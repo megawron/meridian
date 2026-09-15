@@ -68,6 +68,12 @@ mod imp {
         pub(super) task_category_model: RefCell<Option<gtk::StringList>>,
         pub(super) task_category_selector: RefCell<Option<gtk::DropDown>>,
         pub task_list: RefCell<Option<gtk::ListBox>>,
+        pub task_table_header: RefCell<Option<gtk::DrawingArea>>,
+        pub task_table_canvas: RefCell<Option<gtk::DrawingArea>>,
+        pub task_table_layout: RefCell<Option<PreparedTaskTableLayout>>,
+        pub task_table_hovered_row: Cell<Option<usize>>,
+        pub task_table_hovered_header: Cell<Option<TaskTableColumn>>,
+        pub task_table_anchor_row: Cell<Option<usize>>,
         pub task_store: RefCell<Option<gio::ListStore>>,
         pub task_empty_state: RefCell<Option<gtk::Label>>,
         pub(super) task_empty_status_page: RefCell<Option<adw::StatusPage>>,
@@ -6583,8 +6589,362 @@ impl TasksPage {
             .margin_top(12)
             .margin_bottom(12)
             .build();
+
+        let task_table_header = gtk::DrawingArea::builder()
+            .content_height(28)
+            .hexpand(true)
+            .css_classes(vec!["tasks-table-header"])
+            .build();
+        set_accessible_label(&task_table_header, "Aufgabentabellen-Kopfzeile");
+
+        let task_table_canvas = gtk::DrawingArea::builder()
+            .content_height(100)
+            .hexpand(true)
+            .focusable(true)
+            .can_focus(true)
+            .focus_on_click(true)
+            .css_classes(vec!["tasks-table-canvas"])
+            .build();
+        set_accessible_label(&task_table_canvas, "Aufgabenliste Canvas");
+
+        self.imp()
+            .task_table_header
+            .replace(Some(task_table_header.clone()));
+        self.imp()
+            .task_table_canvas
+            .replace(Some(task_table_canvas.clone()));
+
+        // Header Draw Func
+        {
+            let page_weak = self.downgrade();
+            task_table_header.set_draw_func(move |_, cr, width, height| {
+                let Some(page) = page_weak.upgrade() else { return; };
+                let layout_ref = page.imp().task_table_layout.borrow();
+                let hovered = page.imp().task_table_hovered_header.get();
+                let sort = page.imp().task_sort.get();
+                let descending = page.imp().task_sort_descending.get();
+                let is_dark = adw::StyleManager::default().is_dark();
+                if let Some(layout) = layout_ref.as_ref() {
+                    draw_task_table_header(cr, layout, width as f64, height as f64, sort, descending, hovered, is_dark);
+                }
+            });
+        }
+
+        // Header Click Gesture
+        {
+            let header_click = gtk::GestureClick::new();
+            let page_weak = self.downgrade();
+            let header_clone = task_table_header.clone();
+            header_click.connect_pressed(move |gesture, _n_press, x, _y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let Some(page) = page_weak.upgrade() else { return; };
+                let layout_ref = page.imp().task_table_layout.borrow();
+                let Some(layout) = layout_ref.as_ref() else { return; };
+                if let Some(col) = hit_test_task_table_header(layout, x) {
+                    let current_sort = page.imp().task_sort.get();
+                    let current_descending = page.imp().task_sort_descending.get();
+                    let new_sort = match col {
+                        TaskTableColumn::Completed => TaskSort::DueDate,
+                        TaskTableColumn::Priority => TaskSort::Priority,
+                        TaskTableColumn::DueDate => TaskSort::DueDate,
+                        TaskTableColumn::Title => TaskSort::Title,
+                        TaskTableColumn::Status => TaskSort::DueDate,
+                        TaskTableColumn::Category => TaskSort::Title,
+                    };
+                    let new_descending = if current_sort == new_sort {
+                        !current_descending
+                    } else {
+                        false
+                    };
+                    page.imp().task_sort.set(new_sort);
+                    page.imp().task_sort_descending.set(new_descending);
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_task_sort_field(new_sort.setting_value());
+                        settings.set_task_sort_descending(new_descending);
+                    }
+                    header_clone.queue_draw();
+                    if let (Some(store), Some(list), Some(empty)) = (
+                        page.imp().task_store.borrow().clone(),
+                        page.imp().task_list.borrow().clone(),
+                        page.imp().task_empty_state.borrow().clone(),
+                    ) {
+                        render_task_rows(&page, &list, &store, &empty);
+                    }
+                }
+            });
+            task_table_header.add_controller(header_click);
+        }
+
+        // Header Motion Controller
+        {
+            let header_motion = gtk::EventControllerMotion::new();
+            let page_weak = self.downgrade();
+            let header_clone = task_table_header.clone();
+            header_motion.connect_motion(move |_, x, _y| {
+                let Some(page) = page_weak.upgrade() else { return; };
+                let layout_ref = page.imp().task_table_layout.borrow();
+                let col = layout_ref.as_ref().and_then(|l| hit_test_task_table_header(l, x));
+                if page.imp().task_table_hovered_header.get() != col {
+                    page.imp().task_table_hovered_header.set(col);
+                    header_clone.queue_draw();
+                }
+            });
+            let page_weak = self.downgrade();
+            let header_clone = task_table_header.clone();
+            header_motion.connect_leave(move |_| {
+                let Some(page) = page_weak.upgrade() else { return; };
+                if page.imp().task_table_hovered_header.get().is_some() {
+                    page.imp().task_table_hovered_header.set(None);
+                    header_clone.queue_draw();
+                }
+            });
+            task_table_header.add_controller(header_motion);
+        }
+
+        // Canvas Draw Func
+        {
+            let page_weak = self.downgrade();
+            task_table_canvas.set_draw_func(move |_, cr, width, height| {
+                let Some(page) = page_weak.upgrade() else { return; };
+                let layout_ref = page.imp().task_table_layout.borrow();
+                let selection: std::collections::HashSet<TaskSelectionIdentity> =
+                    page.imp().task_selection.borrow().iter().cloned().collect();
+                let hovered = page.imp().task_table_hovered_row.get();
+                let is_dark = adw::StyleManager::default().is_dark();
+                if let Some(layout) = layout_ref.as_ref() {
+                    draw_task_table_canvas(cr, layout, &selection, width as f64, height as f64, hovered, is_dark);
+                }
+            });
+        }
+
+        // Canvas Primary Click Gesture
+        {
+            let canvas_click = gtk::GestureClick::new();
+            let page_weak = self.downgrade();
+            let canvas_clone = task_table_canvas.clone();
+            canvas_click.connect_pressed(move |gesture, n_press, x, y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let Some(page) = page_weak.upgrade() else { return; };
+                let layout_ref = page.imp().task_table_layout.borrow();
+                let Some(layout) = layout_ref.as_ref() else { return; };
+                let Some((row_idx, in_check)) = hit_test_task_table(layout, x, y) else { return; };
+
+                canvas_clone.grab_focus();
+
+                if in_check {
+                    if let Some(row) = layout.rows.get(row_idx) {
+                        let completed = task_is_completed(&row.task);
+                        toggle_task_item_completion(&page, &row.task, !completed);
+                    }
+                } else if n_press == 2 {
+                    if let Some(row) = layout.rows.get(row_idx) {
+                        if let (Some(store), Some(list), Some(empty)) = (
+                            page.imp().task_store.borrow().clone(),
+                            page.imp().task_list.borrow().clone(),
+                            page.imp().task_empty_state.borrow().clone(),
+                        ) {
+                            page.open_task_dialog(store, list, empty, Some(row.task.clone()));
+                        }
+                    }
+                } else if n_press == 1 {
+                    let current_event = gesture.current_event();
+                    let state = current_event.as_ref().map(|e| e.modifier_state()).unwrap_or(gdk::ModifierType::empty());
+                    let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+                    let ctrl_or_cmd = state.contains(gdk::ModifierType::CONTROL_MASK) || state.contains(gdk::ModifierType::META_MASK);
+
+                    let mut current_sel = page.imp().task_selection.borrow().clone();
+                    let clicked_task = &layout.rows[row_idx].task;
+                    let clicked_id = TaskSelectionIdentity::from_task(clicked_task);
+
+                    if shift {
+                        let anchor = page.imp().task_table_anchor_row.get().unwrap_or(row_idx);
+                        let start = anchor.min(row_idx);
+                        let end = anchor.max(row_idx);
+                        let mut range_sel = Vec::new();
+                        for i in start..=end {
+                            if let Some(r) = layout.rows.get(i) {
+                                range_sel.push(TaskSelectionIdentity::from_task(&r.task));
+                            }
+                        }
+                        page.imp().task_selection.replace(range_sel);
+                    } else if ctrl_or_cmd {
+                        if let Some(pos) = current_sel.iter().position(|id| id == &clicked_id) {
+                            current_sel.remove(pos);
+                        } else {
+                            current_sel.push(clicked_id);
+                        }
+                        page.imp().task_table_anchor_row.set(Some(row_idx));
+                        page.imp().task_selection.replace(current_sel);
+                    } else {
+                        page.imp().task_table_anchor_row.set(Some(row_idx));
+                        page.imp().task_selection.replace(vec![clicked_id]);
+                    }
+                    update_task_selection_controls(&page);
+                    refresh_task_preview(&page);
+                    canvas_clone.queue_draw();
+                }
+            });
+            task_table_canvas.add_controller(canvas_click);
+        }
+
+        // Canvas Secondary Click Gesture (Context Menu)
+        {
+            let canvas_secondary_click = gtk::GestureClick::new();
+            canvas_secondary_click.set_button(gdk::BUTTON_SECONDARY);
+            let page_weak = self.downgrade();
+            let canvas_clone = task_table_canvas.clone();
+            canvas_secondary_click.connect_pressed(move |gesture, _n_press, x, y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let Some(page) = page_weak.upgrade() else { return; };
+                let layout_ref = page.imp().task_table_layout.borrow();
+                let Some(layout) = layout_ref.as_ref() else { return; };
+                let Some((row_idx, _)) = hit_test_task_table(layout, x, y) else { return; };
+                if let Some(row) = layout.rows.get(row_idx) {
+                    let clicked_id = TaskSelectionIdentity::from_task(&row.task);
+                    let mut sel = page.imp().task_selection.borrow().clone();
+                    if !sel.contains(&clicked_id) {
+                        sel = vec![clicked_id];
+                        page.imp().task_selection.replace(sel);
+                        page.imp().task_table_anchor_row.set(Some(row_idx));
+                        update_task_selection_controls(&page);
+                        refresh_task_preview(&page);
+                        canvas_clone.queue_draw();
+                    }
+                    show_task_table_context_menu(&page, &canvas_clone, &row.task, gdk::Rectangle::new(x as i32, y as i32, 1, 1));
+                }
+            });
+            task_table_canvas.add_controller(canvas_secondary_click);
+        }
+
+        // Canvas Motion Controller
+        {
+            let canvas_motion = gtk::EventControllerMotion::new();
+            let page_weak = self.downgrade();
+            let canvas_clone = task_table_canvas.clone();
+            canvas_motion.connect_motion(move |_, x, y| {
+                let Some(page) = page_weak.upgrade() else { return; };
+                let layout_ref = page.imp().task_table_layout.borrow();
+                let hovered_idx = layout_ref.as_ref().and_then(|l| hit_test_task_table(l, x, y)).map(|(idx, _)| idx);
+                if page.imp().task_table_hovered_row.get() != hovered_idx {
+                    page.imp().task_table_hovered_row.set(hovered_idx);
+                    canvas_clone.queue_draw();
+                }
+            });
+            let page_weak = self.downgrade();
+            let canvas_clone = task_table_canvas.clone();
+            canvas_motion.connect_leave(move |_| {
+                let Some(page) = page_weak.upgrade() else { return; };
+                if page.imp().task_table_hovered_row.get().is_some() {
+                    page.imp().task_table_hovered_row.set(None);
+                    canvas_clone.queue_draw();
+                }
+            });
+            task_table_canvas.add_controller(canvas_motion);
+        }
+
+        // Canvas Key Controller
+        {
+            let key_controller = gtk::EventControllerKey::new();
+            let page_weak = self.downgrade();
+            let canvas_clone = task_table_canvas.clone();
+            key_controller.connect_key_pressed(move |_, keyval, _, state| {
+                let Some(page) = page_weak.upgrade() else { return glib::Propagation::Proceed; };
+                let layout_ref = page.imp().task_table_layout.borrow();
+                let Some(layout) = layout_ref.as_ref() else { return glib::Propagation::Proceed; };
+                if layout.rows.is_empty() { return glib::Propagation::Proceed; };
+
+                let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+                let current_sel = page.imp().task_selection.borrow().clone();
+                let current_anchor = page.imp().task_table_anchor_row.get().unwrap_or(0);
+
+                match keyval {
+                    gdk::Key::Up => {
+                        let next_idx = current_anchor.saturating_sub(1);
+                        if shift {
+                            let anchor = page.imp().task_table_anchor_row.get().unwrap_or(0);
+                            let start = anchor.min(next_idx);
+                            let end = anchor.max(next_idx);
+                            let range_sel: Vec<_> = (start..=end).filter_map(|i| layout.rows.get(i).map(|r| TaskSelectionIdentity::from_task(&r.task))).collect();
+                            page.imp().task_selection.replace(range_sel);
+                        } else if let Some(row) = layout.rows.get(next_idx) {
+                            page.imp().task_table_anchor_row.set(Some(next_idx));
+                            page.imp().task_selection.replace(vec![TaskSelectionIdentity::from_task(&row.task)]);
+                        }
+                        update_task_selection_controls(&page);
+                        refresh_task_preview(&page);
+                        canvas_clone.queue_draw();
+                        glib::Propagation::Stop
+                    }
+                    gdk::Key::Down => {
+                        let next_idx = (current_anchor + 1).min(layout.rows.len() - 1);
+                        if shift {
+                            let anchor = page.imp().task_table_anchor_row.get().unwrap_or(0);
+                            let start = anchor.min(next_idx);
+                            let end = anchor.max(next_idx);
+                            let range_sel: Vec<_> = (start..=end).filter_map(|i| layout.rows.get(i).map(|r| TaskSelectionIdentity::from_task(&r.task))).collect();
+                            page.imp().task_selection.replace(range_sel);
+                        } else if let Some(row) = layout.rows.get(next_idx) {
+                            page.imp().task_table_anchor_row.set(Some(next_idx));
+                            page.imp().task_selection.replace(vec![TaskSelectionIdentity::from_task(&row.task)]);
+                        }
+                        update_task_selection_controls(&page);
+                        refresh_task_preview(&page);
+                        canvas_clone.queue_draw();
+                        glib::Propagation::Stop
+                    }
+                    gdk::Key::Home => {
+                        if let Some(row) = layout.rows.first() {
+                            page.imp().task_table_anchor_row.set(Some(0));
+                            page.imp().task_selection.replace(vec![TaskSelectionIdentity::from_task(&row.task)]);
+                            update_task_selection_controls(&page);
+                            refresh_task_preview(&page);
+                            canvas_clone.queue_draw();
+                        }
+                        glib::Propagation::Stop
+                    }
+                    gdk::Key::End => {
+                        let last_idx = layout.rows.len() - 1;
+                        if let Some(row) = layout.rows.get(last_idx) {
+                            page.imp().task_table_anchor_row.set(Some(last_idx));
+                            page.imp().task_selection.replace(vec![TaskSelectionIdentity::from_task(&row.task)]);
+                            update_task_selection_controls(&page);
+                            refresh_task_preview(&page);
+                            canvas_clone.queue_draw();
+                        }
+                        glib::Propagation::Stop
+                    }
+                    gdk::Key::space => {
+                        if let Some(sel_id) = current_sel.first() {
+                            if let Some(row) = layout.rows.iter().find(|r| &r.identity == sel_id) {
+                                let completed = task_is_completed(&row.task);
+                                toggle_task_item_completion(&page, &row.task, !completed);
+                            }
+                        }
+                        glib::Propagation::Stop
+                    }
+                    gdk::Key::Return | gdk::Key::KP_Enter => {
+                        if let Some(sel_id) = current_sel.first() {
+                            if let Some(row) = layout.rows.iter().find(|r| &r.identity == sel_id) {
+                                if let (Some(store), Some(list), Some(empty)) = (
+                                    page.imp().task_store.borrow().clone(),
+                                    page.imp().task_list.borrow().clone(),
+                                    page.imp().task_empty_state.borrow().clone(),
+                                ) {
+                                    page.open_task_dialog(store, list, empty, Some(row.task.clone()));
+                                }
+                            }
+                        }
+                        glib::Propagation::Stop
+                    }
+                    _ => glib::Propagation::Proceed,
+                }
+            });
+            task_table_canvas.add_controller(key_controller);
+        }
+
         tasks_content_box.append(&quick_add_box);
-        tasks_content_box.append(&task_list);
+        tasks_content_box.append(&task_table_header);
+        tasks_content_box.append(&task_table_canvas);
 
         let task_clamp = adw::Clamp::builder()
             .maximum_size(950)
@@ -7822,6 +8182,682 @@ impl TasksPage {
     }
 }
 
+// --- ETable Tasks Canvas Models and Drawing (Original GNOME Evolution Canvas parity) ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TaskTableColumn {
+    Completed,
+    Priority,
+    Title,
+    Status,
+    DueDate,
+    Category,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedTaskTableRow {
+    pub(crate) task: TaskItemObject,
+    pub(crate) identity: TaskSelectionIdentity,
+    pub(crate) id: String,
+    pub(crate) source_uid: String,
+    pub(crate) title: String,
+    pub(crate) due_date: Option<NaiveDate>,
+    pub(crate) due_display: String,
+    pub(crate) is_overdue: bool,
+    pub(crate) priority: u32,
+    pub(crate) status: String,
+    pub(crate) percent: u32,
+    pub(crate) categories: Vec<String>,
+    pub(crate) completed: bool,
+    pub(crate) y: f64,
+    pub(crate) height: f64,
+    pub(crate) check_rect: (f64, f64, f64, f64),
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PreparedTaskTableLayout {
+    pub(crate) rows: Vec<PreparedTaskTableRow>,
+    pub(crate) total_height: f64,
+    pub(crate) col_check_w: f64,
+    pub(crate) col_prio_w: f64,
+    pub(crate) col_title_w: f64,
+    pub(crate) col_status_w: f64,
+    pub(crate) col_due_w: f64,
+    pub(crate) col_cat_w: f64,
+}
+
+pub(crate) fn prepare_task_table_layout(
+    tasks: &[TaskItemObject],
+    total_width: f64,
+    today: NaiveDate,
+) -> PreparedTaskTableLayout {
+    let row_height = 32.0;
+    let col_check_w = 32.0;
+    let col_prio_w = 28.0;
+    let col_status_w = 110.0;
+    let col_due_w = 120.0;
+    let col_cat_w = 110.0;
+    let col_title_w = (total_width - col_check_w - col_prio_w - col_status_w - col_due_w - col_cat_w - 16.0).max(180.0);
+
+    let mut rows = Vec::with_capacity(tasks.len());
+    let mut current_y = 0.0;
+
+    for task in tasks {
+        let completed = task_is_completed(task);
+        let raw_title = task.title();
+        let title = if raw_title.trim().is_empty() {
+            "(Ohne Betreff)".to_string()
+        } else {
+            raw_title
+        };
+
+        let due_raw = task.due_date();
+        let parsed_due = task_due_date(&due_raw);
+        let (due_display, is_overdue) = if let Some(due) = parsed_due {
+            let text = if due == today {
+                "Heute".to_string()
+            } else if due == today + chrono::Duration::days(1) {
+                "Morgen".to_string()
+            } else if due == today - chrono::Duration::days(1) {
+                "Gestern".to_string()
+            } else {
+                due.format("%d.%m.%Y").to_string()
+            };
+            let overdue = !completed && due < today;
+            (text, overdue)
+        } else if !due_raw.trim().is_empty() {
+            (due_raw, false)
+        } else {
+            ("-".to_string(), false)
+        };
+
+        let priority = task.priority().parse::<u32>().unwrap_or(0);
+        let status = task_status_label(&task.component());
+        let percent_raw = ical_property(&task.component(), "PERCENT-COMPLETE");
+        let percent = percent_raw.and_then(|p| p.parse::<u32>().ok()).unwrap_or(0);
+        let categories: Vec<String> = task_categories(task).collect();
+
+        let check_rect = (8.0, current_y + (row_height - 16.0) / 2.0, 16.0, 16.0);
+
+        rows.push(PreparedTaskTableRow {
+            task: task.clone(),
+            identity: TaskSelectionIdentity::from_task(task),
+            id: task.id(),
+            source_uid: task.source_uid(),
+            title,
+            due_date: parsed_due,
+            due_display,
+            is_overdue,
+            priority,
+            status: status.to_string(),
+            percent,
+            categories,
+            completed,
+            y: current_y,
+            height: row_height,
+            check_rect,
+        });
+
+        current_y += row_height;
+    }
+
+    PreparedTaskTableLayout {
+        rows,
+        total_height: current_y,
+        col_check_w,
+        col_prio_w,
+        col_title_w,
+        col_status_w,
+        col_due_w,
+        col_cat_w,
+    }
+}
+
+pub(crate) fn hit_test_task_table_header(
+    layout: &PreparedTaskTableLayout,
+    x: f64,
+) -> Option<TaskTableColumn> {
+    if x < layout.col_check_w {
+        Some(TaskTableColumn::Completed)
+    } else if x < layout.col_check_w + layout.col_prio_w {
+        Some(TaskTableColumn::Priority)
+    } else if x < layout.col_check_w + layout.col_prio_w + layout.col_title_w {
+        Some(TaskTableColumn::Title)
+    } else if x < layout.col_check_w + layout.col_prio_w + layout.col_title_w + layout.col_status_w {
+        Some(TaskTableColumn::Status)
+    } else if x < layout.col_check_w + layout.col_prio_w + layout.col_title_w + layout.col_status_w + layout.col_due_w {
+        Some(TaskTableColumn::DueDate)
+    } else if x < layout.col_check_w + layout.col_prio_w + layout.col_title_w + layout.col_status_w + layout.col_due_w + layout.col_cat_w {
+        Some(TaskTableColumn::Category)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn hit_test_task_table(
+    layout: &PreparedTaskTableLayout,
+    x: f64,
+    y: f64,
+) -> Option<(usize, bool)> {
+    if layout.rows.is_empty() || y < 0.0 || y >= layout.total_height {
+        return None;
+    }
+    let row_idx = (y / 32.0).floor() as usize;
+    if row_idx < layout.rows.len() {
+        let (cx, cy, cw, ch) = layout.rows[row_idx].check_rect;
+        let in_check = x >= (cx - 4.0) && x <= (cx + cw + 4.0) && y >= (cy - 4.0) && y <= (cy + ch + 4.0);
+        Some((row_idx, in_check))
+    } else {
+        None
+    }
+}
+
+fn draw_cairo_rounded_rect(
+    cr: &gtk::cairo::Context,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    radius: f64,
+) {
+    let r = radius.min(width / 2.0).min(height / 2.0).max(0.0);
+    if r <= 0.0 {
+        cr.rectangle(x, y, width, height);
+        return;
+    }
+    let degrees = std::f64::consts::PI / 180.0;
+    cr.new_sub_path();
+    cr.arc(x + width - r, y + r, r, -90.0 * degrees, 0.0 * degrees);
+    cr.arc(x + width - r, y + height - r, r, 0.0 * degrees, 90.0 * degrees);
+    cr.arc(x + r, y + height - r, r, 90.0 * degrees, 180.0 * degrees);
+    cr.arc(x + r, y + r, r, 180.0 * degrees, 270.0 * degrees);
+    cr.close_path();
+}
+
+fn truncate_cairo_text(cr: &gtk::cairo::Context, text: &str, max_width: f64) -> String {
+    if text.is_empty() || max_width <= 0.0 {
+        return String::new();
+    }
+    if let Ok(extents) = cr.text_extents(text) {
+        if extents.width() <= max_width {
+            return text.to_string();
+        }
+    }
+    let ellipsis = "…";
+    let ellipsis_w = cr.text_extents(ellipsis).map(|e| e.width()).unwrap_or(8.0);
+    let target_w = (max_width - ellipsis_w).max(0.0);
+    let chars: Vec<char> = text.chars().collect();
+    let mut low = 0;
+    let mut high = chars.len();
+    let mut best = 0;
+    while low <= high {
+        let mid = (low + high) / 2;
+        let s: String = chars[..mid].iter().collect();
+        let w = cr.text_extents(&s).map(|e| e.width()).unwrap_or(0.0);
+        if w <= target_w {
+            best = mid;
+            low = mid + 1;
+        } else if mid == 0 {
+            break;
+        } else {
+            high = mid - 1;
+        }
+    }
+    let mut res: String = chars[..best].iter().collect();
+    res.push('…');
+    res
+}
+
+pub(crate) fn draw_task_table_header(
+    cr: &gtk::cairo::Context,
+    layout: &PreparedTaskTableLayout,
+    width: f64,
+    height: f64,
+    current_sort: TaskSort,
+    sort_desc: bool,
+    hovered_col: Option<TaskTableColumn>,
+    is_dark: bool,
+) {
+    if is_dark {
+        cr.set_source_rgb(0.18, 0.18, 0.18);
+    } else {
+        cr.set_source_rgb(0.95, 0.95, 0.96);
+    }
+    cr.paint().ok();
+
+    // Bottom border
+    cr.set_line_width(1.0);
+    if is_dark {
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.12);
+    } else {
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.12);
+    }
+    cr.move_to(0.0, height - 0.5);
+    cr.line_to(width, height - 0.5);
+    cr.stroke().ok();
+
+    let columns = [
+        (TaskTableColumn::Completed, 0.0, layout.col_check_w, "✓"),
+        (TaskTableColumn::Priority, layout.col_check_w, layout.col_prio_w, "!"),
+        (TaskTableColumn::Title, layout.col_check_w + layout.col_prio_w, layout.col_title_w, "Betreff"),
+        (TaskTableColumn::Status, layout.col_check_w + layout.col_prio_w + layout.col_title_w, layout.col_status_w, "Status"),
+        (TaskTableColumn::DueDate, layout.col_check_w + layout.col_prio_w + layout.col_title_w + layout.col_status_w, layout.col_due_w, "Fälligkeit"),
+        (TaskTableColumn::Category, layout.col_check_w + layout.col_prio_w + layout.col_title_w + layout.col_status_w + layout.col_due_w, layout.col_cat_w, "Kategorien"),
+    ];
+
+    cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+    cr.set_font_size(11.0);
+
+    for (col, col_x, col_w, label) in columns {
+        if hovered_col == Some(col) {
+            if is_dark {
+                cr.set_source_rgba(1.0, 1.0, 1.0, 0.08);
+            } else {
+                cr.set_source_rgba(0.0, 0.0, 0.0, 0.05);
+            }
+            cr.rectangle(col_x, 0.0, col_w, height - 1.0);
+            cr.fill().ok();
+        }
+
+        // Column separator
+        if is_dark {
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.08);
+        } else {
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.08);
+        }
+        cr.move_to(col_x + col_w - 0.5, 4.0);
+        cr.line_to(col_x + col_w - 0.5, height - 5.0);
+        cr.stroke().ok();
+
+        // Label
+        if is_dark {
+            cr.set_source_rgba(0.85, 0.85, 0.85, 0.9);
+        } else {
+            cr.set_source_rgba(0.2, 0.2, 0.2, 0.9);
+        }
+
+        let mut display = label.to_string();
+        let is_sorted = match (col, current_sort) {
+            (TaskTableColumn::Title, TaskSort::Title) => true,
+            (TaskTableColumn::DueDate, TaskSort::DueDate) => true,
+            (TaskTableColumn::Priority, TaskSort::Priority) => true,
+            _ => false,
+        };
+        if is_sorted {
+            display.push(' ');
+            display.push(if sort_desc { '▼' } else { '▲' });
+        }
+
+        let text_x = if col == TaskTableColumn::Completed || col == TaskTableColumn::Priority {
+            col_x + (col_w / 2.0) - 4.0
+        } else {
+            col_x + 8.0
+        };
+        cr.move_to(text_x, (height / 2.0) + 4.0);
+        cr.show_text(&display).ok();
+    }
+}
+
+pub(crate) fn draw_task_table_canvas(
+    cr: &gtk::cairo::Context,
+    layout: &PreparedTaskTableLayout,
+    selection: &HashSet<TaskSelectionIdentity>,
+    width: f64,
+    height: f64,
+    hovered_row: Option<usize>,
+    is_dark: bool,
+) {
+    if is_dark {
+        cr.set_source_rgb(0.12, 0.12, 0.12);
+    } else {
+        cr.set_source_rgb(1.0, 1.0, 1.0);
+    }
+    cr.paint().ok();
+
+    for (idx, row) in layout.rows.iter().enumerate() {
+        if row.y + row.height < 0.0 || row.y > height {
+            continue;
+        }
+
+        let is_selected = selection.contains(&row.identity);
+        let is_hovered = hovered_row == Some(idx);
+
+        // Row background
+        if is_selected {
+            cr.set_source_rgba(0.2, 0.5, 0.9, 0.25);
+            cr.rectangle(0.0, row.y, width, row.height);
+            cr.fill().ok();
+            cr.set_source_rgba(0.2, 0.5, 0.9, 0.4);
+            cr.set_line_width(1.0);
+            cr.rectangle(0.5, row.y + 0.5, width - 1.0, row.height - 1.0);
+            cr.stroke().ok();
+        } else if is_hovered {
+            if is_dark {
+                cr.set_source_rgba(1.0, 1.0, 1.0, 0.05);
+            } else {
+                cr.set_source_rgba(0.0, 0.0, 0.0, 0.04);
+            }
+            cr.rectangle(0.0, row.y, width, row.height);
+            cr.fill().ok();
+        } else if idx % 2 == 1 {
+            if is_dark {
+                cr.set_source_rgba(1.0, 1.0, 1.0, 0.015);
+            } else {
+                cr.set_source_rgba(0.0, 0.0, 0.0, 0.015);
+            }
+            cr.rectangle(0.0, row.y, width, row.height);
+            cr.fill().ok();
+        }
+
+        // 1. Checkbox
+        let (cx, cy, cw, ch) = row.check_rect;
+        draw_cairo_rounded_rect(cr, cx, cy, cw, ch, 3.0);
+        if row.completed {
+            cr.set_source_rgba(0.2, 0.55, 0.95, 0.9);
+            cr.fill_preserve().ok();
+            cr.set_source_rgba(0.2, 0.45, 0.85, 1.0);
+            cr.set_line_width(1.0);
+            cr.stroke().ok();
+
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.set_line_width(2.0);
+            cr.set_line_cap(gtk::cairo::LineCap::Round);
+            cr.set_line_join(gtk::cairo::LineJoin::Round);
+            cr.move_to(cx + 3.5, cy + 8.5);
+            cr.line_to(cx + 6.5, cy + 11.5);
+            cr.line_to(cx + 12.5, cy + 4.5);
+            cr.stroke().ok();
+        } else {
+            if is_dark {
+                cr.set_source_rgba(0.7, 0.7, 0.7, 0.6);
+            } else {
+                cr.set_source_rgba(0.3, 0.3, 0.3, 0.6);
+            }
+            cr.set_line_width(1.5);
+            cr.stroke().ok();
+        }
+
+        // 2. Priority indicator
+        let prio_x = layout.col_check_w;
+        if (1..=4).contains(&row.priority) {
+            cr.set_source_rgba(0.9, 0.2, 0.2, 0.95);
+            cr.arc(prio_x + 14.0, row.y + (row.height / 2.0), 4.5, 0.0, 2.0 * std::f64::consts::PI);
+            cr.fill().ok();
+        } else if (6..=9).contains(&row.priority) {
+            cr.set_source_rgba(0.5, 0.5, 0.5, 0.5);
+            cr.arc(prio_x + 14.0, row.y + (row.height / 2.0), 3.0, 0.0, 2.0 * std::f64::consts::PI);
+            cr.fill().ok();
+        }
+
+        // 3. Title
+        let title_x = layout.col_check_w + layout.col_prio_w + 8.0;
+        let title_max_w = layout.col_title_w - 16.0;
+        let text_baseline = row.y + (row.height / 2.0) + 4.0;
+
+        cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
+        cr.set_font_size(12.0);
+
+        if row.completed {
+            if is_dark {
+                cr.set_source_rgba(0.55, 0.55, 0.55, 0.7);
+            } else {
+                cr.set_source_rgba(0.5, 0.5, 0.5, 0.7);
+            }
+        } else if is_dark {
+            cr.set_source_rgba(0.92, 0.92, 0.92, 1.0);
+        } else {
+            cr.set_source_rgba(0.12, 0.12, 0.12, 1.0);
+        }
+
+        let display_title = truncate_cairo_text(cr, &row.title, title_max_w);
+        cr.move_to(title_x, text_baseline);
+        cr.show_text(&display_title).ok();
+
+        if row.completed {
+            if let Ok(extents) = cr.text_extents(&display_title) {
+                cr.set_line_width(1.0);
+                cr.move_to(title_x, text_baseline - 4.0);
+                cr.line_to(title_x + extents.width(), text_baseline - 4.0);
+                cr.stroke().ok();
+            }
+        }
+
+        // 4. Status
+        let status_x = layout.col_check_w + layout.col_prio_w + layout.col_title_w + 8.0;
+        cr.set_font_size(11.0);
+        if is_dark {
+            cr.set_source_rgba(0.7, 0.7, 0.7, 0.8);
+        } else {
+            cr.set_source_rgba(0.4, 0.4, 0.4, 0.8);
+        }
+        let display_status = truncate_cairo_text(cr, &row.status, layout.col_status_w - 16.0);
+        cr.move_to(status_x, text_baseline);
+        cr.show_text(&display_status).ok();
+
+        // 5. Due Date
+        let due_x = status_x + layout.col_status_w;
+        if row.is_overdue {
+            cr.set_source_rgba(0.95, 0.25, 0.25, 1.0);
+        } else if is_dark {
+            cr.set_source_rgba(0.7, 0.7, 0.7, 0.8);
+        } else {
+            cr.set_source_rgba(0.4, 0.4, 0.4, 0.8);
+        }
+        let display_due = truncate_cairo_text(cr, &row.due_display, layout.col_due_w - 16.0);
+        cr.move_to(due_x, text_baseline);
+        cr.show_text(&display_due).ok();
+
+        // 6. Categories
+        let cat_x = due_x + layout.col_due_w;
+        if !row.categories.is_empty() {
+            let cat_str = row.categories.join(", ");
+            if is_dark {
+                cr.set_source_rgba(0.65, 0.65, 0.65, 0.75);
+            } else {
+                cr.set_source_rgba(0.45, 0.45, 0.45, 0.75);
+            }
+            let display_cat = truncate_cairo_text(cr, &cat_str, layout.col_cat_w - 16.0);
+            cr.move_to(cat_x, text_baseline);
+            cr.show_text(&display_cat).ok();
+        }
+
+        // Horizontal row separator line
+        cr.set_line_width(1.0);
+        if is_dark {
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.05);
+        } else {
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.05);
+        }
+        let line_y = (row.y + row.height).floor() + 0.5;
+        cr.move_to(0.0, line_y);
+        cr.line_to(width, line_y);
+        cr.stroke().ok();
+    }
+}
+
+pub(crate) fn toggle_task_item_completion(page: &TasksPage, task: &TaskItemObject, completed: bool) {
+    let source_uid = task.source_uid();
+    if !task_source_is_writable_on_page(page, &source_uid) {
+        if let Some(canvas) = page.imp().task_table_canvas.borrow().as_ref() {
+            show_toast_for_widget(canvas, "Diese Aufgabenliste ist nicht als schreibfähig bestätigt");
+        }
+        return;
+    }
+
+    let status = if completed {
+        "COMPLETED"
+    } else {
+        "NEEDS-ACTION"
+    };
+    let percent = if completed { "100" } else { "0" };
+    let mut component = update_ical_property(&task.component(), "STATUS", Some(status));
+    component = update_ical_property(&component, "PERCENT-COMPLETE", Some(percent));
+    component = if completed {
+        update_ical_property(
+            &component,
+            "COMPLETED",
+            Some(&Utc::now().format("%Y%m%dT%H%M%SZ").to_string()),
+        )
+    } else {
+        update_ical_property(&component, "COMPLETED", None)
+    };
+    let uid = task.id();
+    let uid_for_worker = uid.clone();
+    let source_uid_for_worker = source_uid.clone();
+    let (sender, receiver) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let result = ECalService::new().modify_component(
+            &source_uid_for_worker,
+            ECalComponentType::Task,
+            &uid_for_worker,
+            &component,
+        );
+        if let Err(error) = sender.send_blocking(result) {
+            tracing::debug!(%error, "Task status mutation result was dropped");
+        }
+    });
+
+    let task_clone = task.clone();
+    let page_weak = page.downgrade();
+    glib::spawn_future_local(async move {
+        let result = match receiver.recv().await {
+            Ok(result) => result,
+            Err(error) => {
+                tracing::debug!(%error, "Task status mutation channel closed");
+                if let Some(page) = page_weak.upgrade() {
+                    if let Some(canvas) = page.imp().task_table_canvas.borrow().as_ref() {
+                        show_toast_for_widget(canvas, "Aufgabenstatus konnte nicht aktualisiert werden");
+                    }
+                }
+                return;
+            }
+        };
+        match result {
+            Ok(result) => {
+                let component = match task_authoritative_component(&uid, &result.uid, result.component) {
+                    Ok(component) => component,
+                    Err(error) => {
+                        if let Some(page) = page_weak.upgrade() {
+                            if let Some(canvas) = page.imp().task_table_canvas.borrow().as_ref() {
+                                show_toast_for_widget(canvas, &error);
+                            }
+                        }
+                        return;
+                    }
+                };
+                task_clone.set_completed(completed);
+                task_clone.set_component(component);
+                if let Some(page) = page_weak.upgrade() {
+                    page.refresh_tasks();
+                }
+            }
+            Err(error) => {
+                if let Some(page) = page_weak.upgrade() {
+                    if let Some(canvas) = page.imp().task_table_canvas.borrow().as_ref() {
+                        show_toast_for_widget(canvas, &format!("Aufgabe konnte nicht aktualisiert werden: {error}"));
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn show_task_table_context_menu(
+    page: &TasksPage,
+    anchor_widget: &gtk::DrawingArea,
+    task: &TaskItemObject,
+    rect: gdk::Rectangle,
+) {
+    let popover = gtk::Popover::builder()
+        .has_arrow(false)
+        .pointing_to(&rect)
+        .build();
+    let menu_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(2)
+        .margin_start(6)
+        .margin_end(6)
+        .margin_top(6)
+        .margin_bottom(6)
+        .build();
+
+    // 1. Edit
+    let edit = gtk::Button::with_label("Aufgabe bearbeiten");
+    edit.set_halign(gtk::Align::Fill);
+    edit.add_css_class("flat");
+    let popover_for_edit = popover.clone();
+    let page_weak_edit = page.downgrade();
+    let task_for_edit = task.clone();
+    edit.connect_clicked(move |_| {
+        popover_for_edit.popdown();
+        if let Some(page) = page_weak_edit.upgrade() {
+            if let (Some(store), Some(list), Some(empty)) = (
+                page.imp().task_store.borrow().clone(),
+                page.imp().task_list.borrow().clone(),
+                page.imp().task_empty_state.borrow().clone(),
+            ) {
+                page.open_task_dialog(store, list, empty, Some(task_for_edit.clone()));
+            }
+        }
+    });
+    menu_box.append(&edit);
+
+    // 2. Toggle completion
+    let completed = task_is_completed(task);
+    let toggle_label = if completed {
+        "Als offen markieren"
+    } else {
+        "Als erledigt markieren"
+    };
+    let toggle = gtk::Button::with_label(toggle_label);
+    toggle.set_halign(gtk::Align::Fill);
+    toggle.add_css_class("flat");
+    toggle.set_sensitive(task_source_is_writable_on_page(page, &task.source_uid()));
+    let popover_for_toggle = popover.clone();
+    let page_weak_toggle = page.downgrade();
+    let task_for_toggle = task.clone();
+    toggle.connect_clicked(move |_| {
+        popover_for_toggle.popdown();
+        if let Some(page) = page_weak_toggle.upgrade() {
+            toggle_task_item_completion(&page, &task_for_toggle, !completed);
+        }
+    });
+    menu_box.append(&toggle);
+
+    // 3. Delete
+    let delete = gtk::Button::with_label("Aufgabe löschen");
+    delete.set_halign(gtk::Align::Fill);
+    delete.add_css_class("flat");
+    delete.add_css_class("destructive-action");
+    delete.set_sensitive(task_source_is_writable_on_page(page, &task.source_uid()));
+    let popover_for_delete = popover.clone();
+    let page_weak_delete = page.downgrade();
+    delete.connect_clicked(move |_| {
+        popover_for_delete.popdown();
+        if let Some(page) = page_weak_delete.upgrade() {
+            if let (Some(store), Some(list), Some(empty), Some(del_btn)) = (
+                page.imp().task_store.borrow().clone(),
+                page.imp().task_list.borrow().clone(),
+                page.imp().task_empty_state.borrow().clone(),
+                page.imp().task_delete_selection_button.borrow().clone(),
+            ) {
+                present_task_delete_confirmation(
+                    &page,
+                    &del_btn,
+                    &store,
+                    &list,
+                    &empty,
+                );
+            }
+        }
+    });
+    menu_box.append(&delete);
+
+    popover.set_parent(anchor_widget);
+    popover.set_child(Some(&menu_box));
+    popover.popup();
+}
+
 fn render_task_rows(
     page: &TasksPage,
     task_list: &gtk::ListBox,
@@ -7880,29 +8916,34 @@ fn render_task_rows(
             context,
         )
     });
-    for task in tasks {
-        let selected = preserved_selection.contains(&TaskSelectionIdentity::from_task(&task));
-        append_task_row(
-            page,
-            task_list,
-            task_store,
-            empty_tasks,
-            &task,
-            context,
-            &category_metadata,
-        );
-        if selected && let Some(row) = task_list.last_child().and_downcast::<gtk::ListBoxRow>() {
-            task_list.select_row(Some(&row));
-        }
-        visible += 1;
+    let canvas_width = page
+        .imp()
+        .task_table_canvas
+        .borrow()
+        .as_ref()
+        .map(|c| c.width() as f64)
+        .filter(|&w| w > 100.0)
+        .unwrap_or(700.0);
+    let layout = prepare_task_table_layout(&tasks, canvas_width, context.today);
+    let total_h = layout.total_height.max(80.0);
+    page.imp().task_table_layout.replace(Some(layout));
+
+    if let Some(canvas) = page.imp().task_table_canvas.borrow().as_ref() {
+        canvas.set_content_height(total_h as i32);
+        canvas.queue_draw();
     }
+    if let Some(header) = page.imp().task_table_header.borrow().as_ref() {
+        header.queue_draw();
+    }
+
+    let active_selection: Vec<TaskSelectionIdentity> = tasks
+        .iter()
+        .map(TaskSelectionIdentity::from_task)
+        .filter(|id| preserved_selection.contains(id))
+        .collect();
+    page.imp().task_selection.replace(active_selection);
     page.imp().task_selection_restoring.set(false);
-    // A filter change or backend removal can make a preserved identity
-    // invisible. Keep the page-owned selection and its actions aligned with
-    // the rows GTK actually restored instead of exporting a hidden stale task.
-    page.imp()
-        .task_selection
-        .replace(task_selection_from_list(task_list));
+    visible = tasks.len();
     update_task_selection_controls(page);
     empty_tasks.set_visible(visible == 0);
     if visible == 0 {
@@ -17175,6 +18216,60 @@ mod tests {
         hidden.insert("hidden-source-1".to_string());
         assert!(hidden.contains("hidden-source-1"));
         assert!(!hidden.contains("visible-source-2"));
+    }
+
+    #[test]
+    fn test_task_table_canvas_layout_and_hit_testing() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
+        let task1 = TaskItemObject::new(
+            "local-calendar",
+            "task-1",
+            "Review pull requests",
+            "2026-09-15",
+            "1",
+            false,
+            "BEGIN:VTODO\r\nSUMMARY:Review pull requests\r\nCATEGORIES:Work\r\nEND:VTODO\r\n",
+        );
+        let task2 = TaskItemObject::new(
+            "local-calendar",
+            "task-2",
+            "Submit report",
+            "2026-09-20",
+            "2",
+            true,
+            "BEGIN:VTODO\r\nSUMMARY:Submit report\r\nSTATUS:COMPLETED\r\nPERCENT-COMPLETE:100\r\nEND:VTODO\r\n",
+        );
+
+        let layout = prepare_task_table_layout(&[task1, task2], 800.0, today);
+        assert_eq!(layout.rows.len(), 2);
+        assert_eq!(layout.total_height, 64.0);
+        assert_eq!(layout.rows[0].title, "Review pull requests");
+        assert_eq!(layout.rows[0].due_display, "Heute");
+        assert!(!layout.rows[0].completed);
+        assert_eq!(layout.rows[1].title, "Submit report");
+        assert!(layout.rows[1].completed);
+
+        // Header hit test
+        assert_eq!(hit_test_task_table_header(&layout, 10.0), Some(TaskTableColumn::Completed));
+        assert_eq!(hit_test_task_table_header(&layout, 40.0), Some(TaskTableColumn::Priority));
+        assert_eq!(hit_test_task_table_header(&layout, 100.0), Some(TaskTableColumn::Title));
+
+        // Row hit test: outside checkbox
+        let hit_row0 = hit_test_task_table(&layout, 200.0, 10.0);
+        assert_eq!(hit_row0, Some((0, false)));
+
+        // Row hit test: inside checkbox
+        let (cx, cy, _, _) = layout.rows[0].check_rect;
+        let hit_check0 = hit_test_task_table(&layout, cx + 2.0, cy + 2.0);
+        assert_eq!(hit_check0, Some((0, true)));
+
+        // Row 1 hit test
+        let hit_row1 = hit_test_task_table(&layout, 200.0, 42.0);
+        assert_eq!(hit_row1, Some((1, false)));
+
+        // Out of bounds hit test
+        assert_eq!(hit_test_task_table(&layout, 200.0, 100.0), None);
+        assert_eq!(hit_test_task_table(&layout, 200.0, -5.0), None);
     }
 }
 

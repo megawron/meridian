@@ -57,6 +57,14 @@ mod imp {
         pub memo_refresh_generation: Cell<u64>,
         pub memo_preview_state: RefCell<MemoPreviewState>,
         pub memo_list: RefCell<Option<gtk::ListBox>>,
+        pub memo_table_header: RefCell<Option<gtk::DrawingArea>>,
+        pub memo_table_canvas: RefCell<Option<gtk::DrawingArea>>,
+        pub memo_table_layout: RefCell<Option<PreparedMemoTableLayout>>,
+        pub memo_table_hovered_row: Cell<Option<usize>>,
+        pub memo_table_hovered_header: Cell<Option<MemoTableColumn>>,
+        pub memo_table_anchor_row: Cell<Option<usize>>,
+        pub memo_sort: Cell<MemoSort>,
+        pub memo_sort_descending: Cell<bool>,
         pub memo_records: RefCell<Option<Rc<RefCell<Vec<MemoRecord>>>>>,
         pub memo_empty_state: RefCell<Option<gtk::Label>>,
         pub new_memo_button: RefCell<Option<gtk::Button>>,
@@ -97,6 +105,14 @@ mod imp {
                 memo_refresh_generation: Cell::new(0),
                 memo_preview_state: RefCell::new(MemoPreviewState::default()),
                 memo_list: RefCell::new(None),
+                memo_table_header: RefCell::new(None),
+                memo_table_canvas: RefCell::new(None),
+                memo_table_layout: RefCell::new(None),
+                memo_table_hovered_row: Cell::new(None),
+                memo_table_hovered_header: Cell::new(None),
+                memo_table_anchor_row: Cell::new(None),
+                memo_sort: Cell::new(MemoSort::default()),
+                memo_sort_descending: Cell::new(true),
                 memo_records: RefCell::new(None),
                 memo_empty_state: RefCell::new(None),
                 new_memo_button: RefCell::new(None),
@@ -169,11 +185,405 @@ glib::wrapper! {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum MemoSort {
+pub(crate) enum MemoSort {
     #[default]
     Updated,
     Title,
     Source,
+}
+
+// --- ETable Memos Canvas Models and Drawing (Original GNOME Evolution Canvas parity) ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MemoTableColumn {
+    Color,
+    Title,
+    Source,
+    Updated,
+    Categories,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedMemoTableRow {
+    pub(crate) memo: MemoRecord,
+    pub(crate) identity: MemoIdentity,
+    pub(crate) summary: String,
+    pub(crate) source_display: String,
+    pub(crate) updated: String,
+    pub(crate) categories: Vec<String>,
+    pub(crate) category_color: Option<String>,
+    pub(crate) y: f64,
+    pub(crate) height: f64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PreparedMemoTableLayout {
+    pub(crate) rows: Vec<PreparedMemoTableRow>,
+    pub(crate) total_height: f64,
+    pub(crate) width: f64,
+    pub(crate) col_color_w: f64,
+    pub(crate) col_title_w: f64,
+    pub(crate) col_source_w: f64,
+    pub(crate) col_updated_w: f64,
+    pub(crate) col_categories_w: f64,
+}
+
+fn truncate_cairo_text(cr: &gtk::cairo::Context, text: &str, max_width: f64) -> String {
+    if max_width <= 0.0 {
+        return String::new();
+    }
+    if let Ok(extents) = cr.text_extents(text) {
+        if extents.width() <= max_width {
+            return text.to_string();
+        }
+    }
+    let ellipsis = "…";
+    let ellipsis_w = cr.text_extents(ellipsis).map(|e| e.width()).unwrap_or(10.0);
+    let target_w = max_width - ellipsis_w;
+    if target_w <= 0.0 {
+        return ellipsis.to_string();
+    }
+    let mut truncated = String::new();
+    for ch in text.chars() {
+        truncated.push(ch);
+        if let Ok(extents) = cr.text_extents(&truncated) {
+            if extents.width() > target_w {
+                truncated.pop();
+                break;
+            }
+        }
+    }
+    truncated.push_str(ellipsis);
+    truncated
+}
+
+fn parse_hex_color(hex: &str) -> Option<(f64, f64, f64)> {
+    let clean = hex.trim().trim_start_matches('#');
+    if clean.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&clean[0..2], 16).ok()? as f64 / 255.0;
+    let g = u8::from_str_radix(&clean[2..4], 16).ok()? as f64 / 255.0;
+    let b = u8::from_str_radix(&clean[4..6], 16).ok()? as f64 / 255.0;
+    Some((r, g, b))
+}
+
+pub(crate) fn prepare_memo_table_layout(
+    memos: &[MemoRecord],
+    total_width: f64,
+) -> PreparedMemoTableLayout {
+    let row_height = 32.0;
+    let col_color_w = 28.0;
+    let col_source_w = 140.0;
+    let col_updated_w = 120.0;
+    let col_categories_w = 120.0;
+    let col_title_w = (total_width - col_color_w - col_source_w - col_updated_w - col_categories_w - 16.0).max(160.0);
+
+    let mut rows = Vec::with_capacity(memos.len());
+    let mut current_y = 0.0;
+    let cat_store = CalendarCategoryStore::default();
+
+    for memo in memos {
+        let summary = if memo.summary.trim().is_empty() {
+            "(Ohne Betreff)".to_string()
+        } else {
+            memo.summary.clone()
+        };
+        let category_color = cat_store.color_for_component(&memo.component);
+        let categories_str = component_categories(&memo.component);
+        let categories = categories_str
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+
+        rows.push(PreparedMemoTableRow {
+            identity: MemoIdentity::from(memo),
+            memo: memo.clone(),
+            summary,
+            source_display: memo.source_display_name.clone(),
+            updated: memo.updated.clone(),
+            categories,
+            category_color,
+            y: current_y,
+            height: row_height,
+        });
+
+        current_y += row_height;
+    }
+
+    PreparedMemoTableLayout {
+        rows,
+        total_height: current_y,
+        width: total_width,
+        col_color_w,
+        col_title_w,
+        col_source_w,
+        col_updated_w,
+        col_categories_w,
+    }
+}
+
+pub(crate) fn hit_test_memo_table_header(
+    layout: &PreparedMemoTableLayout,
+    x: f64,
+) -> Option<MemoTableColumn> {
+    if x < 0.0 || x > layout.width {
+        return None;
+    }
+    if x < layout.col_color_w {
+        Some(MemoTableColumn::Color)
+    } else if x < layout.col_color_w + layout.col_title_w {
+        Some(MemoTableColumn::Title)
+    } else if x < layout.col_color_w + layout.col_title_w + layout.col_source_w {
+        Some(MemoTableColumn::Source)
+    } else if x < layout.col_color_w + layout.col_title_w + layout.col_source_w + layout.col_updated_w {
+        Some(MemoTableColumn::Updated)
+    } else if x < layout.col_color_w + layout.col_title_w + layout.col_source_w + layout.col_updated_w + layout.col_categories_w {
+        Some(MemoTableColumn::Categories)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn hit_test_memo_table(
+    layout: &PreparedMemoTableLayout,
+    y: f64,
+) -> Option<usize> {
+    if layout.rows.is_empty() || y < 0.0 || y >= layout.total_height {
+        return None;
+    }
+    let row_idx = (y / 32.0).floor() as usize;
+    if row_idx < layout.rows.len() {
+        Some(row_idx)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn draw_memo_table_header(
+    cr: &gtk::cairo::Context,
+    layout: &PreparedMemoTableLayout,
+    width: f64,
+    height: f64,
+    sort: MemoSort,
+    descending: bool,
+    hovered: Option<MemoTableColumn>,
+    is_dark: bool,
+) {
+    if is_dark {
+        cr.set_source_rgba(0.18, 0.18, 0.18, 0.9);
+    } else {
+        cr.set_source_rgba(0.96, 0.96, 0.96, 0.9);
+    }
+    cr.rectangle(0.0, 0.0, width, height);
+    cr.fill().ok();
+
+    cr.set_line_width(1.0);
+    if is_dark {
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.1);
+    } else {
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.1);
+    }
+    cr.move_to(0.0, height - 0.5);
+    cr.line_to(width, height - 0.5);
+    cr.stroke().ok();
+
+    let columns = [
+        (MemoTableColumn::Title, "Titel", layout.col_color_w, layout.col_title_w),
+        (MemoTableColumn::Source, "Notizbuch", layout.col_color_w + layout.col_title_w, layout.col_source_w),
+        (MemoTableColumn::Updated, "Geändert", layout.col_color_w + layout.col_title_w + layout.col_source_w, layout.col_updated_w),
+        (MemoTableColumn::Categories, "Kategorien", layout.col_color_w + layout.col_title_w + layout.col_source_w + layout.col_updated_w, layout.col_categories_w),
+    ];
+
+    cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+    cr.set_font_size(11.0);
+
+    for (col, label, col_x, col_w) in columns {
+        if hovered == Some(col) {
+            if is_dark {
+                cr.set_source_rgba(1.0, 1.0, 1.0, 0.06);
+            } else {
+                cr.set_source_rgba(0.0, 0.0, 0.0, 0.05);
+            }
+            cr.rectangle(col_x, 0.0, col_w, height - 1.0);
+            cr.fill().ok();
+        }
+
+        if is_dark {
+            cr.set_source_rgba(0.75, 0.75, 0.75, 1.0);
+        } else {
+            cr.set_source_rgba(0.35, 0.35, 0.35, 1.0);
+        }
+
+        let is_sorted = match col {
+            MemoTableColumn::Title => sort == MemoSort::Title,
+            MemoTableColumn::Source => sort == MemoSort::Source,
+            MemoTableColumn::Updated => sort == MemoSort::Updated,
+            _ => false,
+        };
+
+        let display_text = truncate_cairo_text(cr, label, col_w - 24.0);
+        cr.move_to(col_x + 8.0, 18.0);
+        cr.show_text(&display_text).ok();
+
+        if is_sorted {
+            let arrow_x = col_x + 8.0 + cr.text_extents(&display_text).map(|e| e.width()).unwrap_or(30.0) + 6.0;
+            let arrow_y = 14.0;
+            cr.set_line_width(1.2);
+            if is_dark {
+                cr.set_source_rgba(0.9, 0.9, 0.9, 0.9);
+            } else {
+                cr.set_source_rgba(0.2, 0.2, 0.2, 0.9);
+            }
+            if descending {
+                cr.move_to(arrow_x - 3.5, arrow_y - 2.0);
+                cr.line_to(arrow_x + 3.5, arrow_y - 2.0);
+                cr.line_to(arrow_x, arrow_y + 3.0);
+                cr.close_path();
+            } else {
+                cr.move_to(arrow_x - 3.5, arrow_y + 2.0);
+                cr.line_to(arrow_x + 3.5, arrow_y + 2.0);
+                cr.line_to(arrow_x, arrow_y - 3.0);
+                cr.close_path();
+            }
+            cr.fill().ok();
+        }
+
+        cr.set_line_width(1.0);
+        if is_dark {
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.05);
+        } else {
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.05);
+        }
+        cr.move_to(col_x + col_w - 0.5, 4.0);
+        cr.line_to(col_x + col_w - 0.5, height - 5.0);
+        cr.stroke().ok();
+    }
+}
+
+pub(crate) fn draw_memo_table_canvas(
+    cr: &gtk::cairo::Context,
+    layout: &PreparedMemoTableLayout,
+    selection: &MemoSelection,
+    width: f64,
+    height: f64,
+    hovered_row: Option<usize>,
+    is_dark: bool,
+) {
+    if is_dark {
+        cr.set_source_rgb(0.12, 0.12, 0.12);
+    } else {
+        cr.set_source_rgb(1.0, 1.0, 1.0);
+    }
+    cr.paint().ok();
+
+    for (idx, row) in layout.rows.iter().enumerate() {
+        if row.y + row.height < 0.0 || row.y > height {
+            continue;
+        }
+
+        let is_selected = selection.contains(&row.identity);
+        let is_hovered = hovered_row == Some(idx);
+
+        if is_selected {
+            cr.set_source_rgba(0.2, 0.5, 0.9, 0.25);
+            cr.rectangle(0.0, row.y, width, row.height);
+            cr.fill().ok();
+            cr.set_source_rgba(0.2, 0.5, 0.9, 0.4);
+            cr.set_line_width(1.0);
+            cr.rectangle(0.5, row.y + 0.5, width - 1.0, row.height - 1.0);
+            cr.stroke().ok();
+        } else if is_hovered {
+            if is_dark {
+                cr.set_source_rgba(1.0, 1.0, 1.0, 0.05);
+            } else {
+                cr.set_source_rgba(0.0, 0.0, 0.0, 0.04);
+            }
+            cr.rectangle(0.0, row.y, width, row.height);
+            cr.fill().ok();
+        } else if idx % 2 == 1 {
+            if is_dark {
+                cr.set_source_rgba(1.0, 1.0, 1.0, 0.015);
+            } else {
+                cr.set_source_rgba(0.0, 0.0, 0.0, 0.015);
+            }
+            cr.rectangle(0.0, row.y, width, row.height);
+            cr.fill().ok();
+        }
+
+        // Column 0: Category Color Dot
+        let dot_cx = layout.col_color_w / 2.0;
+        let dot_cy = row.y + row.height / 2.0;
+        if let Some(color_hex) = row.category_color.as_deref().and_then(parse_hex_color) {
+            cr.set_source_rgb(color_hex.0, color_hex.1, color_hex.2);
+            cr.arc(dot_cx, dot_cy, 4.5, 0.0, std::f64::consts::TAU);
+            cr.fill().ok();
+        } else {
+            if is_dark {
+                cr.set_source_rgba(0.6, 0.6, 0.6, 0.4);
+            } else {
+                cr.set_source_rgba(0.4, 0.4, 0.4, 0.4);
+            }
+            cr.arc(dot_cx, dot_cy, 3.5, 0.0, std::f64::consts::TAU);
+            cr.fill().ok();
+        }
+
+        let text_baseline = row.y + row.height / 2.0 + 4.0;
+
+        // Column 1: Title
+        let title_x = layout.col_color_w + 8.0;
+        cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
+        cr.set_font_size(12.0);
+        if is_dark {
+            cr.set_source_rgba(0.92, 0.92, 0.92, 1.0);
+        } else {
+            cr.set_source_rgba(0.12, 0.12, 0.12, 1.0);
+        }
+        let display_title = truncate_cairo_text(cr, &row.summary, layout.col_title_w - 16.0);
+        cr.move_to(title_x, text_baseline);
+        cr.show_text(&display_title).ok();
+
+        // Column 2: Source Notebook
+        let source_x = layout.col_color_w + layout.col_title_w + 8.0;
+        cr.set_font_size(11.0);
+        if is_dark {
+            cr.set_source_rgba(0.65, 0.65, 0.65, 0.8);
+        } else {
+            cr.set_source_rgba(0.45, 0.45, 0.45, 0.8);
+        }
+        let display_source = truncate_cairo_text(cr, &row.source_display, layout.col_source_w - 16.0);
+        cr.move_to(source_x, text_baseline);
+        cr.show_text(&display_source).ok();
+
+        // Column 3: Updated Date
+        let updated_x = source_x + layout.col_source_w;
+        let display_updated = truncate_cairo_text(cr, &row.updated, layout.col_updated_w - 16.0);
+        cr.move_to(updated_x, text_baseline);
+        cr.show_text(&display_updated).ok();
+
+        // Column 4: Categories
+        let cat_x = updated_x + layout.col_updated_w;
+        if !row.categories.is_empty() {
+            let cat_str = row.categories.join(", ");
+            let display_cat = truncate_cairo_text(cr, &cat_str, layout.col_categories_w - 16.0);
+            cr.move_to(cat_x, text_baseline);
+            cr.show_text(&display_cat).ok();
+        }
+
+        // Horizontal separator line
+        cr.set_line_width(1.0);
+        if is_dark {
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.05);
+        } else {
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.05);
+        }
+        let line_y = (row.y + row.height).floor() + 0.5;
+        cr.move_to(0.0, line_y);
+        cr.line_to(width, line_y);
+        cr.stroke().ok();
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1936,12 +2346,39 @@ impl MemosPage {
             .min_content_width(220)
             .build();
 
+        let memo_table_header = gtk::DrawingArea::builder()
+            .content_height(28)
+            .hexpand(true)
+            .css_classes(vec!["memos-table-header"])
+            .build();
+        set_accessible_label(&memo_table_header, "Notizentabellen-Kopfzeile");
+
+        let memo_table_canvas = gtk::DrawingArea::builder()
+            .content_height(100)
+            .hexpand(true)
+            .focusable(true)
+            .can_focus(true)
+            .focus_on_click(true)
+            .css_classes(vec!["memos-table-canvas"])
+            .build();
+        set_accessible_label(&memo_table_canvas, "Notizenliste Canvas");
+
+        self.imp()
+            .memo_table_header
+            .replace(Some(memo_table_header.clone()));
+        self.imp()
+            .memo_table_canvas
+            .replace(Some(memo_table_canvas.clone()));
+
         let memo_list_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .vexpand(true)
             .hexpand(true)
             .build();
+        memo_list.set_visible(false);
         memo_list_box.append(&empty_state);
+        memo_list_box.append(&memo_table_header);
+        memo_list_box.append(&memo_table_canvas);
         memo_list_box.append(&memo_list);
         memo_list_scroll.set_child(Some(&memo_list_box));
         memo_list_container.append(&memo_list_scroll);
@@ -2679,8 +3116,27 @@ impl MemosPage {
         });
 
         let memo_list_for_select_all = memo_list.clone();
+        let page_weak_for_select_all = self.downgrade();
+        let memo_records_for_select_all = Rc::clone(&memo_records);
         select_all_memo_btn.connect_clicked(move |_| {
             memo_list_for_select_all.select_all();
+            let Some(page) = page_weak_for_select_all.upgrade() else { return; };
+            let layout_ref = page.imp().memo_table_layout.borrow();
+            if let Some(layout) = layout_ref.as_ref() {
+                let all_ids: Vec<MemoIdentity> = layout.rows.iter().map(|r| r.identity.clone()).collect();
+                let mut sel = MemoSelection::default();
+                sel.set_selected(all_ids.clone());
+                page.imp().memo_selection.replace(sel);
+                unsafe {
+                    memo_list_for_select_all.set_data("canvas-selection", all_ids);
+                }
+                sync_memo_surface_selection(&page, &memo_list_for_select_all);
+                update_memo_surface_widgets_from_page(&page, &memo_list_for_select_all, &memo_records_for_select_all);
+                refresh_memo_preview(&page, &memo_list_for_select_all, &memo_records_for_select_all);
+                if let Some(canvas) = page.imp().memo_table_canvas.borrow().as_ref() {
+                    canvas.queue_draw();
+                }
+            }
         });
 
         let page_weak_for_paste = self.downgrade();
@@ -3110,6 +3566,477 @@ impl MemosPage {
             glib::Propagation::Proceed
         });
         memo_text.add_controller(memo_text_key_controller);
+
+        // Header Draw Func
+        {
+            let page_weak = self.downgrade();
+            memo_table_header.set_draw_func(move |_, cr, width, height| {
+                let Some(page) = page_weak.upgrade() else { return; };
+                let layout_ref = page.imp().memo_table_layout.borrow();
+                let hovered = page.imp().memo_table_hovered_header.get();
+                let sort = page.imp().memo_sort.get();
+                let descending = page.imp().memo_sort_descending.get();
+                let is_dark = adw::StyleManager::default().is_dark();
+                if let Some(layout) = layout_ref.as_ref() {
+                    draw_memo_table_header(cr, layout, width as f64, height as f64, sort, descending, hovered, is_dark);
+                }
+            });
+        }
+
+        // Header Click Gesture
+        {
+            let header_click = gtk::GestureClick::new();
+            let page_weak = self.downgrade();
+            let header_clone = memo_table_header.clone();
+            let memo_list_for_header = memo_list.clone();
+            let memo_records_for_header = Rc::clone(&memo_records);
+            let empty_state_for_header = empty_state.clone();
+            header_click.connect_pressed(move |gesture, _n_press, x, _y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let Some(page) = page_weak.upgrade() else { return; };
+                let layout_ref = page.imp().memo_table_layout.borrow();
+                let Some(layout) = layout_ref.as_ref() else { return; };
+                if let Some(col) = hit_test_memo_table_header(layout, x) {
+                    let current_sort = page.imp().memo_sort.get();
+                    let current_descending = page.imp().memo_sort_descending.get();
+                    let new_sort = match col {
+                        MemoTableColumn::Title => MemoSort::Title,
+                        MemoTableColumn::Source => MemoSort::Source,
+                        MemoTableColumn::Updated => MemoSort::Updated,
+                        _ => current_sort,
+                    };
+                    let new_descending = if current_sort == new_sort {
+                        !current_descending
+                    } else {
+                        false
+                    };
+                    page.imp().memo_sort.set(new_sort);
+                    page.imp().memo_sort_descending.set(new_descending);
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_memo_sort_field(new_sort.setting_value());
+                        settings.set_memo_sort_descending(new_descending);
+                    }
+                    header_clone.queue_draw();
+                    refresh_memo_filter_view(&page, &memo_list_for_header, &memo_records_for_header, &empty_state_for_header);
+                }
+            });
+            memo_table_header.add_controller(header_click);
+        }
+
+        // Header Motion Controller
+        {
+            let header_motion = gtk::EventControllerMotion::new();
+            let page_weak = self.downgrade();
+            let header_clone = memo_table_header.clone();
+            header_motion.connect_motion(move |_, x, _y| {
+                let Some(page) = page_weak.upgrade() else { return; };
+                let layout_ref = page.imp().memo_table_layout.borrow();
+                let col = layout_ref.as_ref().and_then(|l| hit_test_memo_table_header(l, x));
+                if page.imp().memo_table_hovered_header.get() != col {
+                    page.imp().memo_table_hovered_header.set(col);
+                    header_clone.queue_draw();
+                }
+            });
+            let page_weak = self.downgrade();
+            let header_clone = memo_table_header.clone();
+            header_motion.connect_leave(move |_| {
+                let Some(page) = page_weak.upgrade() else { return; };
+                if page.imp().memo_table_hovered_header.get().is_some() {
+                    page.imp().memo_table_hovered_header.set(None);
+                    header_clone.queue_draw();
+                }
+            });
+            memo_table_header.add_controller(header_motion);
+        }
+
+        // Canvas Draw Func
+        {
+            let page_weak = self.downgrade();
+            memo_table_canvas.set_draw_func(move |_, cr, width, height| {
+                let Some(page) = page_weak.upgrade() else { return; };
+                let layout_ref = page.imp().memo_table_layout.borrow();
+                let selection = page.imp().memo_selection.borrow();
+                let hovered = page.imp().memo_table_hovered_row.get();
+                let is_dark = adw::StyleManager::default().is_dark();
+                if let Some(layout) = layout_ref.as_ref() {
+                    draw_memo_table_canvas(cr, layout, &selection, width as f64, height as f64, hovered, is_dark);
+                }
+            });
+        }
+
+        // Canvas Primary Click Gesture
+        {
+            let canvas_click = gtk::GestureClick::new();
+            let page_weak = self.downgrade();
+            let canvas_clone = memo_table_canvas.clone();
+            let memo_list_for_click = memo_list.clone();
+            let memo_records_for_click = Rc::clone(&memo_records);
+            let selected_memo_for_click = Rc::clone(&selected_memo);
+            let memo_mutation_generation_for_click = Rc::clone(&memo_mutation_generation);
+            let memo_alarm_editor_for_click = memo_alarm_editor.clone();
+            let memo_detail_stack_for_click = memo_detail_stack.clone();
+            let memo_title_for_click = memo_title.clone();
+            let memo_categories_for_click = memo_categories.clone();
+            let memo_meta_for_click = memo_meta.clone();
+            let memo_text_for_click = memo_text.clone();
+            let open_memo_btn_for_click = open_memo_btn.clone();
+
+            canvas_click.connect_pressed(move |gesture, n_press, _x, y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let Some(page) = page_weak.upgrade() else { return; };
+                let layout_ref = page.imp().memo_table_layout.borrow();
+                let Some(layout) = layout_ref.as_ref() else { return; };
+                let Some(row_idx) = hit_test_memo_table(layout, y) else { return; };
+
+                canvas_clone.grab_focus();
+
+                if n_press == 2 {
+                    open_memo_btn_for_click.activate();
+                } else if n_press == 1 {
+                    let current_event = gesture.current_event();
+                    let state = current_event.as_ref().map(|e| e.modifier_state()).unwrap_or(gdk::ModifierType::empty());
+                    let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+                    let ctrl_or_cmd = state.contains(gdk::ModifierType::CONTROL_MASK) || state.contains(gdk::ModifierType::META_MASK);
+
+                    let clicked_id = layout.rows[row_idx].identity.clone();
+                    let mut current_sel = page.imp().memo_selection.borrow().clone();
+
+                    if shift {
+                        let anchor = page.imp().memo_table_anchor_row.get().unwrap_or(row_idx);
+                        let start = anchor.min(row_idx);
+                        let end = anchor.max(row_idx);
+                        let mut range_sel = Vec::new();
+                        for i in start..=end {
+                            if let Some(r) = layout.rows.get(i) {
+                                range_sel.push(r.identity.clone());
+                            }
+                        }
+                        current_sel.set_selected(range_sel);
+                        current_sel.set_focus(Some(clicked_id.clone()));
+                        page.imp().memo_selection.replace(current_sel.clone());
+                    } else if ctrl_or_cmd {
+                        let mut selected = current_sel.selected().to_vec();
+                        if let Some(pos) = selected.iter().position(|id| id == &clicked_id) {
+                            selected.remove(pos);
+                        } else {
+                            selected.push(clicked_id.clone());
+                        }
+                        current_sel.set_selected(selected);
+                        current_sel.set_focus(Some(clicked_id.clone()));
+                        page.imp().memo_table_anchor_row.set(Some(row_idx));
+                        page.imp().memo_selection.replace(current_sel.clone());
+                    } else {
+                        page.imp().memo_table_anchor_row.set(Some(row_idx));
+                        current_sel.set_selected(vec![clicked_id.clone()]);
+                        current_sel.set_focus(Some(clicked_id.clone()));
+                        page.imp().memo_selection.replace(current_sel.clone());
+                    }
+
+                    unsafe {
+                        memo_list_for_click.set_data("canvas-selection", current_sel.selected().to_vec());
+                        if let Some(focus) = current_sel.focus() {
+                            memo_list_for_click.set_data("canvas-focus", focus.clone());
+                        }
+                    }
+
+                    memo_mutation_generation_for_click.set(memo_mutation_generation_for_click.get().wrapping_add(1));
+                    if current_sel.len() == 1 {
+                        if let Some(memo) = memo_records_for_click.borrow().iter().find(|m| m.source_uid == clicked_id.source_uid && m.uid == clicked_id.uid).cloned() {
+                            *selected_memo_for_click.borrow_mut() = Some(memo.clone());
+                            memo_title_for_click.set_text(&memo.summary);
+                            memo_categories_for_click.set_text(&component_categories(&memo.component));
+                            memo_meta_for_click.set_label(&format!("VJOURNAL · {}", memo.updated));
+                            memo_text_for_click.buffer().set_text(&memo.description);
+                            memo_alarm_editor_for_click.set_component(Some(&memo.component), &memo.summary);
+                            memo_detail_stack_for_click.set_visible_child_name("content");
+                        }
+                    } else if current_sel.is_empty() {
+                        *selected_memo_for_click.borrow_mut() = None;
+                        memo_alarm_editor_for_click.set_component(None, "");
+                        memo_detail_stack_for_click.set_visible_child_name("empty");
+                    }
+
+                    sync_memo_surface_selection(&page, &memo_list_for_click);
+                    update_memo_surface_widgets_from_page(&page, &memo_list_for_click, &memo_records_for_click);
+                    refresh_memo_preview(&page, &memo_list_for_click, &memo_records_for_click);
+                    canvas_clone.queue_draw();
+                }
+            });
+            memo_table_canvas.add_controller(canvas_click);
+        }
+
+        // Canvas Secondary Click Gesture (Context Menu)
+        {
+            let canvas_secondary_click = gtk::GestureClick::new();
+            canvas_secondary_click.set_button(gdk::BUTTON_SECONDARY);
+            let page_weak = self.downgrade();
+            let canvas_clone = memo_table_canvas.clone();
+            let memo_list_for_ctx = memo_list.clone();
+            let memo_records_for_ctx = Rc::clone(&memo_records);
+            let selected_memo_for_ctx = Rc::clone(&selected_memo);
+            let memo_mutation_generation_for_ctx = Rc::clone(&memo_mutation_generation);
+            let memo_alarm_editor_for_ctx = memo_alarm_editor.clone();
+            let memo_detail_stack_for_ctx = memo_detail_stack.clone();
+            let memo_title_for_ctx = memo_title.clone();
+            let memo_categories_for_ctx = memo_categories.clone();
+            let memo_meta_for_ctx = memo_meta.clone();
+            let memo_text_for_ctx = memo_text.clone();
+            let save_btn_for_ctx = save_memo_btn.clone();
+            let export_btn_for_ctx = export_memo_btn.clone();
+            let delete_btn_for_ctx = delete_memo_btn.clone();
+
+            canvas_secondary_click.connect_pressed(move |gesture, _n_press, x, y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let Some(page) = page_weak.upgrade() else { return; };
+                let layout_ref = page.imp().memo_table_layout.borrow();
+                let Some(layout) = layout_ref.as_ref() else { return; };
+                let Some(row_idx) = hit_test_memo_table(layout, y) else { return; };
+
+                let clicked_id = layout.rows[row_idx].identity.clone();
+                let mut current_sel = page.imp().memo_selection.borrow().clone();
+                if !current_sel.contains(&clicked_id) {
+                    current_sel.set_selected(vec![clicked_id.clone()]);
+                    current_sel.set_focus(Some(clicked_id.clone()));
+                    page.imp().memo_table_anchor_row.set(Some(row_idx));
+                    page.imp().memo_selection.replace(current_sel.clone());
+                    unsafe {
+                        memo_list_for_ctx.set_data("canvas-selection", current_sel.selected().to_vec());
+                        memo_list_for_ctx.set_data("canvas-focus", clicked_id.clone());
+                    }
+                    memo_mutation_generation_for_ctx.set(memo_mutation_generation_for_ctx.get().wrapping_add(1));
+                    if let Some(memo) = memo_records_for_ctx.borrow().iter().find(|m| m.source_uid == clicked_id.source_uid && m.uid == clicked_id.uid).cloned() {
+                        *selected_memo_for_ctx.borrow_mut() = Some(memo.clone());
+                        memo_title_for_ctx.set_text(&memo.summary);
+                        memo_categories_for_ctx.set_text(&component_categories(&memo.component));
+                        memo_meta_for_ctx.set_label(&format!("VJOURNAL · {}", memo.updated));
+                        memo_text_for_ctx.buffer().set_text(&memo.description);
+                        memo_alarm_editor_for_ctx.set_component(Some(&memo.component), &memo.summary);
+                        memo_detail_stack_for_ctx.set_visible_child_name("content");
+                    }
+                    sync_memo_surface_selection(&page, &memo_list_for_ctx);
+                    update_memo_surface_widgets_from_page(&page, &memo_list_for_ctx, &memo_records_for_ctx);
+                    refresh_memo_preview(&page, &memo_list_for_ctx, &memo_records_for_ctx);
+                    canvas_clone.queue_draw();
+                }
+
+                let popover = gtk::Popover::builder()
+                    .has_arrow(false)
+                    .pointing_to(&gdk::Rectangle::new(x as i32, y as i32, 1, 1))
+                    .build();
+                let menu_box = gtk::Box::builder()
+                    .orientation(gtk::Orientation::Vertical)
+                    .spacing(2)
+                    .margin_start(6)
+                    .margin_end(6)
+                    .margin_top(6)
+                    .margin_bottom(6)
+                    .build();
+
+                let save = gtk::Button::with_label("Notiz speichern");
+                save.set_halign(gtk::Align::Fill);
+                save.add_css_class("flat");
+                let pop_save = popover.clone();
+                let save_btn = save_btn_for_ctx.clone();
+                save.connect_clicked(move |_| {
+                    pop_save.popdown();
+                    save_btn.activate();
+                });
+                menu_box.append(&save);
+
+                let export = gtk::Button::with_label("Als iCalendar exportieren");
+                export.set_halign(gtk::Align::Fill);
+                export.add_css_class("flat");
+                let pop_exp = popover.clone();
+                let exp_btn = export_btn_for_ctx.clone();
+                export.connect_clicked(move |_| {
+                    pop_exp.popdown();
+                    exp_btn.activate();
+                });
+                menu_box.append(&export);
+
+                let delete = gtk::Button::with_label("Notiz löschen");
+                delete.set_halign(gtk::Align::Fill);
+                delete.add_css_class("flat");
+                delete.add_css_class("destructive-action");
+                let pop_del = popover.clone();
+                let del_btn = delete_btn_for_ctx.clone();
+                delete.connect_clicked(move |_| {
+                    pop_del.popdown();
+                    del_btn.activate();
+                });
+                menu_box.append(&delete);
+
+                popover.set_child(Some(&menu_box));
+                popover.set_parent(&canvas_clone);
+                let pop_weak = popover.downgrade();
+                popover.connect_closed(move |_| {
+                    if let Some(p) = pop_weak.upgrade() {
+                        p.unparent();
+                    }
+                });
+                popover.popup();
+            });
+            memo_table_canvas.add_controller(canvas_secondary_click);
+        }
+
+        // Canvas Motion Controller
+        {
+            let canvas_motion = gtk::EventControllerMotion::new();
+            let page_weak = self.downgrade();
+            let canvas_clone = memo_table_canvas.clone();
+            canvas_motion.connect_motion(move |_, _x, y| {
+                let Some(page) = page_weak.upgrade() else { return; };
+                let layout_ref = page.imp().memo_table_layout.borrow();
+                let hovered_idx = layout_ref.as_ref().and_then(|l| hit_test_memo_table(l, y));
+                if page.imp().memo_table_hovered_row.get() != hovered_idx {
+                    page.imp().memo_table_hovered_row.set(hovered_idx);
+                    canvas_clone.queue_draw();
+                }
+            });
+            let page_weak = self.downgrade();
+            let canvas_clone = memo_table_canvas.clone();
+            canvas_motion.connect_leave(move |_| {
+                let Some(page) = page_weak.upgrade() else { return; };
+                if page.imp().memo_table_hovered_row.get().is_some() {
+                    page.imp().memo_table_hovered_row.set(None);
+                    canvas_clone.queue_draw();
+                }
+            });
+            memo_table_canvas.add_controller(canvas_motion);
+        }
+
+        // Canvas Key Controller
+        {
+            let key_controller = gtk::EventControllerKey::new();
+            let page_weak = self.downgrade();
+            let canvas_clone = memo_table_canvas.clone();
+            let memo_list_for_key = memo_list.clone();
+            let memo_records_for_key = Rc::clone(&memo_records);
+            let selected_memo_for_key = Rc::clone(&selected_memo);
+            let memo_mutation_gen_for_key = Rc::clone(&memo_mutation_generation);
+            let memo_alarm_editor_for_key = memo_alarm_editor.clone();
+            let memo_detail_stack_for_key = memo_detail_stack.clone();
+            let memo_title_for_key = memo_title.clone();
+            let memo_categories_for_key = memo_categories.clone();
+            let memo_meta_for_key = memo_meta.clone();
+            let memo_text_for_key = memo_text.clone();
+            let open_btn_for_key = open_memo_btn.clone();
+            let delete_btn_for_key = delete_memo_btn.clone();
+            let select_all_btn_for_key = select_all_memo_btn.clone();
+            let copy_btn_for_key = copy_memo_btn.clone();
+            let cut_btn_for_key = cut_memo_btn.clone();
+            let paste_btn_for_key = paste_memo_btn.clone();
+            let save_btn_for_key = save_memo_btn.clone();
+            let btn_add_memo_for_key = btn_add_memo.clone();
+            let sidebar_toggle_for_key = sidebar_toggle.clone();
+            let preview_toggle_for_key = preview_toggle.clone();
+
+            key_controller.connect_key_pressed(move |_, keyval, _, state| {
+                if keyval == gdk::Key::F9 {
+                    sidebar_toggle_for_key.set_active(!sidebar_toggle_for_key.is_active());
+                    return glib::Propagation::Stop;
+                }
+                let control = state.contains(gdk::ModifierType::CONTROL_MASK)
+                    || state.contains(gdk::ModifierType::META_MASK);
+                let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+
+                if control && (keyval == gdk::Key::m || keyval == gdk::Key::M) {
+                    preview_toggle_for_key.set_active(!preview_toggle_for_key.is_active());
+                    return glib::Propagation::Stop;
+                }
+                if control && (keyval == gdk::Key::s || keyval == gdk::Key::S) {
+                    save_btn_for_key.activate();
+                    return glib::Propagation::Stop;
+                }
+                if control && (keyval == gdk::Key::n || keyval == gdk::Key::N) {
+                    btn_add_memo_for_key.activate();
+                    return glib::Propagation::Stop;
+                }
+                if control && (keyval == gdk::Key::a || keyval == gdk::Key::A) {
+                    select_all_btn_for_key.activate();
+                    return glib::Propagation::Stop;
+                }
+                if control && (keyval == gdk::Key::c || keyval == gdk::Key::C) {
+                    copy_btn_for_key.activate();
+                    return glib::Propagation::Stop;
+                }
+                if control && (keyval == gdk::Key::x || keyval == gdk::Key::X) {
+                    cut_btn_for_key.activate();
+                    return glib::Propagation::Stop;
+                }
+                if control && (keyval == gdk::Key::v || keyval == gdk::Key::V) {
+                    paste_btn_for_key.activate();
+                    return glib::Propagation::Stop;
+                }
+                if keyval == gdk::Key::Delete {
+                    delete_btn_for_key.activate();
+                    return glib::Propagation::Stop;
+                }
+                if keyval == gdk::Key::Return {
+                    open_btn_for_key.activate();
+                    return glib::Propagation::Stop;
+                }
+
+                let Some(page) = page_weak.upgrade() else { return glib::Propagation::Proceed; };
+                let layout_ref = page.imp().memo_table_layout.borrow();
+                let Some(layout) = layout_ref.as_ref() else { return glib::Propagation::Proceed; };
+                if layout.rows.is_empty() { return glib::Propagation::Proceed; }
+
+                let current_sel = page.imp().memo_selection.borrow().clone();
+                let current_idx = current_sel.focus().and_then(|f| layout.rows.iter().position(|r| r.identity == *f)).unwrap_or(0);
+                let anchor = page.imp().memo_table_anchor_row.get().unwrap_or(current_idx);
+
+                let next_idx = match keyval {
+                    gdk::Key::Up => current_idx.saturating_sub(1),
+                    gdk::Key::Down => (current_idx + 1).min(layout.rows.len() - 1),
+                    gdk::Key::Home => 0,
+                    gdk::Key::End => layout.rows.len() - 1,
+                    gdk::Key::Page_Up => current_idx.saturating_sub(10),
+                    gdk::Key::Page_Down => (current_idx + 10).min(layout.rows.len() - 1),
+                    _ => return glib::Propagation::Proceed,
+                };
+
+                let mut new_sel = MemoSelection::default();
+                let target_id = layout.rows[next_idx].identity.clone();
+                if shift {
+                    let start = anchor.min(next_idx);
+                    let end = anchor.max(next_idx);
+                    let range: Vec<MemoIdentity> = layout.rows[start..=end].iter().map(|r| r.identity.clone()).collect();
+                    new_sel.set_selected(range);
+                    new_sel.set_focus(Some(target_id.clone()));
+                } else {
+                    page.imp().memo_table_anchor_row.set(Some(next_idx));
+                    new_sel.set_selected(vec![target_id.clone()]);
+                    new_sel.set_focus(Some(target_id.clone()));
+                }
+                page.imp().memo_selection.replace(new_sel.clone());
+                unsafe {
+                    memo_list_for_key.set_data("canvas-selection", new_sel.selected().to_vec());
+                    if let Some(focus) = new_sel.focus() {
+                        memo_list_for_key.set_data("canvas-focus", focus.clone());
+                    }
+                }
+                if new_sel.len() == 1 {
+                    memo_mutation_gen_for_key.set(memo_mutation_gen_for_key.get().wrapping_add(1));
+                    if let Some(memo) = memo_records_for_key.borrow().iter().find(|m| m.source_uid == target_id.source_uid && m.uid == target_id.uid).cloned() {
+                        *selected_memo_for_key.borrow_mut() = Some(memo.clone());
+                        memo_title_for_key.set_text(&memo.summary);
+                        memo_categories_for_key.set_text(&component_categories(&memo.component));
+                        memo_meta_for_key.set_label(&format!("VJOURNAL · {}", memo.updated));
+                        memo_text_for_key.buffer().set_text(&memo.description);
+                        memo_alarm_editor_for_key.set_component(Some(&memo.component), &memo.summary);
+                        memo_detail_stack_for_key.set_visible_child_name("content");
+                    }
+                }
+                sync_memo_surface_selection(&page, &memo_list_for_key);
+                update_memo_surface_widgets_from_page(&page, &memo_list_for_key, &memo_records_for_key);
+                refresh_memo_preview(&page, &memo_list_for_key, &memo_records_for_key);
+                canvas_clone.queue_draw();
+
+                glib::Propagation::Stop
+            });
+            memo_table_canvas.add_controller(key_controller);
+        }
 
         let memo_records_for_selection = Rc::clone(&memo_records);
         let selected_memo_for_selection = Rc::clone(&selected_memo);
@@ -4509,16 +5436,20 @@ fn refresh_memo_filter_view(
         hidden_sources.clone(),
     );
 
-    match filter {
+    let filtered_memos: Vec<MemoRecord> = match filter {
         Err(error) => {
             empty_state.set_label(&format!("Ungültige erweiterte Suche: {error}"));
             empty_state.set_visible(true);
+            Vec::new()
         }
         Ok(filter) => {
-            let has_records = filter
+            let matches: Vec<MemoRecord> = filter
                 .filter(&memo_records.borrow())
                 .into_iter()
-                .any(|memo| !hidden_sources.contains(&memo.source_uid));
+                .filter(|memo| !hidden_sources.contains(&memo.source_uid))
+                .cloned()
+                .collect();
+            let has_records = !matches.is_empty();
             empty_state.set_label(
                 if query.is_empty() && source_filter.is_none() && category_filter.is_none() {
                     "Keine synchronisierten Notizen geladen"
@@ -4527,8 +5458,46 @@ fn refresh_memo_filter_view(
                 },
             );
             empty_state.set_visible(!has_records);
+            matches
         }
+    };
+
+    let mut sorted_memos = filtered_memos;
+    let sort = page.imp().memo_sort.get();
+    let descending = page.imp().memo_sort_descending.get();
+    sorted_memos.sort_by(|a, b| {
+        let cmp = match sort {
+            MemoSort::Title => a.summary.to_lowercase().cmp(&b.summary.to_lowercase()),
+            MemoSort::Source => a.source_display_name.to_lowercase().cmp(&b.source_display_name.to_lowercase()),
+            MemoSort::Updated => a.updated.cmp(&b.updated),
+        };
+        if descending {
+            cmp.reverse()
+        } else {
+            cmp
+        }
+    });
+
+    let canvas_width = page
+        .imp()
+        .memo_table_canvas
+        .borrow()
+        .as_ref()
+        .map(|c| c.width() as f64)
+        .filter(|&w| w > 100.0)
+        .unwrap_or(700.0);
+    let layout = prepare_memo_table_layout(&sorted_memos, canvas_width);
+    let total_h = layout.total_height;
+    page.imp().memo_table_layout.replace(Some(layout));
+
+    if let Some(canvas) = page.imp().memo_table_canvas.borrow().as_ref() {
+        canvas.set_content_height(total_h.max(80.0) as i32);
+        canvas.queue_draw();
     }
+    if let Some(header) = page.imp().memo_table_header.borrow().as_ref() {
+        header.queue_draw();
+    }
+
     memo_list.invalidate_filter();
     restore_memo_selection_state(
         page,
@@ -4550,10 +5519,19 @@ fn restore_memo_selection_state(
     let mut selection = page.imp().memo_selection.borrow().clone();
     selection.restore_after_refresh(&records, generation);
     page.imp().memo_selection.replace(selection.clone());
+    unsafe {
+        memo_list.set_data("canvas-selection", selection.selected().to_vec());
+        if let Some(focus) = selection.focus() {
+            memo_list.set_data("canvas-focus", focus.clone());
+        }
+    }
     restore_memo_selection_rows(memo_list, &selection);
 }
 
 fn memo_selection_identities(memo_list: &gtk::ListBox) -> Vec<MemoIdentity> {
+    if let Some(ids) = unsafe { memo_list.data::<Vec<MemoIdentity>>("canvas-selection") } {
+        return unsafe { ids.as_ref().clone() };
+    }
     memo_list
         .selected_rows()
         .iter()
@@ -4569,12 +5547,16 @@ fn memo_selection_identities(memo_list: &gtk::ListBox) -> Vec<MemoIdentity> {
 fn memo_selection_from_rows(memo_list: &gtk::ListBox) -> MemoSelection {
     let mut selection = MemoSelection::default();
     selection.set_selected(memo_selection_identities(memo_list));
-    let focus = memo_list.selected_row().and_then(|row| unsafe {
-        Some(MemoIdentity::new(
-            row.data::<String>("memo-source-uid")?.as_ref().clone(),
-            row.data::<String>("memo-id")?.as_ref().clone(),
-        ))
-    });
+    let focus = if let Some(focus) = unsafe { memo_list.data::<MemoIdentity>("canvas-focus") } {
+        Some(unsafe { focus.as_ref().clone() })
+    } else {
+        memo_list.selected_row().and_then(|row| unsafe {
+            Some(MemoIdentity::new(
+                row.data::<String>("memo-source-uid")?.as_ref().clone(),
+                row.data::<String>("memo-id")?.as_ref().clone(),
+            ))
+        })
+    };
     selection.set_focus(focus);
     selection
 }
@@ -4627,12 +5609,16 @@ fn selected_memo_records_checked(
 
 fn sync_memo_surface_selection(page: &MemosPage, memo_list: &gtk::ListBox) {
     let identities = memo_selection_identities(memo_list);
-    let focus = memo_list.selected_row().and_then(|row| unsafe {
-        Some(MemoIdentity::new(
-            row.data::<String>("memo-source-uid")?.as_ref().clone(),
-            row.data::<String>("memo-id")?.as_ref().clone(),
-        ))
-    });
+    let focus = if let Some(focus) = unsafe { memo_list.data::<MemoIdentity>("canvas-focus") } {
+        Some(unsafe { focus.as_ref().clone() })
+    } else {
+        memo_list.selected_row().and_then(|row| unsafe {
+            Some(MemoIdentity::new(
+                row.data::<String>("memo-source-uid")?.as_ref().clone(),
+                row.data::<String>("memo-id")?.as_ref().clone(),
+            ))
+        })
+    };
     let mut selection = page.imp().memo_selection.borrow_mut();
     selection.set_selected(identities);
     selection.set_generation(page.imp().memo_refresh_generation.get());
@@ -5737,6 +6723,55 @@ mod tests {
         assert!(source.contains("Dreispalten-Ansicht"));
         assert!(source.contains("Klassische Ansicht"));
         assert!(source.contains("Nur Liste"));
+    }
+
+    #[test]
+    fn test_memo_table_canvas_layout_and_hit_testing() {
+        let memos = vec![
+            MemoRecord {
+                uid: "memo-1".to_string(),
+                source_uid: "source-a".to_string(),
+                source_display_name: "Personal".to_string(),
+                component: "BEGIN:VJOURNAL\r\nSUMMARY:First Note\r\nCATEGORIES:Work\r\nEND:VJOURNAL\r\n".to_string(),
+                summary: "First Note".to_string(),
+                description: "Description 1".to_string(),
+                updated: "2026-09-15T12:00:00Z".to_string(),
+            },
+            MemoRecord {
+                uid: "memo-2".to_string(),
+                source_uid: "source-b".to_string(),
+                source_display_name: "Work".to_string(),
+                component: "BEGIN:VJOURNAL\r\nSUMMARY:Second Note\r\nEND:VJOURNAL\r\n".to_string(),
+                summary: "Second Note".to_string(),
+                description: "Description 2".to_string(),
+                updated: "2026-09-15T13:00:00Z".to_string(),
+            },
+        ];
+
+        let layout = prepare_memo_table_layout(&memos, 800.0);
+        assert_eq!(layout.rows.len(), 2);
+        assert_eq!(layout.rows[0].identity.uid, "memo-1");
+        assert_eq!(layout.rows[1].identity.uid, "memo-2");
+        assert_eq!(layout.rows[0].categories, vec!["Work"]);
+        assert!(layout.rows[1].categories.is_empty());
+
+        // Hit testing rows
+        assert_eq!(hit_test_memo_table(&layout, 10.0), Some(0));
+        assert_eq!(hit_test_memo_table(&layout, 35.0), Some(1));
+        assert_eq!(hit_test_memo_table(&layout, 150.0), None);
+
+        // Hit testing header columns
+        let header_title_x = layout.col_color_w + 10.0;
+        let header_source_x = layout.col_color_w + layout.col_title_w + 10.0;
+        let header_updated_x = layout.col_color_w + layout.col_title_w + layout.col_source_w + 10.0;
+        let header_categories_x = layout.col_color_w + layout.col_title_w + layout.col_source_w + layout.col_updated_w + 10.0;
+
+        assert_eq!(hit_test_memo_table_header(&layout, -5.0), None);
+        assert_eq!(hit_test_memo_table_header(&layout, 5.0), Some(MemoTableColumn::Color));
+        assert_eq!(hit_test_memo_table_header(&layout, header_title_x), Some(MemoTableColumn::Title));
+        assert_eq!(hit_test_memo_table_header(&layout, header_source_x), Some(MemoTableColumn::Source));
+        assert_eq!(hit_test_memo_table_header(&layout, header_updated_x), Some(MemoTableColumn::Updated));
+        assert_eq!(hit_test_memo_table_header(&layout, header_categories_x), Some(MemoTableColumn::Categories));
     }
 }
 
