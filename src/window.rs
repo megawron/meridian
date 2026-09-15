@@ -3684,26 +3684,67 @@ impl EvolutionWindow {
             #[weak(rename_to = win)]
             self,
             move |_, _| {
-                let cal_store = crate::services::CalendarStoreService::new();
-                let contact_store = crate::services::ContactStoreService::new();
                 let srv = crate::services::MacosIntegrationService::new();
-                let summary = srv.sync_all(&cal_store, &contact_store);
-                if summary.errors.is_empty() {
-                    win.add_toast(&adw::Toast::new(&format!(
-                        "macOS Synchronisation: {} Termine, {} Aufgaben, {} Kontakte synchronisiert",
-                        summary.calendar_events, summary.tasks_reminders, summary.contacts
-                    )));
+                let cal_perm = srv.check_permission(crate::services::MacosPermissionKind::Calendar);
+                let contact_perm = srv.check_permission(crate::services::MacosPermissionKind::Contacts);
+
+                let win_clone = win.clone();
+                let do_sync = move || {
+                    let (sender, receiver) = async_channel::bounded(1);
+                    std::thread::spawn(move || {
+                        let srv = crate::services::MacosIntegrationService::new();
+                        let cal_store = crate::services::CalendarStoreService::new();
+                        let contact_store = crate::services::ContactStoreService::new();
+                        let summary = srv.sync_all(&cal_store, &contact_store);
+                        let _ = sender.send_blocking(summary);
+                    });
+                    let win_weak = win_clone.downgrade();
+                    glib::spawn_future_local(async move {
+                        if let Ok(summary) = receiver.recv().await {
+                            if let Some(win) = win_weak.upgrade() {
+                                if summary.errors.is_empty() {
+                                    win.add_toast(&adw::Toast::new(&format!(
+                                        "macOS Synchronisation: {} Termine, {} Aufgaben, {} Kontakte synchronisiert",
+                                        summary.calendar_events, summary.tasks_reminders, summary.contacts
+                                    )));
+                                } else {
+                                    win.add_toast(&adw::Toast::new(&format!(
+                                        "macOS Synchronisation ({} Termine, {} Kontakte). {}",
+                                        summary.calendar_events, summary.contacts, summary.errors.join("; ")
+                                    )));
+                                }
+                                if let Some(cal_page) = win.calendar_page() {
+                                    cal_page.reload_calendar_data();
+                                }
+                                if let Some(contact_page) = win.contacts_page() {
+                                    contact_page.reload_contacts();
+                                }
+                            }
+                        }
+                    });
+                };
+
+                let rc_sync = std::rc::Rc::new(do_sync);
+                if cal_perm == crate::services::MacosPermissionStatus::NotDetermined {
+                    let srv_c = srv.clone();
+                    let sync_c = std::rc::Rc::clone(&rc_sync);
+                    srv.request_permission(crate::services::MacosPermissionKind::Calendar, move |_| {
+                        if contact_perm == crate::services::MacosPermissionStatus::NotDetermined {
+                            let sync_c2 = std::rc::Rc::clone(&sync_c);
+                            srv_c.request_permission(crate::services::MacosPermissionKind::Contacts, move |_| {
+                                sync_c2();
+                            });
+                        } else {
+                            sync_c();
+                        }
+                    });
+                } else if contact_perm == crate::services::MacosPermissionStatus::NotDetermined {
+                    let sync_c = std::rc::Rc::clone(&rc_sync);
+                    srv.request_permission(crate::services::MacosPermissionKind::Contacts, move |_| {
+                        sync_c();
+                    });
                 } else {
-                    win.add_toast(&adw::Toast::new(&format!(
-                        "macOS Synchronisation ({} Termine, {} Kontakte). {}",
-                        summary.calendar_events, summary.contacts, summary.errors.join("; ")
-                    )));
-                }
-                if let Some(cal_page) = win.calendar_page() {
-                    cal_page.reload_calendar_data();
-                }
-                if let Some(contact_page) = win.contacts_page() {
-                    contact_page.reload_contacts();
+                    rc_sync();
                 }
             }
         ));
@@ -3715,21 +3756,35 @@ impl EvolutionWindow {
                 #[weak(rename_to = win)]
                 self,
                 move || {
-                    let cal_store = crate::services::CalendarStoreService::new();
-                    let contact_store = crate::services::ContactStoreService::new();
-                    let cal_snapshot = cal_store.load_snapshot();
-                    let contacts = contact_store.load_contacts();
-                    if cal_snapshot.events.is_empty() && cal_snapshot.tasks.is_empty() && contacts.is_empty() {
-                        let srv = crate::services::MacosIntegrationService::new();
-                        let summary = srv.sync_all(&cal_store, &contact_store);
-                        if summary.calendar_events > 0 || summary.tasks_reminders > 0 || summary.contacts > 0 {
-                            if let Some(cal_page) = win.calendar_page() {
-                                cal_page.reload_calendar_data();
+                    let srv = crate::services::MacosIntegrationService::new();
+                    let cal_perm = srv.check_permission(crate::services::MacosPermissionKind::Calendar);
+                    let contact_perm = srv.check_permission(crate::services::MacosPermissionKind::Contacts);
+                    if cal_perm == crate::services::MacosPermissionStatus::Authorized
+                        || contact_perm == crate::services::MacosPermissionStatus::Authorized
+                    {
+                        let (sender, receiver) = async_channel::bounded(1);
+                        std::thread::spawn(move || {
+                            let srv = crate::services::MacosIntegrationService::new();
+                            let cal_store = crate::services::CalendarStoreService::new();
+                            let contact_store = crate::services::ContactStoreService::new();
+                            let summary = srv.sync_all(&cal_store, &contact_store);
+                            let _ = sender.send_blocking(summary);
+                        });
+                        let win_weak = win.downgrade();
+                        glib::spawn_future_local(async move {
+                            if let Ok(summary) = receiver.recv().await {
+                                if summary.calendar_events > 0 || summary.tasks_reminders > 0 || summary.contacts > 0 {
+                                    if let Some(win) = win_weak.upgrade() {
+                                        if let Some(cal_page) = win.calendar_page() {
+                                            cal_page.reload_calendar_data();
+                                        }
+                                        if let Some(contact_page) = win.contacts_page() {
+                                            contact_page.reload_contacts();
+                                        }
+                                    }
+                                }
                             }
-                            if let Some(contact_page) = win.contacts_page() {
-                                contact_page.reload_contacts();
-                            }
-                        }
+                        });
                     }
                 }
             ));

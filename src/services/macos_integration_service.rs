@@ -308,21 +308,24 @@ impl MacosIntegrationService {
             return Ok(0);
         }
 
-        let existing_snapshot = store.load_snapshot();
-        let mut existing_uids = HashSet::new();
-        for ev in existing_snapshot.events {
-            existing_uids.insert(ev.uid);
+        let event_count = ics.match_indices("BEGIN:VEVENT").count();
+        let target_path = store.calendar_dir().join("apple-calendar.ics");
+        std::fs::create_dir_all(store.calendar_dir()).map_err(|e| e.to_string())?;
+        std::fs::write(&target_path, ics.as_bytes()).map_err(|e| e.to_string())?;
+
+        // Also clean up any legacy Apple events from evolution-gtk4-local.ics if present
+        let local_path = store.calendar_dir().join("evolution-gtk4-local.ics");
+        if local_path.exists() {
+            if let Ok(local_content) = std::fs::read_to_string(&local_path) {
+                let has_only_apple = local_content.lines().any(|l| l.starts_with("UID:") && l.get(4..).map_or(false, |r| r.contains(':')))
+                    && !local_content.lines().any(|l| l.starts_with("UID:") && !l.get(4..).map_or(false, |r| r.contains(':')));
+                if has_only_apple {
+                    let _ = std::fs::remove_file(&local_path);
+                }
+            }
         }
 
-        let plan = super::ical_import_service::plan_ical_import(
-            &ics,
-            &existing_uids,
-            super::ical_import_service::IcalDuplicatePolicy::OverwriteExisting,
-        );
-        let result = super::ical_import_service::execute_ical_import(&plan, store)
-            .map_err(|e| format!("Fehler beim Importieren der macOS Kalendertermine: {e}"))?;
-
-        Ok(result.imported_count + result.overwritten_count)
+        Ok(event_count)
     }
 
     /// Synchronize Apple Reminders from EventKit into Evolution's CalendarStoreService (tasks/memos).
@@ -338,21 +341,12 @@ impl MacosIntegrationService {
             return Ok(0);
         }
 
-        let existing_snapshot = store.load_snapshot();
-        let mut existing_uids = HashSet::new();
-        for t in existing_snapshot.tasks {
-            existing_uids.insert(t.uid);
-        }
+        let reminder_count = ics.match_indices("BEGIN:VTODO").count();
+        let target_path = store.calendar_dir().join("apple-reminders.ics");
+        std::fs::create_dir_all(store.calendar_dir()).map_err(|e| e.to_string())?;
+        std::fs::write(&target_path, ics.as_bytes()).map_err(|e| e.to_string())?;
 
-        let plan = super::ical_import_service::plan_ical_import(
-            &ics,
-            &existing_uids,
-            super::ical_import_service::IcalDuplicatePolicy::OverwriteExisting,
-        );
-        let result = super::ical_import_service::execute_ical_import(&plan, store)
-            .map_err(|e| format!("Fehler beim Importieren der macOS Erinnerungen: {e}"))?;
-
-        Ok(result.imported_count + result.overwritten_count)
+        Ok(reminder_count)
     }
 
     /// Synchronize Apple Contacts from Contacts.framework into Evolution's ContactStoreService.
@@ -368,18 +362,24 @@ impl MacosIntegrationService {
             return Ok(0);
         }
 
-        let existing_records = store.load_contacts();
-        let existing_contacts: Vec<_> = existing_records.into_iter().map(|r| r.contact).collect();
-        let plan = super::contact_import_service::plan_contact_import(
-            &vcf,
-            super::contact_import_service::ContactImportFormat::VCard,
-            &existing_contacts,
-            super::contact_import_service::ContactDuplicatePolicy::OverwriteExisting,
-        );
-        let result = super::contact_import_service::execute_contact_import(&plan, store)
-            .map_err(|e| format!("Fehler beim Importieren der macOS Kontakte: {e}"))?;
+        let contact_count = vcf.match_indices("BEGIN:VCARD").count();
+        let target_path = store.contact_dir().join("apple-contacts.vcf");
+        std::fs::create_dir_all(store.contact_dir()).map_err(|e| e.to_string())?;
+        std::fs::write(&target_path, vcf.as_bytes()).map_err(|e| e.to_string())?;
 
-        Ok(result.imported_count + result.overwritten_count)
+        // Clean up legacy Apple contacts in evolution-gtk4-local.vcf from previous slow imports
+        let local_path = store.contact_dir().join("evolution-gtk4-local.vcf");
+        if local_path.exists() {
+            if let Ok(local_content) = std::fs::read_to_string(&local_path) {
+                let has_only_apple = local_content.contains("PRODID:-//Apple Inc.")
+                    && !local_content.lines().any(|l| l.starts_with("PRODID:") && !l.contains("Apple Inc."));
+                if has_only_apple {
+                    let _ = std::fs::remove_file(&local_path);
+                }
+            }
+        }
+
+        Ok(contact_count)
     }
 
     /// Perform a full synchronization of Calendar, Reminders, and Contacts.

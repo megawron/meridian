@@ -1538,7 +1538,10 @@ pub(crate) fn load_snapshot_prefer_eds() -> CalendarLoadResult {
             CalendarLoadResult {
                 snapshot,
                 origin: CalendarDataOrigin::Local,
-                warning: Some(error.to_string()),
+                warning: match error {
+                    ECalServiceError::Unsupported => None,
+                    other => Some(other.to_string()),
+                },
             }
         }
     }

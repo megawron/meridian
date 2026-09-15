@@ -700,7 +700,10 @@ fn load_contacts_prefer_eds_fresh() -> EBookLoadResult {
             EBookLoadResult {
                 contacts,
                 origin: EBookDataOrigin::Local,
-                warning: Some(error.to_string()),
+                warning: match error {
+                    EBookServiceError::Unsupported => None,
+                    other => Some(other.to_string()),
+                },
             }
         }
     }

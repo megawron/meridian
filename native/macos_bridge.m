@@ -125,6 +125,18 @@ static NSString *escape_ics_text(NSString *text) {
     return escaped;
 }
 
+static NSString *hex_color_from_cgcolor(CGColorRef cgColor) {
+    if (!cgColor) return nil;
+    NSColor *color = [NSColor colorWithCGColor:cgColor];
+    if (!color) return nil;
+    NSColor *rgb = [color colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    if (!rgb) return nil;
+    int r = (int)round(rgb.redComponent * 255.0);
+    int g = (int)round(rgb.greenComponent * 255.0);
+    int b = (int)round(rgb.blueComponent * 255.0);
+    return [NSString stringWithFormat:@"#%02x%02x%02x", r, g, b];
+}
+
 int macos_check_calendar_permission(void) {
     @autoreleasepool {
         EKAuthorizationStatus status = [EKEventStore authorizationStatusForEntityType:EKEntityTypeEvent];
@@ -147,14 +159,13 @@ int macos_check_contacts_permission(void) {
 }
 
 void macos_request_calendar_permission(macos_permission_callback_t callback, void *user_data) {
-    @autoreleasepool {
-        EKEventStore *store = [[EKEventStore alloc] init];
+    void (^requestBlock)(void) = ^{
+        EKEventStore *store = macos_shared_event_store();
         if (@available(macOS 14.0, *)) {
             [store requestFullAccessToEventsWithCompletion:^(BOOL granted, NSError * _Nullable error) {
                 if (error) {
                     NSLog(@"[macOS Bridge] Calendar requestFullAccess error: %@", error);
                 }
-                (void)store;
                 if (callback) {
                     callback(granted ? 1 : 0, user_data);
                 }
@@ -164,24 +175,28 @@ void macos_request_calendar_permission(macos_permission_callback_t callback, voi
                 if (error) {
                     NSLog(@"[macOS Bridge] Calendar requestAccess error: %@", error);
                 }
-                (void)store;
                 if (callback) {
                     callback(granted ? 1 : 0, user_data);
                 }
             }];
         }
+    };
+
+    if ([NSThread isMainThread]) {
+        requestBlock();
+    } else {
+        dispatch_async(dispatch_get_main_queue(), requestBlock);
     }
 }
 
 void macos_request_reminders_permission(macos_permission_callback_t callback, void *user_data) {
-    @autoreleasepool {
-        EKEventStore *store = [[EKEventStore alloc] init];
+    void (^requestBlock)(void) = ^{
+        EKEventStore *store = macos_shared_event_store();
         if (@available(macOS 14.0, *)) {
             [store requestFullAccessToRemindersWithCompletion:^(BOOL granted, NSError * _Nullable error) {
                 if (error) {
                     NSLog(@"[macOS Bridge] Reminders requestFullAccess error: %@", error);
                 }
-                (void)store;
                 if (callback) {
                     callback(granted ? 1 : 0, user_data);
                 }
@@ -191,33 +206,43 @@ void macos_request_reminders_permission(macos_permission_callback_t callback, vo
                 if (error) {
                     NSLog(@"[macOS Bridge] Reminders requestAccess error: %@", error);
                 }
-                (void)store;
                 if (callback) {
                     callback(granted ? 1 : 0, user_data);
                 }
             }];
         }
+    };
+
+    if ([NSThread isMainThread]) {
+        requestBlock();
+    } else {
+        dispatch_async(dispatch_get_main_queue(), requestBlock);
     }
 }
 
 void macos_request_contacts_permission(macos_permission_callback_t callback, void *user_data) {
-    @autoreleasepool {
-        CNContactStore *store = [[CNContactStore alloc] init];
+    void (^requestBlock)(void) = ^{
+        CNContactStore *store = macos_shared_contact_store();
         [store requestAccessForEntityType:CNEntityTypeContacts completionHandler:^(BOOL granted, NSError * _Nullable error) {
             if (error) {
                 NSLog(@"[macOS Bridge] Contacts requestAccess error: %@", error);
             }
-            (void)store;
             if (callback) {
                 callback(granted ? 1 : 0, user_data);
             }
         }];
+    };
+
+    if ([NSThread isMainThread]) {
+        requestBlock();
+    } else {
+        dispatch_async(dispatch_get_main_queue(), requestBlock);
     }
 }
 
 char *macos_export_calendar_events_ics(void) {
     @autoreleasepool {
-        EKEventStore *store = [[EKEventStore alloc] init];
+        EKEventStore *store = macos_shared_event_store();
         
         // Query events from 1 year past to 2 years future
         NSDate *now = [NSDate date];
@@ -283,6 +308,18 @@ char *macos_export_calendar_events_ics(void) {
             
             if (event.calendar && event.calendar.title.length > 0) {
                 [ics appendFormat:@"CATEGORIES:%@\r\n", escape_ics_text(event.calendar.title)];
+                [ics appendFormat:@"X-EVOLUTION-SOURCE-NAME:%@\r\n", escape_ics_text(event.calendar.title)];
+                NSString *accUid = event.calendar.source.sourceIdentifier ?: @"";
+                NSString *srcUid = [NSString stringWithFormat:@"macos:calendar:%lu:%@:%@",
+                    (unsigned long)accUid.length,
+                    accUid,
+                    event.calendar.calendarIdentifier ?: @""];
+                [ics appendFormat:@"X-EVOLUTION-SOURCE-UID:%@\r\n", escape_ics_text(srcUid)];
+                NSString *hexColor = hex_color_from_cgcolor(event.calendar.CGColor);
+                if (hexColor && hexColor.length > 0) {
+                    [ics appendFormat:@"COLOR:%@\r\n", hexColor];
+                    [ics appendFormat:@"X-APPLE-CALENDAR-COLOR:%@\r\n", hexColor];
+                }
             }
             
             [ics appendString:@"STATUS:CONFIRMED\r\n"];
@@ -298,7 +335,7 @@ char *macos_export_calendar_events_ics(void) {
 
 char *macos_export_reminders_ics(void) {
     @autoreleasepool {
-        EKEventStore *store = [[EKEventStore alloc] init];
+        EKEventStore *store = macos_shared_event_store();
         NSPredicate *pred = [store predicateForRemindersInCalendars:nil];
         MacosReminderFetchState *state;
 
@@ -356,6 +393,18 @@ char *macos_export_reminders_ics(void) {
             
             if (reminder.calendar && reminder.calendar.title.length > 0) {
                 [ics appendFormat:@"CATEGORIES:%@\r\n", escape_ics_text(reminder.calendar.title)];
+                [ics appendFormat:@"X-EVOLUTION-SOURCE-NAME:%@\r\n", escape_ics_text(reminder.calendar.title)];
+                NSString *accUid = reminder.calendar.source.sourceIdentifier ?: @"";
+                NSString *srcUid = [NSString stringWithFormat:@"macos:reminders:%lu:%@:%@",
+                    (unsigned long)accUid.length,
+                    accUid,
+                    reminder.calendar.calendarIdentifier ?: @""];
+                [ics appendFormat:@"X-EVOLUTION-SOURCE-UID:%@\r\n", escape_ics_text(srcUid)];
+                NSString *hexColor = hex_color_from_cgcolor(reminder.calendar.CGColor);
+                if (hexColor && hexColor.length > 0) {
+                    [ics appendFormat:@"COLOR:%@\r\n", hexColor];
+                    [ics appendFormat:@"X-APPLE-CALENDAR-COLOR:%@\r\n", hexColor];
+                }
             }
             
             [ics appendString:@"END:VTODO\r\n"];
@@ -370,19 +419,10 @@ char *macos_export_reminders_ics(void) {
 
 char *macos_export_contacts_vcf(void) {
     @autoreleasepool {
-        CNContactStore *store = [[CNContactStore alloc] init];
+        CNContactStore *store = macos_shared_contact_store();
         
-        NSArray *keys = @[
-            [CNContactVCardSerialization descriptorForRequiredKeys],
-            CNContactGivenNameKey,
-            CNContactFamilyNameKey,
-            CNContactOrganizationNameKey,
-            CNContactEmailAddressesKey,
-            CNContactPhoneNumbersKey,
-            CNContactPostalAddressesKey,
-            CNContactNoteKey,
-            CNContactJobTitleKey,
-            CNContactDepartmentNameKey
+        NSArray<id<CNKeyDescriptor>> *keys = @[
+            [CNContactVCardSerialization descriptorForRequiredKeys]
         ];
         
         CNContactFetchRequest *request = [[CNContactFetchRequest alloc] initWithKeysToFetch:keys];
@@ -482,6 +522,7 @@ static NSDictionary *
 macos_eventkit_source_dictionary (EKCalendar *calendar, NSString *kind)
 {
     EKSource *source = calendar.source;
+    NSString *hexColor = hex_color_from_cgcolor(calendar.CGColor);
 
     return @{
         @"uid": calendar.calendarIdentifier ?: @"",
@@ -491,6 +532,7 @@ macos_eventkit_source_dictionary (EKCalendar *calendar, NSString *kind)
         @"account_name": source.title ?: @"",
         @"backend": @"eventkit",
         @"writable": @(calendar.allowsContentModifications),
+        @"color": hexColor ?: @"",
     };
 }
 
@@ -536,6 +578,21 @@ macos_event_ics_component (EKEvent *event)
         [ics appendFormat:@"CREATED:%@\r\n", format_date_ics (event.creationDate, NO)];
     if (event.lastModifiedDate)
         [ics appendFormat:@"LAST-MODIFIED:%@\r\n", format_date_ics (event.lastModifiedDate, NO)];
+    if (event.calendar && event.calendar.title.length > 0) {
+        [ics appendFormat:@"CATEGORIES:%@\r\n", escape_ics_text (event.calendar.title)];
+        [ics appendFormat:@"X-EVOLUTION-SOURCE-NAME:%@\r\n", escape_ics_text (event.calendar.title)];
+        NSString *accUid = event.calendar.source.sourceIdentifier ?: @"";
+        NSString *srcUid = [NSString stringWithFormat:@"macos:calendar:%lu:%@:%@",
+            (unsigned long)accUid.length,
+            accUid,
+            event.calendar.calendarIdentifier ?: @""];
+        [ics appendFormat:@"X-EVOLUTION-SOURCE-UID:%@\r\n", escape_ics_text (srcUid)];
+        NSString *hexColor = hex_color_from_cgcolor(event.calendar.CGColor);
+        if (hexColor && hexColor.length > 0) {
+            [ics appendFormat:@"COLOR:%@\r\n", hexColor];
+            [ics appendFormat:@"X-APPLE-CALENDAR-COLOR:%@\r\n", hexColor];
+        }
+    }
     [ics appendString:@"END:VEVENT\r\n"];
     return ics;
 }
@@ -565,6 +622,21 @@ macos_reminder_ics_component (EKReminder *reminder)
             [ics appendFormat:@"COMPLETED:%@\r\n", format_date_ics (reminder.completionDate, NO)];
     } else {
         [ics appendString:@"STATUS:NEEDS-ACTION\r\n"];
+    }
+    if (reminder.calendar && reminder.calendar.title.length > 0) {
+        [ics appendFormat:@"CATEGORIES:%@\r\n", escape_ics_text (reminder.calendar.title)];
+        [ics appendFormat:@"X-EVOLUTION-SOURCE-NAME:%@\r\n", escape_ics_text (reminder.calendar.title)];
+        NSString *accUid = reminder.calendar.source.sourceIdentifier ?: @"";
+        NSString *srcUid = [NSString stringWithFormat:@"macos:reminders:%lu:%@:%@",
+            (unsigned long)accUid.length,
+            accUid,
+            reminder.calendar.calendarIdentifier ?: @""];
+        [ics appendFormat:@"X-EVOLUTION-SOURCE-UID:%@\r\n", escape_ics_text (srcUid)];
+        NSString *hexColor = hex_color_from_cgcolor(reminder.calendar.CGColor);
+        if (hexColor && hexColor.length > 0) {
+            [ics appendFormat:@"COLOR:%@\r\n", hexColor];
+            [ics appendFormat:@"X-APPLE-CALENDAR-COLOR:%@\r\n", hexColor];
+        }
     }
     [ics appendString:@"END:VTODO\r\n"];
     return ics;
@@ -749,15 +821,10 @@ macos_system_sources_json (BOOL include_components)
         macos_append_error (errors,
             [NSString stringWithFormat:@"Could not discover Contacts containers: %@",
                 container_error.localizedDescription]);
-    } else if (containers.count > 0) {
-        macos_append_error (errors,
-            @"Contacts does not expose per-container writability; contacts sources are reported read-only.");
     }
 
     if (include_components) {
         if (macos_eventkit_has_read_access (EKEntityTypeEvent)) {
-            macos_append_error (errors,
-                @"Calendar components are limited to EventKit's rolling six-month past and twelve-month future query window.");
             macos_append_event_components (event_store, event_calendars, components, errors);
         } else {
             macos_append_error (errors,

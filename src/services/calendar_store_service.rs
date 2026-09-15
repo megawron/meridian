@@ -1459,6 +1459,36 @@ fn append_component(
         .cloned()
         .unwrap_or_else(|| "(Ohne Titel)".to_string());
 
+    let resolved_source_name = component
+        .properties
+        .get("X-EVOLUTION-SOURCE-NAME")
+        .or_else(|| {
+            if source_display_name == "Lokaler Kalender" || source_display_name.is_empty() {
+                component.properties.get("CATEGORIES")
+            } else {
+                None
+            }
+        })
+        .filter(|s| !s.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| source_display_name.to_string());
+
+    let resolved_source_uid = component
+        .properties
+        .get("X-EVOLUTION-SOURCE-UID")
+        .filter(|s| !s.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| {
+            if (source_uid == "local-calendar" || source_uid.is_empty())
+                && !resolved_source_name.is_empty()
+                && resolved_source_name != "Lokaler Kalender"
+            {
+                format!("calendar-{}", resolved_source_name)
+            } else {
+                source_uid.to_string()
+            }
+        });
+
     match component.kind.as_str() {
         "VEVENT" => {
             let all_day = component.date_properties.contains("DTSTART");
@@ -1486,8 +1516,8 @@ fn append_component(
                 .unwrap_or_default();
             snapshot.events.push(CalendarEventRecord {
                 uid,
-                source_uid: source_uid.to_string(),
-                source_display_name: source_display_name.to_string(),
+                source_uid: resolved_source_uid,
+                source_display_name: resolved_source_name,
                 component: raw_component.clone(),
                 summary,
                 start,
@@ -1517,8 +1547,8 @@ fn append_component(
                 .is_some_and(|value| value.eq_ignore_ascii_case("COMPLETED"));
             snapshot.tasks.push(TaskRecord {
                 uid,
-                source_uid: source_uid.to_string(),
-                source_display_name: source_display_name.to_string(),
+                source_uid: resolved_source_uid,
+                source_display_name: resolved_source_name,
                 component: raw_component.clone(),
                 summary,
                 due: component
@@ -1545,8 +1575,8 @@ fn append_component(
         "VJOURNAL" => {
             snapshot.memos.push(MemoRecord {
                 uid,
-                source_uid: source_uid.to_string(),
-                source_display_name: source_display_name.to_string(),
+                source_uid: resolved_source_uid,
+                source_display_name: resolved_source_name,
                 component: raw_component.clone(),
                 summary,
                 description: component
@@ -3589,6 +3619,46 @@ mod tests {
             name.to_string_lossy().ends_with(".tmp") || name.to_string_lossy().ends_with(".lock")
         }));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_parse_ical_resolves_source_metadata_from_component() {
+        let ics = "BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+BEGIN:VEVENT\r\n\
+UID:cal-ev-1\r\n\
+DTSTART:20260915T090000\r\n\
+DTEND:20260915T100000\r\n\
+SUMMARY:Team Sync\r\n\
+X-EVOLUTION-SOURCE-NAME:Arbeit\r\n\
+X-EVOLUTION-SOURCE-UID:macos:calendar:12:GoogleAcc:work-cal-id\r\n\
+END:VEVENT\r\n\
+BEGIN:VEVENT\r\n\
+UID:cal-ev-2\r\n\
+DTSTART:20260915T120000\r\n\
+DTEND:20260915T130000\r\n\
+SUMMARY:Mittagessen\r\n\
+CATEGORIES:Privat\r\n\
+END:VEVENT\r\n\
+BEGIN:VTODO\r\n\
+UID:cal-todo-1\r\n\
+SUMMARY:Einkaufen\r\n\
+X-EVOLUTION-SOURCE-NAME:Einkaufsliste\r\n\
+END:VTODO\r\n\
+END:VCALENDAR\r\n";
+
+        let mut snapshot = CalendarSnapshot::default();
+        parse_ical(ics, Path::new("test.ics"), "local-calendar", "Lokaler Kalender", &mut snapshot);
+
+        assert_eq!(snapshot.events.len(), 2);
+        assert_eq!(snapshot.events[0].source_display_name, "Arbeit");
+        assert_eq!(snapshot.events[0].source_uid, "macos:calendar:12:GoogleAcc:work-cal-id");
+
+        assert_eq!(snapshot.events[1].source_display_name, "Privat");
+        assert_eq!(snapshot.events[1].source_uid, "calendar-Privat");
+
+        assert_eq!(snapshot.tasks.len(), 1);
+        assert_eq!(snapshot.tasks[0].source_display_name, "Einkaufsliste");
     }
 
     fn temporary_directory(label: &str) -> PathBuf {

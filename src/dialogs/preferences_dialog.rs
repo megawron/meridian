@@ -544,34 +544,69 @@ impl PreferencesDialog {
                     .display_label(),
             )
             .build();
+        let cal_status = macos_service.check_permission(crate::services::MacosPermissionKind::Calendar);
+        let btn_cal_label = match cal_status {
+            crate::services::MacosPermissionStatus::Authorized => "Jetzt synchronisieren",
+            crate::services::MacosPermissionStatus::Denied => "Einstellungen öffnen",
+            crate::services::MacosPermissionStatus::NotDetermined => "Berechtigung anfordern",
+            _ => "Status prüfen",
+        };
         let btn_cal = gtk::Button::builder()
-            .label("Berechtigung anfordern")
+            .label(btn_cal_label)
             .valign(gtk::Align::Center)
             .css_classes(vec!["suggested-action"])
             .build();
         let row_cal_clone = row_cal.clone();
+        let btn_cal_clone = btn_cal.clone();
         let dialog_cal = self.downgrade();
         btn_cal.connect_clicked(move |_| {
             let srv = crate::services::MacosIntegrationService::new();
             let row = row_cal_clone.clone();
+            let btn = btn_cal_clone.clone();
             let dlg = dialog_cal.clone();
-            let srv_cb = srv.clone();
-            srv.request_permission(
-                crate::services::MacosPermissionKind::Calendar,
-                move |granted| {
-                    let status =
-                        srv_cb.check_permission(crate::services::MacosPermissionKind::Calendar);
-                    row.set_subtitle(status.display_label());
+            let current = srv.check_permission(crate::services::MacosPermissionKind::Calendar);
+            match current {
+                crate::services::MacosPermissionStatus::Denied => {
+                    srv.open_privacy_settings(crate::services::MacosPermissionKind::Calendar);
+                }
+                crate::services::MacosPermissionStatus::Authorized => {
+                    let cal_store = crate::services::CalendarStoreService::new();
+                    let count = srv.sync_apple_calendar_to_store(&cal_store).unwrap_or(0);
                     if let Some(dialog) = dlg.upgrade() {
-                        let msg = if granted {
-                            format!("Kalender-Berechtigung aktualisiert: {}", status.display_label())
-                        } else {
-                            "Kalenderzugriff wurde verweigert. Bitte in den macOS Systemeinstellungen aktivieren.".to_string()
-                        };
-                        dialog.show_toast(&msg);
+                        dialog.show_toast(&format!("Apple Kalender synchronisiert: {} Termine geladen", count));
                     }
-                },
-            );
+                }
+                crate::services::MacosPermissionStatus::NotDetermined => {
+                    let srv_cb = srv.clone();
+                    srv.request_permission(
+                        crate::services::MacosPermissionKind::Calendar,
+                        move |_granted| {
+                            let status = srv_cb.check_permission(crate::services::MacosPermissionKind::Calendar);
+                            row.set_subtitle(status.display_label());
+                            match status {
+                                crate::services::MacosPermissionStatus::Authorized => {
+                                    btn.set_label("Jetzt synchronisieren");
+                                    let cal_store = crate::services::CalendarStoreService::new();
+                                    let count = srv_cb.sync_apple_calendar_to_store(&cal_store).unwrap_or(0);
+                                    if let Some(dialog) = dlg.upgrade() {
+                                        dialog.show_toast(&format!("Apple Kalender verbunden: {} Termine synchronisiert", count));
+                                    }
+                                }
+                                crate::services::MacosPermissionStatus::Denied => {
+                                    btn.set_label("Einstellungen öffnen");
+                                    if let Some(dialog) = dlg.upgrade() {
+                                        dialog.show_toast("Kalenderzugriff wurde verweigert. Bitte in den macOS Systemeinstellungen aktivieren.");
+                                    }
+                                }
+                                _ => {}
+                            }
+                        },
+                    );
+                }
+                _ => {
+                    srv.open_privacy_settings(crate::services::MacosPermissionKind::Calendar);
+                }
+            }
         });
         row_cal.add_suffix(&btn_cal);
         group.add(&row_cal);
@@ -585,34 +620,69 @@ impl PreferencesDialog {
                     .display_label(),
             )
             .build();
+        let con_status = macos_service.check_permission(crate::services::MacosPermissionKind::Contacts);
+        let btn_contacts_label = match con_status {
+            crate::services::MacosPermissionStatus::Authorized => "Jetzt synchronisieren",
+            crate::services::MacosPermissionStatus::Denied => "Einstellungen öffnen",
+            crate::services::MacosPermissionStatus::NotDetermined => "Berechtigung anfordern",
+            _ => "Status prüfen",
+        };
         let btn_contacts = gtk::Button::builder()
-            .label("Berechtigung anfordern")
+            .label(btn_contacts_label)
             .valign(gtk::Align::Center)
             .css_classes(vec!["suggested-action"])
             .build();
         let row_contacts_clone = row_contacts.clone();
+        let btn_contacts_clone = btn_contacts.clone();
         let dialog_contacts = self.downgrade();
         btn_contacts.connect_clicked(move |_| {
             let srv = crate::services::MacosIntegrationService::new();
             let row = row_contacts_clone.clone();
+            let btn = btn_contacts_clone.clone();
             let dlg = dialog_contacts.clone();
-            let srv_cb = srv.clone();
-            srv.request_permission(
-                crate::services::MacosPermissionKind::Contacts,
-                move |granted| {
-                    let status =
-                        srv_cb.check_permission(crate::services::MacosPermissionKind::Contacts);
-                    row.set_subtitle(status.display_label());
+            let current = srv.check_permission(crate::services::MacosPermissionKind::Contacts);
+            match current {
+                crate::services::MacosPermissionStatus::Denied => {
+                    srv.open_privacy_settings(crate::services::MacosPermissionKind::Contacts);
+                }
+                crate::services::MacosPermissionStatus::Authorized => {
+                    let contact_store = crate::services::ContactStoreService::new();
+                    let count = srv.sync_apple_contacts_to_store(&contact_store).unwrap_or(0);
                     if let Some(dialog) = dlg.upgrade() {
-                        let msg = if granted {
-                            format!("Kontakt-Berechtigung aktualisiert: {}", status.display_label())
-                        } else {
-                            "Kontaktzugriff wurde verweigert. Bitte in den macOS Systemeinstellungen aktivieren.".to_string()
-                        };
-                        dialog.show_toast(&msg);
+                        dialog.show_toast(&format!("Apple Kontakte synchronisiert: {} Kontakte geladen", count));
                     }
-                },
-            );
+                }
+                crate::services::MacosPermissionStatus::NotDetermined => {
+                    let srv_cb = srv.clone();
+                    srv.request_permission(
+                        crate::services::MacosPermissionKind::Contacts,
+                        move |_granted| {
+                            let status = srv_cb.check_permission(crate::services::MacosPermissionKind::Contacts);
+                            row.set_subtitle(status.display_label());
+                            match status {
+                                crate::services::MacosPermissionStatus::Authorized => {
+                                    btn.set_label("Jetzt synchronisieren");
+                                    let contact_store = crate::services::ContactStoreService::new();
+                                    let count = srv_cb.sync_apple_contacts_to_store(&contact_store).unwrap_or(0);
+                                    if let Some(dialog) = dlg.upgrade() {
+                                        dialog.show_toast(&format!("Apple Kontakte verbunden: {} Kontakte synchronisiert", count));
+                                    }
+                                }
+                                crate::services::MacosPermissionStatus::Denied => {
+                                    btn.set_label("Einstellungen öffnen");
+                                    if let Some(dialog) = dlg.upgrade() {
+                                        dialog.show_toast("Kontaktzugriff wurde verweigert. Bitte in den macOS Systemeinstellungen aktivieren.");
+                                    }
+                                }
+                                _ => {}
+                            }
+                        },
+                    );
+                }
+                _ => {
+                    srv.open_privacy_settings(crate::services::MacosPermissionKind::Contacts);
+                }
+            }
         });
         row_contacts.add_suffix(&btn_contacts);
         group.add(&row_contacts);
@@ -626,34 +696,69 @@ impl PreferencesDialog {
                     .display_label(),
             )
             .build();
+        let rem_status = macos_service.check_permission(crate::services::MacosPermissionKind::Reminders);
+        let btn_rem_label = match rem_status {
+            crate::services::MacosPermissionStatus::Authorized => "Jetzt synchronisieren",
+            crate::services::MacosPermissionStatus::Denied => "Einstellungen öffnen",
+            crate::services::MacosPermissionStatus::NotDetermined => "Berechtigung anfordern",
+            _ => "Status prüfen",
+        };
         let btn_reminders = gtk::Button::builder()
-            .label("Berechtigung anfordern")
+            .label(btn_rem_label)
             .valign(gtk::Align::Center)
             .css_classes(vec!["suggested-action"])
             .build();
         let row_reminders_clone = row_reminders.clone();
+        let btn_reminders_clone = btn_reminders.clone();
         let dialog_reminders = self.downgrade();
         btn_reminders.connect_clicked(move |_| {
             let srv = crate::services::MacosIntegrationService::new();
             let row = row_reminders_clone.clone();
+            let btn = btn_reminders_clone.clone();
             let dlg = dialog_reminders.clone();
-            let srv_cb = srv.clone();
-            srv.request_permission(
-                crate::services::MacosPermissionKind::Reminders,
-                move |granted| {
-                    let status =
-                        srv_cb.check_permission(crate::services::MacosPermissionKind::Reminders);
-                    row.set_subtitle(status.display_label());
+            let current = srv.check_permission(crate::services::MacosPermissionKind::Reminders);
+            match current {
+                crate::services::MacosPermissionStatus::Denied => {
+                    srv.open_privacy_settings(crate::services::MacosPermissionKind::Reminders);
+                }
+                crate::services::MacosPermissionStatus::Authorized => {
+                    let cal_store = crate::services::CalendarStoreService::new();
+                    let count = srv.sync_apple_reminders_to_store(&cal_store).unwrap_or(0);
                     if let Some(dialog) = dlg.upgrade() {
-                        let msg = if granted {
-                            format!("Erinnerungs-Berechtigung aktualisiert: {}", status.display_label())
-                        } else {
-                            "Erinnerungszugriff wurde verweigert. Bitte in den macOS Systemeinstellungen aktivieren.".to_string()
-                        };
-                        dialog.show_toast(&msg);
+                        dialog.show_toast(&format!("Apple Erinnerungen synchronisiert: {} Aufgaben geladen", count));
                     }
-                },
-            );
+                }
+                crate::services::MacosPermissionStatus::NotDetermined => {
+                    let srv_cb = srv.clone();
+                    srv.request_permission(
+                        crate::services::MacosPermissionKind::Reminders,
+                        move |_granted| {
+                            let status = srv_cb.check_permission(crate::services::MacosPermissionKind::Reminders);
+                            row.set_subtitle(status.display_label());
+                            match status {
+                                crate::services::MacosPermissionStatus::Authorized => {
+                                    btn.set_label("Jetzt synchronisieren");
+                                    let cal_store = crate::services::CalendarStoreService::new();
+                                    let count = srv_cb.sync_apple_reminders_to_store(&cal_store).unwrap_or(0);
+                                    if let Some(dialog) = dlg.upgrade() {
+                                        dialog.show_toast(&format!("Apple Erinnerungen verbunden: {} Aufgaben synchronisiert", count));
+                                    }
+                                }
+                                crate::services::MacosPermissionStatus::Denied => {
+                                    btn.set_label("Einstellungen öffnen");
+                                    if let Some(dialog) = dlg.upgrade() {
+                                        dialog.show_toast("Erinnerungszugriff wurde verweigert. Bitte in den macOS Systemeinstellungen aktivieren.");
+                                    }
+                                }
+                                _ => {}
+                            }
+                        },
+                    );
+                }
+                _ => {
+                    srv.open_privacy_settings(crate::services::MacosPermissionKind::Reminders);
+                }
+            }
         });
         row_reminders.add_suffix(&btn_reminders);
         group.add(&row_reminders);
@@ -765,6 +870,254 @@ impl PreferencesDialog {
             crate::services::MacosIntegrationService::new().open_internet_accounts();
         });
         group.add(&row_sys);
+
+        group
+    }
+
+    #[cfg(target_os = "macos")]
+    fn build_macos_contacts_group(&self) -> adw::PreferencesGroup {
+        let macos_service = crate::services::MacosIntegrationService::new();
+        let group = adw::PreferencesGroup::builder()
+            .title("Apple Kontakte (macOS)")
+            .description("Native Kontakte aus dem macOS Adressbuch (Contacts.framework)")
+            .build();
+
+        let row_contacts = adw::ActionRow::builder()
+            .title("Apple Kontakte synchronisieren")
+            .subtitle(
+                macos_service
+                    .check_permission(crate::services::MacosPermissionKind::Contacts)
+                    .display_label(),
+            )
+            .build();
+        let con_status = macos_service.check_permission(crate::services::MacosPermissionKind::Contacts);
+        let btn_contacts_label = match con_status {
+            crate::services::MacosPermissionStatus::Authorized => "Jetzt synchronisieren",
+            crate::services::MacosPermissionStatus::Denied => "Einstellungen öffnen",
+            crate::services::MacosPermissionStatus::NotDetermined => "Verbinden",
+            _ => "Status prüfen",
+        };
+        let btn_contacts = gtk::Button::builder()
+            .label(btn_contacts_label)
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["suggested-action"])
+            .build();
+        let row_contacts_clone = row_contacts.clone();
+        let btn_contacts_clone = btn_contacts.clone();
+        let dialog_contacts = self.downgrade();
+        btn_contacts.connect_clicked(move |_| {
+            let srv = crate::services::MacosIntegrationService::new();
+            let row = row_contacts_clone.clone();
+            let btn = btn_contacts_clone.clone();
+            let dlg = dialog_contacts.clone();
+            let current = srv.check_permission(crate::services::MacosPermissionKind::Contacts);
+            match current {
+                crate::services::MacosPermissionStatus::Denied => {
+                    srv.open_privacy_settings(crate::services::MacosPermissionKind::Contacts);
+                }
+                crate::services::MacosPermissionStatus::Authorized => {
+                    let contact_store = crate::services::ContactStoreService::new();
+                    let count = srv.sync_apple_contacts_to_store(&contact_store).unwrap_or(0);
+                    if let Some(dialog) = dlg.upgrade() {
+                        dialog.show_toast(&format!("Apple Kontakte synchronisiert: {} Kontakte geladen", count));
+                    }
+                }
+                crate::services::MacosPermissionStatus::NotDetermined => {
+                    let srv_cb = srv.clone();
+                    srv.request_permission(
+                        crate::services::MacosPermissionKind::Contacts,
+                        move |_granted| {
+                            let status = srv_cb.check_permission(crate::services::MacosPermissionKind::Contacts);
+                            row.set_subtitle(status.display_label());
+                            match status {
+                                crate::services::MacosPermissionStatus::Authorized => {
+                                    btn.set_label("Jetzt synchronisieren");
+                                    let contact_store = crate::services::ContactStoreService::new();
+                                    let count = srv_cb.sync_apple_contacts_to_store(&contact_store).unwrap_or(0);
+                                    if let Some(dialog) = dlg.upgrade() {
+                                        dialog.show_toast(&format!("Apple Kontakte verbunden: {} Kontakte synchronisiert", count));
+                                    }
+                                }
+                                crate::services::MacosPermissionStatus::Denied => {
+                                    btn.set_label("Einstellungen öffnen");
+                                    if let Some(dialog) = dlg.upgrade() {
+                                        dialog.show_toast("Kontaktzugriff wurde verweigert. Bitte in den macOS Systemeinstellungen aktivieren.");
+                                    }
+                                }
+                                _ => {}
+                            }
+                        },
+                    );
+                }
+                _ => {
+                    srv.open_privacy_settings(crate::services::MacosPermissionKind::Contacts);
+                }
+            }
+        });
+        row_contacts.add_suffix(&btn_contacts);
+        group.add(&row_contacts);
+        group
+    }
+
+    #[cfg(target_os = "macos")]
+    fn build_macos_calendar_group(&self) -> adw::PreferencesGroup {
+        let macos_service = crate::services::MacosIntegrationService::new();
+        let group = adw::PreferencesGroup::builder()
+            .title("Apple Kalender & Erinnerungen (macOS)")
+            .description("Native Kalender und Erinnerungen aus EventKit")
+            .build();
+
+        // 1. Calendar
+        let row_cal = adw::ActionRow::builder()
+            .title("Apple Kalender (EventKit)")
+            .subtitle(
+                macos_service
+                    .check_permission(crate::services::MacosPermissionKind::Calendar)
+                    .display_label(),
+            )
+            .build();
+        let cal_status = macos_service.check_permission(crate::services::MacosPermissionKind::Calendar);
+        let btn_cal_label = match cal_status {
+            crate::services::MacosPermissionStatus::Authorized => "Jetzt synchronisieren",
+            crate::services::MacosPermissionStatus::Denied => "Einstellungen öffnen",
+            crate::services::MacosPermissionStatus::NotDetermined => "Verbinden",
+            _ => "Status prüfen",
+        };
+        let btn_cal = gtk::Button::builder()
+            .label(btn_cal_label)
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["suggested-action"])
+            .build();
+        let row_cal_clone = row_cal.clone();
+        let btn_cal_clone = btn_cal.clone();
+        let dialog_cal = self.downgrade();
+        btn_cal.connect_clicked(move |_| {
+            let srv = crate::services::MacosIntegrationService::new();
+            let row = row_cal_clone.clone();
+            let btn = btn_cal_clone.clone();
+            let dlg = dialog_cal.clone();
+            let current = srv.check_permission(crate::services::MacosPermissionKind::Calendar);
+            match current {
+                crate::services::MacosPermissionStatus::Denied => {
+                    srv.open_privacy_settings(crate::services::MacosPermissionKind::Calendar);
+                }
+                crate::services::MacosPermissionStatus::Authorized => {
+                    let cal_store = crate::services::CalendarStoreService::new();
+                    let count = srv.sync_apple_calendar_to_store(&cal_store).unwrap_or(0);
+                    if let Some(dialog) = dlg.upgrade() {
+                        dialog.show_toast(&format!("Apple Kalender synchronisiert: {} Termine geladen", count));
+                    }
+                }
+                crate::services::MacosPermissionStatus::NotDetermined => {
+                    let srv_cb = srv.clone();
+                    srv.request_permission(
+                        crate::services::MacosPermissionKind::Calendar,
+                        move |_granted| {
+                            let status = srv_cb.check_permission(crate::services::MacosPermissionKind::Calendar);
+                            row.set_subtitle(status.display_label());
+                            match status {
+                                crate::services::MacosPermissionStatus::Authorized => {
+                                    btn.set_label("Jetzt synchronisieren");
+                                    let cal_store = crate::services::CalendarStoreService::new();
+                                    let count = srv_cb.sync_apple_calendar_to_store(&cal_store).unwrap_or(0);
+                                    if let Some(dialog) = dlg.upgrade() {
+                                        dialog.show_toast(&format!("Apple Kalender verbunden: {} Termine synchronisiert", count));
+                                    }
+                                }
+                                crate::services::MacosPermissionStatus::Denied => {
+                                    btn.set_label("Einstellungen öffnen");
+                                    if let Some(dialog) = dlg.upgrade() {
+                                        dialog.show_toast("Kalenderzugriff wurde verweigert. Bitte in den macOS Systemeinstellungen aktivieren.");
+                                    }
+                                }
+                                _ => {}
+                            }
+                        },
+                    );
+                }
+                _ => {
+                    srv.open_privacy_settings(crate::services::MacosPermissionKind::Calendar);
+                }
+            }
+        });
+        row_cal.add_suffix(&btn_cal);
+        group.add(&row_cal);
+
+        // 2. Reminders
+        let row_reminders = adw::ActionRow::builder()
+            .title("Apple Erinnerungen (EventKit)")
+            .subtitle(
+                macos_service
+                    .check_permission(crate::services::MacosPermissionKind::Reminders)
+                    .display_label(),
+            )
+            .build();
+        let rem_status = macos_service.check_permission(crate::services::MacosPermissionKind::Reminders);
+        let btn_rem_label = match rem_status {
+            crate::services::MacosPermissionStatus::Authorized => "Jetzt synchronisieren",
+            crate::services::MacosPermissionStatus::Denied => "Einstellungen öffnen",
+            crate::services::MacosPermissionStatus::NotDetermined => "Verbinden",
+            _ => "Status prüfen",
+        };
+        let btn_reminders = gtk::Button::builder()
+            .label(btn_rem_label)
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["suggested-action"])
+            .build();
+        let row_reminders_clone = row_reminders.clone();
+        let btn_reminders_clone = btn_reminders.clone();
+        let dialog_reminders = self.downgrade();
+        btn_reminders.connect_clicked(move |_| {
+            let srv = crate::services::MacosIntegrationService::new();
+            let row = row_reminders_clone.clone();
+            let btn = btn_reminders_clone.clone();
+            let dlg = dialog_reminders.clone();
+            let current = srv.check_permission(crate::services::MacosPermissionKind::Reminders);
+            match current {
+                crate::services::MacosPermissionStatus::Denied => {
+                    srv.open_privacy_settings(crate::services::MacosPermissionKind::Reminders);
+                }
+                crate::services::MacosPermissionStatus::Authorized => {
+                    let cal_store = crate::services::CalendarStoreService::new();
+                    let count = srv.sync_apple_reminders_to_store(&cal_store).unwrap_or(0);
+                    if let Some(dialog) = dlg.upgrade() {
+                        dialog.show_toast(&format!("Apple Erinnerungen synchronisiert: {} Aufgaben geladen", count));
+                    }
+                }
+                crate::services::MacosPermissionStatus::NotDetermined => {
+                    let srv_cb = srv.clone();
+                    srv.request_permission(
+                        crate::services::MacosPermissionKind::Reminders,
+                        move |_granted| {
+                            let status = srv_cb.check_permission(crate::services::MacosPermissionKind::Reminders);
+                            row.set_subtitle(status.display_label());
+                            match status {
+                                crate::services::MacosPermissionStatus::Authorized => {
+                                    btn.set_label("Jetzt synchronisieren");
+                                    let cal_store = crate::services::CalendarStoreService::new();
+                                    let count = srv_cb.sync_apple_reminders_to_store(&cal_store).unwrap_or(0);
+                                    if let Some(dialog) = dlg.upgrade() {
+                                        dialog.show_toast(&format!("Apple Erinnerungen verbunden: {} Aufgaben synchronisiert", count));
+                                    }
+                                }
+                                crate::services::MacosPermissionStatus::Denied => {
+                                    btn.set_label("Einstellungen öffnen");
+                                    if let Some(dialog) = dlg.upgrade() {
+                                        dialog.show_toast("Erinnerungszugriff wurde verweigert. Bitte in den macOS Systemeinstellungen aktivieren.");
+                                    }
+                                }
+                                _ => {}
+                            }
+                        },
+                    );
+                }
+                _ => {
+                    srv.open_privacy_settings(crate::services::MacosPermissionKind::Reminders);
+                }
+            }
+        });
+        row_reminders.add_suffix(&btn_reminders);
+        group.add(&row_reminders);
 
         group
     }
@@ -2018,6 +2371,11 @@ impl PreferencesDialog {
         ));
         group_contacts_local.add(&row_import_contacts);
         page_contacts.add(&group_contacts_local);
+
+        #[cfg(target_os = "macos")]
+        {
+            page_contacts.add(&self.build_macos_contacts_group());
+        }
 
         let group_default_address_book = adw::PreferencesGroup::builder()
             .title("Standardadressbuch")
@@ -5773,6 +6131,11 @@ impl PreferencesDialog {
         page_calendar_display.add(&group_calendar_local);
         page_calendar_display.add(&group_categories);
         page_calendar_display.add(&group_task_memo_lists);
+
+        #[cfg(target_os = "macos")]
+        {
+            page_calendar_display.add(&self.build_macos_calendar_group());
+        }
 
         calendar_sub_stack.add_titled(&page_calendar_general, Some("general"), "General");
         calendar_sub_stack.add_titled(&page_calendar_display, Some("display"), "Display und Formate");
