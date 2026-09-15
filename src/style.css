@@ -2,6 +2,26 @@
 /* Evolution GTK4 — Application Stylesheet */
 /* Complements the libadwaita default theme with application-specific styling */
 
+/* ── Global Typography Baseline ────────────────────────────────────────── */
+window,
+dialog,
+label,
+button,
+entry,
+textview {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "Helvetica Neue", Cantarell, "Segoe UI", Roboto, sans-serif;
+}
+
+/* ── Sidebar Typography (Identical to previous default) ────────────────── */
+.navigation-sidebar,
+.mail-sidebar,
+.calendar-sidebar,
+.tasks-sidebar,
+.contacts-sidebar,
+.evolution-sidebar-drawer {
+  font-family: Cantarell, -apple-system, sans-serif;
+}
+
 /* ── Badge (unread count) ──────────────────────────────────────────────── */
 .badge {
   background-color: @accent_bg_color;
@@ -403,7 +423,7 @@
 
 .thread-context label,
 .thread-context .thread-message {
-  font-size: 0.82rem;
+  font-size: 0.90rem;
 }
 
 .mail-plain-view {
@@ -416,32 +436,32 @@
   background-color: alpha(@blue_3, 0.2);
   color: @blue_4;
   border-radius: 4px;
-  padding: 1px 6px;
-  font-size: 0.7rem;
+  padding: 2px 8px;
+  font-size: 0.90rem;
 }
 
 .event-chip-yellow {
   background-color: alpha(@yellow_3, 0.2);
   color: @yellow_5;
   border-radius: 4px;
-  padding: 1px 6px;
-  font-size: 0.7rem;
+  padding: 2px 8px;
+  font-size: 0.90rem;
 }
 
 .event-chip-green {
   background-color: alpha(@green_3, 0.2);
   color: @green_5;
   border-radius: 4px;
-  padding: 1px 6px;
-  font-size: 0.7rem;
+  padding: 2px 8px;
+  font-size: 0.90rem;
 }
 
 .event-chip-purple {
   background-color: alpha(@purple_3, 0.2);
   color: @purple_4;
   border-radius: 4px;
-  padding: 1px 6px;
-  font-size: 0.7rem;
+  padding: 2px 8px;
+  font-size: 0.90rem;
 }
 
 /* ── Folder Sidebar ────────────────────────────────────────────────────── */
@@ -1520,24 +1540,24 @@ searchbar {
 }
 
 .calendar-month-header-cell {
-  padding: 3px 2px;
+  padding: 4px 2px;
   border-right: 1px solid alpha(@borders, 0.4);
-  font-size: 0.80rem;
+  font-size: 0.90rem;
   font-weight: 600;
-  color: alpha(@window_fg_color, 0.8);
+  color: alpha(@window_fg_color, 0.85);
 }
 
 .calendar-allday-row {
   border-bottom: 2px solid alpha(@borders, 0.65);
   background-color: alpha(@window_fg_color, 0.02);
-  min-height: 28px;
+  min-height: 30px;
 }
 
 .calendar-allday-label {
-  padding: 2px 2px;
-  font-size: 0.68rem;
+  padding: 3px 6px;
+  font-size: 0.85rem;
   font-weight: 600;
-  color: alpha(@window_fg_color, 0.65);
+  color: alpha(@window_fg_color, 0.75);
   border-right: 1px solid alpha(@borders, 0.4);
 }
 
@@ -1552,22 +1572,24 @@ searchbar {
 }
 
 .calendar-timezone-header {
-  font-size: 0.75rem;
+  font-size: 0.88rem;
   font-weight: 600;
-  color: alpha(@window_fg_color, 0.7);
-  padding: 2px 4px;
+  color: alpha(@window_fg_color, 0.75);
+  padding: 3px 6px;
 }
 
 .calendar-time-gutter {
-  min-width: 52px;
+  min-width: 58px;
   border-right: 1px solid alpha(@borders, 0.5);
   background-color: alpha(@window_fg_color, 0.02);
 }
 
 .calendar-time-gutter-label {
-  font-size: 0.95rem;
-  color: alpha(@window_fg_color, 0.88);
-  padding-right: 4px;
+  font-family: Cantarell, -apple-system, sans-serif;
+  font-size: 1.15rem;
+  font-weight: 500;
+  color: alpha(@window_fg_color, 0.90);
+  padding-right: 6px;
   padding-left: 2px;
   padding-top: 0;
   margin-top: 0;
@@ -1578,54 +1600,13 @@ searchbar {
   min-height: 2px;
 }
 
-.calendar-grid-cell {
-  border-right: 1px solid alpha(@borders, 0.35);
-  transition: background-color 100ms ease;
+.calendar-day-canvas {
+  background: transparent;
+  outline: none;
 }
 
-.calendar-grid-cell:hover {
-  background-color: alpha(@accent_color, 0.07);
-}
-
-.calendar-hour-cell {
-  border-bottom: 1px solid alpha(@borders, 0.45);
-}
-
-.calendar-half-hour-cell {
-  border-bottom: 1px dashed alpha(@borders, 0.22);
-}
-
-.calendar-workday-cell {
-  background-color: @view_bg_color;
-}
-
-.calendar-offhours-cell {
-  background-color: alpha(@window_fg_color, 0.025);
-}
-
-/* Selected slot / time range highlight (unified continuous selection box) */
-.calendar-grid-cell.calendar-slot-selected {
-  background-color: alpha(@accent_color, 0.18);
-  box-shadow: inset 1.5px 0 0 @accent_color, inset -1.5px 0 0 @accent_color;
-  border-bottom-color: transparent !important;
-  border-radius: 0;
-}
-
-.calendar-grid-cell.calendar-slot-selected.calendar-slot-selected-top {
-  box-shadow: inset 0 1.5px 0 0 @accent_color, inset 1.5px 0 0 0 @accent_color, inset -1.5px 0 0 0 @accent_color;
-  border-top-left-radius: 6px;
-  border-top-right-radius: 6px;
-}
-
-.calendar-grid-cell.calendar-slot-selected.calendar-slot-selected-bottom {
-  box-shadow: inset 0 -1.5px 0 0 @accent_color, inset 1.5px 0 0 0 @accent_color, inset -1.5px 0 0 0 @accent_color;
-  border-bottom-left-radius: 6px;
-  border-bottom-right-radius: 6px;
-}
-
-.calendar-grid-cell.calendar-slot-selected.calendar-slot-selected-top.calendar-slot-selected-bottom {
-  box-shadow: inset 0 0 0 1.5px @accent_color;
-  border-radius: 6px;
+.calendar-day-canvas:focus {
+  outline: none;
 }
 
 .calendar-month-cell.calendar-slot-selected {
@@ -1637,13 +1618,14 @@ searchbar {
 /* Event chip in time grid - GNOME Libadwaita & Amie borderless solid style with right gap */
 .calendar-grid-event {
   margin: 1px 0;
-  padding: 2px 4px;
+  padding: 3px 6px;
   border-radius: 6px;
   border: none;
   outline: none;
   background-color: @accent_bg_color;
   color: @accent_fg_color;
-  font-size: 0.78rem;
+  font-size: 0.95rem;
+  font-weight: 500;
   transition: background-color 100ms ease;
 }
 
@@ -1659,14 +1641,14 @@ searchbar {
 
 .calendar-grid-event.all-day-chip,
 button.calendar-grid-event.all-day-chip {
-  margin: 1px 1px;
-  padding: 0 3px;
+  margin: 1px 2px;
+  padding: 2px 6px;
   border-radius: 4px;
   border: none;
   outline: none;
-  font-size: 0.84rem;
-  min-height: 19px;
-  line-height: 1.15;
+  font-size: 0.92rem;
+  min-height: 22px;
+  line-height: 1.2;
 }
 
 .calendar-grid-event.all-day-chip:hover,
@@ -1677,20 +1659,41 @@ button.calendar-grid-event.all-day-chip:hover {
 
 .calendar-grid-event.month-bar-chip,
 button.calendar-grid-event.month-bar-chip {
-  margin: 1px 1px;
-  padding: 0 4px;
-  border-radius: 3px;
+  margin: 1px 2px;
+  padding: 2px 6px;
+  border-radius: 4px;
   border: none;
   outline: none;
-  font-size: 0.85rem;
-  min-height: 16px;
-  line-height: 1.15;
+  font-size: 0.92rem;
+  min-height: 21px;
+  line-height: 1.2;
 }
 
 .calendar-grid-event.month-bar-chip:hover,
 button.calendar-grid-event.month-bar-chip:hover {
-  border: none;
-  outline: none;
+  filter: brightness(0.96);
+}
+
+/* Multi-day all-day continuous bar spanning in month view */
+.month-bar-chip.span-start,
+button.month-bar-chip.span-start {
+  border-top-right-radius: 0 !important;
+  border-bottom-right-radius: 0 !important;
+  margin-right: -5px !important;
+}
+
+.month-bar-chip.span-middle,
+button.month-bar-chip.span-middle {
+  border-radius: 0 !important;
+  margin-left: -5px !important;
+  margin-right: -5px !important;
+}
+
+.month-bar-chip.span-end,
+button.month-bar-chip.span-end {
+  border-top-left-radius: 0 !important;
+  border-bottom-left-radius: 0 !important;
+  margin-left: -5px !important;
 }
 
 /* Month view overflow indicator dots */
@@ -1733,9 +1736,9 @@ button.calendar-grid-event.month-bar-chip:hover {
 }
 
 .calendar-badge-pill {
-  padding: 2px 8px;
+  padding: 3px 10px;
   border-radius: 9999px;
-  font-size: 0.75rem;
+  font-size: 0.85rem;
   font-weight: 600;
   background-color: alpha(@accent_color, 0.14);
   color: @accent_color;
@@ -1762,18 +1765,61 @@ button.calendar-grid-event.month-bar-chip:hover {
 }
 
 .calendar-attendee-chip {
-  padding: 3px 8px;
+  padding: 4px 10px;
   border-radius: 6px;
   background-color: alpha(@window_fg_color, 0.05);
-  font-size: 0.78rem;
+  font-size: 0.88rem;
 }
 
 
 /* Month view continuous grid */
 .calendar-month-grid {
-  border-top: none;
+  border-top: 1px solid alpha(@borders, 0.45);
   border-left: 1px solid alpha(@borders, 0.45);
   background-color: @view_bg_color;
+}
+
+.calendar-list-canvas {
+  background: @view_bg_color;
+  outline: none;
+}
+
+.calendar-list-canvas:focus {
+  outline: none;
+}
+
+.calendar-month-canvas {
+  background: @view_bg_color;
+  outline: none;
+}
+
+.calendar-month-canvas:focus-visible {
+  outline: 2px solid alpha(@accent_color, 0.6);
+  outline-offset: -2px;
+}
+
+.taskpad-canvas,
+.memopad-canvas,
+.tasks-table-canvas,
+.memos-table-canvas {
+  background: @view_bg_color;
+  outline: none;
+}
+
+.taskpad-canvas:focus-visible,
+.memopad-canvas:focus-visible,
+.tasks-table-canvas:focus-visible,
+.memos-table-canvas:focus-visible {
+  outline: 2px solid alpha(@accent_color, 0.6);
+  outline-offset: -2px;
+}
+
+.tasks-table-header,
+.memos-table-header {
+  border-bottom: 1px solid alpha(@borders, 0.5);
+  background: alpha(@headerbar_bg_color, 0.7);
+  font-weight: 600;
+  font-size: 11px;
 }
 
 .calendar-month-cell {
@@ -1810,13 +1856,13 @@ button.calendar-grid-event.month-bar-chip:hover {
 }
 
 .secondary-tz-header {
-  font-size: 0.75rem;
+  font-size: 0.88rem;
   font-weight: 600;
   color: alpha(@accent_color, 0.9);
 }
 
 .secondary-tz-label {
-  font-size: 0.72rem;
+  font-size: 0.85rem;
   font-weight: 500;
   opacity: 0.85;
 }
@@ -1825,11 +1871,23 @@ button.calendar-grid-event.month-bar-chip:hover {
   border-bottom: 1px dotted alpha(@borders, 0.18);
 }
 
+/* ── Calendar Header & Month Day Numbers ───────────────────────────────── */
+.calendar-header-day-number {
+  font-size: 0.90rem;
+  font-weight: 600;
+}
+
+.calendar-month-day-number {
+  font-size: 0.95rem;
+  font-weight: 600;
+  padding: 2px 4px;
+}
+
 /* Mail Label Badges & Chips */
 .mail-label-chip {
-  padding: 1px 6px;
+  padding: 2px 8px;
   border-radius: 9999px;
-  font-size: 0.75rem;
+  font-size: 0.85rem;
   font-weight: 600;
   margin-left: 4px;
   background-color: alpha(@window_fg_color, 0.08);
@@ -2046,13 +2104,13 @@ button.calendar-grid-event.month-bar-chip:hover {
 }
 
 .contact-card-sub {
-  font-size: 0.82rem;
+  font-size: 0.88rem;
   line-height: 1.2;
   opacity: 0.8;
 }
 
 .contact-card-detail-text {
-  font-size: 0.88rem;
+  font-size: 0.92rem;
   line-height: 1.25;
 }
 
@@ -2066,8 +2124,8 @@ button.calendar-grid-event.month-bar-chip:hover {
   color: alpha(@window_fg_color, 0.85);
   border-radius: 9999px;
   padding: 2px 8px;
-  font-size: 0.75rem;
-  font-weight: 500;
+  font-size: 0.85rem;
+  font-weight: 600;
 }
 
 /* Event Dialog — GNOME Evolution & Lookout Appointment Layout */
@@ -2130,7 +2188,7 @@ button.calendar-grid-event.month-bar-chip:hover {
   min-height: 28px;
   padding: 0;
   border-radius: 6px;
-  font-size: 0.8rem;
+  font-size: 0.88rem;
   font-weight: 500;
 }
 
@@ -2163,15 +2221,15 @@ button.calendar-grid-event.month-bar-chip:hover {
 }
 
 .calendar-year-weekday-header {
-  font-size: 0.72rem;
+  font-size: 0.85rem;
   font-weight: 600;
   min-width: 28px;
   padding: 2px 0;
 }
 
 .calendar-year-week-number {
-  font-size: 0.72rem;
-  color: alpha(@window_fg_color, 0.45);
+  font-size: 0.85rem;
+  color: alpha(@window_fg_color, 0.5);
   font-weight: 500;
   padding: 0 2px;
 }
@@ -2265,7 +2323,7 @@ button.calendar-grid-event.month-bar-chip:hover {
 
 .calendar-year-event-title {
   font-weight: 600;
-  font-size: 0.9rem;
+  font-size: 0.92rem;
   line-height: 1.25;
 }
 
@@ -2278,7 +2336,7 @@ button.calendar-grid-event.month-bar-chip:hover {
 /* ── Agenda View High Performance Styling ──────────────────────────────── */
 .calendar-agenda-date-header {
   font-weight: 700;
-  font-size: 0.92rem;
+  font-size: 1.0rem;
   color: @accent_color;
   padding: 8px 10px 4px 10px;
   border-bottom: 1px solid alpha(@borders, 0.3);
@@ -2289,17 +2347,17 @@ button.calendar-grid-event.month-bar-chip:hover {
 }
 
 .appointment-timeline-hour-label {
-  font-size: 0.8rem;
+  font-size: 0.88rem;
   font-weight: 600;
   color: alpha(@window_fg_color, 0.65);
   padding: 2px 4px 0 6px;
-  min-width: 38px;
+  min-width: 42px;
 }
 
 .appointment-timeline-event {
-  border-radius: 4px;
-  padding: 2px 6px;
-  font-size: 0.78rem;
+  border-radius: 5px;
+  padding: 3px 8px;
+  font-size: 0.92rem;
   font-weight: 600;
   color: #ffffff;
   background-color: @accent_bg_color;
@@ -2308,9 +2366,9 @@ button.calendar-grid-event.month-bar-chip:hover {
 
 .appointment-timeline-preview {
   border-radius: 5px;
-  font-size: 0.78rem;
+  font-size: 0.92rem;
   font-weight: 700;
-  padding: 2px 6px;
+  padding: 3px 8px;
 }
 
 .appointment-timeline-conflict {
@@ -2413,4 +2471,34 @@ button.calendar-grid-event.month-bar-chip:hover {
 
 .account-type-combo popover label {
   text-overflow: clip;
+}
+
+/* ── Mail Message List Canvas & Header ──────────────────────────────── */
+.mail-table-header {
+  background-color: transparent;
+  border-bottom: 1px solid alpha(currentColor, 0.12);
+}
+
+.mail-table-canvas {
+  background-color: transparent;
+  outline: none;
+}
+
+.mail-table-canvas:focus {
+  outline: none;
+}
+
+/* ── Contacts Table View Canvas & Header ────────────────────────────── */
+.contacts-table-header {
+  background-color: transparent;
+  border-bottom: 1px solid alpha(currentColor, 0.12);
+}
+
+.contacts-table-canvas {
+  background-color: transparent;
+  outline: none;
+}
+
+.contacts-table-canvas:focus {
+  outline: none;
 }
