@@ -1737,6 +1737,15 @@ button.month-bar-chip.span-end {
   outline: none;
 }
 
+.calendar-year-canvas {
+  background: @view_bg_color;
+  outline: none;
+}
+
+.calendar-year-canvas:focus-visible {
+  outline: none;
+}
+
 .calendar-month-canvas {
   background: @view_bg_color;
   outline: none;
