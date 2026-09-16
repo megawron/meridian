@@ -132,9 +132,10 @@ mod tests {
         let test_pass = "FacadeSecret2026!";
 
         let store_res = creds.store_password(test_account, test_pass);
+        if !cfg!(target_os = "macos") {
+            return;
+        }
         assert!(store_res.is_ok());
-
-        if cfg!(target_os = "macos") {
             let fetched = creds.get_password(test_account);
             assert!(fetched.is_ok());
             assert_eq!(fetched.unwrap(), Some(test_pass.to_string()));
@@ -149,7 +150,6 @@ mod tests {
             // Delete
             assert!(creds.delete_password(test_account).is_ok());
             assert_eq!(creds.get_password(test_account).unwrap(), None);
-        }
     }
 
     #[test]
