@@ -216,7 +216,7 @@ textview {
 
 .mail-column-header {
   min-height: 26px;
-  padding: 0 2px;
+  padding: 0;
   margin: 0;
   border-top: 1px solid alpha(@borders, 0.7);
   border-bottom: 1px solid alpha(@borders, 0.85);
@@ -303,7 +303,7 @@ textview {
 }
 
 .mail-column-header label {
-  font-size: 0.82rem;
+  font-size: 1.0rem;
   font-weight: 600;
 }
 
@@ -517,7 +517,14 @@ textview {
 }
 
 .mail-sidebar .mail-sidebar-row label {
+  font-family: Cantarell, -apple-system, sans-serif;
   font-size: 1rem;
+  font-weight: 500;
+  color: @window_fg_color;
+}
+
+.mail-sidebar .mail-sidebar-row label:disabled {
+  opacity: 0.90;
   color: @window_fg_color;
 }
 
@@ -1734,6 +1741,15 @@ button.month-bar-chip.span-end {
 }
 
 .calendar-list-canvas:focus {
+  outline: none;
+}
+
+.calendar-agenda-canvas {
+  background: @view_bg_color;
+  outline: none;
+}
+
+.calendar-agenda-canvas:focus {
   outline: none;
 }
 

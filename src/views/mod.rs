@@ -29,7 +29,7 @@ pub(crate) use mail_page::set_button_icon_with_fallback;
 pub(crate) use mail_viewer::MailPrintDialogResult;
 pub use mail_viewer::MailViewer;
 pub use mail_viewer_window::MailViewerWindow;
-pub(crate) use mail_viewer::{MessageSearchResult, MessageSearchStatus};
+pub(crate) use mail_viewer::{MessageSearchResult, MessageSearchStatus, extract_email_address};
 pub use memos_page::MemosPage;
 pub use tasks_page::TasksPage;
 

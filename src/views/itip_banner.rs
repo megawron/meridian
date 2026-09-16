@@ -68,6 +68,7 @@ impl ItipBanner {
         let revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideDown)
             .reveal_child(false)
+            .visible(false)
             .build();
 
         let banner_box = gtk::Box::builder()
@@ -460,8 +461,10 @@ impl ItipBanner {
 
         let Some(invitation) = invitation else {
             self.revealer.set_reveal_child(false);
+            self.revealer.set_visible(false);
             return;
         };
+        self.revealer.set_visible(true);
 
         let event = &invitation.event;
         let title = if event.summary.trim().is_empty() {
@@ -579,6 +582,7 @@ impl ItipBanner {
         self.btn_update.set_sensitive(true);
         self.btn_import.set_sensitive(true);
 
+        self.revealer.set_visible(true);
         self.revealer.set_reveal_child(true);
     }
 

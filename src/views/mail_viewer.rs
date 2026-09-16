@@ -42,7 +42,7 @@ const RENDER_LOADING_TEXT: &str = "Nachricht wird vorbereitet …";
 mod imp {
     use super::*;
 
-    #[derive(Debug, Default)]
+    #[derive(Default)]
     pub struct MailViewer {
         pub banner: adw::Banner,
         pub trash_banner: adw::Banner,
@@ -85,7 +85,15 @@ mod imp {
         pub settings: RefCell<Option<AppSettings>>,
         pub remote_content_store: RefCell<Option<RemoteContentStore>>,
         pub remote_content_allowed: RefCell<HashSet<String>>,
+        pub remote_content_allowed_senders: RefCell<HashSet<String>>,
         pub current_sender: RefCell<Option<String>>,
+        pub on_remote_images_blocked: RefCell<Option<Box<dyn Fn(bool) + 'static>>>,
+    }
+
+    impl std::fmt::Debug for MailViewer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("MailViewer").finish_non_exhaustive()
+        }
     }
 
     #[glib::object_subclass]
@@ -169,6 +177,7 @@ impl MailViewer {
             .title("Externe Bilder blockiert – eingebettete Bilder bleiben sichtbar")
             .button_label("Bilder laden")
             .revealed(false)
+            .visible(false)
             .build();
 
         banner.connect_button_clicked(glib::clone!(
@@ -177,6 +186,7 @@ impl MailViewer {
             move |b| {
                 viewer.allow_remote_images();
                 b.set_revealed(false);
+                b.set_visible(false);
             }
         ));
 
@@ -187,6 +197,7 @@ impl MailViewer {
             .title("Diese Nachricht befindet sich im Papierkorb.")
             .button_label("Wiederherstellen")
             .revealed(false)
+            .visible(false)
             .build();
         box_container.append(&trash_banner);
 
@@ -195,6 +206,7 @@ impl MailViewer {
             .title("Diese Nachricht wurde als unerwünschte Werbung (Spam) eingestuft.")
             .button_label("Kein Spam")
             .revealed(false)
+            .visible(false)
             .build();
         box_container.append(&junk_banner);
 
@@ -274,6 +286,8 @@ impl MailViewer {
             let renderer_stack = gtk::Stack::builder()
                 .hexpand(true)
                 .vexpand(true)
+                .hhomogeneous(false)
+                .vhomogeneous(false)
                 .transition_type(gtk::StackTransitionType::Crossfade)
                 .build();
             renderer_stack.add_named(&placeholder, Some("placeholder"));
@@ -297,6 +311,9 @@ impl MailViewer {
         self.imp()
             .remote_content_allowed
             .replace(remote_content_store.allowed_message_ids());
+        self.imp()
+            .remote_content_allowed_senders
+            .replace(remote_content_store.allowed_senders());
         self.imp()
             .remote_content_store
             .replace(Some(remote_content_store));
@@ -436,6 +453,7 @@ impl MailViewer {
         };
         if message_changed {
             self.imp().remote_images_allowed_for_current.set(false);
+            self.notify_remote_images_blocked(false);
         }
         if source_changed {
             let source_generation = advance_generation(self.imp().source_generation.get());
@@ -470,6 +488,21 @@ impl MailViewer {
                 .unwrap_or(false);
         let contacts_remote_images = (image_policy == "sometimes" || image_policy == "contacts")
             && sender_in_contacts(self.imp().current_sender.borrow().as_deref());
+        let sender_remote_images = self
+            .imp()
+            .current_sender
+            .borrow()
+            .as_deref()
+            .map(|sender| {
+                let email = extract_email_address(sender);
+                !email.is_empty()
+                    && self
+                        .imp()
+                        .remote_content_allowed_senders
+                        .borrow()
+                        .contains(&email)
+            })
+            .unwrap_or(false);
         let per_message_remote_images = message_id
             .map(|message_id| {
                 self.imp()
@@ -480,6 +513,7 @@ impl MailViewer {
             .unwrap_or(false);
         let remote_images_allowed = global_remote_images
             || contacts_remote_images
+            || sender_remote_images
             || per_message_remote_images
             || self.imp().remote_images_allowed_for_current.get();
         let render_html = settings
@@ -535,9 +569,6 @@ impl MailViewer {
             .render_worker_generation
             .store(generation, Ordering::Release);
         self.imp().banner.set_revealed(false);
-        self.set_fallback_text(RENDER_LOADING_TEXT);
-        #[cfg(target_os = "linux")]
-        self.show_renderer_loading();
 
         let decision = {
             let cache = self.imp().render_cache.borrow();
@@ -664,9 +695,9 @@ impl MailViewer {
             render_plan.clone(),
             document.clone(),
         ));
-        self.imp()
-            .banner
-            .set_revealed(render_plan.has_remote_images && !key.remote_images_allowed);
+        let remote_blocked = render_plan.has_remote_images && !key.remote_images_allowed;
+        self.imp().banner.set_revealed(false);
+        self.notify_remote_images_blocked(remote_blocked);
         self.set_fallback_text(&render_plan.visible_text);
         self.imp()
             .displayed_plaintext
@@ -710,6 +741,29 @@ impl MailViewer {
                 .active_webview_uri
                 .replace(Some(content_uri.clone()));
             webview.load_alternate_html(&document, &content_uri, effective_base_uri);
+
+            // Timeout backstop (matching Lookout's HTML_REVEAL_TIMEOUT_MS):
+            // If WebKit hasn't reported Finished within 400ms (e.g. slow/hung remote fonts or subresources),
+            // forcibly reveal the message anyway instead of keeping the view stuck at opacity 0.
+            let viewer_weak = self.downgrade();
+            let current_gen = generation;
+            glib::timeout_add_local_once(
+                std::time::Duration::from_millis(400),
+                move || {
+                    if let Some(viewer) = viewer_weak.upgrade() {
+                        if viewer.imp().render_generation.get() == current_gen
+                            && !viewer.imp().webview_ready.get()
+                        {
+                            tracing::debug!("Revealing webview after 400ms timeout backstop");
+                            viewer.imp().webview_ready.set(true);
+                            if let Some(wv) = viewer.imp().webview.borrow().as_ref() {
+                                wv.set_opacity(1.0);
+                            }
+                            viewer.show_renderer_ready();
+                        }
+                    }
+                },
+            );
         }
 
         #[cfg(not(target_os = "linux"))]
@@ -956,10 +1010,12 @@ impl MailViewer {
     }
 
     pub fn set_trash_banner_visible(&self, visible: bool) {
+        self.imp().trash_banner.set_visible(visible);
         self.imp().trash_banner.set_revealed(visible);
     }
 
     pub fn set_junk_banner_visible(&self, visible: bool) {
+        self.imp().junk_banner.set_visible(visible);
         self.imp().junk_banner.set_revealed(visible);
     }
 
@@ -973,6 +1029,18 @@ impl MailViewer {
         self.imp().junk_banner.connect_button_clicked(move |_| {
             callback();
         });
+    }
+
+    pub fn connect_remote_images_blocked<F: Fn(bool) + 'static>(&self, callback: F) {
+        self.imp()
+            .on_remote_images_blocked
+            .replace(Some(Box::new(callback)));
+    }
+
+    fn notify_remote_images_blocked(&self, blocked: bool) {
+        if let Some(cb) = self.imp().on_remote_images_blocked.borrow().as_ref() {
+            cb(blocked);
+        }
     }
 
     /// Allow remote image loading for the current email.
@@ -999,10 +1067,35 @@ impl MailViewer {
         }
         self.imp().remote_images_allowed_for_current.set(true);
         self.imp().banner.set_revealed(false);
+        self.notify_remote_images_blocked(false);
         // Re-run the rendering path from the retained original HTML.  A
         // WebKit reload alone cannot restore remote <img> tags that were
         // deliberately removed from the privacy-first document.
         self.reload_current();
+    }
+
+    /// Return the currently set sender string, if any.
+    pub fn current_sender(&self) -> Option<String> {
+        self.imp().current_sender.borrow().clone()
+    }
+
+    /// Allow remote image loading for the sender of the current email permanently.
+    pub fn allow_remote_images_for_sender(&self) {
+        if let Some(sender) = self.imp().current_sender.borrow().as_deref() {
+            let email = extract_email_address(sender);
+            if !email.is_empty() {
+                if let Some(store) = self.imp().remote_content_store.borrow().as_ref() {
+                    if let Err(error) = store.set_sender_allowed(&email, true) {
+                        tracing::warn!(%error, "Could not persist remote content approval for sender");
+                    }
+                }
+                self.imp()
+                    .remote_content_allowed_senders
+                    .borrow_mut()
+                    .insert(email);
+            }
+        }
+        self.allow_remote_images();
     }
 
     /// Start a search limited to the message currently owned by this viewer.
@@ -1418,18 +1511,20 @@ impl MailViewer {
         settings.set_enable_page_cache(true);
         settings.set_enable_smooth_scrolling(true);
 
+        let user_content_manager = webkit6::UserContentManager::new();
+        let user_style_sheet = webkit6::UserStyleSheet::new(
+            USER_MAIL_OVERRIDE_CSS,
+            webkit6::UserContentInjectedFrames::TopFrame,
+            webkit6::UserStyleLevel::User,
+            &[],
+            &[],
+        );
+        user_content_manager.add_style_sheet(&user_style_sheet);
+
         let webview = webkit6::WebView::builder()
             .web_context(&web_context)
             .settings(&settings)
-            .hexpand(true)
-            .vexpand(true)
-            .build();
-
-        let webview_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Automatic)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .min_content_width(0)
-            .child(&webview)
+            .user_content_manager(&user_content_manager)
             .hexpand(true)
             .vexpand(true)
             .build();
@@ -1443,16 +1538,8 @@ impl MailViewer {
                 return;
             }
             match event {
-                webkit6::LoadEvent::Started
-                | webkit6::LoadEvent::Redirected
-                | webkit6::LoadEvent::Committed => {
-                    viewer.imp().webview_ready.set(false);
-                    webview.set_opacity(0.0);
-                    viewer.show_renderer_loading();
-                }
                 webkit6::LoadEvent::Finished => {
                     viewer.imp().webview_ready.set(true);
-                    webview.set_opacity(1.0);
                     viewer.show_renderer_ready();
                 }
                 _ => {}
@@ -1520,8 +1607,8 @@ impl MailViewer {
             self.imp().find_controller.replace(Some(find_controller));
         }
 
-        stack.add_named(&webview_scroll, Some("webkit"));
-        stack.set_visible_child_name("loading");
+        stack.add_named(&webview, Some("webkit"));
+        stack.set_visible_child_name("webkit");
         self.imp().webview.replace(Some(webview.clone()));
         tracing::debug!("Deferred WebKitGTK context and view created");
         Some(webview)
@@ -1542,12 +1629,6 @@ impl MailViewer {
     fn show_renderer_loading(&self) {
         if let Some(label) = self.imp().renderer_error_label.borrow().as_ref() {
             label.set_visible(false);
-        }
-        if let Some(webview) = self.imp().webview.borrow().as_ref() {
-            webview.set_opacity(0.0);
-        }
-        if let Some(stack) = self.imp().renderer_stack.borrow().as_ref() {
-            stack.set_visible_child_name("loading");
         }
     }
 
@@ -2039,34 +2120,38 @@ fn is_internal_renderer_uri(value: &str) -> bool {
         || value.starts_with("about:blank#evolution-mail-render-")
 }
 
+pub fn extract_email_address(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if let Some(start) = trimmed.find('<') {
+        if let Some(end) = trimmed.rfind('>') {
+            if start < end {
+                return trimmed[start + 1..end].trim().to_lowercase();
+            }
+        }
+    }
+    trimmed.to_lowercase()
+}
+
 fn sender_in_contacts(sender: Option<&str>) -> bool {
     let Some(sender) = sender else {
         return false;
     };
-    let sender = sender.trim().to_lowercase();
-    if sender.is_empty() {
+    let email_to_check = extract_email_address(sender);
+    if email_to_check.is_empty() {
         return false;
     }
-    let email_to_check = if let Some(start) = sender.find('<')
-        && let Some(end) = sender.rfind('>')
-        && start < end
-    {
-        sender[start + 1..end].trim()
-    } else {
-        sender.as_str()
-    };
 
     let contacts =
         crate::services::contact_store_service::ContactStoreService::new().load_contacts();
     contacts.into_iter().any(|record| {
         let contact = record.contact;
-        if contact.email.trim().eq_ignore_ascii_case(email_to_check) {
+        if contact.email.trim().eq_ignore_ascii_case(&email_to_check) {
             return true;
         }
         contact
             .emails
             .iter()
-            .any(|e| e.trim().eq_ignore_ascii_case(email_to_check))
+            .any(|e| e.trim().eq_ignore_ascii_case(&email_to_check))
     })
 }
 
@@ -2102,6 +2187,159 @@ fn blockquote_citation_css(citation_highlighting: bool, citation_colors: &[Strin
     )
 }
 
+pub(crate) const USER_MAIL_OVERRIDE_CSS: &str = r#"
+.preheader, .preview-text, .email-preheader, .email-preview, .mso-hide,
+*[class*="preheader" i], *[id*="preheader" i],
+*[class*="pre-header" i], *[id*="pre-header" i],
+*[class*="preview-text" i], *[id*="preview-text" i],
+*[class*="preview_text" i], *[id*="preview_text" i],
+*[class*="email-preview" i], *[id*="email-preview" i],
+*[class*="mail-preview" i], *[id*="mail-preview" i],
+*[class*="snippet" i], *[id*="snippet" i],
+*[class*="mso-hide" i],
+*[style*="display:none" i], *[style*="display: none" i],
+*[style*="visibility:hidden" i], *[style*="visibility: hidden" i],
+*[style*="mso-hide:all" i], *[style*="mso-hide: all" i],
+*[style*="font-size:0" i], *[style*="font-size: 0" i],
+*[style*="font-size:1px" i], *[style*="font-size: 1px" i],
+*[style*="font-size: 0px" i], *[style*="font-size:0px" i],
+*[style*="font-size:0pt" i], *[style*="font-size: 0pt" i],
+*[style*="font-size: 0.0" i], *[style*="font-size:0.0" i],
+*[style*="max-height:0" i], *[style*="max-height: 0" i],
+*[style*="height:0" i], *[style*="height: 0" i],
+*[style*="line-height:0" i], *[style*="line-height: 0" i],
+*[style*="line-height:1px" i], *[style*="line-height: 1px" i],
+*[style*="opacity:0" i], *[style*="opacity: 0" i],
+*[style*="color:transparent" i], *[style*="color: transparent" i] {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  height: 0 !important;
+  max-height: 0 !important;
+  min-height: 0 !important;
+  width: 0 !important;
+  max-width: 0 !important;
+  min-width: 0 !important;
+  line-height: 0 !important;
+  font-size: 0 !important;
+  overflow: hidden !important;
+  mso-hide: all !important;
+  pointer-events: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+* {
+  box-sizing: border-box !important;
+  min-width: 0 !important;
+}
+html, body {
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  padding: 12px !important;
+  box-sizing: border-box !important;
+  overflow-x: auto !important;
+  -webkit-text-size-adjust: 100%;
+  word-wrap: break-word !important;
+}
+table, div, p, span, a, td, th, center, article, section, header, footer {
+  max-width: 100% !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+}
+img, video, iframe, canvas, svg {
+  max-width: 100% !important;
+  height: auto !important;
+}
+table {
+  border-collapse: collapse !important;
+  table-layout: fixed !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+}
+table[width], table[style*="width"] {
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+}
+td[width], td[style*="width"], th[width], th[style*="width"],
+div[style*="width"], div[width] {
+  max-width: 100% !important;
+  min-width: 0 !important;
+}
+body > table, body > div, body > center, body > article, body > main,
+center > table, table[align="center"] {
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+@media (max-width: 768px), screen and (max-width: 768px) {
+  body > table, body > div, body > center, body > article, body > main,
+  center > table, table[align="center"] {
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+  }
+  table[align="left"], table[align="right"],
+  td[align="left"], td[align="right"],
+  td[class*="col" i], th[class*="col" i],
+  td[class*="stack" i], th[class*="stack" i],
+  td[class*="column" i], th[class*="column" i],
+  *[class*="mobile" i], *[class*="fluid" i],
+  *[class*="responsive" i] {
+    display: block !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    float: none !important;
+    box-sizing: border-box !important;
+  }
+}
+@media (max-width: 600px), screen and (max-width: 600px) {
+  html, body {
+    padding: 8px !important;
+  }
+  table, tbody, tr, td, th {
+    display: block !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    float: none !important;
+    box-sizing: border-box !important;
+  }
+  center {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+  }
+}
+@media (max-width: 400px), screen and (max-width: 400px) {
+  html, body {
+    padding: 4px !important;
+  }
+  table, tbody, tr, td, th, div, p, span, a, img {
+    max-width: 100% !important;
+    overflow-wrap: anywhere !important;
+    word-break: break-word !important;
+  }
+}
+pre, code {
+  white-space: pre-wrap !important;
+  word-wrap: break-word !important;
+  font-family: inherit;
+  font-size: inherit;
+  margin: 0;
+}
+a {
+  color: #3584e4;
+  text-decoration: underline;
+}
+"#;
+
 fn compose_sanitized_mail_document(
     sanitized: &str,
     render_html: bool,
@@ -2121,21 +2359,10 @@ fn compose_sanitized_mail_document(
     background-color: #1e1e1e;
     color: #eeeeec;
   }
-  html, body {
-    width: 100% !important;
-    max-width: 100% !important;
-    min-width: 0 !important;
-    overflow-x: auto !important;
-    box-sizing: border-box !important;
-    -webkit-text-size-adjust: 100%;
-  }
   body {
     font-family: __FONT_FAMILY__;
     font-size: __FONT_SIZE__px;
     line-height: 1.6;
-    margin: 16px;
-    min-height: calc(100vh - 32px);
-    padding: 0;
     color: inherit;
     background-color: transparent;
   }
@@ -2147,21 +2374,10 @@ fn compose_sanitized_mail_document(
     background-color: #ffffff;
     color: #2e3436;
   }
-  html, body {
-    width: 100% !important;
-    max-width: 100% !important;
-    min-width: 0 !important;
-    overflow-x: auto !important;
-    box-sizing: border-box !important;
-    -webkit-text-size-adjust: 100%;
-  }
   body {
     font-family: __FONT_FAMILY__;
     font-size: __FONT_SIZE__px;
     line-height: 1.6;
-    margin: 16px;
-    min-height: calc(100vh - 32px);
-    padding: 0;
     color: inherit;
     background-color: transparent;
   }
@@ -2171,87 +2387,16 @@ fn compose_sanitized_mail_document(
         .replace("__FONT_FAMILY__", &mail_font_family)
         .replace("__FONT_SIZE__", &mail_font_size.to_string());
     let citation_css = blockquote_citation_css(citation_highlighting, citation_colors);
-    let preheader_suppression_css = r#"
-  .preheader, .preview-text, .email-preheader, .mso-hide,
-  *[class*="preheader" i], *[id*="preheader" i],
-  *[class*="preview-text" i], *[id*="preview-text" i],
-  div[style*="display:none" i], span[style*="display:none" i],
-  div[style*="display: none" i], span[style*="display: none" i],
-  div[style*="font-size:0" i], span[style*="font-size:0" i],
-  div[style*="font-size: 0" i], span[style*="font-size: 0" i],
-  div[style*="font-size:1px" i], span[style*="font-size:1px" i],
-  div[style*="font-size: 1px" i], span[style*="font-size: 1px" i],
-  div[style*="max-height:0" i], span[style*="max-height:0" i],
-  div[style*="max-height: 0" i], span[style*="max-height: 0" i],
-  div[style*="opacity:0" i], span[style*="opacity:0" i],
-  div[style*="opacity: 0" i], span[style*="opacity: 0" i] {
-    display: none !important;
-    visibility: hidden !important;
-    opacity: 0 !important;
-    height: 0 !important;
-    max-height: 0 !important;
-    width: 0 !important;
-    max-width: 0 !important;
-    line-height: 0 !important;
-    font-size: 0 !important;
-    overflow: hidden !important;
-    mso-hide: all !important;
-  }
-"#;
-    let responsive_containers_css = r#"
-  * { box-sizing: border-box !important; }
-  table, div, p, span, a, td, th {
-    max-width: 100% !important;
-    min-width: 0 !important;
-    overflow-wrap: break-word !important;
-    word-break: break-word !important;
-  }
-  img, video, iframe, canvas, svg {
-    max-width: 100% !important;
-    height: auto !important;
-  }
-  table {
-    border-collapse: collapse;
-    table-layout: auto !important;
-  }
-  body > table, body > div, body > center, body > article, body > main,
-  center > table, table[align="center"] {
-    width: 100% !important;
-    max-width: 100% !important;
-    min-width: 0 !important;
-    margin-left: auto !important;
-    margin-right: auto !important;
-  }
-  @media screen and (max-width: 640px) {
-    td[class*="col" i], td[class*="column" i], td[class*="stack" i],
-    th[class*="col" i], th[class*="column" i] {
-      display: block !important;
-      width: 100% !important;
-      max-width: 100% !important;
-      min-width: 0 !important;
-      box-sizing: border-box !important;
-    }
-  }
-  pre, code {
-    white-space: pre-wrap !important;
-    word-wrap: break-word !important;
-    font-family: inherit;
-    font-size: inherit;
-    margin: 0;
-  }
-  a {
-    color: #3584e4;
-    text-decoration: underline;
-  }
-"#;
     let remote_images_css = if remote_images_allowed {
         ""
     } else {
         " img[src^=\"http://\"], img[src^=\"https://\"], img[src^=\"//\"], img[xlink\\:href^=\"http://\"], img[xlink\\:href^=\"https://\"], img[xlink\\:href^=\"//\"] { display: none !important; }"
     };
-    let style_tag = format!(
-        "<style>{body_css}{preheader_suppression_css}{responsive_containers_css} {citation_css}{remote_images_css}</style>"
+    let baseline_style_tag = format!("<style>{body_css}</style>");
+    let override_style_tag = format!(
+        "<style>{USER_MAIL_OVERRIDE_CSS} {citation_css}{remote_images_css}</style>"
     );
+    let style_tag = format!("{baseline_style_tag}{override_style_tag}");
 
     // WebKit's image preference is the first line of defense. Keep the
     // policy in the document as well, so a provider cannot make remote
@@ -2271,10 +2416,23 @@ fn compose_sanitized_mail_document(
     let has_html_root = render_html && lower.contains("<html");
 
     if has_html_root {
-        // Put the application baseline before the mail's own <head> rules.
-        // This keeps the configured color scheme and safe typography
-        // available without overriding explicit colors, backgrounds, link
-        // styles, or table layout from the message.
+        // Put the application baseline before the mail's own <head> rules,
+        // and put responsive overrides/preheader suppression at the end of <head>
+        // so our rules come AFTER the email's own <style> blocks in document order.
+        // This guarantees that the viewer baseline provides default typography
+        // without stomping mail colors, while max-width: 100%, preheader suppression,
+        // and mobile media queries win in specificity over author fixed widths.
+        if let Some(head_close) = lower.find("</head>") {
+            let (before_close, after_close) = sanitized.split_at(head_close);
+            if let Some(head_start) = lower.find("<head") {
+                if let Some(head_end_offset) = lower[head_start..].find('>') {
+                    let open_insertion = head_start + head_end_offset + 1;
+                    let (head_open, inside_head) = before_close.split_at(open_insertion);
+                    return format!("{head_open}{security_tag}{baseline_style_tag}{inside_head}{override_style_tag}{after_close}");
+                }
+            }
+            return format!("{before_close}{security_tag}{baseline_style_tag}{override_style_tag}{after_close}");
+        }
         if let Some(head_start) = lower.find("<head") {
             if let Some(head_end_offset) = lower[head_start..].find('>') {
                 let insertion = head_start + head_end_offset + 1;
@@ -2556,7 +2714,7 @@ mod tests {
         html_to_fallback_text, inline_image_sources_match, message_search_context_is_current,
         plaintext_search_matches, prepare_mail_body, readable_fallback_text, render_decision,
         render_result_is_current, safe_css_font_family, safe_mail_font_size,
-        webview_load_is_current,
+        webview_load_is_current, extract_email_address,
     };
     use crate::services::inline_content_service::InlineImage;
     use std::sync::Arc;
@@ -3018,14 +3176,14 @@ mod tests {
         assert!(doc.contains("max-width: 100% !important"));
         assert!(doc.contains("min-width: 0 !important"));
         assert!(doc.contains("word-break: break-word !important"));
-        assert!(doc.contains("table-layout: auto !important"));
+        assert!(doc.contains("table-layout: fixed !important"));
     }
 
     #[test]
     fn mail_composed_document_contains_preheader_suppression_rules() {
         let colors = test_citation_colors();
         let doc = compose_sanitized_mail_document(
-            r#"<html><body><div class="preheader" style="display:none;font-size:1px;max-height:0px;">Strava</div><p>Hallo</p></body></html>"#,
+            r#"<html><head><style>.own-rule { color: red; }</style></head><body><div class="preheader" style="display:none;font-size:1px;max-height:0px;">Strava</div><p>Hallo</p></body></html>"#,
             true,
             false,
             false,
@@ -3035,12 +3193,16 @@ mod tests {
             &colors,
         );
         assert!(doc.contains(".preheader, .preview-text"));
-        assert!(doc.contains("div[style*=\"display:none\" i]"));
-        assert!(doc.contains("div[style*=\"font-size:1px\" i]"));
-        assert!(doc.contains("div[style*=\"max-height:0\" i]"));
+        assert!(doc.contains("*[style*=\"display:none\" i]"));
+        assert!(doc.contains("*[style*=\"font-size:1px\" i]"));
+        assert!(doc.contains("*[style*=\"max-height:0\" i]"));
         assert!(doc.contains("display: none !important"));
         assert!(doc.contains("visibility: hidden !important"));
         assert!(doc.contains("mso-hide: all !important"));
+        // Ensure style_tag comes after the mail's own head rules
+        let own_rule_pos = doc.find(".own-rule").unwrap();
+        let override_style_pos = doc.find(".preheader, .preview-text").unwrap();
+        assert!(override_style_pos > own_rule_pos);
     }
 
     #[test]
@@ -3058,8 +3220,31 @@ mod tests {
         );
         assert!(doc.contains("body > table, body > div, body > center"));
         assert!(doc.contains("min-width: 0 !important"));
-        assert!(doc.contains("@media screen and (max-width: 640px)"));
+        assert!(doc.contains("@media (max-width: 768px), screen and (max-width: 768px)"));
         assert!(doc.contains("td[class*=\"col\" i]"));
+    }
+
+    #[test]
+    fn test_extract_email_address_helper() {
+        assert_eq!(extract_email_address("Alice <alice@example.com>"), "alice@example.com");
+        assert_eq!(extract_email_address("<bob@example.com>"), "bob@example.com");
+        assert_eq!(extract_email_address("charlie@example.com"), "charlie@example.com");
+        assert_eq!(extract_email_address("  David <DAVID@EXAMPLE.COM>  "), "david@example.com");
+        assert_eq!(extract_email_address(""), "");
+    }
+
+    #[test]
+    fn test_mail_viewer_measures_can_shrink() {
+        use gtk::prelude::*;
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let viewer = super::MailViewer::new();
+        let (min_w, _, _, _) = viewer.measure(gtk::Orientation::Horizontal, -1);
+        assert!(
+            min_w <= 160,
+            "MailViewer minimum width must be <= 160px so it can fit narrow responsive panels, got {min_w}"
+        );
     }
 }
 
