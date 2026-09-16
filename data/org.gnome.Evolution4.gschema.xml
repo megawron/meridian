@@ -457,7 +457,7 @@
       <summary>Show an attachment indicator in the mail list</summary>
     </key>
     <key name="mail-show-preview-text" type="b">
-      <default>false</default>
+      <default>true</default>
       <summary>Show message preview text in the mail list</summary>
     </key>
     <key name="mail-show-labels" type="b">
@@ -495,6 +495,31 @@
       <default>130</default>
       <range min="60" max="300"/>
       <summary>Width of the date column in the mail list</summary>
+    </key>
+    <key name="mail-date-format" type="s">
+      <default>'standard'</default>
+      <choices>
+        <choice value='standard'/>
+        <choice value='smart'/>
+        <choice value='short'/>
+        <choice value='full'/>
+        <choice value='datetime'/>
+        <choice value='iso'/>
+        <choice value='custom'/>
+      </choices>
+      <summary>Date display format style in the mail list (standard, smart, short, full, datetime, iso, custom)</summary>
+    </key>
+    <key name="mail-date-custom-format" type="s">
+      <default>''</default>
+      <summary>Custom strftime format pattern for dates in the mail list</summary>
+    </key>
+    <key name="mail-date-align" type="s">
+      <default>'right'</default>
+      <choices>
+        <choice value='right'/>
+        <choice value='left'/>
+      </choices>
+      <summary>Alignment of the date column in the mail list (right or left)</summary>
     </key>
     <key name="mail-list-view-profile" type="s">
       <default>'messages'</default>

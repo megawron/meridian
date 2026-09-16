@@ -216,6 +216,12 @@ struct BackupSettings {
     mail_recipient_column_width: i32,
     #[serde(default = "default_mail_date_column_width")]
     mail_date_column_width: i32,
+    #[serde(default = "default_mail_date_format")]
+    mail_date_format: String,
+    #[serde(default = "default_mail_date_custom_format")]
+    mail_date_custom_format: String,
+    #[serde(default = "default_mail_date_align")]
+    mail_date_align: String,
     #[serde(default = "default_mail_list_view_profile")]
     mail_list_view_profile: String,
     #[serde(default = "default_mail_list_column_order")]
@@ -783,7 +789,7 @@ fn default_mail_show_attachment() -> bool {
 }
 
 fn default_mail_show_preview_text() -> bool {
-    false
+    true
 }
 
 fn default_mail_show_labels() -> bool {
@@ -800,6 +806,18 @@ fn default_mail_recipient_column_width() -> i32 {
 
 fn default_mail_date_column_width() -> i32 {
     130
+}
+
+fn default_mail_date_format() -> String {
+    "standard".to_string()
+}
+
+fn default_mail_date_custom_format() -> String {
+    String::new()
+}
+
+fn default_mail_date_align() -> String {
+    "right".to_string()
 }
 
 fn default_mail_list_view_profile() -> String {
@@ -959,6 +977,9 @@ impl BackupSettings {
             mail_sender_column_width: settings.mail_sender_column_width(),
             mail_recipient_column_width: settings.mail_recipient_column_width(),
             mail_date_column_width: settings.mail_date_column_width(),
+            mail_date_format: settings.mail_date_format(),
+            mail_date_custom_format: settings.mail_date_custom_format(),
+            mail_date_align: settings.mail_date_align(),
             mail_list_view_profile: settings.mail_list_view_profile(),
             mail_list_column_order: settings.mail_list_column_order().join(","),
             color_scheme: settings.color_scheme(),
@@ -1148,6 +1169,9 @@ impl BackupSettings {
         settings.set_mail_sender_column_width(self.mail_sender_column_width);
         settings.set_mail_recipient_column_width(self.mail_recipient_column_width);
         settings.set_mail_date_column_width(self.mail_date_column_width);
+        settings.set_mail_date_format(&self.mail_date_format);
+        settings.set_mail_date_custom_format(&self.mail_date_custom_format);
+        settings.set_mail_date_align(&self.mail_date_align);
         if self.mail_list_view_profile == "custom" {
             let order = crate::services::settings_service::normalize_mail_list_column_order(
                 &self.mail_list_column_order,
@@ -1455,6 +1479,16 @@ impl BackupSettings {
             self.mail_date_column_width,
             60,
             300,
+        )?;
+        validate_choice(
+            "mail_date_format",
+            &self.mail_date_format,
+            &["standard", "smart", "short", "full", "datetime", "iso", "custom"],
+        )?;
+        validate_choice(
+            "mail_date_align",
+            &self.mail_date_align,
+            &["right", "left"],
         )?;
         validate_choice(
             "mail_list_view_profile",
@@ -2023,6 +2057,9 @@ const BACKUP_SETTINGS_FIELDS: &[&str] = &[
     "mail_sender_column_width",
     "mail_recipient_column_width",
     "mail_date_column_width",
+    "mail_date_format",
+    "mail_date_custom_format",
+    "mail_date_align",
     "mail_list_view_profile",
     "mail_list_column_order",
     "color_scheme",
@@ -3623,7 +3660,7 @@ mod tests {
         assert!(!settings.mail_show_recipient);
         assert!(settings.mail_show_date);
         assert!(settings.mail_show_attachment);
-        assert!(!settings.mail_show_preview_text);
+        assert!(settings.mail_show_preview_text);
         assert!(settings.mail_show_labels);
         assert!(!settings.mail_show_size);
         assert!(!settings.mail_show_follow_up_due);

@@ -2281,6 +2281,40 @@ impl AppSettings {
         self.set_int("mail-date-column-width", value.clamp(60, 300));
     }
 
+    pub fn mail_date_format(&self) -> String {
+        let val = self.settings.string("mail-date-format").to_string();
+        match val.as_str() {
+            "smart" | "short" | "full" | "datetime" | "iso" | "custom" => val,
+            _ => "standard".to_string(),
+        }
+    }
+
+    pub fn set_mail_date_format(&self, value: &str) {
+        let val = match value {
+            "smart" | "short" | "full" | "datetime" | "iso" | "custom" => value,
+            _ => "standard",
+        };
+        self.set_string("mail-date-format", val);
+    }
+
+    pub fn mail_date_custom_format(&self) -> String {
+        self.settings.string("mail-date-custom-format").to_string()
+    }
+
+    pub fn set_mail_date_custom_format(&self, value: &str) {
+        self.set_string("mail-date-custom-format", value);
+    }
+
+    pub fn mail_date_align(&self) -> String {
+        let val = self.settings.string("mail-date-align").to_string();
+        if val == "left" { "left".to_string() } else { "right".to_string() }
+    }
+
+    pub fn set_mail_date_align(&self, value: &str) {
+        let val = if value == "left" { "left" } else { "right" };
+        self.set_string("mail-date-align", val);
+    }
+
     pub fn mail_list_view_profile(&self) -> String {
         normalized_mail_list_view_profile(&self.settings.string("mail-list-view-profile"))
             .to_string()
@@ -3124,6 +3158,9 @@ impl AppSettings {
                 let value = parse_migrated_i32_in_range(key, value, 60, 300)?;
                 self.set_mail_date_column_width(value);
             }
+            "mail-date-format" => self.set_mail_date_format(value),
+            "mail-date-custom-format" => self.set_mail_date_custom_format(value),
+            "mail-date-align" => self.set_mail_date_align(value),
             "mail-list-view-profile" => {
                 if !matches!(value, "messages" | "wide" | "custom") {
                     return Err(format!("ungültiges Mail-Ansichtsprofil für „{key}“"));
@@ -3564,6 +3601,9 @@ impl AppSettings {
             "mail-sender-column-width",
             "mail-recipient-column-width",
             "mail-date-column-width",
+            "mail-date-format",
+            "mail-date-custom-format",
+            "mail-date-align",
             "mail-list-view-profile",
             "mail-list-column-order",
             "color-scheme",

@@ -4675,6 +4675,79 @@ impl PreferencesDialog {
         }
         group_mail_list.add(&row_mail_threading);
 
+        let row_mail_date_format = adw::ComboRow::builder()
+            .title("Datumsformat")
+            .subtitle("Darstellung des Empfangsdatums in der Nachrichtenübersicht")
+            .model(&gtk::StringList::new(&[
+                "Standard (d. Monat / Vorjahr: dd.mm.jj)",
+                "Intelligent (Heute: Uhrzeit, dieses Jahr: d. Monat, Vorjahr: dd.mm.jj)",
+                "Kurzdatum (dd.mm.jj, z. B. 10.09.26)",
+                "Vollständiges Datum (dd.mm.yyyy, z. B. 10.09.2026)",
+                "Datum & Uhrzeit (dd.mm.yyyy HH:MM)",
+                "ISO 8601 (YYYY-MM-DD)",
+                "Benutzerdefiniert...",
+            ]))
+            .build();
+
+        let row_mail_date_custom = adw::EntryRow::builder()
+            .title("Eigenes Datumsformat (Strftime)")
+            .show_apply_button(true)
+            .build();
+
+        let row_mail_date_align = adw::ComboRow::builder()
+            .title("Datums-Ausrichtung")
+            .subtitle("Positionierung der Datumsangabe in der Spalte")
+            .model(&gtk::StringList::new(&[
+                "Rechtsbündig (Standard / Google-Stil)",
+                "Linksbündig (Klassisches Evolution)",
+            ]))
+            .build();
+
+        if let Some(settings) = settings.clone() {
+            let current_fmt = settings.mail_date_format();
+            row_mail_date_format.set_selected(match current_fmt.as_str() {
+                "smart" => 1,
+                "short" => 2,
+                "full" => 3,
+                "datetime" => 4,
+                "iso" => 5,
+                "custom" => 6,
+                _ => 0,
+            });
+            row_mail_date_custom.set_visible(current_fmt == "custom");
+            row_mail_date_custom.set_text(&settings.mail_date_custom_format());
+
+            let s_fmt = settings.clone();
+            let r_custom = row_mail_date_custom.clone();
+            row_mail_date_format.connect_selected_notify(move |row| {
+                let chosen = match row.selected() {
+                    1 => "smart",
+                    2 => "short",
+                    3 => "full",
+                    4 => "datetime",
+                    5 => "iso",
+                    6 => "custom",
+                    _ => "standard",
+                };
+                s_fmt.set_mail_date_format(chosen);
+                r_custom.set_visible(chosen == "custom");
+            });
+
+            let s_custom = settings.clone();
+            row_mail_date_custom.connect_apply(move |row| {
+                s_custom.set_mail_date_custom_format(row.text().as_str());
+            });
+
+            row_mail_date_align.set_selected(if settings.mail_date_align() == "left" { 1 } else { 0 });
+            let s_align = settings.clone();
+            row_mail_date_align.connect_selected_notify(move |row| {
+                s_align.set_mail_date_align(if row.selected() == 1 { "left" } else { "right" });
+            });
+        }
+        group_mail_list.add(&row_mail_date_format);
+        group_mail_list.add(&row_mail_date_custom);
+        group_mail_list.add(&row_mail_date_align);
+
         let group_mail_columns = adw::PreferencesGroup::builder()
             .title("Mail-Zeile")
             .description("Ansichtsprofil, Reihenfolge, sichtbare Spalten und Zusatzinformationen")
