@@ -96,6 +96,61 @@ impl CalendarEventIdentity {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) enum PreparedAgendaItem {
+    DateHeader {
+        date: NaiveDate,
+        text: String,
+        is_today: bool,
+        y: f64,
+        height: f64,
+    },
+    EventRow {
+        date: NaiveDate,
+        record: CalendarEventRecord,
+        identity: Option<CalendarEventIdentity>,
+        color: (f64, f64, f64),
+        time_str: String,
+        title: String,
+        sub: String,
+        category: Option<String>,
+        y: f64,
+        height: f64,
+    },
+}
+
+impl PreparedAgendaItem {
+    pub(crate) fn y(&self) -> f64 {
+        match self {
+            Self::DateHeader { y, .. } | Self::EventRow { y, .. } => *y,
+        }
+    }
+
+    pub(crate) fn height(&self) -> f64 {
+        match self {
+            Self::DateHeader { height, .. } | Self::EventRow { height, .. } => *height,
+        }
+    }
+
+    pub(crate) fn is_event_row(&self) -> bool {
+        matches!(self, Self::EventRow { .. })
+    }
+
+    pub(crate) fn record(&self) -> Option<&CalendarEventRecord> {
+        match self {
+            Self::EventRow { record, .. } => Some(record),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn identity(&self) -> Option<&CalendarEventIdentity> {
+        match self {
+            Self::EventRow { identity, .. } => identity.as_ref(),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct PreparedCalendarListRow {
     pub(crate) record: CalendarEventRecord,
     pub(crate) identity: Option<CalendarEventIdentity>,
@@ -924,6 +979,13 @@ mod imp {
         pub week_view: RefCell<Option<gtk::Box>>,
         pub workweek_view: RefCell<Option<gtk::Box>>,
         pub agenda_view: RefCell<Option<gtk::Box>>,
+        pub agenda_canvas: RefCell<Option<gtk::DrawingArea>>,
+        pub agenda_items: RefCell<Vec<PreparedAgendaItem>>,
+        pub agenda_hovered_row: Cell<Option<usize>>,
+        pub agenda_selected_row: Cell<Option<usize>>,
+        pub agenda_title_label: RefCell<Option<gtk::Label>>,
+        pub agenda_empty_box: RefCell<Option<gtk::Widget>>,
+        pub agenda_scroll: RefCell<Option<gtk::ScrolledWindow>>,
         pub year_view: RefCell<Option<gtk::Box>>,
         pub year_canvas: RefCell<Option<gtk::DrawingArea>>,
         pub year_markers: RefCell<BTreeMap<NaiveDate, usize>>,
@@ -1042,6 +1104,13 @@ mod imp {
                 week_view: RefCell::new(None),
                 workweek_view: RefCell::new(None),
                 agenda_view: RefCell::new(None),
+                agenda_canvas: RefCell::new(None),
+                agenda_items: RefCell::new(Vec::new()),
+                agenda_hovered_row: Cell::new(None),
+                agenda_selected_row: Cell::new(None),
+                agenda_title_label: RefCell::new(None),
+                agenda_empty_box: RefCell::new(None),
+                agenda_scroll: RefCell::new(None),
                 year_view: RefCell::new(None),
                 year_canvas: RefCell::new(None),
                 year_markers: RefCell::new(BTreeMap::new()),
@@ -3564,23 +3633,311 @@ impl CalendarPage {
             .replace(Some(workweek_view.clone()));
         calendar_stack.add_titled(&workweek_view, Some("workweek"), "Arbeitswoche");
 
-        // 5. Agenda View
+        // 5. Agenda View: high-performance Cairo canvas with date headers and event rows
         let agenda_view = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        self.imp().agenda_view.replace(Some(agenda_view.clone()));
+
+        let agenda_title_label = gtk::Label::builder()
+            .label("Kommende Termine")
+            .css_classes(vec!["title-3"])
+            .halign(gtk::Align::Start)
+            .margin_start(16)
+            .margin_end(16)
+            .margin_top(12)
+            .margin_bottom(8)
+            .build();
+        agenda_view.append(&agenda_title_label);
+        self.imp().agenda_title_label.replace(Some(agenda_title_label.clone()));
+
+        let agenda_empty_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .margin_start(16)
             .margin_end(16)
-            .margin_top(16)
-            .margin_bottom(16)
-            .spacing(8)
+            .visible(false)
             .build();
-        self.imp().agenda_view.replace(Some(agenda_view.clone()));
+        agenda_view.append(&agenda_empty_box);
+        self.imp().agenda_empty_box.replace(Some(agenda_empty_box.clone().upcast()));
+
+        let agenda_canvas = gtk::DrawingArea::builder()
+            .hexpand(true)
+            .vexpand(true)
+            .focusable(true)
+            .can_focus(true)
+            .css_classes(vec!["calendar-agenda-canvas"])
+            .build();
+        self.imp().agenda_canvas.replace(Some(agenda_canvas.clone()));
+
         let agenda_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .child(&agenda_view)
+            .hexpand(true)
+            .vexpand(true)
+            .child(&agenda_canvas)
             .build();
+        agenda_view.append(&agenda_scroll);
+        self.imp().agenda_scroll.replace(Some(agenda_scroll.clone()));
 
-        calendar_stack.add_titled(&agenda_scroll, Some("agenda"), "Agenda");
+        calendar_stack.add_titled(&agenda_view, Some("agenda"), "Agenda");
+
+        // Wire draw function
+        let page_weak_draw = self.downgrade();
+        agenda_canvas.set_draw_func(move |_area, cr, width_i32, height_i32| {
+            let Some(page) = page_weak_draw.upgrade() else { return };
+            let width = width_i32 as f64;
+            let height = height_i32 as f64;
+            let is_dark = adw::StyleManager::default().is_dark();
+
+            let (clip_y1, clip_y2) = match cr.clip_extents() {
+                Ok((_, y1, _, y2)) => (y1, y2),
+                Err(_) => (0.0, height),
+            };
+
+            let items_ref = page.imp().agenda_items.borrow();
+            if items_ref.is_empty() {
+                return;
+            }
+
+            let selected_idx = page.imp().agenda_selected_row.get();
+            let hovered_idx = page.imp().agenda_hovered_row.get();
+
+            draw_agenda_canvas(
+                cr,
+                &items_ref,
+                width,
+                clip_y1,
+                clip_y2,
+                selected_idx,
+                hovered_idx,
+                is_dark,
+            );
+        });
+
+        // Click gesture
+        let agenda_click = gtk::GestureClick::builder().button(1).build();
+        let page_weak_click = self.downgrade();
+        agenda_click.connect_pressed(move |gesture, n_press, _x, y| {
+            let Some(page) = page_weak_click.upgrade() else { return };
+            let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
+            area.grab_focus();
+            let items_ref = page.imp().agenda_items.borrow();
+            if let Some(idx) = hit_test_agenda_canvas(&items_ref, y) {
+                if items_ref[idx].is_event_row() {
+                    page.imp().agenda_selected_row.set(Some(idx));
+                    if let Some(id) = items_ref[idx].identity() {
+                        page.imp()
+                            .view_state
+                            .borrow_mut()
+                            .select_event(Some(id.clone()), Some(idx));
+                    }
+                    area.queue_draw();
+
+                    if n_press >= 2 {
+                        if let Some(id) = items_ref[idx].identity() {
+                            let id_clone = id.clone();
+                            drop(items_ref);
+                            page.open_event_editor_for_identity(&area, &id_clone);
+                        }
+                    }
+                }
+            }
+        });
+        agenda_canvas.add_controller(agenda_click);
+
+        // Right click context menu
+        let agenda_right_click = gtk::GestureClick::builder().button(3).build();
+        let page_weak_right = self.downgrade();
+        agenda_right_click.connect_pressed(move |gesture, _n_press, x, y| {
+            let Some(page) = page_weak_right.upgrade() else { return };
+            let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
+            let items_ref = page.imp().agenda_items.borrow();
+            if let Some(idx) = hit_test_agenda_canvas(&items_ref, y) {
+                if let Some(record) = items_ref[idx].record().cloned() {
+                    page.imp().agenda_selected_row.set(Some(idx));
+                    if let Some(id) = items_ref[idx].identity() {
+                        page.imp()
+                            .view_state
+                            .borrow_mut()
+                            .select_event(Some(id.clone()), Some(idx));
+                    }
+                    area.queue_draw();
+
+                    let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+                    drop(items_ref);
+                    show_calendar_event_context_menu(&page, &area, &record, rect);
+                }
+            }
+        });
+        agenda_canvas.add_controller(agenda_right_click);
+
+        // Motion controller (hover & cursor)
+        let agenda_motion = gtk::EventControllerMotion::new();
+        let page_weak_motion = self.downgrade();
+        agenda_motion.connect_motion(move |ctrl, _x, y| {
+            let Some(page) = page_weak_motion.upgrade() else { return };
+            let Some(area) = ctrl.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
+            let items_ref = page.imp().agenda_items.borrow();
+            let hit = hit_test_agenda_canvas(&items_ref, y);
+            let is_event = hit.map(|idx| items_ref[idx].is_event_row()).unwrap_or(false);
+            let new_hover = if is_event { hit } else { None };
+
+            if new_hover != page.imp().agenda_hovered_row.get() {
+                page.imp().agenda_hovered_row.set(new_hover);
+                area.queue_draw();
+            }
+            if new_hover.is_some() {
+                area.set_cursor_from_name(Some("pointer"));
+            } else {
+                area.set_cursor_from_name(None);
+            }
+        });
+        let page_weak_leave = self.downgrade();
+        agenda_motion.connect_leave(move |ctrl| {
+            let Some(page) = page_weak_leave.upgrade() else { return };
+            let Some(area) = ctrl.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
+            if page.imp().agenda_hovered_row.get().is_some() {
+                page.imp().agenda_hovered_row.set(None);
+                area.queue_draw();
+            }
+            area.set_cursor_from_name(None);
+        });
+        agenda_canvas.add_controller(agenda_motion);
+
+        // Tooltip
+        agenda_canvas.set_has_tooltip(true);
+        let page_weak_tooltip = self.downgrade();
+        agenda_canvas.connect_query_tooltip(move |_area, _x, y, _keyboard, tooltip| {
+            let Some(page) = page_weak_tooltip.upgrade() else { return false };
+            let items_ref = page.imp().agenda_items.borrow();
+            let Some(idx) = hit_test_agenda_canvas(&items_ref, y as f64) else { return false };
+            if let PreparedAgendaItem::EventRow { title, time_str, sub, .. } = &items_ref[idx] {
+                let text = if sub.is_empty() {
+                    format!("{title}\n{time_str}")
+                } else {
+                    format!("{title}\n{time_str} · {sub}")
+                };
+                tooltip.set_text(Some(&text));
+                true
+            } else {
+                false
+            }
+        });
+
+        // Key controller (Up, Down, Home, End, Enter)
+        let agenda_key = gtk::EventControllerKey::new();
+        let page_weak_key = self.downgrade();
+        let agenda_scroll_weak = agenda_scroll.downgrade();
+        agenda_key.connect_key_pressed(move |ctrl, keyval, _, _| {
+            let Some(page) = page_weak_key.upgrade() else { return glib::Propagation::Proceed };
+            let Some(area) = ctrl.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return glib::Propagation::Proceed };
+            let items_ref = page.imp().agenda_items.borrow();
+            let len = items_ref.len();
+            if len == 0 { return glib::Propagation::Proceed };
+            let cur_idx = page.imp().agenda_selected_row.get();
+
+            let scroll_to_item = |idx: usize| {
+                if let Some(scroll) = agenda_scroll_weak.upgrade() {
+                    let vadj = scroll.vadjustment();
+                    let item_top = if idx > 0 && !items_ref[idx - 1].is_event_row() {
+                        items_ref[idx - 1].y()
+                    } else {
+                        items_ref[idx].y()
+                    };
+                    let item_bot = items_ref[idx].y() + items_ref[idx].height();
+                    let cur_scroll = vadj.value();
+                    let page_size = vadj.page_size();
+                    if item_top < cur_scroll {
+                        vadj.set_value(item_top);
+                    } else if item_bot > cur_scroll + page_size {
+                        vadj.set_value((item_bot - page_size).max(0.0));
+                    }
+                }
+            };
+
+            let apply_selection = |idx: usize| {
+                page.imp().agenda_selected_row.set(Some(idx));
+                if let Some(id) = items_ref[idx].identity() {
+                    page.imp()
+                        .view_state
+                        .borrow_mut()
+                        .select_event(Some(id.clone()), Some(idx));
+                }
+                scroll_to_item(idx);
+                area.queue_draw();
+            };
+
+            match keyval {
+                gdk::Key::Up => {
+                    let prev = match cur_idx {
+                        Some(idx) => {
+                            let mut p = idx.saturating_sub(1);
+                            while p > 0 && !items_ref[p].is_event_row() {
+                                p -= 1;
+                            }
+                            if items_ref[p].is_event_row() { Some(p) } else { Some(idx) }
+                        }
+                        None => items_ref.iter().rposition(|it| it.is_event_row()),
+                    };
+                    if let Some(p) = prev {
+                        apply_selection(p);
+                    }
+                    glib::Propagation::Stop
+                }
+                gdk::Key::Down => {
+                    let next = match cur_idx {
+                        Some(idx) => {
+                            let mut n = (idx + 1).min(len.saturating_sub(1));
+                            while n + 1 < len && !items_ref[n].is_event_row() {
+                                n += 1;
+                            }
+                            if items_ref[n].is_event_row() { Some(n) } else { Some(idx) }
+                        }
+                        None => items_ref.iter().position(|it| it.is_event_row()),
+                    };
+                    if let Some(n) = next {
+                        apply_selection(n);
+                    }
+                    glib::Propagation::Stop
+                }
+                gdk::Key::Home => {
+                    if let Some(first) = items_ref.iter().position(|it| it.is_event_row()) {
+                        apply_selection(first);
+                    }
+                    glib::Propagation::Stop
+                }
+                gdk::Key::End => {
+                    if let Some(last) = items_ref.iter().rposition(|it| it.is_event_row()) {
+                        apply_selection(last);
+                    }
+                    glib::Propagation::Stop
+                }
+                gdk::Key::Return | gdk::Key::KP_Enter => {
+                    if let Some(sel) = page.imp().agenda_selected_row.get() {
+                        if sel < len {
+                            if let Some(id) = items_ref[sel].identity() {
+                                let id_clone = id.clone();
+                                drop(items_ref);
+                                page.open_event_editor_for_identity(&area, &id_clone);
+                            }
+                        }
+                    }
+                    glib::Propagation::Stop
+                }
+                _ => glib::Propagation::Proceed,
+            }
+        });
+        agenda_canvas.add_controller(agenda_key);
+
+        // Dark theme notify
+        let agenda_canvas_weak = agenda_canvas.downgrade();
+        adw::StyleManager::default().connect_dark_notify(move |_| {
+            if let Some(c) = agenda_canvas_weak.upgrade() {
+                c.queue_draw();
+            }
+        });
 
         // 6. Year View: high-performance Cairo canvas with 12 month grids and details panel
         let year_view = gtk::Box::builder()
@@ -5876,7 +6233,12 @@ impl CalendarPage {
             let days_count = days_in_month(y, m);
             for day in 1..=days_count {
                 if let Some(d) = NaiveDate::from_ymd_opt(y, m, day) {
-                    if is_day_visible_in_viewport(&viewport, d) {
+                    let visible = if is_month_view {
+                        has_selected_date && is_day_visible_in_viewport(&viewport, d)
+                    } else {
+                        is_day_visible_in_viewport(&viewport, d)
+                    };
+                    if visible {
                         cal.mark_day(day);
                     }
                 }
@@ -5938,7 +6300,10 @@ impl CalendarPage {
             .view_state
             .borrow_mut()
             .set_anchor(current_date, configured_first_weekday());
-        if !matches!(current_view, CalendarView::Year | CalendarView::List) {
+        if !matches!(
+            current_view,
+            CalendarView::Year | CalendarView::List | CalendarView::Month | CalendarView::Agenda
+        ) {
             let list_events = self.filtered_sorted_events();
             self.imp()
                 .view_state
@@ -7039,79 +7404,96 @@ impl CalendarPage {
     }
 
     fn refresh_agenda_view(&self) {
-        let Some(view) = self.imp().agenda_view.borrow().as_ref().cloned() else {
-            return;
-        };
-        clear_box(&view);
-        if self.append_calendar_state_to_box(&view) {
+        if self.calendar_data_state() != CalendarDataState::Ready {
+            self.imp().agenda_items.borrow_mut().clear();
+            self.imp().agenda_selected_row.set(None);
+            if let Some(empty_box) = self
+                .imp()
+                .agenda_empty_box
+                .borrow()
+                .as_ref()
+                .and_then(|w| w.downcast_ref::<gtk::Box>())
+            {
+                clear_box(empty_box);
+                empty_box.append(&self.calendar_state_row());
+                empty_box.set_visible(true);
+            }
+            if let Some(scroll) = self.imp().agenda_scroll.borrow().as_ref() {
+                scroll.set_visible(false);
+            }
             return;
         }
 
         let visible_range = self.current_calendar_viewport().visible_range;
         let start_date = visible_range.start;
         let end_date = visible_range.last_inclusive();
-        view.append(
-            &gtk::Label::builder()
-                .label(&format!(
-                    "Kommende Termine · {} bis {} · Arbeitszeit: {}",
-                    format_date(start_date),
-                    format_date(end_date),
-                    configured_workday_text()
-                ))
-                .css_classes(vec!["title-3"])
-                .halign(gtk::Align::Start)
-                .build(),
-        );
+        let workday_text = configured_workday_text();
+
+        if let Some(title_lbl) = self.imp().agenda_title_label.borrow().as_ref() {
+            title_lbl.set_label(&format!(
+                "Kommende Termine · {} bis {} · Arbeitszeit: {}",
+                format_date(start_date),
+                format_date(end_date),
+                workday_text
+            ));
+        }
 
         let events_by_date = self.events_by_date(visible_range);
-        let mut has_events = false;
-        let agenda_list = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .css_classes(vec!["boxed-list"])
-            .hexpand(true)
-            .build();
+        let today = Local::now().date_naive();
+        let items = build_prepared_agenda_items(&events_by_date, visible_range, today);
+        let is_empty = items.is_empty();
 
-        let mut is_first = true;
-        for date in visible_range.dates() {
-            let mut events = events_by_date.get(&date).cloned().unwrap_or_default();
-            events.sort_by_key(|event| event_start_datetime(event));
-            if !events.is_empty() {
-                has_events = true;
-                let header_row = gtk::ListBoxRow::builder()
-                    .activatable(false)
-                    .selectable(false)
-                    .build();
-                let header_lbl = gtk::Label::builder()
-                    .label(&format!(
-                        "{} · KW {:02}",
-                        format_date(date),
-                        date.iso_week().week()
-                    ))
-                    .css_classes(if is_first {
-                        vec!["calendar-agenda-date-header", "first"]
-                    } else {
-                        vec!["calendar-agenda-date-header"]
-                    })
-                    .halign(gtk::Align::Start)
-                    .hexpand(true)
-                    .build();
-                is_first = false;
-                header_row.set_child(Some(&header_lbl));
-                agenda_list.append(&header_row);
-
-                for event in events {
-                    agenda_list.append(&calendar_event_row(self, &event));
-                }
+        if let Some(empty_box) = self
+            .imp()
+            .agenda_empty_box
+            .borrow()
+            .as_ref()
+            .and_then(|w| w.downcast_ref::<gtk::Box>())
+        {
+            if is_empty {
+                clear_box(empty_box);
+                let empty_row = empty_period_row(
+                    "Keine kommenden Termine",
+                    "Für die nächsten 90 Tage sind keine VEVENTs geladen.",
+                );
+                empty_box.append(&empty_row);
+                empty_box.set_visible(true);
+            } else {
+                empty_box.set_visible(false);
             }
         }
 
-        if has_events {
-            view.append(&agenda_list);
+        if let Some(scroll) = self.imp().agenda_scroll.borrow().as_ref() {
+            scroll.set_visible(!is_empty);
+        }
+
+        let total_h = items
+            .last()
+            .map(|it| (it.y() + it.height()).ceil() as i32)
+            .unwrap_or(0);
+
+        let selected_identity = self.imp().view_state.borrow().selected_event.clone();
+        let reconciled_idx = if let Some(target_id) = selected_identity {
+            items.iter().position(|it| it.identity() == Some(&target_id))
         } else {
-            view.append(&empty_period_row(
-                "Keine kommenden Termine",
-                "Für die nächsten 90 Tage sind keine VEVENTs geladen.",
-            ));
+            self.imp().agenda_selected_row.get().filter(|&idx| idx < items.len() && items[idx].is_event_row())
+        };
+        self.imp().agenda_selected_row.set(reconciled_idx);
+        if let Some(idx) = reconciled_idx {
+            if let Some(id) = items[idx].identity() {
+                self.imp()
+                    .view_state
+                    .borrow_mut()
+                    .select_event(Some(id.clone()), Some(idx));
+            }
+        }
+
+        self.imp().agenda_items.replace(items);
+
+        if let Some(canvas) = self.imp().agenda_canvas.borrow().as_ref() {
+            canvas.set_content_height(total_h.max(1));
+            canvas.set_height_request(total_h.max(1));
+            canvas.queue_draw();
         }
     }
 
@@ -10951,6 +11333,309 @@ fn draw_time_grid_chip(
     }
 
     let _ = cr.restore();
+}
+
+pub(crate) fn build_prepared_agenda_items(
+    events_by_date: &BTreeMap<NaiveDate, Vec<CalendarEventRecord>>,
+    visible_range: CalendarDateRange,
+    today: NaiveDate,
+) -> Vec<PreparedAgendaItem> {
+    let mut items = Vec::new();
+    let mut current_y = 0.0;
+    let header_height = 36.0;
+    let row_height = 46.0;
+
+    for date in visible_range.dates() {
+        let mut events = events_by_date.get(&date).cloned().unwrap_or_default();
+        events.sort_by(|a, b| compare_day_events_order(a, b, date));
+        if !events.is_empty() {
+            let text = format!("{} · KW {:02}", format_date(date), date.iso_week().week());
+            let is_today = date == today;
+            items.push(PreparedAgendaItem::DateHeader {
+                date,
+                text,
+                is_today,
+                y: current_y,
+                height: header_height,
+            });
+            current_y += header_height;
+
+            for event in events {
+                let identity = CalendarEventIdentity::from_event(&event);
+                let time_str = event_time_text(&event);
+                let title = if event.summary.trim().is_empty() {
+                    "(Ohne Titel)".to_string()
+                } else {
+                    event.summary.trim().to_string()
+                };
+                let sub = if !event.location.trim().is_empty() && !event.source_display_name.is_empty() {
+                    format!("{} · {}", event.location.trim(), event.source_display_name)
+                } else if !event.location.trim().is_empty() {
+                    event.location.trim().to_string()
+                } else if !event.source_display_name.is_empty() {
+                    event.source_display_name.clone()
+                } else {
+                    String::new()
+                };
+                let category = category_names_from_ical_component(&event.component)
+                    .into_iter()
+                    .next();
+                let color_hex = event_color_for_record(&event);
+                let color = if let Ok(c) = gdk::RGBA::parse(&color_hex) {
+                    (c.red() as f64, c.green() as f64, c.blue() as f64)
+                } else {
+                    (0.21, 0.52, 0.89)
+                };
+
+                items.push(PreparedAgendaItem::EventRow {
+                    date,
+                    record: event,
+                    identity,
+                    color,
+                    time_str,
+                    title,
+                    sub,
+                    category,
+                    y: current_y,
+                    height: row_height,
+                });
+                current_y += row_height;
+            }
+        }
+    }
+
+    items
+}
+
+pub(crate) fn hit_test_agenda_canvas(items: &[PreparedAgendaItem], y: f64) -> Option<usize> {
+    if items.is_empty() || y.is_nan() || y < 0.0 {
+        return None;
+    }
+    let total_h = items.last().map(|it| it.y() + it.height()).unwrap_or(0.0);
+    if y >= total_h {
+        return None;
+    }
+    let idx = items.partition_point(|it| (it.y() + it.height()) <= y);
+    if idx < items.len() && y >= items[idx].y() && y < items[idx].y() + items[idx].height() {
+        Some(idx)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn draw_agenda_canvas(
+    cr: &gtk::cairo::Context,
+    items: &[PreparedAgendaItem],
+    width: f64,
+    clip_y1: f64,
+    clip_y2: f64,
+    selected_idx: Option<usize>,
+    hovered_idx: Option<usize>,
+    is_dark: bool,
+) {
+    if items.is_empty() {
+        return;
+    }
+
+    let start_idx = items.partition_point(|it| (it.y() + it.height()) < clip_y1);
+    let end_idx = (items.partition_point(|it| it.y() <= clip_y2) + 1).min(items.len());
+
+    let fg = if is_dark { 1.0 } else { 0.0 };
+    let primary_alpha = if is_dark { 0.95 } else { 0.90 };
+    let secondary_alpha = if is_dark { 0.60 } else { 0.55 };
+
+    for idx in start_idx..end_idx {
+        match &items[idx] {
+            PreparedAgendaItem::DateHeader { text, is_today, y, height, .. } => {
+                let row_y = *y;
+                let row_h = *height;
+
+                // Background
+                if *is_today {
+                    cr.rectangle(0.0, row_y, width, row_h);
+                    cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, if is_dark { 0.18 } else { 0.10 });
+                    let _ = cr.fill();
+
+                    // Left accent indicator
+                    cr.rectangle(0.0, row_y, 4.0, row_h);
+                    cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 1.0);
+                    let _ = cr.fill();
+                } else {
+                    cr.rectangle(0.0, row_y, width, row_h);
+                    cr.set_source_rgba(fg, fg, fg, if is_dark { 0.06 } else { 0.04 });
+                    let _ = cr.fill();
+                }
+
+                // Top separator
+                cr.set_line_width(1.0);
+                cr.set_source_rgba(fg, fg, fg, if is_dark { 0.12 } else { 0.08 });
+                cr.move_to(0.0, row_y + 0.5);
+                cr.line_to(width, row_y + 0.5);
+                let _ = cr.stroke();
+
+                // Bottom separator
+                cr.move_to(0.0, (row_y + row_h).round() - 0.5);
+                cr.line_to(width, (row_y + row_h).round() - 0.5);
+                let _ = cr.stroke();
+
+                // Header text
+                let _ = cr.save();
+                let header_text_max_w = (width - 100.0).max(40.0);
+                cr.rectangle(16.0, row_y, header_text_max_w, row_h);
+                cr.clip();
+                cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+                cr.set_font_size(13.0);
+                if *is_today {
+                    cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 1.0);
+                } else {
+                    cr.set_source_rgba(fg, fg, fg, primary_alpha);
+                }
+                let trunc_text = truncate_cairo_text(cr, text, header_text_max_w);
+                cr.move_to(16.0, row_y + 23.0);
+                let _ = cr.show_text(&trunc_text);
+                let _ = cr.restore();
+
+                // "Heute" pill badge
+                if *is_today && width > 300.0 {
+                    let badge_w = 54.0;
+                    let badge_h = 20.0;
+                    let badge_x = width - badge_w - 16.0;
+                    let badge_y = row_y + (row_h - badge_h) / 2.0;
+                    draw_cairo_rounded_rect(cr, badge_x, badge_y, badge_w, badge_h, 9999.0);
+                    cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 0.90);
+                    let _ = cr.fill();
+
+                    let _ = cr.save();
+                    cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+                    cr.set_font_size(11.0);
+                    cr.set_source_rgba(1.0, 1.0, 1.0, 1.0);
+                    cr.move_to(badge_x + 9.0, badge_y + 14.5);
+                    let _ = cr.show_text("Heute");
+                    let _ = cr.restore();
+                }
+            }
+            PreparedAgendaItem::EventRow {
+                color,
+                time_str,
+                title,
+                sub,
+                category,
+                y,
+                height,
+                ..
+            } => {
+                let row_y = *y;
+                let row_h = *height;
+                let is_selected = selected_idx == Some(idx);
+                let is_hovered = hovered_idx == Some(idx);
+
+                // Background
+                if is_selected {
+                    cr.rectangle(0.0, row_y, width, row_h);
+                    cr.set_source_rgba(0.21, 0.52, 0.89, if is_dark { 0.28 } else { 0.16 });
+                    let _ = cr.fill();
+
+                    // Left accent indicator bar
+                    cr.rectangle(0.0, row_y, 4.0, row_h);
+                    cr.set_source_rgba(0.21, 0.52, 0.89, 1.0);
+                    let _ = cr.fill();
+                } else if is_hovered {
+                    cr.rectangle(0.0, row_y, width, row_h);
+                    let hover_alpha = if is_dark { 0.05 } else { 0.04 };
+                    cr.set_source_rgba(fg, fg, fg, hover_alpha);
+                    let _ = cr.fill();
+                }
+
+                // Bottom row separator
+                let line_alpha = if is_dark { 0.08 } else { 0.06 };
+                cr.set_source_rgba(fg, fg, fg, line_alpha);
+                cr.set_line_width(1.0);
+                cr.move_to(28.0, (row_y + row_h).round() - 0.5);
+                cr.line_to(width, (row_y + row_h).round() - 0.5);
+                let _ = cr.stroke();
+
+                // Calendar color dot
+                let dot_x = 28.0;
+                let dot_y = row_y + row_h / 2.0;
+                let (dr, dg, db) = *color;
+                cr.arc(dot_x, dot_y, 4.5, 0.0, 2.0 * std::f64::consts::PI);
+                cr.set_source_rgb(dr, dg, db);
+                let _ = cr.fill();
+
+                // Time column
+                let time_x = 44.0;
+                let time_w = 90.0;
+                let _ = cr.save();
+                cr.rectangle(time_x, row_y, time_w, row_h);
+                cr.clip();
+                cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+                cr.set_font_size(11.5);
+                cr.set_source_rgba(fg, fg, fg, if is_dark { 0.85 } else { 0.75 });
+                let trunc_time = truncate_cairo_text(cr, time_str, time_w);
+                cr.move_to(time_x, row_y + 27.0);
+                let _ = cr.show_text(&trunc_time);
+                let _ = cr.restore();
+
+                // Subtle vertical column separator
+                cr.set_source_rgba(fg, fg, fg, line_alpha * 1.5);
+                cr.move_to(time_x + time_w + 6.0 + 0.5, row_y + 8.0);
+                cr.line_to(time_x + time_w + 6.0 + 0.5, row_y + row_h - 8.0);
+                let _ = cr.stroke();
+
+                // Summary & Subtitle
+                let title_x = time_x + time_w + 18.0;
+                let right_margin = if width > 500.0 { 150.0 } else { 30.0 };
+                let max_title_w = (width - title_x - right_margin).max(40.0);
+
+                let _ = cr.save();
+                cr.rectangle(title_x, row_y, max_title_w, row_h);
+                cr.clip();
+
+                // Summary
+                cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+                cr.set_font_size(13.0);
+                cr.set_source_rgba(fg, fg, fg, primary_alpha);
+                let title_y = if sub.is_empty() { row_y + 27.0 } else { row_y + 19.0 };
+                let trunc_title = truncate_cairo_text(cr, title, max_title_w);
+                cr.move_to(title_x, title_y);
+                let _ = cr.show_text(&trunc_title);
+
+                // Subtitle (location & calendar)
+                if !sub.is_empty() {
+                    cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
+                    cr.set_font_size(11.0);
+                    cr.set_source_rgba(fg, fg, fg, secondary_alpha);
+                    let trunc_sub = truncate_cairo_text(cr, sub, max_title_w);
+                    cr.move_to(title_x, row_y + 35.0);
+                    let _ = cr.show_text(&trunc_sub);
+                }
+                let _ = cr.restore();
+
+                // Category pill badge
+                if width > 460.0 {
+                    if let Some(cat) = category {
+                        let cat_w = 90.0;
+                        let cat_x = width - cat_w - 20.0;
+                        let cat_y = row_y + 13.0;
+                        draw_cairo_rounded_rect(cr, cat_x, cat_y, cat_w, 20.0, 9999.0);
+                        cr.set_source_rgba(fg, fg, fg, if is_dark { 0.10 } else { 0.06 });
+                        let _ = cr.fill();
+
+                        let _ = cr.save();
+                        cr.rectangle(cat_x + 8.0, cat_y, cat_w - 16.0, 20.0);
+                        cr.clip();
+                        cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+                        cr.set_font_size(10.0);
+                        cr.set_source_rgba(fg, fg, fg, secondary_alpha);
+                        let trunc_cat = truncate_cairo_text(cr, cat, cat_w - 16.0);
+                        cr.move_to(cat_x + 8.0, cat_y + 14.0);
+                        let _ = cr.show_text(&trunc_cat);
+                        let _ = cr.restore();
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn prepare_calendar_list_row(event: &CalendarEventRecord) -> PreparedCalendarListRow {
@@ -17481,6 +18166,12 @@ mod tests {
         assert_eq!(cal3.date().month(), 11);
         assert_eq!(cal4.date().month(), 12);
 
+        let previous_week_start = AppSettings::try_new().map(|s| {
+            let prev = s.calendar_week_start();
+            s.set_calendar_week_start("monday");
+            prev
+        });
+
         // Verify marked days in Week view (default week is 2026-09-07 to 2026-09-13)
         page.select_calendar_view(CalendarView::Week);
         assert!(cal1.day_is_marked(7));
@@ -17529,6 +18220,12 @@ mod tests {
         assert_eq!(cal5.date().month(), 2);
         assert_eq!(cal6.date().year(), 2027);
         assert_eq!(cal6.date().month(), 3);
+
+        if let Some(prev) = previous_week_start {
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_calendar_week_start(&prev);
+            }
+        }
     }
 
     #[test]
@@ -18569,6 +19266,289 @@ mod tests {
 
         // 3. Hovered, light theme
         draw_calendar_list_row(&cr, &event, 0.0, 800.0, 36.0, false, true, false);
+    }
+
+    #[test]
+    fn test_build_prepared_agenda_items_grouping_and_layout() {
+        let mut events_by_date = BTreeMap::new();
+        let d1 = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
+        let d2 = NaiveDate::from_ymd_opt(2026, 9, 16).unwrap();
+
+        let ev1 = CalendarEventRecord {
+            uid: "ev-1".to_string(),
+            source_uid: "src-1".to_string(),
+            source_display_name: "Privat".to_string(),
+            component: "BEGIN:VEVENT\r\nUID:ev-1\r\nDTSTART:20260915T140000\r\nDTEND:20260915T150000\r\nSUMMARY:Besprechung\r\nLOCATION:Büro\r\nCATEGORIES:Work\r\nEND:VEVENT\r\n".to_string(),
+            summary: "Besprechung".to_string(),
+            start: "2026-09-15 14:00".to_string(),
+            end: "2026-09-15 15:00".to_string(),
+            location: "Büro".to_string(),
+            description: String::new(),
+            all_day: false,
+        };
+        let ev2 = CalendarEventRecord {
+            uid: "ev-2".to_string(),
+            source_uid: "src-1".to_string(),
+            source_display_name: "Privat".to_string(),
+            component: "BEGIN:VEVENT\r\nUID:ev-2\r\nDTSTART:20260915T090000\r\nDTEND:20260915T100000\r\nSUMMARY:Frühstück\r\nEND:VEVENT\r\n".to_string(),
+            summary: "Frühstück".to_string(),
+            start: "2026-09-15 09:00".to_string(),
+            end: "2026-09-15 10:00".to_string(),
+            location: String::new(),
+            description: String::new(),
+            all_day: false,
+        };
+        let ev3 = CalendarEventRecord {
+            uid: "ev-3".to_string(),
+            source_uid: "src-2".to_string(),
+            source_display_name: "Arbeit".to_string(),
+            component: "BEGIN:VEVENT\r\nUID:ev-3\r\nDTSTART;VALUE=DATE:20260916\r\nSUMMARY:Ganztags-Event\r\nEND:VEVENT\r\n".to_string(),
+            summary: "Ganztags-Event".to_string(),
+            start: "2026-09-16".to_string(),
+            end: "2026-09-16".to_string(),
+            location: String::new(),
+            description: String::new(),
+            all_day: true,
+        };
+
+        events_by_date.insert(d1, vec![ev1.clone(), ev2.clone()]);
+        events_by_date.insert(d2, vec![ev3.clone()]);
+
+        let range = CalendarDateRange::new(d1, NaiveDate::from_ymd_opt(2026, 9, 18).unwrap());
+        let today = d1;
+        let items = build_prepared_agenda_items(&events_by_date, range, today);
+
+        assert_eq!(items.len(), 5);
+
+        // Header 1
+        match &items[0] {
+            PreparedAgendaItem::DateHeader { date, is_today, y, height, text } => {
+                assert_eq!(*date, d1);
+                assert!(*is_today);
+                assert_eq!(*y, 0.0);
+                assert_eq!(*height, 36.0);
+                assert!(text.contains("KW 38"));
+            }
+            _ => panic!("Expected DateHeader"),
+        }
+
+        // Event 1 (ev2 sorted first by start time)
+        match &items[1] {
+            PreparedAgendaItem::EventRow { record, title, y, height, .. } => {
+                assert_eq!(record.uid, "ev-2");
+                assert_eq!(title, "Frühstück");
+                assert_eq!(*y, 36.0);
+                assert_eq!(*height, 46.0);
+            }
+            _ => panic!("Expected EventRow"),
+        }
+
+        // Event 2 (ev1 sorted second)
+        match &items[2] {
+            PreparedAgendaItem::EventRow { record, title, category, sub, y, height, .. } => {
+                assert_eq!(record.uid, "ev-1");
+                assert_eq!(title, "Besprechung");
+                assert_eq!(category.as_deref(), Some("Work"));
+                assert!(sub.contains("Büro"));
+                assert_eq!(*y, 82.0);
+                assert_eq!(*height, 46.0);
+            }
+            _ => panic!("Expected EventRow"),
+        }
+
+        // Header 2
+        match &items[3] {
+            PreparedAgendaItem::DateHeader { date, is_today, y, height, .. } => {
+                assert_eq!(*date, d2);
+                assert!(!*is_today);
+                assert_eq!(*y, 128.0);
+                assert_eq!(*height, 36.0);
+            }
+            _ => panic!("Expected DateHeader"),
+        }
+
+        // Event 3
+        match &items[4] {
+            PreparedAgendaItem::EventRow { record, time_str, y, height, .. } => {
+                assert_eq!(record.uid, "ev-3");
+                assert_eq!(time_str, "Ganztägig");
+                assert_eq!(*y, 164.0);
+                assert_eq!(*height, 46.0);
+            }
+            _ => panic!("Expected EventRow"),
+        }
+    }
+
+    #[test]
+    fn test_hit_test_agenda_canvas_boundary_and_coordinates() {
+        let d = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
+        let items = vec![
+            PreparedAgendaItem::DateHeader {
+                date: d,
+                text: "Di., 15.09.2026".to_string(),
+                is_today: false,
+                y: 0.0,
+                height: 36.0,
+            },
+            PreparedAgendaItem::EventRow {
+                date: d,
+                record: CalendarEventRecord {
+                    uid: "e1".to_string(),
+                    source_uid: "s1".to_string(),
+                    source_display_name: "K".to_string(),
+                    component: String::new(),
+                    summary: "E1".to_string(),
+                    start: "2026-09-15 10:00".to_string(),
+                    end: "2026-09-15 11:00".to_string(),
+                    location: String::new(),
+                    description: String::new(),
+                    all_day: false,
+                },
+                identity: None,
+                color: (0.2, 0.5, 0.9),
+                time_str: "10:00–11:00".to_string(),
+                title: "E1".to_string(),
+                sub: String::new(),
+                category: None,
+                y: 36.0,
+                height: 46.0,
+            },
+        ];
+
+        // Before top
+        assert_eq!(hit_test_agenda_canvas(&items, -1.0), None);
+        assert_eq!(hit_test_agenda_canvas(&items, f64::NAN), None);
+
+        // Header (0.0..36.0)
+        assert_eq!(hit_test_agenda_canvas(&items, 0.0), Some(0));
+        assert_eq!(hit_test_agenda_canvas(&items, 18.0), Some(0));
+        assert_eq!(hit_test_agenda_canvas(&items, 35.9), Some(0));
+
+        // Event row (36.0..82.0)
+        assert_eq!(hit_test_agenda_canvas(&items, 36.0), Some(1));
+        assert_eq!(hit_test_agenda_canvas(&items, 50.0), Some(1));
+        assert_eq!(hit_test_agenda_canvas(&items, 81.9), Some(1));
+
+        // Past bottom
+        assert_eq!(hit_test_agenda_canvas(&items, 82.0), None);
+        assert_eq!(hit_test_agenda_canvas(&items, 100.0), None);
+
+        // Empty items
+        assert_eq!(hit_test_agenda_canvas(&[], 10.0), None);
+    }
+
+    #[test]
+    fn test_build_prepared_agenda_items_recurring_and_allday_order() {
+        let d = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
+        let mut events_by_date = BTreeMap::new();
+
+        // All-day event
+        let ev_allday = CalendarEventRecord {
+            uid: "ev-allday".to_string(),
+            source_uid: "s1".to_string(),
+            source_display_name: "Kalender".to_string(),
+            component: "BEGIN:VEVENT\r\nUID:ev-allday\r\nDTSTART;VALUE=DATE:20260915\r\nSUMMARY:Ganztag\r\nEND:VEVENT\r\n".to_string(),
+            summary: "Ganztag".to_string(),
+            start: "2026-09-15".to_string(),
+            end: "2026-09-15".to_string(),
+            location: String::new(),
+            description: String::new(),
+            all_day: true,
+        };
+
+        // Morning event at 09:00
+        let ev_morning = CalendarEventRecord {
+            uid: "ev-morning".to_string(),
+            source_uid: "s1".to_string(),
+            source_display_name: "Kalender".to_string(),
+            component: "BEGIN:VEVENT\r\nUID:ev-morning\r\nDTSTART:20260915T090000\r\nDTEND:20260915T100000\r\nSUMMARY:Frühstück\r\nEND:VEVENT\r\n".to_string(),
+            summary: "Frühstück".to_string(),
+            start: "2026-09-15 09:00".to_string(),
+            end: "2026-09-15 10:00".to_string(),
+            location: String::new(),
+            description: String::new(),
+            all_day: false,
+        };
+
+        // Recurring afternoon event (master DTSTART in January 2026, occurrence on 2026-09-15 at 14:00)
+        let ev_recurring = CalendarEventRecord {
+            uid: "ev-recurring".to_string(),
+            source_uid: "s1".to_string(),
+            source_display_name: "Kalender".to_string(),
+            component: "BEGIN:VEVENT\r\nUID:ev-recurring\r\nDTSTART:20260106T140000\r\nDTEND:20260106T150000\r\nRRULE:FREQ=WEEKLY;BYDAY=TU\r\nSUMMARY:Wöchentliches Meeting\r\nEND:VEVENT\r\n".to_string(),
+            summary: "Wöchentliches Meeting".to_string(),
+            start: "2026-09-15 14:00".to_string(),
+            end: "2026-09-15 15:00".to_string(),
+            location: String::new(),
+            description: String::new(),
+            all_day: false,
+        };
+
+        // Deliberately insert in non-chronological order
+        events_by_date.insert(d, vec![ev_recurring.clone(), ev_morning.clone(), ev_allday.clone()]);
+
+        let range = CalendarDateRange::new(d, NaiveDate::from_ymd_opt(2026, 9, 16).unwrap());
+        let items = build_prepared_agenda_items(&events_by_date, range, d);
+
+        assert_eq!(items.len(), 4); // 1 header + 3 events
+        assert_eq!(items[1].record().unwrap().uid, "ev-allday");
+        assert_eq!(items[2].record().unwrap().uid, "ev-morning");
+        assert_eq!(items[3].record().unwrap().uid, "ev-recurring");
+    }
+
+    #[test]
+    fn test_draw_agenda_canvas_cairo_rendering() {
+        let d = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
+        let items = vec![
+            PreparedAgendaItem::DateHeader {
+                date: d,
+                text: "Di., 15.09.2026 · KW 38 · Ein sehr langer Titel für ein Datumsheader um Truncation zu testen".to_string(),
+                is_today: true,
+                y: 0.0,
+                height: 36.0,
+            },
+            PreparedAgendaItem::EventRow {
+                date: d,
+                record: CalendarEventRecord {
+                    uid: "e1".to_string(),
+                    source_uid: "s1".to_string(),
+                    source_display_name: "Kalender mit sehr langem Namen für Truncation-Tests".to_string(),
+                    component: String::new(),
+                    summary: "Team Meeting mit einem extrem langen Titel der definitiv abgeschnitten werden muss".to_string(),
+                    start: "2026-09-15 10:00".to_string(),
+                    end: "2026-09-15 11:00".to_string(),
+                    location: "Konferenzraum 3 im zweiten Obergeschoss Gebäude B".to_string(),
+                    description: String::new(),
+                    all_day: false,
+                },
+                identity: None,
+                color: (0.21, 0.52, 0.89),
+                time_str: "10:00–11:00".to_string(),
+                title: "Team Meeting mit einem extrem langen Titel der definitiv abgeschnitten werden muss".to_string(),
+                sub: "Konferenzraum 3 · Kalender".to_string(),
+                category: Some("Eine sehr lange Kategoriebezeichnung".to_string()),
+                y: 36.0,
+                height: 46.0,
+            },
+        ];
+
+        let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 800, 100).unwrap();
+        let cr = gtk::cairo::Context::new(&surface).unwrap();
+
+        // 1. Light theme, unselected
+        draw_agenda_canvas(&cr, &items, 800.0, 0.0, 100.0, None, None, false);
+
+        // 2. Dark theme, selected
+        draw_agenda_canvas(&cr, &items, 800.0, 0.0, 100.0, Some(1), None, true);
+
+        // 3. Hovered
+        draw_agenda_canvas(&cr, &items, 800.0, 0.0, 100.0, None, Some(1), false);
+
+        // 4. Narrow width to force truncation
+        draw_agenda_canvas(&cr, &items, 350.0, 0.0, 100.0, None, None, false);
+
+        // 5. Empty items
+        draw_agenda_canvas(&cr, &[], 800.0, 0.0, 100.0, None, None, false);
     }
 
     #[test]
