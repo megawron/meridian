@@ -191,7 +191,8 @@ impl MailMessageObject {
         *imp.thread_position.borrow_mut() = thread_position;
         *imp.date_str.borrow_mut() = date_str.to_string();
         *imp.message_size.borrow_mut() = message_size;
-        *imp.preview_snippet.borrow_mut() = preview_snippet.to_string();
+        let clean_snippet = crate::services::html_sanitizer::clean_mail_snippet(preview_snippet);
+        *imp.preview_snippet.borrow_mut() = clean_snippet;
         *imp.html_body.borrow_mut() = html_body.to_string();
         *imp.is_unread.borrow_mut() = is_unread;
         *imp.is_flagged.borrow_mut() = is_flagged;
@@ -320,9 +321,10 @@ impl MailMessageObject {
         attachments: Vec<AttachmentInfo>,
         searchable_body_text: Option<Arc<str>>,
     ) {
-        *self.imp().html_body.borrow_mut() = html_body;
+        *self.imp().html_body.borrow_mut() = html_body.clone();
         self.imp().searchable_body_text.take();
-        *self.imp().preview_snippet.borrow_mut() = preview_snippet;
+        let clean_snippet = crate::services::html_sanitizer::clean_mail_snippet(&preview_snippet);
+        *self.imp().preview_snippet.borrow_mut() = clean_snippet;
         *self.imp().attachments.borrow_mut() = attachments;
         *self.imp().is_preview_only.borrow_mut() = false;
         if let Some(searchable_body_text) = searchable_body_text {

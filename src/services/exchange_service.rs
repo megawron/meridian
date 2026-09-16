@@ -172,11 +172,17 @@ impl ExchangeMailMessage {
                 sanitized
             }
         };
-        let preview = if self.body_preview.trim().is_empty() {
-            self.body_text.trim().to_string()
+        let mut preview = if !self.body_preview.trim().is_empty() {
+            crate::services::html_sanitizer::clean_mail_snippet(&self.body_preview)
         } else {
-            self.body_preview.trim().to_string()
+            String::new()
         };
+        if preview.is_empty() && !self.body_text.trim().is_empty() {
+            preview = crate::services::html_sanitizer::clean_mail_snippet(&self.body_text);
+        }
+        if preview.is_empty() && !self.body_html.trim().is_empty() {
+            preview = crate::services::html_sanitizer::clean_mail_snippet_from_html(&self.body_html);
+        }
         let message_id = self.internet_message_id.clone();
         let folder_id = normalized_mail_folder_id(folder_name);
         crate::services::mail_store_service::ParsedMail {

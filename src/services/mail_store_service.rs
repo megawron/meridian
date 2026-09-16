@@ -2427,7 +2427,24 @@ pub(crate) fn parse_rfc822_bytes(
     let mut extracted = MimeExtraction::default();
     extract_mime_content(&headers, body, &mut extracted);
 
+    let is_preview_only = headers.get("x-evolution-preview-only").is_some();
     let plain_body = extracted.plain_body.unwrap_or_default();
+    let mut preview = if !plain_body.trim().is_empty() {
+        crate::services::html_sanitizer::clean_mail_snippet(plain_body.as_str())
+    } else {
+        String::new()
+    };
+    if preview.is_empty() {
+        if let Some(html_body) = extracted.html_body.as_deref() {
+            preview = crate::services::html_sanitizer::clean_mail_snippet_from_html(html_body);
+        }
+    }
+    if preview.is_empty() {
+        if let Some(html_fallback) = extracted.html_fallback.as_deref() {
+            preview = crate::services::html_sanitizer::clean_mail_snippet_from_html(html_fallback);
+        }
+    }
+
     let body_html = if let Some(html_body) = extracted.html_body {
         html_body
     } else if looks_like_html(&plain_body) {
@@ -2436,15 +2453,11 @@ pub(crate) fn parse_rfc822_bytes(
         format!("<pre>{}</pre>", escape_html(plain_body.trim()))
     } else if let Some(html_fallback) = extracted.html_fallback {
         html_fallback
+    } else if is_preview_only {
+        String::new()
     } else {
         "<p>(Keine Nachricht)</p>".to_string()
     };
-
-    let preview = text_preview(if !plain_body.trim().is_empty() {
-        plain_body.as_str()
-    } else {
-        body_html.as_str()
-    });
 
     let raw_mime = (!matches!(
         CryptoService::verify_signature(raw).protocol,
@@ -2485,7 +2498,7 @@ pub(crate) fn parse_rfc822_bytes(
         follow_up: MailFollowUpMetadata::default(),
         labels: Vec::new(),
         attachments: extracted.attachments,
-        is_preview_only: headers.get("x-evolution-preview-only").is_some(),
+        is_preview_only,
     })
 }
 
@@ -3306,17 +3319,9 @@ fn escape_html(value: &str) -> String {
 }
 
 fn text_preview(value: &str) -> String {
-    let clean = crate::services::html_sanitizer::html_to_plain_text(value);
-    let mut collapsed = String::with_capacity(clean.len());
-    for word in clean.split_whitespace() {
-        if !collapsed.is_empty() {
-            collapsed.push(' ');
-        }
-        collapsed.push_str(word);
-    }
-    let preview: String = collapsed.chars().take(120).collect();
-    if collapsed.chars().count() > 120 {
-        format!("{preview}…")
+    let preview = crate::services::html_sanitizer::clean_mail_snippet_from_html(value);
+    if preview.is_empty() {
+        crate::services::html_sanitizer::clean_mail_snippet(value)
     } else {
         preview
     }
@@ -5321,6 +5326,12 @@ mod tests {
         assert!(!parsed_normal.is_preview_only);
         let obj_normal = parsed_normal.into_object();
         assert!(!obj_normal.is_preview_only());
+
+        let empty_preview = b"From: user@example.com\r\nSubject: Test Empty\r\nX-Evolution-Preview-Only: 1\r\n\r\n";
+        let parsed_empty = parse_rfc822_bytes("msg-empty", "inbox", empty_preview, true).expect("should parse");
+        assert!(parsed_empty.is_preview_only);
+        assert_eq!(parsed_empty.preview_snippet, "");
+        assert_eq!(parsed_empty.html_body, "");
     }
 
     #[test]

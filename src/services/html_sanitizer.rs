@@ -276,6 +276,340 @@ pub(crate) fn sanitized_html_to_plain_text(value: &str) -> String {
     decode_html_entities(output.trim())
 }
 
+/// Extracts a clean, human-readable preview snippet from plain text or raw snippet content,
+/// stripping technical noise like image placeholders (`[image: Google]`), markdown/bracketed
+/// links (`[link](url)` -> `link`), raw URLs, preheader padding, and email header repetitions.
+pub fn clean_mail_snippet(raw: &str) -> String {
+    if raw.trim().is_empty() {
+        return String::new();
+    }
+
+    // 1. Strip zero-width characters and normalize NBSP
+    let cleaned_chars: String = raw
+        .chars()
+        .filter_map(|c| match c {
+            '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}' | '\u{2060}' | '\u{00AD}' => None,
+            '\u{00A0}' => Some(' '),
+            other => Some(other),
+        })
+        .collect();
+
+    // 2. Strip image placeholders like `[image: Google]`, `[IMAGE: ...]`, `[image]`, `[bild: ...]`, `[logo]`, `[cid:...]`
+    let without_images = strip_image_placeholders(&cleaned_chars);
+
+    // 3. Transform markdown links: `[anchor text](https://url)` -> `anchor text`
+    let without_markdown_links = transform_markdown_links(&without_images);
+
+    // 4. Strip bracketed URLs: `<https://...>`, `[https://...]`, `(https://...)`, `<http://...>`
+    let without_bracketed_urls = strip_bracketed_urls(&without_markdown_links);
+
+    // 5. Strip remaining standalone URLs (http://..., https://..., www....)
+    let without_urls = strip_standalone_urls(&without_bracketed_urls);
+
+    // 6. Strip email header repetitions at the beginning (e.g. "From: ...", "Subject: ...", "Von: ...")
+    let without_headers = strip_leading_headers(&without_urls);
+
+    // 7. Strip markdown bold / italic formatting markers (**bold** -> bold, *italic* -> italic)
+    let without_decorations = strip_markdown_decorations(&without_headers);
+
+    // 8. Collapse whitespace into single spaces and normalize punctuation spacing
+    let mut words = Vec::new();
+    for word in without_decorations.split_whitespace() {
+        let trimmed = word.trim_matches(|c: char| c == '-' || c == '_' || c == '|' || c == '~');
+        if !trimmed.is_empty() {
+            words.push(trimmed);
+        }
+    }
+    let mut collapsed = words.join(" ");
+    for punct in [".", ",", "!", "?", ";", ":"] {
+        let pattern = format!(" {punct}");
+        collapsed = collapsed.replace(&pattern, punct);
+    }
+
+    // 9. Truncate to clean word boundary around 130 characters with ellipsis
+    truncate_to_word_boundary(&collapsed, 130)
+}
+
+/// Convert HTML mail markup into a clean, human-readable preview snippet without technical artifacts.
+pub fn clean_mail_snippet_from_html(html: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    let body_html = if let Some(head_start) = lower.find("<head") {
+        if let Some(head_close) = lower[head_start..].find("</head>") {
+            let after = head_start + head_close + "</head>".len();
+            format!("{}{}", &html[..head_start], &html[after..])
+        } else {
+            html.to_string()
+        }
+    } else {
+        html.to_string()
+    };
+    let plain = html_to_plain_text(&body_html);
+    clean_mail_snippet(&plain)
+}
+
+fn strip_image_placeholders(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let chars: Vec<(usize, char)> = input.char_indices().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        let (byte_pos, ch) = chars[i];
+        if ch == '[' || ch == '(' {
+            let close_ch = if ch == '[' { ']' } else { ')' };
+            if let Some(rel_close) = input[byte_pos + 1..].find(close_ch) {
+                let close_pos = byte_pos + 1 + rel_close;
+                let inner = input[byte_pos + 1..close_pos].trim();
+                let inner_lower = inner.to_ascii_lowercase();
+                let is_img = [
+                    "image", "img", "bild", "photo", "foto", "grafik", "graphic", "icon", "logo", "cid",
+                    "attachment", "anhang",
+                ]
+                .iter()
+                .any(|&prefix| {
+                    if inner_lower.starts_with(prefix) {
+                        let after = &inner_lower[prefix.len()..];
+                        after.is_empty()
+                            || after.starts_with(':')
+                            || after.starts_with(' ')
+                            || after.starts_with('=')
+                            || after.starts_with('/')
+                    } else {
+                        false
+                    }
+                });
+
+                if is_img {
+                    let mut next_byte = close_pos + 1;
+                    let rest = &input[next_byte..];
+                    let trimmed = rest.trim_start();
+                    if trimmed.starts_with('(') {
+                        if let Some(p_close) = trimmed.find(')') {
+                            let p_inner = trimmed[1..p_close].trim().to_ascii_lowercase();
+                            if p_inner.starts_with("http://")
+                                || p_inner.starts_with("https://")
+                                || p_inner.starts_with("www.")
+                                || p_inner.starts_with("mailto:")
+                            {
+                                let ws_len = rest.len() - trimmed.len();
+                                next_byte += ws_len + p_close + 1;
+                            }
+                        }
+                    }
+                    while i < chars.len() && chars[i].0 < next_byte {
+                        i += 1;
+                    }
+                    continue;
+                }
+            }
+        }
+        result.push(ch);
+        i += 1;
+    }
+    result
+}
+
+fn transform_markdown_links(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut cursor = 0;
+
+    while let Some(rel_open) = input[cursor..].find('[') {
+        let open_bracket = cursor + rel_open;
+        result.push_str(&input[cursor..open_bracket]);
+
+        if let Some(rel_close) = input[open_bracket + 1..].find(']') {
+            let close_bracket = open_bracket + 1 + rel_close;
+            let anchor_text = &input[open_bracket + 1..close_bracket];
+
+            let after = &input[close_bracket + 1..];
+            let trimmed_after = after.trim_start();
+            if trimmed_after.starts_with('(') {
+                if let Some(rel_paren_close) = trimmed_after.find(')') {
+                    let target_url = trimmed_after[1..rel_paren_close].trim();
+                    let lower = target_url.to_ascii_lowercase();
+                    let is_url = lower.starts_with("http://")
+                        || lower.starts_with("https://")
+                        || lower.starts_with("mailto:")
+                        || lower.starts_with("tel:")
+                        || lower.starts_with("www.");
+                    if is_url {
+                        result.push_str(anchor_text);
+                        let ws_len = after.len() - trimmed_after.len();
+                        cursor = close_bracket + 1 + ws_len + rel_paren_close + 1;
+                        continue;
+                    }
+                }
+            } else if trimmed_after.starts_with('[') {
+                if let Some(rel_ref_close) = trimmed_after.find(']') {
+                    let ref_id = trimmed_after[1..rel_ref_close].trim();
+                    if ref_id.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+                        result.push_str(anchor_text);
+                        let ws_len = after.len() - trimmed_after.len();
+                        cursor = close_bracket + 1 + ws_len + rel_ref_close + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        result.push('[');
+        cursor = open_bracket + 1;
+    }
+    result.push_str(&input[cursor..]);
+    result
+}
+
+fn strip_bracketed_urls(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let chars: Vec<(usize, char)> = input.char_indices().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        let (byte_pos, ch) = chars[i];
+        if ch == '<' || ch == '[' || ch == '(' {
+            let close_ch = match ch {
+                '<' => '>',
+                '[' => ']',
+                '(' => ')',
+                _ => unreachable!(),
+            };
+            if let Some(rel_close) = input[byte_pos + 1..].find(close_ch) {
+                let close_pos = byte_pos + 1 + rel_close;
+                let candidate = input[byte_pos + 1..close_pos].trim();
+                let lower = candidate.to_ascii_lowercase();
+                let is_url = lower.starts_with("http://")
+                    || lower.starts_with("https://")
+                    || lower.starts_with("www.")
+                    || lower.starts_with("mailto:")
+                    || (lower.contains("://") && (lower.contains("http://") || lower.contains("https://")))
+                    || ((lower.starts_with("link:")
+                        || lower.starts_with("url:")
+                        || lower.starts_with("quelle:")
+                        || lower.starts_with("siehe:")
+                        || lower.starts_with("source:"))
+                        && (lower.contains("http://") || lower.contains("https://") || lower.contains("www.")));
+
+                let is_footnote = ch == '[' && !candidate.is_empty() && candidate.chars().all(|c| c.is_ascii_digit());
+
+                if is_url || is_footnote {
+                    let next_byte = close_pos + 1;
+                    while i < chars.len() && chars[i].0 < next_byte {
+                        i += 1;
+                    }
+                    continue;
+                }
+            }
+        }
+        result.push(ch);
+        i += 1;
+    }
+    result
+}
+
+fn strip_standalone_urls(input: &str) -> String {
+    let mut result = Vec::new();
+    for word in input.split_whitespace() {
+        let trimmed = word.trim_matches(|c: char| {
+            c == '<' || c == '>' || c == '(' || c == ')' || c == '[' || c == ']' || c == '{' || c == '}' || c == '"' || c == '\''
+        });
+        let candidate = trimmed.trim_end_matches(|c: char| c == '.' || c == ',' || c == ';' || c == ':');
+        let lower = candidate.to_ascii_lowercase();
+        let is_url = lower.starts_with("http://")
+            || lower.starts_with("https://")
+            || lower.starts_with("www.")
+            || (lower.starts_with("mailto:") && lower.contains('@'));
+        if !is_url {
+            result.push(word);
+        }
+    }
+    result.join(" ")
+}
+
+fn strip_leading_headers(input: &str) -> String {
+    let mut lines = input.lines().peekable();
+    let mut skipped = false;
+
+    while let Some(&line) = lines.peek() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            lines.next();
+            continue;
+        }
+
+        let is_sep = (trimmed.starts_with("---") && trimmed.ends_with("---"))
+            || (trimmed.starts_with("===") && trimmed.ends_with("==="))
+            || (trimmed.starts_with("___") && trimmed.ends_with("___"));
+        if is_sep {
+            lines.next();
+            skipped = true;
+            continue;
+        }
+
+        let lower = trimmed.to_ascii_lowercase();
+        let is_hdr = lower.starts_with("von:")
+            || lower.starts_with("from:")
+            || lower.starts_with("gesendet:")
+            || lower.starts_with("sent:")
+            || lower.starts_with("datum:")
+            || lower.starts_with("date:")
+            || lower.starts_with("an:")
+            || lower.starts_with("to:")
+            || lower.starts_with("cc:")
+            || lower.starts_with("betreff:")
+            || lower.starts_with("subject:")
+            || lower.starts_with("ursprüngliche nachricht")
+            || lower.starts_with("original message");
+
+        if is_hdr {
+            lines.next();
+            skipped = true;
+            continue;
+        }
+
+        break;
+    }
+
+    if skipped {
+        let remaining: Vec<&str> = lines.collect();
+        if !remaining.is_empty() {
+            let joined = remaining.join("\n");
+            if !joined.trim().is_empty() {
+                return joined;
+            }
+        }
+    }
+    input.to_string()
+}
+
+fn strip_markdown_decorations(input: &str) -> String {
+    let s = input.replace("**", "").replace("__", "");
+    let mut result = Vec::new();
+    for line in s.lines() {
+        let trimmed = line.trim_start();
+        let stripped = trimmed
+            .trim_start_matches('#')
+            .trim_start_matches(|c: char| c == '*' || c == '-' || c == '•');
+        result.push(stripped.trim());
+    }
+    result.join(" ")
+}
+
+fn truncate_to_word_boundary(text: &str, max_chars: usize) -> String {
+    let count = text.chars().count();
+    if count <= max_chars {
+        return text.to_string();
+    }
+    let prefix: String = text.chars().take(max_chars).collect();
+    let min_boundary = (max_chars * 3) / 5;
+    if let Some(last_space) = prefix.rfind(' ') {
+        if prefix[..last_space].chars().count() >= min_boundary {
+            let trimmed = prefix[..last_space].trim_end_matches(|c: char| {
+                c == ',' || c == '.' || c == ';' || c == ':' || c == '-' || c == '!' || c == '?'
+            });
+            return format!("{trimmed}…");
+        }
+    }
+    format!("{prefix}…")
+}
+
 fn strip_style_blocks(input: &str) -> String {
     let lower = input.to_ascii_lowercase();
     let mut output = String::with_capacity(input.len());
@@ -1572,4 +1906,111 @@ mod tests {
         assert!(!sanitized.contains("Enable JS"));
         assert!(sanitized.contains("<p>Visible Content</p>"));
     }
+
+    #[test]
+    fn clean_mail_snippet_strips_image_placeholders_and_bracketed_urls() {
+        let text = "[image: Google] Dein Sicherheitscode lautet 482910. Bitte nicht weitergeben.";
+        assert_eq!(
+            clean_mail_snippet(text),
+            "Dein Sicherheitscode lautet 482910. Bitte nicht weitergeben."
+        );
+
+        let img_case = "[IMAGE: Company Logo] [image] Willkommen im Team!";
+        assert_eq!(clean_mail_snippet(img_case), "Willkommen im Team!");
+
+        let german_img = "[Bild: Foto von Max] Guten Tag Herr Mustermann";
+        assert_eq!(
+            clean_mail_snippet(german_img),
+            "Guten Tag Herr Mustermann"
+        );
+    }
+
+    #[test]
+    fn clean_mail_snippet_transforms_markdown_links_and_strips_urls() {
+        let md = "Besuchen Sie [unsere Hilfeseite](https://support.example.com/help?id=123) für mehr Infos.";
+        assert_eq!(
+            clean_mail_snippet(md),
+            "Besuchen Sie unsere Hilfeseite für mehr Infos."
+        );
+
+        let bracketed = "Hier klicken <https://example.com/very/long/url> oder (https://alt.example.com)";
+        assert_eq!(clean_mail_snippet(bracketed), "Hier klicken oder");
+
+        let standalone = "Projektstatus ist grün. Siehe https://jira.example.org/browse/DEV-42 für Details.";
+        assert_eq!(
+            clean_mail_snippet(standalone),
+            "Projektstatus ist grün. Siehe für Details."
+        );
+    }
+
+    #[test]
+    fn clean_mail_snippet_strips_preheader_padding_and_zero_width_chars() {
+        let preheader_padding = "\u{200c}\u{200b}\u{a0}\u{a0}\u{200c}\u{a0}   Ihr monatlicher Kontoauszug ist verfügbar.   ";
+        assert_eq!(
+            clean_mail_snippet(preheader_padding),
+            "Ihr monatlicher Kontoauszug ist verfügbar."
+        );
+    }
+
+    #[test]
+    fn clean_mail_snippet_from_html_cleans_html_entities_and_markup() {
+        let html = "<html><body><p>[image: Newsletter] <strong>Wichtige Ankündigung:</strong> Neue Features online! &amp; mehr.</p></body></html>";
+        assert_eq!(
+            clean_mail_snippet_from_html(html),
+            "Wichtige Ankündigung: Neue Features online! & mehr."
+        );
+    }
+
+    #[test]
+    fn clean_mail_snippet_truncates_at_word_boundary() {
+        let long_text = "Dies ist ein sehr langer Text mit vielen Wörtern der definitiv die maximale Längenbegrenzung von hundertdreißig Zeichen überschreiten wird damit das Verhalten bei der Wortkürzung überprüft werden kann.";
+        let snippet = clean_mail_snippet(long_text);
+        assert!(snippet.ends_with('…'));
+        assert!(snippet.chars().count() <= 135);
+        // Ensure no word was cut in half right before ellipsis
+        let before_ellipsis = snippet.trim_end_matches('…');
+        assert!(!before_ellipsis.ends_with(' '));
+    }
+
+    #[test]
+    fn clean_mail_snippet_handles_complex_noise_and_links() {
+        // Image placeholder with attached link
+        let img_link = "[image: Google](https://google.com) Willkommen bei Ihrem neuen Konto.";
+        assert_eq!(clean_mail_snippet(img_link), "Willkommen bei Ihrem neuen Konto.");
+
+        let img_link_spaced = "[image: Logo] (https://cdn.example.com/logo.png) Unser Quartalsbericht";
+        assert_eq!(clean_mail_snippet(img_link_spaced), "Unser Quartalsbericht");
+
+        // Parenthesized image
+        let paren_img = "(image: Google) Hallo Welt";
+        assert_eq!(clean_mail_snippet(paren_img), "Hallo Welt");
+
+        // Markdown link with space before parenthesis
+        let spaced_md = "Besuchen Sie [unsere Webseite] (https://example.com) für Details.";
+        assert_eq!(clean_mail_snippet(spaced_md), "Besuchen Sie unsere Webseite für Details.");
+
+        // Non-URL bracket followed by URL bracket (the bug where first non-URL bracket stopped scanning)
+        let mixed_brackets = "Hallo (Hinweis) hier ist der Link (https://example.com/page). Schönen Tag!";
+        assert_eq!(
+            clean_mail_snippet(mixed_brackets),
+            "Hallo (Hinweis) hier ist der Link. Schönen Tag!"
+        );
+
+        // Footnote references in plain text
+        let footnote = "Wichtige Neuigkeiten [1] zum Projektstatus [2]. Weitere Infos folgen.";
+        assert_eq!(
+            clean_mail_snippet(footnote),
+            "Wichtige Neuigkeiten zum Projektstatus. Weitere Infos folgen."
+        );
+    }
+
+    #[test]
+    fn test_clean_mail_snippet_from_html_strips_head_and_artifacts() {
+        let html = r#"<html><head><title>Re: Status Update</title><style>.msg { color: blue; }</style></head><body><div class="preheader" style="display:none">[image: Google]</div><p>Hallo Martin, hier ist die Zusammenfassung unserer Besprechung.</p></body></html>"#;
+        assert_eq!(
+            clean_mail_snippet_from_html(html),
+            "Hallo Martin, hier ist die Zusammenfassung unserer Besprechung."
+        );
+    }
 }
+

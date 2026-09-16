@@ -11,12 +11,41 @@ use super::mail_metadata_service::MailFollowUpState;
 use super::mail_store_service::{MailBackendLocation, ParsedMail, assign_thread_metadata};
 use super::mail_transport_service::{MailTransportMode, MailTransportService};
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 static CAMEL_NATIVE_LOCK: Mutex<()> = Mutex::new(());
+
+const RAW_MESSAGE_MEMORY_CACHE_LIMIT: usize = 64;
+
+type RawCacheKey = (String, String, String);
+
+static RAW_MESSAGE_CACHE: Mutex<VecDeque<(RawCacheKey, Arc<Vec<u8>>)>> =
+    Mutex::new(VecDeque::new());
+
+fn get_cached_raw_message(key: &RawCacheKey) -> Option<Vec<u8>> {
+    let mut cache = RAW_MESSAGE_CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(pos) = cache.iter().position(|(k, _)| k == key) {
+        let (k, data) = cache.remove(pos).unwrap();
+        let result = (*data).clone();
+        cache.push_front((k, data));
+        return Some(result);
+    }
+    None
+}
+
+fn put_cached_raw_message(key: RawCacheKey, data: Vec<u8>) {
+    let mut cache = RAW_MESSAGE_CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(pos) = cache.iter().position(|(k, _)| k == &key) {
+        cache.remove(pos);
+    }
+    cache.push_front((key, Arc::new(data)));
+    while cache.len() > RAW_MESSAGE_MEMORY_CACHE_LIMIT {
+        cache.pop_back();
+    }
+}
 
 const DEFAULT_MAIL_PAGE_SIZE: usize = 100;
 const MAX_MAIL_PAGE_SIZE: usize = 1_000;
@@ -1258,19 +1287,39 @@ impl CamelMailLoad {
             return false;
         };
 
-        self.folders.iter().any(|folder| {
-            let source_matches = source_uid
-                .map(|uid| folder.source_uid == uid)
-                .unwrap_or(true);
-            let folder_matches = folder_name
-                .map(|name| folder_matches_name(&folder.folder_name, name))
-                .unwrap_or_else(|| !self.is_graph || is_initial_graph_folder(&folder.folder_name));
+        if self.folders.is_empty() {
+            return self.messages.len() >= window.limit;
+        }
 
-            source_matches
-                && folder_matches
-                && folder.is_selectable
-                && (folder.total_count as usize) > next_offset
-        })
+        let matching_folders: Vec<_> = self
+            .folders
+            .iter()
+            .filter(|folder| {
+                let source_matches = source_uid
+                    .map(|uid| folder.source_uid == uid)
+                    .unwrap_or(true);
+                let folder_matches = folder_name
+                    .map(|name| folder_matches_name(&folder.folder_name, name))
+                    .unwrap_or_else(|| !self.is_graph || is_initial_graph_folder(&folder.folder_name));
+
+                source_matches && folder_matches && folder.is_selectable
+            })
+            .collect();
+
+        if !matching_folders.is_empty() {
+            let has_uncounted = matching_folders.iter().any(|folder| folder.total_count <= 0);
+            let total_known_count: usize = matching_folders
+                .iter()
+                .map(|folder| folder.total_count.max(0) as usize)
+                .sum();
+            if has_uncounted {
+                (total_known_count > next_offset) || (self.messages.len() >= window.limit)
+            } else {
+                total_known_count > next_offset
+            }
+        } else {
+            self.messages.len() >= window.limit
+        }
     }
 }
 
@@ -2581,6 +2630,25 @@ pub(crate) fn load_raw_message(
     location: &MailBackendLocation,
     cancelled: &Arc<AtomicBool>,
 ) -> Result<Vec<u8>, String> {
+    let cache_key = (
+        location.source_uid.clone(),
+        location.folder_name.clone(),
+        location.message_uid.clone(),
+    );
+    if let Some(cached) = get_cached_raw_message(&cache_key) {
+        cancellation_error(cancelled, "Nachrichtenquelle laden")?;
+        return Ok(cached);
+    }
+
+    let source = load_raw_message_uncached(location, cancelled)?;
+    put_cached_raw_message(cache_key, source.clone());
+    Ok(source)
+}
+
+fn load_raw_message_uncached(
+    location: &MailBackendLocation,
+    cancelled: &Arc<AtomicBool>,
+) -> Result<Vec<u8>, String> {
     if let Some(service) =
         super::exchange_service::graph_service_for_source_worker(&location.source_uid)
     {
@@ -3234,6 +3302,21 @@ mod tests {
         assert!(!load.has_more_for(Some("account-a"), Some("Sent"), 0, 10));
         assert!(!load.has_more_for(Some("account-a"), Some("INBOX"), 10, 10));
         assert!(load.has_more_for(Some("account-a"), Some("inbox"), 0, 10));
+
+        // When folder total_count is 0 (e.g. uninitialized or IMAP without count)
+        let mut load_uncounted = load.clone();
+        load_uncounted.folders[0].total_count = 0;
+        // With empty messages, no more
+        assert!(!load_uncounted.has_more_for(Some("account-a"), Some("INBOX"), 0, 10));
+        // With a full batch (10 items >= limit 10), there are more
+        load_uncounted.messages = (0..10).map(|i| parsed_mail(&format!("msg-{i}"), &format!("uid-{i}"))).collect();
+        assert!(load_uncounted.has_more_for(Some("account-a"), Some("INBOX"), 0, 10));
+        // With a partial batch (5 items < limit 10), we reached the end
+        load_uncounted.messages = (0..5).map(|i| parsed_mail(&format!("msg-{i}"), &format!("uid-{i}"))).collect();
+        // Multi-folder / unified inbox scenario:
+        assert!(load.has_more_for(None, Some("INBOX"), 0, 10));
+        assert!(load.has_more_for(None, None, 0, 10));
+        assert!(!load.has_more_for(None, Some("INBOX"), 20, 10));
     }
 
     #[test]

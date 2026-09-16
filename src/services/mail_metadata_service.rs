@@ -618,6 +618,8 @@ struct RemoteContentFile {
     version: u32,
     #[serde(default)]
     allowed_message_ids: HashSet<String>,
+    #[serde(default)]
+    allowed_senders: HashSet<String>,
 }
 
 /// Persistent per-message approval for loading remote HTML content/images.
@@ -664,11 +666,39 @@ impl RemoteContentStore {
         file.allowed_message_ids.contains(message_id)
     }
 
+    pub fn is_sender_allowed(&self, sender: &str) -> bool {
+        let sender = sender.trim().to_lowercase();
+        if sender.is_empty() {
+            return false;
+        }
+        let Ok(raw) = fs::read(&self.path) else {
+            return false;
+        };
+        let Ok(file) = serde_json::from_slice::<RemoteContentFile>(&raw) else {
+            tracing::warn!(path = %self.path.display(), "Ignoring invalid remote content file");
+            return false;
+        };
+        if file.version != REMOTE_CONTENT_VERSION {
+            tracing::warn!(
+                path = %self.path.display(),
+                version = file.version,
+                expected = REMOTE_CONTENT_VERSION,
+                "Ignoring unsupported remote content version"
+            );
+            return false;
+        }
+        file.allowed_senders.contains(&sender)
+    }
+
     /// Load the approval set once for a long-lived viewer. The viewer updates
     /// its in-memory copy after successful writes, avoiding filesystem and
     /// JSON work on every message selection.
     pub(crate) fn allowed_message_ids(&self) -> HashSet<String> {
         self.load_file().allowed_message_ids
+    }
+
+    pub(crate) fn allowed_senders(&self) -> HashSet<String> {
+        self.load_file().allowed_senders
     }
 
     pub fn set_allowed(&self, message_id: &str, allowed: bool) -> io::Result<()> {
@@ -681,6 +711,28 @@ impl RemoteContentStore {
             file.allowed_message_ids.insert(message_id.to_string());
         } else {
             file.allowed_message_ids.remove(message_id);
+        }
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let encoded = serde_json::to_vec_pretty(&file)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let temporary_path = self.path.with_extension("json.tmp");
+        fs::write(&temporary_path, encoded)?;
+        fs::rename(temporary_path, &self.path)
+    }
+
+    pub fn set_sender_allowed(&self, sender: &str, allowed: bool) -> io::Result<()> {
+        let sender = sender.trim().to_lowercase();
+        if sender.is_empty() {
+            return Ok(());
+        }
+        let _lock = AppSidecarFileLock::acquire(&self.path)?;
+        let mut file = self.load_file_for_update()?;
+        if allowed {
+            file.allowed_senders.insert(sender);
+        } else {
+            file.allowed_senders.remove(&sender);
         }
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
@@ -723,6 +775,7 @@ fn empty_remote_content_file() -> RemoteContentFile {
     RemoteContentFile {
         version: REMOTE_CONTENT_VERSION,
         allowed_message_ids: HashSet::new(),
+        allowed_senders: HashSet::new(),
     }
 }
 
@@ -1193,6 +1246,20 @@ mod tests {
             .set_allowed("message-1", false)
             .expect("remote content approval should be revocable");
         assert!(!RemoteContentStore::new(&path).is_allowed("message-1"));
+
+        // Test sender whitelisting
+        assert!(!store.is_sender_allowed("friend@example.com"));
+        store
+            .set_sender_allowed("friend@example.com", true)
+            .expect("sender approval should save");
+        assert!(RemoteContentStore::new(&path).is_sender_allowed("friend@example.com"));
+        assert!(RemoteContentStore::new(&path).is_sender_allowed("FRIEND@EXAMPLE.COM"));
+        assert!(RemoteContentStore::new(&path).allowed_senders().contains("friend@example.com"));
+        RemoteContentStore::new(&path)
+            .set_sender_allowed("friend@example.com", false)
+            .expect("sender approval should be revocable");
+        assert!(!RemoteContentStore::new(&path).is_sender_allowed("friend@example.com"));
+
         let _ = fs::remove_dir_all(root);
     }
 

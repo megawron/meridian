@@ -1053,10 +1053,12 @@ load_folder (LoadContext *context,
                 remember_error (context, current->full_name, error);
                 g_clear_error (&error);
             } else {
-                if (!camel_folder_refresh_info_sync (
-                        folder, cancellable, &error)) {
-                    remember_error (context, current->full_name, error);
-                    g_clear_error (&error);
+                if (context->message_offset == 0) {
+                    if (!camel_folder_refresh_info_sync (
+                            folder, cancellable, &error)) {
+                        remember_error (context, current->full_name, error);
+                        g_clear_error (&error);
+                    }
                 }
 
                 #if EDS_BRIDGE_HAS_DUP_UIDS
@@ -2108,7 +2110,6 @@ evolution_eds_camel_load_messages_by_uid (
     ESource *source = NULL;
     CamelStore *store = NULL;
     CamelFolder *folder = NULL;
-    CamelFolderInfo *folder_info = NULL;
     GCancellable *cancellable = NULL;
     CancellationMonitor *cancellation_monitor = NULL;
     LoadContext context = { 0 };
@@ -2172,24 +2173,13 @@ evolution_eds_camel_load_messages_by_uid (
     if (!folder)
         goto finish;
 
-    /* The caller already has an exact folder and UID (reader selection or
-     * folder-changed notification). As in EMailReader, retrieve that message
-     * directly: refreshing the summary and recursively listing the entire
-     * account here adds network round trips before every message display. */
-    folder_info = camel_store_get_folder_info_sync (
-        store, folder_name,
-        CAMEL_STORE_FOLDER_INFO_FAST,
-        cancellable, &error);
-    if (folder_info)
-        matching_folder = find_folder_info_by_name (folder_info, folder_name);
-    else
-        g_clear_error (&error);
-
+    /* The caller already has an exact folder and UID. We have the CamelFolder
+     * directly; avoid camel_store_get_folder_info_sync which triggers slow
+     * synchronous network roundtrips to IMAP/Exchange servers on every message click. */
     synthetic_folder.full_name = (gchar *) folder_name;
     synthetic_folder.display_name = (gchar *) folder_name;
     synthetic_folder.flags = 0;
-    if (!matching_folder)
-        matching_folder = &synthetic_folder;
+    matching_folder = &synthetic_folder;
 
     for (ii = 0; ii < message_uid_count; ii++) {
         CamelMessageInfo *message_info = NULL;
@@ -2251,7 +2241,6 @@ finish:
 
     g_free (context.first_error);
     evolution_eds_camel_free_messages (context.messages, context.count);
-    camel_folder_info_free (folder_info);
     g_clear_error (&error);
     cancellation_monitor_free (cancellation_monitor);
     g_clear_object (&cancellable);
