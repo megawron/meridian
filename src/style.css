@@ -1674,8 +1674,8 @@ button.month-bar-chip.span-end {
 
 /* Event details popover (Evolution & Lookout / GNOME HIG style) */
 .calendar-details-popover {
-  min-width: 320px;
-  padding: 2px;
+  min-width: 290px;
+  padding: 0;
 }
 
 .calendar-details-header {
@@ -1925,11 +1925,12 @@ button.month-bar-chip.span-end {
 }
 
 .contacts-alphabet-btn {
-  min-width: 24px;
-  max-width: 24px;
+  width: 25px;
+  min-width: 25px;
+  max-width: 25px;
   min-height: 20px;
   max-height: 22px;
-  padding: 1px 2px 1px 4px;
+  padding: 1px 3px;
   margin: 0;
   margin-right: 0;
   font-weight: 700;
@@ -1943,21 +1944,16 @@ button.month-bar-chip.span-end {
   background-color: @card_bg_color;
   color: @window_fg_color;
   box-shadow: -1px 1px 2px alpha(black, 0.08);
-  transition: min-width 150ms ease,
-              max-width 150ms ease,
-              padding 150ms ease,
-              background-color 150ms ease,
-              box-shadow 150ms ease,
-              border-color 150ms ease;
+  transition: background-color 120ms ease,
+              border-color 120ms ease,
+              box-shadow 120ms ease,
+              color 120ms ease;
 }
 
 .contacts-alphabet-btn:hover {
-  background-color: alpha(@window_fg_color, 0.14);
+  background-color: alpha(@window_fg_color, 0.12);
   border-color: alpha(@window_fg_color, 0.38);
-  min-width: 28px;
-  max-width: 28px;
-  padding: 1px 2px 1px 6px;
-  box-shadow: -2px 1px 4px alpha(black, 0.14);
+  box-shadow: -1px 1px 3px alpha(black, 0.14);
 }
 
 .contacts-alphabet-btn:active {
@@ -2035,7 +2031,7 @@ button.month-bar-chip.span-end {
   margin: 0;
 }
 
-/* Contact Card View — Compact Business Cards (200x100px) */
+/* Contact Card View — Modern Libadwaita Cards (min 200x124px, responsive) */
 .contact-cards-flow {
   background-color: transparent;
 }
@@ -2044,61 +2040,64 @@ button.month-bar-chip.span-end {
   background: transparent;
   padding: 0;
   margin: 0;
-  border-radius: 8px;
+  border-radius: 12px;
 }
 
 .contact-card-box {
   background-color: @card_bg_color;
-  border-radius: 8px;
-  border: 1px solid alpha(@window_fg_color, 0.12);
-  padding: 6px 8px;
-  box-shadow: 0 1px 2px alpha(black, 0.05);
-  transition: box-shadow 150ms ease, border-color 150ms ease, transform 150ms ease;
-  min-width: 190px;
-  height: 100px;
-  min-height: 100px;
-  max-height: 100px;
+  border-radius: 12px;
+  border: 1px solid alpha(@window_fg_color, 0.09);
+  padding: 8px 10px;
+  box-shadow: 0 1px 3px alpha(black, 0.05), 0 1px 2px alpha(black, 0.03);
+  transition: box-shadow 160ms ease, border-color 160ms ease, transform 160ms ease;
+  min-width: 130px;
+  height: 124px;
+  min-height: 124px;
+  max-height: 124px;
   overflow: hidden;
 }
 
 .contact-card-child:hover .contact-card-box {
-  border-color: alpha(@window_fg_color, 0.28);
-  box-shadow: 0 2px 6px alpha(black, 0.09);
+  border-color: alpha(@window_fg_color, 0.22);
+  box-shadow: 0 4px 12px alpha(black, 0.09), 0 1px 3px alpha(black, 0.05);
+  transform: translateY(-2px);
 }
 
 .contact-card-child:selected .contact-card-box {
   border-color: @accent_bg_color;
-  box-shadow: 0 0 0 2px @accent_bg_color, 0 2px 6px alpha(black, 0.12);
+  box-shadow: 0 0 0 2px @accent_bg_color, 0 4px 12px alpha(black, 0.12);
+  background-color: alpha(@accent_bg_color, 0.04);
 }
 
 .contact-card-name {
-  font-weight: 700;
-  font-size: 0.98rem;
-  line-height: 1.2;
+  font-weight: 600;
+  font-size: 1.02rem;
+  line-height: 1.25;
+  color: @window_fg_color;
 }
 
 .contact-card-sub {
-  font-size: 0.88rem;
+  font-size: 0.85rem;
   line-height: 1.2;
-  opacity: 0.8;
+  opacity: 0.75;
 }
 
 .contact-card-detail-text {
-  font-size: 0.92rem;
+  font-size: 0.88rem;
   line-height: 1.25;
 }
 
 .card-separator {
-  margin: 3px 0 4px 0;
-  opacity: 0.35;
+  margin: 2px 0;
+  opacity: 0.15;
 }
 
 .contact-card-badge {
-  background-color: alpha(@window_fg_color, 0.08);
-  color: alpha(@window_fg_color, 0.85);
+  background-color: alpha(@accent_bg_color, 0.12);
+  color: @accent_color;
   border-radius: 9999px;
-  padding: 2px 8px;
-  font-size: 0.85rem;
+  padding: 1px 6px;
+  font-size: 0.72rem;
   font-weight: 600;
 }
 
@@ -2475,4 +2474,116 @@ button.month-bar-chip.span-end {
 
 .contacts-table-canvas:focus {
   outline: none;
+}
+
+/* ── Agenda / To Do Sidebar (Parity with Left Sidebar Drawer) ── */
+.todo-sidebar {
+  background-color: @window_bg_color;
+  border-left: 1px solid alpha(@borders, 0.45);
+}
+
+.agenda-sidebar-canvas {
+  background-color: transparent;
+}
+
+.agenda-sidebar-canvas:focus {
+  outline: none;
+}
+
+.todo-sidebar .navigation-sidebar {
+  padding: 1px 2px 4px 2px;
+  background-color: transparent;
+}
+
+.agenda-day-header {
+  min-height: 24px;
+  padding: 1px 4px;
+  margin: 0;
+  border-radius: 4px;
+  transition: background-color 150ms ease;
+}
+
+.agenda-day-header:hover {
+  background-color: alpha(@window_fg_color, 0.05);
+}
+
+.agenda-day-header label.heading {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: @window_fg_color;
+}
+
+.agenda-day-header image {
+  min-width: 12px;
+  min-height: 12px;
+  color: @window_fg_color;
+}
+
+.agenda-event-row {
+  min-height: 24px;
+  padding: 1px 4px;
+  margin: 0;
+  border-radius: 4px;
+  transition: background-color 150ms ease;
+}
+
+.agenda-event-row:hover {
+  background-color: alpha(@window_fg_color, 0.05);
+}
+
+.agenda-event-row.selected {
+  background-color: @accent_bg_color !important;
+  color: @accent_fg_color !important;
+}
+
+.agenda-event-row.selected label,
+.agenda-event-row.selected image {
+  color: @accent_fg_color !important;
+}
+
+.agenda-event-time {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: alpha(@window_fg_color, 0.75);
+  margin-right: 2px;
+}
+
+.agenda-event-title {
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: @window_fg_color;
+}
+
+.agenda-task-row {
+  min-height: 24px;
+  padding: 1px 4px;
+  margin: 0;
+  border-radius: 4px;
+  transition: background-color 150ms ease;
+}
+
+.agenda-task-row:hover {
+  background-color: alpha(@window_fg_color, 0.05);
+}
+
+.agenda-task-row.selected {
+  background-color: @accent_bg_color !important;
+  color: @accent_fg_color !important;
+}
+
+.agenda-task-row.selected label {
+  color: @accent_fg_color !important;
+}
+
+.agenda-task-row checkbutton {
+  min-height: 16px;
+  min-width: 16px;
+  padding: 0;
+  margin: 0 4px 0 0;
+}
+
+.agenda-task-row label {
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: @window_fg_color;
 }

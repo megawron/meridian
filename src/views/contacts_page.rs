@@ -972,8 +972,6 @@ impl ContactsPage {
                 let page_weak = page_weak.clone();
                 let render_holder = Rc::clone(&render_holder);
 
-                crate::services::eds_service::invalidate_account_collections_cache();
-
                 let default_source_uid = AppSettings::try_new()
                     .map(|settings| settings.default_address_book_source_uid())
                     .unwrap_or_default();
@@ -4226,23 +4224,28 @@ impl ContactsPage {
         paned.set_shrink_end_child(false);
 
         let sidebar_position = AppSettings::try_new()
-            .map(|settings| settings.contact_hpane_position())
-            .unwrap_or(200)
+            .map(|settings| settings.mail_sidebar_position())
+            .unwrap_or(260)
             .clamp(80, 1500);
         paned.set_position(sidebar_position);
         if let Some(settings) = AppSettings::try_new() {
             let settings_for_notify = settings.clone();
             paned.connect_position_notify(move |paned| {
                 let position = paned.position();
-                if (80..=1500).contains(&position) && settings_for_notify.contact_hpane_position() != position {
-                    settings_for_notify.set_contact_hpane_position(position);
+                if (80..=1500).contains(&position) {
+                    if settings_for_notify.mail_sidebar_position() != position {
+                        settings_for_notify.set_mail_sidebar_position(position);
+                    }
+                    if settings_for_notify.contact_hpane_position() != position {
+                        settings_for_notify.set_contact_hpane_position(position);
+                    }
                 }
             });
 
             let paned_weak = paned.downgrade();
-            settings.connect_changed(Some("contact-hpane-position"), move |settings, _| {
+            settings.connect_changed(Some("mail-sidebar-position"), move |settings, _| {
                 if let Some(paned) = paned_weak.upgrade() {
-                    let pos = settings.int("contact-hpane-position").clamp(80, 1500);
+                    let pos = settings.int("mail-sidebar-position").clamp(80, 1500);
                     if (paned.position() - pos).abs() > 1 {
                         paned.set_position(pos);
                     }
@@ -4549,37 +4552,18 @@ fn refresh_contacts(
                 // an empty/error/warning message the user needs to see.
                 empty_state.set_visible(contact_status_needs_visibility(contact_count, warning));
                 let contacts = result.contacts;
-                let chunk_size = 100;
-                let mut index = 0;
-                while index < contacts.len() {
-                    if !is_current() || !page_is_alive() {
-                        return;
+                let flow_opt = page_weak
+                    .upgrade()
+                    .and_then(|p| p.imp().contact_cards_flow.borrow().clone());
+                let mut stored_ref = stored_contacts.borrow_mut();
+                for record in &contacts {
+                    append_contact_row(&contact_list, record);
+                    if let Some(flow) = flow_opt.as_ref() {
+                        append_contact_card(flow, record);
                     }
-                    let end = (index + chunk_size).min(contacts.len());
-                    let flow_opt = page_weak
-                        .upgrade()
-                        .and_then(|p| p.imp().contact_cards_flow.borrow().clone());
-                    let mut stored_ref = stored_contacts.borrow_mut();
-                    for record in &contacts[index..end] {
-                        append_contact_row(&contact_list, record);
-                        if let Some(flow) = flow_opt.as_ref() {
-                            append_contact_card(flow, record);
-                        }
-                        stored_ref.push(record.clone());
-                    }
-                    drop(stored_ref);
-                    index = end;
-                    if index < contacts.len() {
-                        glib::timeout_future_with_priority(
-                            glib::Priority::LOW,
-                            std::time::Duration::from_millis(5),
-                        )
-                        .await;
-                        if !is_current() || !page_is_alive() {
-                            return;
-                        }
-                    }
+                    stored_ref.push(record.clone());
                 }
+                drop(stored_ref);
                 mark_duplicate_rows(&contact_list, &stored_contacts);
                 refresh_contact_category_model(
                     &category_model,
@@ -6929,7 +6913,7 @@ fn append_contact_card(flow: &gtk::FlowBox, record: &EBookContactRecord) {
     let card_child = gtk::FlowBoxChild::new();
     card_child.set_focusable(true);
     card_child.add_css_class("contact-card-child");
-    card_child.set_size_request(200, 100);
+    card_child.set_size_request(130, 124);
     card_child.set_halign(gtk::Align::Fill);
     card_child.set_valign(gtk::Align::Fill);
     card_child.set_hexpand(true);
@@ -6953,10 +6937,10 @@ fn append_contact_card(flow: &gtk::FlowBox, record: &EBookContactRecord) {
 
     let card_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(2)
+        .spacing(6)
         .css_classes(vec!["card", "contact-card-box"])
-        .width_request(200)
-        .height_request(100)
+        .width_request(130)
+        .height_request(124)
         .halign(gtk::Align::Fill)
         .valign(gtk::Align::Fill)
         .hexpand(true)
@@ -6971,7 +6955,7 @@ fn append_contact_card(flow: &gtk::FlowBox, record: &EBookContactRecord) {
         .build();
 
     let avatar = adw::Avatar::builder()
-        .size(34)
+        .size(38)
         .text(&contact.fn_name)
         .show_initials(true)
         .build();
@@ -6980,7 +6964,7 @@ fn append_contact_card(flow: &gtk::FlowBox, record: &EBookContactRecord) {
 
     let title_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(1)
+        .spacing(2)
         .valign(gtk::Align::Center)
         .hexpand(true)
         .build();
@@ -6991,6 +6975,7 @@ fn append_contact_card(flow: &gtk::FlowBox, record: &EBookContactRecord) {
         .hexpand(true)
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .width_chars(1)
+        .max_width_chars(10)
         .css_classes(vec!["contact-card-name"])
         .lines(1)
         .build();
@@ -7012,21 +6997,32 @@ fn append_contact_card(flow: &gtk::FlowBox, record: &EBookContactRecord) {
             .hexpand(true)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .width_chars(1)
+            .max_width_chars(10)
             .css_classes(vec!["dim-label", "contact-card-sub"])
             .lines(1)
             .build();
         title_box.append(&sub_label);
     }
     header_box.append(&title_box);
-    card_box.append(&header_box);
 
-    let sep = gtk::Separator::new(gtk::Orientation::Horizontal);
-    sep.add_css_class("card-separator");
-    card_box.append(&sep);
+    if let Some(cat) = contact.categories.first().filter(|c| !c.trim().is_empty()) {
+        let badge = gtk::Label::builder()
+            .label(cat)
+            .valign(gtk::Align::Start)
+            .halign(gtk::Align::End)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .max_width_chars(8)
+            .width_chars(1)
+            .css_classes(vec!["caption", "contact-card-badge"])
+            .build();
+        header_box.append(&badge);
+    }
+
+    card_box.append(&header_box);
 
     let details_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(2)
+        .spacing(4)
         .valign(gtk::Align::Start)
         .vexpand(false)
         .hexpand(true)
@@ -7053,6 +7049,7 @@ fn append_contact_card(flow: &gtk::FlowBox, record: &EBookContactRecord) {
             .hexpand(true)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .width_chars(1)
+            .max_width_chars(11)
             .css_classes(vec!["contact-card-detail-text"])
             .lines(1)
             .build();
@@ -7087,6 +7084,7 @@ fn append_contact_card(flow: &gtk::FlowBox, record: &EBookContactRecord) {
             .hexpand(true)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .width_chars(1)
+            .max_width_chars(11)
             .css_classes(vec!["contact-card-detail-text"])
             .lines(1)
             .build();
@@ -7120,6 +7118,7 @@ fn append_contact_card(flow: &gtk::FlowBox, record: &EBookContactRecord) {
                     .hexpand(true)
                     .ellipsize(gtk::pango::EllipsizeMode::End)
                     .width_chars(1)
+                    .max_width_chars(11)
                     .css_classes(vec!["contact-card-detail-text"])
                     .lines(1)
                     .build();
@@ -7127,26 +7126,6 @@ fn append_contact_card(flow: &gtk::FlowBox, record: &EBookContactRecord) {
                 details_box.append(&addr_row);
                 detail_rows += 1;
             }
-        }
-    }
-
-    if detail_rows < MAX_DETAIL_ROWS {
-        if let Some(cat) = contact.categories.first().filter(|c| !c.trim().is_empty()) {
-            let cat_box = gtk::Box::builder()
-                .orientation(gtk::Orientation::Horizontal)
-                .spacing(4)
-                .margin_top(1)
-                .hexpand(false)
-                .build();
-            let badge = gtk::Label::builder()
-                .label(cat)
-                .ellipsize(gtk::pango::EllipsizeMode::End)
-                .max_width_chars(16)
-                .width_chars(1)
-                .css_classes(vec!["caption", "contact-card-badge"])
-                .build();
-            cat_box.append(&badge);
-            details_box.append(&cat_box);
         }
     }
 
@@ -8334,22 +8313,23 @@ mod tests {
         let paned = page.outer_paned().expect("outer paned exists");
 
         if let Some(settings) = crate::services::settings_service::AppSettings::try_new() {
-            settings.set_contact_hpane_position(320);
             settings.set_mail_sidebar_position(210);
+            settings.set_contact_hpane_position(210);
 
             // Re-sync with position
             paned.set_position(320);
             while context.iteration(false) {}
+            assert_eq!(settings.mail_sidebar_position(), 320);
             assert_eq!(settings.contact_hpane_position(), 320);
 
-            // Moving paned must write contact_hpane_position, NOT mail_sidebar_position
+            // Moving paned must write mail_sidebar_position and contact_hpane_position
             paned.set_position(440);
             while context.iteration(false) {}
+            assert_eq!(settings.mail_sidebar_position(), 440);
             assert_eq!(settings.contact_hpane_position(), 440);
-            assert_eq!(settings.mail_sidebar_position(), 210);
 
-            // External change to contact_hpane_position updates paned
-            settings.set_contact_hpane_position(280);
+            // External change to mail_sidebar_position updates paned
+            settings.set_mail_sidebar_position(280);
             while context.iteration(false) {}
             assert_eq!(paned.position(), 280);
         } else {
@@ -8370,16 +8350,18 @@ mod tests {
         };
 
         // 1. Boundary & Clamping Stress
+        settings.set_mail_sidebar_position(300);
         settings.set_contact_hpane_position(300);
         paned.set_position(300);
         while context.iteration(false) {}
+        assert_eq!(settings.mail_sidebar_position(), 300);
         assert_eq!(settings.contact_hpane_position(), 300);
 
         // Paned dragging out-of-bounds: < 80 (e.g. 50) must not overwrite settings
         paned.set_position(50);
         while context.iteration(false) {}
         assert_eq!(
-            settings.contact_hpane_position(),
+            settings.mail_sidebar_position(),
             300,
             "Paned position < 80 must not be written to GSettings"
         );
@@ -8388,7 +8370,7 @@ mod tests {
         paned.set_position(2000);
         while context.iteration(false) {}
         assert_eq!(
-            settings.contact_hpane_position(),
+            settings.mail_sidebar_position(),
             300,
             "Paned position > 1500 must not be written to GSettings"
         );
@@ -8396,14 +8378,14 @@ mod tests {
         // Valid boundaries: exactly 80 and exactly 1500
         paned.set_position(80);
         while context.iteration(false) {}
-        assert_eq!(settings.contact_hpane_position(), 80);
+        assert_eq!(settings.mail_sidebar_position(), 80);
 
         paned.set_position(1500);
         while context.iteration(false) {}
-        assert_eq!(settings.contact_hpane_position(), 1500);
+        assert_eq!(settings.mail_sidebar_position(), 1500);
 
         // External setting change with large value (e.g. 2500) clamps UI paned to 1500
-        settings.set_contact_hpane_position(2500);
+        settings.set_mail_sidebar_position(2500);
         while context.iteration(false) {}
         assert_eq!(
             paned.position(),
@@ -8412,7 +8394,7 @@ mod tests {
         );
 
         // External setting change below min (e.g. 40 -> settings clamps to 80)
-        settings.set_contact_hpane_position(40);
+        settings.set_mail_sidebar_position(40);
         while context.iteration(false) {}
         assert_eq!(
             paned.position(),
@@ -8420,45 +8402,34 @@ mod tests {
             "UI paned must clamp small external GSettings to 80"
         );
 
-        // 2. Window View Switching & Mail Sidebar Isolation
+        // 2. Window View Switching & Unified Sidebar Width
         let app = crate::application::EvolutionApplication::new();
         let window = crate::window::EvolutionWindow::new(&app);
 
-        settings.set_contact_hpane_position(380);
-        settings.set_mail_sidebar_position(210);
+        settings.set_mail_sidebar_position(380);
         while context.iteration(false) {}
 
-        // Switching between all views
+        // Switching between all views preserves unified sidebar width
         for view in &["contacts", "mail", "calendar", "tasks", "memos", "contacts"] {
             window.set_active_view(view);
             while context.iteration(false) {}
             assert_eq!(
-                settings.contact_hpane_position(),
+                settings.mail_sidebar_position(),
                 380,
-                "Switching to view {view} must not modify contact_hpane_position"
+                "Switching to view {view} must keep unified mail_sidebar_position"
             );
         }
 
-        // Altering mail-sidebar-position while in mail view
+        // Altering mail-sidebar-position while in mail view syncs across views
         window.set_active_view("mail");
         while context.iteration(false) {}
         settings.set_mail_sidebar_position(490);
         while context.iteration(false) {}
-        assert_eq!(
-            settings.contact_hpane_position(),
-            380,
-            "Altering mail_sidebar_position must not touch contact_hpane_position"
-        );
+        assert_eq!(settings.mail_sidebar_position(), 490);
 
-        // Switching back to contacts view: contact paned remains intact
+        // Switching back to contacts view: contact paned remains unified
         window.set_active_view("contacts");
         while context.iteration(false) {}
-        assert_eq!(settings.contact_hpane_position(), 380);
-
-        // External change updates contacts paned dynamically
-        settings.set_contact_hpane_position(420);
-        while context.iteration(false) {}
-        assert_eq!(settings.contact_hpane_position(), 420);
         assert_eq!(settings.mail_sidebar_position(), 490);
     }
 
@@ -8520,8 +8491,8 @@ mod tests {
 
         let child = find_card_child(&flow, "source-1", "uid-turing").expect("card child exists");
         let card_box = child.child().and_then(|w| w.downcast::<gtk::Box>().ok()).expect("card box exists");
-        assert_eq!(card_box.width_request(), 200);
-        assert_eq!(card_box.height_request(), 100);
+        assert_eq!(card_box.width_request(), 130);
+        assert_eq!(card_box.height_request(), 124);
 
         // First select
         assert!(select_contact_card(&flow, "source-1", "uid-turing"));
@@ -8629,8 +8600,8 @@ mod tests {
 
         let child = find_card_child(&flow, "source-1", "uid-ada").expect("Ada card child exists");
         let card_box = child.child().and_then(|w| w.downcast::<gtk::Box>().ok()).expect("card box exists");
-        assert_eq!(card_box.width_request(), 200);
-        assert_eq!(card_box.height_request(), 100);
+        assert_eq!(card_box.width_request(), 130);
+        assert_eq!(card_box.height_request(), 124);
         assert_eq!(child.halign(), gtk::Align::Fill);
         assert_eq!(child.valign(), gtk::Align::Fill);
         assert!(child.hexpands());
@@ -8655,6 +8626,78 @@ mod tests {
         assert_eq!(flow.halign(), gtk::Align::Fill, "FlowBox must have halign Fill so it spans the full viewport width");
         assert!(flow.hexpands(), "FlowBox must hexpand to fill ScrolledWindow");
         assert_eq!(flow.orientation(), gtk::Orientation::Horizontal);
+    }
+
+    #[test]
+    fn test_flow_allocation_columns() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        use glib::subclass::prelude::ObjectSubclassIsExt;
+        let page = ContactsPage::new();
+        let flow = page.imp().contact_cards_flow.borrow().clone().expect("flow exists");
+
+        let contact1 = VCardContact::new("Willy %", "", "Mobil: +491738334242", "");
+        let rec1 = record("s1", "u1", contact1);
+        let contact2 = VCardContact::new("Zoë (Cukaff)", "", "Mobil: +4915225739618", "");
+        let rec2 = record("s1", "u2", contact2);
+
+        append_contact_card(&flow, &rec1);
+        append_contact_card(&flow, &rec2);
+
+        let window = gtk::Window::builder()
+            .default_width(1200)
+            .default_height(800)
+            .child(&page)
+            .build();
+        window.present();
+
+        for _ in 0..10 {
+            _context.iteration(false);
+        }
+
+        let mut max_child_min = 0;
+        let mut max_child_nat = 0;
+        let mut child_count = 0;
+        let mut curr = flow.first_child();
+        while let Some(c) = curr {
+            child_count += 1;
+            let (c_min, c_nat, _, _) = c.measure(gtk::Orientation::Horizontal, -1);
+            if c_min > max_child_min {
+                max_child_min = c_min;
+            }
+            if c_nat > max_child_nat {
+                max_child_nat = c_nat;
+            }
+            curr = c.next_sibling();
+        }
+
+        assert!(child_count > 0, "flow must have children");
+        assert!(
+            max_child_nat <= 160,
+            "max_child_nat ({max_child_nat}) must be <= 160 to allow multi-column layout at narrow window widths"
+        );
+
+        // At 200px width (narrower than 2 cards), exactly 1 column
+        let (h_single, _, _, _) = flow.measure(gtk::Orientation::Vertical, 200);
+
+        // At 320px width, must wrap to at least 2 columns (height roughly halved)
+        let (h_320, _, _, _) = flow.measure(gtk::Orientation::Vertical, 320);
+        assert!(
+            h_320 <= (h_single * 6) / 10,
+            "At 320px, FlowBox must wrap to 2 columns: h_320={h_320}, h_single={h_single}"
+        );
+
+        // At 700px width (user's window size), must wrap to at least 3-4 columns
+        let (h_700, _, _, _) = flow.measure(gtk::Orientation::Vertical, 700);
+        assert!(
+            h_700 <= (h_single * 4) / 10,
+            "At 700px, FlowBox must wrap to at least 3 columns: h_700={h_700}, h_single={h_single}"
+        );
     }
 
     #[test]

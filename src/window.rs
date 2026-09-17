@@ -1986,12 +1986,18 @@ impl EvolutionWindow {
         let sync_sidebar_position: Rc<dyn Fn(i32)> = {
             let mail_page = mail_page.clone();
             let calendar_bin = calendar_bin.clone();
+            let contacts_bin = contacts_bin.clone();
             let tasks_bin = tasks_bin.clone();
             let memos_bin = memos_bin.clone();
             Rc::new(move |pos: i32| {
                 mail_page.set_sidebar_position(pos);
                 if let Some(child) = calendar_bin.child() {
                     if let Ok(page) = child.downcast::<CalendarPage>() {
+                        page.set_sidebar_position(pos);
+                    }
+                }
+                if let Some(child) = contacts_bin.child() {
+                    if let Ok(page) = child.downcast::<ContactsPage>() {
                         page.set_sidebar_position(pos);
                     }
                 }
@@ -2698,20 +2704,42 @@ impl EvolutionWindow {
         }
 
         self.add_boolean_setting_action(
+            "use-vertical-mail-layout",
+            "mail-layout",
+            |settings| settings.mail_layout() == "vertical",
+            |settings, is_vertical| {
+                settings.set_mail_layout(if is_vertical { "vertical" } else { "horizontal" });
+            },
+        );
+        self.add_boolean_setting_action(
+            "use-horizontal-mail-layout",
+            "mail-layout",
+            |settings| settings.mail_layout() == "horizontal",
+            |settings, is_horizontal| {
+                settings.set_mail_layout(if is_horizontal { "horizontal" } else { "vertical" });
+            },
+        );
+        self.add_boolean_setting_action(
             "use-classic-mail-layout",
             "mail-layout",
-            |settings| settings.mail_layout() == "classic",
+            |settings| settings.mail_layout() == "horizontal" || settings.mail_layout() == "classic",
             |settings, is_classic| {
-                settings.set_mail_layout(if is_classic { "classic" } else { "modern" });
+                settings.set_mail_layout(if is_classic { "horizontal" } else { "vertical" });
             },
         );
         self.add_boolean_setting_action(
             "use-modern-mail-layout",
             "mail-layout",
-            |settings| settings.mail_layout() == "modern",
+            |settings| settings.mail_layout() == "vertical" || settings.mail_layout() == "modern",
             |settings, is_modern| {
-                settings.set_mail_layout(if is_modern { "modern" } else { "classic" });
+                settings.set_mail_layout(if is_modern { "vertical" } else { "horizontal" });
             },
+        );
+        self.add_boolean_setting_action(
+            "toggle-todo-bar",
+            "mail-show-todo-bar",
+            AppSettings::mail_show_todo_bar,
+            AppSettings::set_mail_show_todo_bar,
         );
 
         self.add_boolean_setting_action(
@@ -5032,7 +5060,7 @@ mod tests {
         let memos_paned = memos_page.outer_paned().expect("memos paned");
         assert_eq!(memos_paned.position(), 330);
 
-        // Switch to contacts - contacts divider is decoupled from mail_sidebar_position
+        // Switch to contacts - contacts divider is synchronized with mail_sidebar_position
         window.set_active_view("contacts");
         let contacts_bin = stack
             .child_by_name("contacts")
@@ -5043,10 +5071,7 @@ mod tests {
             .and_downcast::<ContactsPage>()
             .expect("contacts page");
         let contacts_paned = contacts_page.outer_paned().expect("contacts paned");
-        // Contacts paned maintains independent position
-        if let Some(settings) = AppSettings::try_new() {
-            assert_eq!(contacts_paned.position(), settings.contact_hpane_position());
-        }
+        assert_eq!(contacts_paned.position(), 330);
 
         // Switch back to mail
         window.set_active_view("mail");
@@ -5328,27 +5353,27 @@ mod tests {
             return;
         };
 
-        // Switch to classic
+        // Switch to classic/horizontal
         classic_action.change_state(&true.to_variant());
-        assert_eq!(settings.mail_layout(), "classic");
+        assert_eq!(settings.mail_layout(), "horizontal");
         assert_eq!(classic_action.state().and_then(|v| v.get::<bool>()), Some(true));
         assert_eq!(modern_action.state().and_then(|v| v.get::<bool>()), Some(false));
 
-        // Switch to modern via classic toggle (setting false)
+        // Switch to modern/vertical via classic toggle (setting false)
         classic_action.change_state(&false.to_variant());
-        assert_eq!(settings.mail_layout(), "modern");
+        assert_eq!(settings.mail_layout(), "vertical");
         assert_eq!(classic_action.state().and_then(|v| v.get::<bool>()), Some(false));
         assert_eq!(modern_action.state().and_then(|v| v.get::<bool>()), Some(true));
 
         // Activate classic again via click (activate)
         classic_action.activate(None);
-        assert_eq!(settings.mail_layout(), "classic");
+        assert_eq!(settings.mail_layout(), "horizontal");
         assert_eq!(classic_action.state().and_then(|v| v.get::<bool>()), Some(true));
         assert_eq!(modern_action.state().and_then(|v| v.get::<bool>()), Some(false));
 
         // Modern action activation also works
         modern_action.activate(None);
-        assert_eq!(settings.mail_layout(), "modern");
+        assert_eq!(settings.mail_layout(), "vertical");
         assert_eq!(classic_action.state().and_then(|v| v.get::<bool>()), Some(false));
         assert_eq!(modern_action.state().and_then(|v| v.get::<bool>()), Some(true));
     }

@@ -639,6 +639,28 @@ pub(crate) fn load_contacts_prefer_eds_cached(use_cache: bool) -> EBookLoadResul
 }
 
 fn load_contacts_prefer_eds_fresh() -> EBookLoadResult {
+    let sqlite_contacts = crate::services::evolution_contact_cache::load_contacts_from_evolution_sqlite_cache();
+    if !sqlite_contacts.is_empty() {
+        let mut contacts = sqlite_contacts;
+        let local_service = ContactStoreService::new();
+        if local_service.is_writable() {
+            contacts.extend(local_service.load_contacts().into_iter().map(|record| {
+                EBookContactRecord {
+                    source_uid: "local-addressbook".to_string(),
+                    source_display_name: "Lokales Adressbuch".to_string(),
+                    uid: record.id,
+                    vcard: record.vcard,
+                    contact: record.contact,
+                }
+            }));
+        }
+        return EBookLoadResult {
+            contacts,
+            origin: EBookDataOrigin::Eds,
+            warning: None,
+        };
+    }
+
     match EBookService::new().load_contacts() {
         Ok((mut contacts, warning)) => {
             let local_service = ContactStoreService::new();
