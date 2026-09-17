@@ -41,7 +41,7 @@ fn module_icon_widget(name: &str) -> gtk::Image {
         "mail" => ("evolution-mail", "mail-unread-symbolic"),
         "contacts" => ("x-office-address-book", "x-office-address-book-symbolic"),
         "calendar" => ("x-office-calendar", "x-office-calendar-symbolic"),
-        "tasks" => ("evolution-tasks", "evolution-tasks-symbolic"),
+        "tasks" => ("evolution-tasks-symbolic", "tasks-symbolic"),
         "memos" => ("accessories-text-editor", "accessories-text-editor-symbolic"),
         _ => ("evolution-mail", "mail-unread-symbolic"),
     };
