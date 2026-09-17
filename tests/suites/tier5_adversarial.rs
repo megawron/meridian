@@ -290,7 +290,7 @@ fn tier5_adversarial_corrupted_json_backup_recovery() {
         serde_json::from_str(corrupted_json_str).expect("JSON must be well-formed");
 
     // Initial baseline
-    assert_eq!(settings.string("mail-layout").as_str(), "classic");
+    assert_eq!(settings.string("mail-layout").as_str(), "vertical");
     assert_eq!(settings.boolean("offline-mode"), false);
 
     // Safe restore implementing schema key guarding to defend against GLib-GIO abort
@@ -487,8 +487,8 @@ fn tier5_adversarial_factory_reset_all_198_schema_keys_integrity() {
     let all_keys = schema.list_keys();
     assert_eq!(
         all_keys.len(),
-        198,
-        "Canonical schema must define exactly 198 configuration keys"
+        203,
+        "Canonical schema must define exactly 203 configuration keys"
     );
 
     // Capture initial default snapshot

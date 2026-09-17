@@ -1547,7 +1547,7 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
             _ => Err("kein unterstützter Standardordner"),
         },
         "mail-layout" => match value.to_ascii_lowercase().as_str() {
-            "classic" | "modern" => Ok(value.to_ascii_lowercase()),
+            "classic" | "modern" | "horizontal" | "vertical" => Ok(value.to_ascii_lowercase()),
             _ => Err("kein unterstütztes Mail-Layout"),
         },
         "mail-normal-headers" => parse_mail_normal_headers_value(value)

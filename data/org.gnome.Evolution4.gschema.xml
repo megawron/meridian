@@ -209,12 +209,12 @@
       <summary>Custom display order for address book source groups</summary>
     </key>
     <key name="date-format" type="s">
-      <default>'german'</default>
-      <summary>Calendar date display format (german, iso, or us)</summary>
+      <default>'locale'</default>
+      <summary>Calendar date display format (locale, german, iso, or us)</summary>
     </key>
     <key name="time-format" type="s">
-      <default>'24h'</default>
-      <summary>Calendar time display format (24h or 12h)</summary>
+      <default>'locale'</default>
+      <summary>Calendar time display format (locale, 24h, or 12h)</summary>
     </key>
     <key name="calendar-time-zone" type="s">
       <default>'system'</default>
@@ -394,8 +394,22 @@
       <summary>Mail folder selected when the application starts</summary>
     </key>
     <key name="mail-layout" type="s">
-      <default>'classic'</default>
-      <summary>Mail layout (modern side-by-side or classic top-preview)</summary>
+      <default>'vertical'</default>
+      <summary>Mail layout arrangement</summary>
+      <description>Arrangement of mail panes: 'vertical' (3-panel: folders, list, preview on right) or 'horizontal' (folders, list above, preview below). Legacy 'modern' and 'classic' are accepted for backwards compatibility.</description>
+    </key>
+    <key name="mail-show-todo-bar" type="b">
+      <default>false</default>
+      <summary>Aufgabenleiste für heute in der Mail-Ansicht anzeigen</summary>
+    </key>
+    <key name="agenda-show-tasks" type="b">
+      <default>true</default>
+      <summary>Aufgaben in der Agenda-Seitenleiste anzeigen</summary>
+    </key>
+    <key name="mail-todo-bar-position" type="i">
+      <default>260</default>
+      <range min="160" max="1200"/>
+      <summary>Breite der Aufgabenleiste für heute in der Mail-Ansicht</summary>
     </key>
     <key name="mail-show-toolbar" type="b">
       <default>true</default>

@@ -376,12 +376,12 @@ fn tier1_appearance_color_scheme_theme_switching() {
 fn tier1_appearance_mail_layout_clean_separation() {
     // Feature 5: mail-layout resides in mail preferences, not mixed into appearance
     let settings = create_test_settings();
-    assert_eq!(settings.string("mail-layout").as_str(), "classic");
+    assert_eq!(settings.string("mail-layout").as_str(), "vertical");
     assert_eq!(settings.string("mail-row-density").as_str(), "compact");
 
-    settings.set_string("mail-layout", "modern").unwrap();
+    settings.set_string("mail-layout", "horizontal").unwrap();
     settings.set_string("mail-row-density", "comfortable").unwrap();
-    assert_eq!(settings.string("mail-layout").as_str(), "modern");
+    assert_eq!(settings.string("mail-layout").as_str(), "horizontal");
     assert_eq!(settings.string("mail-row-density").as_str(), "comfortable");
 }
 

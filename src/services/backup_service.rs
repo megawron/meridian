@@ -865,11 +865,11 @@ fn default_mail_font_size() -> u32 {
 }
 
 fn default_date_format() -> String {
-    "german".to_string()
+    "locale".to_string()
 }
 
 fn default_time_format() -> String {
-    "24h".to_string()
+    "locale".to_string()
 }
 
 fn default_mail_sort_descending() -> bool {
@@ -1568,8 +1568,8 @@ impl BackupSettings {
             &self.calendar_week_start,
             &["monday", "sunday"],
         )?;
-        validate_choice("date_format", &self.date_format, &["german", "iso", "us"])?;
-        validate_choice("time_format", &self.time_format, &["12h", "24h"])?;
+        validate_choice("date_format", &self.date_format, &["locale", "german", "iso", "us"])?;
+        validate_choice("time_format", &self.time_format, &["locale", "12h", "24h"])?;
         validate_choice(
             "mail_default_folder",
             &self.mail_default_folder,
@@ -1601,7 +1601,11 @@ impl BackupSettings {
                 "ungültige Ordnersortierung",
             ));
         }
-        validate_choice("mail_layout", &self.mail_layout, &["classic", "modern"])?;
+        validate_choice(
+            "mail_layout",
+            &self.mail_layout,
+            &["vertical", "horizontal", "classic", "modern"],
+        )?;
         validate_choice(
             "mail_row_density",
             &self.mail_row_density,

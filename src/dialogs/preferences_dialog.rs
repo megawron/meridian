@@ -5110,22 +5110,25 @@ impl PreferencesDialog {
             .title("Datumsformat")
             .subtitle("Darstellung in Kalenderübersichten und Agenda")
             .model(&gtk::StringList::new(&[
-                "Deutsch (z. B. 11.08.2026)",
-                "ISO (2026-08-11)",
-                "US (08/11/2026)",
+                "Systemstandard (Locale)",
+                "Deutsch (z. B. 19.09.2026)",
+                "US (z. B. 09/19/2026)",
+                "ISO (z. B. 2026-09-19)",
             ]))
             .build();
         if let Some(settings) = settings.clone() {
             row_date_format.set_selected(match settings.date_format().as_str() {
-                "iso" => 1,
+                "german" => 1,
                 "us" => 2,
+                "iso" => 3,
                 _ => 0,
             });
             row_date_format.connect_selected_notify(move |row| {
                 settings.set_date_format(match row.selected() {
-                    1 => "iso",
+                    1 => "german",
                     2 => "us",
-                    _ => "german",
+                    3 => "iso",
+                    _ => "locale",
                 });
             });
         }
@@ -5135,18 +5138,23 @@ impl PreferencesDialog {
             .title("Zeitformat")
             .subtitle("Zeitachse und Terminzeiten")
             .model(&gtk::StringList::new(&[
-                "24-Stunden-Format",
-                "12-Stunden-Format",
+                "Systemstandard (Locale)",
+                "24-Stunden-Format (z. B. 14:30)",
+                "12-Stunden-Format (z. B. 2:30 pm)",
             ]))
             .build();
         if let Some(settings) = settings.clone() {
-            row_time_format.set_selected(if settings.time_format() == "12h" {
-                1
-            } else {
-                0
+            row_time_format.set_selected(match settings.time_format().as_str() {
+                "24h" => 1,
+                "12h" => 2,
+                _ => 0,
             });
             row_time_format.connect_selected_notify(move |row| {
-                settings.set_time_format(if row.selected() == 1 { "12h" } else { "24h" });
+                settings.set_time_format(match row.selected() {
+                    1 => "24h",
+                    2 => "12h",
+                    _ => "locale",
+                });
             });
         }
         group_calendar_view.add(&row_time_format);

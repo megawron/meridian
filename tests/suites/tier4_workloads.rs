@@ -26,7 +26,7 @@ fn tier4_workload_initial_onboarding_and_defaults_validation() {
     // 2. Mail defaults
     assert_eq!(settings.boolean("mail-mark-seen"), true);
     assert_eq!(settings.int("mail-mark-seen-timeout"), 1500);
-    assert_eq!(settings.string("mail-layout").as_str(), "classic");
+    assert_eq!(settings.string("mail-layout").as_str(), "vertical");
     assert_eq!(settings.string("mail-row-density").as_str(), "compact");
     assert_eq!(settings.boolean("flush-outbox"), true);
     assert_eq!(settings.int("mail-sync-interval"), 300);
@@ -172,7 +172,7 @@ fn tier4_workload_backup_and_restore_settings_serialization_roundtrip() {
     // 2. Create target instance (fresh settings)
     let settings_target = create_test_settings();
     assert_eq!(settings_target.string("color-scheme").as_str(), "system");
-    assert_eq!(settings_target.string("mail-layout").as_str(), "classic");
+    assert_eq!(settings_target.string("mail-layout").as_str(), "vertical");
     assert_eq!(settings_target.int("mail-sync-interval"), 300);
 
     // 3. Restore backup into target

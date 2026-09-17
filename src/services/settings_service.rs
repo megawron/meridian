@@ -1308,18 +1308,77 @@ impl AppSettings {
         self.set_calendar_second_zones(&list);
     }
 
+    pub fn system_locale_date_format() -> &'static str {
+        if let Ok(link) = std::fs::read_link("/etc/localtime") {
+            let path = link.to_string_lossy();
+            if path.contains("Berlin") || path.contains("Busingen") || path.contains("Germany") {
+                return "german";
+            }
+        }
+        let tz = std::env::var("TZ").unwrap_or_default();
+        if tz.contains("Berlin") || tz.contains("Germany") {
+            return "german";
+        }
+        let locale = std::env::var("LC_TIME")
+            .or_else(|_| std::env::var("LC_ALL"))
+            .or_else(|_| std::env::var("LANG"))
+            .unwrap_or_default();
+        let lower = locale.to_lowercase();
+        if lower.starts_with("de") {
+            return "german";
+        }
+        if lower.starts_with("en_us") || lower.starts_with("en_ph") {
+            "us"
+        } else if lower.starts_with("zh_cn")
+            || lower.starts_with("ja_jp")
+            || lower.starts_with("ko_kr")
+            || lower.starts_with("sv_se")
+        {
+            "iso"
+        } else {
+            "german"
+        }
+    }
+
+    pub fn system_prefers_12h() -> bool {
+        if gio::SettingsSchemaSource::default()
+            .and_then(|s| s.lookup("org.gnome.desktop.interface", true))
+            .is_some()
+        {
+            let desktop = gio::Settings::new("org.gnome.desktop.interface");
+            if desktop.string("clock-format").as_str() == "12h" {
+                return true;
+            }
+        }
+        let locale = std::env::var("LC_TIME")
+            .or_else(|_| std::env::var("LC_ALL"))
+            .or_else(|_| std::env::var("LANG"))
+            .unwrap_or_default();
+        let lower = locale.to_lowercase();
+        lower.starts_with("en_us") || lower.starts_with("en_ca") || lower.starts_with("en_ph")
+    }
+
     pub fn date_format(&self) -> String {
         let value = self.settings.string("date-format").to_string();
         match value.as_str() {
-            "iso" | "us" => value,
-            _ => "german".to_string(),
+            "iso" | "us" | "german" => value,
+            _ => "locale".to_string(),
+        }
+    }
+
+    pub fn resolved_date_format(&self) -> String {
+        let fmt = self.date_format();
+        if fmt == "locale" {
+            Self::system_locale_date_format().to_string()
+        } else {
+            fmt
         }
     }
 
     pub fn set_date_format(&self, value: &str) {
         let value = match value {
-            "iso" | "us" => value,
-            _ => "german",
+            "iso" | "us" | "german" => value,
+            _ => "locale",
         };
         if let Err(error) = self.settings.set_string("date-format", value) {
             tracing::warn!(%error, "Could not persist date format");
@@ -1327,15 +1386,34 @@ impl AppSettings {
     }
 
     pub fn time_format(&self) -> String {
-        if self.settings.string("time-format").as_str() == "12h" {
-            "12h".to_string()
-        } else {
-            "24h".to_string()
+        let val = self.settings.string("time-format");
+        match val.as_str() {
+            "12h" => "12h".to_string(),
+            "24h" => "24h".to_string(),
+            _ => "locale".to_string(),
+        }
+    }
+
+    pub fn resolved_time_format(&self) -> String {
+        match self.time_format().as_str() {
+            "12h" => "12h".to_string(),
+            "24h" => "24h".to_string(),
+            _ => {
+                if Self::system_prefers_12h() {
+                    "12h".to_string()
+                } else {
+                    "24h".to_string()
+                }
+            }
         }
     }
 
     pub fn set_time_format(&self, value: &str) {
-        let value = if value == "12h" { "12h" } else { "24h" };
+        let value = match value {
+            "12h" => "12h",
+            "24h" => "24h",
+            _ => "locale",
+        };
         if let Err(error) = self.settings.set_string("time-format", value) {
             tracing::warn!(%error, "Could not persist time format");
         }
@@ -1766,21 +1844,20 @@ impl AppSettings {
         }
     }
 
-    /// Select the mail workflow layout.  `modern` keeps the message list and
-    /// preview side by side; `classic` mirrors Evolution's traditional
-    /// folder-left, list-above-preview arrangement.
+    /// Select the mail workflow layout.
+    /// 'vertical' (or legacy 'modern') keeps the message list and preview side by side (3-panel).
+    /// 'horizontal' (or legacy 'classic') mirrors Evolution's horizontal arrangement (preview bottom).
     pub fn mail_layout(&self) -> String {
         match self.settings.string("mail-layout").as_str() {
-            "classic" => "classic".to_string(),
-            _ => "modern".to_string(),
+            "horizontal" | "classic" => "horizontal".to_string(),
+            _ => "vertical".to_string(),
         }
     }
 
     pub fn set_mail_layout(&self, value: &str) {
-        let value = if value == "classic" {
-            "classic"
-        } else {
-            "modern"
+        let value = match value {
+            "horizontal" | "classic" => "horizontal",
+            _ => "vertical",
         };
         if let Err(error) = self.settings.set_string("mail-layout", value) {
             tracing::warn!(%error, "Could not persist mail layout");
@@ -1819,8 +1896,32 @@ impl AppSettings {
         self.set_int("mail-sidebar-position", value.clamp(0, 2_000));
     }
 
+    pub fn mail_show_todo_bar(&self) -> bool {
+        self.settings.boolean("mail-show-todo-bar")
+    }
+
+    pub fn set_mail_show_todo_bar(&self, value: bool) {
+        self.set_boolean("mail-show-todo-bar", value);
+    }
+
+    pub fn agenda_show_tasks(&self) -> bool {
+        self.settings.boolean("agenda-show-tasks")
+    }
+
+    pub fn set_agenda_show_tasks(&self, value: bool) {
+        self.set_boolean("agenda-show-tasks", value);
+    }
+
+    pub fn mail_todo_bar_position(&self) -> i32 {
+        self.settings.int("mail-todo-bar-position").clamp(160, 1_200)
+    }
+
+    pub fn set_mail_todo_bar_position(&self, value: i32) {
+        self.set_int("mail-todo-bar-position", value.clamp(160, 1_200));
+    }
+
     pub fn mail_preview_position(&self, layout: &str) -> i32 {
-        let key = if layout == "classic" {
+        let key = if layout == "classic" || layout == "horizontal" {
             "mail-classic-preview-position"
         } else {
             "mail-modern-preview-position"
@@ -1829,7 +1930,7 @@ impl AppSettings {
     }
 
     pub fn set_mail_preview_position(&self, layout: &str, value: i32) {
-        let key = if layout == "classic" {
+        let key = if layout == "classic" || layout == "horizontal" {
             "mail-classic-preview-position"
         } else {
             "mail-modern-preview-position"
@@ -3112,6 +3213,12 @@ impl AppSettings {
                 self.set_mail_show_mark_read_actions(parse_migrated_bool(key, value)?);
             }
             "mail-show-sidebar" => self.set_mail_show_sidebar(parse_migrated_bool(key, value)?),
+            "mail-show-todo-bar" => {
+                self.set_mail_show_todo_bar(parse_migrated_bool(key, value)?);
+            }
+            "mail-todo-bar-position" => {
+                self.set_mail_todo_bar_position(parse_migrated_i32_in_range(key, value, 160, 1_200)?);
+            }
             "mail-sidebar-position" => {
                 self.set_mail_sidebar_position(parse_migrated_i32_in_range(key, value, 0, 2_000)?);
             }
@@ -3583,6 +3690,8 @@ impl AppSettings {
             "mail-layout",
             "mail-show-toolbar",
             "mail-show-sidebar",
+            "mail-show-todo-bar",
+            "mail-todo-bar-position",
             "mail-sidebar-position",
             "mail-modern-preview-position",
             "mail-classic-preview-position",
@@ -5722,6 +5831,44 @@ mod tests {
         settings.set_mail_expanded_folders(&test_folders);
         let loaded = settings.mail_expanded_folders();
         assert_eq!(loaded, test_folders);
+    }
+
+    #[test]
+    fn test_date_and_time_format_settings() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+
+        // Default should be locale
+        assert_eq!(settings.date_format(), "locale");
+        assert_eq!(settings.time_format(), "locale");
+
+        let resolved_df = settings.resolved_date_format();
+        assert!(["german", "us", "iso"].contains(&resolved_df.as_str()));
+
+        let resolved_tf = settings.resolved_time_format();
+        assert!(["12h", "24h"].contains(&resolved_tf.as_str()));
+
+        // Set custom date formats
+        settings.set_date_format("german");
+        assert_eq!(settings.date_format(), "german");
+        assert_eq!(settings.resolved_date_format(), "german");
+
+        settings.set_date_format("us");
+        assert_eq!(settings.date_format(), "us");
+        assert_eq!(settings.resolved_date_format(), "us");
+
+        settings.set_date_format("iso");
+        assert_eq!(settings.date_format(), "iso");
+        assert_eq!(settings.resolved_date_format(), "iso");
+
+        // Set custom time formats
+        settings.set_time_format("12h");
+        assert_eq!(settings.time_format(), "12h");
+        assert_eq!(settings.resolved_time_format(), "12h");
+
+        settings.set_time_format("24h");
+        assert_eq!(settings.time_format(), "24h");
+        assert_eq!(settings.resolved_time_format(), "24h");
     }
 }
 
