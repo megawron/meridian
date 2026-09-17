@@ -985,9 +985,13 @@ mod imp {
         pub agenda_selected_row: Cell<Option<usize>>,
         pub agenda_title_label: RefCell<Option<gtk::Label>>,
         pub agenda_empty_box: RefCell<Option<gtk::Widget>>,
-        pub agenda_scroll: RefCell<Option<gtk::ScrolledWindow>>,
+        pub agenda_scroll: RefCell<Option<gtk::Widget>>,
+        pub agenda_vadjustment: RefCell<Option<gtk::Adjustment>>,
         pub year_view: RefCell<Option<gtk::Box>>,
+        pub year_state_box: RefCell<Option<gtk::Box>>,
         pub year_canvas: RefCell<Option<gtk::DrawingArea>>,
+        pub year_vadjustment: RefCell<Option<gtk::Adjustment>>,
+        pub year_nav_strip_container: RefCell<Option<gtk::Box>>,
         pub year_markers: RefCell<BTreeMap<NaiveDate, usize>>,
         pub year_hovered_target: RefCell<Option<YearCanvasHitTarget>>,
         pub year_rendered_year: Cell<Option<i32>>,
@@ -1111,8 +1115,12 @@ mod imp {
                 agenda_title_label: RefCell::new(None),
                 agenda_empty_box: RefCell::new(None),
                 agenda_scroll: RefCell::new(None),
+                agenda_vadjustment: RefCell::new(None),
                 year_view: RefCell::new(None),
+                year_state_box: RefCell::new(None),
                 year_canvas: RefCell::new(None),
+                year_vadjustment: RefCell::new(None),
+                year_nav_strip_container: RefCell::new(None),
                 year_markers: RefCell::new(BTreeMap::new()),
                 year_hovered_target: RefCell::new(None),
                 year_rendered_year: Cell::new(None),
@@ -2963,9 +2971,8 @@ impl CalendarPage {
             .valign(gtk::Align::Center)
             .css_classes(vec!["calendar-actions-group"])
             .build();
-        actions_box.append(&btn_availability);
         actions_box.append(&btn_print_calendar);
-
+        actions_box.append(&btn_availability);
 
         let start_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -2975,6 +2982,8 @@ impl CalendarPage {
         start_box.append(&sidebar_toggle);
         start_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         start_box.append(&nav_box);
+        start_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        start_box.append(&actions_box);
 
         let end_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -2983,8 +2992,6 @@ impl CalendarPage {
             .halign(gtk::Align::End)
             .build();
         end_box.append(&view_switcher_box);
-        end_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        end_box.append(&actions_box);
         end_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         end_box.append(&tag_vpane_toggle_btn);
 
@@ -3671,15 +3678,44 @@ impl CalendarPage {
             .build();
         self.imp().agenda_canvas.replace(Some(agenda_canvas.clone()));
 
-        let agenda_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
+        let agenda_vadjustment = gtk::Adjustment::new(0.0, 0.0, 100.0, 46.0, 200.0, 100.0);
+        self.imp().agenda_vadjustment.replace(Some(agenda_vadjustment.clone()));
+
+        let agenda_vscrollbar = gtk::Scrollbar::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .adjustment(&agenda_vadjustment)
+            .build();
+
+        let agenda_content_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
             .hexpand(true)
             .vexpand(true)
-            .child(&agenda_canvas)
             .build();
-        agenda_view.append(&agenda_scroll);
-        self.imp().agenda_scroll.replace(Some(agenda_scroll.clone()));
+        agenda_content_box.append(&agenda_canvas);
+        agenda_content_box.append(&agenda_vscrollbar);
+        agenda_view.append(&agenda_content_box);
+        self.imp().agenda_scroll.replace(Some(agenda_content_box.clone().upcast()));
+
+        let scroll_ctrl = gtk::EventControllerScroll::new(
+            gtk::EventControllerScrollFlags::VERTICAL | gtk::EventControllerScrollFlags::KINETIC,
+        );
+        let vadj_for_scroll = agenda_vadjustment.clone();
+        scroll_ctrl.connect_scroll(move |_, _, dy| {
+            let page_size = vadj_for_scroll.page_size();
+            let upper = vadj_for_scroll.upper();
+            let max_val = (upper - page_size).max(0.0);
+            let step = vadj_for_scroll.step_increment().max(10.0);
+            let delta = dy * step;
+            let new_val = (vadj_for_scroll.value() + delta).clamp(0.0, max_val);
+            vadj_for_scroll.set_value(new_val);
+            glib::Propagation::Stop
+        });
+        agenda_canvas.add_controller(scroll_ctrl);
+
+        let canvas_for_adj = agenda_canvas.clone();
+        agenda_vadjustment.connect_value_changed(move |_| {
+            canvas_for_adj.queue_draw();
+        });
 
         calendar_stack.add_titled(&agenda_view, Some("agenda"), "Agenda");
 
@@ -3691,29 +3727,40 @@ impl CalendarPage {
             let height = height_i32 as f64;
             let is_dark = adw::StyleManager::default().is_dark();
 
-            let (clip_y1, clip_y2) = match cr.clip_extents() {
-                Ok((_, y1, _, y2)) => (y1, y2),
-                Err(_) => (0.0, height),
-            };
-
             let items_ref = page.imp().agenda_items.borrow();
             if items_ref.is_empty() {
                 return;
             }
 
+            let scroll_y = if let Some(vadj) = page.imp().agenda_vadjustment.borrow().as_ref() {
+                if (vadj.page_size() - height).abs() > 1.0 {
+                    vadj.set_page_size(height);
+                    vadj.set_page_increment((height * 0.9).max(10.0));
+                }
+                vadj.value()
+            } else {
+                0.0
+            };
+
             let selected_idx = page.imp().agenda_selected_row.get();
             let hovered_idx = page.imp().agenda_hovered_row.get();
 
+            let visible_y1 = scroll_y;
+            let visible_y2 = scroll_y + height;
+
+            let _ = cr.save();
+            cr.translate(0.0, -scroll_y);
             draw_agenda_canvas(
                 cr,
                 &items_ref,
                 width,
-                clip_y1,
-                clip_y2,
+                visible_y1,
+                visible_y2,
                 selected_idx,
                 hovered_idx,
                 is_dark,
             );
+            let _ = cr.restore();
         });
 
         // Click gesture
@@ -3724,7 +3771,9 @@ impl CalendarPage {
             let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
             area.grab_focus();
             let items_ref = page.imp().agenda_items.borrow();
-            if let Some(idx) = hit_test_agenda_canvas(&items_ref, y) {
+            let scroll_y = page.imp().agenda_vadjustment.borrow().as_ref().map(|v| v.value()).unwrap_or(0.0);
+            let logical_y = y + scroll_y;
+            if let Some(idx) = hit_test_agenda_canvas(&items_ref, logical_y) {
                 if items_ref[idx].is_event_row() {
                     page.imp().agenda_selected_row.set(Some(idx));
                     if let Some(id) = items_ref[idx].identity() {
@@ -3753,8 +3802,11 @@ impl CalendarPage {
         agenda_right_click.connect_pressed(move |gesture, _n_press, x, y| {
             let Some(page) = page_weak_right.upgrade() else { return };
             let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
+            area.grab_focus();
             let items_ref = page.imp().agenda_items.borrow();
-            if let Some(idx) = hit_test_agenda_canvas(&items_ref, y) {
+            let scroll_y = page.imp().agenda_vadjustment.borrow().as_ref().map(|v| v.value()).unwrap_or(0.0);
+            let logical_y = y + scroll_y;
+            if let Some(idx) = hit_test_agenda_canvas(&items_ref, logical_y) {
                 if let Some(record) = items_ref[idx].record().cloned() {
                     page.imp().agenda_selected_row.set(Some(idx));
                     if let Some(id) = items_ref[idx].identity() {
@@ -3780,7 +3832,9 @@ impl CalendarPage {
             let Some(page) = page_weak_motion.upgrade() else { return };
             let Some(area) = ctrl.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
             let items_ref = page.imp().agenda_items.borrow();
-            let hit = hit_test_agenda_canvas(&items_ref, y);
+            let scroll_y = page.imp().agenda_vadjustment.borrow().as_ref().map(|v| v.value()).unwrap_or(0.0);
+            let logical_y = y + scroll_y;
+            let hit = hit_test_agenda_canvas(&items_ref, logical_y);
             let is_event = hit.map(|idx| items_ref[idx].is_event_row()).unwrap_or(false);
             let new_hover = if is_event { hit } else { None };
 
@@ -3812,7 +3866,9 @@ impl CalendarPage {
         agenda_canvas.connect_query_tooltip(move |_area, _x, y, _keyboard, tooltip| {
             let Some(page) = page_weak_tooltip.upgrade() else { return false };
             let items_ref = page.imp().agenda_items.borrow();
-            let Some(idx) = hit_test_agenda_canvas(&items_ref, y as f64) else { return false };
+            let scroll_y = page.imp().agenda_vadjustment.borrow().as_ref().map(|v| v.value()).unwrap_or(0.0);
+            let logical_y = (y as f64) + scroll_y;
+            let Some(idx) = hit_test_agenda_canvas(&items_ref, logical_y) else { return false };
             if let PreparedAgendaItem::EventRow { title, time_str, sub, .. } = &items_ref[idx] {
                 let text = if sub.is_empty() {
                     format!("{title}\n{time_str}")
@@ -3829,7 +3885,6 @@ impl CalendarPage {
         // Key controller (Up, Down, Home, End, Enter)
         let agenda_key = gtk::EventControllerKey::new();
         let page_weak_key = self.downgrade();
-        let agenda_scroll_weak = agenda_scroll.downgrade();
         agenda_key.connect_key_pressed(move |ctrl, keyval, _, _| {
             let Some(page) = page_weak_key.upgrade() else { return glib::Propagation::Proceed };
             let Some(area) = ctrl.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return glib::Propagation::Proceed };
@@ -3838,9 +3893,9 @@ impl CalendarPage {
             if len == 0 { return glib::Propagation::Proceed };
             let cur_idx = page.imp().agenda_selected_row.get();
 
+            let vadj_opt = page.imp().agenda_vadjustment.borrow().as_ref().cloned();
             let scroll_to_item = |idx: usize| {
-                if let Some(scroll) = agenda_scroll_weak.upgrade() {
-                    let vadj = scroll.vadjustment();
+                if let Some(vadj) = vadj_opt.as_ref() {
                     let item_top = if idx > 0 && !items_ref[idx - 1].is_event_row() {
                         items_ref[idx - 1].y()
                     } else {
@@ -3946,6 +4001,331 @@ impl CalendarPage {
             .vexpand(true)
             .build();
         self.imp().year_view.replace(Some(year_view.clone()));
+
+        let year_state_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .hexpand(true)
+            .vexpand(true)
+            .visible(false)
+            .build();
+        year_view.append(&year_state_box);
+        self.imp().year_state_box.replace(Some(year_state_box.clone()));
+
+        let year_nav_strip_container = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .hexpand(true)
+            .build();
+        self.imp().year_nav_strip_container.replace(Some(year_nav_strip_container.clone()));
+
+        let year_canvas = gtk::DrawingArea::builder()
+            .hexpand(true)
+            .vexpand(true)
+            .can_focus(true)
+            .focusable(true)
+            .css_classes(vec!["calendar-year-canvas"])
+            .build();
+        self.imp().year_canvas.replace(Some(year_canvas.clone()));
+
+        let year_vadjustment = gtk::Adjustment::new(0.0, 0.0, 100.0, 40.0, 200.0, 100.0);
+        self.imp().year_vadjustment.replace(Some(year_vadjustment.clone()));
+
+        let year_vscrollbar = gtk::Scrollbar::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .adjustment(&year_vadjustment)
+            .build();
+
+        let year_canvas_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        year_canvas_box.append(&year_canvas);
+        year_canvas_box.append(&year_vscrollbar);
+
+        let calendar_area = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        calendar_area.append(&year_nav_strip_container);
+        calendar_area.append(&year_canvas_box);
+
+        let details_container = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(0)
+            .vexpand(true)
+            .build();
+        self.imp().year_details_container.replace(Some(details_container.clone()));
+
+        let orientation = self.imp().year_preview_orientation.get();
+        let paned_orientation = match orientation {
+            YearPreviewOrientation::Side => {
+                details_container.add_css_class("calendar-year-details-panel");
+                details_container.add_css_class("side-mode");
+                let side_w = self.imp().year_details_side_width.get();
+                details_container.set_width_request(side_w.clamp(160, 600));
+                gtk::Orientation::Horizontal
+            }
+            YearPreviewOrientation::Bottom => {
+                details_container.add_css_class("calendar-year-details-panel");
+                details_container.add_css_class("bottom-mode");
+                let bottom_h = self.imp().year_details_bottom_height.get();
+                details_container.set_height_request(bottom_h.clamp(120, 500));
+                gtk::Orientation::Vertical
+            }
+        };
+
+        let year_paned = gtk::Paned::builder()
+            .orientation(paned_orientation)
+            .wide_handle(false)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+
+        year_paned.set_start_child(Some(&calendar_area));
+        year_paned.set_end_child(Some(&details_container));
+        year_paned.set_resize_start_child(true);
+        year_paned.set_resize_end_child(false);
+        year_paned.set_shrink_start_child(true);
+        year_paned.set_shrink_end_child(true);
+        self.imp().year_paned.replace(Some(year_paned.clone()));
+
+        let page_weak_paned = self.downgrade();
+        year_paned.connect_position_notify(move |paned| {
+            let Some(page) = page_weak_paned.upgrade() else { return };
+            let pos = paned.position();
+            if pos <= 0 { return; }
+            match page.imp().year_preview_orientation.get() {
+                YearPreviewOrientation::Side => {
+                    let total_w = paned.width();
+                    if total_w > 0 {
+                        let details_w = total_w - pos;
+                        if (140..=1200).contains(&details_w) {
+                            page.imp().year_details_side_width.set(details_w);
+                        }
+                    }
+                }
+                YearPreviewOrientation::Bottom => {
+                    let total_h = paned.height();
+                    if total_h > 0 {
+                        let details_h = total_h - pos;
+                        if (100..=800).contains(&details_h) {
+                            page.imp().year_details_bottom_height.set(details_h);
+                        }
+                    }
+                }
+            }
+        });
+        year_view.append(&year_paned);
+
+        // Connect scroll controller on year_canvas
+        let scroll_ctrl = gtk::EventControllerScroll::new(
+            gtk::EventControllerScrollFlags::VERTICAL | gtk::EventControllerScrollFlags::KINETIC,
+        );
+        let vadj_for_scroll = year_vadjustment.clone();
+        scroll_ctrl.connect_scroll(move |_, _, dy| {
+            let page_size = vadj_for_scroll.page_size();
+            let upper = vadj_for_scroll.upper();
+            let max_val = (upper - page_size).max(0.0);
+            let step = vadj_for_scroll.step_increment().max(10.0);
+            let delta = dy * step;
+            let new_val = (vadj_for_scroll.value() + delta).clamp(0.0, max_val);
+            vadj_for_scroll.set_value(new_val);
+            glib::Propagation::Stop
+        });
+        year_canvas.add_controller(scroll_ctrl);
+
+        let canvas_for_adj = year_canvas.clone();
+        year_vadjustment.connect_value_changed(move |_| {
+            canvas_for_adj.queue_draw();
+        });
+
+        // Wire draw function
+        let page_weak_draw = self.downgrade();
+        year_canvas.set_draw_func(move |_area, cr, width_i32, height_i32| {
+            let Some(page) = page_weak_draw.upgrade() else { return };
+            let width = width_i32 as f64;
+            let height = height_i32 as f64;
+            let is_dark = adw::StyleManager::default().is_dark();
+            let year = page.current_calendar_viewport().anchor_date.year();
+            let show_week_numbers = AppSettings::try_new()
+                .map(|s| s.calendar_show_week_numbers())
+                .unwrap_or(false);
+            let first_weekday = configured_first_weekday();
+            let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
+            let total_h = layout.height.ceil();
+
+            let scroll_y = if let Some(vadj) = page.imp().year_vadjustment.borrow().as_ref() {
+                if (vadj.upper() - total_h).abs() > 1.0 {
+                    vadj.set_upper(total_h.max(1.0));
+                }
+                if (vadj.page_size() - height).abs() > 1.0 {
+                    vadj.set_page_size(height);
+                    vadj.set_page_increment((height * 0.9).max(10.0));
+                }
+                vadj.value()
+            } else {
+                0.0
+            };
+
+            let selected_day = page
+                .imp()
+                .view_state
+                .borrow()
+                .selected_range
+                .filter(|range| range.start.year() == year)
+                .map(|range| range.start);
+            let today = Local::now().date_naive();
+            let markers = page.imp().year_markers.borrow();
+            let hovered = page.imp().year_hovered_target.borrow().clone();
+
+            let _ = cr.save();
+            cr.translate(0.0, -scroll_y);
+            Self::draw_year_canvas(
+                cr,
+                &layout,
+                &markers,
+                selected_day,
+                today,
+                hovered.as_ref(),
+                is_dark,
+            );
+            let _ = cr.restore();
+        });
+
+        // Primary click gesture
+        let click_gesture = gtk::GestureClick::builder().button(1).build();
+        let page_weak_click = self.downgrade();
+        click_gesture.connect_pressed(move |gesture, n_press, x, y| {
+            let Some(page) = page_weak_click.upgrade() else { return };
+            let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
+            area.grab_focus();
+            let year = page.current_calendar_viewport().anchor_date.year();
+            let show_week_numbers = AppSettings::try_new()
+                .map(|s| s.calendar_show_week_numbers())
+                .unwrap_or(false);
+            let first_weekday = configured_first_weekday();
+            let width = area.width() as f64;
+            let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
+            let scroll_y = page.imp().year_vadjustment.borrow().as_ref().map(|v| v.value()).unwrap_or(0.0);
+            let logical_y = y + scroll_y;
+            if let Some(target) = Self::hit_test_year_canvas(&layout, x, logical_y) {
+                match target {
+                    YearCanvasHitTarget::MonthHeader(m) => {
+                        if let Some(first_of_month) = NaiveDate::from_ymd_opt(year, m, 1) {
+                            *page.imp().current_date.borrow_mut() = first_of_month;
+                            page.imp()
+                                .view_state
+                                .borrow_mut()
+                                .set_anchor(first_of_month, configured_first_weekday());
+                            page.imp().view_state.borrow_mut().select_civil_day(first_of_month);
+                            page.select_calendar_view(CalendarView::Month);
+                        }
+                    }
+                    YearCanvasHitTarget::Day(target_date) => {
+                        if n_press == 1 {
+                            page.select_calendar_day(target_date);
+                        } else if n_press >= 2 {
+                            *page.imp().current_date.borrow_mut() = target_date;
+                            page.imp()
+                                .view_state
+                                .borrow_mut()
+                                .set_anchor(target_date, configured_first_weekday());
+                            page.imp().view_state.borrow_mut().select_civil_day(target_date);
+                            page.select_calendar_view(CalendarView::Day);
+                        }
+                    }
+                }
+            }
+        });
+        year_canvas.add_controller(click_gesture);
+
+        // Motion controller for hover & pointer cursor
+        let motion = gtk::EventControllerMotion::new();
+        let page_weak_motion = self.downgrade();
+        motion.connect_motion(move |ctrl, x, y| {
+            let Some(page) = page_weak_motion.upgrade() else { return };
+            let Some(area) = ctrl.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
+            let year = page.current_calendar_viewport().anchor_date.year();
+            let show_week_numbers = AppSettings::try_new()
+                .map(|s| s.calendar_show_week_numbers())
+                .unwrap_or(false);
+            let first_weekday = configured_first_weekday();
+            let width = area.width() as f64;
+            let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
+            let scroll_y = page.imp().year_vadjustment.borrow().as_ref().map(|v| v.value()).unwrap_or(0.0);
+            let logical_y = y + scroll_y;
+            let target = Self::hit_test_year_canvas(&layout, x, logical_y);
+            let old_target = page.imp().year_hovered_target.borrow().clone();
+            if target != old_target {
+                *page.imp().year_hovered_target.borrow_mut() = target.clone();
+                area.queue_draw();
+            }
+            if target.is_some() {
+                area.set_cursor_from_name(Some("pointer"));
+            } else {
+                area.set_cursor_from_name(None);
+            }
+        });
+        let page_weak_leave = self.downgrade();
+        motion.connect_leave(move |ctrl| {
+            let Some(page) = page_weak_leave.upgrade() else { return };
+            let Some(area) = ctrl.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
+            if page.imp().year_hovered_target.borrow().is_some() {
+                *page.imp().year_hovered_target.borrow_mut() = None;
+                area.queue_draw();
+            }
+            area.set_cursor_from_name(None);
+        });
+        year_canvas.add_controller(motion);
+
+        // Tooltips
+        year_canvas.set_has_tooltip(true);
+        let page_weak_tt = self.downgrade();
+        year_canvas.connect_query_tooltip(move |area, x, y, _keyboard, tooltip| {
+            let Some(page) = page_weak_tt.upgrade() else { return false };
+            let year = page.current_calendar_viewport().anchor_date.year();
+            let show_week_numbers = AppSettings::try_new()
+                .map(|s| s.calendar_show_week_numbers())
+                .unwrap_or(false);
+            let first_weekday = configured_first_weekday();
+            let width = area.width() as f64;
+            let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
+            let scroll_y = page.imp().year_vadjustment.borrow().as_ref().map(|v| v.value()).unwrap_or(0.0);
+            let logical_y = y as f64 + scroll_y;
+            if let Some(target) = Self::hit_test_year_canvas(&layout, x as f64, logical_y) {
+                match target {
+                    YearCanvasHitTarget::MonthHeader(m) => {
+                        tooltip.set_text(Some(&format!("Zur Monatsansicht für {} {}", Self::calendar_month_name(m), year)));
+                        true
+                    }
+                    YearCanvasHitTarget::Day(date) => {
+                        let markers = page.imp().year_markers.borrow();
+                        let count = markers.get(&date).copied().unwrap_or(0);
+                        let text = if count == 0 {
+                            format_date(date)
+                        } else if count == 1 {
+                            format!("{} · 1 Termin", format_date(date))
+                        } else {
+                            format!("{} · {} Termine", format_date(date), count)
+                        };
+                        tooltip.set_text(Some(&text));
+                        true
+                    }
+                }
+            } else {
+                false
+            }
+        });
+
+        // Dark theme notify
+        let canvas_weak = year_canvas.downgrade();
+        adw::StyleManager::default().connect_dark_notify(move |_| {
+            if let Some(c) = canvas_weak.upgrade() {
+                c.queue_draw();
+            }
+        });
+
         calendar_stack.add_titled(&year_view, Some("year"), "Jahr");
 
         // 7. List View: permanent high-performance Cairo canvas with native ScrolledWindow
@@ -7490,9 +7870,10 @@ impl CalendarPage {
 
         self.imp().agenda_items.replace(items);
 
+        if let Some(vadj) = self.imp().agenda_vadjustment.borrow().as_ref() {
+            vadj.set_upper(total_h.max(1) as f64);
+        }
         if let Some(canvas) = self.imp().agenda_canvas.borrow().as_ref() {
-            canvas.set_content_height(total_h.max(1));
-            canvas.set_height_request(total_h.max(1));
             canvas.queue_draw();
         }
     }
@@ -8317,7 +8698,15 @@ impl CalendarPage {
             _ => vec!["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"],
         };
 
+        let (clip_y1, clip_y2) = match cr.clip_extents() {
+            Ok((_, y1, _, y2)) => (y1, y2),
+            Err(_) => (0.0, f64::MAX),
+        };
+
         for m in &layout.months {
+            if m.card_y + m.card_h < clip_y1 || m.card_y > clip_y2 {
+                continue;
+            }
             // Card background
             let card_bg_alpha = if is_dark { 0.04 } else { 0.03 };
             cr.set_source_rgba(fg, fg, fg, card_bg_alpha);
@@ -8488,24 +8877,71 @@ impl CalendarPage {
         }
     }
 
-    fn refresh_year_view(&self) {
-        let Some(view) = self.imp().year_view.borrow().as_ref().cloned() else {
-            return;
-        };
+    fn update_year_paned_layout(&self) {
+        if let (Some(paned), Some(details_container)) = (
+            self.imp().year_paned.borrow().as_ref(),
+            self.imp().year_details_container.borrow().as_ref(),
+        ) {
+            details_container.remove_css_class("side-mode");
+            details_container.remove_css_class("bottom-mode");
+            details_container.add_css_class("calendar-year-details-panel");
+            match self.imp().year_preview_orientation.get() {
+                YearPreviewOrientation::Side => {
+                    details_container.add_css_class("side-mode");
+                    let side_w = self.imp().year_details_side_width.get();
+                    details_container.set_width_request(side_w.clamp(160, 600));
+                    details_container.set_height_request(-1);
+                    paned.set_orientation(gtk::Orientation::Horizontal);
+                }
+                YearPreviewOrientation::Bottom => {
+                    details_container.add_css_class("bottom-mode");
+                    let bottom_h = self.imp().year_details_bottom_height.get();
+                    details_container.set_height_request(bottom_h.clamp(120, 500));
+                    details_container.set_width_request(-1);
+                    paned.set_orientation(gtk::Orientation::Vertical);
+                }
+            }
+        }
+    }
 
-        if self.append_calendar_state_to_box(&view) {
+    fn refresh_year_view(&self) {
+        let state_box = self.imp().year_state_box.borrow().as_ref().cloned();
+        let paned = self.imp().year_paned.borrow().as_ref().cloned();
+
+        if self.calendar_data_state() != CalendarDataState::Ready {
+            if let Some(paned) = paned {
+                paned.set_visible(false);
+            }
+            if let Some(state_box) = state_box {
+                clear_box(&state_box);
+                state_box.append(&self.calendar_state_row());
+                state_box.set_visible(true);
+            }
             return;
         }
 
         let year = self.current_calendar_viewport().anchor_date.year();
         let Some(year_range) = calendar_year_range_option(year) else {
-            clear_box(&view);
-            view.append(&empty_period_row(
-                "Jahresansicht nicht verfügbar",
-                "Das ausgewählte Kalenderjahr liegt außerhalb des unterstützten Datumsbereichs.",
-            ));
+            if let Some(state_box) = state_box.as_ref() {
+                clear_box(state_box);
+                state_box.append(&empty_period_row(
+                    "Jahresansicht nicht verfügbar",
+                    "Das ausgewählte Kalenderjahr liegt außerhalb des unterstützten Datumsbereichs.",
+                ));
+                state_box.set_visible(true);
+            }
+            if let Some(paned) = paned {
+                paned.set_visible(false);
+            }
             return;
         };
+
+        if let Some(state_box) = state_box {
+            state_box.set_visible(false);
+        }
+        if let Some(paned) = paned.as_ref() {
+            paned.set_visible(true);
+        }
 
         let selected_day = self
             .imp()
@@ -8539,296 +8975,57 @@ impl CalendarPage {
                 &hidden_sources,
             )
         } else {
-            self.events_by_date(year_range)
+            let mut day_identities: BTreeMap<NaiveDate, (BTreeSet<CalendarEventIdentity>, usize)> = BTreeMap::new();
+            if let Some(records) = self.imp().event_records.borrow().as_ref() {
+                for event in records.borrow().iter() {
+                    if !event_matches_calendar_filter(event, &query, category.as_deref(), &hidden_sources) {
+                        continue;
+                    }
+                    let identity = CalendarEventIdentity::from_event(event);
+                    for date in event_occurrence_dates_in_range(event, year_range) {
+                        let (seen, no_id_count) = day_identities.entry(date).or_default();
+                        if let Some(ref id) = identity {
+                            seen.insert(id.clone());
+                        } else {
+                            *no_id_count += 1;
+                        }
+                    }
+                }
+            }
+            day_identities
                 .into_iter()
-                .map(|(date, events)| (date, events.len()))
+                .filter_map(|(date, (seen, no_id_count))| {
+                    let count = seen.len() + no_id_count;
+                    if count > 0 {
+                        Some((date, count))
+                    } else {
+                        None
+                    }
+                })
                 .collect()
         };
 
         *self.imp().year_markers.borrow_mut() = markers;
 
-        let needs_full_rebuild = self.imp().year_canvas.borrow().is_none()
-            || self.imp().year_rendered_year.get() != Some(year);
-
-        if needs_full_rebuild {
-            clear_box(&view);
-            view.set_orientation(gtk::Orientation::Vertical);
-
-            let nav_strip = self.create_year_navigation_strip(year);
-
-            let year_canvas = gtk::DrawingArea::builder()
-                .hexpand(true)
-                .vexpand(true)
-                .can_focus(true)
-                .focusable(true)
-                .css_classes(vec!["calendar-year-canvas"])
-                .build();
-            self.imp().year_canvas.replace(Some(year_canvas.clone()));
-
-            let page_weak_draw = self.downgrade();
-            year_canvas.set_draw_func(move |area, cr, width_i32, _height_i32| {
-                let Some(page) = page_weak_draw.upgrade() else { return };
-                let width = width_i32 as f64;
-                let is_dark = adw::StyleManager::default().is_dark();
-                let year = page.current_calendar_viewport().anchor_date.year();
-                let show_week_numbers = AppSettings::try_new()
-                    .map(|s| s.calendar_show_week_numbers())
-                    .unwrap_or(false);
-                let first_weekday = configured_first_weekday();
-                let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
-                let total_h = layout.height.ceil() as i32;
-
-                if (area.content_height() - total_h).abs() > 2 {
-                    let area_clone = area.clone();
-                    glib::idle_add_local_once(move || {
-                        area_clone.set_content_height(total_h);
-                        area_clone.set_height_request(total_h);
-                    });
-                }
-
-                let selected_day = page
-                    .imp()
-                    .view_state
-                    .borrow()
-                    .selected_range
-                    .filter(|range| range.start.year() == year)
-                    .map(|range| range.start);
-                let today = Local::now().date_naive();
-                let markers = page.imp().year_markers.borrow();
-                let hovered = page.imp().year_hovered_target.borrow().clone();
-
-                Self::draw_year_canvas(
-                    cr,
-                    &layout,
-                    &markers,
-                    selected_day,
-                    today,
-                    hovered.as_ref(),
-                    is_dark,
-                );
-            });
-
-            // Primary click gesture
-            let click_gesture = gtk::GestureClick::builder().button(1).build();
-            let page_weak_click = self.downgrade();
-            click_gesture.connect_pressed(move |gesture, n_press, x, y| {
-                let Some(page) = page_weak_click.upgrade() else { return };
-                let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
-                area.grab_focus();
-                let year = page.current_calendar_viewport().anchor_date.year();
-                let show_week_numbers = AppSettings::try_new()
-                    .map(|s| s.calendar_show_week_numbers())
-                    .unwrap_or(false);
-                let first_weekday = configured_first_weekday();
-                let width = area.width() as f64;
-                let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
-                if let Some(target) = Self::hit_test_year_canvas(&layout, x, y) {
-                    match target {
-                        YearCanvasHitTarget::MonthHeader(m) => {
-                            if let Some(first_of_month) = NaiveDate::from_ymd_opt(year, m, 1) {
-                                *page.imp().current_date.borrow_mut() = first_of_month;
-                                page.imp()
-                                    .view_state
-                                    .borrow_mut()
-                                    .set_anchor(first_of_month, configured_first_weekday());
-                                page.imp().view_state.borrow_mut().select_civil_day(first_of_month);
-                                page.select_calendar_view(CalendarView::Month);
-                            }
-                        }
-                        YearCanvasHitTarget::Day(target_date) => {
-                            if n_press == 1 {
-                                page.select_calendar_day(target_date);
-                            } else if n_press >= 2 {
-                                *page.imp().current_date.borrow_mut() = target_date;
-                                page.imp()
-                                    .view_state
-                                    .borrow_mut()
-                                    .set_anchor(target_date, configured_first_weekday());
-                                page.imp().view_state.borrow_mut().select_civil_day(target_date);
-                                page.select_calendar_view(CalendarView::Day);
-                            }
-                        }
-                    }
-                }
-            });
-            year_canvas.add_controller(click_gesture);
-
-            // Motion controller for hover & pointer cursor
-            let motion = gtk::EventControllerMotion::new();
-            let page_weak_motion = self.downgrade();
-            motion.connect_motion(move |ctrl, x, y| {
-                let Some(page) = page_weak_motion.upgrade() else { return };
-                let Some(area) = ctrl.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
-                let year = page.current_calendar_viewport().anchor_date.year();
-                let show_week_numbers = AppSettings::try_new()
-                    .map(|s| s.calendar_show_week_numbers())
-                    .unwrap_or(false);
-                let first_weekday = configured_first_weekday();
-                let width = area.width() as f64;
-                let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
-                let target = Self::hit_test_year_canvas(&layout, x, y);
-                let old_target = page.imp().year_hovered_target.borrow().clone();
-                if target != old_target {
-                    *page.imp().year_hovered_target.borrow_mut() = target.clone();
-                    area.queue_draw();
-                }
-                if target.is_some() {
-                    area.set_cursor_from_name(Some("pointer"));
-                } else {
-                    area.set_cursor_from_name(None);
-                }
-            });
-            let page_weak_leave = self.downgrade();
-            motion.connect_leave(move |ctrl| {
-                let Some(page) = page_weak_leave.upgrade() else { return };
-                let Some(area) = ctrl.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
-                if page.imp().year_hovered_target.borrow().is_some() {
-                    *page.imp().year_hovered_target.borrow_mut() = None;
-                    area.queue_draw();
-                }
-                area.set_cursor_from_name(None);
-            });
-            year_canvas.add_controller(motion);
-
-            // Tooltips
-            year_canvas.set_has_tooltip(true);
-            let page_weak_tt = self.downgrade();
-            year_canvas.connect_query_tooltip(move |area, x, y, _keyboard, tooltip| {
-                let Some(page) = page_weak_tt.upgrade() else { return false };
-                let year = page.current_calendar_viewport().anchor_date.year();
-                let show_week_numbers = AppSettings::try_new()
-                    .map(|s| s.calendar_show_week_numbers())
-                    .unwrap_or(false);
-                let first_weekday = configured_first_weekday();
-                let width = area.width() as f64;
-                let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
-                if let Some(target) = Self::hit_test_year_canvas(&layout, x as f64, y as f64) {
-                    match target {
-                        YearCanvasHitTarget::MonthHeader(m) => {
-                            tooltip.set_text(Some(&format!("Zur Monatsansicht für {} {}", Self::calendar_month_name(m), year)));
-                            true
-                        }
-                        YearCanvasHitTarget::Day(date) => {
-                            let markers = page.imp().year_markers.borrow();
-                            let count = markers.get(&date).copied().unwrap_or(0);
-                            let text = if count == 0 {
-                                format_date(date)
-                            } else if count == 1 {
-                                format!("{} · 1 Termin", format_date(date))
-                            } else {
-                                format!("{} · {} Termine", format_date(date), count)
-                            };
-                            tooltip.set_text(Some(&text));
-                            true
-                        }
-                    }
-                } else {
-                    false
-                }
-            });
-
-            // Dark theme notify
-            let canvas_weak = year_canvas.downgrade();
-            adw::StyleManager::default().connect_dark_notify(move |_| {
-                if let Some(c) = canvas_weak.upgrade() {
-                    c.queue_draw();
-                }
-            });
-
-            let scrolled_year_grid = gtk::ScrolledWindow::builder()
-                .hscrollbar_policy(gtk::PolicyType::Never)
-                .vscrollbar_policy(gtk::PolicyType::Automatic)
-                .hexpand(true)
-                .vexpand(true)
-                .child(&year_canvas)
-                .build();
-
-            let calendar_area = gtk::Box::builder()
-                .orientation(gtk::Orientation::Vertical)
-                .hexpand(true)
-                .vexpand(true)
-                .build();
-            calendar_area.append(&nav_strip);
-            calendar_area.append(&scrolled_year_grid);
-
-            let details_container = gtk::Box::builder()
-                .orientation(gtk::Orientation::Vertical)
-                .spacing(0)
-                .vexpand(true)
-                .build();
-
-            let orientation = self.imp().year_preview_orientation.get();
-            let paned_orientation = match orientation {
-                YearPreviewOrientation::Side => {
-                    details_container.add_css_class("calendar-year-details-panel");
-                    details_container.add_css_class("side-mode");
-                    let side_w = self.imp().year_details_side_width.get();
-                    details_container.set_width_request(side_w.clamp(160, 600));
-                    gtk::Orientation::Horizontal
-                }
-                YearPreviewOrientation::Bottom => {
-                    details_container.add_css_class("calendar-year-details-panel");
-                    details_container.add_css_class("bottom-mode");
-                    let bottom_h = self.imp().year_details_bottom_height.get();
-                    details_container.set_height_request(bottom_h.clamp(120, 500));
-                    gtk::Orientation::Vertical
-                }
-            };
-
-            let year_paned = gtk::Paned::builder()
-                .orientation(paned_orientation)
-                .wide_handle(false)
-                .hexpand(true)
-                .vexpand(true)
-                .build();
-
-            year_paned.set_start_child(Some(&calendar_area));
-            year_paned.set_end_child(Some(&details_container));
-            year_paned.set_resize_start_child(true);
-            year_paned.set_resize_end_child(false);
-            year_paned.set_shrink_start_child(true);
-            year_paned.set_shrink_end_child(true);
-
-            self.imp().year_paned.replace(Some(year_paned.clone()));
-
-            let page_weak_paned = self.downgrade();
-            year_paned.connect_position_notify(move |paned| {
-                let Some(page) = page_weak_paned.upgrade() else { return };
-                let pos = paned.position();
-                if pos <= 0 { return; }
-                match page.imp().year_preview_orientation.get() {
-                    YearPreviewOrientation::Side => {
-                        let total_w = paned.width();
-                        if total_w > 0 {
-                            let details_w = total_w - pos;
-                            if (140..=1200).contains(&details_w) {
-                                page.imp().year_details_side_width.set(details_w);
-                            }
-                        }
-                    }
-                    YearPreviewOrientation::Bottom => {
-                        let total_h = paned.height();
-                        if total_h > 0 {
-                            let details_h = total_h - pos;
-                            if (100..=800).contains(&details_h) {
-                                page.imp().year_details_bottom_height.set(details_h);
-                            }
-                        }
-                    }
-                }
-            });
-
-            view.append(&year_paned);
-            self.imp().year_details_container.replace(Some(details_container.clone()));
-            self.render_year_day_details(&details_container, selected_day);
+        // Update nav strip if year changed
+        if self.imp().year_rendered_year.get() != Some(year) {
+            if let Some(container) = self.imp().year_nav_strip_container.borrow().as_ref() {
+                clear_box(container);
+                container.append(&self.create_year_navigation_strip(year));
+            }
             self.imp().year_rendered_year.set(Some(year));
-        } else {
-            if let Some(canvas) = self.imp().year_canvas.borrow().as_ref() {
-                canvas.queue_draw();
+            if let Some(vadj) = self.imp().year_vadjustment.borrow().as_ref() {
+                vadj.set_value(0.0);
             }
-            if let Some(details) = self.imp().year_details_container.borrow().as_ref() {
-                self.render_year_day_details(details, selected_day);
-            }
+        }
+
+        self.update_year_paned_layout();
+
+        if let Some(canvas) = self.imp().year_canvas.borrow().as_ref() {
+            canvas.queue_draw();
+        }
+        if let Some(details) = self.imp().year_details_container.borrow().as_ref() {
+            self.render_year_day_details(details, selected_day);
         }
     }
 
@@ -11025,25 +11222,64 @@ fn truncate_cairo_text(cr: &gtk::cairo::Context, text: &str, max_width: f64) -> 
     if text.is_empty() || max_width <= 0.0 {
         return String::new();
     }
-    if let Ok(ext) = cr.text_extents(text) {
-        if ext.width() <= max_width {
-            return text.to_string();
+    let total_w = match cr.text_extents(text) {
+        Ok(ext) => {
+            if ext.width() <= max_width {
+                return text.to_string();
+            }
+            ext.width()
         }
-    }
-    let chars: Vec<char> = text.chars().collect();
-    if chars.is_empty() {
+        Err(_) => return text.to_string(),
+    };
+
+    let char_indices: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+    let num_chars = char_indices.len();
+    if num_chars == 0 {
         return String::new();
     }
-    let mut low = 0usize;
-    let mut high = chars.len();
-    let mut best = 0usize;
 
+    // Estimate character fit from average character width
+    let avg_char_w = (total_w / num_chars as f64).max(1.0);
+    let est = (max_width / avg_char_w).round() as usize;
+
+    // Narrow search window around estimate with safety clamping
+    let mut low = est.saturating_sub(6);
+    let mut high = (est + 6).min(num_chars);
+
+    let mut test_str = String::with_capacity(text.len() + 4);
+
+    // Expand search window if estimate was outside bounds
+    if low > 0 {
+        let byte_end = if low < num_chars { char_indices[low] } else { text.len() };
+        test_str.clear();
+        test_str.push_str(&text[..byte_end]);
+        test_str.push('…');
+        if let Ok(ext) = cr.text_extents(&test_str) {
+            if ext.width() > max_width {
+                low = 0;
+            }
+        } else {
+            low = 0;
+        }
+    }
+    if high < num_chars {
+        let byte_end = char_indices[high];
+        test_str.clear();
+        test_str.push_str(&text[..byte_end]);
+        test_str.push('…');
+        if let Ok(ext) = cr.text_extents(&test_str) {
+            if ext.width() <= max_width {
+                high = num_chars;
+            }
+        }
+    }
+
+    let mut best = 0usize;
     while low <= high {
         let mid = (low + high) / 2;
-        let mut test_str = String::with_capacity(mid * 4 + 3);
-        for &ch in &chars[..mid] {
-            test_str.push(ch);
-        }
+        let byte_end = if mid < num_chars { char_indices[mid] } else { text.len() };
+        test_str.clear();
+        test_str.push_str(&text[..byte_end]);
         test_str.push('…');
         if let Ok(ext) = cr.text_extents(&test_str) {
             if ext.width() <= max_width {
@@ -11060,16 +11296,11 @@ fn truncate_cairo_text(cr: &gtk::cairo::Context, text: &str, max_width: f64) -> 
         }
     }
 
-    if best == 0 {
-        "…".to_string()
-    } else {
-        let mut res = String::with_capacity(best * 4 + 3);
-        for &ch in &chars[..best] {
-            res.push(ch);
-        }
-        res.push('…');
-        res
-    }
+    let byte_end = if best < num_chars { char_indices[best] } else { text.len() };
+    let mut res = String::with_capacity(byte_end + 4);
+    res.push_str(&text[..byte_end]);
+    res.push('…');
+    res
 }
 
 #[derive(Clone)]
@@ -14858,12 +15089,12 @@ fn event_start_date(event: &CalendarEventRecord) -> Option<NaiveDate> {
         .or_else(|| NaiveDate::parse_from_str(event.start.get(..10)?, "%Y-%m-%d").ok())
 }
 
-fn event_start_datetime(event: &CalendarEventRecord) -> Option<NaiveDateTime> {
+pub(crate) fn event_start_datetime(event: &CalendarEventRecord) -> Option<NaiveDateTime> {
     property_local_datetime(&event.component, "DTSTART", event.all_day)
         .or_else(|| displayed_event_datetime(&event.start))
 }
 
-fn event_end_datetime(event: &CalendarEventRecord) -> Option<NaiveDateTime> {
+pub(crate) fn event_end_datetime(event: &CalendarEventRecord) -> Option<NaiveDateTime> {
     property_local_datetime(&event.component, "DTEND", event.all_day)
         .or_else(|| {
             let start = event_start_datetime(event)?;
@@ -14945,7 +15176,7 @@ fn event_display_range(event: &CalendarEventRecord) -> Option<CalendarDateRange>
     ))
 }
 
-fn event_occurrence_dates_in_range(
+pub(crate) fn event_occurrence_dates_in_range(
     event: &CalendarEventRecord,
     range: CalendarDateRange,
 ) -> Vec<NaiveDate> {
@@ -15480,9 +15711,34 @@ fn indexed_event_day_markers(
     category_filter: Option<&str>,
     hidden_sources: &HashSet<String>,
 ) -> BTreeMap<NaiveDate, usize> {
-    indexed_events_by_date(index, range, search_query, category_filter, hidden_sources)
+    let mut day_identities: BTreeMap<NaiveDate, (BTreeSet<CalendarEventIdentity>, usize)> = BTreeMap::new();
+    for event_index in index.candidate_event_indices(range) {
+        let Some(event) = index.snapshot.events.get(event_index) else {
+            continue;
+        };
+        if !event_matches_calendar_filter(event, search_query, category_filter, hidden_sources) {
+            continue;
+        }
+        let identity = CalendarEventIdentity::from_event(event);
+        for date in event_occurrence_dates_in_range(event, range) {
+            let (seen, no_id_count) = day_identities.entry(date).or_default();
+            if let Some(ref id) = identity {
+                seen.insert(id.clone());
+            } else {
+                *no_id_count += 1;
+            }
+        }
+    }
+    day_identities
         .into_iter()
-        .map(|(date, events)| (date, events.len()))
+        .filter_map(|(date, (seen, no_id_count))| {
+            let count = seen.len() + no_id_count;
+            if count > 0 {
+                Some((date, count))
+            } else {
+                None
+            }
+        })
         .collect()
 }
 
@@ -19599,8 +19855,9 @@ mod tests {
         let source = include_str!("calendar_page.rs");
         // Verify date_label is centered in the view_toolbar CenterBox
         assert!(source.contains(".center_widget(&date_label)"));
-        // Verify navigation buttons are in start_box on the left
+        // Verify navigation buttons and actions are in start_box on the left (GNOME HIG)
         assert!(source.contains("start_box.append(&nav_box)"));
+        assert!(source.contains("start_box.append(&actions_box)"));
         // Verify view switchers are in end_box on the right
         assert!(source.contains("end_box.append(&view_switcher_box)"));
         // Verify date_label has halign Center
@@ -20209,6 +20466,37 @@ mod tests {
 
         let hit_none = hit_test_memopad(&layout, 50.0, 100.0);
         assert_eq!(hit_none, None);
+    }
+
+    #[test]
+    fn test_year_and_agenda_virtualization_and_fast_indexing() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let page = CalendarPage::new();
+        assert!(page.imp().agenda_vadjustment.borrow().is_some());
+        assert!(page.imp().agenda_canvas.borrow().is_some());
+        assert!(page.imp().year_vadjustment.borrow().is_some());
+        assert!(page.imp().year_canvas.borrow().is_some());
+        assert!(page.imp().year_paned.borrow().is_some());
+
+        // Verify switching to Month, Agenda, Year views operates smoothly
+        page.select_calendar_view(CalendarView::Month);
+        assert_eq!(*page.imp().current_view.borrow(), CalendarView::Month);
+
+        page.select_calendar_view(CalendarView::Agenda);
+        assert_eq!(*page.imp().current_view.borrow(), CalendarView::Agenda);
+
+        page.select_calendar_view(CalendarView::Year);
+        assert_eq!(*page.imp().current_view.borrow(), CalendarView::Year);
+
+        // Canvas widgets should remain stable and not get destroyed on view switches
+        assert!(page.imp().year_canvas.borrow().is_some());
+        assert!(page.imp().agenda_canvas.borrow().is_some());
+        assert!(page.imp().month_canvas.borrow().is_some());
     }
 }
 
