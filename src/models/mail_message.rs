@@ -124,6 +124,7 @@ mod imp {
         pub(crate) raw_mime: RefCell<Option<Arc<[u8]>>>,
         pub attachments: RefCell<Vec<AttachmentInfo>>,
         pub is_preview_only: RefCell<bool>,
+        pub cached_formatted_date: RefCell<Option<(String, String)>>,
     }
 
     #[glib::object_subclass]
@@ -279,6 +280,22 @@ impl MailMessageObject {
         self.imp().date_str.borrow().clone()
     }
 
+    pub fn formatted_date_cached<F>(&self, cache_key: &str, compute: F) -> String
+    where
+        F: FnOnce(&str) -> String,
+    {
+        let imp = self.imp();
+        if let Some((ref key, ref formatted)) = *imp.cached_formatted_date.borrow() {
+            if key == cache_key {
+                return formatted.clone();
+            }
+        }
+        let date_str = imp.date_str.borrow();
+        let formatted = compute(&date_str);
+        *imp.cached_formatted_date.borrow_mut() = Some((cache_key.to_string(), formatted.clone()));
+        formatted
+    }
+
     pub fn preview_snippet(&self) -> String {
         self.imp().preview_snippet.borrow().clone()
     }
@@ -422,6 +439,10 @@ impl MailMessageObject {
             labels.sort_by_key(|value| value.to_ascii_lowercase());
         }
         changed
+    }
+
+    pub fn set_labels(&self, labels: Vec<String>) {
+        *self.imp().labels.borrow_mut() = labels;
     }
 
     pub(crate) fn backend_location(&self) -> Option<MailBackendLocation> {

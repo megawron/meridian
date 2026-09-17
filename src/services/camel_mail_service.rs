@@ -47,8 +47,8 @@ fn put_cached_raw_message(key: RawCacheKey, data: Vec<u8>) {
     }
 }
 
-const DEFAULT_MAIL_PAGE_SIZE: usize = 100;
-const MAX_MAIL_PAGE_SIZE: usize = 1_000;
+const DEFAULT_MAIL_PAGE_SIZE: usize = 100_000;
+const MAX_MAIL_PAGE_SIZE: usize = 100_000;
 const MAX_MAIL_PAGE_OFFSET: usize = i32::MAX as usize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -644,7 +644,7 @@ fn folder_matches_name(actual: &str, wanted: &str) -> bool {
 /// folder's full name is still available.  Keep the Evolution-compatible
 /// built-in folder selection usable by deriving the stable UI id from that
 /// name as a fallback.
-fn normalized_camel_folder_id(folder_id: &str, folder_name: &str) -> String {
+pub(crate) fn normalized_camel_folder_id(folder_id: &str, folder_name: &str) -> String {
     let explicit = folder_id.trim().to_ascii_lowercase();
     let explicit_id = match explicit.as_str() {
         "inbox" => Some("inbox"),
@@ -965,12 +965,18 @@ pub(crate) enum CamelChangeKind {
     Changed,
     FolderDeleted,
     FolderRenamed,
+    SourceAdded,
+    SourceRemoved,
+    SourceEnabled,
+    SourceDisabled,
+    SourceChanged,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CamelChangeEvent {
     pub(crate) kind: CamelChangeKind,
     pub(crate) source_uid: String,
+    pub(crate) source_display_name: Option<String>,
     pub(crate) folder_name: String,
     pub(crate) old_folder_name: Option<String>,
     pub(crate) added_count: usize,
@@ -1018,6 +1024,21 @@ impl CamelChangeNormalizer {
 
     fn normalize(&mut self, mut event: CamelChangeEvent) -> Result<CamelChangeEvent, String> {
         event.source_uid = event.source_uid.trim().to_string();
+
+        if matches!(
+            event.kind,
+            CamelChangeKind::SourceAdded
+                | CamelChangeKind::SourceRemoved
+                | CamelChangeKind::SourceEnabled
+                | CamelChangeKind::SourceDisabled
+                | CamelChangeKind::SourceChanged
+        ) {
+            if event.source_uid.is_empty() {
+                return Err("Camel-Kontoänderung ohne Quell-UID".to_string());
+            }
+            return Ok(event);
+        }
+
         event.folder_name = event.folder_name.trim().to_string();
         event.old_folder_name = event
             .old_folder_name
@@ -1066,6 +1087,7 @@ impl CamelChangeNormalizer {
                     });
                 }
             }
+            _ => {}
         }
 
         event.removed_uids = normalized_uids(event.removed_uids);
@@ -1418,6 +1440,7 @@ mod ffi {
         pub(super) source_uid: *mut c_char,
         pub(super) folder_name: *mut c_char,
         pub(super) old_folder_name: *mut c_char,
+        pub(super) source_display_name: *mut c_char,
         pub(super) added_count: usize,
         pub(super) removed_count: usize,
         pub(super) changed_count: usize,
@@ -1581,6 +1604,22 @@ mod ffi {
             password: *const c_char,
             out_error: *mut *mut c_char,
         ) -> i32;
+
+        pub(super) fn evolution_eds_camel_search_folder(
+            source_uid: *const c_char,
+            folder_name: *const c_char,
+            query_sexpr: *const c_char,
+            out_uids: *mut *mut *mut c_char,
+            out_count: *mut usize,
+            out_error: *mut *mut c_char,
+            cancellation_callback: Option<EvolutionEdsCamelCancellationCallback>,
+            cancellation_user_data: *mut c_void,
+        ) -> i32;
+
+        pub(super) fn evolution_eds_camel_free_uids(
+            uids: *mut *mut c_char,
+            count: usize,
+        );
     }
 }
 
@@ -1984,6 +2023,14 @@ fn load_messages_native(
             }
 
             if skip_folder {
+                continue;
+            }
+
+            if raw_folder_name.starts_with('.')
+                || raw_folder_name.contains("/.")
+                || mapped_folder_name.starts_with('.')
+                || mapped_folder_name.contains("/.")
+            {
                 continue;
             }
 
@@ -2661,6 +2708,18 @@ fn load_raw_message_uncached(
         return Ok(source);
     }
 
+    // Check if the message is already cached locally on disk in Evolution's cache (<1ms, no Camel lock):
+    if let Some(cache) = crate::services::evolution_summary_cache::find_evolution_account_cache(Some(&location.source_uid)) {
+        if let Some(raw) = crate::services::evolution_summary_cache::read_cached_raw_message_direct(
+            &cache.cache_dir,
+            &location.folder_name,
+            &location.message_uid,
+        ) {
+            cancellation_error(cancelled, "Nachrichtenquelle laden")?;
+            return Ok(raw);
+        }
+    }
+
     #[cfg(eds_camel_bridge)]
     {
         return load_raw_message_native(location, cancelled);
@@ -2839,6 +2898,90 @@ fn load_messages_for_uids_native(
     Ok(messages)
 }
 
+pub(crate) fn search_folder_sync(
+    source_uid: &str,
+    folder_name: &str,
+    query_sexpr: &str,
+    cancelled: Option<&AtomicBool>,
+) -> Result<Vec<String>, String> {
+    #[cfg(eds_camel_bridge)]
+    {
+        use std::ffi::{CStr, CString, c_char, c_void};
+        unsafe extern "C" fn cancellation_callback(user_data: *mut c_void) -> i32 {
+            if user_data.is_null() {
+                return 0;
+            }
+            let cancelled = unsafe { &*(user_data as *const AtomicBool) };
+            cancelled.load(Ordering::Relaxed) as i32
+        }
+
+        let (resolved_source_uid, resolved_folder_name) =
+            resolve_shared_mailbox_target(source_uid, folder_name);
+        let source_uid_c = CString::new(resolved_source_uid)
+            .map_err(|_| "EDS source UID contains an invalid NUL byte".to_string())?;
+        let folder_name_c = CString::new(resolved_folder_name)
+            .map_err(|_| "EDS folder name contains an invalid NUL byte".to_string())?;
+        let query_sexpr_c = CString::new(query_sexpr)
+            .map_err(|_| "Camel search query contains an invalid NUL byte".to_string())?;
+
+        let cancellation_user_data = cancelled.map_or(std::ptr::null_mut(), |cancelled| {
+            cancelled as *const AtomicBool as *mut c_void
+        });
+        let cancellation_callback =
+            cancelled.map(|_| cancellation_callback as ffi::EvolutionEdsCamelCancellationCallback);
+
+        let mut out_uids: *mut *mut c_char = std::ptr::null_mut();
+        let mut out_count: usize = 0;
+        let mut error_message: *mut c_char = std::ptr::null_mut();
+
+        let _native_lock = CAMEL_NATIVE_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+
+        let success = unsafe {
+            ffi::evolution_eds_camel_search_folder(
+                source_uid_c.as_ptr(),
+                folder_name_c.as_ptr(),
+                query_sexpr_c.as_ptr(),
+                &mut out_uids,
+                &mut out_count,
+                &mut error_message,
+                cancellation_callback,
+                cancellation_user_data,
+            ) != 0
+        };
+
+        let warning = (!error_message.is_null()).then(|| unsafe {
+            let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
+            ffi::evolution_eds_camel_free_error(error_message);
+            message
+        });
+
+        if !success {
+            return Err(warning.unwrap_or_else(|| "Camel-Ordnersuche fehlgeschlagen".to_string()));
+        }
+
+        let mut uids = Vec::with_capacity(out_count);
+        if !out_uids.is_null() {
+            for i in 0..out_count {
+                let uid_ptr = unsafe { *out_uids.add(i) };
+                if !uid_ptr.is_null() {
+                    let uid = unsafe { CStr::from_ptr(uid_ptr).to_string_lossy().into_owned() };
+                    uids.push(uid);
+                }
+            }
+            unsafe { ffi::evolution_eds_camel_free_uids(out_uids, out_count) };
+        }
+
+        Ok(uids)
+    }
+    #[cfg(not(eds_camel_bridge))]
+    {
+        let _ = (source_uid, folder_name, query_sexpr, cancelled);
+        Err("EDS/Camel bridge is not available on this platform".to_string())
+    }
+}
+
 #[cfg(any(eds_camel_bridge, test))]
 fn send_watcher_event(
     sender: &async_channel::Sender<CamelSyncEvent>,
@@ -2935,6 +3078,7 @@ pub(crate) fn start_change_monitor()
                     source_uid: std::ptr::null_mut(),
                     folder_name: std::ptr::null_mut(),
                     old_folder_name: std::ptr::null_mut(),
+                    source_display_name: std::ptr::null_mut(),
                     added_count: 0,
                     removed_count: 0,
                     changed_count: 0,
@@ -2969,6 +3113,11 @@ pub(crate) fn start_change_monitor()
                     1 => Some(CamelChangeKind::Changed),
                     2 => Some(CamelChangeKind::FolderDeleted),
                     3 => Some(CamelChangeKind::FolderRenamed),
+                    4 => Some(CamelChangeKind::SourceAdded),
+                    5 => Some(CamelChangeKind::SourceRemoved),
+                    6 => Some(CamelChangeKind::SourceEnabled),
+                    7 => Some(CamelChangeKind::SourceDisabled),
+                    8 => Some(CamelChangeKind::SourceChanged),
                     _ => None,
                 }) else {
                     let unknown_kind = raw_event.kind;
@@ -2985,9 +3134,16 @@ pub(crate) fn start_change_monitor()
                     }
                     continue;
                 };
+                let source_display_name = if !raw_event.source_display_name.is_null() {
+                    let s = c_string(raw_event.source_display_name);
+                    (!s.is_empty()).then_some(s)
+                } else {
+                    None
+                };
                 let event = CamelChangeEvent {
                     kind,
                     source_uid: c_string(raw_event.source_uid),
+                    source_display_name,
                     folder_name: c_string(raw_event.folder_name),
                     old_folder_name: (!raw_event.old_folder_name.is_null())
                         .then(|| c_string(raw_event.old_folder_name)),
@@ -3030,6 +3186,7 @@ mod tests {
         CamelChangeEvent {
             kind,
             source_uid: " account-a ".to_string(),
+            source_display_name: None,
             folder_name: folder_name.to_string(),
             old_folder_name: None,
             added_count: 99,
@@ -3329,7 +3486,7 @@ mod tests {
             }
         );
         assert_eq!(
-            PageWindow::normalized(0, 50_000).unwrap().limit,
+            PageWindow::normalized(0, 200_000).unwrap().limit,
             MAX_MAIL_PAGE_SIZE
         );
         assert!(PageWindow::normalized(MAX_MAIL_PAGE_OFFSET + 1, 10).is_err());

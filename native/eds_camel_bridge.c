@@ -755,6 +755,14 @@ is_mail_folder (CamelFolderInfo *folder_info)
     if (!folder_info)
         return FALSE;
 
+    if (folder_info->full_name) {
+        if (folder_info->full_name[0] == '.' || strstr (folder_info->full_name, "/."))
+            return FALSE;
+    }
+
+    if (folder_info->display_name && folder_info->display_name[0] == '.')
+        return FALSE;
+
     type = folder_info->flags & CAMEL_FOLDER_TYPE_MASK;
     return type != CAMEL_FOLDER_TYPE_CONTACTS &&
            type != CAMEL_FOLDER_TYPE_EVENTS &&
@@ -1053,12 +1061,9 @@ load_folder (LoadContext *context,
                 remember_error (context, current->full_name, error);
                 g_clear_error (&error);
             } else {
-                if (context->message_offset == 0) {
-                    if (!camel_folder_refresh_info_sync (
-                            folder, cancellable, &error)) {
-                        remember_error (context, current->full_name, error);
-                        g_clear_error (&error);
-                    }
+                CamelFolderSummary *summary = camel_folder_get_folder_summary (folder);
+                if (summary) {
+                    camel_folder_summary_prepare_fetch_all (summary, NULL);
                 }
 
                 #if EDS_BRIDGE_HAS_DUP_UIDS
@@ -1090,10 +1095,10 @@ load_folder (LoadContext *context,
 
                     while (index < (gsize) uids->len &&
                            !load_cancelled (context) &&
-                           loaded < (gsize) context->max_messages_per_folder) {
+                           (context->max_messages_per_folder <= 0 ||
+                            loaded < (gsize) context->max_messages_per_folder)) {
                         const gchar *message_uid = sort_entries[index].uid;
                         CamelMessageInfo *message_info;
-                        CamelMimeMessage *message;
 
                         index++;
                         if (!message_uid)
@@ -1101,22 +1106,13 @@ load_folder (LoadContext *context,
 
                         message_info = camel_folder_get_message_info (
                             folder, message_uid);
-                        message = camel_folder_get_message_cached (
-                            folder, message_uid, cancellable);
-                        if (message) {
-                            if (append_message (
-                                    context, source_uid, current, message_uid,
-                                    message_info, message, cancellable))
-                                loaded++;
-                            g_object_unref (message);
-                        } else if (message_info) {
+                        if (message_info) {
                             if (append_message_from_info (
                                     context, source_uid, current, message_uid,
                                     message_info))
                                 loaded++;
-                        }
-                        if (message_info)
                             g_object_unref (message_info);
+                        }
                     }
 
                     g_free (sort_entries);
@@ -1953,9 +1949,15 @@ evolution_eds_camel_load_messages (const char *source_uid,
         *out_error = NULL;
 
     context.message_offset = message_offset > 0 ? message_offset : 0;
-    context.max_messages_per_folder = max_messages_per_folder > 0
-        ? max_messages_per_folder
-        : DEFAULT_MESSAGES_PER_FOLDER;
+    if (folder_name && *folder_name) {
+        context.max_messages_per_folder = max_messages_per_folder > 0
+            ? max_messages_per_folder
+            : 10000;
+    } else {
+        context.max_messages_per_folder = max_messages_per_folder > 0
+            ? max_messages_per_folder
+            : DEFAULT_MESSAGES_PER_FOLDER;
+    }
     context.progress_callback = progress_callback;
     context.progress_user_data = progress_user_data;
     context.cancellation_callback = cancellation_callback;
@@ -3119,6 +3121,10 @@ struct _EvolutionEdsCamelWatcher {
     GPtrArray *stores;
     ESourceRegistry *registry;
     EdsCamelSession *session;
+    gulong source_added_id;
+    gulong source_removed_id;
+    gulong source_enabled_id;
+    gulong source_disabled_id;
 };
 
 static char **
@@ -3164,6 +3170,7 @@ free_watcher_event (CamelWatcherEvent *queued_event)
     g_free (queued_event->event.source_uid);
     g_free (queued_event->event.folder_name);
     g_free (queued_event->event.old_folder_name);
+    g_free (queued_event->event.source_display_name);
     free_uid_array (
         queued_event->event.added_uids,
         queued_event->event.added_uid_count);
@@ -3404,6 +3411,99 @@ watcher_remember_error (gchar **first_error,
             "%s: %s", scope ? scope : "EDS/Camel", error->message);
 }
 
+static void
+queue_watcher_source_event (EvolutionEdsCamelWatcher *watcher,
+                            EvolutionEdsCamelChangeKind kind,
+                            const gchar *source_uid,
+                            const gchar *source_display_name)
+{
+    CamelWatcherEvent *queued_event;
+
+    if (!watcher)
+        return;
+
+    g_mutex_lock (&watcher->lock);
+    if (watcher->stopping) {
+        g_mutex_unlock (&watcher->lock);
+        return;
+    }
+
+    queued_event = g_new0 (CamelWatcherEvent, 1);
+    queued_event->event.kind = kind;
+    queued_event->event.source_uid = g_strdup (source_uid);
+    queued_event->event.source_display_name = g_strdup (source_display_name);
+
+    g_queue_push_tail (watcher->events, queued_event);
+    g_cond_signal (&watcher->condition);
+    g_mutex_unlock (&watcher->lock);
+}
+
+static void
+watcher_source_added_cb (ESourceRegistry *registry,
+                         ESource *source,
+                         gpointer user_data)
+{
+    EvolutionEdsCamelWatcher *watcher = user_data;
+    (void) registry;
+    if (!watcher || watcher->stopping)
+        return;
+    if (!e_source_has_extension (source, E_SOURCE_EXTENSION_MAIL_ACCOUNT))
+        return;
+    if (!e_source_get_enabled (source))
+        return;
+    queue_watcher_source_event (
+        watcher, EVOLUTION_EDS_CAMEL_SOURCE_ADDED,
+        e_source_get_uid (source), e_source_get_display_name (source));
+}
+
+static void
+watcher_source_removed_cb (ESourceRegistry *registry,
+                           ESource *source,
+                           gpointer user_data)
+{
+    EvolutionEdsCamelWatcher *watcher = user_data;
+    (void) registry;
+    if (!watcher || watcher->stopping)
+        return;
+    if (!e_source_has_extension (source, E_SOURCE_EXTENSION_MAIL_ACCOUNT))
+        return;
+    queue_watcher_source_event (
+        watcher, EVOLUTION_EDS_CAMEL_SOURCE_REMOVED,
+        e_source_get_uid (source), e_source_get_display_name (source));
+}
+
+static void
+watcher_source_enabled_cb (ESourceRegistry *registry,
+                           ESource *source,
+                           gpointer user_data)
+{
+    EvolutionEdsCamelWatcher *watcher = user_data;
+    (void) registry;
+    if (!watcher || watcher->stopping)
+        return;
+    if (!e_source_has_extension (source, E_SOURCE_EXTENSION_MAIL_ACCOUNT))
+        return;
+    queue_watcher_source_event (
+        watcher, EVOLUTION_EDS_CAMEL_SOURCE_ENABLED,
+        e_source_get_uid (source), e_source_get_display_name (source));
+}
+
+static void
+watcher_source_disabled_cb (ESourceRegistry *registry,
+                            ESource *source,
+                            gpointer user_data)
+{
+    EvolutionEdsCamelWatcher *watcher = user_data;
+    (void) registry;
+    if (!watcher || watcher->stopping)
+        return;
+    if (!e_source_has_extension (source, E_SOURCE_EXTENSION_MAIL_ACCOUNT))
+        return;
+    queue_watcher_source_event (
+        watcher, EVOLUTION_EDS_CAMEL_SOURCE_DISABLED,
+        e_source_get_uid (source), e_source_get_display_name (source));
+}
+
 int
 evolution_eds_camel_watcher_new (const char *source_uid,
                                  EvolutionEdsCamelWatcher **out_watcher,
@@ -3517,6 +3617,19 @@ evolution_eds_camel_watcher_new (const char *source_uid,
     else
         g_free (first_error);
 
+    watcher->source_added_id = g_signal_connect (
+        watcher->registry, "source-added",
+        G_CALLBACK (watcher_source_added_cb), watcher);
+    watcher->source_removed_id = g_signal_connect (
+        watcher->registry, "source-removed",
+        G_CALLBACK (watcher_source_removed_cb), watcher);
+    watcher->source_enabled_id = g_signal_connect (
+        watcher->registry, "source-enabled",
+        G_CALLBACK (watcher_source_enabled_cb), watcher);
+    watcher->source_disabled_id = g_signal_connect (
+        watcher->registry, "source-disabled",
+        G_CALLBACK (watcher_source_disabled_cb), watcher);
+
     g_clear_object (&cancellable);
     g_list_free_full (sources, g_object_unref);
     *out_watcher = watcher;
@@ -3575,6 +3688,7 @@ evolution_eds_camel_free_change_event (EvolutionEdsCamelChangeEvent *event)
     g_free (event->source_uid);
     g_free (event->folder_name);
     g_free (event->old_folder_name);
+    g_free (event->source_display_name);
     free_uid_array (event->added_uids, event->added_uid_count);
     free_uid_array (event->removed_uids, event->removed_uid_count);
     free_uid_array (event->changed_uids, event->changed_uid_count);
@@ -3594,6 +3708,19 @@ evolution_eds_camel_watcher_free (EvolutionEdsCamelWatcher *watcher)
     watcher->stopping = TRUE;
     g_cond_broadcast (&watcher->condition);
     g_mutex_unlock (&watcher->lock);
+
+    if (watcher->source_added_id && watcher->registry)
+        g_signal_handler_disconnect (watcher->registry, watcher->source_added_id);
+    if (watcher->source_removed_id && watcher->registry)
+        g_signal_handler_disconnect (watcher->registry, watcher->source_removed_id);
+    if (watcher->source_enabled_id && watcher->registry)
+        g_signal_handler_disconnect (watcher->registry, watcher->source_enabled_id);
+    if (watcher->source_disabled_id && watcher->registry)
+        g_signal_handler_disconnect (watcher->registry, watcher->source_disabled_id);
+    watcher->source_added_id = 0;
+    watcher->source_removed_id = 0;
+    watcher->source_enabled_id = 0;
+    watcher->source_disabled_id = 0;
 
     for (ii = 0; ii < watcher->folders->len; ii++) {
         CamelWatcherFolder *watch_folder = g_ptr_array_index (
@@ -5195,5 +5322,129 @@ evolution_eds_camel_store_password (const char *source_uid,
 
     g_printerr ("[EDS] Password successfully stored via credentials provider for %s\n", source_uid);
     return 1;
+}
+
+int
+evolution_eds_camel_search_folder (
+    const char *source_uid,
+    const char *folder_name,
+    const char *query_sexpr,
+    char ***out_uids,
+    size_t *out_count,
+    char **out_error,
+    EvolutionEdsCamelCancellationCallback cancellation_callback,
+    void *cancellation_user_data)
+{
+    ESourceRegistry *registry = NULL;
+    EdsCamelSession *session = NULL;
+    ESource *source = NULL;
+    CamelStore *store = NULL;
+    CamelFolder *folder = NULL;
+    GCancellable *cancellable = NULL;
+    CancellationMonitor *cancellation_monitor = NULL;
+    GPtrArray *uids = NULL;
+    GError *error = NULL;
+    gboolean success = FALSE;
+
+    if (out_uids)
+        *out_uids = NULL;
+    if (out_count)
+        *out_count = 0;
+    if (out_error)
+        *out_error = NULL;
+
+    if (!source_uid || !*source_uid || !folder_name || !*folder_name) {
+        if (out_error)
+            *out_error = g_strdup ("Suche benötigt Konto-UID und Ordnernamen");
+        return 0;
+    }
+
+    camel_provider_init ();
+
+    registry = eds_camel_ref_registry (&error);
+    if (!registry)
+        goto finish;
+
+    source = e_source_registry_ref_source (registry, source_uid);
+    if (!source) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+            "EDS source for Camel search no longer exists");
+        goto finish;
+    }
+    if (!e_source_get_enabled (source)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_FAILED,
+            "EDS source for Camel search is disabled");
+        goto finish;
+    }
+
+    session = eds_camel_ref_session (registry);
+    cancellable = g_cancellable_new ();
+    cancellation_monitor = cancellation_monitor_start (
+        cancellable, cancellation_callback, cancellation_user_data);
+
+    store = open_store_for_source (session, source, cancellable, &error);
+    if (!store)
+        goto finish;
+
+    folder = camel_store_get_folder_sync (
+        store, folder_name, CAMEL_STORE_FOLDER_NONE,
+        cancellable, &error);
+    if (!folder)
+        goto finish;
+
+    CamelFolderSummary *summary = camel_folder_get_folder_summary (folder);
+    if (summary) {
+        camel_folder_summary_prepare_fetch_all (summary, NULL);
+    }
+
+    const gchar *sexpr = (query_sexpr && *query_sexpr) ? query_sexpr : "(match-all)";
+    success = camel_folder_search_sync (folder, sexpr, &uids, cancellable, &error);
+
+finish:
+    if (cancellation_monitor)
+        cancellation_monitor_free (cancellation_monitor);
+
+    if (success && uids) {
+        char **result_uids = g_new0 (char *, uids->len + 1);
+        for (guint i = 0; i < uids->len; i++) {
+            result_uids[i] = g_strdup (g_ptr_array_index (uids, i));
+        }
+        if (out_uids)
+            *out_uids = result_uids;
+        if (out_count)
+            *out_count = uids->len;
+        g_ptr_array_unref (uids);
+    } else if (success) {
+        if (out_uids)
+            *out_uids = g_new0 (char *, 1);
+        if (out_count)
+            *out_count = 0;
+    } else {
+        if (out_error && error)
+            *out_error = g_strdup (error->message);
+    }
+
+    g_clear_error (&error);
+    g_clear_object (&folder);
+    g_clear_object (&store);
+    g_clear_object (&cancellable);
+    g_clear_object (&session);
+    g_clear_object (&source);
+    g_clear_object (&registry);
+
+    return success ? 1 : 0;
+}
+
+void
+evolution_eds_camel_free_uids (char **uids, size_t count)
+{
+    if (!uids)
+        return;
+    for (size_t i = 0; i < count; i++) {
+        g_free (uids[i]);
+    }
+    g_free (uids);
 }
 

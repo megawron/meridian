@@ -125,6 +125,11 @@ typedef enum {
     EVOLUTION_EDS_CAMEL_CHANGE = 1,
     EVOLUTION_EDS_CAMEL_FOLDER_DELETED = 2,
     EVOLUTION_EDS_CAMEL_FOLDER_RENAMED = 3,
+    EVOLUTION_EDS_CAMEL_SOURCE_ADDED = 4,
+    EVOLUTION_EDS_CAMEL_SOURCE_REMOVED = 5,
+    EVOLUTION_EDS_CAMEL_SOURCE_ENABLED = 6,
+    EVOLUTION_EDS_CAMEL_SOURCE_DISABLED = 7,
+    EVOLUTION_EDS_CAMEL_SOURCE_CHANGED = 8,
 } EvolutionEdsCamelChangeKind;
 
 typedef struct {
@@ -132,6 +137,7 @@ typedef struct {
     char *source_uid;
     char *folder_name;
     char *old_folder_name;
+    char *source_display_name;
     size_t added_count;
     size_t removed_count;
     size_t changed_count;
@@ -339,6 +345,24 @@ int evolution_eds_camel_store_password(
     const char *source_uid,
     const char *password,
     char **out_error);
+
+/* Search a specific Camel folder using a Camel S-expression query (e.g.
+ * (match-all (or (contains "subject" "...") (contains "from" "...")))).
+ * Returns an allocated array of message UID strings and sets out_count.
+ * The returned array must be freed with evolution_eds_camel_free_uids(). */
+int evolution_eds_camel_search_folder(
+    const char *source_uid,
+    const char *folder_name,
+    const char *query_sexpr,
+    char ***out_uids,
+    size_t *out_count,
+    char **out_error,
+    EvolutionEdsCamelCancellationCallback cancellation_callback,
+    void *cancellation_user_data);
+
+void evolution_eds_camel_free_uids(
+    char **uids,
+    size_t count);
 
 #ifdef __cplusplus
 }

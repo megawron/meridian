@@ -95,7 +95,8 @@ pub(crate) const ACTIONS: &[ActionSpec] = action_specs! {
         "win.toggle-mail-recipient", "win.toggle-mail-sender",
         "win.toggle-mail-show-deleted", "win.toggle-mail-statusbar",
         "win.toggle-mail-threading", "win.toggle-mail-toolbar", "win.toggle-preview",
-        "win.toggle-sidebar", "win.use-classic-mail-layout", "win.use-modern-mail-layout",
+        "win.toggle-sidebar", "win.toggle-todo-bar", "win.use-classic-mail-layout", "win.use-modern-mail-layout",
+        "win.use-vertical-mail-layout", "win.use-horizontal-mail-layout",
     ],
     MailList => [
         "win.collapse-all-threads", "win.expand-all-threads", "win.mail-next",
@@ -165,7 +166,10 @@ pub(crate) const PRIMARY_MENU_ACTIONS: &[MenuActionSpec] = menu_specs! {
         ("Vorschaufenster ein-/ausblenden", "win.toggle-preview"),
     ],
     ViewLayout => [
+        ("Vertikale Mail-Anordnung (3 Spalten)", "win.use-vertical-mail-layout"),
+        ("Horizontale Mail-Anordnung (Vorschau unten)", "win.use-horizontal-mail-layout"),
         ("Klassische Mail-Anordnung", "win.use-classic-mail-layout"),
+        ("Aufgabenleiste für heute ein-/ausblenden", "win.toggle-todo-bar"),
         ("Werkzeugleiste ein-/ausblenden", "win.toggle-toolbar"),
         ("Modul-Schaltflächen in Kopfleiste", "win.toggle-top-switcher"),
         ("Statusleiste ein-/ausblenden", "win.toggle-statusbar"),

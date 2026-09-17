@@ -210,6 +210,7 @@ fn main() {
     println!("cargo:rustc-link-lib=static=evolution_eds_camel_bridge");
     println!("cargo:rustc-link-lib=static=evolution_eds_ecal_bridge");
     println!("cargo:rustc-link-lib=static=evolution_eds_ebook_bridge");
+    println!("cargo:rustc-link-lib=sqlite3");
     emit_link_metadata(&camel);
     emit_link_metadata(&eds);
     emit_link_metadata(&ecal);

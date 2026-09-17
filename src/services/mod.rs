@@ -54,6 +54,8 @@ pub mod autodiscover_service;
 pub mod certificate_service;
 pub mod credential_service;
 pub mod portable_mail_engine;
+pub mod evolution_summary_cache;
+// pub mod evolution_contact_cache;
 
 pub use autodiscover_service::{
     AutodiscoverService, DiscoveredAccountConfig, DiscoveryTier, ServerConfig, TlsMode,

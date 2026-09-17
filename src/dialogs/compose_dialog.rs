@@ -6481,6 +6481,7 @@ mod tests {
         }
 
         // Concurrent dialogs stress test: one disposed, one active
+        let _ = raw_settings.set_int("draft-autosave-interval", 60);
         let dialog_active = ComposeDialog::new();
         while context.iteration(false) {}
         assert!(

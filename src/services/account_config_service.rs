@@ -322,6 +322,7 @@ impl AccountConfigStore {
         }
         self.save(&accounts)?;
         if let Some(acc) = removed_account {
+            remove_eds_sources_for_profile(&acc);
             let parent_uid = eds_source_uid_for_email(&acc.email);
             let mail_uid = format!("{}-mail", parent_uid);
             let transport_uid = format!("{}-transport", parent_uid);
@@ -767,6 +768,30 @@ pub fn query_exchange_auth_methods(host_or_url: &str) -> Result<Vec<String>, Str
     Ok(ordered)
 }
 
+/// Returns the path to the EDS sources configuration directory.
+pub fn eds_sources_dir() -> PathBuf {
+    if let Ok(custom) = std::env::var("EVOLUTION_SOURCES_DIR") {
+        let path = PathBuf::from(custom.trim());
+        if !path.as_os_str().is_empty() {
+            return path;
+        }
+    }
+    gtk::glib::user_config_dir().join("evolution").join("sources")
+}
+
+/// Remove all `.source` files associated with an AccountProfile from the EDS sources directory.
+pub fn remove_eds_sources_for_profile(profile: &AccountProfile) {
+    let parent_uid = eds_source_uid_for_email(&profile.email);
+    let mail_uid = format!("{}-mail", parent_uid);
+    let identity_uid = format!("{}-identity", parent_uid);
+    let transport_uid = format!("{}-transport", parent_uid);
+    let sources_dir = eds_sources_dir();
+    let _ = fs::remove_file(sources_dir.join(format!("{parent_uid}.source")));
+    let _ = fs::remove_file(sources_dir.join(format!("{mail_uid}.source")));
+    let _ = fs::remove_file(sources_dir.join(format!("{identity_uid}.source")));
+    let _ = fs::remove_file(sources_dir.join(format!("{transport_uid}.source")));
+}
+
 /// Returns the authoritative mail source UID recognized by EDS and Camel.
 pub fn sync_profile_to_eds(
     profile: &AccountProfile,
@@ -780,7 +805,7 @@ pub fn sync_profile_to_eds(
             .to_string();
         let synthetic_uid = eds_source_uid_for_email(&profile.email);
         if synthetic_uid != mail_uid {
-            let sources_dir = gtk::glib::user_config_dir().join("evolution").join("sources");
+            let sources_dir = eds_sources_dir();
             let _ = fs::remove_file(sources_dir.join(format!("{}.source", synthetic_uid)));
             let _ = fs::remove_file(sources_dir.join(format!("{}-mail.source", synthetic_uid)));
             let _ = fs::remove_file(sources_dir.join(format!("{}-identity.source", synthetic_uid)));
@@ -794,7 +819,7 @@ pub fn sync_profile_to_eds(
     let identity_uid = format!("{}-identity", parent_uid);
     let transport_uid = format!("{}-transport", parent_uid);
 
-    let sources_dir = gtk::glib::user_config_dir().join("evolution").join("sources");
+    let sources_dir = eds_sources_dir();
 
     if profile.is_shared_mailbox {
         // Shared mailboxes operate through delegate access under their parent Exchange account.
@@ -1660,5 +1685,8 @@ mod tests {
                 None
             );
         }
+
+        // Always remove test-generated .source files from the system
+        remove_eds_sources_for_profile(&profile);
     }
 }
