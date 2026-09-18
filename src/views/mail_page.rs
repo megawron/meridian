@@ -4769,6 +4769,7 @@ mod imp {
         pub preview_settings: RefCell<Option<AppSettings>>,
         pub classic_toolbar: RefCell<Option<gtk::Widget>>,
         pub mail_sidebar_toggle: RefCell<Option<gtk::ToggleButton>>,
+        pub sidebar_animating: Cell<bool>,
         pub mail_preview_toggle: RefCell<Option<gtk::ToggleButton>>,
         pub mail_todo_toggle: RefCell<Option<gtk::ToggleButton>>,
         pub todo_sidebar: RefCell<Option<gtk::Box>>,
@@ -5222,7 +5223,7 @@ impl MailPage {
         let is_mobile = imp.is_mobile.get();
         let is_tablet = imp.is_tablet.get();
         let sidebar = imp.outer_paned.start_child();
-        let todo_paned = imp.outer_paned.end_child();
+        let todo_paned = Some(imp.todo_paned.clone());
         let message_container = imp.inner_paned.start_child();
         let detail_view = imp.inner_paned.end_child();
         let todo_sidebar = imp.todo_paned.end_child();
@@ -5385,6 +5386,9 @@ impl MailPage {
     }
 
     pub fn set_sidebar_visible(&self, visible: bool) {
+        if self.imp().sidebar_animating.get() {
+            return;
+        }
         let paned = &self.imp().outer_paned;
         if let Some(start) = paned.start_child() {
             start.set_visible(visible);
@@ -5398,6 +5402,20 @@ impl MailPage {
                 paned.set_position(saved_position);
             }
         }
+    }
+
+    pub fn set_sidebar_animating(&self, animating: bool) {
+        self.imp().sidebar_animating.set(animating);
+    }
+
+    pub fn is_sidebar_animating(&self) -> bool {
+        self.imp().sidebar_animating.get()
+    }
+
+    pub fn active_folder_display_title(&self) -> String {
+        let selection = self.active_folder_selection();
+        let (raw_title, _) = selection.title_and_icon();
+        Self::clean_folder_display_title(raw_title)
     }
 
     pub fn set_sidebar_position(&self, pos: i32) {
@@ -5865,7 +5883,12 @@ impl MailPage {
             let page_weak_for_sidebar = self.downgrade();
             settings.connect_changed(Some("mail-show-sidebar"), move |settings, _| {
                 if let Some(page) = page_weak_for_sidebar.upgrade() {
-                    page.set_sidebar_visible(settings.boolean("mail-show-sidebar"));
+                    if page.imp().sidebar_animating.get() {
+                        return;
+                    }
+                    if page.imp().is_mobile.get() {
+                        page.set_sidebar_visible(settings.boolean("mail-show-sidebar"));
+                    }
                 }
             });
             let page_weak_for_default_folder = self.downgrade();
@@ -12472,6 +12495,7 @@ impl MailPage {
             .spacing(8)
             .margin_start(4)
             .margin_end(4)
+            .visible(false)
             .css_classes(vec!["sidebar-drawer-header"])
             .build();
         let drawer_icon = gtk::Image::from_icon_name("mail-inbox-symbolic");
@@ -12491,6 +12515,7 @@ impl MailPage {
         drawer_header.append(&drawer_icon);
         drawer_header.append(&drawer_title);
         drawer_header.append(&drawer_total);
+        drawer_header.set_visible(false);
         self.imp().drawer_header_box.replace(Some(drawer_header.clone()));
         self.imp().drawer_header_title.replace(Some(drawer_title));
         self.imp().drawer_header_icon.replace(Some(drawer_icon));
@@ -13981,6 +14006,9 @@ impl MailPage {
     ) {
         let (raw_title, icon) = selection.title_and_icon();
         let display_title = Self::clean_folder_display_title(raw_title);
+        if let Some(win) = crate::window::find_evolution_window(self) {
+            win.update_sidebar_title(&display_title);
+        }
         if let Some(title_lbl) = self.imp().drawer_header_title.borrow().as_ref() {
             title_lbl.set_label(&display_title);
         }
@@ -21433,9 +21461,10 @@ impl MailPage {
 
         // Outer gtk::Paned: folder sidebar | message+preview area
         // Gives the user a draggable divider between the folder list and messages.
+        sidebar.set_overflow(gtk::Overflow::Hidden);
         imp.outer_paned.set_start_child(Some(&sidebar));
         imp.outer_paned.set_resize_start_child(false);
-        imp.outer_paned.set_shrink_start_child(false);
+        imp.outer_paned.set_shrink_start_child(true);
 
         message_container.set_size_request(180, -1);
         detail_view.set_size_request(120, -1);
@@ -21466,7 +21495,18 @@ impl MailPage {
         imp.todo_paned.set_vexpand(true);
         imp.todo_paned.set_hexpand(true);
 
-        imp.outer_paned.set_end_child(Some(&imp.todo_paned));
+        let content_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        content_box.append(&unified_toolbar);
+        if let Some(search_bar) = imp.mail_search_bar.borrow().as_ref() {
+            content_box.append(search_bar);
+        }
+        content_box.append(&imp.todo_paned);
+
+        imp.outer_paned.set_end_child(Some(&content_box));
         imp.outer_paned.set_resize_end_child(true);
         imp.outer_paned.set_shrink_end_child(true);
 
@@ -21495,7 +21535,13 @@ impl MailPage {
         sidebar.set_visible(sidebar_visible);
         imp.outer_paned.set_position(sidebar_position);
         if let Some(settings) = AppSettings::try_new() {
+            let page_weak_for_pos = self.downgrade();
             imp.outer_paned.connect_position_notify(move |paned| {
+                if let Some(page) = page_weak_for_pos.upgrade() {
+                    if page.imp().sidebar_animating.get() {
+                        return;
+                    }
+                }
                 let position = paned.position();
                 if (80..=1500).contains(&position) && settings.mail_sidebar_position() != position {
                     settings.set_mail_sidebar_position(position);
@@ -21508,10 +21554,6 @@ impl MailPage {
         imp.root_box.set_orientation(gtk::Orientation::Vertical);
         imp.root_box.set_vexpand(true);
         imp.root_box.set_hexpand(true);
-        imp.root_box.append(&unified_toolbar);
-        if let Some(search_bar) = imp.mail_search_bar.borrow().as_ref() {
-            imp.root_box.append(search_bar);
-        }
         imp.root_box.append(&imp.outer_paned);
         imp.root_box.set_parent(&*self.imp().obj());
 

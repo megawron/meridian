@@ -51,6 +51,11 @@ mod imp {
     pub struct EvolutionWindow {
         pub settings: RefCell<Option<AppSettings>>,
         pub header_bar: RefCell<Option<adw::HeaderBar>>,
+        pub sidebar_header: RefCell<Option<adw::HeaderBar>>,
+        pub sidebar_title: RefCell<Option<adw::WindowTitle>>,
+        pub sidebar_close_button: RefCell<Option<gtk::Button>>,
+        pub restore_sidebar_button: RefCell<Option<gtk::Button>>,
+        pub sidebar_animation: RefCell<Option<adw::TimedAnimation>>,
         pub search_button: RefCell<Option<gtk::ToggleButton>>,
         pub view_stack: RefCell<Option<adw::ViewStack>>,
         pub toast_overlay: adw::ToastOverlay,
@@ -70,6 +75,12 @@ mod imp {
         pub last_component_open: RefCell<Option<(ReminderIdentity, Instant)>>,
         pub(crate) search_route_state: Cell<SearchRouteState>,
         pub search_route_source: RefCell<Option<glib::SourceId>>,
+        pub back_button: RefCell<Option<gtk::Button>>,
+        pub view_switcher_bar: RefCell<Option<adw::ViewSwitcherBar>>,
+        pub view_switcher: RefCell<Option<adw::ViewSwitcher>>,
+        pub window_title: RefCell<Option<adw::WindowTitle>>,
+        pub is_mobile: Cell<bool>,
+        pub is_tablet: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -727,6 +738,409 @@ impl EvolutionWindow {
             .and_then(|widget| widget.downcast::<MemosPage>().ok())
     }
 
+    pub fn back_button(&self) -> Option<gtk::Button> {
+        self.imp().back_button.borrow().clone()
+    }
+
+    pub fn view_switcher_bar(&self) -> Option<adw::ViewSwitcherBar> {
+        self.imp().view_switcher_bar.borrow().clone()
+    }
+
+    pub(crate) fn sync_back_button(&self) {
+        let is_mobile = self.imp().is_mobile.get();
+        let can_back = if let Some(view_stack) = self.imp().view_stack.borrow().as_ref() {
+            match view_stack.visible_child_name().as_deref() {
+                Some("mail") => self.mail_page().map(|p| p.can_navigate_back()).unwrap_or(false),
+                Some("calendar") => self.calendar_page().map(|p| p.can_navigate_back()).unwrap_or(false),
+                Some("tasks") => self.tasks_page().map(|p| p.can_navigate_back()).unwrap_or(false),
+                Some("contacts") => self.contacts_page().map(|p| p.can_navigate_back()).unwrap_or(false),
+                Some("memos") => self.memos_page().map(|p| p.can_navigate_back()).unwrap_or(false),
+                _ => false,
+            }
+        } else {
+            false
+        };
+
+        if let Some(back_btn) = self.imp().back_button.borrow().as_ref() {
+            back_btn.set_visible(can_back);
+        }
+
+        if let Some(search_btn) = self.imp().search_button.borrow().as_ref() {
+            if is_mobile {
+                search_btn.set_visible(!can_back);
+            } else {
+                search_btn.set_visible(true);
+            }
+        }
+
+        if is_mobile {
+            if let (Some(view_stack), Some(window_title)) = (
+                self.imp().view_stack.borrow().as_ref(),
+                self.imp().window_title.borrow().as_ref(),
+            ) {
+                match view_stack.visible_child_name().as_deref() {
+                    Some("mail") => {
+                        if let Some(mail) = self.mail_page() {
+                            match mail.drill_down_level() {
+                                crate::views::MailDrillDownLevel::Folders => {
+                                    window_title.set_title("Ordner");
+                                    window_title.set_subtitle("Mail");
+                                }
+                                crate::views::MailDrillDownLevel::Messages => {
+                                    let folder = mail
+                                        .selected_folder_display_name()
+                                        .unwrap_or_else(|| "Posteingang".to_string());
+                                    window_title.set_title(&folder);
+                                    window_title.set_subtitle("Nachrichten");
+                                }
+                                crate::views::MailDrillDownLevel::Viewer => {
+                                    let subj = mail
+                                        .selected_message_subject()
+                                        .unwrap_or_else(|| "E-Mail".to_string());
+                                    window_title.set_title(&subj);
+                                    window_title.set_subtitle("Nachricht");
+                                }
+                            }
+                        }
+                    }
+                    Some("calendar") => {
+                        window_title.set_title("Kalender");
+                        window_title.set_subtitle("");
+                    }
+                    Some("contacts") => {
+                        window_title.set_title("Kontakte");
+                        window_title.set_subtitle("");
+                    }
+                    Some("tasks") => {
+                        window_title.set_title("Aufgaben");
+                        window_title.set_subtitle("");
+                    }
+                    Some("memos") => {
+                        window_title.set_title("Notizen");
+                        window_title.set_subtitle("");
+                    }
+                    _ => {
+                        window_title.set_title("");
+                        window_title.set_subtitle("");
+                    }
+                }
+            }
+        } else if self.imp().is_tablet.get() {
+            if let (Some(view_stack), Some(window_title)) = (
+                self.imp().view_stack.borrow().as_ref(),
+                self.imp().window_title.borrow().as_ref(),
+            ) {
+                if view_stack.visible_child_name().as_deref() == Some("mail") {
+                    if let Some(mail) = self.mail_page() {
+                        if mail.drill_down_level() == crate::views::MailDrillDownLevel::Viewer {
+                            let subj = mail
+                                .selected_message_subject()
+                                .unwrap_or_else(|| "E-Mail".to_string());
+                            window_title.set_title(&subj);
+                            window_title.set_subtitle("Nachricht");
+                        } else {
+                            window_title.set_title("");
+                            window_title.set_subtitle("");
+                        }
+                    } else {
+                        window_title.set_title("");
+                        window_title.set_subtitle("");
+                    }
+                } else {
+                    window_title.set_title("");
+                    window_title.set_subtitle("");
+                }
+            }
+        } else if let Some(window_title) = self.imp().window_title.borrow().as_ref() {
+            window_title.set_title("");
+            window_title.set_subtitle("");
+        }
+    }
+
+    pub(crate) fn handle_navigate_back(&self) -> bool {
+        let handled = if let Some(view_stack) = self.imp().view_stack.borrow().as_ref() {
+            match view_stack.visible_child_name().as_deref() {
+                Some("mail") => self.mail_page().map(|p| p.navigate_back()).unwrap_or(false),
+                Some("calendar") => self.calendar_page().map(|p| p.navigate_back()).unwrap_or(false),
+                Some("tasks") => self.tasks_page().map(|p| p.navigate_back()).unwrap_or(false),
+                Some("contacts") => self.contacts_page().map(|p| p.navigate_back()).unwrap_or(false),
+                Some("memos") => self.memos_page().map(|p| p.navigate_back()).unwrap_or(false),
+                _ => false,
+            }
+        } else {
+            false
+        };
+        self.sync_back_button();
+        handled
+    }
+
+    pub(crate) fn set_screen_mode(&self, is_mobile: bool, is_tablet: bool) {
+        self.imp().is_mobile.set(is_mobile);
+        self.imp().is_tablet.set(is_tablet);
+
+        if let Some(mail) = self.mail_page() {
+            mail.set_screen_mode(is_mobile, is_tablet);
+        }
+        if let Some(cal) = self.calendar_page() {
+            cal.set_screen_mode(is_mobile, is_tablet);
+        }
+        if let Some(tasks) = self.tasks_page() {
+            tasks.set_screen_mode(is_mobile, is_tablet);
+        }
+        if let Some(contacts) = self.contacts_page() {
+            contacts.set_screen_mode(is_mobile, is_tablet);
+        }
+        if let Some(memos) = self.memos_page() {
+            memos.set_screen_mode(is_mobile, is_tablet);
+        }
+
+        if let Some(switcher_bar) = self.imp().view_switcher_bar.borrow().as_ref() {
+            switcher_bar.set_reveal(is_mobile);
+        }
+
+        if let Some(sb) = self.imp().statusbar_box.borrow().as_ref() {
+            if is_mobile {
+                sb.set_visible(false);
+            } else {
+                let is_vis = AppSettings::try_new()
+                    .map(|s| s.mail_show_statusbar())
+                    .unwrap_or(true);
+                sb.set_visible(is_vis);
+            }
+        }
+
+        if let Some(header_bar) = self.imp().header_bar.borrow().as_ref() {
+            if is_mobile {
+                if let Some(window_title) = self.imp().window_title.borrow().as_ref() {
+                    header_bar.set_title_widget(Some(window_title));
+                }
+            } else {
+                let is_top = AppSettings::try_new()
+                    .map(|s| s.switcher_location() == "top")
+                    .unwrap_or(false);
+                if is_top {
+                    if let Some(switcher) = self.imp().view_switcher.borrow().as_ref() {
+                        header_bar.set_title_widget(Some(switcher));
+                    }
+                } else if let Some(window_title) = self.imp().window_title.borrow().as_ref() {
+                    header_bar.set_title_widget(Some(window_title));
+                }
+            }
+        }
+
+        if let Some(sb_h) = self.imp().sidebar_header.borrow().as_ref() {
+            if is_mobile {
+                sb_h.set_visible(false);
+                if let Some(res_btn) = self.imp().restore_sidebar_button.borrow().as_ref() {
+                    res_btn.set_visible(false);
+                }
+                if let Some(hb) = self.imp().header_bar.borrow().as_ref() {
+                    hb.set_show_start_title_buttons(true);
+                }
+            } else {
+                let vis = AppSettings::try_new()
+                    .map(|s| s.mail_show_sidebar())
+                    .unwrap_or(true);
+                sb_h.set_visible(vis);
+                if let Some(res_btn) = self.imp().restore_sidebar_button.borrow().as_ref() {
+                    res_btn.set_visible(!vis);
+                }
+                if let Some(hb) = self.imp().header_bar.borrow().as_ref() {
+                    hb.set_show_start_title_buttons(!vis);
+                }
+                if vis {
+                    if let Some(title) = self.imp().sidebar_title.borrow().as_ref() {
+                        title.set_visible(true);
+                    }
+                    if let Some(btn) = self.imp().sidebar_close_button.borrow().as_ref() {
+                        btn.set_visible(true);
+                    }
+                }
+            }
+        }
+
+        self.sync_back_button();
+    }
+
+    pub fn update_sidebar_title(&self, title: &str) {
+        if let Some(st) = self.imp().sidebar_title.borrow().as_ref() {
+            st.set_title(title);
+        }
+    }
+
+    pub fn toggle_sidebar_animated(&self, show: bool) {
+        if self.imp().is_mobile.get() {
+            if let Some(mail) = self.mail_page() {
+                mail.set_sidebar_visible(show);
+            }
+            if let Some(sb_h) = self.imp().sidebar_header.borrow().as_ref() {
+                sb_h.set_visible(false);
+            }
+            if let Some(res_btn) = self.imp().restore_sidebar_button.borrow().as_ref() {
+                res_btn.set_visible(false);
+            }
+            return;
+        }
+
+        let mail_page = match self.mail_page() {
+            Some(p) => p,
+            None => return,
+        };
+
+        let target_pos = AppSettings::try_new()
+            .map(|s| s.mail_sidebar_position())
+            .unwrap_or(260)
+            .clamp(80, 1500);
+
+        let current_pos = mail_page.imp().outer_paned.position();
+        let (from_pos, to_pos) = if show {
+            let start = if current_pos <= 10 { 0.0 } else { current_pos as f64 };
+            (start, target_pos as f64)
+        } else {
+            let start = if current_pos <= 10 { target_pos as f64 } else { current_pos as f64 };
+            (start, 0.0)
+        };
+
+        if let Some(old_anim) = self.imp().sidebar_animation.borrow_mut().take() {
+            old_anim.pause();
+        }
+
+        mail_page.imp().sidebar_animating.set(true);
+
+        if show {
+            if let Some(start) = mail_page.imp().outer_paned.start_child() {
+                start.set_visible(true);
+            }
+            if let Some(sb_h) = self.imp().sidebar_header.borrow().as_ref() {
+                sb_h.set_visible(true);
+                sb_h.set_show_start_title_buttons(true);
+                sb_h.set_size_request(from_pos as i32, -1);
+            }
+            if let Some(res_btn) = self.imp().restore_sidebar_button.borrow().as_ref() {
+                res_btn.set_visible(false);
+            }
+            if let Some(hb) = self.imp().header_bar.borrow().as_ref() {
+                hb.set_show_start_title_buttons(false);
+            }
+            if from_pos < 170.0 {
+                if let Some(title) = self.imp().sidebar_title.borrow().as_ref() {
+                    title.set_visible(false);
+                }
+                if let Some(btn) = self.imp().sidebar_close_button.borrow().as_ref() {
+                    btn.set_visible(false);
+                }
+            } else {
+                if let Some(title) = self.imp().sidebar_title.borrow().as_ref() {
+                    title.set_visible(true);
+                }
+                if let Some(btn) = self.imp().sidebar_close_button.borrow().as_ref() {
+                    btn.set_visible(true);
+                }
+            }
+        } else {
+            if let Some(title) = self.imp().sidebar_title.borrow().as_ref() {
+                title.set_visible(false);
+            }
+            if let Some(btn) = self.imp().sidebar_close_button.borrow().as_ref() {
+                btn.set_visible(false);
+            }
+            if let Some(sb_h) = self.imp().sidebar_header.borrow().as_ref() {
+                sb_h.set_show_start_title_buttons(false);
+            }
+            if let Some(res_btn) = self.imp().restore_sidebar_button.borrow().as_ref() {
+                res_btn.set_visible(true);
+            }
+            if let Some(hb) = self.imp().header_bar.borrow().as_ref() {
+                hb.set_show_start_title_buttons(true);
+            }
+        }
+
+        let win_weak = self.downgrade();
+        let mail_weak = mail_page.downgrade();
+        let target = adw::CallbackAnimationTarget::new(move |value| {
+            let pos = value.round() as i32;
+            if let Some(page) = mail_weak.upgrade() {
+                page.imp().outer_paned.set_position(pos);
+            }
+            if let Some(win) = win_weak.upgrade() {
+                if let Some(sb_h) = win.imp().sidebar_header.borrow().as_ref() {
+                    sb_h.set_size_request(pos, -1);
+                }
+                if show && pos >= 170 {
+                    if let Some(title) = win.imp().sidebar_title.borrow().as_ref() {
+                        if !title.is_visible() {
+                            title.set_visible(true);
+                        }
+                    }
+                    if let Some(btn) = win.imp().sidebar_close_button.borrow().as_ref() {
+                        if !btn.is_visible() {
+                            btn.set_visible(true);
+                        }
+                    }
+                }
+            }
+        });
+
+        let duration = if show { 250 } else { 200 };
+        let animation = adw::TimedAnimation::builder()
+            .widget(&*self)
+            .value_from(from_pos)
+            .value_to(to_pos)
+            .duration(duration)
+            .easing(adw::Easing::EaseOutCubic)
+            .target(&target)
+            .build();
+
+        let win_weak_done = self.downgrade();
+        let mail_weak_done = mail_page.downgrade();
+        animation.connect_done(move |_| {
+            if let Some(page) = mail_weak_done.upgrade() {
+                if !show {
+                    if let Some(start) = page.imp().outer_paned.start_child() {
+                        start.set_visible(false);
+                    }
+                } else {
+                    page.imp().outer_paned.set_position(target_pos);
+                }
+                page.imp().sidebar_animating.set(false);
+            }
+            if let Some(win) = win_weak_done.upgrade() {
+                win.imp().sidebar_animation.borrow_mut().take();
+                if !show {
+                    if let Some(sb_h) = win.imp().sidebar_header.borrow().as_ref() {
+                        sb_h.set_visible(false);
+                        sb_h.set_show_start_title_buttons(true);
+                    }
+                    if let Some(res_btn) = win.imp().restore_sidebar_button.borrow().as_ref() {
+                        res_btn.set_visible(true);
+                    }
+                    if let Some(hb) = win.imp().header_bar.borrow().as_ref() {
+                        hb.set_show_start_title_buttons(true);
+                    }
+                    if let Some(title) = win.imp().sidebar_title.borrow().as_ref() {
+                        title.set_visible(true);
+                    }
+                    if let Some(btn) = win.imp().sidebar_close_button.borrow().as_ref() {
+                        btn.set_visible(true);
+                    }
+                } else {
+                    if let Some(sb_h) = win.imp().sidebar_header.borrow().as_ref() {
+                        sb_h.set_size_request(target_pos, -1);
+                    }
+                    if let Some(title) = win.imp().sidebar_title.borrow().as_ref() {
+                        title.set_visible(true);
+                    }
+                    if let Some(btn) = win.imp().sidebar_close_button.borrow().as_ref() {
+                        btn.set_visible(true);
+                    }
+                }
+            }
+        });
+
+        self.imp().sidebar_animation.replace(Some(animation.clone()));
+        animation.play();
+    }
+
     pub(crate) fn present_new_task(&self) {
         if let Some(tasks_page) = self.tasks_page() {
             tasks_page.present_new_task();
@@ -835,6 +1249,7 @@ impl EvolutionWindow {
     pub fn set_status(&self, status_text: &str) {
         self.update_mail_status(status_text);
     }
+
 }
 
 /// Find the active EvolutionWindow from any widget or dialog.
@@ -846,6 +1261,13 @@ pub fn find_evolution_window(widget: &impl gtk::prelude::IsA<gtk::Widget>) -> Op
         if let Ok(win) = root.downcast::<EvolutionWindow>() {
             return Some(win);
         }
+    }
+    let mut current_parent = widget.clone().upcast::<gtk::Widget>().parent();
+    while let Some(parent) = current_parent {
+        if let Ok(evo_win) = parent.clone().downcast::<EvolutionWindow>() {
+            return Some(evo_win);
+        }
+        current_parent = parent.parent();
     }
     let mut current_window = widget
         .clone()
@@ -1946,40 +2368,55 @@ impl EvolutionWindow {
             let contacts_bin = contacts_bin.clone();
             let tasks_bin = tasks_bin.clone();
             let memos_bin = memos_bin.clone();
-            Rc::new(move |name| match name {
-                "calendar"
-                    if calendar_bin
-                        .child()
-                        .map(|child| child.is::<adw::StatusPage>())
-                        .unwrap_or(true) =>
-                {
-                    calendar_bin.set_child(Some(&CalendarPage::new()));
+            let window_weak = self.downgrade();
+            Rc::new(move |name| {
+                let (is_mobile, is_tablet) = window_weak
+                    .upgrade()
+                    .map(|w| (w.imp().is_mobile.get(), w.imp().is_tablet.get()))
+                    .unwrap_or((false, false));
+                match name {
+                    "calendar"
+                        if calendar_bin
+                            .child()
+                            .map(|child| child.is::<adw::StatusPage>())
+                            .unwrap_or(true) =>
+                    {
+                        let page = CalendarPage::new();
+                        page.set_screen_mode(is_mobile, is_tablet);
+                        calendar_bin.set_child(Some(&page));
+                    }
+                    "contacts"
+                        if contacts_bin
+                            .child()
+                            .map(|child| child.is::<adw::StatusPage>())
+                            .unwrap_or(true) =>
+                    {
+                        let page = ContactsPage::new();
+                        page.set_screen_mode(is_mobile, is_tablet);
+                        contacts_bin.set_child(Some(&page));
+                    }
+                    "tasks"
+                        if tasks_bin
+                            .child()
+                            .map(|child| child.is::<adw::StatusPage>())
+                            .unwrap_or(true) =>
+                    {
+                        let page = crate::views::TasksPage::new();
+                        page.set_screen_mode(is_mobile, is_tablet);
+                        tasks_bin.set_child(Some(&page));
+                    }
+                    "memos"
+                        if memos_bin
+                            .child()
+                            .map(|child| child.is::<adw::StatusPage>())
+                            .unwrap_or(true) =>
+                    {
+                        let page = crate::views::MemosPage::new();
+                        page.set_screen_mode(is_mobile, is_tablet);
+                        memos_bin.set_child(Some(&page));
+                    }
+                    _ => {}
                 }
-                "contacts"
-                    if contacts_bin
-                        .child()
-                        .map(|child| child.is::<adw::StatusPage>())
-                        .unwrap_or(true) =>
-                {
-                    contacts_bin.set_child(Some(&ContactsPage::new()));
-                }
-                "tasks"
-                    if tasks_bin
-                        .child()
-                        .map(|child| child.is::<adw::StatusPage>())
-                        .unwrap_or(true) =>
-                {
-                    tasks_bin.set_child(Some(&crate::views::TasksPage::new()));
-                }
-                "memos"
-                    if memos_bin
-                        .child()
-                        .map(|child| child.is::<adw::StatusPage>())
-                        .unwrap_or(true) =>
-                {
-                    memos_bin.set_child(Some(&crate::views::MemosPage::new()));
-                }
-                _ => {}
             })
         };
 
@@ -1989,8 +2426,14 @@ impl EvolutionWindow {
             let contacts_bin = contacts_bin.clone();
             let tasks_bin = tasks_bin.clone();
             let memos_bin = memos_bin.clone();
+            let win_weak_sidebar_pos = self.downgrade();
             Rc::new(move |pos: i32| {
                 mail_page.set_sidebar_position(pos);
+                if let Some(win) = win_weak_sidebar_pos.upgrade() {
+                    if let Some(sb_h) = win.imp().sidebar_header.borrow().as_ref() {
+                        sb_h.set_size_request(pos, -1);
+                    }
+                }
                 if let Some(child) = calendar_bin.child() {
                     if let Ok(page) = child.downcast::<CalendarPage>() {
                         page.set_sidebar_position(pos);
@@ -2054,8 +2497,23 @@ impl EvolutionWindow {
             if let Some(view_name) = stack.visible_child_name() {
                 if let Some(window) = window_for_search_route.upgrade() {
                     window.invalidate_search_route_for_visible_page(Some(view_name.as_str()));
+                    let title = match view_name.as_str() {
+                        "mail" => window
+                            .mail_page()
+                            .map(|m| m.active_folder_display_title())
+                            .unwrap_or_else(|| "Posteingang".to_string()),
+                        "calendar" => "Kalender".to_string(),
+                        "contacts" => "Kontakte".to_string(),
+                        "tasks" => "Aufgaben".to_string(),
+                        "memos" => "Notizen".to_string(),
+                        _ => String::new(),
+                    };
+                    window.update_sidebar_title(&title);
                 }
                 ensure_module_loaded_for_signal(view_name.as_str());
+                if let Some(window) = window_for_search_route.upgrade() {
+                    window.set_screen_mode(window.imp().is_mobile.get(), window.imp().is_tablet.get());
+                }
                 if let Some(settings) = settings_for_view.as_ref() {
                     settings.set_active_view(view_name.as_str());
                     let pos = settings.mail_sidebar_position();
@@ -2066,8 +2524,73 @@ impl EvolutionWindow {
             }
         });
 
-        let header_bar = adw::HeaderBar::new();
+        let initial_sidebar_pos = AppSettings::try_new()
+            .map(|s| s.mail_sidebar_position())
+            .unwrap_or(260)
+            .clamp(80, 1500);
+        let initial_sidebar_vis = AppSettings::try_new()
+            .map(|s| s.mail_show_sidebar())
+            .unwrap_or(true);
+
+        let sidebar_header = adw::HeaderBar::builder()
+            .show_start_title_buttons(true)
+            .show_end_title_buttons(false)
+            .css_classes(vec!["flat", "sidebar-header"])
+            .build();
+        sidebar_header.set_overflow(gtk::Overflow::Hidden);
+        let sidebar_title = adw::WindowTitle::builder()
+            .title("Posteingang")
+            .build();
+        sidebar_header.set_title_widget(Some(&sidebar_title));
+        sidebar_header.set_size_request(initial_sidebar_pos, -1);
+        sidebar_header.set_visible(initial_sidebar_vis);
+        self.imp().sidebar_header.replace(Some(sidebar_header.clone()));
+        self.imp().sidebar_title.replace(Some(sidebar_title.clone()));
+
+        let sidebar_close_btn = gtk::Button::builder()
+            .icon_name("sidebar-show-symbolic")
+            .tooltip_text("Seitenleiste einklappen (F9)")
+            .css_classes(vec!["flat"])
+            .build();
+        set_accessible_label(&sidebar_close_btn, "Seitenleiste einklappen");
+        sidebar_close_btn.connect_clicked(|_| {
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_mail_show_sidebar(false);
+            }
+        });
+        sidebar_header.pack_end(&sidebar_close_btn);
+        self.imp().sidebar_close_button.replace(Some(sidebar_close_btn.clone()));
+
+        let header_bar = adw::HeaderBar::builder()
+            .show_start_title_buttons(!initial_sidebar_vis)
+            .show_end_title_buttons(true)
+            .hexpand(true)
+            .build();
         self.imp().header_bar.replace(Some(header_bar.clone()));
+
+        let restore_sidebar_btn = gtk::Button::builder()
+            .icon_name("sidebar-show-symbolic")
+            .tooltip_text("Seitenleiste einblenden (F9)")
+            .css_classes(vec!["flat"])
+            .visible(!initial_sidebar_vis)
+            .build();
+        set_accessible_label(&restore_sidebar_btn, "Seitenleiste einblenden");
+        restore_sidebar_btn.connect_clicked(|_| {
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_mail_show_sidebar(true);
+            }
+        });
+        self.imp().restore_sidebar_button.replace(Some(restore_sidebar_btn.clone()));
+
+        if let Some(settings) = AppSettings::try_new() {
+            let win_weak_vis = self.downgrade();
+            settings.connect_changed(Some("mail-show-sidebar"), move |settings, _| {
+                let vis = settings.boolean("mail-show-sidebar");
+                if let Some(win) = win_weak_vis.upgrade() {
+                    win.toggle_sidebar_animated(vis);
+                }
+            });
+        }
 
         let search_button = gtk::ToggleButton::builder()
             .icon_name("edit-find-symbolic")
@@ -2110,10 +2633,28 @@ impl EvolutionWindow {
                 if search_btn_for_stack.is_active() != is_open {
                     search_btn_for_stack.set_active(is_open);
                 }
+                win.sync_back_button();
             }
         });
 
+        header_bar.pack_start(&restore_sidebar_btn);
         header_bar.pack_start(&search_button);
+
+        let back_button = gtk::Button::builder()
+            .icon_name("go-previous-symbolic")
+            .tooltip_text("Zurück")
+            .visible(false)
+            .css_classes(vec!["flat"])
+            .build();
+        set_accessible_label(&back_button, "Zurück");
+        let win_weak_for_back = self.downgrade();
+        back_button.connect_clicked(move |_| {
+            if let Some(win) = win_weak_for_back.upgrade() {
+                win.handle_navigate_back();
+            }
+        });
+        self.imp().back_button.replace(Some(back_button.clone()));
+        header_bar.pack_start(&back_button);
 
         let compose_button = gtk::Button::builder()
             .icon_name("mail-message-new-symbolic")
@@ -2133,26 +2674,37 @@ impl EvolutionWindow {
         header_bar.pack_start(&compose_button);
 
         let window_title = adw::WindowTitle::builder()
-            .title("Evolution")
+            .title("")
             .build();
+        self.imp().window_title.replace(Some(window_title.clone()));
 
         let view_switcher = adw::ViewSwitcher::builder()
             .stack(&view_stack)
             .policy(adw::ViewSwitcherPolicy::Wide)
             .build();
+        self.imp().view_switcher.replace(Some(view_switcher.clone()));
 
         let update_title_widget = {
             let header_bar = header_bar.clone();
             let window_title = window_title.clone();
             let view_switcher = view_switcher.clone();
+            let win_weak = self.downgrade();
             move || {
-                let is_top = AppSettings::try_new()
-                    .map(|s| s.switcher_location() == "top")
+                let is_mobile = win_weak
+                    .upgrade()
+                    .map(|w| w.imp().is_mobile.get())
                     .unwrap_or(false);
-                if is_top {
-                    header_bar.set_title_widget(Some(&view_switcher));
-                } else {
+                if is_mobile {
                     header_bar.set_title_widget(Some(&window_title));
+                } else {
+                    let is_top = AppSettings::try_new()
+                        .map(|s| s.switcher_location() == "top")
+                        .unwrap_or(false);
+                    if is_top {
+                        header_bar.set_title_widget(Some(&view_switcher));
+                    } else {
+                        header_bar.set_title_widget(Some(&window_title));
+                    }
                 }
             }
         };
@@ -2198,6 +2750,7 @@ impl EvolutionWindow {
             .halign(gtk::Align::Start)
             .hexpand(true)
             .ellipsize(pango::EllipsizeMode::End)
+            .width_chars(10)
             .build();
 
         let status_progress = gtk::ProgressBar::builder()
@@ -2234,6 +2787,8 @@ impl EvolutionWindow {
             .label(&format_current_status_date())
             .css_classes(vec!["caption", "dim-label"])
             .halign(gtk::Align::End)
+            .ellipsize(pango::EllipsizeMode::End)
+            .width_chars(10)
             .build();
         let date_label_weak = date_label.downgrade();
         glib::timeout_add_seconds_local(60, move || {
@@ -2335,8 +2890,25 @@ impl EvolutionWindow {
             .transport_status_source
             .replace(Some(transport_status_source));
 
+        let view_switcher_bar = adw::ViewSwitcherBar::builder()
+            .stack(&view_stack)
+            .reveal(false)
+            .build();
+        self.imp()
+            .view_switcher_bar
+            .replace(Some(view_switcher_bar.clone()));
+
+        let header_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(0)
+            .css_classes(vec!["window-header-box"])
+            .build();
+        header_box.append(&sidebar_header);
+        header_box.append(&header_bar);
+
         let toolbar_view = adw::ToolbarView::new();
-        toolbar_view.add_top_bar(&header_bar);
+        toolbar_view.add_top_bar(&header_box);
+        toolbar_view.add_bottom_bar(&view_switcher_bar);
         toolbar_view.add_bottom_bar(&debug_revealer);
         toolbar_view.add_bottom_bar(&statusbar_box);
         toolbar_view.set_content(Some(&view_stack));
@@ -2346,20 +2918,90 @@ impl EvolutionWindow {
         toast_overlay.set_vexpand(true);
         toast_overlay.set_child(Some(&toolbar_view));
 
-        // Responsive Breakpoints
-        let bp_narrow =
-            adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 860sp").unwrap());
-        // FIXME: Hiding the preview widget causes layout oscillation if its minimum width
-        // forces the window size to cross the breakpoint threshold continuously.
-        // if let Some(preview) = mail_page.preview_widget() {
-        //     bp_narrow.add_setter(&preview, "visible", Some(&false.to_value()));
-        // }
-
+        // Responsive Breakpoints: 3-Tier Model
+        // 1. Desktop (> 1000sp): 3 columns
+        // 2. Tablet (720sp - 1000sp): 2 columns
+        // 3. Mobile (< 720sp): 1 column drill-down
+        let bp_tablet =
+            adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 1000sp").unwrap());
         let bp_mobile =
-            adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 560sp").unwrap());
+            adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 720sp").unwrap());
 
-        self.add_breakpoint(bp_narrow);
+        let tablet_applied = Rc::new(Cell::new(false));
+        let mobile_applied = Rc::new(Cell::new(false));
+
+        let tab_app = Rc::clone(&tablet_applied);
+        let mob_app = Rc::clone(&mobile_applied);
+        let win_weak_tab_apply = self.downgrade();
+        bp_tablet.connect_apply(move |_| {
+            tab_app.set(true);
+            if !mob_app.get() {
+                if let Some(win) = win_weak_tab_apply.upgrade() {
+                    win.set_screen_mode(false, true);
+                }
+            }
+        });
+
+        let tab_unapp = Rc::clone(&tablet_applied);
+        let mob_unapp = Rc::clone(&mobile_applied);
+        let win_weak_tab_unapply = self.downgrade();
+        bp_tablet.connect_unapply(move |_| {
+            tab_unapp.set(false);
+            if !mob_unapp.get() {
+                if let Some(win) = win_weak_tab_unapply.upgrade() {
+                    win.set_screen_mode(false, false);
+                }
+            }
+        });
+
+        let mob_app_m = Rc::clone(&mobile_applied);
+        let win_weak_mob_apply = self.downgrade();
+        bp_mobile.connect_apply(move |_| {
+            mob_app_m.set(true);
+            if let Some(win) = win_weak_mob_apply.upgrade() {
+                win.set_screen_mode(true, false);
+            }
+        });
+
+        let tab_unapp_m = Rc::clone(&tablet_applied);
+        let mob_unapp_m = Rc::clone(&mobile_applied);
+        let win_weak_mob_unapply = self.downgrade();
+        bp_mobile.connect_unapply(move |_| {
+            mob_unapp_m.set(false);
+            if let Some(win) = win_weak_mob_unapply.upgrade() {
+                if tab_unapp_m.get() {
+                    win.set_screen_mode(false, true);
+                } else {
+                    win.set_screen_mode(false, false);
+                }
+            }
+        });
+
+        self.add_breakpoint(bp_tablet);
         self.add_breakpoint(bp_mobile);
+
+        let key_controller = gtk::EventControllerKey::new();
+        let win_weak_for_key = self.downgrade();
+        key_controller.connect_key_pressed(move |_, keyval, _, modifier| {
+            if keyval == gdk::Key::Escape
+                || (keyval == gdk::Key::Left && modifier.contains(gdk::ModifierType::ALT_MASK))
+            {
+                if let Some(win) = win_weak_for_key.upgrade() {
+                    if win.handle_navigate_back() {
+                        return glib::Propagation::Stop;
+                    }
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        self.add_controller(key_controller);
+
+        let win_weak_stack = self.downgrade();
+        view_stack.connect_visible_child_name_notify(move |_| {
+            if let Some(win) = win_weak_stack.upgrade() {
+                win.sync_back_button();
+            }
+        });
 
         self.imp().view_stack.replace(Some(view_stack));
         self.set_content(Some(toast_overlay));
@@ -4404,6 +5046,7 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::action_contract::{ACTIONS, menu_actions};
 
@@ -5444,29 +6087,48 @@ mod tests {
 
         // Ensure search_button is packed first (furthest to the left)
         let header_bar = window.imp().header_bar.borrow().as_ref().unwrap().clone();
+        // Ensure search_button is in header_bar and is the first toggle button
+        fn find_first_toggle_button(w: &gtk::Widget) -> Option<gtk::ToggleButton> {
+            if let Some(btn) = w.downcast_ref::<gtk::ToggleButton>() {
+                return Some(btn.clone());
+            }
+            let mut ch = w.first_child();
+            while let Some(c) = ch {
+                if let Some(found) = find_first_toggle_button(&c) {
+                    return Some(found);
+                }
+                ch = c.next_sibling();
+            }
+            None
+        }
+
         assert_eq!(
-            header_bar.first_child().and_then(|c| c.downcast::<gtk::ToggleButton>().ok()),
+            find_first_toggle_button(header_bar.upcast_ref()),
             Some(search_btn.clone()),
-            "search_button must be the first child on the far left of header_bar"
+            "search_button must be the first toggle button in header_bar"
         );
 
         // Ensure transport button (mail-send-receive-symbolic) and sidebar_button are not in headerbar
         let mut has_transport = false;
         let mut has_sidebar = false;
-        let mut child = header_bar.first_child();
-        while let Some(c) = child {
-            if let Some(menu_btn) = c.downcast_ref::<gtk::MenuButton>() {
+        fn check_widgets(w: &gtk::Widget, has_transport: &mut bool, has_sidebar: &mut bool) {
+            if let Some(menu_btn) = w.downcast_ref::<gtk::MenuButton>() {
                 if menu_btn.icon_name().as_deref() == Some("mail-send-receive-symbolic") {
-                    has_transport = true;
+                    *has_transport = true;
                 }
             }
-            if let Some(toggle_btn) = c.downcast_ref::<gtk::ToggleButton>() {
+            if let Some(toggle_btn) = w.downcast_ref::<gtk::ToggleButton>() {
                 if toggle_btn.icon_name().as_deref() == Some("sidebar-show-symbolic") {
-                    has_sidebar = true;
+                    *has_sidebar = true;
                 }
             }
-            child = c.next_sibling();
+            let mut child = w.first_child();
+            while let Some(c) = child {
+                check_widgets(&c, has_transport, has_sidebar);
+                child = c.next_sibling();
+            }
         }
+        check_widgets(header_bar.upcast_ref(), &mut has_transport, &mut has_sidebar);
         assert!(!has_transport, "transport_button must not be in header_bar");
         assert!(!has_sidebar, "sidebar_button must not be in header_bar");
     }
@@ -5484,6 +6146,229 @@ mod tests {
         let found = find_evolution_window(&window);
         assert!(found.is_some());
         window.reload_accounts();
+    }
+
+    #[test]
+    fn test_responsive_screen_modes_and_view_switcher_bar() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+
+        let switcher_bar = window.view_switcher_bar().expect("view_switcher_bar should exist");
+        let back_btn = window.back_button().expect("back_button should exist");
+
+        // Desktop default mode
+        assert!(!switcher_bar.reveals(), "switcher_bar should not reveal on desktop");
+        assert!(!back_btn.is_visible(), "back_button should be hidden initially");
+
+        // Switch to tablet mode
+        window.set_screen_mode(false, true);
+        assert!(!switcher_bar.reveals(), "switcher_bar should not reveal on tablet");
+        assert!(!back_btn.is_visible(), "back_button should remain hidden on tablet without drilldown");
+
+        // Switch to mobile mode
+        window.set_screen_mode(true, false);
+        assert!(switcher_bar.reveals(), "switcher_bar should reveal on mobile");
+        assert!(!back_btn.is_visible(), "back_button should start hidden on mobile root");
+
+        // Revert to desktop mode
+        window.set_screen_mode(false, false);
+        assert!(!switcher_bar.reveals(), "switcher_bar should hide again on desktop");
+    }
+
+    #[test]
+    fn test_responsive_mail_drilldown_navigation() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+        window.set_visible(true);
+
+        let back_btn = window.back_button().expect("back_button should exist");
+        let mail_page = window.mail_page().expect("mail_page should exist");
+
+        // Ensure active view is mail for this test
+        if let Some(view_stack) = window.imp().view_stack.borrow().as_ref() {
+            view_stack.set_visible_child_name("mail");
+        }
+
+        // Activate mobile mode
+        window.set_screen_mode(true, false);
+
+        // Initially at Folders level
+        assert!(!mail_page.can_navigate_back());
+        assert!(!back_btn.is_visible());
+
+        // Drill down to Messages
+        mail_page.set_drill_down_level(crate::views::MailDrillDownLevel::Messages);
+        assert!(mail_page.can_navigate_back());
+        assert!(back_btn.is_visible());
+
+        // Drill down to Viewer
+        mail_page.set_drill_down_level(crate::views::MailDrillDownLevel::Viewer);
+        assert!(mail_page.can_navigate_back());
+        assert!(back_btn.is_visible());
+
+        // Press back: Viewer -> Messages
+        assert!(window.handle_navigate_back());
+        assert!(mail_page.can_navigate_back());
+        assert!(back_btn.is_visible());
+
+        // Press back again: Messages -> Folders
+        assert!(window.handle_navigate_back());
+        assert!(!mail_page.can_navigate_back());
+        assert!(!back_btn.is_visible());
+
+        // Press back at root: does nothing
+        assert!(!window.handle_navigate_back());
+    }
+
+    #[test]
+    fn test_responsive_tablet_mode_drilldown_navigation() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+        window.set_visible(true);
+
+        let back_btn = window.back_button().expect("back_button should exist");
+        let mail_page = window.mail_page().expect("mail_page should exist");
+
+        if let Some(view_stack) = window.imp().view_stack.borrow().as_ref() {
+            view_stack.set_visible_child_name("mail");
+        }
+
+        // Activate tablet mode (720px - 1000px)
+        window.set_screen_mode(false, true);
+
+        // Initially in 2-column browse mode: Folders + Messages visible, Viewer folded
+        assert!(!mail_page.can_navigate_back());
+        assert!(!back_btn.is_visible());
+
+        // When user opens a message in tablet mode, drill down to Viewer
+        mail_page.set_drill_down_level(crate::views::MailDrillDownLevel::Viewer);
+        assert!(mail_page.can_navigate_back());
+        assert!(back_btn.is_visible());
+
+        // Press back: Viewer -> Messages (returns to 2-column Folders + Messages)
+        assert!(window.handle_navigate_back());
+        assert!(!mail_page.can_navigate_back());
+        assert!(!back_btn.is_visible());
+        assert_eq!(mail_page.drill_down_level(), crate::views::MailDrillDownLevel::Messages);
+
+        // Press back again: does nothing in tablet mode
+        assert!(!window.handle_navigate_back());
+    }
+
+    #[test]
+    fn test_responsive_subpages_drilldown_navigation() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+
+        // Test memos page drilldown and toolbar
+        let memos = crate::views::MemosPage::new();
+        assert!(memos.imp().toolbar.borrow().as_ref().unwrap().is_visible());
+        memos.set_screen_mode(true, false);
+        assert!(!memos.imp().toolbar.borrow().as_ref().unwrap().is_visible());
+        assert!(!memos.can_navigate_back());
+        memos.imp().is_detail_shown.set(true);
+        assert!(memos.can_navigate_back());
+        assert!(memos.navigate_back());
+        assert!(!memos.can_navigate_back());
+        assert!(!memos.navigate_back());
+
+        // Test tasks page drilldown and toolbar
+        let tasks = crate::views::TasksPage::new();
+        assert!(tasks.imp().toolbar.borrow().as_ref().unwrap().is_visible());
+        tasks.set_screen_mode(true, false);
+        assert!(!tasks.imp().toolbar.borrow().as_ref().unwrap().is_visible());
+        assert!(!tasks.can_navigate_back());
+        tasks.imp().is_detail_shown.set(true);
+        assert!(tasks.can_navigate_back());
+        assert!(tasks.navigate_back());
+        assert!(!tasks.can_navigate_back());
+        assert!(!tasks.navigate_back());
+
+        // Test contacts page drilldown and toolbar
+        let contacts = crate::views::ContactsPage::new();
+        assert!(contacts.imp().toolbar.borrow().as_ref().unwrap().is_visible());
+        contacts.set_screen_mode(true, false);
+        assert!(!contacts.imp().toolbar.borrow().as_ref().unwrap().is_visible());
+        assert!(!contacts.can_navigate_back());
+        contacts.imp().is_detail_shown.set(true);
+        assert!(contacts.can_navigate_back());
+        assert!(contacts.navigate_back());
+        assert!(!contacts.can_navigate_back());
+        assert!(!contacts.navigate_back());
+
+        // Test calendar page responsive mode and toolbar
+        let calendar = crate::views::CalendarPage::new();
+        assert!(calendar.imp().toolbar.borrow().as_ref().unwrap().is_visible());
+        calendar.set_screen_mode(true, false);
+        assert!(!calendar.imp().toolbar.borrow().as_ref().unwrap().is_visible());
+        assert!(!calendar.can_navigate_back());
+    }
+
+    #[test]
+    fn test_sidebar_header_and_toggler_state() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_mail_show_sidebar(true);
+        }
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+        window.set_visible(true);
+        window.set_screen_mode(false, false);
+
+        let sidebar_header = window.imp().sidebar_header.borrow().clone().expect("sidebar_header should exist");
+        let sidebar_title = window.imp().sidebar_title.borrow().clone().expect("sidebar_title should exist");
+        let restore_btn = window.imp().restore_sidebar_button.borrow().clone().expect("restore_sidebar_button should exist");
+        let close_btn = window.imp().sidebar_close_button.borrow().clone().expect("sidebar_close_button should exist");
+
+        // Initial title in sidebar header is "Posteingang" (not "Evolution")
+        assert_eq!(sidebar_title.title(), "Posteingang");
+
+        // Update sidebar title test
+        window.update_sidebar_title("Kalender");
+        assert_eq!(sidebar_title.title(), "Kalender");
+
+        // When sidebar is visible (default desktop):
+        // sidebar_header is visible, restore_btn is hidden
+        assert!(sidebar_header.is_visible());
+        assert!(!restore_btn.is_visible());
+        assert!(close_btn.is_visible());
+
+        // In mobile mode: sidebar header is hidden
+        window.set_screen_mode(true, false);
+        assert!(!sidebar_header.is_visible());
+        assert!(!restore_btn.is_visible());
+
+        // Back to desktop:
+        window.set_screen_mode(false, false);
+        assert!(sidebar_header.is_visible());
+        assert!(!restore_btn.is_visible());
     }
 }
 

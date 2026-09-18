@@ -218,14 +218,14 @@ textview {
   min-height: 26px;
   padding: 0;
   margin: 0;
-  border-top: 1px solid alpha(@borders, 0.7);
-  border-bottom: 1px solid alpha(@borders, 0.85);
-  background-color: alpha(@window_fg_color, 0.04);
+  border-top: none;
+  border-bottom: 1px solid alpha(@borders, 0.45);
+  background-color: @view_bg_color;
 }
 
 .mail-column-header-cell {
   padding: 2px 4px;
-  border-right: 1px solid alpha(@borders, 0.35);
+  border-right: 1px solid alpha(@borders, 0.25);
   min-height: 24px;
   background-color: transparent;
   transition: background-color 120ms ease;
@@ -1343,7 +1343,7 @@ splitview > .sidebar,
   margin: 0;
   padding: 4px 8px;
   background-color: transparent;
-  border-bottom: 1px solid alpha(@borders, 0.45);
+  border-bottom: none;
 }
 
 .sidebar-drawer-header label {
@@ -2685,4 +2685,18 @@ viewswitcherbar viewswitcher button label {
 
 viewswitcherbar viewswitcher button image {
   -gtk-icon-size: 18px !important;
+}
+
+headerbar.sidebar-header {
+  background-color: @window_bg_color;
+  background-image: none;
+  border-bottom: none;
+  border-right: 1px solid alpha(@borders, 0.55);
+  box-shadow: none;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.window-header-box {
+  background-color: transparent;
 }
