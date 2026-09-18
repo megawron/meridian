@@ -1913,6 +1913,7 @@ impl MemosPage {
         let drawer_header = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
+            .visible(false)
             .css_classes(vec!["sidebar-drawer-header"])
             .build();
         let drawer_icon = gtk::Image::from_icon_name("accessories-text-editor-symbolic");
