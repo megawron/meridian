@@ -3883,8 +3883,6 @@ impl ContactsPage {
             .spacing(2)
             .halign(gtk::Align::Start)
             .build();
-        left_box.append(&sidebar_toggle);
-        left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         left_box.append(&edit_btn);
         left_box.append(&delete_btn);
         left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
@@ -3976,8 +3974,6 @@ impl ContactsPage {
         view_switcher_box.append(&list_view_btn);
 
         right_box.append(&view_switcher_box);
-        right_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        right_box.append(&preview_toggle);
 
         contacts_toolbar.append(&left_box);
         contacts_toolbar.append(&center_box);
@@ -4389,6 +4385,7 @@ impl ContactsPage {
             .vexpand(true)
             .hexpand(true)
             .build();
+        content_box.append(&contacts_toolbar_scroll);
         content_box.append(&preview_paned);
 
         paned.set_end_child(Some(&content_box));
@@ -4552,7 +4549,6 @@ impl ContactsPage {
             .build();
         #[cfg(all(target_os = "macos", macos_bridge))]
         root_box.append(&macos_banner);
-        root_box.append(&contacts_toolbar_scroll);
         root_box.append(&paned);
         root_box.set_parent(self);
 

@@ -15,6 +15,7 @@ use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, Timelike, Utc}
 use gtk::prelude::*;
 use gtk::{gio, glib};
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use crate::services::calendar_category_service::CalendarCategoryStore;
@@ -504,20 +505,53 @@ fn update_day_schedule_timeline(
         }
     }
 
+fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is_dark: bool) -> String {
+    let clean = color.trim_start_matches('#').to_lowercase();
+    let mode = if is_dark { "dark" } else { "light" };
+    let preview_tag = if is_preview { "prev" } else { "norm" };
+    let type_tag = if is_all_day { "allday" } else { "timed" };
+    let class_name = format!("timeline-ev-{clean}-{preview_tag}-{type_tag}-{mode}");
+
+    thread_local! {
+        static REGISTERED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    }
+
+    let already_registered = REGISTERED.with(|r| r.borrow().contains(&class_name));
+    if !already_registered {
+        if let Some(display) = gtk::gdk::Display::default() {
+            let (bg, _, _, fg) = crate::views::calendar_page::pastel_colors_for_hex(color, is_dark);
+            let border_rule = if is_preview {
+                format!("border: 2px solid {color}; font-weight: 700;")
+            } else {
+                "border: 1px solid alpha(currentColor, 0.18); font-weight: 600;".to_string()
+            };
+            let (radius, padding) = if is_all_day {
+                ("4px", "2px 6px")
+            } else {
+                ("5px", "2px 5px")
+            };
+            let css = format!(
+                "label.{class_name} {{ background-color: {bg}; color: {fg}; {border_rule} border-radius: {radius}; padding: {padding}; }}"
+            );
+            let p = gtk::CssProvider::new();
+            p.load_from_string(&css);
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &p,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+            REGISTERED.with(|r| r.borrow_mut().insert(class_name.clone()));
+        }
+    }
+
+    class_name
+}
+
     for (idx, (is_preview, title, color)) in all_day_items.iter().enumerate() {
         let y = idx as f64 * 26.0;
         let is_dark = adw::StyleManager::default().is_dark();
-        let (bg, _, _, fg) = crate::views::calendar_page::pastel_colors_for_hex(color, is_dark);
-        let border_rule = if *is_preview {
-            format!("border: 2px solid {color}; font-weight: 700;")
-        } else {
-            "border: 1px solid alpha(currentColor, 0.18); font-weight: 600;".to_string()
-        };
-        let p = gtk::CssProvider::new();
-        p.load_from_data(&format!(
-            "label.appointment-timeline-event {{ background-color: {bg}; color: {fg}; {border_rule} border-radius: 4px; padding: 2px 6px; }}"
-        ));
-        let mut classes = vec!["appointment-timeline-event"];
+        let color_class = ensure_timeline_event_css(color, *is_preview, true, is_dark);
+        let mut classes = vec!["appointment-timeline-event", color_class.as_str()];
         if *is_preview {
             classes.push("appointment-timeline-preview");
         }
@@ -531,9 +565,6 @@ fn update_day_schedule_timeline(
             .css_classes(classes)
             .tooltip_text(&format!("{title}\nGanztägiger Termin"))
             .build();
-        ev_label
-            .style_context()
-            .add_provider(&p, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
         timeline_fixed.put(&ev_label, TIMELINE_EVENTS_X, y);
     }
 
@@ -671,8 +702,6 @@ fn update_day_schedule_timeline(
                 || (item.is_preview && has_conflict);
 
             let is_dark = adw::StyleManager::default().is_dark();
-            let (bg, _, _, fg) =
-                crate::views::calendar_page::pastel_colors_for_hex(&item.color, is_dark);
 
             let time_prefix = format_clock_minutes(item.start_min);
             let label_text = format!("{} {}", time_prefix, item.title);
@@ -699,16 +728,8 @@ fn update_day_schedule_timeline(
                 css_classes.push("appointment-timeline-conflict");
             }
 
-            let border_rule = if item.is_preview {
-                format!("border: 2px solid {}; font-weight: 700;", item.color)
-            } else {
-                "border: 1px solid alpha(currentColor, 0.18); font-weight: 600;".to_string()
-            };
-
-            let p = gtk::CssProvider::new();
-            p.load_from_data(&format!(
-                "label.appointment-timeline-event {{ background-color: {bg}; color: {fg}; {border_rule} border-radius: 5px; padding: 2px 5px; }}"
-            ));
+            let color_class = ensure_timeline_event_css(&item.color, item.is_preview, false, is_dark);
+            css_classes.push(&color_class);
 
             let widget = gtk::Label::builder()
                 .label(&label_text)
@@ -721,9 +742,6 @@ fn update_day_schedule_timeline(
                 .tooltip_text(&tooltip)
                 .build();
 
-            widget
-                .style_context()
-                .add_provider(&p, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
             timeline_fixed.put(&widget, x, y);
         }
     }
@@ -1292,13 +1310,22 @@ impl EventDialog {
                 let cal_color = calendar_source_colors.borrow().get(selected_idx).cloned();
 
                 if let Some(ref color) = cal_color {
-                    if let Some(old) = color_badge_provider.borrow_mut().take() {
-                        color_badge.style_context().remove_provider(&old);
+                    if let Some(display) = gtk::gdk::Display::default() {
+                        let mut prov_slot = color_badge_provider.borrow_mut();
+                        let css = format!("box.appointment-color-badge {{ background-color: {color}; min-width: 14px; min-height: 14px; border-radius: 9999px; margin-end: 6px; }}");
+                        if let Some(ref p) = *prov_slot {
+                            p.load_from_string(&css);
+                        } else {
+                            let p = gtk::CssProvider::new();
+                            p.load_from_string(&css);
+                            gtk::style_context_add_provider_for_display(
+                                &display,
+                                &p,
+                                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                            );
+                            *prov_slot = Some(p);
+                        }
                     }
-                    let p = gtk::CssProvider::new();
-                    p.load_from_data(&format!("box.appointment-color-badge {{ background-color: {color}; min-width: 14px; min-height: 14px; border-radius: 9999px; margin-end: 6px; }}"));
-                    color_badge.style_context().add_provider(&p, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
-                    color_badge_provider.borrow_mut().replace(p);
                 }
 
                 update_day_schedule_timeline(

@@ -6625,11 +6625,15 @@ mod tests {
             return;
         };
         if let Some(settings) = AppSettings::try_new() {
+            settings.set_active_view("mail");
             settings.set_mail_show_sidebar(true);
         }
         let app = EvolutionApplication::new();
         let window = EvolutionWindow::new(&app);
         window.set_visible(true);
+        if let Some(stack) = window.imp().view_stack.borrow().as_ref() {
+            stack.set_visible_child_name("mail");
+        }
         window.set_screen_mode(false, false);
 
         let sidebar_header = window.imp().sidebar_header.borrow().clone().expect("sidebar_header should exist");

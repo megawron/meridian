@@ -1059,7 +1059,11 @@ paned.vertical > separator:hover {
 /* ── Unified Left Sidebar Drawer ───────────────────────────────────────── */
 .evolution-sidebar-drawer,
 splitview > sidebar,
-splitview > .sidebar,
+splitview > .sidebar {
+  background-color: @sidebar_bg_color;
+  color: @sidebar_fg_color;
+}
+
 .evolution-sidebar-drawer list,
 .evolution-sidebar-drawer listview,
 .evolution-sidebar-drawer listbox,
@@ -1068,14 +1072,20 @@ splitview > .sidebar,
 .evolution-sidebar-drawer scrolledwindow > viewport,
 .evolution-sidebar-drawer > box,
 .evolution-sidebar-drawer calendar {
-  background-color: @window_bg_color;
-  color: @window_fg_color;
+  background-color: transparent;
+  color: inherit;
 }
 
 .evolution-sidebar-drawer {
-  background-color: @window_bg_color;
-  border-right: none;
+  background-color: @sidebar_bg_color;
+  color: @sidebar_fg_color;
+  border-right: 1px solid @borders;
   box-shadow: none;
+}
+
+.evolution-sidebar-drawer:dir(rtl) {
+  border-right: none;
+  border-left: 1px solid @borders;
 }
 
 /* ── Calendar Sidebar Mini-Calendar ────────────────────────────────────── */
@@ -2534,8 +2544,15 @@ button.month-bar-chip.span-end {
 
 /* ── Agenda / To Do Sidebar (Parity with Left Sidebar Drawer) ── */
 .todo-sidebar {
-  background-color: @window_bg_color;
-  border-left: 1px solid alpha(@borders, 0.45);
+  background-color: @sidebar_bg_color;
+  color: @sidebar_fg_color;
+  border-left: 1px solid @borders;
+  border-right: none;
+}
+
+.todo-sidebar:dir(rtl) {
+  border-left: none;
+  border-right: 1px solid @borders;
 }
 
 .agenda-sidebar-canvas {
@@ -2688,15 +2705,66 @@ viewswitcherbar viewswitcher button image {
 }
 
 headerbar.sidebar-header {
-  background-color: @window_bg_color;
+  background-color: @sidebar_bg_color;
   background-image: none;
   border-bottom: none;
-  border-right: 1px solid alpha(@borders, 0.55);
+  border-right: 1px solid @borders;
   box-shadow: none;
   min-width: 0;
   overflow: hidden;
 }
 
+headerbar.sidebar-header:dir(rtl) {
+  border-right: none;
+  border-left: 1px solid @borders;
+}
+
 .window-header-box {
   background-color: transparent;
 }
+
+/* ── Mail Table Overlay Scrollbar ──────────────────────────────────────── */
+scrollbar.mail-table-overlay-scrollbar,
+scrollbar.vertical.mail-table-overlay-scrollbar {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  margin: 0 3px 0 0;
+  min-width: 0;
+  width: 7px;
+}
+
+scrollbar.mail-table-overlay-scrollbar trough,
+scrollbar.vertical.mail-table-overlay-scrollbar trough {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  margin: 0;
+  min-width: 7px;
+  width: 7px;
+}
+
+scrollbar.mail-table-overlay-scrollbar slider,
+scrollbar.vertical.mail-table-overlay-scrollbar slider {
+  min-width: 7px;
+  width: 7px;
+  border-radius: 9999px;
+  background-color: alpha(currentColor, 0.4);
+  margin: 0;
+  padding: 0;
+  border: none;
+  transition: all 150ms ease;
+}
+
+scrollbar.mail-table-overlay-scrollbar:hover slider,
+scrollbar.mail-table-overlay-scrollbar slider:hover,
+scrollbar.mail-table-overlay-scrollbar:active slider,
+scrollbar.mail-table-overlay-scrollbar slider:active {
+  min-width: 10px;
+  width: 10px;
+  background-color: alpha(currentColor, 0.75);
+}
+
+

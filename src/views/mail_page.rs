@@ -8099,7 +8099,7 @@ impl MailPage {
             // Handle dropped message
             if let Some(msg_id) = payload_str.strip_prefix("evolution-message:") {
                 let drop_action = target
-                    .drop()
+                    .current_drop()
                     .map(|d| d.actions())
                     .unwrap_or(gtk::gdk::DragAction::MOVE);
                 let is_copy = drop_action.contains(gtk::gdk::DragAction::COPY)
@@ -12067,7 +12067,7 @@ impl MailPage {
                         .unwrap_or_else(|| target_folder.id());
 
                     let drop_action = target
-                        .drop()
+                        .current_drop()
                         .map(|d| d.actions())
                         .unwrap_or(gtk::gdk::DragAction::MOVE);
                     let is_copy = drop_action.contains(gtk::gdk::DragAction::COPY)
@@ -14620,8 +14620,6 @@ impl MailPage {
             .spacing(4)
             .build();
 
-        actions_box.append(&sidebar_toggle);
-        actions_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         actions_box.append(&nav_group);
         actions_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         actions_box.append(&print_btn);
@@ -14650,8 +14648,6 @@ impl MailPage {
             .halign(gtk::Align::End)
             .build();
         pinned_right_box.append(columns_button);
-        pinned_right_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        pinned_right_box.append(&preview_toggle);
 
         toolbar.append(&actions_scroll);
         toolbar.append(&pinned_right_box);
@@ -15701,7 +15697,7 @@ impl MailPage {
     pub(crate) fn update_mail_table_canvas_layout(&self) {
         if let Some(canvas) = self.imp().mail_table_canvas.borrow().as_ref() {
             if let Some(thread_sel) = self.imp().thread_selection.borrow().as_ref() {
-                let w = canvas.width().max(canvas.allocated_width()).max(120) as f64;
+                let w = canvas.width().max(120) as f64;
                 let layout = self.current_mail_table_layout(thread_sel, w);
                 canvas.set_content_height(layout.height as i32);
                 self.imp().mail_table_layout.replace(Some(Rc::new(layout)));
@@ -15774,8 +15770,8 @@ impl MailPage {
             is_dragging_begin.set(false);
             *drop_target_begin.borrow_mut() = None;
             let h_x = col_widget_begin
-                .translate_coordinates(&header_begin, start_x, start_y)
-                .map(|(x, _)| x)
+                .compute_point(&header_begin, &gtk::graphene::Point::new(start_x as f32, start_y as f32))
+                .map(|p| p.x() as f64)
                 .unwrap_or(start_x);
             start_x_begin.set(h_x);
         });
@@ -15802,9 +15798,9 @@ impl MailPage {
                     let name = w.widget_name().to_string();
                     if name.starts_with("mail-column-") && !name.starts_with("mail-column-sep-") && w.is_visible() {
                         let id = name.trim_start_matches("mail-column-").to_string();
-                        if let Some((x, _)) = w.translate_coordinates(&header_update, 0.0, 0.0) {
-                            let width = w.width().max(w.allocated_width()).max(1) as f64;
-                            columns.push((id, w.clone(), x, width));
+                        if let Some(pt) = w.compute_point(&header_update, &gtk::graphene::Point::new(0.0, 0.0)) {
+                            let width = w.width().max(1) as f64;
+                            columns.push((id, w.clone(), pt.x() as f64, width));
                         }
                     }
                 }
@@ -16301,8 +16297,8 @@ impl MailPage {
                 sender_w_start_begin.set(width);
                 sender_sep_x_start_begin.set(start_x);
                 let header_x = sep_for_sender_begin
-                    .translate_coordinates(&header_for_sender_begin, start_x, start_y)
-                    .map(|(x, _)| x)
+                    .compute_point(&header_for_sender_begin, &gtk::graphene::Point::new(start_x as f32, start_y as f32))
+                    .map(|p| p.x() as f64)
                     .unwrap_or(start_x);
                 sender_header_x_start_begin.set(header_x);
                 gesture.set_state(gtk::EventSequenceState::Claimed);
@@ -16319,10 +16315,10 @@ impl MailPage {
             if let Some(page) = page_for_sender_update.upgrade() {
                 let cur_sep_x = sender_sep_x_start_update.get() + offset_x;
                 let cur_sep_y = offset_y;
-                let delta_x = if let Some((cur_header_x, _)) = sep_for_sender_update
-                    .translate_coordinates(&header_for_sender_update, cur_sep_x, cur_sep_y)
+                let delta_x = if let Some(pt) = sep_for_sender_update
+                    .compute_point(&header_for_sender_update, &gtk::graphene::Point::new(cur_sep_x as f32, cur_sep_y as f32))
                 {
-                    cur_header_x - sender_header_x_start_update.get()
+                    pt.x() as f64 - sender_header_x_start_update.get()
                 } else {
                     offset_x
                 };
@@ -16381,8 +16377,8 @@ impl MailPage {
                 recipient_w_start_begin.set(width);
                 recipient_sep_x_start_begin.set(start_x);
                 let header_x = sep_for_recipient_begin
-                    .translate_coordinates(&header_for_recipient_begin, start_x, start_y)
-                    .map(|(x, _)| x)
+                    .compute_point(&header_for_recipient_begin, &gtk::graphene::Point::new(start_x as f32, start_y as f32))
+                    .map(|p| p.x() as f64)
                     .unwrap_or(start_x);
                 recipient_header_x_start_begin.set(header_x);
                 gesture.set_state(gtk::EventSequenceState::Claimed);
@@ -16399,10 +16395,10 @@ impl MailPage {
             if let Some(page) = page_for_recipient_update.upgrade() {
                 let cur_sep_x = recipient_sep_x_start_update.get() + offset_x;
                 let cur_sep_y = offset_y;
-                let delta_x = if let Some((cur_header_x, _)) = sep_for_recipient_update
-                    .translate_coordinates(&header_for_recipient_update, cur_sep_x, cur_sep_y)
+                let delta_x = if let Some(pt) = sep_for_recipient_update
+                    .compute_point(&header_for_recipient_update, &gtk::graphene::Point::new(cur_sep_x as f32, cur_sep_y as f32))
                 {
-                    cur_header_x - recipient_header_x_start_update.get()
+                    pt.x() as f64 - recipient_header_x_start_update.get()
                 } else {
                     offset_x
                 };
@@ -16460,8 +16456,8 @@ impl MailPage {
                 date_w_start_begin.set(width);
                 date_sep_x_start_begin.set(start_x);
                 let header_x = sep_for_date_begin
-                    .translate_coordinates(&header_for_date_begin, start_x, start_y)
-                    .map(|(x, _)| x)
+                    .compute_point(&header_for_date_begin, &gtk::graphene::Point::new(start_x as f32, start_y as f32))
+                    .map(|p| p.x() as f64)
                     .unwrap_or(start_x);
                 date_header_x_start_begin.set(header_x);
                 gesture.set_state(gtk::EventSequenceState::Claimed);
@@ -16478,10 +16474,10 @@ impl MailPage {
             if let Some(page) = page_for_date_update.upgrade() {
                 let cur_sep_x = date_sep_x_start_update.get() + offset_x;
                 let cur_sep_y = offset_y;
-                let delta_x = if let Some((cur_header_x, _)) = sep_for_date_update
-                    .translate_coordinates(&header_for_date_update, cur_sep_x, cur_sep_y)
+                let delta_x = if let Some(pt) = sep_for_date_update
+                    .compute_point(&header_for_date_update, &gtk::graphene::Point::new(cur_sep_x as f32, cur_sep_y as f32))
                 {
-                    cur_header_x - date_header_x_start_update.get()
+                    pt.x() as f64 - date_header_x_start_update.get()
                 } else {
                     offset_x
                 };
@@ -19560,8 +19556,8 @@ impl MailPage {
                     }
                 }
                 if let Some(spacer) = page.imp().column_header_scrollbar_spacer.borrow().as_ref() {
-                    if spacer.is_visible() != needs_scroll {
-                        spacer.set_visible(needs_scroll);
+                    if spacer.is_visible() {
+                        spacer.set_visible(false);
                     }
                 }
                 adj.value()
@@ -19577,7 +19573,7 @@ impl MailPage {
         let canvas_for_click = mail_table_canvas.clone();
         click_gesture.connect_pressed(move |gesture, n_press, x, y| {
             let Some(page) = page_for_click.upgrade() else { return; };
-            let w = canvas_for_click.width().max(canvas_for_click.allocated_width()).max(120) as f64;
+            let w = canvas_for_click.width().max(120) as f64;
             let n_items = thread_sel_for_click.n_items() as usize;
             let layout = {
                 let cached = page.imp().mail_table_layout.borrow();
@@ -19666,7 +19662,7 @@ impl MailPage {
         let canvas_for_right_click = mail_table_canvas.clone();
         right_click.connect_pressed(move |gesture, _, x, y| {
             let Some(page) = page_for_right_click.upgrade() else { return; };
-            let w = canvas_for_right_click.width().max(canvas_for_right_click.allocated_width()).max(120) as f64;
+            let w = canvas_for_right_click.width().max(120) as f64;
             let n_items = thread_sel_for_right_click.n_items() as usize;
             let layout = {
                 let cached = page.imp().mail_table_layout.borrow();
@@ -19851,8 +19847,8 @@ impl MailPage {
                     }
                 }
                 if let Some(spacer) = page.imp().column_header_scrollbar_spacer.borrow().as_ref() {
-                    if spacer.is_visible() != needs_scroll {
-                        spacer.set_visible(needs_scroll);
+                    if spacer.is_visible() {
+                        spacer.set_visible(false);
                     }
                 }
             }
@@ -19924,25 +19920,24 @@ impl MailPage {
         });
         mail_table_canvas.add_controller(scroll_ctrl);
 
-        let table_horizontal_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
+        let table_overlay = gtk::Overlay::builder()
             .vexpand(true)
             .hexpand(true)
             .build();
-        table_horizontal_box.append(&mail_table_canvas);
-        table_horizontal_box.append(&vscrollbar);
+        table_overlay.set_child(Some(&mail_table_canvas));
 
-        let vscrollbar_size_group = gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal);
-        vscrollbar_size_group.add_widget(&vscrollbar);
-        if let Some(spacer) = self.imp().column_header_scrollbar_spacer.borrow().as_ref() {
-            vscrollbar_size_group.add_widget(spacer);
-        }
-        self.imp()
-            .vscrollbar_size_group
-            .replace(Some(vscrollbar_size_group));
+        vscrollbar.set_halign(gtk::Align::End);
+        vscrollbar.set_valign(gtk::Align::Fill);
+        vscrollbar.set_margin_end(3);
+        vscrollbar.set_margin_start(0);
+        vscrollbar.set_margin_top(0);
+        vscrollbar.set_margin_bottom(0);
+        vscrollbar.add_css_class("mail-table-overlay-scrollbar");
+        table_overlay.add_overlay(&vscrollbar);
+        table_overlay.set_measure_overlay(&vscrollbar, false);
+
         self.imp().list_vscrollbar.replace(Some(vscrollbar.clone()));
-
-        list_container.append(&table_horizontal_box);
+        list_container.append(&table_overlay);
         message_state_box.add_css_class("mail-pane-status");
         message_state_box.set_visible(false);
         self.imp()
@@ -27851,8 +27846,10 @@ mod tests {
         assert!(toolbar.contains("folder-symbolic"), "missing move icon");
         assert!(toolbar.contains("edit-copy-symbolic"), "missing copy icon");
         assert!(toolbar.contains("columns_button"), "missing columns button");
-        assert!(toolbar.contains("sidebar-show-symbolic"), "missing sidebar toggle");
-        assert!(toolbar.contains("sidebar-show-right-symbolic"), "missing preview toggle");
+        assert!(!toolbar.contains("actions_box.append(&sidebar_toggle)"), "sidebar toggle should not be in unified mail toolbar");
+        assert!(!toolbar.contains("pinned_right_box.append(&preview_toggle)"), "preview toggle should not be in unified mail toolbar");
+        assert!(source.contains("sidebar-show-symbolic"), "missing sidebar toggle definition");
+        assert!(source.contains("sidebar-show-right-symbolic"), "missing preview toggle definition");
         assert!(!toolbar.contains("edit-find-symbolic"), "search icon should not be in unified mail toolbar");
         let detail_view = compact_rust(rust_function_body(source, "build_detail_view"));
         for action in ["win.reply", "win.reply-all", "win.forward", "win.export"] {

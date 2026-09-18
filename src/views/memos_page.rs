@@ -2308,8 +2308,6 @@ impl MemosPage {
             .spacing(2)
             .halign(gtk::Align::Start)
             .build();
-        left_box.append(&sidebar_toggle);
-        left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         left_box.append(&btn_add_memo);
         left_box.append(&save_memo_btn);
         left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
@@ -4557,7 +4555,16 @@ impl MemosPage {
             &select_all_memo_btn,
         );
 
-        paned.set_end_child(Some(&memo_preview_paned));
+        let content_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        content_box.append(&memos_toolbar_scroll);
+        content_box.append(&memo_search_bar);
+        content_box.append(&memo_preview_paned);
+
+        paned.set_end_child(Some(&content_box));
         paned.set_resize_end_child(true);
         paned.set_shrink_end_child(false);
 
@@ -4579,8 +4586,6 @@ impl MemosPage {
             .vexpand(true)
             .hexpand(true)
             .build();
-        root_box.append(&memos_toolbar_scroll);
-        root_box.append(&memo_search_bar);
         root_box.append(&paned);
         root_box.set_parent(self);
     }

@@ -4875,8 +4875,6 @@ impl TasksPage {
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .build();
-        left_box.append(&sidebar_toggle);
-        left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         left_box.append(&triage_group);
         left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         left_box.append(&clipboard_group);
@@ -7179,6 +7177,8 @@ impl TasksPage {
                 settings.set_task_preview_position(orientation.setting_value(), paned.position());
             }
         });
+        content_box.append(&toolbar_scroll);
+        content_box.append(&task_search_bar);
         content_box.append(&preview_paned);
 
         content_box.set_vexpand(true);
@@ -7207,8 +7207,6 @@ impl TasksPage {
             .vexpand(true)
             .hexpand(true)
             .build();
-        root_box.append(&toolbar_scroll);
-        root_box.append(&task_search_bar);
         root_box.append(&paned);
         root_box.set_parent(self);
 

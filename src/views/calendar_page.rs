@@ -3195,8 +3195,6 @@ impl CalendarPage {
             .spacing(6)
             .valign(gtk::Align::Center)
             .build();
-        start_box.append(&sidebar_toggle);
-        start_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         start_box.append(&nav_box);
         start_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         start_box.append(&actions_box);
@@ -3208,8 +3206,6 @@ impl CalendarPage {
             .halign(gtk::Align::End)
             .build();
         end_box.append(&view_switcher_box);
-        end_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        end_box.append(&tag_vpane_toggle_btn);
 
         let view_toolbar = gtk::CenterBox::builder()
             .start_widget(&start_box)
@@ -5538,6 +5534,8 @@ impl CalendarPage {
 
         calendar_stack.set_vexpand(true);
         content_box.set_vexpand(true);
+        content_box.append(&view_toolbar_scroll);
+        content_box.append(&calendar_search_bar);
         content_box.append(&content_hpaned);
 
         self.refresh_calendar_views();
@@ -5696,8 +5694,6 @@ impl CalendarPage {
             .build();
         #[cfg(all(target_os = "macos", macos_bridge))]
         root_box.append(&macos_banner);
-        root_box.append(&view_toolbar_scroll);
-        root_box.append(&calendar_search_bar);
         root_box.append(&paned);
         root_box.set_parent(self);
 
@@ -8378,7 +8374,7 @@ impl CalendarPage {
 
                 let color = event_color_for_record(item.event);
                 let (bg, hover, active, fg) = pastel_colors_for_hex(&color, is_dark);
-                let provider = cached_event_chip_css_provider(&bg, &hover, &active, &fg);
+                let chip_class = ensure_event_chip_css_class(&bg, &hover, &active, &fg);
 
                 let title = if item.event.summary.trim().is_empty() {
                     "(Ohne Titel)"
@@ -8393,10 +8389,9 @@ impl CalendarPage {
                     .valign(gtk::Align::Fill)
                     .width_request(col_width as i32)
                     .height_request(h.max(22.0) as i32)
-                    .css_classes(vec!["flat", "calendar-grid-event"])
+                    .css_classes(vec!["flat", "calendar-grid-event", chip_class.as_str()])
                     .tooltip_text(&format!("{}\n{} · {}", title, item.time_text, item.event.source_display_name))
                     .build();
-                chip_btn.style_context().add_provider(&provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
 
                 let page_weak = self.downgrade();
                 let ev_record = item.event.clone();
@@ -8704,16 +8699,12 @@ impl CalendarPage {
 
         // 4px vertical color bar in event / calendar color
         let color = event_color_for_record(event);
+        let bar_class = ensure_year_event_bar_css_class(&color);
         let color_bar = gtk::Box::builder()
             .width_request(4)
             .valign(gtk::Align::Fill)
-            .css_classes(vec!["calendar-year-event-bar"])
+            .css_classes(vec!["calendar-year-event-bar", bar_class.as_str()])
             .build();
-        let p = gtk::CssProvider::new();
-        p.load_from_data(&format!(
-            "box {{ background-color: {color}; border-radius: 9999px; min-width: 4px; width: 4px; }}"
-        ));
-        color_bar.style_context().add_provider(&p, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
         hbox.append(&color_bar);
 
         let text_col = gtk::Box::builder()
@@ -13084,32 +13075,90 @@ fn add_months(year: i32, month: u32, offset: usize) -> (i32, u32) {
     (new_year, new_month)
 }
 
-fn cached_event_chip_css_provider(
+fn ensure_event_chip_css_class(
     bg: &str,
     hover: &str,
     active: &str,
     fg: &str,
-) -> gtk::CssProvider {
+) -> String {
     thread_local! {
-        static PROVIDER_CACHE: std::cell::RefCell<HashMap<(String, String, String, String), gtk::CssProvider>> =
+        static CLASS_CACHE: std::cell::RefCell<HashMap<(String, String, String, String), String>> =
             std::cell::RefCell::new(HashMap::new());
     }
     let key = (bg.to_string(), hover.to_string(), active.to_string(), fg.to_string());
-    PROVIDER_CACHE.with(|cache| {
+    CLASS_CACHE.with(|cache| {
         let mut map = cache.borrow_mut();
-        if let Some(provider) = map.get(&key) {
-            provider.clone()
+        if let Some(class_name) = map.get(&key) {
+            class_name.clone()
         } else {
+            let class_name = format!("cal-chip-{}", map.len());
             let provider = gtk::CssProvider::new();
-            provider.load_from_data(&format!(
-                "button.calendar-grid-event {{ border: none; outline: none; background-color: {bg}; color: {fg}; }} \
-                 button.calendar-grid-event:hover {{ border: none; outline: none; background-color: {hover}; color: {fg}; }} \
-                 button.calendar-grid-event:active {{ border: none; outline: none; background-color: {active}; color: {fg}; }}"
+            provider.load_from_string(&format!(
+                "button.{class_name} {{ border: none; outline: none; background-color: {bg}; color: {fg}; }} \
+                 button.{class_name}:hover {{ border: none; outline: none; background-color: {hover}; color: {fg}; }} \
+                 button.{class_name}:active {{ border: none; outline: none; background-color: {active}; color: {fg}; }}"
             ));
-            map.insert(key, provider.clone());
-            provider
+            if let Some(display) = gtk::gdk::Display::default() {
+                gtk::style_context_add_provider_for_display(
+                    &display,
+                    &provider,
+                    gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                );
+            }
+            map.insert(key, class_name.clone());
+            class_name
         }
     })
+}
+
+fn ensure_year_event_bar_css_class(color: &str) -> String {
+    let clean = color.trim_start_matches('#').to_lowercase();
+    let class_name = format!("cal-year-bar-{clean}");
+    thread_local! {
+        static REGISTERED: std::cell::RefCell<HashSet<String>> =
+            std::cell::RefCell::new(HashSet::new());
+    }
+    let already = REGISTERED.with(|r| r.borrow().contains(&class_name));
+    if !already {
+        if let Some(display) = gtk::gdk::Display::default() {
+            let p = gtk::CssProvider::new();
+            p.load_from_string(&format!(
+                "box.{class_name} {{ background-color: {color}; border-radius: 9999px; min-width: 4px; width: 4px; }}"
+            ));
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &p,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+            REGISTERED.with(|r| r.borrow_mut().insert(class_name.clone()));
+        }
+    }
+    class_name
+}
+
+fn ensure_category_pill_css_class(cat_col: &str) -> String {
+    let clean = cat_col.trim_start_matches('#').to_lowercase();
+    let class_name = format!("cal-cat-pill-{clean}");
+    thread_local! {
+        static REGISTERED: std::cell::RefCell<HashSet<String>> =
+            std::cell::RefCell::new(HashSet::new());
+    }
+    let already = REGISTERED.with(|r| r.borrow().contains(&class_name));
+    if !already {
+        if let Some(display) = gtk::gdk::Display::default() {
+            let p = gtk::CssProvider::new();
+            p.load_from_string(&format!(
+                "label.{class_name} {{ background-color: alpha({cat_col}, 0.20); color: {cat_col}; }}"
+            ));
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &p,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+            REGISTERED.with(|r| r.borrow_mut().insert(class_name.clone()));
+        }
+    }
+    class_name
 }
 
 /// Determines the dominant month (year, month) for a 42-day (6-week) month grid range.
@@ -14934,13 +14983,8 @@ fn show_calendar_event_details_popover_full<W: IsA<gtk::Widget> + Clone + 'stati
                 .css_classes(vec!["calendar-badge-pill"])
                 .build();
             if let Some(cat_col) = cat_store.color_for(&cat) {
-                let cat_provider = gtk::CssProvider::new();
-                cat_provider.load_from_data(&format!(
-                    "label {{ background-color: alpha({cat_col}, 0.20); color: {cat_col}; }}"
-                ));
-                cat_pill
-                    .style_context()
-                    .add_provider(&cat_provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+                let pill_class = ensure_category_pill_css_class(&cat_col);
+                cat_pill.add_css_class(&pill_class);
             }
             cat_flow.append(&cat_pill);
         }
@@ -15142,10 +15186,8 @@ fn calendar_grid_event_chip(
     // Solid, opaque pastel card styling (Amie & Libadwaita borderless)
     let is_dark = adw::StyleManager::default().is_dark();
     let (bg, hover, active, fg) = pastel_colors_for_hex(&color, is_dark);
-    let provider = cached_event_chip_css_provider(&bg, &hover, &active, &fg);
-    chip_button
-        .style_context()
-        .add_provider(&provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+    let chip_class = ensure_event_chip_css_class(&bg, &hover, &active, &fg);
+    chip_button.add_css_class(&chip_class);
 
     let text = if is_all_day {
         format!("<b>{}</b>", glib::markup_escape_text(title))
