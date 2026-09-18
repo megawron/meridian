@@ -132,6 +132,144 @@ pub(crate) fn recurrence_matches_without_count(
     })
 }
 
+fn advance_months(date: NaiveDate, months: i64) -> Option<NaiveDate> {
+    let current_month_0 = i64::from(date.month() - 1);
+    let total_months = (i64::from(date.year()) * 12 + current_month_0).checked_add(months)?;
+    let next_year = i32::try_from(total_months.div_euclid(12)).ok()?;
+    let next_month_1 = u32::try_from(total_months.rem_euclid(12) + 1).ok()?;
+    NaiveDate::from_ymd_opt(next_year, next_month_1, 1)
+}
+
+fn advance_period(rule: &RecurrenceRule, period_anchor: NaiveDate) -> Option<NaiveDate> {
+    let interval = rule.interval.max(1);
+    match rule.frequency.as_str() {
+        "DAILY" => period_anchor.checked_add_signed(Duration::days(interval)),
+        "WEEKLY" => period_anchor.checked_add_signed(Duration::days(7 * interval)),
+        "MONTHLY" => advance_months(period_anchor, interval),
+        "YEARLY" => {
+            let next_year = period_anchor.year().checked_add(i32::try_from(interval).ok()?)?;
+            NaiveDate::from_ymd_opt(next_year, 1, 1)
+        }
+        _ => period_anchor.checked_add_signed(Duration::days(1)),
+    }
+}
+
+fn initial_period_anchor(rule: &RecurrenceRule, initial_start: NaiveDate) -> NaiveDate {
+    match rule.frequency.as_str() {
+        "DAILY" => initial_start,
+        "WEEKLY" => week_start(initial_start, rule.week_start),
+        "MONTHLY" => initial_start.with_day(1).unwrap_or(initial_start),
+        "YEARLY" => NaiveDate::from_ymd_opt(initial_start.year(), 1, 1).unwrap_or(initial_start),
+        _ => initial_start,
+    }
+}
+
+fn jump_period_anchor(
+    rule: &RecurrenceRule,
+    initial_start: NaiveDate,
+    from: NaiveDate,
+) -> NaiveDate {
+    let initial_anchor = initial_period_anchor(rule, initial_start);
+    if from <= initial_start {
+        return initial_anchor;
+    }
+    let interval = rule.interval.max(1);
+    match rule.frequency.as_str() {
+        "DAILY" => {
+            let days = (from - initial_start).num_days();
+            let steps = (days / interval).max(0);
+            initial_start + Duration::days(steps * interval)
+        }
+        "WEEKLY" => {
+            let from_week = week_start(from, rule.week_start);
+            if from_week > initial_anchor {
+                let weeks = (from_week - initial_anchor).num_days().div_euclid(7);
+                let steps = (weeks / interval).max(0);
+                initial_anchor + Duration::days(steps * interval * 7)
+            } else {
+                initial_anchor
+            }
+        }
+        "MONTHLY" => {
+            let from_month_anchor = from.with_day(1).unwrap_or(from);
+            if from_month_anchor > initial_anchor {
+                let diff_months = month_distance(initial_anchor, from_month_anchor);
+                let steps = (diff_months / interval).max(0);
+                advance_months(initial_anchor, steps * interval).unwrap_or(initial_anchor)
+            } else {
+                initial_anchor
+            }
+        }
+        "YEARLY" => {
+            let from_year = from.year();
+            let initial_year = initial_anchor.year();
+            if from_year > initial_year {
+                let diff_years = i64::from(from_year - initial_year);
+                let steps = (diff_years / interval).max(0);
+                let target_year = initial_year + (steps * interval) as i32;
+                NaiveDate::from_ymd_opt(target_year, 1, 1).unwrap_or(initial_anchor)
+            } else {
+                initial_anchor
+            }
+        }
+        _ => initial_start,
+    }
+}
+
+fn generated_occurrences_in_period(
+    rule: &RecurrenceRule,
+    initial_start: NaiveDate,
+    period_anchor: NaiveDate,
+) -> Vec<NaiveDate> {
+    let (period_start, period_end) = recurrence_period_bounds(rule, period_anchor);
+    if rule.until.is_some_and(|until| period_start > until) {
+        return Vec::new();
+    }
+    if period_end < initial_start {
+        return Vec::new();
+    }
+
+    let period_matches = match rule.frequency.as_str() {
+        "DAILY" => (period_start - initial_start).num_days() % rule.interval == 0,
+        "WEEKLY" => {
+            let initial_week = week_start(initial_start, rule.week_start);
+            let weeks = (period_start - initial_week).num_days().div_euclid(7);
+            weeks >= 0 && weeks % rule.interval == 0
+        }
+        "MONTHLY" => {
+            let months = month_distance(initial_start, period_start);
+            months >= 0 && months % rule.interval == 0
+        }
+        "YEARLY" => {
+            let years = i64::from(period_start.year() - initial_start.year());
+            years >= 0 && years % rule.interval == 0
+        }
+        _ => false,
+    };
+    if !period_matches {
+        return Vec::new();
+    }
+
+    let total_days = (period_end - period_start).num_days();
+    let mut candidates = Vec::with_capacity((total_days + 1) as usize);
+    for offset in 0..=total_days {
+        let Some(candidate) = period_start.checked_add_signed(Duration::days(offset)) else {
+            break;
+        };
+        if candidate < initial_start {
+            continue;
+        }
+        if rule.until.is_some_and(|until| candidate > until) {
+            break;
+        }
+        if is_generated_occurrence(rule, initial_start, candidate) {
+            candidates.push(candidate);
+        }
+    }
+
+    candidates
+}
+
 /// Evaluates one rule occurrence, including COUNT and an optional EXDATE set.
 pub(crate) fn recurrence_occurs_on(
     rule: &RecurrenceRule,
@@ -153,20 +291,30 @@ pub(crate) fn recurrence_occurs_on(
         return true;
     };
     let mut occurrences = 0_usize;
-    let mut cursor = initial_start;
-    while cursor <= date {
-        if is_generated_occurrence(rule, initial_start, cursor) {
-            occurrences = occurrences.saturating_add(1);
-            if occurrences > count {
-                return false;
+    let mut period_anchor = initial_period_anchor(rule, initial_start);
+    loop {
+        let (period_start, _) = recurrence_period_bounds(rule, period_anchor);
+        if period_start > date || rule.until.is_some_and(|until| period_start > until) {
+            break;
+        }
+        let period_occs = generated_occurrences_in_period(rule, initial_start, period_anchor);
+        for occ in period_occs {
+            if occ <= date {
+                occurrences = occurrences.saturating_add(1);
+                if occurrences > count {
+                    return false;
+                }
+            }
+            if occ >= date {
+                break;
             }
         }
-        let Some(next) = cursor.checked_add_signed(Duration::days(1)) else {
+        let Some(next_anchor) = advance_period(rule, period_anchor) else {
             break;
         };
-        cursor = next;
+        period_anchor = next_anchor;
     }
-    occurrences > 0
+    occurrences > 0 && occurrences <= count
 }
 
 /// Finds the next generated occurrence on or after `from`, excluding EXDATE values.
@@ -176,23 +324,101 @@ pub(crate) fn next_recurrence_date(
     from: NaiveDate,
     excluded_dates: &[NaiveDate],
 ) -> Option<NaiveDate> {
+    if rule.until.is_some_and(|until| from > until) {
+        return None;
+    }
+
     let mut occurrences = 0_usize;
-    let mut cursor = initial_start;
+    let mut period_anchor = if rule.count.is_none() {
+        jump_period_anchor(rule, initial_start, from)
+    } else {
+        initial_period_anchor(rule, initial_start)
+    };
+
     loop {
-        if is_generated_occurrence(rule, initial_start, cursor) {
+        let (period_start, _) = recurrence_period_bounds(rule, period_anchor);
+        if rule.until.is_some_and(|until| period_start > until) {
+            return None;
+        }
+
+        let period_occs = generated_occurrences_in_period(rule, initial_start, period_anchor);
+        for occ in period_occs {
             occurrences = occurrences.saturating_add(1);
             if rule.count.is_some_and(|count| occurrences > count) {
                 return None;
             }
-            if cursor >= from && !excluded_dates.contains(&cursor) {
-                return Some(cursor);
+            if rule.until.is_some_and(|until| occ > until) {
+                return None;
+            }
+            if occ >= from && !excluded_dates.contains(&occ) {
+                return Some(occ);
             }
         }
-        if rule.until.is_some_and(|until| cursor >= until) {
+
+        let Some(next_anchor) = advance_period(rule, period_anchor) else {
             return None;
-        }
-        cursor = cursor.checked_add_signed(Duration::days(1))?;
+        };
+        period_anchor = next_anchor;
     }
+}
+
+/// Returns all occurrences within the half-open range `[range_start, range_end)`
+/// in a single efficient forward pass without resetting to initial start for each occurrence.
+pub(crate) fn recurrence_occurrences_in_range(
+    rule: &RecurrenceRule,
+    initial_start: NaiveDate,
+    range_start: NaiveDate,
+    range_end: NaiveDate,
+    excluded_dates: &[NaiveDate],
+) -> Vec<NaiveDate> {
+    if range_start >= range_end {
+        return Vec::new();
+    }
+    if rule.until.is_some_and(|until| range_start > until) {
+        return Vec::new();
+    }
+
+    let mut results = Vec::new();
+    let mut occurrences = 0_usize;
+    let mut period_anchor = if rule.count.is_none() {
+        jump_period_anchor(rule, initial_start, range_start)
+    } else {
+        initial_period_anchor(rule, initial_start)
+    };
+
+    loop {
+        let (period_start, _) = recurrence_period_bounds(rule, period_anchor);
+        if rule.until.is_some_and(|until| period_start > until) {
+            break;
+        }
+        if period_start >= range_end {
+            break;
+        }
+
+        let period_occs = generated_occurrences_in_period(rule, initial_start, period_anchor);
+        for occ in period_occs {
+            occurrences = occurrences.saturating_add(1);
+            if rule.count.is_some_and(|count| occurrences > count) {
+                return results;
+            }
+            if rule.until.is_some_and(|until| occ > until) {
+                return results;
+            }
+            if occ >= range_end {
+                return results;
+            }
+            if occ >= range_start && !excluded_dates.contains(&occ) {
+                results.push(occ);
+            }
+        }
+
+        let Some(next_anchor) = advance_period(rule, period_anchor) else {
+            break;
+        };
+        period_anchor = next_anchor;
+    }
+
+    results
 }
 
 fn is_generated_occurrence(
@@ -590,5 +816,54 @@ mod tests {
         assert!(parse_recurrence_rule("FREQ=DAILY;COUNT=-1").is_none());
         assert!(parse_recurrence_rule("FREQ=DAILY;UNTIL=not-a-date").is_none());
         assert!(parse_recurrence_rule("FREQ=DAILY").is_some());
+    }
+
+    #[test]
+    fn recurrence_occurrences_in_range_returns_expected_subset() {
+        let rule = parse_recurrence_rule("FREQ=WEEKLY;BYDAY=MO,WE,FR").unwrap();
+        let start = date("2026-08-03"); // Monday
+        let excluded = [date("2026-08-05")]; // Wednesday excluded
+
+        let occurrences = recurrence_occurrences_in_range(
+            &rule,
+            start,
+            date("2026-08-03"),
+            date("2026-08-10"),
+            &excluded,
+        );
+
+        assert_eq!(
+            occurrences,
+            vec![
+                date("2026-08-03"), // Monday
+                date("2026-08-07"), // Friday (Wednesday was excluded)
+            ]
+        );
+    }
+
+    #[test]
+    fn recurrence_occurrences_in_range_scales_with_span_not_history() {
+        // Event started in 1999 (over 9,800 days ago)
+        let rule = parse_recurrence_rule("FREQ=DAILY").unwrap();
+        let historical_start = date("1999-01-01");
+
+        let t0 = std::time::Instant::now();
+        let occurrences = recurrence_occurrences_in_range(
+            &rule,
+            historical_start,
+            date("2026-01-01"),
+            date("2027-01-01"),
+            &[],
+        );
+        let elapsed = t0.elapsed();
+
+        assert_eq!(occurrences.len(), 365);
+        assert_eq!(occurrences[0], date("2026-01-01"));
+        assert_eq!(occurrences[364], date("2026-12-31"));
+        // The 365-day query for a 27-year-old series must complete in under 5 milliseconds!
+        assert!(
+            elapsed.as_millis() < 50,
+            "Query for 1999 series took too long: {elapsed:?}"
+        );
     }
 }

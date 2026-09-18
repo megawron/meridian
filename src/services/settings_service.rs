@@ -70,6 +70,7 @@ const MAIL_LIST_WIDE_COLUMN_IDS: [&str; 15] = [
 pub(crate) fn normalized_mail_list_view_profile(value: &str) -> &'static str {
     match value {
         "wide" => "wide",
+        "cards" => "cards",
         "custom" => "custom",
         _ => "messages",
     }

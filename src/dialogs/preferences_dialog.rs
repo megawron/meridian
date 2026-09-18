@@ -4754,19 +4754,26 @@ impl PreferencesDialog {
             .build();
         let row_mail_list_profile = adw::ComboRow::builder()
             .title("Ansichtsprofil")
-            .subtitle("Standard entspricht Evolutions Messages-Ansicht; Wide priorisiert die Nachrichtenfelder")
-            .model(&gtk::StringList::new(&["Standard", "Wide", "Benutzerdefiniert"]))
+            .subtitle("Standard entspricht Evolutions Messages-Ansicht; Wide priorisiert die Nachrichtenfelder; Kartenansicht einspaltig")
+            .model(&gtk::StringList::new(&[
+                "Standard",
+                "Wide",
+                "Kartenansicht",
+                "Benutzerdefiniert",
+            ]))
             .build();
         if let Some(settings) = settings.clone() {
             row_mail_list_profile.set_selected(match settings.mail_list_view_profile().as_str() {
                 "wide" => 1,
-                "custom" => 2,
+                "cards" => 2,
+                "custom" => 3,
                 _ => 0,
             });
             let settings_for_selection = settings.clone();
             row_mail_list_profile.connect_selected_notify(move |row| match row.selected() {
                 0 => settings_for_selection.apply_mail_list_view_profile("messages"),
                 1 => settings_for_selection.apply_mail_list_view_profile("wide"),
+                2 => settings_for_selection.apply_mail_list_view_profile("cards"),
                 _ => {
                     let order = settings_for_selection.mail_list_column_order();
                     settings_for_selection.set_mail_list_column_order(&order);
@@ -4779,7 +4786,8 @@ impl PreferencesDialog {
                 };
                 row.set_selected(match settings.string("mail-list-view-profile").as_str() {
                     "wide" => 1,
-                    "custom" => 2,
+                    "cards" => 2,
+                    "custom" => 3,
                     _ => 0,
                 });
             });

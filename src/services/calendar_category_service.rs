@@ -10,8 +10,12 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::SystemTime;
 
 const CURRENT_VERSION: u32 = 1;
+
+static CATEGORY_CACHE: Mutex<Option<(PathBuf, Option<SystemTime>, CategoryFile)>> = Mutex::new(None);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CalendarCategory {
@@ -20,7 +24,7 @@ pub struct CalendarCategory {
     pub color: String,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct CategoryFile {
     version: u32,
     #[serde(default)]
@@ -65,6 +69,9 @@ impl CalendarCategoryStore {
     }
 
     pub fn color_for_component(&self, component: &str) -> Option<String> {
+        if !component.contains("CATEGORIES") {
+            return None;
+        }
         category_names_from_ical_component(component)
             .into_iter()
             .find_map(|name| self.color_for(&name))
@@ -138,18 +145,34 @@ impl CalendarCategoryStore {
     }
 
     fn load_file(&self) -> CategoryFile {
+        let mtime = fs::metadata(&self.path).and_then(|m| m.modified()).ok();
+        if let Ok(guard) = CATEGORY_CACHE.lock() {
+            if let Some((ref cached_path, ref cached_mtime, ref file)) = *guard {
+                if cached_path == &self.path && *cached_mtime == mtime {
+                    return file.clone();
+                }
+            }
+        }
         let Ok(raw) = fs::read(&self.path) else {
-            return CategoryFile {
+            let file = CategoryFile {
                 version: CURRENT_VERSION,
                 categories: default_categories(),
             };
+            if let Ok(mut guard) = CATEGORY_CACHE.lock() {
+                *guard = Some((self.path.clone(), mtime, file.clone()));
+            }
+            return file;
         };
         let Ok(mut file) = serde_json::from_slice::<CategoryFile>(&raw) else {
             tracing::warn!(path = %self.path.display(), "Ignoring invalid calendar category file");
-            return CategoryFile {
+            let file = CategoryFile {
                 version: CURRENT_VERSION,
                 categories: default_categories(),
             };
+            if let Ok(mut guard) = CATEGORY_CACHE.lock() {
+                *guard = Some((self.path.clone(), mtime, file.clone()));
+            }
+            return file;
         };
         if file.version != CURRENT_VERSION {
             tracing::warn!(
@@ -158,10 +181,14 @@ impl CalendarCategoryStore {
                 expected = CURRENT_VERSION,
                 "Ignoring unsupported calendar category version"
             );
-            return CategoryFile {
+            let file = CategoryFile {
                 version: CURRENT_VERSION,
                 categories: default_categories(),
             };
+            if let Ok(mut guard) = CATEGORY_CACHE.lock() {
+                *guard = Some((self.path.clone(), mtime, file.clone()));
+            }
+            return file;
         }
         file.categories.retain(|category| {
             !category.id.trim().is_empty()
@@ -169,6 +196,9 @@ impl CalendarCategoryStore {
                 && valid_color(&category.color)
         });
         sort_categories(&mut file.categories);
+        if let Ok(mut guard) = CATEGORY_CACHE.lock() {
+            *guard = Some((self.path.clone(), mtime, file.clone()));
+        }
         file
     }
 
@@ -184,7 +214,12 @@ impl CalendarCategoryStore {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         let temporary_path = self.path.with_extension("json.tmp");
         fs::write(&temporary_path, encoded)?;
-        fs::rename(temporary_path, &self.path)
+        fs::rename(temporary_path, &self.path)?;
+        let mtime = fs::metadata(&self.path).and_then(|m| m.modified()).ok();
+        if let Ok(mut guard) = CATEGORY_CACHE.lock() {
+            *guard = Some((self.path.clone(), mtime, file));
+        }
+        Ok(())
     }
 }
 
