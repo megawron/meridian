@@ -36,7 +36,7 @@ use crate::services::ical_time_service::{
 use crate::services::recurrence_service::recurrence_matches_without_count;
 use crate::services::recurrence_service::{
     RecurrenceByDay, next_recurrence_date, parse_extended_weekday_token, parse_recurrence_rule,
-    recurrence_occurs_on as recurrence_rule_occurs_on,
+    recurrence_occurs_on as recurrence_rule_occurs_on, recurrence_occurrences_in_range,
 };
 use crate::services::reminder_service::{
     AlarmTrigger, ReminderComponentKind, ReminderIdentity, parse_alarms,
@@ -700,8 +700,22 @@ fn projection_chunk_ranges(item_count: usize, chunk_size: usize) -> Vec<(usize, 
 /// small side list and expanded only once per requested range.  This keeps an
 /// Agenda query out of the N-events-by-90-days full-scan shape.
 #[derive(Debug, Clone)]
+struct IndexedEventMeta {
+    identity: Option<CalendarEventIdentity>,
+    display_range: Option<CalendarDateRange>,
+    recurrence_rule: Option<crate::services::recurrence_service::RecurrenceRule>,
+    excluded_dates: Vec<NaiveDate>,
+    rdate_values: Vec<NaiveDate>,
+    all_day: bool,
+    start_min: u16,
+    end_min: u16,
+    is_single_day: bool,
+}
+
+#[derive(Debug, Clone)]
 struct CalendarSnapshotIndex {
     snapshot: Arc<CalendarSnapshot>,
+    metas: Vec<IndexedEventMeta>,
     date_buckets: BTreeMap<NaiveDate, Vec<usize>>,
     recurring_events: Vec<usize>,
     long_events: Vec<(usize, CalendarDateRange)>,
@@ -718,8 +732,70 @@ struct CalendarIndexQueryStats {
 
 impl CalendarSnapshotIndex {
     fn new(snapshot: Arc<CalendarSnapshot>) -> Self {
+        let mut metas = Vec::with_capacity(snapshot.events.len());
+        for event in snapshot.events.iter() {
+            let identity = CalendarEventIdentity::from_event(event);
+            let display_range = record_display_range(event).or_else(|| event_display_range(event));
+            let recurring = (event.component.contains("RRULE") || event.component.contains("RDATE"))
+                && (ical_property(&event.component, "RRULE").is_some()
+                    || ical_property(&event.component, "RDATE").is_some());
+            let (recurrence_rule, excluded_dates, rdate_values) = if recurring {
+                (
+                    ical_property(&event.component, "RRULE").and_then(|raw| parse_recurrence_rule(&raw)),
+                    exdate_values(event),
+                    property_local_dates(&event.component, "RDATE"),
+                )
+            } else {
+                (None, Vec::new(), Vec::new())
+            };
+            let all_day = event.all_day;
+            let (start_min, end_min, is_single_day) = if all_day {
+                (0, 1440, false)
+            } else if !recurring {
+                let start_date = display_range.map(|r| r.start).unwrap_or_else(|| NaiveDate::from_ymd_opt(2000, 1, 1).unwrap());
+                let (s, e, _) = event_occurrence_times_for_date(event, start_date, 30);
+                let single = display_range.map(|r| r.len_days() <= 1).unwrap_or(true);
+                (s.min(1440) as u16, e.min(1440) as u16, single)
+            } else {
+                let start_dt = event_start_datetime(event);
+                let end_dt = event_end_datetime(event);
+                let (base_start, base_duration) = match (start_dt, end_dt) {
+                    (Some(start), Some(end)) => {
+                        let dur = end.signed_duration_since(start);
+                        let dur = if dur > Duration::zero() { dur } else { Duration::minutes(30) };
+                        (start, dur)
+                    }
+                    (Some(start), None) => (start, Duration::minutes(30)),
+                    (None, _) => {
+                        let fallback_start = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap().and_hms_opt(9, 0, 0).unwrap();
+                        (fallback_start, Duration::minutes(30))
+                    }
+                };
+                if base_start.date() == (base_start + base_duration).date() {
+                    let s = (base_start.hour() * 60 + base_start.minute()).min(1439) as u16;
+                    let end_m = ((base_start + base_duration).hour() * 60 + (base_start + base_duration).minute()).min(1440) as u16;
+                    let e = if end_m <= s { (s + 30).min(1440) } else { end_m };
+                    (s, e, true)
+                } else {
+                    (0, 1440, false)
+                }
+            };
+            metas.push(IndexedEventMeta {
+                identity,
+                display_range,
+                recurrence_rule,
+                excluded_dates,
+                rdate_values,
+                all_day,
+                start_min,
+                end_min,
+                is_single_day,
+            });
+        }
+
         let mut index = Self {
             snapshot,
+            metas,
             date_buckets: BTreeMap::new(),
             recurring_events: Vec::new(),
             long_events: Vec::new(),
@@ -728,9 +804,9 @@ impl CalendarSnapshotIndex {
 
         for (event_index, event) in index.snapshot.events.iter().enumerate() {
             index.all_event_indices.push(event_index);
-            let recurring = ical_property(&event.component, "RRULE").is_some()
-                || ical_property(&event.component, "RDATE").is_some();
-            let Some(range) = record_display_range(event) else {
+            let recurring = index.metas[event_index].recurrence_rule.is_some()
+                || !index.metas[event_index].rdate_values.is_empty();
+            let Some(range) = index.metas[event_index].display_range else {
                 continue;
             };
 
@@ -765,6 +841,61 @@ impl CalendarSnapshotIndex {
         index
     }
 
+    fn recurring_occurrences_in_range(
+        &self,
+        event_idx: usize,
+        range: CalendarDateRange,
+    ) -> Vec<NaiveDate> {
+        let meta = &self.metas[event_idx];
+        let Some(initial_range) = meta.display_range else {
+            return Vec::new();
+        };
+        let initial_start = initial_range.start;
+        let span_days = initial_range.len_days().saturating_sub(1);
+        let mut occurrence_starts = BTreeSet::new();
+
+        if !meta.excluded_dates.contains(&initial_start) {
+            occurrence_starts.insert(initial_start);
+        }
+        for &rdate in &meta.rdate_values {
+            if !meta.excluded_dates.contains(&rdate) {
+                occurrence_starts.insert(rdate);
+            }
+        }
+
+        if let Some(rule) = meta.recurrence_rule.as_ref() {
+            let from = range
+                .start
+                .checked_sub_signed(Duration::days(span_days))
+                .unwrap_or(range.start)
+                .max(initial_start);
+            let recurring_starts = recurrence_occurrences_in_range(
+                rule,
+                initial_start,
+                from,
+                range.end,
+                &meta.excluded_dates,
+            );
+            occurrence_starts.extend(recurring_starts);
+        }
+
+        let mut dates = BTreeSet::new();
+        for occurrence_start in occurrence_starts {
+            for offset in 0..=span_days {
+                let Some(date) = occurrence_start.checked_add_signed(Duration::days(offset)) else {
+                    break;
+                };
+                if range.contains(date) {
+                    dates.insert(date);
+                }
+                if date >= range.last_inclusive() {
+                    break;
+                }
+            }
+        }
+        dates.into_iter().collect()
+    }
+
     fn candidate_event_indices(&self, range: CalendarDateRange) -> Vec<usize> {
         self.candidate_event_indices_with_stats(range).0
     }
@@ -794,10 +925,9 @@ impl CalendarSnapshotIndex {
 
         let mut indices = indices.into_iter().collect::<Vec<_>>();
         indices.sort_by(|left, right| {
-            let left_event = &self.snapshot.events[*left];
-            let right_event = &self.snapshot.events[*right];
-            CalendarEventIdentity::from_event(left_event)
-                .cmp(&CalendarEventIdentity::from_event(right_event))
+            self.metas[*left]
+                .identity
+                .cmp(&self.metas[*right].identity)
                 .then_with(|| left.cmp(right))
         });
         (indices, stats)
@@ -945,6 +1075,12 @@ fn persist_calendar_view(view: CalendarView, settings: Option<&AppSettings>) {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MonthHoverTarget {
+    pub(crate) uid: String,
+    pub(crate) occurrence_date: NaiveDate,
+}
+
 // ─── GObject Subclass ───────────────────────────────────────────────────────
 
 mod imp {
@@ -974,7 +1110,11 @@ mod imp {
         pub month_layout: RefCell<Option<Rc<PreparedMonthLayout>>>,
         pub month_drag_selection: RefCell<Option<MonthDragSelection>>,
         pub month_hovered_date: RefCell<Option<NaiveDate>>,
-        pub month_hovered_event: RefCell<Option<CalendarEventIdentity>>,
+        pub month_hovered_target: RefCell<Option<MonthHoverTarget>>,
+        pub month_rendered_key: RefCell<Option<(NaiveDate, u64, String, Option<String>, usize, bool)>>,
+        pub agenda_rendered_key: RefCell<Option<(CalendarDateRange, u64, String, Option<String>, usize)>>,
+        pub year_rendered_key: RefCell<Option<(i32, u64, String, Option<String>, usize)>>,
+        pub mini_calendar_last_key: RefCell<Option<(CalendarView, NaiveDate, CalendarDateRange)>>,
         pub day_view: RefCell<Option<gtk::Box>>,
         pub week_view: RefCell<Option<gtk::Box>>,
         pub workweek_view: RefCell<Option<gtk::Box>>,
@@ -1038,6 +1178,8 @@ mod imp {
         pub tag_vpane_toggle_btn: RefCell<Option<gtk::ToggleButton>>,
         pub calendar_sidebar_toggle: RefCell<Option<gtk::ToggleButton>>,
         pub mini_calendar: RefCell<Option<gtk::Calendar>>,
+        pub is_mobile: Cell<bool>,
+        pub is_tablet: Cell<bool>,
         pub mini_calendar_2: RefCell<Option<gtk::Calendar>>,
         pub mini_calendar_3: RefCell<Option<gtk::Calendar>>,
         pub mini_calendar_4: RefCell<Option<gtk::Calendar>>,
@@ -1103,7 +1245,11 @@ mod imp {
                 month_layout: RefCell::new(None),
                 month_drag_selection: RefCell::new(None),
                 month_hovered_date: RefCell::new(None),
-                month_hovered_event: RefCell::new(None),
+                month_hovered_target: RefCell::new(None),
+                month_rendered_key: RefCell::new(None),
+                agenda_rendered_key: RefCell::new(None),
+                year_rendered_key: RefCell::new(None),
+                mini_calendar_last_key: RefCell::new(None),
                 day_view: RefCell::new(None),
                 week_view: RefCell::new(None),
                 workweek_view: RefCell::new(None),
@@ -1166,6 +1312,8 @@ mod imp {
                 tag_vpane_toggle_btn: RefCell::new(None),
                 calendar_sidebar_toggle: RefCell::new(None),
                 mini_calendar: RefCell::new(None),
+                is_mobile: Cell::new(false),
+                is_tablet: Cell::new(false),
                 mini_calendar_2: RefCell::new(None),
                 mini_calendar_3: RefCell::new(None),
                 mini_calendar_4: RefCell::new(None),
@@ -1345,6 +1493,65 @@ impl CalendarPage {
 
     pub fn outer_paned(&self) -> Option<gtk::Paned> {
         self.imp().outer_paned.borrow().clone()
+    }
+
+    pub(crate) fn set_screen_mode(&self, is_mobile: bool, is_tablet: bool) {
+        let imp = self.imp();
+        imp.is_mobile.set(is_mobile);
+        imp.is_tablet.set(is_tablet);
+        self.sync_calendar_layout_visibility();
+    }
+
+    pub(crate) fn can_navigate_back(&self) -> bool {
+        false
+    }
+
+    pub(crate) fn navigate_back(&self) -> bool {
+        false
+    }
+
+    pub(crate) fn sync_calendar_layout_visibility(&self) {
+        let imp = self.imp();
+        let is_mobile = imp.is_mobile.get();
+        let is_tablet = imp.is_tablet.get();
+
+        if let Some(tag_vpaned) = imp.tag_vpaned.borrow().as_ref() {
+            if is_mobile || is_tablet {
+                tag_vpaned.set_visible(false);
+            } else {
+                let show_tag = AppSettings::try_new()
+                    .map(|s| s.calendar_show_tag_vpane())
+                    .unwrap_or(true);
+                tag_vpaned.set_visible(show_tag);
+            }
+        }
+        if let Some(outer_paned) = imp.outer_paned.borrow().as_ref() {
+            if let Some(sidebar) = outer_paned.start_child() {
+                if is_mobile {
+                    sidebar.set_visible(false);
+                } else if is_tablet {
+                    let show_sb = AppSettings::try_new()
+                        .map(|s| s.mail_show_sidebar())
+                        .unwrap_or(false);
+                    sidebar.set_visible(show_sb);
+                } else {
+                    let show_sb = AppSettings::try_new()
+                        .map(|s| s.mail_show_sidebar())
+                        .unwrap_or(true);
+                    sidebar.set_visible(show_sb);
+                }
+            }
+        }
+        if let Some(toolbar) = imp.toolbar.borrow().as_ref() {
+            if is_mobile {
+                toolbar.set_visible(false);
+            } else {
+                let show_tb = AppSettings::try_new()
+                    .map(|s| s.mail_show_toolbar())
+                    .unwrap_or(true);
+                toolbar.set_visible(show_tb);
+            }
+        }
     }
 
     pub fn year_paned(&self) -> Option<gtk::Paned> {
@@ -1660,16 +1867,21 @@ impl CalendarPage {
         self.invalidate_calendar_mutation();
 
         let generation = self.imp().calendar_load_gate.borrow_mut().begin();
-        self.bump_calendar_revision();
         self.imp().view_state.borrow_mut().load_generation = generation;
         self.imp().calendar_load_error.replace(None);
-        let needs_preview = self.imp().calendar_snapshot_index.borrow().is_none();
-        self.set_calendar_loading_status(true, "Kalender werden geladen …");
-        self.imp().calendar_list_projection_count.set(None);
-        self.refresh_task_sidebar();
-        self.refresh_task_and_memo_panes();
-        self.refresh_event_list_visibility();
-        self.refresh_calendar_views();
+        let has_cached_index = self.imp().calendar_snapshot_index.borrow().is_some();
+        let needs_preview = !has_cached_index;
+        if has_cached_index {
+            self.set_calendar_loading_status(true, "Aktualisierung läuft …");
+        } else {
+            self.bump_calendar_revision();
+            self.set_calendar_loading_status(true, "Kalender werden geladen …");
+            self.imp().calendar_list_projection_count.set(None);
+            self.refresh_task_sidebar();
+            self.refresh_task_and_memo_panes();
+            self.refresh_event_list_visibility();
+            self.refresh_calendar_views();
+        }
 
         let cancellation = Arc::new(AtomicBool::new(false));
         self.imp()
@@ -1868,10 +2080,6 @@ impl CalendarPage {
 
         let count = snapshot_index.snapshot.events.len();
         let state_label = self.imp().calendar_data_state.borrow().as_ref().cloned();
-        let sidebar_token = CalendarSidebarApplyToken {
-            load_generation: generation,
-            model_revision: self.imp().calendar_revision.get(),
-        };
         if !preview && !self.finish_calendar_snapshot_load(generation, &cancellation) {
             return;
         }
@@ -1916,50 +2124,6 @@ impl CalendarPage {
             }
             let events = snapshot_index.snapshot.events.clone();
             event_records.borrow_mut().extend(events.clone());
-
-            let page_weak = self.downgrade();
-            let event_list_clone = event_list.clone();
-            let event_records_clone = Rc::clone(&event_records);
-            let cancellation = Arc::clone(&cancellation);
-            glib::spawn_future_local(async move {
-                let chunk_size = 40;
-                let mut index = 0;
-                while index < events.len() {
-                    let Some(page) = page_weak.upgrade() else {
-                        return;
-                    };
-                    if !page.calendar_sidebar_apply_is_current(sidebar_token, &cancellation) {
-                        return;
-                    }
-                    let end = (index + chunk_size).min(events.len());
-                    for event in &events[index..end] {
-                        append_event_row(
-                            &page,
-                            &event_list_clone,
-                            Rc::clone(&event_records_clone),
-                            event.clone(),
-                        );
-                    }
-                    index = end;
-                    if index < events.len() {
-                        glib::timeout_future_with_priority(
-                            glib::Priority::LOW,
-                            std::time::Duration::from_millis(5),
-                        )
-                        .await;
-                    }
-                }
-                if let Some(page) = page_weak.upgrade() {
-                    if !page.calendar_sidebar_apply_is_current(sidebar_token, &cancellation) {
-                        return;
-                    }
-                    page.refresh_task_sidebar();
-                    page.refresh_task_and_memo_panes();
-                    page.refresh_calendar_category_model();
-                    page.refresh_calendar_views();
-                    page.refresh_event_list_visibility();
-                }
-            });
         }
 
         self.refresh_task_sidebar();
@@ -2623,6 +2787,24 @@ impl CalendarPage {
             page.refresh_taskpad();
             page.refresh_memopad();
         });
+        // Synchronous initial load from local snapshot cache (GNOME Evolution architecture)
+        // This renders all calendar events on the very first frame without delay or flicker.
+        if let Some(snapshot) = crate::services::ecal_service::load_calendar_load_cache()
+            .or_else(|| Some(CalendarStoreService::new().load_snapshot()))
+        {
+            let snapshot_index = Arc::new(CalendarSnapshotIndex::new(Arc::new(snapshot)));
+            self.imp()
+                .calendar_snapshot_index
+                .replace(Some(Arc::clone(&snapshot_index)));
+            event_records.borrow_mut().extend(snapshot_index.snapshot.events.clone());
+            *task_records.borrow_mut() = snapshot_index.snapshot.tasks.clone();
+            *memo_records.borrow_mut() = snapshot_index.snapshot.memos.clone();
+            self.bump_calendar_revision();
+            self.refresh_task_sidebar();
+            self.refresh_task_and_memo_panes();
+            self.refresh_calendar_category_model();
+            self.refresh_event_list_visibility();
+        }
 
         self.start_calendar_snapshot_load();
 
@@ -3107,7 +3289,7 @@ impl CalendarPage {
 
             let selected_time_slot = *page.imp().selected_time_slot.borrow();
             let drag_selection = *page.imp().month_drag_selection.borrow();
-            let hovered_event = page.imp().month_hovered_event.borrow().clone();
+            let hovered_target = page.imp().month_hovered_target.borrow().clone();
 
             draw_month_canvas(
                 cr,
@@ -3116,7 +3298,7 @@ impl CalendarPage {
                 &layout,
                 selected_time_slot,
                 drag_selection,
-                hovered_event.as_ref(),
+                hovered_target.as_ref(),
                 is_dark,
             );
         });
@@ -3136,7 +3318,7 @@ impl CalendarPage {
             let Some(hit) = hit_test_month_canvas(x, y, w, h, &layout) else { return };
 
             match hit {
-                MonthCanvasHit::Event { event, date } => {
+                MonthCanvasHit::Event { event, date, .. } => {
                     if n_press == 2 {
                         if let Some(identity) = CalendarEventIdentity::from_event(&event) {
                             page.open_event_editor_for_identity(drawing_area, &identity);
@@ -3339,19 +3521,22 @@ impl CalendarPage {
             let hit = hit_test_month_canvas(x, y, w, h, &layout);
 
             match hit {
-                Some(MonthCanvasHit::Event { event, .. }) => {
+                Some(MonthCanvasHit::Event { event, occurrence_date, .. }) => {
                     drawing_area.set_cursor_from_name(Some("pointer"));
-                    let ident = CalendarEventIdentity::from_event(&event);
-                    let mut prev = page.imp().month_hovered_event.borrow_mut();
-                    if *prev != ident {
-                        *prev = ident;
+                    let target = MonthHoverTarget {
+                        uid: event.uid.clone(),
+                        occurrence_date,
+                    };
+                    let mut prev = page.imp().month_hovered_target.borrow_mut();
+                    if prev.as_ref() != Some(&target) {
+                        *prev = Some(target);
                         drop(prev);
                         drawing_area.queue_draw();
                     }
                 }
                 Some(MonthCanvasHit::Overflow { .. }) => {
                     drawing_area.set_cursor_from_name(Some("pointer"));
-                    let mut prev = page.imp().month_hovered_event.borrow_mut();
+                    let mut prev = page.imp().month_hovered_target.borrow_mut();
                     if prev.is_some() {
                         *prev = None;
                         drop(prev);
@@ -3360,13 +3545,25 @@ impl CalendarPage {
                 }
                 _ => {
                     drawing_area.set_cursor_from_name(None);
-                    let mut prev = page.imp().month_hovered_event.borrow_mut();
+                    let mut prev = page.imp().month_hovered_target.borrow_mut();
                     if prev.is_some() {
                         *prev = None;
                         drop(prev);
                         drawing_area.queue_draw();
                     }
                 }
+            }
+        });
+        let page_weak_leave = self.downgrade();
+        motion_controller.connect_leave(move |ctrl| {
+            let (Some(page), Some(widget)) = (page_weak_leave.upgrade(), ctrl.widget()) else { return };
+            let Some(drawing_area) = widget.downcast_ref::<gtk::DrawingArea>() else { return };
+            drawing_area.set_cursor_from_name(None);
+            let mut prev = page.imp().month_hovered_target.borrow_mut();
+            if prev.is_some() {
+                *prev = None;
+                drop(prev);
+                drawing_area.queue_draw();
             }
         });
         month_canvas.add_controller(motion_controller);
@@ -3384,7 +3581,7 @@ impl CalendarPage {
             let Some(hit) = hit_test_month_canvas(x as f64, y as f64, w, h, &layout) else { return false };
 
             match hit {
-                MonthCanvasHit::Event { event, date } => {
+                MonthCanvasHit::Event { event, date, .. } => {
                     let time_str = if event.all_day {
                         "Ganztägig".to_string()
                     } else {
@@ -3500,7 +3697,7 @@ impl CalendarPage {
 
             let w = drawing_area.width() as f64;
             let h = drawing_area.height() as f64;
-            if let Some(MonthCanvasHit::Event { event, date }) = hit_test_month_canvas(x, y, w, h, &layout) {
+            if let Some(MonthCanvasHit::Event { event, date, .. }) = hit_test_month_canvas(x, y, w, h, &layout) {
                 if event.source_uid.trim().is_empty()
                     || event.uid.trim().is_empty()
                     || event_mutation_error(&event).is_some()
@@ -4762,8 +4959,10 @@ impl CalendarPage {
             let page_weak_for_toolbar = self.downgrade();
             settings.connect_changed(Some("mail-show-toolbar"), move |settings, _| {
                 if let Some(page) = page_weak_for_toolbar.upgrade() {
-                    if let Some(toolbar) = page.imp().toolbar.borrow().as_ref() {
-                        toolbar.set_visible(settings.boolean("mail-show-toolbar"));
+                    if !page.imp().is_mobile.get() {
+                        if let Some(toolbar) = page.imp().toolbar.borrow().as_ref() {
+                            toolbar.set_visible(settings.boolean("mail-show-toolbar"));
+                        }
                     }
                 }
             });
@@ -6563,6 +6762,7 @@ impl CalendarPage {
         drop(calendars);
 
         if visibility_changed || target_count > current_len {
+            self.imp().mini_calendar_last_key.replace(None);
             self.sync_mini_calendar();
         }
     }
@@ -6573,10 +6773,17 @@ impl CalendarPage {
             return;
         }
         let date = *self.imp().current_date.borrow();
+        let current_view = *self.imp().current_view.borrow();
         let viewport = self.current_calendar_viewport();
+
+        let key = (current_view, date, viewport.visible_range);
+        if self.imp().mini_calendar_last_key.borrow().as_ref() == Some(&key) {
+            return;
+        }
+
         self.imp().syncing_mini_calendar.set(true);
 
-        let is_month_view = *self.imp().current_view.borrow() == CalendarView::Month;
+        let is_month_view = current_view == CalendarView::Month;
         let show_week_numbers = AppSettings::try_new()
             .map(|settings| settings.calendar_show_week_numbers())
             .unwrap_or(false);
@@ -6626,6 +6833,7 @@ impl CalendarPage {
             update_mini_calendar_classes(cal, y, m, &viewport, has_selected_date);
         }
 
+        self.imp().mini_calendar_last_key.replace(Some(key));
         self.imp().syncing_mini_calendar.set(false);
     }
 
@@ -6720,14 +6928,6 @@ impl CalendarPage {
                 }
             }
 
-            if let Some(event_list) = self.imp().event_list.borrow().as_ref().cloned() {
-                while let Some(child) = event_list.first_child() {
-                    event_list.remove(&child);
-                }
-                for event in records.borrow().iter().cloned() {
-                    append_event_row(self, &event_list, Rc::clone(&records), event);
-                }
-            }
             self.rebuild_calendar_index_from_records();
             self.bump_calendar_revision();
         }
@@ -7787,6 +7987,7 @@ impl CalendarPage {
         if self.calendar_data_state() != CalendarDataState::Ready {
             self.imp().agenda_items.borrow_mut().clear();
             self.imp().agenda_selected_row.set(None);
+            self.imp().agenda_rendered_key.replace(None);
             if let Some(empty_box) = self
                 .imp()
                 .agenda_empty_box
@@ -7816,6 +8017,32 @@ impl CalendarPage {
                 format_date(end_date),
                 workday_text
             ));
+        }
+
+        let query = self.imp().calendar_search_query.borrow().clone();
+        let category = self.imp().calendar_category_filter.borrow().clone();
+        let hidden_count = self.imp().hidden_calendar_sources.borrow().len();
+        let revision = self.imp().calendar_revision.get();
+        let key = (visible_range, revision, query, category, hidden_count);
+
+        if self.imp().agenda_rendered_key.borrow().as_ref() == Some(&key) {
+            let is_empty = self.imp().agenda_items.borrow().is_empty();
+            if let Some(scroll) = self.imp().agenda_scroll.borrow().as_ref() {
+                scroll.set_visible(!is_empty);
+            }
+            if let Some(empty_box) = self
+                .imp()
+                .agenda_empty_box
+                .borrow()
+                .as_ref()
+                .and_then(|w| w.downcast_ref::<gtk::Box>())
+            {
+                empty_box.set_visible(is_empty);
+            }
+            if let Some(canvas) = self.imp().agenda_canvas.borrow().as_ref() {
+                canvas.queue_draw();
+            }
+            return;
         }
 
         let events_by_date = self.events_by_date(visible_range);
@@ -7869,6 +8096,7 @@ impl CalendarPage {
         }
 
         self.imp().agenda_items.replace(items);
+        self.imp().agenda_rendered_key.replace(Some(key));
 
         if let Some(vadj) = self.imp().agenda_vadjustment.borrow().as_ref() {
             vadj.set_upper(total_h.max(1) as f64);
@@ -8960,52 +9188,58 @@ impl CalendarPage {
         let query = self.imp().calendar_search_query.borrow().clone();
         let category = self.imp().calendar_category_filter.borrow().clone();
         let hidden_sources = self.imp().hidden_calendar_sources.borrow().clone();
+        let hidden_count = hidden_sources.len();
+        let revision = self.imp().calendar_revision.get();
+        let key = (year, revision, query.clone(), category.clone(), hidden_count);
 
-        let markers: BTreeMap<NaiveDate, usize> = if let Some(index) = self
-            .imp()
-            .calendar_snapshot_index
-            .borrow()
-            .as_ref()
-        {
-            indexed_event_day_markers(
-                index,
-                year_range,
-                &query,
-                category.as_deref(),
-                &hidden_sources,
-            )
-        } else {
-            let mut day_identities: BTreeMap<NaiveDate, (BTreeSet<CalendarEventIdentity>, usize)> = BTreeMap::new();
-            if let Some(records) = self.imp().event_records.borrow().as_ref() {
-                for event in records.borrow().iter() {
-                    if !event_matches_calendar_filter(event, &query, category.as_deref(), &hidden_sources) {
-                        continue;
-                    }
-                    let identity = CalendarEventIdentity::from_event(event);
-                    for date in event_occurrence_dates_in_range(event, year_range) {
-                        let (seen, no_id_count) = day_identities.entry(date).or_default();
-                        if let Some(ref id) = identity {
-                            seen.insert(id.clone());
-                        } else {
-                            *no_id_count += 1;
+        if self.imp().year_rendered_key.borrow().as_ref() != Some(&key) {
+            let markers: BTreeMap<NaiveDate, usize> = if let Some(index) = self
+                .imp()
+                .calendar_snapshot_index
+                .borrow()
+                .as_ref()
+            {
+                indexed_event_day_markers(
+                    index,
+                    year_range,
+                    &query,
+                    category.as_deref(),
+                    &hidden_sources,
+                )
+            } else {
+                let mut day_identities: BTreeMap<NaiveDate, (BTreeSet<CalendarEventIdentity>, usize)> = BTreeMap::new();
+                if let Some(records) = self.imp().event_records.borrow().as_ref() {
+                    for event in records.borrow().iter() {
+                        if !event_matches_calendar_filter(event, &query, category.as_deref(), &hidden_sources) {
+                            continue;
+                        }
+                        let identity = CalendarEventIdentity::from_event(event);
+                        for date in event_occurrence_dates_in_range(event, year_range) {
+                            let (seen, no_id_count) = day_identities.entry(date).or_default();
+                            if let Some(ref id) = identity {
+                                seen.insert(id.clone());
+                            } else {
+                                *no_id_count += 1;
+                            }
                         }
                     }
                 }
-            }
-            day_identities
-                .into_iter()
-                .filter_map(|(date, (seen, no_id_count))| {
-                    let count = seen.len() + no_id_count;
-                    if count > 0 {
-                        Some((date, count))
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        };
+                day_identities
+                    .into_iter()
+                    .filter_map(|(date, (seen, no_id_count))| {
+                        let count = seen.len() + no_id_count;
+                        if count > 0 {
+                            Some((date, count))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            };
 
-        *self.imp().year_markers.borrow_mut() = markers;
+            *self.imp().year_markers.borrow_mut() = markers;
+            self.imp().year_rendered_key.replace(Some(key));
+        }
 
         // Update nav strip if year changed
         if self.imp().year_rendered_year.get() != Some(year) {
@@ -9352,6 +9586,22 @@ impl CalendarPage {
 
     fn refresh_month_grid(&self) {
         let viewport = self.current_calendar_viewport();
+        let query = self.imp().calendar_search_query.borrow().clone();
+        let category = self.imp().calendar_category_filter.borrow().clone();
+        let hidden_count = self.imp().hidden_calendar_sources.borrow().len();
+        let revision = self.imp().calendar_revision.get();
+        let is_dark = adw::StyleManager::default().is_dark();
+        let key = (viewport.anchor_date, revision, query, category, hidden_count, is_dark);
+
+        if self.imp().month_rendered_key.borrow().as_ref() == Some(&key)
+            && self.imp().month_layout.borrow().is_some()
+        {
+            if let Some(canvas) = self.imp().month_canvas.borrow().as_ref() {
+                canvas.queue_draw();
+            }
+            return;
+        }
+
         let events_by_date = self.events_by_date(viewport.visible_range);
         let today = Local::now().date_naive();
         let show_week_numbers = AppSettings::try_new()
@@ -9359,7 +9609,6 @@ impl CalendarPage {
             .unwrap_or(false);
         let compress_weekend = configured_compress_weekend();
         let workdays: HashSet<Weekday> = configured_workdays().into_iter().collect();
-        let is_dark = adw::StyleManager::default().is_dark();
 
         let weekday_names_full = configured_weekday_names_full();
         let weekday_names_short = configured_weekday_names_short();
@@ -9378,6 +9627,7 @@ impl CalendarPage {
         );
 
         self.imp().month_layout.replace(Some(Rc::new(layout)));
+        self.imp().month_rendered_key.replace(Some(key));
         if let Some(canvas) = self.imp().month_canvas.borrow().as_ref() {
             canvas.queue_draw();
         }
@@ -9801,6 +10051,7 @@ pub(crate) enum MonthCellTrackItem {
         event: CalendarEventRecord,
         span: MonthBarSpan,
         show_title: bool,
+        occurrence_date: NaiveDate,
     },
     Spacer,
 }
@@ -9818,7 +10069,7 @@ pub(crate) fn compute_week_cell_layouts(
     assert_eq!(week_dates.len(), 7);
 
     // 1. Gather all unique multi-day all-day events in this week
-    let mut multi_day_events: Vec<CalendarEventRecord> = Vec::new();
+    let mut multi_day_events: Vec<(CalendarEventRecord, CalendarDateRange)> = Vec::new();
     let mut seen_multi_uids = std::collections::HashSet::new();
 
     for date in week_dates.iter() {
@@ -9829,7 +10080,7 @@ pub(crate) fn compute_week_cell_layouts(
                         if range.len_days() > 1 {
                             let key = (ev.uid.clone(), ev.start.clone());
                             if seen_multi_uids.insert(key) {
-                                multi_day_events.push(ev.clone());
+                                multi_day_events.push((ev.clone(), range));
                             }
                         }
                     }
@@ -9840,9 +10091,7 @@ pub(crate) fn compute_week_cell_layouts(
 
     // Sort multi-day events:
     // Earlier start first, longer duration first, then summary/uid for stability
-    multi_day_events.sort_by(|a, b| {
-        let r_a = event_display_range(a).unwrap();
-        let r_b = event_display_range(b).unwrap();
+    multi_day_events.sort_by(|(a, r_a), (b, r_b)| {
         r_a.start.cmp(&r_b.start)
             .then_with(|| r_b.len_days().cmp(&r_a.len_days()))
             .then_with(|| a.summary.cmp(&b.summary))
@@ -9852,8 +10101,8 @@ pub(crate) fn compute_week_cell_layouts(
     // 2. Track matrix: each row is [Option<MonthCellTrackItem>; 7]
     let mut tracks: Vec<[Option<MonthCellTrackItem>; 7]> = Vec::new();
 
-    for ev in &multi_day_events {
-        let range = event_display_range(ev).unwrap();
+    for (ev, range) in &multi_day_events {
+        let range = *range;
         let mut cols = Vec::new();
         for (col, date) in week_dates.iter().enumerate() {
             if range.contains(*date) {
@@ -9896,6 +10145,7 @@ pub(crate) fn compute_week_cell_layouts(
                 event: ev.clone(),
                 span,
                 show_title,
+                occurrence_date: range.start,
             });
         }
     }
@@ -9904,12 +10154,8 @@ pub(crate) fn compute_week_cell_layouts(
     for (col, date) in week_dates.iter().enumerate() {
         if let Some(events) = events_by_date.get(date) {
             for ev in events {
-                if ev.all_day {
-                    if let Some(range) = event_display_range(ev) {
-                        if range.len_days() > 1 {
-                            continue;
-                        }
-                    }
+                if ev.all_day && seen_multi_uids.contains(&(ev.uid.clone(), ev.start.clone())) {
+                    continue;
                 }
                 let mut target_track = 0;
                 loop {
@@ -9926,6 +10172,7 @@ pub(crate) fn compute_week_cell_layouts(
                     event: ev.clone(),
                     span: MonthBarSpan::None,
                     show_title: true,
+                    occurrence_date: *date,
                 });
             }
         }
@@ -10470,6 +10717,7 @@ pub(crate) struct PreparedMonthEventBar {
     pub(crate) hov_hex: String,
     pub(crate) fg_hex: String,
     pub(crate) color_hex: String,
+    pub(crate) occurrence_date: NaiveDate,
 }
 
 #[derive(Clone, Debug)]
@@ -10506,7 +10754,11 @@ pub(crate) enum MonthCanvasHit {
     Header { col: usize },
     KwHeader,
     KwRow { row: usize },
-    Event { event: CalendarEventRecord, date: NaiveDate },
+    Event {
+        event: CalendarEventRecord,
+        date: NaiveDate,
+        occurrence_date: NaiveDate,
+    },
     Overflow { date: NaiveDate },
     DayCell { date: NaiveDate },
 }
@@ -10546,13 +10798,14 @@ pub(crate) fn prepare_month_layout(
         for t in 0..max_events_per_cell {
             let mut col = 0;
             while col < 7 {
-                if let Some(MonthCellTrackItem::Event { event, span, .. }) = layouts[col].visible_items.get(t) {
+                if let Some(MonthCellTrackItem::Event { event, span, occurrence_date, .. }) = layouts[col].visible_items.get(t) {
                     let ev_uid = event.uid.clone();
                     let ev_start = event.start.clone();
+                    let occ_date = *occurrence_date;
                     let mut end_col = col;
                     while end_col + 1 < 7 {
-                        if let Some(MonthCellTrackItem::Event { event: next_ev, .. }) = layouts[end_col + 1].visible_items.get(t) {
-                            if next_ev.uid == ev_uid && next_ev.start == ev_start {
+                        if let Some(MonthCellTrackItem::Event { event: next_ev, occurrence_date: next_occ, .. }) = layouts[end_col + 1].visible_items.get(t) {
+                            if next_ev.uid == ev_uid && next_ev.start == ev_start && *next_occ == occ_date {
                                 end_col += 1;
                                 continue;
                             }
@@ -10575,8 +10828,12 @@ pub(crate) fn prepare_month_layout(
                     let (bg_hex, hov_hex, _, fg_hex) = pastel_colors_for_hex(&color_hex, is_dark);
 
                     let time_str = if !event.all_day {
-                        let (start_min, _, _) = event_occurrence_times_for_date(event, week_dates[col], 30);
-                        Some(format_clock_minutes(start_min))
+                        if let Some(s) = quick_time_str(&event.start) {
+                            Some(s)
+                        } else {
+                            let (start_min, _, _) = event_occurrence_times_for_date(event, week_dates[col], 30);
+                            Some(format_clock_minutes(start_min))
+                        }
                     } else {
                         None
                     };
@@ -10594,6 +10851,7 @@ pub(crate) fn prepare_month_layout(
                         hov_hex,
                         fg_hex,
                         color_hex,
+                        occurrence_date: occ_date,
                     });
 
                     col = end_col + 1;
@@ -10697,6 +10955,7 @@ pub(crate) fn hit_test_month_canvas(
                 return Some(MonthCanvasHit::Event {
                     event: bar.event.clone(),
                     date,
+                    occurrence_date: bar.occurrence_date,
                 });
             }
         }
@@ -10745,7 +11004,7 @@ pub(crate) fn draw_month_canvas(
     layout: &PreparedMonthLayout,
     selected_time_slot: Option<SelectedTimeSlot>,
     drag_selection: Option<MonthDragSelection>,
-    hovered_event: Option<&CalendarEventIdentity>,
+    hovered_target: Option<&MonthHoverTarget>,
     is_dark: bool,
 ) {
     let header_h = 28.0;
@@ -11030,8 +11289,9 @@ pub(crate) fn draw_month_canvas(
             let bar_x = kw_w + bar.start_col as f64 * col_w + 3.0;
             let bar_w = (bar.end_col - bar.start_col + 1) as f64 * col_w - 6.0;
             let bar_y = cell_y + day_header_h + bar.track as f64 * chip_step;
-            let is_hovered = hovered_event
-                .map(|h| h.uid == bar.event.uid)
+            let is_hovered = hovered_target
+                .as_ref()
+                .map(|h| h.uid == bar.event.uid && h.occurrence_date == bar.occurrence_date)
                 .unwrap_or(false);
 
             if bar.all_day {
@@ -11575,25 +11835,34 @@ pub(crate) fn build_prepared_agenda_items(
     let mut current_y = 0.0;
     let header_height = 36.0;
     let row_height = 46.0;
+    let is_12h = is_12h_clock();
 
     for date in visible_range.dates() {
-        let mut events = events_by_date.get(&date).cloned().unwrap_or_default();
-        events.sort_by(|a, b| compare_day_events_order(a, b, date));
-        if !events.is_empty() {
-            let text = format!("{} · KW {:02}", format_date(date), date.iso_week().week());
-            let is_today = date == today;
-            items.push(PreparedAgendaItem::DateHeader {
-                date,
-                text,
-                is_today,
-                y: current_y,
-                height: header_height,
-            });
-            current_y += header_height;
+        let Some(events) = events_by_date.get(&date) else {
+            continue;
+        };
+        if events.is_empty() {
+            continue;
+        }
+        let text = format!("{} · KW {:02}", format_date(date), date.iso_week().week());
+        let is_today = date == today;
+        items.push(PreparedAgendaItem::DateHeader {
+            date,
+            text,
+            is_today,
+            y: current_y,
+            height: header_height,
+        });
+        current_y += header_height;
 
-            for event in events {
-                let identity = CalendarEventIdentity::from_event(&event);
-                let time_str = event_time_text(&event);
+        let mut sorted_events: Vec<&CalendarEventRecord> = events.iter().collect();
+        if sorted_events.len() > 1 {
+            sorted_events.sort_by(|a, b| compare_day_events_order(a, b, date));
+        }
+
+        for event in sorted_events {
+                let identity = CalendarEventIdentity::from_event(event);
+                let time_str = event_time_text_with_12h(event, is_12h);
                 let title = if event.summary.trim().is_empty() {
                     "(Ohne Titel)".to_string()
                 } else {
@@ -11608,30 +11877,33 @@ pub(crate) fn build_prepared_agenda_items(
                 } else {
                     String::new()
                 };
-                let category = category_names_from_ical_component(&event.component)
-                    .into_iter()
-                    .next();
+                let category = if event.component.contains("CATEGORIES") {
+                    category_names_from_ical_component(&event.component)
+                        .into_iter()
+                        .next()
+                } else {
+                    None
+                };
                 let color_hex = event_color_for_record(&event);
-                let color = if let Ok(c) = gdk::RGBA::parse(&color_hex) {
-                    (c.red() as f64, c.green() as f64, c.blue() as f64)
+                let color = if let Some((r, g, b)) = parse_hex_color(&color_hex) {
+                    (r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0)
                 } else {
                     (0.21, 0.52, 0.89)
                 };
 
-                items.push(PreparedAgendaItem::EventRow {
-                    date,
-                    record: event,
-                    identity,
-                    color,
-                    time_str,
-                    title,
-                    sub,
-                    category,
-                    y: current_y,
-                    height: row_height,
-                });
-                current_y += row_height;
-            }
+            items.push(PreparedAgendaItem::EventRow {
+                date,
+                record: event.clone(),
+                identity,
+                color,
+                time_str,
+                title,
+                sub,
+                category,
+                y: current_y,
+                height: row_height,
+            });
+            current_y += row_height;
         }
     }
 
@@ -13203,11 +13475,13 @@ fn normalized_workday_range(configured_start: u32, configured_end: u32) -> (u32,
     (start, end)
 }
 
-fn format_clock_minutes(minutes: u32) -> String {
+fn is_12h_clock() -> bool {
+    AppSettings::try_new().is_some_and(|settings| settings.time_format() == "12h")
+}
+
+fn format_clock_minutes_with_12h(minutes: u32, use_twelve_hour_clock: bool) -> String {
     let hour = (minutes / 60) % 24;
     let minute = minutes % 60;
-    let use_twelve_hour_clock =
-        AppSettings::try_new().is_some_and(|settings| settings.time_format() == "12h");
     if use_twelve_hour_clock {
         let suffix = if hour < 12 { "AM" } else { "PM" };
         let display_hour = match hour % 12 {
@@ -13218,6 +13492,10 @@ fn format_clock_minutes(minutes: u32) -> String {
     } else {
         format!("{hour:02}:{minute:02}")
     }
+}
+
+fn format_clock_minutes(minutes: u32) -> String {
+    format_clock_minutes_with_12h(minutes, is_12h_clock())
 }
 
 fn shift_month(date: NaiveDate, direction: i32) -> NaiveDate {
@@ -13746,36 +14024,44 @@ pub(crate) fn event_occurrence_times_for_date(
     };
 
     let start_date = base_start.date();
-    let is_recurring = ical_property(&event.component, "RRULE").is_some()
-        || ical_property(&event.component, "RDATE").is_some();
+    let is_recurring = (event.component.contains("RRULE") || event.component.contains("RDATE"))
+        && (ical_property(&event.component, "RRULE").is_some()
+            || ical_property(&event.component, "RDATE").is_some());
 
     let (occ_start_dt, occ_end_dt) = if is_recurring {
-        let span_days = (base_duration.num_days() + 1).max(1);
-        let excluded_dates = exdate_values(event);
-        let rdate_values = property_local_dates(&event.component, "RDATE");
-        let recurrence_rule =
-            ical_property(&event.component, "RRULE").and_then(|raw| parse_recurrence_rule(&raw));
+        let is_multi_day = base_start.date() != (base_start + base_duration).date();
+        if is_multi_day {
+            let span_days = (base_duration.num_days() + 1).max(1);
+            let excluded_dates = exdate_values(event);
+            let rdate_values = property_local_dates(&event.component, "RDATE");
+            let recurrence_rule =
+                ical_property(&event.component, "RRULE").and_then(|raw| parse_recurrence_rule(&raw));
 
-        let mut matched_start = None;
-        for offset in 0..span_days {
-            if let Some(candidate) = day.checked_sub_signed(Duration::days(offset)) {
-                if event_occurrence_start_is_on(
-                    candidate,
-                    start_date,
-                    &excluded_dates,
-                    &rdate_values,
-                    recurrence_rule.as_ref(),
-                ) {
-                    matched_start = Some(candidate);
-                    break;
+            let mut matched_start = None;
+            for offset in 0..span_days {
+                if let Some(candidate) = day.checked_sub_signed(Duration::days(offset)) {
+                    if event_occurrence_start_is_on(
+                        candidate,
+                        start_date,
+                        &excluded_dates,
+                        &rdate_values,
+                        recurrence_rule.as_ref(),
+                    ) {
+                        matched_start = Some(candidate);
+                        break;
+                    }
                 }
             }
-        }
 
-        let occ_date = matched_start.unwrap_or(day);
-        let occ_start = occ_date.and_time(base_start.time());
-        let occ_end = occ_start + base_duration;
-        (occ_start, occ_end)
+            let occ_date = matched_start.unwrap_or(day);
+            let occ_start = occ_date.and_time(base_start.time());
+            let occ_end = occ_start + base_duration;
+            (occ_start, occ_end)
+        } else {
+            let occ_start = day.and_time(base_start.time());
+            let occ_end = occ_start + base_duration;
+            (occ_start, occ_end)
+        }
     } else {
         (base_start, base_start + base_duration)
     };
@@ -14977,14 +15263,27 @@ fn open_event_editor_for_widget<W: IsA<gtk::Widget>>(widget: &W, event: &Calenda
 }
 
 fn event_time_text(event: &CalendarEventRecord) -> String {
+    event_time_text_with_12h(event, is_12h_clock())
+}
+
+fn event_time_text_with_12h(event: &CalendarEventRecord, use_12h: bool) -> String {
     if event.all_day || event.start.len() <= 10 {
         return "Ganztägig".to_string();
+    }
+    if !use_12h {
+        if let (Some(start_str), Some(end_str)) = (quick_time_str(&event.start), quick_time_str(&event.end)) {
+            if start_str != end_str {
+                return format!("{start_str}–{end_str}");
+            } else {
+                return start_str;
+            }
+        }
     }
     let start_dt = event_start_datetime(event);
     let end_dt = event_end_datetime(event);
     if let (Some(start), Some(end)) = (start_dt, end_dt) {
-        let start_str = format_clock_minutes(start.time().hour() * 60 + start.time().minute());
-        let end_str = format_clock_minutes(end.time().hour() * 60 + end.time().minute());
+        let start_str = format_clock_minutes_with_12h(start.time().hour() * 60 + start.time().minute(), use_12h);
+        let end_str = format_clock_minutes_with_12h(end.time().hour() * 60 + end.time().minute(), use_12h);
         if start != end {
             return format!("{start_str}–{end_str}");
         } else {
@@ -15090,24 +15389,106 @@ fn event_start_date(event: &CalendarEventRecord) -> Option<NaiveDate> {
 }
 
 pub(crate) fn event_start_datetime(event: &CalendarEventRecord) -> Option<NaiveDateTime> {
-    property_local_datetime(&event.component, "DTSTART", event.all_day)
-        .or_else(|| displayed_event_datetime(&event.start))
+    displayed_event_datetime(&event.start)
+        .or_else(|| {
+            if event.component.contains("DTSTART") {
+                property_local_datetime(&event.component, "DTSTART", event.all_day)
+            } else {
+                None
+            }
+        })
 }
 
 pub(crate) fn event_end_datetime(event: &CalendarEventRecord) -> Option<NaiveDateTime> {
-    property_local_datetime(&event.component, "DTEND", event.all_day)
+    displayed_event_datetime(&event.end)
+        .or_else(|| {
+            if event.component.contains("DTEND") {
+                property_local_datetime(&event.component, "DTEND", event.all_day)
+            } else {
+                None
+            }
+        })
         .or_else(|| {
             let start = event_start_datetime(event)?;
             let duration = property_local_duration(&event.component)?;
             Some(start + duration)
         })
-        .or_else(|| displayed_event_datetime(&event.end))
+}
+
+#[inline]
+fn quick_time_str(start: &str) -> Option<String> {
+    let bytes = start.as_bytes();
+    if bytes.len() >= 16
+        && (bytes[10] == b' ' || bytes[10] == b'T')
+        && bytes[11].is_ascii_digit()
+        && bytes[12].is_ascii_digit()
+        && bytes[13] == b':'
+        && bytes[14].is_ascii_digit()
+        && bytes[15].is_ascii_digit()
+    {
+        Some(start[11..16].to_string())
+    } else {
+        None
+    }
+}
+
+#[inline]
+fn parse_2_digits(b: &[u8]) -> Option<u32> {
+    if b.len() == 2 && b[0].is_ascii_digit() && b[1].is_ascii_digit() {
+        Some((b[0] - b'0') as u32 * 10 + (b[1] - b'0') as u32)
+    } else {
+        None
+    }
+}
+
+#[inline]
+fn parse_4_digits(b: &[u8]) -> Option<i32> {
+    if b.len() == 4
+        && b[0].is_ascii_digit()
+        && b[1].is_ascii_digit()
+        && b[2].is_ascii_digit()
+        && b[3].is_ascii_digit()
+    {
+        Some(
+            (b[0] - b'0') as i32 * 1000
+                + (b[1] - b'0') as i32 * 100
+                + (b[2] - b'0') as i32 * 10
+                + (b[3] - b'0') as i32,
+        )
+    } else {
+        None
+    }
 }
 
 fn displayed_event_datetime(value: &str) -> Option<NaiveDateTime> {
-    if let Some(value) = value.get(..16) {
-        if let Ok(datetime) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M") {
-            return Some(datetime);
+    let bytes = value.as_bytes();
+    if bytes.len() >= 10 {
+        if let (Some(y), Some(m), Some(d)) = (
+            parse_4_digits(&bytes[0..4]),
+            parse_2_digits(&bytes[5..7]),
+            parse_2_digits(&bytes[8..10]),
+        ) {
+            if bytes[4] == b'-' && bytes[7] == b'-' {
+                if let Some(date) = NaiveDate::from_ymd_opt(y, m, d) {
+                    if bytes.len() >= 16
+                        && (bytes[10] == b' ' || bytes[10] == b'T')
+                        && bytes[13] == b':'
+                    {
+                        if let (Some(h), Some(min)) = (
+                            parse_2_digits(&bytes[11..13]),
+                            parse_2_digits(&bytes[14..16]),
+                        ) {
+                            let s = if bytes.len() >= 19 && bytes[16] == b':' {
+                                parse_2_digits(&bytes[17..19]).unwrap_or(0)
+                            } else {
+                                0
+                            };
+                            return date.and_hms_opt(h, min, s);
+                        }
+                    }
+                    return date.and_hms_opt(0, 0, 0);
+                }
+            }
         }
     }
     NaiveDate::parse_from_str(value.get(..10)?, "%Y-%m-%d")
@@ -15144,6 +15525,9 @@ fn record_display_range(event: &CalendarEventRecord) -> Option<CalendarDateRange
 }
 
 fn event_display_range(event: &CalendarEventRecord) -> Option<CalendarDateRange> {
+    if let Some(range) = record_display_range(event) {
+        return Some(range);
+    }
     let start = event_start_date(event)?;
     if event.all_day {
         let end = property_local_date(&event.component, "DTEND", true)
@@ -15183,6 +15567,20 @@ pub(crate) fn event_occurrence_dates_in_range(
     let Some(initial_range) = event_display_range(event) else {
         return Vec::new();
     };
+    let recurring = (event.component.contains("RRULE") || event.component.contains("RDATE"))
+        && (ical_property(&event.component, "RRULE").is_some()
+            || ical_property(&event.component, "RDATE").is_some());
+
+    if !recurring {
+        if !range.intersects(initial_range) {
+            return Vec::new();
+        }
+        return initial_range
+            .dates()
+            .filter(|date| range.contains(*date))
+            .collect();
+    }
+
     let initial_start = initial_range.start;
     let span_days = initial_range.len_days().saturating_sub(1);
     let excluded_dates = exdate_values(event);
@@ -15206,19 +15604,9 @@ pub(crate) fn event_occurrence_dates_in_range(
             .checked_sub_signed(Duration::days(span_days))
             .unwrap_or(range.start)
             .max(initial_start);
-        let mut cursor = from;
-        while let Some(occurrence) =
-            next_recurrence_date(rule, initial_start, cursor, &excluded_dates)
-        {
-            if occurrence >= range.end {
-                break;
-            }
-            occurrence_starts.insert(occurrence);
-            let Some(next) = occurrence.succ_opt() else {
-                break;
-            };
-            cursor = next;
-        }
+        let recurring_starts =
+            recurrence_occurrences_in_range(rule, initial_start, from, range.end, &excluded_dates);
+        occurrence_starts.extend(recurring_starts);
     }
 
     let mut dates = BTreeSet::new();
@@ -15574,7 +15962,12 @@ pub(crate) fn compare_day_events_order(
                 l_start.cmp(&r_start).then_with(|| l_end.cmp(&r_end))
             }
         })
-        .then_with(|| left.summary.to_lowercase().cmp(&right.summary.to_lowercase()))
+        .then_with(|| {
+            left.summary
+                .chars()
+                .flat_map(char::to_lowercase)
+                .cmp(right.summary.chars().flat_map(char::to_lowercase))
+        })
         .then_with(|| left.source_uid.cmp(&right.source_uid))
         .then_with(|| left.uid.cmp(&right.uid))
 }
@@ -15679,27 +16072,108 @@ fn indexed_events_by_date(
     category_filter: Option<&str>,
     hidden_sources: &HashSet<String>,
 ) -> BTreeMap<NaiveDate, Vec<CalendarEventRecord>> {
-    let mut grouped = BTreeMap::<NaiveDate, Vec<CalendarEventRecord>>::new();
-    for event_index in index.candidate_event_indices(range) {
-        let Some(event) = index.snapshot.events.get(event_index) else {
-            continue;
-        };
-        if !event_matches_calendar_filter(event, search_query, category_filter, hidden_sources) {
-            continue;
-        }
-        for date in event_occurrence_dates_in_range(event, range) {
-            grouped.entry(date).or_default().push(event.clone());
+    let mut day_indices: BTreeMap<NaiveDate, Vec<usize>> = BTreeMap::new();
+
+    // 1. Direct date bucket lookup for non-recurring events (O(1) per date)
+    for date in range.dates() {
+        if let Some(bucket) = index.date_buckets.get(&date) {
+            for &idx in bucket {
+                let event = &index.snapshot.events[idx];
+                if event_matches_calendar_filter(event, search_query, category_filter, hidden_sources) {
+                    day_indices.entry(date).or_default().push(idx);
+                }
+            }
         }
     }
 
-    for (date, events) in grouped.iter_mut() {
-        events.sort_by(|a, b| compare_day_events_order(a, b, *date));
-        let mut seen = BTreeSet::new();
-        events.retain(|event| {
-            CalendarEventIdentity::from_event(event)
-                .map(|identity| seen.insert(identity))
-                .unwrap_or(true)
+    // 2. Expand recurring events in range
+    for &idx in &index.recurring_events {
+        let event = &index.snapshot.events[idx];
+        if !event_matches_calendar_filter(event, search_query, category_filter, hidden_sources) {
+            continue;
+        }
+        for date in index.recurring_occurrences_in_range(idx, range) {
+            day_indices.entry(date).or_default().push(idx);
+        }
+    }
+
+    // 3. Long events intersecting range
+    for &(idx, long_range) in &index.long_events {
+        if !long_range.intersects(range) {
+            continue;
+        }
+        let event = &index.snapshot.events[idx];
+        if !event_matches_calendar_filter(event, search_query, category_filter, hidden_sources) {
+            continue;
+        }
+        for date in long_range.dates() {
+            if range.contains(date) {
+                day_indices.entry(date).or_default().push(idx);
+            }
+        }
+    }
+
+    // 4. Sort each day and deduplicate, then materialize CalendarEventRecords
+    let mut grouped = BTreeMap::new();
+    for (date, indices) in day_indices {
+        struct DayEventSortItem {
+            idx: usize,
+            all_day: bool,
+            start_min: u32,
+            end_min: u32,
+        }
+
+        let mut event_items: Vec<DayEventSortItem> = indices
+            .iter()
+            .map(|&idx| {
+                let meta = &index.metas[idx];
+                if meta.all_day {
+                    DayEventSortItem { idx, all_day: true, start_min: 0, end_min: 1440 }
+                } else if meta.is_single_day {
+                    DayEventSortItem { idx, all_day: false, start_min: meta.start_min as u32, end_min: meta.end_min as u32 }
+                } else {
+                    let ev = &index.snapshot.events[idx];
+                    let (start_min, end_min, _) = event_occurrence_times_for_date(ev, date, 30);
+                    DayEventSortItem { idx, all_day: false, start_min, end_min }
+                }
+            })
+            .collect();
+
+        event_items.sort_by(|a, b| {
+            (!a.all_day).cmp(&(!b.all_day))
+                .then_with(|| {
+                    if a.all_day && b.all_day {
+                        std::cmp::Ordering::Equal
+                    } else {
+                        a.start_min.cmp(&b.start_min).then_with(|| a.end_min.cmp(&b.end_min))
+                    }
+                })
+                .then_with(|| {
+                    index.snapshot.events[a.idx].summary
+                        .chars()
+                        .flat_map(char::to_lowercase)
+                        .cmp(index.snapshot.events[b.idx].summary.chars().flat_map(char::to_lowercase))
+                })
+                .then_with(|| index.snapshot.events[a.idx].source_uid.cmp(&index.snapshot.events[b.idx].source_uid))
+                .then_with(|| index.snapshot.events[a.idx].uid.cmp(&index.snapshot.events[b.idx].uid))
+                .then_with(|| a.idx.cmp(&b.idx))
         });
+
+        let mut seen = BTreeSet::new();
+        let mut events = Vec::with_capacity(event_items.len());
+        for item in event_items {
+            let meta = &index.metas[item.idx];
+            let should_insert = match &meta.identity {
+                Some(id) => seen.insert(id),
+                None => true,
+            };
+            if should_insert {
+                events.push(index.snapshot.events[item.idx].clone());
+            }
+        }
+        if !events.is_empty() {
+            grouped.insert(date, events);
+        }
     }
     grouped
 }
@@ -15711,24 +16185,63 @@ fn indexed_event_day_markers(
     category_filter: Option<&str>,
     hidden_sources: &HashSet<String>,
 ) -> BTreeMap<NaiveDate, usize> {
-    let mut day_identities: BTreeMap<NaiveDate, (BTreeSet<CalendarEventIdentity>, usize)> = BTreeMap::new();
-    for event_index in index.candidate_event_indices(range) {
-        let Some(event) = index.snapshot.events.get(event_index) else {
-            continue;
-        };
+    let mut day_identities: BTreeMap<NaiveDate, (BTreeSet<&CalendarEventIdentity>, usize)> = BTreeMap::new();
+
+    // 1. Non-recurring events from date_buckets
+    for date in range.dates() {
+        if let Some(bucket) = index.date_buckets.get(&date) {
+            for &idx in bucket {
+                let event = &index.snapshot.events[idx];
+                if !event_matches_calendar_filter(event, search_query, category_filter, hidden_sources) {
+                    continue;
+                }
+                let (seen, no_id_count) = day_identities.entry(date).or_default();
+                if let Some(ref id) = index.metas[idx].identity {
+                    seen.insert(id);
+                } else {
+                    *no_id_count += 1;
+                }
+            }
+        }
+    }
+
+    // 2. Recurring events
+    for &idx in &index.recurring_events {
+        let event = &index.snapshot.events[idx];
         if !event_matches_calendar_filter(event, search_query, category_filter, hidden_sources) {
             continue;
         }
-        let identity = CalendarEventIdentity::from_event(event);
-        for date in event_occurrence_dates_in_range(event, range) {
+        for date in index.recurring_occurrences_in_range(idx, range) {
             let (seen, no_id_count) = day_identities.entry(date).or_default();
-            if let Some(ref id) = identity {
-                seen.insert(id.clone());
+            if let Some(ref id) = index.metas[idx].identity {
+                seen.insert(id);
             } else {
                 *no_id_count += 1;
             }
         }
     }
+
+    // 3. Long events
+    for &(idx, long_range) in &index.long_events {
+        if !long_range.intersects(range) {
+            continue;
+        }
+        let event = &index.snapshot.events[idx];
+        if !event_matches_calendar_filter(event, search_query, category_filter, hidden_sources) {
+            continue;
+        }
+        for date in long_range.dates() {
+            if range.contains(date) {
+                let (seen, no_id_count) = day_identities.entry(date).or_default();
+                if let Some(ref id) = index.metas[idx].identity {
+                    seen.insert(id);
+                } else {
+                    *no_id_count += 1;
+                }
+            }
+        }
+    }
+
     day_identities
         .into_iter()
         .filter_map(|(date, (seen, no_id_count))| {
@@ -19239,7 +19752,7 @@ mod tests {
         // Track 1: single_event (None, show_title: true)
         assert_eq!(layouts[0].visible_items.len(), 2);
         match &layouts[0].visible_items[0] {
-            MonthCellTrackItem::Event { event, span, show_title } => {
+            MonthCellTrackItem::Event { event, span, show_title, .. } => {
                 assert_eq!(event.uid, "ev1");
                 assert_eq!(*span, MonthBarSpan::Start);
                 assert!(*show_title);
@@ -19247,7 +19760,7 @@ mod tests {
             _ => panic!("Expected event1 on track 0"),
         }
         match &layouts[0].visible_items[1] {
-            MonthCellTrackItem::Event { event, span, show_title } => {
+            MonthCellTrackItem::Event { event, span, show_title, .. } => {
                 assert_eq!(event.uid, "ev3");
                 assert_eq!(*span, MonthBarSpan::None);
                 assert!(*show_title);
@@ -19260,7 +19773,7 @@ mod tests {
         // Track 1: event2 (Start, show_title: true)
         assert_eq!(layouts[1].visible_items.len(), 2);
         match &layouts[1].visible_items[0] {
-            MonthCellTrackItem::Event { event, span, show_title } => {
+            MonthCellTrackItem::Event { event, span, show_title, .. } => {
                 assert_eq!(event.uid, "ev1");
                 assert_eq!(*span, MonthBarSpan::Middle);
                 assert!(!*show_title);
@@ -19268,7 +19781,7 @@ mod tests {
             _ => panic!("Expected event1 on track 0"),
         }
         match &layouts[1].visible_items[1] {
-            MonthCellTrackItem::Event { event, span, show_title } => {
+            MonthCellTrackItem::Event { event, span, show_title, .. } => {
                 assert_eq!(event.uid, "ev2");
                 assert_eq!(*span, MonthBarSpan::Start);
                 assert!(*show_title);
@@ -19281,7 +19794,7 @@ mod tests {
         // Track 1: event2 (Middle, show_title: false)
         assert_eq!(layouts[2].visible_items.len(), 2);
         match &layouts[2].visible_items[0] {
-            MonthCellTrackItem::Event { event, span, show_title } => {
+            MonthCellTrackItem::Event { event, span, show_title, .. } => {
                 assert_eq!(event.uid, "ev1");
                 assert_eq!(*span, MonthBarSpan::End);
                 assert!(!*show_title);
@@ -19289,7 +19802,7 @@ mod tests {
             _ => panic!("Expected event1 on track 0"),
         }
         match &layouts[2].visible_items[1] {
-            MonthCellTrackItem::Event { event, span, show_title } => {
+            MonthCellTrackItem::Event { event, span, show_title, .. } => {
                 assert_eq!(event.uid, "ev2");
                 assert_eq!(*span, MonthBarSpan::Middle);
                 assert!(!*show_title);
@@ -19306,7 +19819,7 @@ mod tests {
             _ => panic!("Expected Spacer on track 0 for day 3"),
         }
         match &layouts[3].visible_items[1] {
-            MonthCellTrackItem::Event { event, span, show_title } => {
+            MonthCellTrackItem::Event { event, span, show_title, .. } => {
                 assert_eq!(event.uid, "ev2");
                 assert_eq!(*span, MonthBarSpan::End);
                 assert!(!*show_title);
@@ -19463,9 +19976,10 @@ mod tests {
         // bar_x = 36 + 0 * 100 + 3 = 39. bar_w = 94.
         let hit_ev = hit_test_month_canvas(50.0, 60.0, width, height, &layout);
         match hit_ev {
-            Some(MonthCanvasHit::Event { event, date }) => {
+            Some(MonthCanvasHit::Event { event, date, occurrence_date }) => {
                 assert_eq!(event.uid, "ev-hit");
                 assert_eq!(date, days[0]);
+                assert_eq!(occurrence_date, days[0]);
             }
             other => panic!("Expected Event hit, got {:?}", other),
         }
@@ -20497,6 +21011,133 @@ mod tests {
         assert!(page.imp().year_canvas.borrow().is_some());
         assert!(page.imp().agenda_canvas.borrow().is_some());
         assert!(page.imp().month_canvas.borrow().is_some());
+    }
+
+
+
+    #[test]
+    fn test_month_hover_target_isolates_recurring_event_occurrences() {
+        let anchor = NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();
+        let viewport = CalendarViewport::for_view(CalendarView::Month, anchor, Weekday::Mon);
+        let days: Vec<NaiveDate> = viewport.visible_range.dates().collect();
+        assert!(days.len() >= 42);
+
+        // Daily recurring event: same UID, 10:00 to 11:00 on day 0 and day 1
+        let event_occ_0 = CalendarEventRecord {
+            uid: "recurring-daily-uid".to_string(),
+            source_uid: "s1".to_string(),
+            source_display_name: "Calendar".to_string(),
+            component: "BEGIN:VEVENT\nRRULE:FREQ=DAILY\nEND:VEVENT".to_string(),
+            summary: "Daily Standup".to_string(),
+            start: format!("{}T10:00:00", days[0].format("%Y-%m-%d")),
+            end: format!("{}T11:00:00", days[0].format("%Y-%m-%d")),
+            location: String::new(),
+            description: String::new(),
+            all_day: false,
+        };
+        let event_occ_1 = CalendarEventRecord {
+            uid: "recurring-daily-uid".to_string(),
+            source_uid: "s1".to_string(),
+            source_display_name: "Calendar".to_string(),
+            component: "BEGIN:VEVENT\nRRULE:FREQ=DAILY\nEND:VEVENT".to_string(),
+            summary: "Daily Standup".to_string(),
+            start: format!("{}T10:00:00", days[1].format("%Y-%m-%d")),
+            end: format!("{}T11:00:00", days[1].format("%Y-%m-%d")),
+            location: String::new(),
+            description: String::new(),
+            all_day: false,
+        };
+
+        let mut events_by_date = BTreeMap::new();
+        events_by_date.entry(days[0]).or_insert_with(Vec::new).push(event_occ_0);
+        events_by_date.entry(days[1]).or_insert_with(Vec::new).push(event_occ_1);
+
+        let workdays: HashSet<Weekday> = [Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri].into_iter().collect();
+        let weekday_names_full = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"];
+        let weekday_names_short = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+
+        let layout = prepare_month_layout(
+            &viewport,
+            &events_by_date,
+            days[0],
+            false,
+            &workdays,
+            false,
+            &weekday_names_full,
+            &weekday_names_short,
+            false,
+            6,
+        );
+
+        // Verify that separate occurrences were NOT merged into a continuous bar
+        let event_bars: Vec<_> = layout.weeks[0].event_bars.iter().filter(|b| b.event.uid == "recurring-daily-uid").collect();
+        assert_eq!(event_bars.len(), 2, "Daily recurring occurrences must be distinct bars");
+        assert_eq!(event_bars[0].occurrence_date, days[0]);
+        assert_eq!(event_bars[1].occurrence_date, days[1]);
+        assert_eq!(event_bars[0].start_col, 0);
+        assert_eq!(event_bars[1].start_col, 1);
+
+        let width = 700.0;
+        let height = 628.0;
+
+        // Hit testing occurrence 0 must return occurrence_date = days[0]
+        let hit_0 = hit_test_month_canvas(50.0, 60.0, width, height, &layout);
+        match hit_0 {
+            Some(MonthCanvasHit::Event { ref event, occurrence_date, .. }) => {
+                assert_eq!(event.uid, "recurring-daily-uid");
+                assert_eq!(occurrence_date, days[0]);
+            }
+            other => panic!("Expected MonthCanvasHit::Event for occ 0, got {other:?}"),
+        }
+
+        // Hit testing occurrence 1 must return occurrence_date = days[1]
+        let hit_1 = hit_test_month_canvas(150.0, 60.0, width, height, &layout);
+        match hit_1 {
+            Some(MonthCanvasHit::Event { ref event, occurrence_date, .. }) => {
+                assert_eq!(event.uid, "recurring-daily-uid");
+                assert_eq!(occurrence_date, days[1]);
+            }
+            other => panic!("Expected MonthCanvasHit::Event for occ 1, got {other:?}"),
+        }
+
+        // When hovering occurrence 0, only occurrence 0 evaluates is_hovered == true
+        let hover_target = MonthHoverTarget {
+            uid: "recurring-daily-uid".to_string(),
+            occurrence_date: days[0],
+        };
+        let occ_0_is_hovered = hover_target.uid == event_bars[0].event.uid && hover_target.occurrence_date == event_bars[0].occurrence_date;
+        let occ_1_is_hovered = hover_target.uid == event_bars[1].event.uid && hover_target.occurrence_date == event_bars[1].occurrence_date;
+
+        assert!(occ_0_is_hovered, "Occurrence 0 must be hovered");
+        assert!(!occ_1_is_hovered, "Occurrence 1 must NOT be hovered when hovering occurrence 0");
+    }
+
+    #[test]
+    fn test_event_occurrence_dates_in_range_historical_event_performance() {
+        let historical_event = CalendarEventRecord {
+            uid: "historical-1999".to_string(),
+            source_uid: "s1".to_string(),
+            source_display_name: "Calendar".to_string(),
+            component: "BEGIN:VEVENT\r\nUID:historical-1999\r\nDTSTART;VALUE=DATE:19990101\r\nRRULE:FREQ=DAILY\r\nEND:VEVENT\r\n".to_string(),
+            summary: "Daily since 1999".to_string(),
+            start: "1999-01-01".to_string(),
+            end: "1999-01-01".to_string(),
+            location: String::new(),
+            description: String::new(),
+            all_day: true,
+        };
+
+        let t0 = std::time::Instant::now();
+        let dates = event_occurrence_dates_in_range(&historical_event, calendar_year_range(2026));
+        let elapsed = t0.elapsed();
+
+        assert_eq!(dates.len(), 365);
+        assert_eq!(dates[0], date("2026-01-01"));
+        assert_eq!(dates[364], date("2026-12-31"));
+        assert!(
+            elapsed.as_millis() < 50,
+            "1-year query for 1999 series took too long: {elapsed:?}"
+        );
     }
 }
 
