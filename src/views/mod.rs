@@ -24,6 +24,7 @@ pub use html_editor::EditorContent;
 pub use html_editor::HtmlEditor;
 pub use itip_banner::ItipBanner;
 pub use mail_page::MailPage;
+pub(crate) use mail_page::MailDrillDownLevel;
 pub(crate) use mail_page::set_button_icon_with_fallback;
 #[cfg(target_os = "linux")]
 pub(crate) use mail_viewer::MailPrintDialogResult;

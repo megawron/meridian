@@ -85,11 +85,17 @@ mod imp {
         pub toolbar: RefCell<Option<gtk::Widget>>,
         pub memo_sidebar_toggle: RefCell<Option<gtk::ToggleButton>>,
         pub memo_preview_toggle: RefCell<Option<gtk::ToggleButton>>,
+        pub is_mobile: Cell<bool>,
+        pub is_tablet: Cell<bool>,
+        pub is_detail_shown: Cell<bool>,
     }
 
     impl Default for MemosPage {
         fn default() -> Self {
             Self {
+                is_mobile: Cell::new(false),
+                is_tablet: Cell::new(false),
+                is_detail_shown: Cell::new(false),
                 ecal_monitor_cancel: RefCell::new(None),
                 memo_category_filter: RefCell::new(None),
                 memo_category_model: RefCell::new(None),
@@ -677,6 +683,102 @@ impl MemosPage {
 
     pub fn outer_paned(&self) -> Option<gtk::Paned> {
         self.imp().outer_paned.borrow().clone()
+    }
+
+    pub(crate) fn set_screen_mode(&self, is_mobile: bool, is_tablet: bool) {
+        let imp = self.imp();
+        imp.is_mobile.set(is_mobile);
+        imp.is_tablet.set(is_tablet);
+        self.sync_memos_layout_visibility();
+    }
+
+    pub(crate) fn can_navigate_back(&self) -> bool {
+        let imp = self.imp();
+        imp.is_mobile.get() && imp.is_detail_shown.get()
+    }
+
+    pub(crate) fn navigate_back(&self) -> bool {
+        let imp = self.imp();
+        if imp.is_mobile.get() && imp.is_detail_shown.get() {
+            imp.is_detail_shown.set(false);
+            self.sync_memos_layout_visibility();
+            if let Some(root) = self.root().and_downcast::<crate::window::EvolutionWindow>() {
+                root.sync_back_button();
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn sync_memos_layout_visibility(&self) {
+        let imp = self.imp();
+        let is_mobile = imp.is_mobile.get();
+        let is_tablet = imp.is_tablet.get();
+        let Some(outer_paned) = imp.outer_paned.borrow().clone() else { return; };
+        let Some(preview_paned) = imp.memo_preview_paned.borrow().clone() else { return; };
+
+        let sidebar = outer_paned.start_child();
+        let list_container = preview_paned.start_child();
+        let detail_box = preview_paned.end_child();
+
+        if is_mobile {
+            if let Some(sb) = sidebar.as_ref() {
+                sb.set_visible(false);
+            }
+            if imp.is_detail_shown.get() {
+                if let Some(lc) = list_container.as_ref() {
+                    lc.set_visible(false);
+                }
+                if let Some(db) = detail_box.as_ref() {
+                    db.set_visible(true);
+                }
+            } else {
+                if let Some(lc) = list_container.as_ref() {
+                    lc.set_visible(true);
+                }
+                if let Some(db) = detail_box.as_ref() {
+                    db.set_visible(false);
+                }
+            }
+        } else if is_tablet {
+            if let Some(sb) = sidebar.as_ref() {
+                let sb_vis = AppSettings::try_new()
+                    .map(|s| s.mail_show_sidebar())
+                    .unwrap_or(false);
+                sb.set_visible(sb_vis);
+            }
+            if let Some(lc) = list_container.as_ref() {
+                lc.set_visible(true);
+            }
+            if let Some(db) = detail_box.as_ref() {
+                db.set_visible(true);
+            }
+        } else {
+            if let Some(sb) = sidebar.as_ref() {
+                let sb_vis = AppSettings::try_new()
+                    .map(|s| s.mail_show_sidebar())
+                    .unwrap_or(true);
+                sb.set_visible(sb_vis);
+            }
+            if let Some(lc) = list_container.as_ref() {
+                lc.set_visible(true);
+            }
+            if let Some(db) = detail_box.as_ref() {
+                db.set_visible(true);
+            }
+        }
+
+        if let Some(toolbar) = imp.toolbar.borrow().as_ref() {
+            if is_mobile {
+                toolbar.set_visible(false);
+            } else {
+                let show_tb = AppSettings::try_new()
+                    .map(|s| s.mail_show_toolbar())
+                    .unwrap_or(true);
+                toolbar.set_visible(show_tb);
+            }
+        }
     }
 
     pub fn memo_preview_paned(&self) -> Option<gtk::Paned> {
@@ -2703,8 +2805,10 @@ impl MemosPage {
             let page_weak_for_toolbar = self.downgrade();
             settings.connect_changed(Some("mail-show-toolbar"), move |settings, _| {
                 if let Some(page) = page_weak_for_toolbar.upgrade() {
-                    if let Some(toolbar) = page.imp().toolbar.borrow().as_ref() {
-                        toolbar.set_visible(settings.boolean("mail-show-toolbar"));
+                    if !page.imp().is_mobile.get() {
+                        if let Some(toolbar) = page.imp().toolbar.borrow().as_ref() {
+                            toolbar.set_visible(settings.boolean("mail-show-toolbar"));
+                        }
                     }
                 }
             });
@@ -4195,9 +4299,34 @@ impl MemosPage {
         });
 
         let memo_text_for_activate = memo_text.clone();
+        let page_for_activate = self.downgrade();
         memo_list.connect_row_activated(move |_, _| {
             memo_text_for_activate.grab_focus();
+            if let Some(page) = page_for_activate.upgrade() {
+                if page.imp().is_mobile.get() {
+                    page.imp().is_detail_shown.set(true);
+                    page.sync_memos_layout_visibility();
+                    if let Some(root) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
+                        root.sync_back_button();
+                    }
+                }
+            }
         });
+
+        let click_for_mobile_memo = gtk::GestureClick::new();
+        let page_for_memo_click = self.downgrade();
+        click_for_mobile_memo.connect_released(move |_, _, _, _| {
+            if let Some(page) = page_for_memo_click.upgrade() {
+                if page.imp().is_mobile.get() {
+                    page.imp().is_detail_shown.set(true);
+                    page.sync_memos_layout_visibility();
+                    if let Some(root) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
+                        root.sync_back_button();
+                    }
+                }
+            }
+        });
+        memo_list.add_controller(click_for_mobile_memo);
 
         let memo_list_for_load = memo_list.clone();
         let empty_state_for_load = empty_state.clone();

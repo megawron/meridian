@@ -145,6 +145,9 @@ mod imp {
         pub(super) task_search_bar: RefCell<Option<gtk::SearchBar>>,
         pub new_task_button: RefCell<Option<gtk::Button>>,
         pub search_entry: RefCell<Option<gtk::SearchEntry>>,
+        pub is_mobile: Cell<bool>,
+        pub is_tablet: Cell<bool>,
+        pub is_detail_shown: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -3622,6 +3625,108 @@ impl TasksPage {
         self.imp().outer_paned.borrow().clone()
     }
 
+    pub(crate) fn set_screen_mode(&self, is_mobile: bool, is_tablet: bool) {
+        let imp = self.imp();
+        imp.is_mobile.set(is_mobile);
+        imp.is_tablet.set(is_tablet);
+        self.sync_tasks_layout_visibility();
+    }
+
+    pub(crate) fn can_navigate_back(&self) -> bool {
+        let imp = self.imp();
+        imp.is_mobile.get() && imp.is_detail_shown.get()
+    }
+
+    pub(crate) fn navigate_back(&self) -> bool {
+        let imp = self.imp();
+        if imp.is_mobile.get() && imp.is_detail_shown.get() {
+            imp.is_detail_shown.set(false);
+            self.sync_tasks_layout_visibility();
+            if let Some(root) = self.root().and_downcast::<crate::window::EvolutionWindow>() {
+                root.sync_back_button();
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn sync_tasks_layout_visibility(&self) {
+        let imp = self.imp();
+        let is_mobile = imp.is_mobile.get();
+        let is_tablet = imp.is_tablet.get();
+        let Some(outer_paned) = imp.outer_paned.borrow().clone() else { return; };
+        let Some(preview_paned) = imp.task_preview_paned.borrow().clone() else { return; };
+
+        let sidebar = outer_paned.start_child();
+        let list_container = preview_paned.start_child();
+        let detail_box = preview_paned.end_child();
+
+        if is_mobile {
+            if let Some(sb) = sidebar.as_ref() {
+                sb.set_visible(false);
+            }
+            if imp.is_detail_shown.get() {
+                if let Some(lc) = list_container.as_ref() {
+                    lc.set_visible(false);
+                }
+                if let Some(db) = detail_box.as_ref() {
+                    db.set_visible(true);
+                }
+            } else {
+                if let Some(lc) = list_container.as_ref() {
+                    lc.set_visible(true);
+                }
+                if let Some(db) = detail_box.as_ref() {
+                    db.set_visible(false);
+                }
+            }
+        } else if is_tablet {
+            if let Some(sb) = sidebar.as_ref() {
+                let sb_vis = AppSettings::try_new()
+                    .map(|s| s.mail_show_sidebar())
+                    .unwrap_or(false);
+                sb.set_visible(sb_vis);
+            }
+            if let Some(lc) = list_container.as_ref() {
+                lc.set_visible(true);
+            }
+            if let Some(db) = detail_box.as_ref() {
+                let prev_vis = AppSettings::try_new()
+                    .map(|s| s.task_preview_visible())
+                    .unwrap_or(true);
+                db.set_visible(prev_vis);
+            }
+        } else {
+            if let Some(sb) = sidebar.as_ref() {
+                let sb_vis = AppSettings::try_new()
+                    .map(|s| s.mail_show_sidebar())
+                    .unwrap_or(true);
+                sb.set_visible(sb_vis);
+            }
+            if let Some(lc) = list_container.as_ref() {
+                lc.set_visible(true);
+            }
+            if let Some(db) = detail_box.as_ref() {
+                let prev_vis = AppSettings::try_new()
+                    .map(|s| s.task_preview_visible())
+                    .unwrap_or(true);
+                db.set_visible(prev_vis);
+            }
+        }
+
+        if let Some(toolbar) = imp.toolbar.borrow().as_ref() {
+            if is_mobile {
+                toolbar.set_visible(false);
+            } else {
+                let show_tb = AppSettings::try_new()
+                    .map(|s| s.mail_show_toolbar())
+                    .unwrap_or(true);
+                toolbar.set_visible(show_tb);
+            }
+        }
+    }
+
     pub fn sidebar_toggle(&self) -> Option<gtk::ToggleButton> {
         self.imp().task_sidebar_toggle.borrow().clone()
     }
@@ -5282,10 +5387,19 @@ impl TasksPage {
             if page.imp().task_selection_restoring.get() {
                 return;
             }
+            let selection = task_selection_from_list(list);
+            let has_selection = !selection.is_empty();
             page.imp()
                 .task_selection
-                .replace(task_selection_from_list(list));
+                .replace(selection);
             update_task_selection_controls(&page);
+            if page.imp().is_mobile.get() && has_selection {
+                page.imp().is_detail_shown.set(true);
+                page.sync_tasks_layout_visibility();
+                if let Some(root) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
+                    root.sync_back_button();
+                }
+            }
         });
 
         let page_weak_for_copy = self.downgrade();
@@ -6311,8 +6425,10 @@ impl TasksPage {
             let page_weak_for_toolbar = self.downgrade();
             settings.connect_changed(Some("mail-show-toolbar"), move |settings, _| {
                 if let Some(page) = page_weak_for_toolbar.upgrade() {
-                    if let Some(toolbar) = page.imp().toolbar.borrow().as_ref() {
-                        toolbar.set_visible(settings.boolean("mail-show-toolbar"));
+                    if !page.imp().is_mobile.get() {
+                        if let Some(toolbar) = page.imp().toolbar.borrow().as_ref() {
+                            toolbar.set_visible(settings.boolean("mail-show-toolbar"));
+                        }
                     }
                 }
             });
@@ -6788,6 +6904,13 @@ impl TasksPage {
                     update_task_selection_controls(&page);
                     refresh_task_preview(&page);
                     canvas_clone.queue_draw();
+                    if page.imp().is_mobile.get() {
+                        page.imp().is_detail_shown.set(true);
+                        page.sync_tasks_layout_visibility();
+                        if let Some(root) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
+                            root.sync_back_button();
+                        }
+                    }
                 }
             });
             task_table_canvas.add_controller(canvas_click);
@@ -9580,7 +9703,11 @@ fn refresh_task_preview(page: &TasksPage) {
         })
         .unwrap_or(true);
     if let Some(preview_box) = page.imp().task_preview_box.borrow().as_ref() {
-        preview_box.set_visible(visible);
+        if page.imp().is_mobile.get() {
+            preview_box.set_visible(page.imp().is_detail_shown.get());
+        } else {
+            preview_box.set_visible(visible);
+        }
     }
     let Some(text_view) = page.imp().task_preview_content.borrow().as_ref().cloned() else {
         return;
