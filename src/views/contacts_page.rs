@@ -568,6 +568,7 @@ mod imp {
         pub reload_fn: RefCell<Option<ReloadContactsCallback>>,
         pub contact_preview_paned: RefCell<Option<gtk::Paned>>,
         pub contact_preview_toggle: RefCell<Option<gtk::ToggleButton>>,
+        pub contacts_sidebar_toggle: RefCell<Option<gtk::ToggleButton>>,
         pub collapsed_addressbook_groups: RefCell<HashSet<String>>,
         pub is_syncing_selection: Cell<bool>,
         pub toolbar: RefCell<Option<gtk::Widget>>,
@@ -772,6 +773,64 @@ impl ContactsPage {
         self.imp().contact_preview_paned.borrow().clone()
     }
 
+    pub fn is_preview_visible(&self) -> bool {
+        if let Some(preview_paned) = self.imp().contact_preview_paned.borrow().as_ref() {
+            if let Some(detail_box) = preview_paned.end_child() {
+                return detail_box.is_visible();
+            }
+        }
+        AppSettings::try_new()
+            .map(|s| s.contact_preview_visible())
+            .unwrap_or(true)
+    }
+
+    pub fn set_preview_visible(&self, visible: bool) {
+        if let Some(preview_paned) = self.imp().contact_preview_paned.borrow().as_ref() {
+            if let Some(detail_box) = preview_paned.end_child() {
+                detail_box.set_visible(visible);
+            }
+        }
+        if let Some(toggle) = self.imp().contact_preview_toggle.borrow().as_ref() {
+            if toggle.is_active() != visible {
+                toggle.set_active(visible);
+            }
+        }
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_contact_preview_visible(visible);
+        }
+    }
+
+    pub fn is_sidebar_visible(&self) -> bool {
+        if let Some(paned) = self.imp().outer_paned.borrow().as_ref() {
+            if let Some(start) = paned.start_child() {
+                return start.is_visible();
+            }
+        }
+        true
+    }
+
+    pub fn set_sidebar_visible(&self, visible: bool) {
+        if let Some(paned) = self.imp().outer_paned.borrow().as_ref() {
+            if let Some(start) = paned.start_child() {
+                start.set_visible(visible);
+            }
+            if visible {
+                let saved_pos = AppSettings::try_new()
+                    .map(|s| s.mail_sidebar_position())
+                    .unwrap_or(260)
+                    .clamp(80, 1500);
+                if paned.position() < 60 {
+                    paned.set_position(saved_pos);
+                }
+            }
+        }
+        if let Some(toggle) = self.imp().contacts_sidebar_toggle.borrow().as_ref() {
+            if toggle.is_active() != visible {
+                toggle.set_active(visible);
+            }
+        }
+    }
+
     pub(crate) fn set_screen_mode(&self, is_mobile: bool, is_tablet: bool) {
         let imp = self.imp();
         imp.is_mobile.set(is_mobile);
@@ -843,12 +902,6 @@ impl ContactsPage {
                 db.set_size_request(280, -1);
                 db.set_visible(true);
             }
-            if let Some(sb) = sidebar.as_ref() {
-                let sb_vis = AppSettings::try_new()
-                    .map(|s| s.mail_show_sidebar())
-                    .unwrap_or(false);
-                sb.set_visible(sb_vis);
-            }
         } else {
             if let Some(lc) = list_container.as_ref() {
                 lc.set_size_request(280, -1);
@@ -857,12 +910,6 @@ impl ContactsPage {
             if let Some(db) = detail_box.as_ref() {
                 db.set_size_request(340, -1);
                 db.set_visible(true);
-            }
-            if let Some(sb) = sidebar.as_ref() {
-                let sb_vis = AppSettings::try_new()
-                    .map(|s| s.mail_show_sidebar())
-                    .unwrap_or(true);
-                sb.set_visible(sb_vis);
             }
         }
 
@@ -3751,9 +3798,7 @@ impl ContactsPage {
             detail_box_for_toggle.set_visible(is_active);
         });
 
-        let sidebar_visible = AppSettings::try_new()
-            .map(|s| s.mail_show_sidebar())
-            .unwrap_or(true);
+        let sidebar_visible = true;
         let sidebar_toggle = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-symbolic")
             .tooltip_text("Seitenleiste ein-/ausblenden (F9)")
@@ -3762,25 +3807,15 @@ impl ContactsPage {
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&sidebar_toggle, "Seitenleiste ein- oder ausblenden");
+        self.imp()
+            .contacts_sidebar_toggle
+            .replace(Some(sidebar_toggle.clone()));
 
         let sidebar_for_toggle = sidebar_outer_box.clone();
         sidebar_toggle.connect_toggled(move |toggle| {
             let is_active = toggle.is_active();
             sidebar_for_toggle.set_visible(is_active);
-            if let Some(settings) = AppSettings::try_new() {
-                settings.set_mail_show_sidebar(is_active);
-            }
         });
-
-        if let Some(settings) = AppSettings::try_new() {
-            let sidebar_toggle_for_settings = sidebar_toggle.clone();
-            settings.connect_changed(Some("mail-show-sidebar"), move |settings, _| {
-                let active = settings.boolean("mail-show-sidebar");
-                if sidebar_toggle_for_settings.is_active() != active {
-                    sidebar_toggle_for_settings.set_active(active);
-                }
-            });
-        }
 
         let list_key_controller = gtk::EventControllerKey::new();
         let delete_btn_for_key = delete_btn.clone();

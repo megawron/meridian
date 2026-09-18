@@ -5368,6 +5368,31 @@ impl MailPage {
         }
     }
 
+    pub fn is_todo_bar_visible(&self) -> bool {
+        self.imp()
+            .todo_sidebar
+            .borrow()
+            .as_ref()
+            .map(|s| s.is_visible())
+            .unwrap_or_else(|| {
+                AppSettings::try_new()
+                    .map(|s| s.mail_show_todo_bar())
+                    .unwrap_or(false)
+            })
+    }
+
+    pub fn is_sidebar_visible(&self) -> bool {
+        self.imp()
+            .outer_paned
+            .start_child()
+            .map(|c| c.is_visible())
+            .unwrap_or_else(|| {
+                AppSettings::try_new()
+                    .map(|s| s.mail_show_sidebar())
+                    .unwrap_or(true)
+            })
+    }
+
     pub fn set_todo_bar_visible(&self, visible: bool) {
         if let Some(sidebar) = self.imp().todo_sidebar.borrow().as_ref() {
             if sidebar.is_visible() == visible {

@@ -1529,16 +1529,6 @@ impl CalendarPage {
             if let Some(sidebar) = outer_paned.start_child() {
                 if is_mobile {
                     sidebar.set_visible(false);
-                } else if is_tablet {
-                    let show_sb = AppSettings::try_new()
-                        .map(|s| s.mail_show_sidebar())
-                        .unwrap_or(false);
-                    sidebar.set_visible(show_sb);
-                } else {
-                    let show_sb = AppSettings::try_new()
-                        .map(|s| s.mail_show_sidebar())
-                        .unwrap_or(true);
-                    sidebar.set_visible(show_sb);
                 }
             }
         }
@@ -1562,6 +1552,64 @@ impl CalendarPage {
         if let Some(paned) = self.imp().outer_paned.borrow().as_ref() {
             if (paned.position() - pos).abs() > 1 {
                 paned.set_position(pos);
+            }
+        }
+    }
+
+    pub fn is_tag_vpane_visible(&self) -> bool {
+        self.imp()
+            .tag_vpaned
+            .borrow()
+            .as_ref()
+            .map(|p| p.is_visible())
+            .unwrap_or_else(|| {
+                AppSettings::try_new()
+                    .map(|s| s.calendar_show_tag_vpane())
+                    .unwrap_or(true)
+            })
+    }
+
+    pub fn set_tag_vpane_visible(&self, visible: bool) {
+        if let Some(tag_vpaned) = self.imp().tag_vpaned.borrow().as_ref() {
+            tag_vpaned.set_visible(visible);
+        }
+        if let Some(btn) = self.imp().tag_vpane_toggle_btn.borrow().as_ref() {
+            if btn.is_active() != visible {
+                btn.set_active(visible);
+            }
+        }
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_calendar_show_tag_vpane(visible);
+        }
+    }
+
+    pub fn is_sidebar_visible(&self) -> bool {
+        if let Some(paned) = self.imp().outer_paned.borrow().as_ref() {
+            if let Some(start) = paned.start_child() {
+                return start.is_visible();
+            }
+        }
+        true
+    }
+
+    pub fn set_sidebar_visible(&self, visible: bool) {
+        if let Some(paned) = self.imp().outer_paned.borrow().as_ref() {
+            if let Some(start) = paned.start_child() {
+                start.set_visible(visible);
+            }
+            if visible {
+                let saved_pos = AppSettings::try_new()
+                    .map(|s| s.mail_sidebar_position())
+                    .unwrap_or(260)
+                    .clamp(80, 1500);
+                if paned.position() < 60 {
+                    paned.set_position(saved_pos);
+                }
+            }
+        }
+        if let Some(btn) = self.imp().calendar_sidebar_toggle.borrow().as_ref() {
+            if btn.is_active() != visible {
+                btn.set_active(visible);
             }
         }
     }
@@ -3100,9 +3148,7 @@ impl CalendarPage {
             .tag_vpane_toggle_btn
             .replace(Some(tag_vpane_toggle_btn.clone()));
 
-        let sidebar_visible = AppSettings::try_new()
-            .map(|s| s.mail_show_sidebar())
-            .unwrap_or(true);
+        let sidebar_visible = true;
         let sidebar_toggle = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-symbolic")
             .tooltip_text("Seitenleiste ein-/ausblenden (F9)")
@@ -3119,20 +3165,7 @@ impl CalendarPage {
         sidebar_toggle.connect_toggled(move |toggle| {
             let is_active = toggle.is_active();
             sidebar_for_toggle.set_visible(is_active);
-            if let Some(settings) = AppSettings::try_new() {
-                settings.set_mail_show_sidebar(is_active);
-            }
         });
-
-        if let Some(settings) = AppSettings::try_new() {
-            let sidebar_toggle_for_settings = sidebar_toggle.clone();
-            settings.connect_changed(Some("mail-show-sidebar"), move |settings, _| {
-                let active = settings.boolean("mail-show-sidebar");
-                if sidebar_toggle_for_settings.is_active() != active {
-                    sidebar_toggle_for_settings.set_active(active);
-                }
-            });
-        }
 
         let btn_print_calendar = gtk::Button::builder()
             .icon_name("document-print-symbolic")

@@ -3625,6 +3625,64 @@ impl TasksPage {
         self.imp().outer_paned.borrow().clone()
     }
 
+    pub fn is_preview_visible(&self) -> bool {
+        if let Some(preview_paned) = self.imp().task_preview_paned.borrow().as_ref() {
+            if let Some(detail_box) = preview_paned.end_child() {
+                return detail_box.is_visible();
+            }
+        }
+        AppSettings::try_new()
+            .map(|s| s.task_preview_visible())
+            .unwrap_or(true)
+    }
+
+    pub fn set_preview_visible(&self, visible: bool) {
+        if let Some(preview_paned) = self.imp().task_preview_paned.borrow().as_ref() {
+            if let Some(detail_box) = preview_paned.end_child() {
+                detail_box.set_visible(visible);
+            }
+        }
+        if let Some(toggle) = self.imp().task_preview_toggle.borrow().as_ref() {
+            if toggle.is_active() != visible {
+                toggle.set_active(visible);
+            }
+        }
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_task_preview_visible(visible);
+        }
+    }
+
+    pub fn is_sidebar_visible(&self) -> bool {
+        if let Some(paned) = self.imp().outer_paned.borrow().as_ref() {
+            if let Some(start) = paned.start_child() {
+                return start.is_visible();
+            }
+        }
+        true
+    }
+
+    pub fn set_sidebar_visible(&self, visible: bool) {
+        if let Some(paned) = self.imp().outer_paned.borrow().as_ref() {
+            if let Some(start) = paned.start_child() {
+                start.set_visible(visible);
+            }
+            if visible {
+                let saved_pos = AppSettings::try_new()
+                    .map(|s| s.mail_sidebar_position())
+                    .unwrap_or(260)
+                    .clamp(80, 1500);
+                if paned.position() < 60 {
+                    paned.set_position(saved_pos);
+                }
+            }
+        }
+        if let Some(toggle) = self.imp().task_sidebar_toggle.borrow().as_ref() {
+            if toggle.is_active() != visible {
+                toggle.set_active(visible);
+            }
+        }
+    }
+
     pub(crate) fn set_screen_mode(&self, is_mobile: bool, is_tablet: bool) {
         let imp = self.imp();
         imp.is_mobile.set(is_mobile);
@@ -3682,12 +3740,6 @@ impl TasksPage {
                 }
             }
         } else if is_tablet {
-            if let Some(sb) = sidebar.as_ref() {
-                let sb_vis = AppSettings::try_new()
-                    .map(|s| s.mail_show_sidebar())
-                    .unwrap_or(false);
-                sb.set_visible(sb_vis);
-            }
             if let Some(lc) = list_container.as_ref() {
                 lc.set_visible(true);
             }
@@ -3698,12 +3750,6 @@ impl TasksPage {
                 db.set_visible(prev_vis);
             }
         } else {
-            if let Some(sb) = sidebar.as_ref() {
-                let sb_vis = AppSettings::try_new()
-                    .map(|s| s.mail_show_sidebar())
-                    .unwrap_or(true);
-                sb.set_visible(sb_vis);
-            }
             if let Some(lc) = list_container.as_ref() {
                 lc.set_visible(true);
             }
@@ -4752,9 +4798,7 @@ impl TasksPage {
             .build();
         set_accessible_label(&preview_toggle, "Aufgabenvorschau ein- oder ausblenden");
 
-        let sidebar_visible = AppSettings::try_new()
-            .map(|s| s.mail_show_sidebar())
-            .unwrap_or(true);
+        let sidebar_visible = true;
         sidebar_outer_box.set_visible(sidebar_visible);
         let sidebar_toggle = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-symbolic")
@@ -4764,25 +4808,15 @@ impl TasksPage {
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&sidebar_toggle, "Seitenleiste ein- oder ausblenden");
+        self.imp()
+            .task_sidebar_toggle
+            .replace(Some(sidebar_toggle.clone()));
 
         let sidebar_for_toggle = sidebar_outer_box.clone();
         sidebar_toggle.connect_toggled(move |toggle| {
             let is_active = toggle.is_active();
             sidebar_for_toggle.set_visible(is_active);
-            if let Some(settings) = AppSettings::try_new() {
-                settings.set_mail_show_sidebar(is_active);
-            }
         });
-
-        if let Some(settings) = AppSettings::try_new() {
-            let sidebar_toggle_for_settings = sidebar_toggle.clone();
-            settings.connect_changed(Some("mail-show-sidebar"), move |settings, _| {
-                let active = settings.boolean("mail-show-sidebar");
-                if sidebar_toggle_for_settings.is_active() != active {
-                    sidebar_toggle_for_settings.set_active(active);
-                }
-            });
-        }
         let preview_orientation_model =
             gtk::StringList::new(&["Vorschau unten", "Vorschau daneben"]);
         let preview_orientation_selector =
