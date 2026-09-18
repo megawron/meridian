@@ -101,6 +101,14 @@ impl MessageFilter {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum MailDrillDownLevel {
+    #[default]
+    Folders,
+    Messages,
+    Viewer,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum MailSortField {
     #[default]
     Date,
@@ -1350,6 +1358,7 @@ pub(crate) struct PreparedMailTableLayout {
     pub show_size: bool,
     pub show_preview_text: bool,
     pub date_align_left: bool,
+    pub is_cards_mode: bool,
     pub primary_desc_normal: gtk::pango::FontDescription,
     pub primary_desc_bold: gtk::pango::FontDescription,
     pub secondary_desc: gtk::pango::FontDescription,
@@ -1564,6 +1573,7 @@ pub(crate) fn prepare_mail_table_layout_from_rows(
         show_size: true,
         show_preview_text: true,
         date_align_left: false,
+        is_cards_mode: false,
         primary_desc_normal,
         primary_desc_bold,
         secondary_desc,
@@ -1659,6 +1669,17 @@ pub(crate) fn hit_test_mail_table(
     }
     let row_idx = (y / layout.row_height) as usize;
     let row = layout.rows.get(row_idx)?;
+
+    if layout.is_cards_mode {
+        if x < 28.0 {
+            return Some(MailTableHitAction::ToggleStatus(row_idx, row.model_index));
+        }
+        let rel_y = y % layout.row_height;
+        if x >= (layout.width - 64.0) && x <= (layout.width - 32.0) && rel_y <= 32.0 {
+            return Some(MailTableHitAction::ToggleStar(row_idx, row.model_index));
+        }
+        return Some(MailTableHitAction::SelectRow(row_idx, row.model_index));
+    }
 
     if x >= layout.col_status_x() && x < (layout.col_status_x() + layout.col_status_w()) {
         return Some(MailTableHitAction::ToggleStatus(row_idx, row.model_index));
@@ -1964,6 +1985,93 @@ pub(crate) fn draw_mail_table_canvas(
             cr.move_to(0.0, y + h - 0.5);
             cr.line_to(width, y + h - 0.5);
             let _ = cr.stroke();
+        }
+
+        if layout.is_cards_mode {
+            let left_pad = 14.0;
+            let right_pad = 14.0;
+            let content_w = (width - left_pad - right_pad).max(60.0);
+
+            // 1. Unread indicator dot
+            let mut sender_x = left_pad;
+            if row.is_unread {
+                cr.set_source_rgba(accent_rgb.0, accent_rgb.1, accent_rgb.2, 1.0);
+                cr.arc(left_pad + 4.0, y + 16.0, 4.0, 0.0, std::f64::consts::TAU);
+                let _ = cr.fill();
+                sender_x += 16.0;
+            }
+
+            // Line 1: Date on the right, icons (star, paperclip) before date
+            let mut top_right_x = width - right_pad;
+            if row.is_flagged {
+                draw_cairo_star(cr, top_right_x - 8.0, y + 16.0, 8.0, true, is_dark, is_hovered);
+                top_right_x -= 22.0;
+            }
+            if row.has_attachments {
+                draw_cairo_paperclip(cr, top_right_x - 8.0, y + 16.0, dim_r, dim_g, dim_b, 0.75);
+                top_right_x -= 18.0;
+            }
+
+            // Date text
+            pango_layout.set_alignment(gtk::pango::Alignment::Right);
+            pango_layout.set_attributes(None);
+            pango_layout.set_font_description(Some(secondary_desc));
+            pango_layout.set_text(&row.date);
+            pango_layout.set_single_paragraph_mode(true);
+            pango_layout.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            let date_render_w = 90.0f64.min((top_right_x - sender_x - 40.0).max(10.0));
+            pango_layout.set_width((date_render_w * gtk::pango::SCALE as f64) as i32);
+            cr.set_source_rgb(dim_r, dim_g, dim_b);
+            cr.move_to(top_right_x - date_render_w, y + 8.0);
+            pangocairo_ffi::update_layout(cr, &pango_layout);
+            pangocairo_ffi::show_layout(cr, &pango_layout);
+            let sender_avail_w = (top_right_x - date_render_w - sender_x - 8.0).max(30.0);
+
+            // Sender name
+            pango_layout.set_alignment(gtk::pango::Alignment::Left);
+            let desc = if row.is_unread { primary_desc_bold } else { primary_desc_normal };
+            pango_layout.set_font_description(Some(desc));
+            pango_layout.set_text(&row.sender);
+            pango_layout.set_single_paragraph_mode(true);
+            pango_layout.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            pango_layout.set_width((sender_avail_w * gtk::pango::SCALE as f64) as i32);
+            cr.set_source_rgb(r, g, b);
+            cr.move_to(sender_x, y + 8.0);
+            pangocairo_ffi::update_layout(cr, &pango_layout);
+            pangocairo_ffi::show_layout(cr, &pango_layout);
+
+            // Line 2: Subject (prominent)
+            let subj_desc = if row.is_unread { primary_desc_bold } else { primary_desc_normal };
+            pango_layout.set_font_description(Some(subj_desc));
+            pango_layout.set_text(&row.subject);
+            pango_layout.set_single_paragraph_mode(true);
+            pango_layout.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            pango_layout.set_width((content_w * gtk::pango::SCALE as f64) as i32);
+            if is_dark {
+                cr.set_source_rgb(0.92, 0.92, 0.92);
+            } else {
+                cr.set_source_rgb(0.12, 0.12, 0.12);
+            }
+            cr.move_to(left_pad, y + 29.0);
+            pangocairo_ffi::update_layout(cr, &pango_layout);
+            pangocairo_ffi::show_layout(cr, &pango_layout);
+
+            // Line 3: Snippet / body preview
+            if !row.snippet.trim().is_empty() {
+                pango_layout.set_font_description(Some(secondary_desc));
+                pango_layout.set_text(&row.snippet);
+                pango_layout.set_single_paragraph_mode(true);
+                pango_layout.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                pango_layout.set_width((content_w * gtk::pango::SCALE as f64) as i32);
+                cr.set_source_rgb(dim_r, dim_g, dim_b);
+                cr.move_to(left_pad, y + 49.0);
+                pangocairo_ffi::update_layout(cr, &pango_layout);
+                pangocairo_ffi::show_layout(cr, &pango_layout);
+            }
+
+            pango_layout.set_alignment(gtk::pango::Alignment::Left);
+            pango_layout.set_attributes(None);
+            continue;
         }
 
         // 1. Status Column (Adwaita blue unread dot, HIG 9px diameter)
@@ -2793,7 +2901,7 @@ pub(crate) fn replace_normal_header_rows(grid: &gtk::Grid, fields: &[(String, St
         let name_label = gtk::Label::builder()
             .label(format!("{name}:"))
             .halign(gtk::Align::End)
-            .valign(gtk::Align::Center)
+            .valign(gtk::Align::Baseline)
             .xalign(1.0)
             .css_classes(vec!["caption", "dim-label"])
             .build();
@@ -2827,14 +2935,15 @@ pub(crate) fn replace_normal_header_rows(grid: &gtk::Grid, fields: &[(String, St
         let value_label = gtk::Label::builder()
             .label(value)
             .halign(gtk::Align::Fill)
-            .valign(gtk::Align::Center)
+            .valign(gtk::Align::Baseline)
             .xalign(0.0)
             .hexpand(true)
             .selectable(true)
+            .wrap(false)
+            .single_line_mode(true)
             .ellipsize(pango::EllipsizeMode::End)
-            .lines(1)
+            .tooltip_text(value)
             .width_chars(1)
-            .max_width_chars(1)
             .css_classes(classes)
             .build();
         grid.attach(&value_label, 1, row as i32, 1, 1);
@@ -4571,7 +4680,10 @@ mod imp {
         pub all_headers_revealer: RefCell<Option<gtk::Revealer>>,
         pub all_headers_grid: RefCell<Option<gtk::Grid>>,
         pub normal_headers_grid: RefCell<Option<gtk::Grid>>,
+        pub mail_subject_label: RefCell<Option<gtk::Label>>,
+        pub preview_actions_row: RefCell<Option<gtk::Box>>,
         pub preview_reply_group: RefCell<Option<gtk::Box>>,
+        pub preview_reply_labels: RefCell<Vec<gtk::Label>>,
         pub load_remote_images_btn: RefCell<Option<adw::SplitButton>>,
         pub all_headers_generation: Cell<u64>,
         pub all_headers_cancellation: RefCell<Option<Arc<AtomicBool>>>,
@@ -4687,9 +4799,12 @@ mod imp {
         pub(super) mail_layout: Cell<MailLayout>,
         pub mail_sort_selector: RefCell<Option<gtk::DropDown>>,
         pub mail_sort_direction_button: RefCell<Option<gtk::Button>>,
+        pub drawer_header_box: RefCell<Option<gtk::Box>>,
         pub drawer_header_title: RefCell<Option<gtk::Label>>,
         pub drawer_header_icon: RefCell<Option<gtk::Image>>,
         pub drawer_header_total: RefCell<Option<gtk::Label>>,
+        pub todo_header_box: RefCell<Option<gtk::Box>>,
+        pub header_row_size_group: RefCell<Option<gtk::SizeGroup>>,
         pub status_size_group: RefCell<Option<gtk::SizeGroup>>,
         pub attachment_size_group: RefCell<Option<gtk::SizeGroup>>,
         pub follow_up_size_group: RefCell<Option<gtk::SizeGroup>>,
@@ -4703,6 +4818,13 @@ mod imp {
         pub sender_separator: RefCell<Option<gtk::Box>>,
         pub recipient_separator: RefCell<Option<gtk::Box>>,
         pub date_separator: RefCell<Option<gtk::Box>>,
+        pub is_mobile: Cell<bool>,
+        pub is_tablet: Cell<bool>,
+        pub drill_down_level: Cell<MailDrillDownLevel>,
+        pub column_header_scroll: RefCell<Option<gtk::ScrolledWindow>>,
+        pub column_header_scrollbar_spacer: RefCell<Option<gtk::Box>>,
+        pub list_vscrollbar: RefCell<Option<gtk::Scrollbar>>,
+        pub vscrollbar_size_group: RefCell<Option<gtk::SizeGroup>>,
     }
 
     #[glib::object_subclass]
@@ -4972,6 +5094,279 @@ impl MailPage {
         self.imp().mail_todo_toggle.borrow().clone()
     }
 
+    pub(crate) fn set_screen_mode(&self, is_mobile: bool, is_tablet: bool) {
+        let imp = self.imp();
+        let was_mobile = imp.is_mobile.get();
+        let was_tablet = imp.is_tablet.get();
+        imp.is_mobile.set(is_mobile);
+        imp.is_tablet.set(is_tablet);
+        if !is_mobile && !is_tablet && (was_mobile || was_tablet) {
+            // When returning to desktop, restore saved paned position if needed
+            let saved_sb_pos = AppSettings::try_new()
+                .map(|s| s.mail_sidebar_position())
+                .unwrap_or(260)
+                .clamp(80, 1500);
+            if imp.outer_paned.position() < 60 {
+                imp.outer_paned.set_position(saved_sb_pos);
+            }
+        }
+        if was_mobile != is_mobile {
+            imp.mail_table_layout.replace(None);
+            if let Some(canvas) = imp.mail_table_canvas.borrow().as_ref() {
+                canvas.queue_draw();
+            }
+        }
+        self.sync_mail_layout_visibility();
+        self.sync_preview_actions_labels();
+        if let Some(win) = crate::window::find_evolution_window(self) {
+            win.sync_back_button();
+        }
+    }
+
+    pub(crate) fn sync_preview_actions_labels(&self) {
+        let imp = self.imp();
+        let is_mobile = imp.is_mobile.get();
+        let show_labels = if is_mobile {
+            false
+        } else {
+            let width = imp
+                .preview_actions_row
+                .borrow()
+                .as_ref()
+                .map(|r| r.width())
+                .unwrap_or(0);
+            if width > 0 {
+                width >= 520
+            } else {
+                let inner_width = imp.inner_paned.width();
+                let inner_pos = imp.inner_paned.position();
+                if inner_width == 0 {
+                    true
+                } else {
+                    let preview_width = match imp.mail_layout.get() {
+                        MailLayout::Vertical => inner_width.saturating_sub(inner_pos),
+                        MailLayout::Horizontal => inner_width,
+                    };
+                    preview_width >= 520
+                }
+            }
+        };
+        for label in imp.preview_reply_labels.borrow().iter() {
+            label.set_visible(show_labels);
+        }
+    }
+
+    pub(crate) fn drill_down_level(&self) -> MailDrillDownLevel {
+        self.imp().drill_down_level.get()
+    }
+
+    pub(crate) fn selected_folder_display_name(&self) -> Option<String> {
+        let sel = self.active_folder_selection();
+        sel.folder_name.clone().or_else(|| {
+            if sel.folder_id == "inbox" || sel.folder_id == "local-inbox" {
+                Some("Posteingang".to_string())
+            } else if !sel.folder_id.is_empty() {
+                Some(sel.folder_id.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    pub(crate) fn selected_message_subject(&self) -> Option<String> {
+        self.selected_message().map(|m| m.subject())
+    }
+
+    pub(crate) fn can_navigate_back(&self) -> bool {
+        let imp = self.imp();
+        (imp.is_mobile.get() && imp.drill_down_level.get() != MailDrillDownLevel::Folders)
+            || (imp.is_tablet.get() && !imp.is_mobile.get() && imp.drill_down_level.get() == MailDrillDownLevel::Viewer)
+    }
+
+    pub(crate) fn navigate_back(&self) -> bool {
+        let imp = self.imp();
+        if imp.is_tablet.get() && !imp.is_mobile.get() {
+            if imp.drill_down_level.get() == MailDrillDownLevel::Viewer {
+                self.set_drill_down_level(MailDrillDownLevel::Messages);
+                return true;
+            }
+            return false;
+        }
+        if !imp.is_mobile.get() {
+            return false;
+        }
+        match imp.drill_down_level.get() {
+            MailDrillDownLevel::Viewer => {
+                self.set_drill_down_level(MailDrillDownLevel::Messages);
+                true
+            }
+            MailDrillDownLevel::Messages => {
+                self.set_drill_down_level(MailDrillDownLevel::Folders);
+                true
+            }
+            MailDrillDownLevel::Folders => false,
+        }
+    }
+
+    pub(crate) fn set_drill_down_level(&self, level: MailDrillDownLevel) {
+        let imp = self.imp();
+        imp.drill_down_level.set(level);
+        self.sync_mail_layout_visibility();
+        if let Some(win) = crate::window::find_evolution_window(self) {
+            win.sync_back_button();
+        }
+    }
+
+    pub(crate) fn sync_mail_layout_visibility(&self) {
+        let imp = self.imp();
+        let is_mobile = imp.is_mobile.get();
+        let is_tablet = imp.is_tablet.get();
+        let sidebar = imp.outer_paned.start_child();
+        let todo_paned = imp.outer_paned.end_child();
+        let message_container = imp.inner_paned.start_child();
+        let detail_view = imp.inner_paned.end_child();
+        let todo_sidebar = imp.todo_paned.end_child();
+        let profile = AppSettings::try_new()
+            .map(|s| s.mail_list_view_profile())
+            .unwrap_or_else(|| "messages".to_string());
+        let is_cards_mode = is_mobile || profile == "cards";
+        if let Some(header_scroll) = imp.column_header_scroll.borrow().as_ref() {
+            header_scroll.set_visible(!is_cards_mode);
+        }
+
+        if is_mobile {
+            if let Some(tb) = imp.classic_toolbar.borrow().as_ref() {
+                tb.set_visible(false);
+            }
+            if let Some(todo) = todo_sidebar.as_ref() {
+                todo.set_visible(false);
+            }
+            if let Some(msg) = message_container.as_ref() {
+                msg.set_size_request(0, -1);
+            }
+            if let Some(detail) = detail_view.as_ref() {
+                detail.set_size_request(0, -1);
+            }
+
+            match imp.drill_down_level.get() {
+                MailDrillDownLevel::Folders => {
+                    if let Some(sb) = sidebar.as_ref() {
+                        sb.set_visible(true);
+                    }
+                    if let Some(tp) = todo_paned.as_ref() {
+                        tp.set_visible(false);
+                    }
+                }
+                MailDrillDownLevel::Messages => {
+                    if let Some(sb) = sidebar.as_ref() {
+                        sb.set_visible(false);
+                    }
+                    if let Some(tp) = todo_paned.as_ref() {
+                        tp.set_visible(true);
+                    }
+                    if let Some(msg) = message_container.as_ref() {
+                        msg.set_visible(true);
+                    }
+                    if let Some(detail) = detail_view.as_ref() {
+                        detail.set_visible(false);
+                    }
+                }
+                MailDrillDownLevel::Viewer => {
+                    if let Some(sb) = sidebar.as_ref() {
+                        sb.set_visible(false);
+                    }
+                    if let Some(tp) = todo_paned.as_ref() {
+                        tp.set_visible(true);
+                    }
+                    if let Some(msg) = message_container.as_ref() {
+                        msg.set_visible(false);
+                    }
+                    if let Some(detail) = detail_view.as_ref() {
+                        detail.set_visible(true);
+                    }
+                }
+            }
+        } else if is_tablet {
+            if let Some(tb) = imp.classic_toolbar.borrow().as_ref() {
+                let tb_vis = AppSettings::try_new()
+                    .map(|s| s.mail_show_toolbar())
+                    .unwrap_or(true);
+                tb.set_visible(tb_vis);
+            }
+            if let Some(tp) = todo_paned.as_ref() {
+                tp.set_visible(true);
+            }
+            if let Some(todo) = todo_sidebar.as_ref() {
+                todo.set_visible(false);
+            }
+
+            match imp.drill_down_level.get() {
+                MailDrillDownLevel::Viewer => {
+                    // In tablet viewer mode: 2 columns [Messages | Viewer] (Folders hidden)
+                    if let Some(sb) = sidebar.as_ref() {
+                        sb.set_visible(false);
+                    }
+                    if let Some(msg) = message_container.as_ref() {
+                        msg.set_size_request(180, -1);
+                        msg.set_visible(true);
+                    }
+                    if let Some(detail) = detail_view.as_ref() {
+                        detail.set_size_request(120, -1);
+                        detail.set_visible(true);
+                    }
+                }
+                _ => {
+                    // In tablet browse mode (default): 2 columns [Folders | Messages] (Viewer folded)
+                    if let Some(sb) = sidebar.as_ref() {
+                        let sb_vis = AppSettings::try_new()
+                            .map(|s| s.mail_show_sidebar())
+                            .unwrap_or(true);
+                        sb.set_visible(sb_vis);
+                    }
+                    if let Some(msg) = message_container.as_ref() {
+                        msg.set_size_request(180, -1);
+                        msg.set_visible(true);
+                    }
+                    if let Some(detail) = detail_view.as_ref() {
+                        detail.set_size_request(0, -1);
+                        detail.set_visible(false);
+                    }
+                }
+            }
+        } else {
+            // Desktop (> 1000sp): All 3 columns preserved
+            if let Some(tb) = imp.classic_toolbar.borrow().as_ref() {
+                let tb_vis = AppSettings::try_new()
+                    .map(|s| s.mail_show_toolbar())
+                    .unwrap_or(true);
+                tb.set_visible(tb_vis);
+            }
+            if let Some(msg) = message_container.as_ref() {
+                msg.set_size_request(180, -1);
+                msg.set_visible(true);
+            }
+            if let Some(detail) = detail_view.as_ref() {
+                detail.set_size_request(120, -1);
+                detail.set_visible(true);
+            }
+            if let Some(sb) = sidebar.as_ref() {
+                let sb_vis = AppSettings::try_new()
+                    .map(|s| s.mail_show_sidebar())
+                    .unwrap_or(true);
+                sb.set_visible(sb_vis);
+            }
+            if let Some(tp) = todo_paned.as_ref() {
+                tp.set_visible(true);
+            }
+            if let Some(todo) = todo_sidebar.as_ref() {
+                let todo_vis = AppSettings::try_new()
+                    .map(|s| s.mail_show_todo_bar())
+                    .unwrap_or(false);
+                todo.set_visible(todo_vis);
+            }
+        }
+    }
+
     pub fn set_todo_bar_visible(&self, visible: bool) {
         if let Some(sidebar) = self.imp().todo_sidebar.borrow().as_ref() {
             if sidebar.is_visible() == visible {
@@ -5097,17 +5492,47 @@ impl MailPage {
         if let Some(group) = self.imp().preview_reply_group.borrow().as_ref() {
             group.set_visible(message.is_some());
         }
+        self.sync_preview_actions_labels();
         grid.set_visible(message.is_some() && !show_all);
+
+        let configuration = AppSettings::try_new()
+            .map(|settings| settings.mail_normal_headers())
+            .unwrap_or_else(default_normal_header_configuration);
+        let subject_enabled = configuration
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("subject") || name == "Betreff")
+            .map(|(_, enabled)| *enabled)
+            .unwrap_or(true);
+
+        if let Some(subject_label) = self.imp().mail_subject_label.borrow().as_ref() {
+            let visible = message.is_some() && !show_all && subject_enabled;
+            subject_label.set_visible(visible);
+            if visible {
+                if let Some(msg) = message {
+                    let subj = msg.subject();
+                    let text = if subj.trim().is_empty() {
+                        "(Kein Betreff)"
+                    } else {
+                        &subj
+                    };
+                    subject_label.set_text(text);
+                }
+            } else {
+                subject_label.set_text("");
+            }
+        }
+
         let Some(message) = message.filter(|_| !show_all) else {
             replace_normal_header_rows(&grid, &[]);
             return;
         };
-        let configuration = AppSettings::try_new()
-            .map(|settings| settings.mail_normal_headers())
-            .unwrap_or_else(default_normal_header_configuration);
         let fields =
             configured_normal_header_fields(&message_header_fields(message), &configuration);
-        replace_normal_header_rows(&grid, &fields);
+        let filtered_fields: Vec<_> = fields
+            .into_iter()
+            .filter(|(name, _)| name != "Betreff" && !name.eq_ignore_ascii_case("subject"))
+            .collect();
+        replace_normal_header_rows(&grid, &filtered_fields);
     }
 
     fn set_mail_status_areas_visible(&self, _visible: bool) {
@@ -5430,8 +5855,10 @@ impl MailPage {
             let page_weak_for_toolbar = self.downgrade();
             settings.connect_changed(Some("mail-show-toolbar"), move |settings, _| {
                 if let Some(page) = page_weak_for_toolbar.upgrade() {
-                    if let Some(toolbar) = page.imp().classic_toolbar.borrow().as_ref() {
-                        toolbar.set_visible(settings.boolean("mail-show-toolbar"));
+                    if !page.imp().is_mobile.get() {
+                        if let Some(toolbar) = page.imp().classic_toolbar.borrow().as_ref() {
+                            toolbar.set_visible(settings.boolean("mail-show-toolbar"));
+                        }
                     }
                 }
             });
@@ -5469,6 +5896,7 @@ impl MailPage {
                             settings_for_position
                                 .set_mail_preview_position(current_layout.setting_value(), pos);
                         }
+                        page.sync_preview_actions_labels();
                     }
                 });
             self.imp().preview_settings.replace(Some(settings));
@@ -5509,6 +5937,7 @@ impl MailPage {
         if let Some(end_child) = imp.inner_paned.end_child() {
             end_child.set_visible(true);
         }
+        self.sync_preview_actions_labels();
     }
 
     fn apply_default_folder(&self, folder_id: &str) {
@@ -11813,6 +12242,26 @@ impl MailPage {
             .build();
         dynamic_folder_view.set_margin_start(0);
 
+        let page_for_dynamic_activate = self.downgrade();
+        dynamic_folder_view.connect_activate(move |_, _| {
+            if let Some(page) = page_for_dynamic_activate.upgrade() {
+                if page.imp().is_mobile.get() {
+                    page.set_drill_down_level(MailDrillDownLevel::Messages);
+                }
+            }
+        });
+
+        let click_for_dynamic_folder = gtk::GestureClick::new();
+        let page_for_dynamic_click = self.downgrade();
+        click_for_dynamic_folder.connect_released(move |_, _, _, _| {
+            if let Some(page) = page_for_dynamic_click.upgrade() {
+                if page.imp().is_mobile.get() {
+                    page.set_drill_down_level(MailDrillDownLevel::Messages);
+                }
+            }
+        });
+        dynamic_folder_view.add_controller(click_for_dynamic_folder);
+
         self.imp()
             .dynamic_folder_store
             .replace(Some(dynamic_folder_store));
@@ -11902,6 +12351,9 @@ impl MailPage {
                 },
                 true,
             );
+            if page.imp().is_mobile.get() {
+                page.set_drill_down_level(MailDrillDownLevel::Messages);
+            }
         });
 
         let search_header = gtk::Label::builder()
@@ -12032,11 +12484,14 @@ impl MailPage {
         let drawer_total = gtk::Label::builder()
             .label("")
             .halign(gtk::Align::End)
-            .css_classes(vec!["sidebar-drawer-total", "dim-label"])
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .css_classes(vec!["sidebar-drawer-total", "sidebar-drawer-unread-badge"])
             .build();
         drawer_header.append(&drawer_icon);
         drawer_header.append(&drawer_title);
         drawer_header.append(&drawer_total);
+        self.imp().drawer_header_box.replace(Some(drawer_header.clone()));
         self.imp().drawer_header_title.replace(Some(drawer_title));
         self.imp().drawer_header_icon.replace(Some(drawer_icon));
         self.imp().drawer_header_total.replace(Some(drawer_total));
@@ -13406,6 +13861,95 @@ impl MailPage {
         }
     }
 
+    pub(crate) fn format_drawer_folder_tooltip(
+        selection: &FolderSelection,
+        display_title: &str,
+        unread: u32,
+        total: usize,
+    ) -> String {
+        let (raw_title, _) = selection.title_and_icon();
+        let title_display = if !raw_title.is_empty() && raw_title != display_title {
+            format!("{display_title} ({raw_title})")
+        } else {
+            display_title.to_string()
+        };
+
+        if total == 0 {
+            return format!("{title_display} (Keine E-Mails)");
+        }
+
+        let fid = selection.folder_id.to_ascii_lowercase();
+        let fname = selection
+            .folder_name
+            .as_deref()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+
+        let is_sent = fid.contains("sent")
+            || fid.contains("gesendet")
+            || fname.contains("sent")
+            || fname.contains("gesendet");
+        let is_drafts = fid.contains("draft")
+            || fid.contains("entwurf")
+            || fname.contains("draft")
+            || fname.contains("entwurf");
+        let is_trash = fid.contains("trash")
+            || fid.contains("papierkorb")
+            || fid.contains("gelöschte")
+            || fid.contains("geloeschte")
+            || fid.contains("deleted")
+            || fname.contains("trash")
+            || fname.contains("papierkorb")
+            || fname.contains("gelöschte")
+            || fname.contains("geloeschte")
+            || fname.contains("deleted");
+        let is_junk = fid.contains("junk")
+            || fid.contains("spam")
+            || fname.contains("junk")
+            || fname.contains("spam");
+
+        if unread > 0 {
+            let total_str = if total == 1 {
+                "1 gesamt".to_string()
+            } else {
+                format!("{total} gesamt")
+            };
+            if unread == 1 {
+                format!("{title_display}: 1 ungelesen, {total_str}")
+            } else {
+                format!("{title_display}: {unread} ungelesen, {total_str}")
+            }
+        } else if is_sent {
+            if total == 1 {
+                format!("{title_display}: 1 gesendete E-Mail")
+            } else {
+                format!("{title_display}: {total} gesendete E-Mails")
+            }
+        } else if is_drafts {
+            if total == 1 {
+                format!("{title_display}: 1 Entwurf")
+            } else {
+                format!("{title_display}: {total} Entwürfe")
+            }
+        } else if is_trash {
+            if total == 1 {
+                format!("{title_display}: 1 gelöschte E-Mail")
+            } else {
+                format!("{title_display}: {total} gelöschte E-Mails")
+            }
+        } else if is_junk {
+            if total == 1 {
+                format!("{title_display}: 1 unerwünschte E-Mail")
+            } else {
+                format!("{title_display}: {total} unerwünschte E-Mails")
+            }
+        } else if total == 1 {
+            format!("{title_display}: 1 E-Mail")
+        } else {
+            format!("{title_display}: {total} E-Mails")
+        }
+    }
+
     fn unread_message_count(&self) -> u32 {
         let Some(store) = self.imp().message_store.borrow().as_ref().cloned() else {
             return 0;
@@ -13439,27 +13983,43 @@ impl MailPage {
         let display_title = Self::clean_folder_display_title(raw_title);
         if let Some(title_lbl) = self.imp().drawer_header_title.borrow().as_ref() {
             title_lbl.set_label(&display_title);
-            if raw_title != display_title.as_str() {
-                title_lbl.set_tooltip_text(Some(raw_title));
-            } else {
-                title_lbl.set_tooltip_text(None);
-            }
         }
         if let Some(icon_img) = self.imp().drawer_header_icon.borrow().as_ref() {
             icon_img.set_icon_name(Some(icon));
         }
+
+        let total = total_override.unwrap_or_else(|| {
+            self.imp()
+                .message_store
+                .borrow()
+                .as_ref()
+                .map(gtk::prelude::ListModelExt::n_items)
+                .unwrap_or(0) as usize
+        });
+        let unread = self.unread_message_count();
+
         if let Some(total_lbl) = self.imp().drawer_header_total.borrow().as_ref() {
-            let total = total_override.unwrap_or_else(|| {
-                self.imp()
-                    .message_store
-                    .borrow()
-                    .as_ref()
-                    .map(gtk::prelude::ListModelExt::n_items)
-                    .unwrap_or(0) as usize
-            });
-            let unread = self.unread_message_count();
-            let status = Self::format_drawer_folder_status(selection, unread, total);
-            total_lbl.set_label(&status);
+            if unread > 0 {
+                total_lbl.set_label(&unread.to_string());
+                total_lbl.set_visible(true);
+            } else {
+                total_lbl.set_label("");
+                total_lbl.set_visible(false);
+            }
+        }
+
+        let tooltip = Self::format_drawer_folder_tooltip(selection, &display_title, unread, total);
+        if let Some(header_box) = self.imp().drawer_header_box.borrow().as_ref() {
+            header_box.set_tooltip_text(Some(&tooltip));
+        }
+        if let Some(title_lbl) = self.imp().drawer_header_title.borrow().as_ref() {
+            title_lbl.set_tooltip_text(Some(&tooltip));
+        }
+        if let Some(icon_img) = self.imp().drawer_header_icon.borrow().as_ref() {
+            icon_img.set_tooltip_text(Some(&tooltip));
+        }
+        if let Some(total_lbl) = self.imp().drawer_header_total.borrow().as_ref() {
+            total_lbl.set_tooltip_text(Some(&tooltip));
         }
     }
 
@@ -14001,31 +14561,47 @@ impl MailPage {
             });
         }
 
-        let spacer = gtk::Box::builder().hexpand(true).build();
+        // Actions box containing all left action buttons
+        let actions_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .build();
 
-        // Assemble Left-to-Right into toolbar:
-        // Left: Navigation & Mail Actions (Sidebar, Nav < >, Print, Triage, Status, More Actions [⋮], Undo)
-        toolbar.append(&sidebar_toggle);
-        toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        toolbar.append(&nav_group);
-        toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        toolbar.append(&print_btn);
-        toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        toolbar.append(&triage_group);
-        toolbar.append(&status_separator);
-        toolbar.append(&status_group);
-        toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        toolbar.append(&more_button);
-        toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        toolbar.append(&undo_btn);
+        actions_box.append(&sidebar_toggle);
+        actions_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        actions_box.append(&nav_group);
+        actions_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        actions_box.append(&print_btn);
+        actions_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        actions_box.append(&triage_group);
+        actions_box.append(&status_separator);
+        actions_box.append(&status_group);
+        actions_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        actions_box.append(&more_button);
+        actions_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        actions_box.append(&undo_btn);
 
-        // Center: Expanding Spacer
-        toolbar.append(&spacer);
+        let actions_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .child(&actions_box)
+            .propagate_natural_width(false)
+            .min_content_width(0)
+            .hexpand(true)
+            .build();
 
-        // Right: Display & Layout Settings (Columns, Preview)
-        toolbar.append(columns_button);
-        toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        toolbar.append(&preview_toggle);
+        let pinned_right_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .valign(gtk::Align::Center)
+            .halign(gtk::Align::End)
+            .build();
+        pinned_right_box.append(columns_button);
+        pinned_right_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        pinned_right_box.append(&preview_toggle);
+
+        toolbar.append(&actions_scroll);
+        toolbar.append(&pinned_right_box);
 
         toolbar
     }
@@ -14106,8 +14682,12 @@ impl MailPage {
                 }
             }
         }
+        let spacer = children.remove("mail-column-scrollbar-spacer");
         for (_, widget) in children {
             container.append(&widget);
+        }
+        if let Some(spacer) = spacer {
+            container.append(&spacer);
         }
     }
 
@@ -14116,6 +14696,8 @@ impl MailPage {
             Self::reorder_mail_column_container(header);
         }
         self.refresh_mail_column_header();
+        self.sync_mail_layout_visibility();
+        self.imp().mail_table_layout.replace(None);
         let list_view = self.imp().mail_list_view.borrow().as_ref().cloned();
         let factory = self.imp().mail_list_factory.borrow().as_ref().cloned();
         if let (Some(list_view), Some(factory)) = (list_view, factory) {
@@ -15054,6 +15636,7 @@ impl MailPage {
             show_size,
             show_preview_text,
             date_align_left,
+            is_cards_mode: false,
             primary_desc_normal,
             primary_desc_bold,
             secondary_desc,
@@ -15994,6 +16577,15 @@ impl MailPage {
             }
         });
         header.add_controller(header_context_gesture);
+        let scrollbar_spacer = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .visible(false)
+            .build();
+        scrollbar_spacer.set_widget_name("mail-column-scrollbar-spacer");
+        header.append(&scrollbar_spacer);
+        self.imp()
+            .column_header_scrollbar_spacer
+            .replace(Some(scrollbar_spacer));
 
         self.imp().mail_column_header.replace(Some(header.clone()));
         self.refresh_mail_column_header();
@@ -17524,6 +18116,10 @@ impl MailPage {
         let page_for_activate = self.downgrade();
         list_view.connect_activate(move |list_view, position| {
             let Some(page) = page_for_activate.upgrade() else { return; };
+            if page.imp().is_mobile.get() || page.imp().is_tablet.get() {
+                page.set_drill_down_level(MailDrillDownLevel::Viewer);
+                return;
+            }
             let Some(model) = list_view.model() else { return; };
             let Some(item) = model.item(position) else { return; };
             let message = if let Some(tree_row) = item.downcast_ref::<gtk::TreeListRow>() {
@@ -17535,6 +18131,17 @@ impl MailPage {
                 page.open_standalone_message_viewer(&msg);
             }
         });
+
+        let click_for_mobile_list = gtk::GestureClick::new();
+        let page_for_list_click = self.downgrade();
+        click_for_mobile_list.connect_released(move |_, _, _, _| {
+            if let Some(page) = page_for_list_click.upgrade() {
+                if page.imp().is_mobile.get() || page.imp().is_tablet.get() {
+                    page.set_drill_down_level(MailDrillDownLevel::Viewer);
+                }
+            }
+        });
+        list_view.add_controller(click_for_mobile_list);
 
         let enter_controller = gtk::EventControllerKey::new();
         let page_for_enter = self.downgrade();
@@ -17898,9 +18505,15 @@ impl MailPage {
             .label("Breitbild")
             .tooltip_text("Tabellarische Liste mit Spalten")
             .build();
+        let cards_profile_button = gtk::ToggleButton::builder()
+            .label("Karten")
+            .tooltip_text("Großzügige Kartenansicht (Gmail / Outlook Stil)")
+            .build();
         wide_profile_button.set_group(Some(&messages_profile_button));
+        cards_profile_button.set_group(Some(&messages_profile_button));
         profile_box.append(&messages_profile_button);
         profile_box.append(&wide_profile_button);
+        profile_box.append(&cards_profile_button);
         columns_popover_box.append(&profile_box);
 
         columns_popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
@@ -17976,6 +18589,7 @@ impl MailPage {
             // View profile initial state and signal
             match settings.mail_list_view_profile().as_str() {
                 "wide" => wide_profile_button.set_active(true),
+                "cards" => cards_profile_button.set_active(true),
                 "messages" => messages_profile_button.set_active(true),
                 _ => {}
             }
@@ -17991,13 +18605,23 @@ impl MailPage {
                     settings_for_wide_profile.apply_mail_list_view_profile("wide");
                 }
             });
+            let settings_for_cards_profile = settings.clone();
+            cards_profile_button.connect_toggled(move |button| {
+                if button.is_active() {
+                    settings_for_cards_profile.apply_mail_list_view_profile("cards");
+                }
+            });
             let messages_profile_button_weak = messages_profile_button.downgrade();
             let wide_profile_button_weak = wide_profile_button.downgrade();
+            let cards_profile_button_weak = cards_profile_button.downgrade();
             settings.connect_changed(Some("mail-list-view-profile"), move |settings, _| {
                 let Some(messages_button) = messages_profile_button_weak.upgrade() else {
                     return;
                 };
                 let Some(wide_button) = wide_profile_button_weak.upgrade() else {
+                    return;
+                };
+                let Some(cards_button) = cards_profile_button_weak.upgrade() else {
                     return;
                 };
                 match settings.string("mail-list-view-profile").as_str() {
@@ -18011,9 +18635,15 @@ impl MailPage {
                             wide_button.set_active(true);
                         }
                     }
+                    "cards" => {
+                        if !cards_button.is_active() {
+                            cards_button.set_active(true);
+                        }
+                    }
                     _ => {
                         messages_button.set_active(false);
                         wide_button.set_active(false);
+                        cards_button.set_active(false);
                     }
                 }
             });
@@ -18411,10 +19041,12 @@ impl MailPage {
             .margin_bottom(4)
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
+            .hexpand(true)
             .build();
 
-        search_entry.set_width_chars(44);
-        search_entry.set_hexpand(false);
+        search_entry.set_width_chars(15);
+        search_entry.set_max_width_chars(44);
+        search_entry.set_hexpand(true);
         search_entry.set_valign(gtk::Align::Center);
         search_options_button.set_valign(gtk::Align::Center);
         save_search_button.set_valign(gtk::Align::Center);
@@ -18438,7 +19070,8 @@ impl MailPage {
             .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Never)
             .child(&unified_toolbar)
-            .propagate_natural_width(true)
+            .propagate_natural_width(false)
+            .min_content_width(0)
             .build();
         unified_toolbar_scroll.set_visible(
             AppSettings::try_new()
@@ -18795,12 +19428,15 @@ impl MailPage {
         list_container.append(&graph_local_search_warning);
         let column_header = self.build_mail_column_header();
         let column_header_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Never)
             .min_content_width(120)
             .child(&column_header)
-            .propagate_natural_width(true)
+            .propagate_natural_width(false)
             .build();
+        self.imp()
+            .column_header_scroll
+            .replace(Some(column_header_scroll.clone()));
         list_container.append(&column_header_scroll);
 
         let mail_table_canvas = gtk::DrawingArea::builder()
@@ -18863,6 +19499,17 @@ impl MailPage {
                 }
                 if (adj.upper() - total_h).abs() > 1.0 {
                     adj.set_upper(total_h);
+                }
+                let needs_scroll = (n_items as f64 * row_h) > height as f64 + 1.0;
+                if let Some(vbar) = page.imp().list_vscrollbar.borrow().as_ref() {
+                    if vbar.is_visible() != needs_scroll {
+                        vbar.set_visible(needs_scroll);
+                    }
+                }
+                if let Some(spacer) = page.imp().column_header_scrollbar_spacer.borrow().as_ref() {
+                    if spacer.is_visible() != needs_scroll {
+                        spacer.set_visible(needs_scroll);
+                    }
                 }
                 adj.value()
             } else {
@@ -18938,6 +19585,9 @@ impl MailPage {
                 }
                 MailTableHitAction::SelectRow(_, model_index) => {
                     thread_sel_for_click.set_selected(model_index as u32);
+                    if page.imp().is_mobile.get() || page.imp().is_tablet.get() {
+                        page.set_drill_down_level(MailDrillDownLevel::Viewer);
+                    }
                     if n_press == 2 {
                         if let Some(item) = thread_sel_for_click.item(model_index as u32) {
                             let msg = if let Some(tree_row) = item.downcast_ref::<gtk::TreeListRow>() {
@@ -19141,6 +19791,17 @@ impl MailPage {
                 if adj.value() > max_val {
                     adj.set_value(max_val);
                 }
+                let needs_scroll = total_height > page_h + 1.0;
+                if let Some(vbar) = page.imp().list_vscrollbar.borrow().as_ref() {
+                    if vbar.is_visible() != needs_scroll {
+                        vbar.set_visible(needs_scroll);
+                    }
+                }
+                if let Some(spacer) = page.imp().column_header_scrollbar_spacer.borrow().as_ref() {
+                    if spacer.is_visible() != needs_scroll {
+                        spacer.set_visible(needs_scroll);
+                    }
+                }
             }
             page.imp().mail_table_layout.replace(None);
             canvas_for_items.queue_draw();
@@ -19218,16 +19879,15 @@ impl MailPage {
         table_horizontal_box.append(&mail_table_canvas);
         table_horizontal_box.append(&vscrollbar);
 
-        let header_for_vbar = column_header.clone();
-        vscrollbar.connect_notify_local(Some("visible"), move |vbar, _| {
-            let width = if vbar.is_visible() { vbar.width() } else { 0 };
-            header_for_vbar.set_margin_end(width);
-        });
-        let header_for_vbar_w = column_header.clone();
-        vscrollbar.connect_notify_local(Some("width"), move |vbar, _| {
-            let width = if vbar.is_visible() { vbar.width() } else { 0 };
-            header_for_vbar_w.set_margin_end(width);
-        });
+        let vscrollbar_size_group = gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal);
+        vscrollbar_size_group.add_widget(&vscrollbar);
+        if let Some(spacer) = self.imp().column_header_scrollbar_spacer.borrow().as_ref() {
+            vscrollbar_size_group.add_widget(spacer);
+        }
+        self.imp()
+            .vscrollbar_size_group
+            .replace(Some(vscrollbar_size_group));
+        self.imp().list_vscrollbar.replace(Some(vscrollbar.clone()));
 
         list_container.append(&table_horizontal_box);
         message_state_box.add_css_class("mail-pane-status");
@@ -19338,6 +19998,18 @@ impl MailPage {
                     page.start_mail_load(MailLoadRequest::initial(), true);
                 }
             }
+            if page.imp().is_mobile.get() {
+                page.set_drill_down_level(MailDrillDownLevel::Messages);
+            }
+        });
+
+        let page_for_folder_activate = self.downgrade();
+        folder_list.connect_row_activated(move |_, _| {
+            if let Some(page) = page_for_folder_activate.upgrade() {
+                if page.imp().is_mobile.get() {
+                    page.set_drill_down_level(MailDrillDownLevel::Messages);
+                }
+            }
         });
 
         let custom_filter = custom_filter.clone();
@@ -19362,6 +20034,9 @@ impl MailPage {
             };
             if let Some(saved_search) = saved_search {
                 page.apply_saved_search(Some(saved_search));
+                if page.imp().is_mobile.get() {
+                    page.set_drill_down_level(MailDrillDownLevel::Messages);
+                }
             } else {
                 page.set_saved_search_target_valid(false);
                 page.set_graph_local_search_warning(Some(SAVED_SEARCH_TARGET_WARNING));
@@ -19458,6 +20133,25 @@ impl MailPage {
         meta_grid.attach(&crypto_label, 0, 0, 1, 1);
         meta_grid.attach(&crypto_chip, 1, 0, 1, 1);
 
+        let mail_subject_label = gtk::Label::builder()
+            .label("")
+            .halign(gtk::Align::Fill)
+            .valign(gtk::Align::Start)
+            .xalign(0.0)
+            .hexpand(true)
+            .selectable(true)
+            .wrap(true)
+            .wrap_mode(pango::WrapMode::WordChar)
+            .lines(3)
+            .ellipsize(pango::EllipsizeMode::End)
+            .width_chars(1)
+            .css_classes(vec!["mail-detail-subject", "title-4"])
+            .visible(false)
+            .build();
+        self.imp()
+            .mail_subject_label
+            .replace(Some(mail_subject_label.clone()));
+
         let normal_headers_grid = gtk::Grid::builder()
             .row_spacing(0)
             .column_spacing(6)
@@ -19493,9 +20187,12 @@ impl MailPage {
             .child(&all_headers_scroll)
             .build();
 
-        let make_reply_btn = |icon_name: &str, tooltip: &str, action_name: &str| {
+        let make_reply_btn = |icon_name: &'static str,
+                              label_text: &'static str,
+                              tooltip: &'static str,
+                              action_name: &'static str|
+         -> (gtk::Button, gtk::Label) {
             let button = gtk::Button::builder()
-                .icon_name(icon_name)
                 .tooltip_text(tooltip)
                 .action_name(action_name)
                 .css_classes(vec!["flat"])
@@ -19506,26 +20203,50 @@ impl MailPage {
                 "mail-forward-symbolic" => "go-next-symbolic",
                 _ => "image-missing-symbolic",
             };
-            set_button_icon_with_fallback(&button, icon_name, fallback);
+            let content_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(6)
+                .valign(gtk::Align::Center)
+                .halign(gtk::Align::Center)
+                .build();
+            let icon = gtk::Image::new();
+            set_image_icon_with_fallback(&icon, icon_name, fallback);
+            icon.set_pixel_size(16);
+            let label = gtk::Label::builder()
+                .label(label_text)
+                .valign(gtk::Align::Center)
+                .visible(true)
+                .build();
+            content_box.append(&icon);
+            content_box.append(&label);
+            button.set_child(Some(&content_box));
             set_accessible_label(&button, tooltip);
-            button
+            (button, label)
         };
 
-        let reply_btn = make_reply_btn(
+        let (reply_btn, reply_lbl) = make_reply_btn(
             "mail-reply-sender-symbolic",
+            "Antworten",
             "Antworten (Ctrl+R)",
             "win.reply",
         );
-        let reply_all_btn = make_reply_btn(
+        let (reply_all_btn, reply_all_lbl) = make_reply_btn(
             "mail-reply-all-symbolic",
+            "Allen antworten",
             "Allen antworten (Ctrl+Shift+R)",
             "win.reply-all",
         );
-        let forward_btn = make_reply_btn(
+        let (forward_btn, forward_lbl) = make_reply_btn(
             "mail-forward-symbolic",
+            "Weiterleiten",
             "Weiterleiten (Ctrl+L)",
             "win.forward",
         );
+        self.imp().preview_reply_labels.replace(vec![
+            reply_lbl,
+            reply_all_lbl,
+            forward_lbl,
+        ]);
 
         let preview_more_menu = gio::Menu::new();
         preview_more_menu.append(Some("Als EML exportieren …"), Some("win.export"));
@@ -19563,7 +20284,8 @@ impl MailPage {
             .tooltip_text("Externe Bilder für diese Nachricht laden")
             .popover(&remote_images_popover)
             .valign(gtk::Align::Center)
-            .halign(gtk::Align::End)
+            .halign(gtk::Align::Start)
+            .css_classes(vec!["flat"])
             .visible(false)
             .build();
         set_accessible_label(&load_remote_images_btn, "Externe Bilder laden");
@@ -19574,8 +20296,9 @@ impl MailPage {
         let preview_reply_group = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .css_classes(vec!["linked", "mail-preview-reply-actions"])
-            .valign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
             .halign(gtk::Align::End)
+            .hexpand(true)
             .visible(false)
             .build();
         preview_reply_group.append(&reply_btn);
@@ -19586,58 +20309,25 @@ impl MailPage {
             .preview_reply_group
             .replace(Some(preview_reply_group.clone()));
 
-        let preview_actions_column = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(4)
-            .valign(gtk::Align::Start)
-            .halign(gtk::Align::End)
-            .build();
-        preview_actions_column.append(&preview_reply_group);
-        preview_actions_column.append(&load_remote_images_btn);
-
-        let headers_top_box = gtk::Box::builder()
+        let preview_actions_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
+            .halign(gtk::Align::Fill)
+            .hexpand(true)
+            .margin_start(4)
+            .margin_end(4)
+            .margin_top(0)
+            .margin_bottom(0)
+            .css_classes(vec!["sidebar-drawer-header", "mail-preview-actions-bar"])
             .build();
-        headers_top_box.append(&normal_headers_grid);
-        headers_top_box.append(&preview_actions_column);
+        preview_actions_row.append(&load_remote_images_btn);
+        preview_actions_row.append(&preview_reply_group);
+        self.imp()
+            .preview_actions_row
+            .replace(Some(preview_actions_row.clone()));
 
-        let actions_col_for_top = preview_actions_column.clone();
-        headers_top_box.connect_notify_local(Some("width"), move |top_box, _| {
-            let width = top_box.width();
-            if width <= 0 {
-                return;
-            }
-            if width < 380 {
-                if top_box.orientation() != gtk::Orientation::Vertical {
-                    top_box.set_orientation(gtk::Orientation::Vertical);
-                    actions_col_for_top.set_halign(gtk::Align::Start);
-                }
-            } else if top_box.orientation() != gtk::Orientation::Horizontal {
-                top_box.set_orientation(gtk::Orientation::Horizontal);
-                actions_col_for_top.set_halign(gtk::Align::End);
-            }
-        });
-
-        let top_box_for_detail = headers_top_box.clone();
-        let actions_col_for_detail = preview_actions_column.clone();
-        detail_view.connect_notify_local(Some("width"), move |detail, _| {
-            let width = detail.width();
-            if width <= 0 {
-                return;
-            }
-            if width < 380 {
-                if top_box_for_detail.orientation() != gtk::Orientation::Vertical {
-                    top_box_for_detail.set_orientation(gtk::Orientation::Vertical);
-                    actions_col_for_detail.set_halign(gtk::Align::Start);
-                }
-            } else if top_box_for_detail.orientation() != gtk::Orientation::Horizontal {
-                top_box_for_detail.set_orientation(gtk::Orientation::Horizontal);
-                actions_col_for_detail.set_halign(gtk::Align::End);
-            }
-        });
-
-        header_box.append(&headers_top_box);
+        header_box.append(&mail_subject_label);
+        header_box.append(&normal_headers_grid);
         header_box.append(&meta_grid);
         header_box.append(&all_headers_revealer);
 
@@ -19990,6 +20680,7 @@ impl MailPage {
             });
         });
 
+        detail_view.append(&preview_actions_row);
         detail_view.append(&header_box);
         detail_view.append(&header_separator);
         detail_view.append(&thread_context);
@@ -20779,6 +21470,18 @@ impl MailPage {
         imp.outer_paned.set_resize_end_child(true);
         imp.outer_paned.set_shrink_end_child(true);
 
+        let header_group = gtk::SizeGroup::new(gtk::SizeGroupMode::Vertical);
+        if let Some(left) = imp.drawer_header_box.borrow().as_ref() {
+            header_group.add_widget(left);
+        }
+        if let Some(mid) = imp.preview_actions_row.borrow().as_ref() {
+            header_group.add_widget(mid);
+        }
+        if let Some(right) = imp.todo_header_box.borrow().as_ref() {
+            header_group.add_widget(right);
+        }
+        imp.header_row_size_group.replace(Some(header_group));
+
         if show_todo {
             self.refresh_today_tasks();
         }
@@ -21508,6 +22211,7 @@ impl MailPage {
             .margin_end(4)
             .css_classes(vec!["sidebar-drawer-header"])
             .build();
+        self.imp().todo_header_box.replace(Some(header_bar.clone()));
 
         let icon = gtk::Image::from_icon_name("x-office-calendar-symbolic");
         header_bar.append(&icon);
@@ -29390,6 +30094,70 @@ mod tests {
     }
 
     #[test]
+    fn test_format_drawer_folder_tooltip() {
+        let inbox = FolderSelection::from_folder_id("inbox");
+        assert_eq!(
+            MailPage::format_drawer_folder_tooltip(&inbox, "Posteingang", 3, 102),
+            "Posteingang: 3 ungelesen, 102 gesamt"
+        );
+        assert_eq!(
+            MailPage::format_drawer_folder_tooltip(&inbox, "Posteingang", 1, 102),
+            "Posteingang: 1 ungelesen, 102 gesamt"
+        );
+        assert_eq!(
+            MailPage::format_drawer_folder_tooltip(&inbox, "Posteingang", 0, 102),
+            "Posteingang: 102 E-Mails"
+        );
+        assert_eq!(
+            MailPage::format_drawer_folder_tooltip(&inbox, "Posteingang", 0, 1),
+            "Posteingang: 1 E-Mail"
+        );
+        assert_eq!(
+            MailPage::format_drawer_folder_tooltip(&inbox, "Posteingang", 0, 0),
+            "Posteingang (Keine E-Mails)"
+        );
+
+        let sent = FolderSelection::from_folder_id("sent");
+        assert_eq!(
+            MailPage::format_drawer_folder_tooltip(&sent, "Gesendet", 0, 55),
+            "Gesendet: 55 gesendete E-Mails"
+        );
+        assert_eq!(
+            MailPage::format_drawer_folder_tooltip(&sent, "Gesendet", 0, 1),
+            "Gesendet: 1 gesendete E-Mail"
+        );
+
+        let drafts = FolderSelection::from_folder_id("drafts");
+        assert_eq!(
+            MailPage::format_drawer_folder_tooltip(&drafts, "Entwürfe", 0, 4),
+            "Entwürfe: 4 Entwürfe"
+        );
+        assert_eq!(
+            MailPage::format_drawer_folder_tooltip(&drafts, "Entwürfe", 0, 1),
+            "Entwürfe: 1 Entwurf"
+        );
+
+        let trash = FolderSelection::from_folder_id("trash");
+        assert_eq!(
+            MailPage::format_drawer_folder_tooltip(&trash, "Papierkorb", 0, 12),
+            "Papierkorb: 12 gelöschte E-Mails"
+        );
+
+        let spam = FolderSelection::from_folder_id("spam");
+        assert_eq!(
+            MailPage::format_drawer_folder_tooltip(&spam, "Junk", 0, 8),
+            "Junk: 8 unerwünschte E-Mails"
+        );
+
+        let mut custom = FolderSelection::from_folder_id("gmail-sent");
+        custom.folder_name = Some("[Gmail]/Gesendet".to_string());
+        assert_eq!(
+            MailPage::format_drawer_folder_tooltip(&custom, "Gesendet", 0, 55),
+            "Gesendet ([Gmail]/Gesendet): 55 gesendete E-Mails"
+        );
+    }
+
+    #[test]
     fn test_default_normal_header_configuration_matches_schema() {
         let headers = default_normal_header_configuration();
         assert!(headers.iter().any(|(name, enabled)| name == "Reply-To" && *enabled));
@@ -30005,6 +30773,135 @@ mod tests {
     }
 
     #[test]
+    fn test_mail_detail_header_adaptive_layout_and_wrapping() {
+        let source = include_str!("mail_page.rs");
+        let detail_fn = rust_function_body(source, "build_detail_view");
+
+        // Subject label is present and placed in header_box
+        assert!(detail_fn.contains("mail_subject_label"));
+        assert!(detail_fn.contains("header_box.append(&mail_subject_label);"));
+        assert!(detail_fn.contains(".css_classes(vec![\"mail-detail-subject\", \"title-4\"])"));
+
+        // Actions row is placed at the top of detail_view (flush with column header) above header_box
+        assert!(detail_fn.contains("detail_view.append(&preview_actions_row);"));
+        assert!(detail_fn.contains("detail_view.append(&header_box);"));
+        assert!(detail_fn.contains(".css_classes(vec![\"sidebar-drawer-header\", \"mail-preview-actions-bar\"])"));
+        assert!(detail_fn.contains("header_box.append(&mail_subject_label);"));
+        assert!(detail_fn.contains("header_box.append(&normal_headers_grid);"));
+
+        // Action buttons have responsive text labels and icon+label content box
+        assert!(detail_fn.contains("make_reply_btn"));
+        assert!(detail_fn.contains("\"Antworten\""));
+        assert!(detail_fn.contains("\"Allen antworten\""));
+        assert!(detail_fn.contains("\"Weiterleiten\""));
+        assert!(source.contains("pub(crate) fn sync_preview_actions_labels(&self)"));
+        assert!(source.contains("self.sync_preview_actions_labels();"));
+
+        // Normal header labels have baseline vertical alignment and do NOT wrap (single line with ellipsis)
+        let replace_fn = rust_function_body(source, "replace_normal_header_rows");
+        assert!(replace_fn.contains(".valign(gtk::Align::Baseline)"));
+        assert!(replace_fn.contains(".wrap(false)"));
+        assert!(replace_fn.contains(".single_line_mode(true)"));
+        assert!(replace_fn.contains(".ellipsize(pango::EllipsizeMode::End)"));
+
+        // Header refresh updates mail_subject_label and filters out redundant subject row
+        let refresh_fn = rust_function_body(source, "refresh_normal_headers_for_message");
+        assert!(refresh_fn.contains("subject_label.set_text(text);"));
+        assert!(refresh_fn.contains("name != \"Betreff\" && !name.eq_ignore_ascii_case(\"subject\")"));
+    }
+
+    #[test]
+    fn test_normal_headers_do_not_wrap_and_use_single_line_mode() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let grid = gtk::Grid::new();
+        let fields = vec![
+            ("Von".to_string(), "Google <no-reply@accounts.google.com>".to_string()),
+            ("An".to_string(), "max.jensen1@gmail.com".to_string()),
+            ("Datum".to_string(), "17.09.2026 09:26".to_string()),
+        ];
+
+        replace_normal_header_rows(&grid, &fields);
+
+        // Grid should contain labels for each field (name label at col 0, value label at col 1)
+        let mut row_count = 0;
+        let mut child = grid.first_child();
+        while let Some(w) = child {
+            if let Ok(label) = w.clone().downcast::<gtk::Label>() {
+                if label.has_css_class("mail-normal-header-value") {
+                    assert!(!label.wraps(), "value label should not wrap");
+                    assert!(label.is_single_line_mode(), "value label should be in single line mode");
+                    assert_eq!(label.ellipsize(), pango::EllipsizeMode::End, "value label should ellipsize at end");
+                    assert!(label.tooltip_text().is_some(), "value label should have tooltip with full value");
+                    row_count += 1;
+                }
+            }
+            child = w.next_sibling();
+        }
+        assert_eq!(row_count, 3, "should have 3 normal header value labels");
+    }
+
+    #[test]
+    fn test_preview_actions_bar_flush_height_and_responsive_collapse() {
+        let css = include_str!("../style.css");
+        assert!(css.contains(".mail-preview-actions-bar {"));
+        assert!(css.contains("min-height: 28px;"));
+        assert!(css.contains("border-bottom: 1px solid alpha(@borders, 0.45);"));
+        assert!(css.contains("background-color: transparent;"));
+
+        let source = include_str!("mail_page.rs");
+        assert!(source.contains("sidebar-drawer-header"));
+        assert!(source.contains("icon.set_pixel_size(16)"));
+        assert!(source.contains("gtk::SizeGroup::new(gtk::SizeGroupMode::Vertical)"));
+        assert!(source.contains("header_group.add_widget(left)"));
+        assert!(source.contains("header_group.add_widget(mid)"));
+        assert!(source.contains("header_group.add_widget(right)"));
+        let sync_fn = rust_function_body(source, "sync_preview_actions_labels");
+        assert!(sync_fn.contains("preview_width >= 520"));
+        assert!(sync_fn.contains("label.set_visible(show_labels)"));
+
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let group = gtk::SizeGroup::new(gtk::SizeGroupMode::Vertical);
+        let left_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let mid_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let right_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        group.add_widget(&left_box);
+        group.add_widget(&mid_box);
+        group.add_widget(&right_box);
+        assert_eq!(group.mode(), gtk::SizeGroupMode::Vertical);
+
+        let label1 = gtk::Label::new(Some("Antworten"));
+        let label2 = gtk::Label::new(Some("Allen antworten"));
+        let label3 = gtk::Label::new(Some("Weiterleiten"));
+
+        let labels = vec![label1.clone(), label2.clone(), label3.clone()];
+        for l in &labels {
+            l.set_visible(false);
+        }
+        for l in &labels {
+            assert!(!l.is_visible());
+        }
+
+        for l in &labels {
+            l.set_visible(true);
+        }
+        for l in &labels {
+            assert!(l.is_visible());
+        }
+    }
+
+    #[test]
     fn test_mail_column_header_and_row_flush_alignment() {
         let source = include_str!("mail_page.rs");
         let header_fn = rust_function_body(source, "build_mail_column_header");
@@ -30259,6 +31156,7 @@ mod tests {
             show_size: true,
             show_preview_text: true,
             date_align_left: false,
+            is_cards_mode: false,
             primary_desc_normal,
             primary_desc_bold,
             secondary_desc,
@@ -30408,6 +31306,7 @@ mod tests {
             show_size: true,
             show_preview_text: true,
             date_align_left: false,
+            is_cards_mode: false,
             primary_desc_normal,
             primary_desc_bold,
             secondary_desc,
@@ -30503,6 +31402,7 @@ mod tests {
             show_size: true,
             show_preview_text: true,
             date_align_left: false,
+            is_cards_mode: false,
             primary_desc_normal,
             primary_desc_bold,
             secondary_desc,

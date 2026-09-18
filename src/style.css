@@ -335,12 +335,26 @@ textview {
   background-color: transparent;
 }
 
+.mail-detail-subject {
+  font-size: 1.15rem;
+  font-weight: 700;
+  line-height: 1.35;
+  color: @window_fg_color;
+  margin-top: 2px;
+  margin-bottom: 4px;
+  padding: 0 2px;
+}
+
 .mail-detail-header grid label {
   font-size: 1rem;
 }
 
 .mail-normal-headers {
   padding: 0 2px;
+}
+
+.mail-normal-headers label {
+  line-height: 1.35;
 }
 
 .mail-normal-headers .mail-normal-header-value {
@@ -370,15 +384,43 @@ textview {
   padding: 0 3px;
 }
 
-.mail-preview-reply-actions {
-  margin-left: 8px;
-  margin-top: 2px;
+.mail-preview-actions-bar {
+  min-height: 28px;
+  padding: 4px 8px;
+  margin: 0;
+  background-color: transparent;
+  border-top: none;
+  border-bottom: 1px solid alpha(@borders, 0.45);
 }
 
-.mail-preview-reply-actions button {
-  min-width: 28px;
+.mail-preview-actions-bar .mail-preview-reply-actions {
+  margin: 0;
+}
+
+.mail-preview-actions-bar .mail-preview-reply-actions button,
+.mail-preview-actions-bar splitbutton,
+.mail-preview-actions-bar splitbutton > button,
+.mail-preview-actions-bar menubutton,
+.mail-preview-actions-bar menubutton > button {
   min-height: 28px;
-  padding: 2px 6px;
+  padding: 2px 8px;
+  font-size: 1.0rem;
+  font-weight: 600;
+  border-radius: 6px;
+}
+
+.mail-preview-actions-bar .mail-preview-reply-actions button label {
+  font-size: 1.0rem;
+  font-weight: 600;
+  margin-left: 6px;
+  color: @window_fg_color;
+}
+
+.mail-preview-actions-bar .mail-preview-reply-actions button image,
+.mail-preview-actions-bar menubutton > button image {
+  min-width: 16px;
+  min-height: 16px;
+  color: @window_fg_color;
 }
 
 .mail-pane-status {
@@ -1320,6 +1362,20 @@ splitview > .sidebar,
   font-size: 0.85rem;
   font-weight: 400;
   color: alpha(@window_fg_color, 0.65);
+}
+
+.sidebar-drawer-header label.sidebar-drawer-unread-badge,
+.sidebar-drawer-header .sidebar-drawer-unread-badge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: @accent_fg_color;
+  background-color: @accent_bg_color;
+  border-radius: 9999px;
+  padding: 1px 7px;
+  min-width: 16px;
+  min-height: 16px;
+  text-align: center;
+  margin-end: 2px;
 }
 
 .evolution-module-switcher {
@@ -2586,4 +2642,47 @@ button.month-bar-chip.span-end {
   font-size: 0.95rem;
   font-weight: 500;
   color: @window_fg_color;
+}
+
+/* ── Mobile-Adaptive ViewSwitcherBar ────────────────────────────────────────── */
+viewswitcherbar {
+  border-top: 1px solid alpha(@borders, 0.5);
+  background-color: @window_bg_color;
+  padding: 0;
+  margin: 0;
+  min-width: 0 !important;
+}
+
+viewswitcherbar viewswitcher {
+  margin: 0 auto;
+  width: 100%;
+}
+
+viewswitcherbar viewswitcher > box {
+  width: 100%;
+}
+
+viewswitcherbar viewswitcher button {
+  flex: 1 1 0 !important;
+  min-width: 0 !important;
+  min-height: 48px !important;
+  padding: 4px 2px !important;
+  margin: 2px 2px !important;
+  border-radius: 8px !important;
+  transition: background-color 150ms ease-in-out;
+}
+
+viewswitcherbar viewswitcher button:checked {
+  background-color: alpha(@accent_bg_color, 0.15) !important;
+  color: @accent_fg_color !important;
+}
+
+viewswitcherbar viewswitcher button label {
+  font-size: 0.72rem !important;
+  font-weight: 600 !important;
+  margin-top: 1px !important;
+}
+
+viewswitcherbar viewswitcher button image {
+  -gtk-icon-size: 18px !important;
 }
