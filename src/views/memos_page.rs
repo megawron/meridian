@@ -730,8 +730,8 @@ impl MemosPage {
                 let saved_pos = AppSettings::try_new()
                     .map(|s| s.mail_sidebar_position())
                     .unwrap_or(260)
-                    .clamp(80, 1500);
-                if paned.position() < 60 {
+                    .clamp(240, 1500);
+                if paned.position() < 180 {
                     paned.set_position(saved_pos);
                 }
             }
@@ -820,10 +820,28 @@ impl MemosPage {
                 toolbar.set_visible(false);
             } else {
                 let show_tb = AppSettings::try_new()
-                    .map(|s| s.mail_show_toolbar())
+                    .map(|s| s.memo_show_toolbar())
                     .unwrap_or(true);
                 toolbar.set_visible(show_tb);
             }
+        }
+    }
+
+    pub fn is_toolbar_visible(&self) -> bool {
+        self.imp()
+            .toolbar
+            .borrow()
+            .as_ref()
+            .map(|t| t.is_visible())
+            .unwrap_or(true)
+    }
+
+    pub fn set_toolbar_visible(&self, visible: bool) {
+        if let Some(toolbar) = self.imp().toolbar.borrow().as_ref() {
+            toolbar.set_visible(visible);
+        }
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_memo_show_toolbar(visible);
         }
     }
 
@@ -2400,7 +2418,7 @@ impl MemosPage {
             .build();
         memos_toolbar_scroll.set_visible(
             AppSettings::try_new()
-                .map(|settings| settings.mail_show_toolbar())
+                .map(|settings| settings.memo_show_toolbar())
                 .unwrap_or(true),
         );
         self.imp()
@@ -2833,11 +2851,11 @@ impl MemosPage {
             });
 
             let page_weak_for_toolbar = self.downgrade();
-            settings.connect_changed(Some("mail-show-toolbar"), move |settings, _| {
+            settings.connect_changed(Some("memo-show-toolbar"), move |settings, _| {
                 if let Some(page) = page_weak_for_toolbar.upgrade() {
                     if !page.imp().is_mobile.get() {
                         if let Some(toolbar) = page.imp().toolbar.borrow().as_ref() {
-                            toolbar.set_visible(settings.boolean("mail-show-toolbar"));
+                            toolbar.set_visible(settings.boolean("memo-show-toolbar"));
                         }
                     }
                 }
@@ -4571,12 +4589,17 @@ impl MemosPage {
         let sidebar_position = AppSettings::try_new()
             .map(|settings| settings.mail_sidebar_position())
             .unwrap_or(260)
-            .clamp(80, 1500);
+            .clamp(240, 1500);
         paned.set_position(sidebar_position);
         if let Some(settings) = AppSettings::try_new() {
             paned.connect_position_notify(move |paned| {
+                if let Some(start) = paned.start_child() {
+                    if !start.is_visible() {
+                        return;
+                    }
+                }
                 let position = paned.position();
-                if (80..=1500).contains(&position) && settings.mail_sidebar_position() != position {
+                if (180..=1500).contains(&position) && settings.mail_sidebar_position() != position {
                     settings.set_mail_sidebar_position(position);
                 }
             });

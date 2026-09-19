@@ -1533,14 +1533,7 @@ impl CalendarPage {
             }
         }
         if let Some(toolbar) = imp.toolbar.borrow().as_ref() {
-            if is_mobile {
-                toolbar.set_visible(false);
-            } else {
-                let show_tb = AppSettings::try_new()
-                    .map(|s| s.mail_show_toolbar())
-                    .unwrap_or(true);
-                toolbar.set_visible(show_tb);
-            }
+            toolbar.set_visible(!is_mobile);
         }
     }
 
@@ -1601,8 +1594,8 @@ impl CalendarPage {
                 let saved_pos = AppSettings::try_new()
                     .map(|s| s.mail_sidebar_position())
                     .unwrap_or(260)
-                    .clamp(80, 1500);
-                if paned.position() < 60 {
+                    .clamp(240, 1500);
+                if paned.position() < 180 {
                     paned.set_position(saved_pos);
                 }
             }
@@ -3227,11 +3220,7 @@ impl CalendarPage {
             .child(&view_toolbar)
             .build();
 
-        view_toolbar_scroll.set_visible(
-            AppSettings::try_new()
-                .map(|settings| settings.mail_show_toolbar())
-                .unwrap_or(true),
-        );
+        view_toolbar_scroll.set_visible(true);
         self.imp()
             .toolbar
             .replace(Some(view_toolbar_scroll.clone().upcast()));
@@ -4985,17 +4974,6 @@ impl CalendarPage {
                 page.refresh_calendar_views();
                 page.refresh_event_list_visibility();
             });
-
-            let page_weak_for_toolbar = self.downgrade();
-            settings.connect_changed(Some("mail-show-toolbar"), move |settings, _| {
-                if let Some(page) = page_weak_for_toolbar.upgrade() {
-                    if !page.imp().is_mobile.get() {
-                        if let Some(toolbar) = page.imp().toolbar.borrow().as_ref() {
-                            toolbar.set_visible(settings.boolean("mail-show-toolbar"));
-                        }
-                    }
-                }
-            });
         }
 
         // Date navigation handlers
@@ -5549,12 +5527,17 @@ impl CalendarPage {
         let sidebar_position = AppSettings::try_new()
             .map(|settings| settings.mail_sidebar_position())
             .unwrap_or(260)
-            .clamp(80, 1500);
+            .clamp(240, 1500);
         paned.set_position(sidebar_position);
         if let Some(settings) = AppSettings::try_new() {
             paned.connect_position_notify(move |paned| {
+                if let Some(start) = paned.start_child() {
+                    if !start.is_visible() {
+                        return;
+                    }
+                }
                 let position = paned.position();
-                if (80..=1500).contains(&position) && settings.mail_sidebar_position() != position {
+                if (180..=1500).contains(&position) && settings.mail_sidebar_position() != position {
                     settings.set_mail_sidebar_position(position);
                 }
             });
