@@ -542,6 +542,7 @@ mod imp {
         pub contact_search_field: Cell<ContactSearchField>,
         pub contact_search_status: RefCell<Option<gtk::Label>>,
         pub contact_search_spinner: RefCell<Option<gtk::Spinner>>,
+        pub contact_search_bar: RefCell<Option<gtk::SearchBar>>,
         pub disposed: Cell<bool>,
         pub selected_identity: RefCell<Option<ContactIdentity>>,
         pub new_contact_button: RefCell<Option<gtk::Button>>,
@@ -577,6 +578,15 @@ mod imp {
         pub is_mobile: Cell<bool>,
         pub is_tablet: Cell<bool>,
         pub is_detail_shown: Cell<bool>,
+        pub edit_button: RefCell<Option<gtk::Button>>,
+        pub email_button: RefCell<Option<gtk::Button>>,
+        pub delete_button: RefCell<Option<gtk::Button>>,
+        pub print_button: RefCell<Option<gtk::Button>>,
+        pub print_list_button: RefCell<Option<gtk::Button>>,
+        pub export_button: RefCell<Option<gtk::Button>>,
+        pub merge_button: RefCell<Option<gtk::Button>>,
+        pub copy_to_book_button: RefCell<Option<gtk::Button>>,
+        pub move_to_book_button: RefCell<Option<gtk::Button>>,
     }
 
     #[glib::object_subclass]
@@ -818,8 +828,8 @@ impl ContactsPage {
                 let saved_pos = AppSettings::try_new()
                     .map(|s| s.mail_sidebar_position())
                     .unwrap_or(260)
-                    .clamp(80, 1500);
-                if paned.position() < 60 {
+                    .clamp(240, 1500);
+                if paned.position() < 180 {
                     paned.set_position(saved_pos);
                 }
             }
@@ -836,6 +846,41 @@ impl ContactsPage {
         imp.is_mobile.set(is_mobile);
         imp.is_tablet.set(is_tablet);
         self.sync_contacts_layout_visibility();
+        self.sync_toolbar_button_labels();
+    }
+
+    pub(crate) fn apply_toolbar_button_modes(&self, is_compact: bool) {
+        let imp = self.imp();
+        let buttons: [(&RefCell<Option<gtk::Button>>, &str, &str); 9] = [
+            (&imp.edit_button, "Bearbeiten", "document-edit-symbolic"),
+            (&imp.email_button, "E-Mail", "mail-message-new-symbolic"),
+            (&imp.delete_button, "Löschen", "user-trash-symbolic"),
+            (&imp.print_button, "Drucken", "document-print-symbolic"),
+            (&imp.print_list_button, "Liste drucken", "document-print-preview-symbolic"),
+            (&imp.export_button, "Exportieren", "document-save-symbolic"),
+            (&imp.merge_button, "Zusammenführen", "object-select-symbolic"),
+            (&imp.copy_to_book_button, "Kopieren…", "edit-copy-symbolic"),
+            (&imp.move_to_book_button, "Verschieben…", "folder-move-symbolic"),
+        ];
+
+        for (cell, text, icon) in buttons {
+            if let Some(btn) = cell.borrow().as_ref() {
+                if is_compact {
+                    btn.set_child(Some(&gtk::Image::from_icon_name(icon)));
+                } else {
+                    let label = gtk::Label::builder()
+                        .label(text)
+                        .valign(gtk::Align::Center)
+                        .build();
+                    btn.set_child(Some(&label));
+                }
+            }
+        }
+    }
+
+    pub(crate) fn sync_toolbar_button_labels(&self) {
+        let is_compact = self.imp().is_mobile.get() || (self.width() > 0 && self.width() < 820);
+        self.apply_toolbar_button_modes(is_compact);
     }
 
     pub(crate) fn can_navigate_back(&self) -> bool {
@@ -918,10 +963,28 @@ impl ContactsPage {
                 toolbar.set_visible(false);
             } else {
                 let show_tb = AppSettings::try_new()
-                    .map(|s| s.mail_show_toolbar())
+                    .map(|s| s.contact_show_toolbar())
                     .unwrap_or(true);
                 toolbar.set_visible(show_tb);
             }
+        }
+    }
+
+    pub fn is_toolbar_visible(&self) -> bool {
+        self.imp()
+            .toolbar
+            .borrow()
+            .as_ref()
+            .map(|t| t.is_visible())
+            .unwrap_or(true)
+    }
+
+    pub fn set_toolbar_visible(&self, visible: bool) {
+        if let Some(toolbar) = self.imp().toolbar.borrow().as_ref() {
+            toolbar.set_visible(visible);
+        }
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_contact_show_toolbar(visible);
         }
     }
 
@@ -938,13 +1001,38 @@ impl ContactsPage {
     }
 
     pub(crate) fn focus_search(&self) {
+        if let Some(bar) = self.imp().contact_search_bar.borrow().as_ref() {
+            bar.set_search_mode(true);
+        }
         if let Some(entry) = self.imp().search_entry.borrow().as_ref() {
             entry.grab_focus();
             entry.select_region(0, -1);
         }
     }
 
+    pub(crate) fn is_search_active(&self) -> bool {
+        self.imp()
+            .contact_search_bar
+            .borrow()
+            .as_ref()
+            .map(|b| b.is_search_mode())
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn close_search(&self) {
+        if let Some(bar) = self.imp().contact_search_bar.borrow().as_ref() {
+            bar.set_search_mode(false);
+        }
+    }
+
+    pub(crate) fn search_bar(&self) -> Option<gtk::SearchBar> {
+        self.imp().contact_search_bar.borrow().clone()
+    }
+
     pub(crate) fn set_search_query(&self, query: &str) {
+        if let Some(bar) = self.imp().contact_search_bar.borrow().as_ref() {
+            bar.set_search_mode(true);
+        }
         // Global search has an explicit, typed mapping in the service layer:
         // Any Field contains.  Reset the page-local quick mode before setting
         // the entry so a previous Name/Phone quick mode cannot reinterpret a
@@ -1001,10 +1089,6 @@ impl ContactsPage {
 
         let search_entry = gtk::SearchEntry::builder()
             .placeholder_text("Kontakte durchsuchen…")
-            .margin_start(6)
-            .margin_end(6)
-            .margin_top(6)
-            .margin_bottom(4)
             .build();
         self.imp().search_entry.replace(Some(search_entry.clone()));
 
@@ -1019,8 +1103,6 @@ impl ContactsPage {
             None::<&gtk::Expression>,
         );
         quick_mode.set_tooltip_text(Some("Schnellsuchfeld auswählen"));
-        quick_mode.set_margin_start(4);
-        quick_mode.set_margin_end(4);
 
         let advanced_search_button = gtk::Button::builder()
             .icon_name("system-search-symbolic")
@@ -2507,12 +2589,14 @@ impl ContactsPage {
             .replace(Some(new_list_btn.clone()));
 
         let print_list_btn = gtk::Button::builder()
-            .icon_name("document-print-preview-symbolic")
             .tooltip_text("Sichtbare Kontakte drucken")
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&print_list_btn, "Sichtbare Kontakte drucken");
+        self.imp()
+            .print_list_button
+            .replace(Some(print_list_btn.clone()));
         let contact_list_for_list_print = contact_list.clone();
         let stored_contacts_for_list_print = Rc::clone(&stored_contacts);
         let search_state_for_list_print = Rc::clone(&search_state);
@@ -2649,12 +2733,14 @@ impl ContactsPage {
             .build();
 
         let email_btn = gtk::Button::builder()
-            .icon_name("mail-message-new-symbolic")
             .tooltip_text("E-Mail senden")
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&email_btn, "E-Mail an den Kontakt senden");
+        self.imp()
+            .email_button
+            .replace(Some(email_btn.clone()));
 
         let contact_list_for_email = contact_list.clone();
         let stored_contacts_for_email = Rc::clone(&stored_contacts);
@@ -2687,12 +2773,14 @@ impl ContactsPage {
         ));
 
         let edit_btn = gtk::Button::builder()
-            .icon_name("document-edit-symbolic")
             .tooltip_text("Kontakt bearbeiten (Strg+E)")
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&edit_btn, "Kontakt bearbeiten");
+        self.imp()
+            .edit_button
+            .replace(Some(edit_btn.clone()));
 
         let selected_contact_for_edit = Rc::clone(&selected_contact);
         let selected_contact_for_edit_refresh = Rc::clone(&selected_contact);
@@ -2754,13 +2842,15 @@ impl ContactsPage {
         ));
 
         let merge_btn = gtk::Button::builder()
-            .icon_name("object-select-symbolic")
             .tooltip_text("Dubletten derselben Quelle zusammenführen")
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(&merge_btn, "Dubletten des Kontakts zusammenführen");
+        self.imp()
+            .merge_button
+            .replace(Some(merge_btn.clone()));
 
         let selected_contact_for_merge = Rc::clone(&selected_contact);
         let stored_contacts_for_merge = Rc::clone(&stored_contacts);
@@ -2972,20 +3062,24 @@ impl ContactsPage {
         ));
 
         let delete_btn = gtk::Button::builder()
-            .icon_name("user-trash-symbolic")
             .tooltip_text("Kontakt löschen (Entf)")
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&delete_btn, "Kontakt löschen");
+        self.imp()
+            .delete_button
+            .replace(Some(delete_btn.clone()));
 
         let export_btn = gtk::Button::builder()
-            .icon_name("document-save-symbolic")
             .tooltip_text("Ausgewählte Kontakte exportieren (vCard, CSV, LDIF)")
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&export_btn, "Ausgewählte Kontakte exportieren");
+        self.imp()
+            .export_button
+            .replace(Some(export_btn.clone()));
         let contact_list_for_export = contact_list.clone();
         let stored_contacts_for_export = Rc::clone(&stored_contacts);
         let export_btn_for_export = export_btn.clone();
@@ -3082,12 +3176,14 @@ impl ContactsPage {
         ));
 
         let print_btn = gtk::Button::builder()
-            .icon_name("document-print-symbolic")
             .tooltip_text("Ausgewählte Kontakte drucken (Strg+P)")
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&print_btn, "Ausgewählte Kontakte drucken");
+        self.imp()
+            .print_button
+            .replace(Some(print_btn.clone()));
         let contact_list_for_print = contact_list.clone();
         let stored_contacts_for_print = Rc::clone(&stored_contacts);
         print_btn.connect_clicked(glib::clone!(
@@ -3124,143 +3220,25 @@ impl ContactsPage {
             }
         ));
 
-        let call_btn = gtk::Button::builder()
-            .icon_name("call-start-symbolic")
-            .tooltip_text("Telefonnummer anrufen")
-            .css_classes(vec!["flat"])
-            .valign(gtk::Align::Center)
-            .build();
-        set_accessible_label(&call_btn, "Telefonnummer anrufen");
-        let selected_contact_for_call = Rc::clone(&selected_contact);
-        call_btn.connect_clicked(glib::clone!(
-            #[weak(rename_to = page)]
-            self,
-            move |_| {
-                if let Some(record) = selected_contact_for_call.borrow().as_ref() {
-                    let phone = contact_phone_text(&record.contact);
-                    let first_phone = phone.split(',').next().unwrap_or("").trim();
-                    if !first_phone.is_empty() {
-                        let uri = format!("tel:{}", first_phone.replace(' ', ""));
-                        let _ = gio::AppInfo::launch_default_for_uri(
-                            &uri,
-                            None::<&gio::AppLaunchContext>,
-                        );
-                    } else {
-                        page.show_toast("Keine Telefonnummer hinterlegt");
-                    }
-                }
-            }
-        ));
-
-        let map_target = AppSettings::try_new()
-            .map(|s| s.contact_open_map_target())
-            .unwrap_or_else(|| "openstreetmap".to_string());
-        let map_tooltip = if map_target.eq_ignore_ascii_case("google") {
-            "Adresse in Google Maps anzeigen"
-        } else {
-            "Adresse in OpenStreetMap anzeigen"
-        };
-        let map_btn = gtk::Button::builder()
-            .icon_name("mark-location-symbolic")
-            .tooltip_text(map_tooltip)
-            .css_classes(vec!["flat"])
-            .valign(gtk::Align::Center)
-            .build();
-        set_accessible_label(&map_btn, map_tooltip);
-        let selected_contact_for_map = Rc::clone(&selected_contact);
-        map_btn.connect_clicked(glib::clone!(
-            #[weak(rename_to = page)]
-            self,
-            move |_| {
-                if let Some(record) = selected_contact_for_map.borrow().as_ref() {
-                    let (target, prefer_local, home_before_work) = AppSettings::try_new()
-                        .map(|s| {
-                            (
-                                s.contact_open_map_target(),
-                                s.contact_open_map_prefer_local(),
-                                s.contact_preview_home_before_work(),
-                            )
-                        })
-                        .unwrap_or_else(|| ("openstreetmap".to_string(), true, false));
-                    let addrs = ordered_contact_addresses(&record.contact, home_before_work);
-                    let addr = addrs.first().map(|s| s.as_str()).unwrap_or("");
-                    if !addr.is_empty() {
-                        let (primary_uri, fallback_uri) =
-                            crate::services::settings_service::build_contact_map_uri(
-                                addr,
-                                &target,
-                                prefer_local,
-                            );
-                        let launched = gio::AppInfo::launch_default_for_uri(
-                            &primary_uri,
-                            None::<&gio::AppLaunchContext>,
-                        );
-                        if launched.is_err() {
-                            if let Some(fallback) = fallback_uri {
-                                let _ = gio::AppInfo::launch_default_for_uri(
-                                    &fallback,
-                                    None::<&gio::AppLaunchContext>,
-                                );
-                            }
-                        }
-                    } else {
-                        page.show_toast("Keine Adresse hinterlegt");
-                    }
-                }
-            }
-        ));
-
-        let web_btn = gtk::Button::builder()
-            .icon_name("web-browser-symbolic")
-            .tooltip_text("Website im Browser öffnen")
-            .css_classes(vec!["flat"])
-            .valign(gtk::Align::Center)
-            .build();
-        set_accessible_label(&web_btn, "Website im Browser öffnen");
-        let selected_contact_for_web = Rc::clone(&selected_contact);
-        web_btn.connect_clicked(glib::clone!(
-            #[weak(rename_to = page)]
-            self,
-            move |_| {
-                if let Some(record) = selected_contact_for_web.borrow().as_ref() {
-                    let url = record
-                        .contact
-                        .urls
-                        .first()
-                        .map(|s| s.as_str())
-                        .unwrap_or("");
-                    if !url.is_empty() {
-                        let uri = if url.starts_with("http://") || url.starts_with("https://") {
-                            url.to_string()
-                        } else {
-                            format!("https://{url}")
-                        };
-                        let _ = gio::AppInfo::launch_default_for_uri(
-                            &uri,
-                            None::<&gio::AppLaunchContext>,
-                        );
-                    } else {
-                        page.show_toast("Keine Website hinterlegt");
-                    }
-                }
-            }
-        ));
-
         let copy_to_book_btn = gtk::Button::builder()
-            .icon_name("edit-copy-symbolic")
             .tooltip_text("In Adressbuch kopieren…")
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&copy_to_book_btn, "In Adressbuch kopieren");
+        self.imp()
+            .copy_to_book_button
+            .replace(Some(copy_to_book_btn.clone()));
 
         let move_to_book_btn = gtk::Button::builder()
-            .icon_name("folder-move-symbolic")
             .tooltip_text("In Adressbuch verschieben…")
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&move_to_book_btn, "In Adressbuch verschieben");
+        self.imp()
+            .move_to_book_button
+            .replace(Some(move_to_book_btn.clone()));
 
         let transfer_ctx = ContactTransferUiContext {
             contact_list: contact_list.clone(),
@@ -3878,40 +3856,95 @@ impl ContactsPage {
         });
         self.add_controller(page_key_controller);
 
+        // Initialize toolbar button modes (desktop: pure text, mobile: pure icon)
+        let is_compact_initial = self.imp().is_mobile.get() || (self.width() > 0 && self.width() < 820);
+        self.apply_toolbar_button_modes(is_compact_initial);
+
+        self.connect_root_notify(move |page| {
+            if let Some(win) = page.root().and_downcast::<gtk::Window>() {
+                let page_weak = page.downgrade();
+                win.connect_default_width_notify(move |_| {
+                    if let Some(page) = page_weak.upgrade() {
+                        page.sync_toolbar_button_labels();
+                    }
+                });
+            }
+        });
+
         let left_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(2)
+            .spacing(4)
             .halign(gtk::Align::Start)
             .build();
+        // 1. Primary actions: Edit, Email, Delete
         left_box.append(&edit_btn);
+        left_box.append(&email_btn);
         left_box.append(&delete_btn);
         left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        left_box.append(&email_btn);
-        left_box.append(&call_btn);
-        left_box.append(&map_btn);
-        left_box.append(&web_btn);
-        left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        left_box.append(&copy_to_book_btn);
-        left_box.append(&move_to_book_btn);
-        left_box.append(&merge_btn);
-        left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        // 2. Output actions: Print, Print List, Export
         left_box.append(&print_btn);
         left_box.append(&print_list_btn);
         left_box.append(&export_btn);
+        left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        // 3. Organization & Maintenance actions: Merge, Copy, Move
+        left_box.append(&merge_btn);
+        left_box.append(&copy_to_book_btn);
+        left_box.append(&move_to_book_btn);
 
-        quick_mode.set_valign(gtk::Align::Center);
+        let contacts_search_bar = gtk::SearchBar::builder()
+            .search_mode_enabled(false)
+            .key_capture_widget(self)
+            .build();
+        contacts_search_bar.connect_entry(&search_entry);
+        self.imp()
+            .contact_search_bar
+            .replace(Some(contacts_search_bar.clone()));
+
+        let search_content_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(4)
+            .margin_bottom(4)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .build();
+
+        search_entry.set_width_chars(32);
         search_entry.set_valign(gtk::Align::Center);
+        quick_mode.set_valign(gtk::Align::Center);
         advanced_search_button.set_valign(gtk::Align::Center);
 
-        let center_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(4)
-            .hexpand(true)
-            .halign(gtk::Align::Fill)
-            .build();
-        center_box.append(&search_entry);
-        center_box.append(&quick_mode);
-        center_box.append(&advanced_search_button);
+        search_content_box.append(&search_entry);
+        search_content_box.append(&quick_mode);
+        search_content_box.append(&advanced_search_button);
+        contacts_search_bar.set_child(Some(&search_content_box));
+
+        let entry_for_search_mode = search_entry.clone();
+        let page_weak_for_search_mode = self.downgrade();
+        contacts_search_bar.connect_notify_local(Some("search-mode-enabled"), move |bar, _| {
+            let is_mode = bar.is_search_mode();
+            if is_mode {
+                entry_for_search_mode.grab_focus();
+            } else if !entry_for_search_mode.text().is_empty() {
+                entry_for_search_mode.set_text("");
+            }
+            if let Some(page) = page_weak_for_search_mode.upgrade() {
+                if let Some(window) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
+                    if let Some(btn) = window.search_button() {
+                        if btn.is_active() != is_mode {
+                            btn.set_active(is_mode);
+                        }
+                    }
+                }
+            }
+        });
+
+        let bar_for_stop = contacts_search_bar.clone();
+        search_entry.connect_stop_search(move |_| {
+            bar_for_stop.set_search_mode(false);
+        });
 
         let right_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -3975,8 +4008,9 @@ impl ContactsPage {
 
         right_box.append(&view_switcher_box);
 
+        let spacer = gtk::Box::builder().hexpand(true).build();
         contacts_toolbar.append(&left_box);
-        contacts_toolbar.append(&center_box);
+        contacts_toolbar.append(&spacer);
         contacts_toolbar.append(&right_box);
 
         let contacts_toolbar_scroll = gtk::ScrolledWindow::builder()
@@ -3987,7 +4021,7 @@ impl ContactsPage {
             .build();
         contacts_toolbar_scroll.set_visible(
             AppSettings::try_new()
-                .map(|settings| settings.mail_show_toolbar())
+                .map(|settings| settings.contact_show_toolbar())
                 .unwrap_or(true),
         );
         self.imp()
@@ -4386,6 +4420,7 @@ impl ContactsPage {
             .hexpand(true)
             .build();
         content_box.append(&contacts_toolbar_scroll);
+        content_box.append(&contacts_search_bar);
         content_box.append(&preview_paned);
 
         paned.set_end_child(Some(&content_box));
@@ -4402,6 +4437,11 @@ impl ContactsPage {
         if let Some(settings) = AppSettings::try_new() {
             let settings_for_notify = settings.clone();
             paned.connect_position_notify(move |paned| {
+                if let Some(start) = paned.start_child() {
+                    if !start.is_visible() {
+                        return;
+                    }
+                }
                 let position = paned.position();
                 if (80..=1500).contains(&position) {
                     if settings_for_notify.mail_sidebar_position() != position {
@@ -4430,27 +4470,16 @@ impl ContactsPage {
             preview_toggle.set_active(initial_visible);
 
             let page_weak_for_toolbar = self.downgrade();
-            settings.connect_changed(Some("mail-show-toolbar"), move |settings, _| {
+            settings.connect_changed(Some("contact-show-toolbar"), move |settings, _| {
                 if let Some(page) = page_weak_for_toolbar.upgrade() {
                     if !page.imp().is_mobile.get() {
                         if let Some(toolbar) = page.imp().toolbar.borrow().as_ref() {
-                            toolbar.set_visible(settings.boolean("mail-show-toolbar"));
+                            toolbar.set_visible(settings.boolean("contact-show-toolbar"));
                         }
                     }
                 }
             });
 
-            let map_btn_for_settings = map_btn.clone();
-            settings.connect_changed(Some("contact-open-map-target"), move |settings, _| {
-                let target = settings.string("contact-open-map-target");
-                let tooltip = if target.eq_ignore_ascii_case("google") {
-                    "Adresse in Google Maps anzeigen"
-                } else {
-                    "Adresse in OpenStreetMap anzeigen"
-                };
-                map_btn_for_settings.set_tooltip_text(Some(tooltip));
-                set_accessible_label(&map_btn_for_settings, tooltip);
-            });
 
             let detail_box_for_settings = detail_box.clone();
             let preview_toggle_for_settings = preview_toggle.clone();
@@ -7085,7 +7114,7 @@ fn append_contact_card(flow: &gtk::FlowBox, record: &EBookContactRecord) {
     let card_child = gtk::FlowBoxChild::new();
     card_child.set_focusable(true);
     card_child.add_css_class("contact-card-child");
-    card_child.set_size_request(130, 124);
+    card_child.set_size_request(200, 124);
     card_child.set_halign(gtk::Align::Fill);
     card_child.set_valign(gtk::Align::Fill);
     card_child.set_hexpand(true);
@@ -7111,7 +7140,7 @@ fn append_contact_card(flow: &gtk::FlowBox, record: &EBookContactRecord) {
         .orientation(gtk::Orientation::Vertical)
         .spacing(6)
         .css_classes(vec!["card", "contact-card-box"])
-        .width_request(130)
+        .width_request(200)
         .height_request(124)
         .halign(gtk::Align::Fill)
         .valign(gtk::Align::Fill)
@@ -7147,7 +7176,7 @@ fn append_contact_card(flow: &gtk::FlowBox, record: &EBookContactRecord) {
         .hexpand(true)
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .width_chars(1)
-        .max_width_chars(10)
+        .max_width_chars(15)
         .css_classes(vec!["contact-card-name"])
         .lines(1)
         .build();
@@ -7169,7 +7198,7 @@ fn append_contact_card(flow: &gtk::FlowBox, record: &EBookContactRecord) {
             .hexpand(true)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .width_chars(1)
-            .max_width_chars(10)
+            .max_width_chars(15)
             .css_classes(vec!["dim-label", "contact-card-sub"])
             .lines(1)
             .build();
@@ -7221,7 +7250,7 @@ fn append_contact_card(flow: &gtk::FlowBox, record: &EBookContactRecord) {
             .hexpand(true)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .width_chars(1)
-            .max_width_chars(11)
+            .max_width_chars(17)
             .css_classes(vec!["contact-card-detail-text"])
             .lines(1)
             .build();
@@ -7256,7 +7285,7 @@ fn append_contact_card(flow: &gtk::FlowBox, record: &EBookContactRecord) {
             .hexpand(true)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .width_chars(1)
-            .max_width_chars(11)
+            .max_width_chars(17)
             .css_classes(vec!["contact-card-detail-text"])
             .lines(1)
             .build();
@@ -7290,7 +7319,7 @@ fn append_contact_card(flow: &gtk::FlowBox, record: &EBookContactRecord) {
                     .hexpand(true)
                     .ellipsize(gtk::pango::EllipsizeMode::End)
                     .width_chars(1)
-                    .max_width_chars(11)
+                    .max_width_chars(17)
                     .css_classes(vec!["contact-card-detail-text"])
                     .lines(1)
                     .build();
@@ -8663,7 +8692,7 @@ mod tests {
 
         let child = find_card_child(&flow, "source-1", "uid-turing").expect("card child exists");
         let card_box = child.child().and_then(|w| w.downcast::<gtk::Box>().ok()).expect("card box exists");
-        assert_eq!(card_box.width_request(), 130);
+        assert_eq!(card_box.width_request(), 200);
         assert_eq!(card_box.height_request(), 124);
 
         // First select
@@ -8772,7 +8801,7 @@ mod tests {
 
         let child = find_card_child(&flow, "source-1", "uid-ada").expect("Ada card child exists");
         let card_box = child.child().and_then(|w| w.downcast::<gtk::Box>().ok()).expect("card box exists");
-        assert_eq!(card_box.width_request(), 130);
+        assert_eq!(card_box.width_request(), 200);
         assert_eq!(card_box.height_request(), 124);
         assert_eq!(child.halign(), gtk::Align::Fill);
         assert_eq!(child.valign(), gtk::Align::Fill);
@@ -8850,21 +8879,21 @@ mod tests {
 
         assert!(child_count > 0, "flow must have children");
         assert!(
-            max_child_nat <= 160,
-            "max_child_nat ({max_child_nat}) must be <= 160 to allow multi-column layout at narrow window widths"
+            max_child_nat <= 220,
+            "max_child_nat ({max_child_nat}) must be <= 220 to allow multi-column layout at standard window widths"
         );
 
-        // At 200px width (narrower than 2 cards), exactly 1 column
-        let (h_single, _, _, _) = flow.measure(gtk::Orientation::Vertical, 200);
+        // At 250px width (narrower than 2 cards, but >= min 226px), exactly 1 column
+        let (h_single, _, _, _) = flow.measure(gtk::Orientation::Vertical, 250);
 
-        // At 320px width, must wrap to at least 2 columns (height roughly halved)
-        let (h_320, _, _, _) = flow.measure(gtk::Orientation::Vertical, 320);
+        // At 500px width, must wrap to at least 2 columns (height roughly halved)
+        let (h_500, _, _, _) = flow.measure(gtk::Orientation::Vertical, 500);
         assert!(
-            h_320 <= (h_single * 6) / 10,
-            "At 320px, FlowBox must wrap to 2 columns: h_320={h_320}, h_single={h_single}"
+            h_500 <= (h_single * 6) / 10,
+            "At 500px, FlowBox must wrap to 2 columns: h_500={h_500}, h_single={h_single}"
         );
 
-        // At 700px width (user's window size), must wrap to at least 3-4 columns
+        // At 700px width (user's window size), must wrap to at least 3 columns
         let (h_700, _, _, _) = flow.measure(gtk::Orientation::Vertical, 700);
         assert!(
             h_700 <= (h_single * 4) / 10,
@@ -9010,5 +9039,110 @@ mod tests {
         assert_eq!(hit_test_contact_table(&layout_name_asc, 35.0), Some(1));
         assert_eq!(hit_test_contact_table(&layout_name_asc, 68.0), Some(2));
         assert_eq!(hit_test_contact_table(&layout_name_asc, 500.0), None);
+    }
+
+    #[test]
+    fn test_contacts_toolbar_and_search_bar_hig() {
+        let source = include_str!("contacts_page.rs");
+        // Collapsible SearchBar pattern matching Mail and Calendar
+        assert!(source.contains("contact_search_bar"));
+        assert!(source.contains("search-mode-enabled"));
+        assert!(source.contains("connect_stop_search"));
+        assert!(source.contains("pub(crate) fn is_search_active"));
+        assert!(source.contains("pub(crate) fn close_search"));
+        assert!(source.contains("pub(crate) fn search_bar"));
+        // Toolbar should not contain search_entry in center_box
+        let legacy_center_append = ["contacts_toolbar", ".append(&center", "_box)"].concat();
+        assert!(!source.contains(&legacy_center_append));
+        assert!(source.contains("content_box.append(&contacts_search_bar)"));
+
+        // Ensure redundant toolbar buttons are removed
+        let call_btn_decl = ["let ", "call_btn", " ="].concat();
+        let map_btn_decl = ["let ", "map_btn", " ="].concat();
+        let web_btn_decl = ["let ", "web_btn", " ="].concat();
+        assert!(!source.contains(&call_btn_decl));
+        assert!(!source.contains(&map_btn_decl));
+        assert!(!source.contains(&web_btn_decl));
+        assert!(source.contains("pub(crate) fn sync_toolbar_button_labels"));
+        assert!(source.contains("pub(crate) fn apply_toolbar_button_modes"));
+
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        use adw::subclass::prelude::*;
+        let page = ContactsPage::new();
+        assert!(page.search_bar().is_some());
+        assert!(!page.is_search_active());
+
+        // Test HIG toolbar button modes in desktop mode (pure text, no icon)
+        let edit_btn = page.imp().edit_button.borrow().clone().expect("edit button exists");
+        let email_btn = page.imp().email_button.borrow().clone().expect("email button exists");
+        let delete_btn = page.imp().delete_button.borrow().clone().expect("delete button exists");
+        let print_btn = page.imp().print_button.borrow().clone().expect("print button exists");
+        let print_list_btn = page.imp().print_list_button.borrow().clone().expect("print_list button exists");
+        let export_btn = page.imp().export_button.borrow().clone().expect("export button exists");
+        let merge_btn = page.imp().merge_button.borrow().clone().expect("merge button exists");
+        let copy_btn = page.imp().copy_to_book_button.borrow().clone().expect("copy button exists");
+        let move_btn = page.imp().move_to_book_button.borrow().clone().expect("move button exists");
+
+        let get_label_text = |btn: &gtk::Button| {
+            btn.child().and_downcast::<gtk::Label>().map(|l| l.text().to_string())
+        };
+        let get_image_icon = |btn: &gtk::Button| {
+            btn.child().and_downcast::<gtk::Image>().and_then(|img| img.icon_name().map(|s| s.to_string()))
+        };
+
+        // Desktop: All buttons have text labels, NO icons
+        assert_eq!(get_label_text(&edit_btn), Some("Bearbeiten".to_string()));
+        assert_eq!(get_label_text(&email_btn), Some("E-Mail".to_string()));
+        assert_eq!(get_label_text(&delete_btn), Some("Löschen".to_string()));
+        assert_eq!(get_label_text(&print_btn), Some("Drucken".to_string()));
+        assert_eq!(get_label_text(&print_list_btn), Some("Liste drucken".to_string()));
+        assert_eq!(get_label_text(&export_btn), Some("Exportieren".to_string()));
+        assert_eq!(get_label_text(&merge_btn), Some("Zusammenführen".to_string()));
+        assert_eq!(get_label_text(&copy_btn), Some("Kopieren…".to_string()));
+        assert_eq!(get_label_text(&move_btn), Some("Verschieben…".to_string()));
+        assert_eq!(get_image_icon(&edit_btn), None);
+
+        // Mobile / Compact mode: All buttons switch to pure icons, NO text
+        page.set_screen_mode(true, false);
+        assert_eq!(get_label_text(&edit_btn), None);
+        assert_eq!(get_image_icon(&edit_btn), Some("document-edit-symbolic".to_string()));
+        assert_eq!(get_image_icon(&email_btn), Some("mail-message-new-symbolic".to_string()));
+        assert_eq!(get_image_icon(&delete_btn), Some("user-trash-symbolic".to_string()));
+        assert_eq!(get_image_icon(&print_btn), Some("document-print-symbolic".to_string()));
+        assert_eq!(get_image_icon(&print_list_btn), Some("document-print-preview-symbolic".to_string()));
+        assert_eq!(get_image_icon(&export_btn), Some("document-save-symbolic".to_string()));
+        assert_eq!(get_image_icon(&merge_btn), Some("object-select-symbolic".to_string()));
+        assert_eq!(get_image_icon(&copy_btn), Some("edit-copy-symbolic".to_string()));
+        assert_eq!(get_image_icon(&move_btn), Some("folder-move-symbolic".to_string()));
+
+        // Restoring desktop mode restores pure text
+        page.set_screen_mode(false, false);
+        assert_eq!(get_label_text(&edit_btn), Some("Bearbeiten".to_string()));
+        assert_eq!(get_label_text(&email_btn), Some("E-Mail".to_string()));
+        assert_eq!(get_label_text(&delete_btn), Some("Löschen".to_string()));
+        assert_eq!(get_image_icon(&edit_btn), None);
+
+        page.focus_search();
+        assert!(page.is_search_active());
+
+        page.close_search();
+        assert!(!page.is_search_active());
+
+        page.set_search_query("test-query");
+        assert!(page.is_search_active());
+        assert_eq!(
+            page.imp()
+                .search_entry
+                .borrow()
+                .as_ref()
+                .map(|e| e.text().to_string()),
+            Some("test-query".to_string())
+        );
     }
 }
