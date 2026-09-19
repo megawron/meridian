@@ -540,9 +540,18 @@
       <choices>
         <choice value='messages'/>
         <choice value='wide'/>
+        <choice value='cards'/>
         <choice value='custom'/>
       </choices>
       <summary>Active mail list column profile</summary>
+    </key>
+    <key name="mail-header-style" type="s">
+      <default>'modern'</default>
+      <choices>
+        <choice value='modern'/>
+        <choice value='classic'/>
+      </choices>
+      <summary>Style of the email message header (modern card or classic tabular)</summary>
     </key>
     <key name="mail-list-column-order" type="s">
       <default>'status,attachment,flagged,sender,recipient,subject,date,follow-up,important,avatar,preview,size,follow-up-due,location,messages'</default>
@@ -738,6 +747,10 @@
       <default>true</default>
       <summary>Show the memo preview</summary>
     </key>
+    <key name="memo-show-toolbar" type="b">
+      <default>true</default>
+      <summary>Show the memos toolbar</summary>
+    </key>
     <key name="memo-preview-orientation" type="s">
       <default>'classic'</default>
       <summary>Memo preview orientation</summary>
@@ -759,6 +772,10 @@
     <key name="task-preview-visible" type="b">
       <default>true</default>
       <summary>Show the task preview</summary>
+    </key>
+    <key name="task-show-toolbar" type="b">
+      <default>true</default>
+      <summary>Show the tasks toolbar</summary>
     </key>
     <key name="task-preview-orientation" type="s">
       <default>'classic'</default>
@@ -836,6 +853,10 @@
       <default>true</default>
       <summary>Show contact preview pane</summary>
       <description>Whether to show the contact preview pane.</description>
+    </key>
+    <key name="contact-show-toolbar" type="b">
+      <default>true</default>
+      <summary>Show the contacts toolbar</summary>
     </key>
     <key name="contact-hpane-position" type="i">
       <default>200</default>

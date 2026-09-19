@@ -76,6 +76,13 @@ pub(crate) fn normalized_mail_list_view_profile(value: &str) -> &'static str {
     }
 }
 
+pub(crate) fn normalized_mail_header_style(value: &str) -> &'static str {
+    match value {
+        "classic" => "classic",
+        _ => "modern",
+    }
+}
+
 pub(crate) fn mail_list_profile_column_order(profile: &str) -> Vec<String> {
     let columns = if normalized_mail_list_view_profile(profile) == "wide" {
         &MAIL_LIST_WIDE_COLUMN_IDS
@@ -2427,6 +2434,32 @@ impl AppSettings {
         self.set_string("mail-list-view-profile", profile);
     }
 
+    pub fn mail_header_style(&self) -> String {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("mail-header-style"))
+            .unwrap_or(false);
+        let raw = if has_key {
+            self.settings.string("mail-header-style").to_string()
+        } else {
+            "modern".to_string()
+        };
+        normalized_mail_header_style(&raw).to_string()
+    }
+
+    pub fn set_mail_header_style(&self, style: &str) {
+        let style = normalized_mail_header_style(style);
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("mail-header-style"))
+            .unwrap_or(false);
+        if has_key {
+            self.set_string("mail-header-style", style);
+        }
+    }
+
     pub fn mail_list_column_order(&self) -> Vec<String> {
         normalize_mail_list_column_order(&self.settings.string("mail-list-column-order"))
     }
@@ -2584,6 +2617,14 @@ impl AppSettings {
         self.set_boolean("memo-preview-visible", value);
     }
 
+    pub fn memo_show_toolbar(&self) -> bool {
+        self.settings.boolean("memo-show-toolbar")
+    }
+
+    pub fn set_memo_show_toolbar(&self, value: bool) {
+        self.set_boolean("memo-show-toolbar", value);
+    }
+
     pub fn memo_preview_orientation(&self) -> String {
         normalize_memo_preview_orientation_value(&self.settings.string("memo-preview-orientation"))
             .unwrap_or_else(|_| {
@@ -2626,6 +2667,14 @@ impl AppSettings {
 
     pub fn set_task_preview_visible(&self, value: bool) {
         self.set_boolean("task-preview-visible", value);
+    }
+
+    pub fn task_show_toolbar(&self) -> bool {
+        self.settings.boolean("task-show-toolbar")
+    }
+
+    pub fn set_task_show_toolbar(&self, value: bool) {
+        self.set_boolean("task-show-toolbar", value);
     }
 
     pub fn task_preview_orientation(&self) -> String {
@@ -2769,6 +2818,14 @@ impl AppSettings {
 
     pub fn set_contact_preview_visible(&self, value: bool) {
         self.set_boolean("contact-preview-visible", value);
+    }
+
+    pub fn contact_show_toolbar(&self) -> bool {
+        self.settings.boolean("contact-show-toolbar")
+    }
+
+    pub fn set_contact_show_toolbar(&self, value: bool) {
+        self.set_boolean("contact-show-toolbar", value);
     }
 
     pub fn contact_hpane_position(&self) -> i32 {
@@ -3279,6 +3336,10 @@ impl AppSettings {
                     self.apply_mail_list_view_profile(value);
                 }
             }
+            "mail-header-style" => {
+                let style = normalized_mail_header_style(value);
+                self.set_mail_header_style(style);
+            }
             "mail-list-column-order" => {
                 let order = normalize_mail_list_column_order(value);
                 self.set_mail_list_column_order(&order);
@@ -3358,6 +3419,9 @@ impl AppSettings {
             "task-preview-visible" => {
                 self.set_task_preview_visible(parse_migrated_bool(key, value)?);
             }
+            "task-show-toolbar" => {
+                self.set_task_show_toolbar(parse_migrated_bool(key, value)?);
+            }
             "task-preview-orientation" => {
                 let value = normalize_task_preview_orientation_value(value)?;
                 self.set_string("task-preview-orientation", &value);
@@ -3388,6 +3452,9 @@ impl AppSettings {
             }
             "memo-preview-visible" => {
                 self.set_memo_preview_visible(parse_migrated_bool(key, value)?);
+            }
+            "memo-show-toolbar" => {
+                self.set_memo_show_toolbar(parse_migrated_bool(key, value)?);
             }
             "memo-preview-orientation" => {
                 let value = normalize_memo_preview_orientation_value(value)?;
@@ -3431,6 +3498,9 @@ impl AppSettings {
             }
             "contact-preview-visible" => {
                 self.set_contact_preview_visible(parse_migrated_bool(key, value)?);
+            }
+            "contact-show-toolbar" => {
+                self.set_contact_show_toolbar(parse_migrated_bool(key, value)?);
             }
             "contact-hpane-position" => {
                 let val = parse_migrated_i32_in_range(key, value, 80, 4_096)?;
@@ -3715,6 +3785,7 @@ impl AppSettings {
             "mail-date-custom-format",
             "mail-date-align",
             "mail-list-view-profile",
+            "mail-header-style",
             "mail-list-column-order",
             "color-scheme",
             "sign-new-messages",
@@ -3747,6 +3818,7 @@ impl AppSettings {
             "task-sort-field",
             "task-sort-descending",
             "task-preview-visible",
+            "task-show-toolbar",
             "task-preview-orientation",
             "task-hpane-position",
             "task-vpane-position",
@@ -3756,6 +3828,7 @@ impl AppSettings {
             "memo-search-mode",
             "memo-category-filter",
             "memo-preview-visible",
+            "memo-show-toolbar",
             "memo-preview-orientation",
             "memo-hpane-position",
             "memo-vpane-position",
@@ -3769,6 +3842,7 @@ impl AppSettings {
             "contact-open-map-prefer-local",
             "contact-layout",
             "contact-preview-visible",
+            "contact-show-toolbar",
             "contact-hpane-position",
             "contact-vpane-position",
             "contact-editor-show-phone",
@@ -4196,6 +4270,17 @@ mod tests {
     fn mail_sort_field_accepts_important_and_rejects_unknown_values() {
         assert_eq!(normalized_mail_sort_field("important"), "important");
         assert_eq!(normalized_mail_sort_field("unknown"), "date");
+    }
+
+    #[test]
+    fn mail_header_style_round_trips_and_normalizes() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+        assert_eq!(settings.mail_header_style(), "modern");
+        settings.set_mail_header_style("classic");
+        assert_eq!(settings_with_backend(&backend).mail_header_style(), "classic");
+        settings.set_mail_header_style("invalid");
+        assert_eq!(settings_with_backend(&backend).mail_header_style(), "modern");
     }
 
     #[test]

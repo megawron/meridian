@@ -393,6 +393,12 @@ struct BackupSettings {
     contact_layout: String,
     #[serde(default = "default_contact_preview_visible")]
     contact_preview_visible: bool,
+    #[serde(default = "default_contact_show_toolbar")]
+    contact_show_toolbar: bool,
+    #[serde(default = "default_task_show_toolbar")]
+    task_show_toolbar: bool,
+    #[serde(default = "default_memo_show_toolbar")]
+    memo_show_toolbar: bool,
     #[serde(default = "default_contact_hpane_position")]
     contact_hpane_position: i32,
     #[serde(default = "default_contact_vpane_position")]
@@ -916,6 +922,18 @@ fn default_contact_preview_visible() -> bool {
     true
 }
 
+fn default_contact_show_toolbar() -> bool {
+    true
+}
+
+fn default_task_show_toolbar() -> bool {
+    true
+}
+
+fn default_memo_show_toolbar() -> bool {
+    true
+}
+
 fn default_contact_hpane_position() -> i32 {
     200
 }
@@ -1065,6 +1083,9 @@ impl BackupSettings {
             contact_open_map_prefer_local: settings.contact_open_map_prefer_local(),
             contact_layout: settings.contact_layout(),
             contact_preview_visible: settings.contact_preview_visible(),
+            contact_show_toolbar: settings.contact_show_toolbar(),
+            task_show_toolbar: settings.task_show_toolbar(),
+            memo_show_toolbar: settings.memo_show_toolbar(),
             contact_hpane_position: settings.contact_hpane_position(),
             contact_vpane_position: settings.contact_vpane_position(),
             contact_editor_show_phone: settings.contact_editor_show_phone(),
@@ -1353,6 +1374,9 @@ impl BackupSettings {
         settings.set_contact_open_map_prefer_local(self.contact_open_map_prefer_local);
         settings.set_contact_layout(&self.contact_layout);
         settings.set_contact_preview_visible(self.contact_preview_visible);
+        settings.set_contact_show_toolbar(self.contact_show_toolbar);
+        settings.set_task_show_toolbar(self.task_show_toolbar);
+        settings.set_memo_show_toolbar(self.memo_show_toolbar);
         settings.set_contact_hpane_position(self.contact_hpane_position);
         settings.set_contact_vpane_position(self.contact_vpane_position);
         settings.set_contact_editor_show_phone(self.contact_editor_show_phone);
@@ -2147,6 +2171,9 @@ const BACKUP_SETTINGS_FIELDS: &[&str] = &[
     "contact_open_map_prefer_local",
     "contact_layout",
     "contact_preview_visible",
+    "contact_show_toolbar",
+    "task_show_toolbar",
+    "memo_show_toolbar",
     "contact_hpane_position",
     "contact_vpane_position",
     "contact_editor_show_phone",

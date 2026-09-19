@@ -1024,6 +1024,9 @@ fn canonical_setting(
         "editor-show-certs" => "contact-editor-show-certs",
         "use-12-hour-format" | "use-12-hour-clock" => "time-format",
         "show-toolbar" if group.contains("mail") => "mail-show-toolbar",
+        "show-toolbar" if group.contains("addressbook") || group.contains("contact") => "contact-show-toolbar",
+        "show-toolbar" if group.contains("task") => "task-show-toolbar",
+        "show-toolbar" if group.contains("memo") => "memo-show-toolbar",
         "show-sidebar" if group.contains("mail") => "mail-show-sidebar",
         "show-from" | "show-sender" if group.contains("mail") => "mail-show-sender",
         "show-to" | "show-recipient" if group.contains("mail") => "mail-show-recipient",
@@ -1263,6 +1266,7 @@ fn is_supported_migration_key(key: &str) -> bool {
             | "task-sort-field"
             | "task-sort-descending"
             | "task-preview-visible"
+            | "task-show-toolbar"
             | "task-preview-orientation"
             | "task-hpane-position"
             | "task-vpane-position"
@@ -1272,6 +1276,7 @@ fn is_supported_migration_key(key: &str) -> bool {
             | "memo-search-mode"
             | "memo-category-filter"
             | "memo-preview-visible"
+            | "memo-show-toolbar"
             | "memo-preview-orientation"
             | "memo-hpane-position"
             | "memo-vpane-position"
@@ -1286,6 +1291,7 @@ fn is_supported_migration_key(key: &str) -> bool {
             | "contact-open-map-prefer-local"
             | "contact-layout"
             | "contact-preview-visible"
+            | "contact-show-toolbar"
             | "contact-hpane-position"
             | "contact-vpane-position"
             | "contact-editor-show-phone"
@@ -1738,7 +1744,9 @@ fn is_boolean_migration_key(key: &str) -> bool {
             | "mail-threading"
             | "task-sort-descending"
             | "task-preview-visible"
+            | "task-show-toolbar"
             | "memo-preview-visible"
+            | "memo-show-toolbar"
             | "memo-sort-descending"
             | "contact-completion-show-address"
             | "contact-address-formatting"
@@ -1746,6 +1754,7 @@ fn is_boolean_migration_key(key: &str) -> bool {
             | "contact-preview-home-before-work"
             | "contact-open-map-prefer-local"
             | "contact-preview-visible"
+            | "contact-show-toolbar"
             | "contact-editor-show-phone"
             | "contact-editor-show-sip"
             | "contact-editor-show-im"

@@ -4951,6 +4951,33 @@ impl PreferencesDialog {
         }
         group_mail_headers_mode.add(&row_show_all_headers);
 
+        let row_header_style = adw::ComboRow::builder()
+            .title("Kopfzeilen-Darstellung")
+            .subtitle("Stil der Kopfzeilen in der normalen E-Mail-Leseansicht")
+            .model(&gtk::StringList::new(&[
+                "Modern (Webmail-Stil)",
+                "Klassisch (Tabellarisch)",
+            ]))
+            .build();
+        if let Some(settings) = settings.clone() {
+            let initial_idx = if settings.mail_header_style() == "classic" { 1 } else { 0 };
+            row_header_style.set_selected(initial_idx);
+            let settings_for_style = settings.clone();
+            row_header_style.connect_selected_notify(move |row| {
+                let val = if row.selected() == 1 { "classic" } else { "modern" };
+                settings_for_style.set_mail_header_style(val);
+            });
+            let row_weak = row_header_style.downgrade();
+            settings.connect_changed(Some("mail-header-style"), move |s, _| {
+                let Some(row) = row_weak.upgrade() else { return; };
+                let target = if s.string("mail-header-style").as_str() == "classic" { 1 } else { 0 };
+                if row.selected() != target {
+                    row.set_selected(target);
+                }
+            });
+        }
+        group_mail_headers_mode.add(&row_header_style);
+
         let group_mail_normal_headers = adw::PreferencesGroup::builder()
             .title("Normale Nachrichtenkopfzeilen")
             .description(
