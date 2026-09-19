@@ -2116,7 +2116,7 @@ button.month-bar-chip.span-end {
   padding: 8px 10px;
   box-shadow: 0 1px 3px alpha(black, 0.05), 0 1px 2px alpha(black, 0.03);
   transition: box-shadow 160ms ease, border-color 160ms ease, transform 160ms ease;
-  min-width: 130px;
+  min-width: 200px;
   height: 124px;
   min-height: 124px;
   max-height: 124px;
@@ -2766,5 +2766,85 @@ scrollbar.mail-table-overlay-scrollbar slider:active {
   width: 10px;
   background-color: alpha(currentColor, 0.75);
 }
+
+/* ── Modern Webmail Header & Conversation Bar ────────────────────────── */
+.mail-modern-header-card {
+  padding: 4px 6px;
+  border-radius: 8px;
+  background-color: alpha(@window_fg_color, 0.025);
+}
+
+.mail-modern-sender-name {
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+
+.mail-details-toggle {
+  font-size: 0.78rem;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.mail-conversation-bar {
+  background-color: alpha(@window_fg_color, 0.035);
+  border-radius: 8px;
+  padding: 3px 8px;
+}
+
+.mail-conversation-inner {
+  padding: 2px 0;
+}
+
+.mail-thread-pill {
+  border-radius: 9999px;
+  padding: 3px 10px;
+  background-color: alpha(@window_fg_color, 0.05);
+  transition: all 120ms ease-in-out;
+}
+
+.mail-thread-pill:hover {
+  background-color: alpha(@window_fg_color, 0.10);
+}
+
+.mail-thread-pill.accent {
+  background-color: @accent_bg_color;
+  color: @accent_fg_color;
+  font-weight: 600;
+}
+
+.mail-thread-pill.accent label {
+  color: @accent_fg_color;
+}
+
+.mail-thread-mini-avatar {
+  font-weight: 700;
+  font-size: 0.72rem;
+  padding: 1px 5px;
+  border-radius: 9999px;
+  background-color: alpha(@window_fg_color, 0.12);
+}
+
+.mail-thread-unread-dot {
+  color: #f57900;
+  font-size: 1.1rem;
+}
+
+.mail-header-action-btn {
+  min-width: 32px;
+  min-height: 32px;
+  padding: 5px;
+  border-radius: 9999px;
+  color: @window_fg_color;
+  transition: all 120ms ease-in-out;
+}
+
+.mail-header-action-btn:hover {
+  background-color: alpha(@window_fg_color, 0.08);
+}
+
+.mail-header-actions-group {
+  margin-start: 4px;
+}
+
 
 

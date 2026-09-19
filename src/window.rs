@@ -60,6 +60,7 @@ mod imp {
         pub sidebar_visibility_per_view: RefCell<HashMap<String, bool>>,
         pub sidebar_animation: RefCell<Option<adw::TimedAnimation>>,
         pub search_button: RefCell<Option<gtk::ToggleButton>>,
+        pub compose_button: RefCell<Option<gtk::Button>>,
         pub view_stack: RefCell<Option<adw::ViewStack>>,
         pub toast_overlay: adw::ToastOverlay,
         pub status_label: RefCell<Option<gtk::Label>>,
@@ -837,12 +838,15 @@ impl EvolutionWindow {
             let saved_pos = AppSettings::try_new()
                 .map(|s| s.mail_sidebar_position())
                 .unwrap_or(260)
-                .clamp(80, 1500);
-            let cur_pos = self
-                .active_view_outer_paned()
-                .map(|p| p.position())
-                .unwrap_or(saved_pos)
-                .clamp(80, 1500);
+                .clamp(240, 1500);
+            let cur_pos = if is_vis {
+                self.active_view_outer_paned()
+                    .map(|p| p.position())
+                    .unwrap_or(saved_pos)
+                    .clamp(240, 1500)
+            } else {
+                saved_pos
+            };
 
             if let Some(sb_h) = self.imp().sidebar_header.borrow().as_ref() {
                 sb_h.set_visible(is_vis);
@@ -918,6 +922,93 @@ impl EvolutionWindow {
     pub fn toggle_active_view_right_panel(&self) {
         let current = self.is_active_view_right_panel_visible();
         self.set_active_view_right_panel_visible(!current);
+    }
+
+    pub fn is_toolbar_visible_for_active_view(&self) -> bool {
+        match self.active_view_name().as_str() {
+            "mail" => self
+                .mail_page()
+                .map(|p| p.is_toolbar_visible())
+                .unwrap_or_else(|| {
+                    AppSettings::try_new()
+                        .map(|s| s.mail_show_toolbar())
+                        .unwrap_or(true)
+                }),
+            "contacts" => self
+                .contacts_page()
+                .map(|p| p.is_toolbar_visible())
+                .unwrap_or_else(|| {
+                    AppSettings::try_new()
+                        .map(|s| s.contact_show_toolbar())
+                        .unwrap_or(true)
+                }),
+            "tasks" => self
+                .tasks_page()
+                .map(|p| p.is_toolbar_visible())
+                .unwrap_or_else(|| {
+                    AppSettings::try_new()
+                        .map(|s| s.task_show_toolbar())
+                        .unwrap_or(true)
+                }),
+            "memos" => self
+                .memos_page()
+                .map(|p| p.is_toolbar_visible())
+                .unwrap_or_else(|| {
+                    AppSettings::try_new()
+                        .map(|s| s.memo_show_toolbar())
+                        .unwrap_or(true)
+                }),
+            "calendar" => true,
+            _ => true,
+        }
+    }
+
+    pub fn set_active_view_toolbar_visible(&self, visible: bool) {
+        match self.active_view_name().as_str() {
+            "mail" => {
+                if let Some(p) = self.mail_page() {
+                    p.set_toolbar_visible(visible);
+                } else if let Some(settings) = AppSettings::try_new() {
+                    settings.set_mail_show_toolbar(visible);
+                }
+            }
+            "contacts" => {
+                if let Some(p) = self.contacts_page() {
+                    p.set_toolbar_visible(visible);
+                } else if let Some(settings) = AppSettings::try_new() {
+                    settings.set_contact_show_toolbar(visible);
+                }
+            }
+            "tasks" => {
+                if let Some(p) = self.tasks_page() {
+                    p.set_toolbar_visible(visible);
+                } else if let Some(settings) = AppSettings::try_new() {
+                    settings.set_task_show_toolbar(visible);
+                }
+            }
+            "memos" => {
+                if let Some(p) = self.memos_page() {
+                    p.set_toolbar_visible(visible);
+                } else if let Some(settings) = AppSettings::try_new() {
+                    settings.set_memo_show_toolbar(visible);
+                }
+            }
+            "calendar" => {}
+            _ => {}
+        }
+        self.sync_toolbar_state_for_current_view();
+    }
+
+    pub fn sync_toolbar_state_for_current_view(&self) {
+        let is_vis = self.is_toolbar_visible_for_active_view();
+        if let Some(action) = self
+            .lookup_action("toggle-toolbar")
+            .and_then(|a| a.downcast::<gio::SimpleAction>().ok())
+        {
+            if action.state().and_then(|v| v.get::<bool>()) != Some(is_vis) {
+                action.set_state(&is_vis.to_variant());
+            }
+        }
     }
 
     pub fn sync_right_sidebar_toggle(&self) {
@@ -1118,6 +1209,19 @@ impl EvolutionWindow {
             }
         }
 
+        if let Some(btn) = self.imp().compose_button.borrow().as_ref() {
+            let active = self.active_view_name();
+            Self::configure_primary_action(btn, &active, is_mobile);
+        }
+
+        if let Some(switcher) = self.imp().view_switcher.borrow().as_ref() {
+            if is_tablet || is_mobile {
+                switcher.set_policy(adw::ViewSwitcherPolicy::Narrow);
+            } else {
+                switcher.set_policy(adw::ViewSwitcherPolicy::Wide);
+            }
+        }
+
         if let Some(header_bar) = self.imp().header_bar.borrow().as_ref() {
             if is_mobile {
                 if let Some(window_title) = self.imp().window_title.borrow().as_ref() {
@@ -1183,11 +1287,10 @@ impl EvolutionWindow {
             .borrow_mut()
             .insert(active_view.clone(), show);
 
-        if active_view == "mail" {
-            if let Some(settings) = AppSettings::try_new() {
-                if settings.mail_show_sidebar() != show {
-                    settings.set_mail_show_sidebar(show);
-                }
+        let is_mail = active_view == "mail";
+        if is_mail {
+            if let Some(mail) = self.mail_page() {
+                mail.imp().sidebar_animating.set(true);
             }
         }
 
@@ -1206,37 +1309,51 @@ impl EvolutionWindow {
             if let Some(res_btn) = self.imp().restore_sidebar_button.borrow().as_ref() {
                 res_btn.set_visible(false);
             }
+            if is_mail {
+                if let Some(mail) = self.mail_page() {
+                    mail.imp().sidebar_animating.set(false);
+                }
+            }
             return;
         }
 
         let outer_paned = match self.active_view_outer_paned() {
             Some(p) => p,
-            None => return,
+            None => {
+                if is_mail {
+                    if let Some(mail) = self.mail_page() {
+                        mail.imp().sidebar_animating.set(false);
+                    }
+                }
+                return;
+            }
         };
 
         let target_pos = AppSettings::try_new()
             .map(|s| s.mail_sidebar_position())
             .unwrap_or(260)
-            .clamp(80, 1500);
+            .clamp(240, 1500);
 
+        let is_start_visible = outer_paned.start_child().map(|s| s.is_visible()).unwrap_or(false);
         let current_pos = outer_paned.position();
         let (from_pos, to_pos) = if show {
-            let start = if current_pos <= 10 { 0.0 } else { current_pos as f64 };
+            let start = if !is_start_visible || current_pos <= 10 {
+                0.0
+            } else {
+                current_pos as f64
+            };
             (start, target_pos as f64)
         } else {
-            let start = if current_pos <= 10 { target_pos as f64 } else { current_pos as f64 };
+            let start = if current_pos < 180 {
+                target_pos as f64
+            } else {
+                current_pos as f64
+            };
             (start, 0.0)
         };
 
         if let Some(old_anim) = self.imp().sidebar_animation.borrow_mut().take() {
             old_anim.pause();
-        }
-
-        let is_mail = active_view == "mail";
-        if is_mail {
-            if let Some(mail) = self.mail_page() {
-                mail.imp().sidebar_animating.set(true);
-            }
         }
 
         if show {
@@ -1331,16 +1448,12 @@ impl EvolutionWindow {
                     if let Some(start) = paned.start_child() {
                         start.set_visible(false);
                     }
+                    paned.set_position(0);
                 } else {
                     paned.set_position(target_pos);
                 }
             }
             if let Some(win) = win_weak_done.upgrade() {
-                if is_mail {
-                    if let Some(mail) = win.mail_page() {
-                        mail.imp().sidebar_animating.set(false);
-                    }
-                }
                 win.imp().sidebar_animation.borrow_mut().take();
                 if !show {
                     if let Some(sb_h) = win.imp().sidebar_header.borrow().as_ref() {
@@ -1375,7 +1488,32 @@ impl EvolutionWindow {
                         action.set_state(&show.to_variant());
                     }
                 }
+                if active_view == "mail" {
+                    if let Some(settings) = AppSettings::try_new() {
+                        if settings.mail_show_sidebar() != show {
+                            settings.set_mail_show_sidebar(show);
+                        }
+                        if show && (settings.mail_sidebar_position() < 240 || settings.mail_sidebar_position() != target_pos) {
+                            settings.set_mail_sidebar_position(target_pos);
+                        }
+                    }
+                }
             }
+            let win_for_idle = win_weak_done.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(win) = win_for_idle.upgrade() {
+                    if show {
+                        if let Some(paned) = win.active_view_outer_paned() {
+                            paned.set_position(target_pos);
+                        }
+                    }
+                    if is_mail {
+                        if let Some(mail) = win.mail_page() {
+                            mail.imp().sidebar_animating.set(false);
+                        }
+                    }
+                }
+            });
         });
 
         self.imp().sidebar_animation.replace(Some(animation.clone()));
@@ -2045,7 +2183,11 @@ impl EvolutionWindow {
                     page.close_search();
                 }
             }
-            Some("contacts") => {}
+            Some("contacts") => {
+                if let Some(page) = self.contacts_page() {
+                    page.close_search();
+                }
+            }
             Some("tasks") => {
                 if let Some(page) = self.tasks_page() {
                     page.close_search();
@@ -2082,7 +2224,7 @@ impl EvolutionWindow {
             .map(|name| name.to_string());
         match view_name.as_deref() {
             Some("calendar") => self.calendar_page().map(|p| p.is_search_active()).unwrap_or(false),
-            Some("contacts") => false,
+            Some("contacts") => self.contacts_page().map(|p| p.is_search_active()).unwrap_or(false),
             Some("tasks") => self.tasks_page().map(|p| p.is_search_active()).unwrap_or(false),
             Some("memos") => self.memos_page().map(|p| p.is_search_active()).unwrap_or(false),
             _ => self.mail_page().map(|p| p.is_search_active()).unwrap_or(false),
@@ -2214,7 +2356,7 @@ impl EvolutionWindow {
         action
     }
 
-    fn configure_primary_action(button: &gtk::Button, view_name: &str) {
+    fn configure_primary_action(button: &gtk::Button, view_name: &str, is_mobile: bool) {
         let (icon_name, tooltip, action_name) = match view_name {
             "calendar" => (
                 "x-office-calendar-symbolic",
@@ -2243,14 +2385,27 @@ impl EvolutionWindow {
             ),
         };
         let icon_theme = gtk::IconTheme::for_display(&button.display());
-        button.set_icon_name(if icon_theme.has_icon(icon_name) {
+        let icon_actual = if icon_theme.has_icon(icon_name) {
             icon_name
         } else {
             "document-new-symbolic"
-        });
+        };
+        let label_text = if is_mobile { "" } else { "Neu" };
+        if let Some(content) = button.child().and_downcast::<adw::ButtonContent>() {
+            content.set_icon_name(icon_actual);
+            content.set_label(label_text);
+        } else {
+            let content = adw::ButtonContent::builder()
+                .icon_name(icon_actual)
+                .label(label_text)
+                .build();
+            button.set_child(Some(&content));
+        }
         button.set_tooltip_text(Some(tooltip));
         button.set_action_name(Some(action_name));
         button.add_css_class("suggested-action");
+        let a11y_label = tooltip.split('(').next().unwrap_or("Neu").trim();
+        set_accessible_label(button, a11y_label);
     }
 
     fn set_mail_actions_enabled(&self, enabled: bool) {
@@ -2634,6 +2789,19 @@ impl EvolutionWindow {
                     {
                         let page = ContactsPage::new();
                         page.set_screen_mode(is_mobile, is_tablet);
+                        if let Some(bar) = page.search_bar() {
+                            if let Some(win) = window_weak.upgrade() {
+                                if let Some(btn) = win.imp().search_button.borrow().as_ref() {
+                                    let btn_clone = btn.clone();
+                                    bar.connect_notify_local(Some("search-mode-enabled"), move |bar, _| {
+                                        let active = bar.is_search_mode();
+                                        if btn_clone.is_active() != active {
+                                            btn_clone.set_active(active);
+                                        }
+                                    });
+                                }
+                            }
+                        }
                         contacts_bin.set_child(Some(&page));
                     }
                     "tasks"
@@ -2720,7 +2888,7 @@ impl EvolutionWindow {
 
             let sync_sidebar_position_for_settings = Rc::clone(&sync_sidebar_position);
             settings.connect_changed(Some("mail-sidebar-position"), move |settings, _| {
-                let pos = settings.int("mail-sidebar-position").clamp(80, 1500);
+                let pos = settings.int("mail-sidebar-position").clamp(240, 1500);
                 sync_sidebar_position_for_settings(pos);
             });
         }
@@ -2756,6 +2924,7 @@ impl EvolutionWindow {
                     window.set_screen_mode(window.imp().is_mobile.get(), window.imp().is_tablet.get());
                     window.sync_sidebar_state_for_current_view();
                     window.sync_right_sidebar_toggle();
+                    window.sync_toolbar_state_for_current_view();
                 }
                 if let Some(settings) = settings_for_view.as_ref() {
                     settings.set_active_view(view_name.as_str());
@@ -2770,7 +2939,7 @@ impl EvolutionWindow {
         let initial_sidebar_pos = AppSettings::try_new()
             .map(|s| s.mail_sidebar_position())
             .unwrap_or(260)
-            .clamp(80, 1500);
+            .clamp(240, 1500);
         let initial_sidebar_vis = AppSettings::try_new()
             .map(|s| s.mail_show_sidebar())
             .unwrap_or(true);
@@ -2904,17 +3073,22 @@ impl EvolutionWindow {
         header_bar.pack_start(&back_button);
 
         let compose_button = gtk::Button::builder()
-            .icon_name("mail-message-new-symbolic")
             .tooltip_text("Neue E-Mail (Ctrl+N)")
             .action_name("app.compose")
             .css_classes(vec!["suggested-action"])
             .build();
 
-        Self::configure_primary_action(&compose_button, &active_view);
+        Self::configure_primary_action(&compose_button, &active_view, false);
+        self.imp().compose_button.replace(Some(compose_button.clone()));
         let primary_action_for_view = compose_button.clone();
+        let win_weak_primary = self.downgrade();
         view_stack.connect_visible_child_name_notify(move |stack| {
             if let Some(view_name) = stack.visible_child_name() {
-                Self::configure_primary_action(&primary_action_for_view, view_name.as_str());
+                let is_mobile = win_weak_primary
+                    .upgrade()
+                    .map(|w| w.imp().is_mobile.get())
+                    .unwrap_or(false);
+                Self::configure_primary_action(&primary_action_for_view, view_name.as_str(), is_mobile);
             }
         });
 
@@ -3009,8 +3183,24 @@ impl EvolutionWindow {
                     }
                 });
             }
+
+            let win_weak_tb_sync = self.downgrade();
+            for key in &[
+                "mail-show-toolbar",
+                "contact-show-toolbar",
+                "task-show-toolbar",
+                "memo-show-toolbar",
+            ] {
+                let win_weak_k = win_weak_tb_sync.clone();
+                settings.connect_changed(Some(key), move |_, _| {
+                    if let Some(win) = win_weak_k.upgrade() {
+                        win.sync_toolbar_state_for_current_view();
+                    }
+                });
+            }
         }
         self.sync_right_sidebar_toggle();
+        self.sync_toolbar_state_for_current_view();
 
         let statusbar_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -3680,12 +3870,34 @@ impl EvolutionWindow {
             AppSettings::mail_show_toolbar,
             AppSettings::set_mail_show_toolbar,
         );
-        self.add_boolean_setting_action(
+
+        let initial_tb_vis = self.is_toolbar_visible_for_active_view();
+        let action_toolbar = gio::SimpleAction::new_stateful(
             "toggle-toolbar",
-            "mail-show-toolbar",
-            AppSettings::mail_show_toolbar,
-            AppSettings::set_mail_show_toolbar,
+            None,
+            &initial_tb_vis.to_variant(),
         );
+        let win_weak_tb_state = self.downgrade();
+        action_toolbar.connect_change_state(move |action, target_state| {
+            if let Some(target_state) = target_state {
+                if let Some(vis) = target_state.get::<bool>() {
+                    action.set_state(&vis.to_variant());
+                    if let Some(win) = win_weak_tb_state.upgrade() {
+                        win.set_active_view_toolbar_visible(vis);
+                    }
+                }
+            }
+        });
+        let win_weak_tb_act = self.downgrade();
+        action_toolbar.connect_activate(move |action, _| {
+            let current = action.state().and_then(|v| v.get::<bool>()).unwrap_or(true);
+            let next = !current;
+            action.set_state(&next.to_variant());
+            if let Some(win) = win_weak_tb_act.upgrade() {
+                win.set_active_view_toolbar_visible(next);
+            }
+        });
+        self.add_action(&action_toolbar);
         self.add_boolean_setting_action(
             "toggle-mail-statusbar",
             "mail-show-statusbar",
@@ -6180,17 +6392,35 @@ mod tests {
         let memos_page = memos_bin.child().and_downcast::<MemosPage>().unwrap();
         assert!(memos_page.imp().toolbar.borrow().is_some());
 
-        // Toggle to false and verify visibility in all views
+        // Verify per-module independence and active-view toggle
         if let Some(settings) = AppSettings::try_new() {
+            // Toggling mail toolbar hides mail toolbar, but preserves other modules
             settings.set_mail_show_toolbar(false);
             assert_eq!(mail_page.imp().classic_toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(false));
+            assert_eq!(contacts_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
+            assert_eq!(calendar_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
+            assert_eq!(tasks_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
+            assert_eq!(memos_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
+
+            // Toggling contacts toolbar only affects contacts
+            settings.set_contact_show_toolbar(false);
             assert_eq!(contacts_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(false));
-            assert_eq!(calendar_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(false));
+            assert_eq!(tasks_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
+
+            // Toggling tasks toolbar only affects tasks
+            settings.set_task_show_toolbar(false);
             assert_eq!(tasks_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(false));
+            assert_eq!(memos_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
+
+            // Toggling memos toolbar only affects memos
+            settings.set_memo_show_toolbar(false);
             assert_eq!(memos_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(false));
 
-            // Toggle to true and verify visibility in all views
+            // Restore all
             settings.set_mail_show_toolbar(true);
+            settings.set_contact_show_toolbar(true);
+            settings.set_task_show_toolbar(true);
+            settings.set_memo_show_toolbar(true);
             assert_eq!(mail_page.imp().classic_toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
             assert_eq!(contacts_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
             assert_eq!(calendar_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
@@ -6375,6 +6605,22 @@ mod tests {
         search_btn.set_active(false);
         assert!(!window.is_active_search_open());
 
+        // Switch to contacts view and test search toggle
+        if let Some(stack) = window.imp().view_stack.borrow().as_ref() {
+            stack.set_visible_child_name("contacts");
+        }
+        assert!(!window.is_active_search_open());
+        search_btn.set_active(true);
+        assert!(window.is_active_search_open());
+        if let Some(contacts) = window.contacts_page() {
+            assert!(contacts.is_search_active());
+        }
+        search_btn.set_active(false);
+        assert!(!window.is_active_search_open());
+        if let Some(contacts) = window.contacts_page() {
+            assert!(!contacts.is_search_active());
+        }
+
         // Ensure search_button is packed first (furthest to the left)
         let header_bar = window.imp().header_bar.borrow().as_ref().unwrap().clone();
         // Ensure search_button is in header_bar and is the first toggle button
@@ -6451,23 +6697,28 @@ mod tests {
 
         let switcher_bar = window.view_switcher_bar().expect("view_switcher_bar should exist");
         let back_btn = window.back_button().expect("back_button should exist");
+        let top_switcher = window.imp().view_switcher.borrow().clone().expect("view_switcher should exist");
 
-        // Desktop default mode
+        // Desktop default mode: wide policy
+        assert_eq!(top_switcher.policy(), adw::ViewSwitcherPolicy::Wide);
         assert!(!switcher_bar.reveals(), "switcher_bar should not reveal on desktop");
         assert!(!back_btn.is_visible(), "back_button should be hidden initially");
 
-        // Switch to tablet mode
+        // Switch to tablet mode: narrow policy for space-saving
         window.set_screen_mode(false, true);
+        assert_eq!(top_switcher.policy(), adw::ViewSwitcherPolicy::Narrow);
         assert!(!switcher_bar.reveals(), "switcher_bar should not reveal on tablet");
         assert!(!back_btn.is_visible(), "back_button should remain hidden on tablet without drilldown");
 
-        // Switch to mobile mode
+        // Switch to mobile mode: narrow policy, bottom bar revealed
         window.set_screen_mode(true, false);
+        assert_eq!(top_switcher.policy(), adw::ViewSwitcherPolicy::Narrow);
         assert!(switcher_bar.reveals(), "switcher_bar should reveal on mobile");
         assert!(!back_btn.is_visible(), "back_button should start hidden on mobile root");
 
-        // Revert to desktop mode
+        // Revert to desktop mode: returns to wide policy
         window.set_screen_mode(false, false);
+        assert_eq!(top_switcher.policy(), adw::ViewSwitcherPolicy::Wide);
         assert!(!switcher_bar.reveals(), "switcher_bar should hide again on desktop");
     }
 
@@ -6751,5 +7002,150 @@ mod tests {
         window.toggle_sidebar_animated(true);
         assert!(window.is_sidebar_visible_for_active_view());
     }
+
+    #[test]
+    fn test_sidebar_toggle_collapse_expand_alignment() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(context) = gtk_test_main_context() else {
+            return;
+        };
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_active_view("mail");
+            settings.set_mail_show_sidebar(true);
+            settings.set_mail_sidebar_position(260);
+        }
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+        window.set_visible(true);
+        window.set_screen_mode(false, false);
+        if let Some(stack) = window.imp().view_stack.borrow().as_ref() {
+            stack.set_visible_child_name("mail");
+        }
+        while context.iteration(false) {}
+
+        let outer_paned = window.active_view_outer_paned().expect("outer paned");
+        println!("Initial paned pos: {}", outer_paned.position());
+        let sb_h = window.imp().sidebar_header.borrow().clone().expect("sb_h");
+        println!("Initial sb_h size_request: {:?}", sb_h.size_request());
+
+        window.toggle_sidebar_animated(false);
+        for _ in 0..40 {
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            while context.iteration(false) {}
+        }
+        assert!(!window.is_sidebar_visible_for_active_view());
+        assert!(!sb_h.is_visible());
+        if let Some(start) = outer_paned.start_child() {
+            assert!(!start.is_visible());
+        }
+        if let Some(settings) = AppSettings::try_new() {
+            assert_eq!(settings.mail_sidebar_position(), 260);
+        }
+
+        window.toggle_sidebar_animated(true);
+        for _ in 0..40 {
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            while context.iteration(false) {}
+        }
+        assert!(window.is_sidebar_visible_for_active_view());
+        assert!(sb_h.is_visible());
+        assert_eq!(outer_paned.position(), 260);
+        if let Some(start) = outer_paned.start_child() {
+            assert!(start.is_visible());
+            assert_eq!(start.width(), 260);
+        }
+        assert_eq!(sb_h.size_request(), (260, -1));
+        if let Some(settings) = AppSettings::try_new() {
+            assert_eq!(settings.mail_sidebar_position(), 260);
+        }
+        // Cycle 2: Collapse and expand again
+        window.toggle_sidebar_animated(false);
+        for _ in 0..40 {
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            while context.iteration(false) {}
+        }
+        assert!(!window.is_sidebar_visible_for_active_view());
+
+        window.toggle_sidebar_animated(true);
+        for _ in 0..40 {
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            while context.iteration(false) {}
+        }
+        assert!(window.is_sidebar_visible_for_active_view());
+        assert_eq!(outer_paned.position(), 260);
+        assert_eq!(sb_h.size_request(), (260, -1));
+        if let Some(start) = outer_paned.start_child() {
+            assert_eq!(start.width(), 260);
+        }
+
+        // Cycle 3: If setting was corrupted to 125 while collapsed
+        window.toggle_sidebar_animated(false);
+        for _ in 0..40 {
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            while context.iteration(false) {}
+        }
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_mail_sidebar_position(125);
+        }
+        window.toggle_sidebar_animated(true);
+        for _ in 0..40 {
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            while context.iteration(false) {}
+        }
+        assert!(window.is_sidebar_visible_for_active_view());
+        assert_eq!(outer_paned.position(), 240);
+        assert_eq!(sb_h.size_request(), (240, -1));
+        if let Some(start) = outer_paned.start_child() {
+            assert_eq!(start.width(), 240);
+        }
+    }
+
+    #[test]
+    fn test_primary_action_button_label_and_responsiveness() {
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+        let _lock = GTK_TEST_MUTEX.lock().unwrap();
+
+        let button = gtk::Button::new();
+        // Desktop/Tablet: label is "Neu"
+        EvolutionWindow::configure_primary_action(&button, "mail", false);
+        let content = button
+            .child()
+            .and_downcast::<adw::ButtonContent>()
+            .expect("ButtonContent child");
+        assert_eq!(content.label().as_str(), "Neu");
+        assert_eq!(
+            content.icon_name().as_str(),
+            "mail-message-new-symbolic"
+        );
+        assert!(button.has_css_class("suggested-action"));
+
+        // Switch to calendar
+        EvolutionWindow::configure_primary_action(&button, "calendar", false);
+        assert_eq!(content.label().as_str(), "Neu");
+        assert_eq!(
+            content.icon_name().as_str(),
+            "x-office-calendar-symbolic"
+        );
+
+        // Mobile mode: label is collapsed ("") for space saving
+        EvolutionWindow::configure_primary_action(&button, "mail", true);
+        assert_eq!(content.label().as_str(), "");
+        assert_eq!(
+            content.icon_name().as_str(),
+            "mail-message-new-symbolic"
+        );
+    }
 }
+
+
 
