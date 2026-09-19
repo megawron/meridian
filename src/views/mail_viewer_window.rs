@@ -89,7 +89,7 @@ mod imp {
     impl ObjectSubclass for MailViewerWindow {
         const NAME: &'static str = "EvolutionMailViewerWindow";
         type Type = super::MailViewerWindow;
-        type ParentType = adw::Window;
+        type ParentType = adw::ApplicationWindow;
     }
 
     impl ObjectImpl for MailViewerWindow {
@@ -112,12 +112,14 @@ mod imp {
         }
     }
 
-    impl AdwWindowImpl for MailViewerWindow {}
+    impl ApplicationWindowImpl for MailViewerWindow {}
+    impl AdwApplicationWindowImpl for MailViewerWindow {}
 }
 
 glib::wrapper! {
     pub struct MailViewerWindow(ObjectSubclass<imp::MailViewerWindow>)
-        @extends adw::Window, gtk::Window, gtk::Widget,
+        @extends adw::ApplicationWindow, gtk::ApplicationWindow,
+                 gtk::Window, gtk::Widget,
         @implements gio::ActionGroup, gio::ActionMap,
                     gtk::Accessible, gtk::Buildable,
                     gtk::ConstraintTarget, gtk::Native,
