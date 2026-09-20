@@ -2554,153 +2554,6 @@ impl PreferencesDialog {
         group_contacts_autocomplete.add(&row_completion_book_sources);
         page_contacts.add(&group_contacts_autocomplete);
 
-        let group_contacts_editor = adw::PreferencesGroup::builder()
-            .title("Kontakteditor-Abschnitte")
-            .description("Sichtbarkeit der einzelnen Detailabschnitte im Bearbeitungsdialog")
-            .build();
-
-        fn add_contact_editor_toggle(
-            group: &adw::PreferencesGroup,
-            settings: &Option<AppSettings>,
-            title: &str,
-            subtitle: &str,
-            key: &'static str,
-            getter: fn(&AppSettings) -> bool,
-            setter: fn(&AppSettings, bool),
-        ) {
-            let row = adw::SwitchRow::builder()
-                .title(title)
-                .subtitle(subtitle)
-                .build();
-            if let Some(s) = settings.clone() {
-                row.set_active(getter(&s));
-                let s_clone = s.clone();
-                row.connect_active_notify(move |r| {
-                    if getter(&s_clone) != r.is_active() {
-                        setter(&s_clone, r.is_active());
-                    }
-                });
-                let row_clone = row.clone();
-                s.connect_changed(Some(key), move |settings, _| {
-                    let val = settings.boolean(key);
-                    if row_clone.is_active() != val {
-                        row_clone.set_active(val);
-                    }
-                });
-            }
-            group.add(&row);
-        }
-
-        add_contact_editor_toggle(
-            &group_contacts_editor,
-            &settings,
-            "Telefonnummern",
-            "Telefon- und Mobilnummern",
-            "contact-editor-show-phone",
-            AppSettings::contact_editor_show_phone,
-            AppSettings::set_contact_editor_show_phone,
-        );
-        add_contact_editor_toggle(
-            &group_contacts_editor,
-            &settings,
-            "SIP- / VoIP-Adressen",
-            "Internettelefonie-Konten",
-            "contact-editor-show-sip",
-            AppSettings::contact_editor_show_sip,
-            AppSettings::set_contact_editor_show_sip,
-        );
-        add_contact_editor_toggle(
-            &group_contacts_editor,
-            &settings,
-            "Instant Messaging",
-            "Chat- und Messenger-Kennungen",
-            "contact-editor-show-im",
-            AppSettings::contact_editor_show_im,
-            AppSettings::set_contact_editor_show_im,
-        );
-        add_contact_editor_toggle(
-            &group_contacts_editor,
-            &settings,
-            "Privatadresse",
-            "Wohnsitz und private Anschrift",
-            "contact-editor-show-home-address",
-            AppSettings::contact_editor_show_home_address,
-            AppSettings::set_contact_editor_show_home_address,
-        );
-        add_contact_editor_toggle(
-            &group_contacts_editor,
-            &settings,
-            "Geschäftsadresse",
-            "Büro- und Firmenanschrift",
-            "contact-editor-show-work-address",
-            AppSettings::contact_editor_show_work_address,
-            AppSettings::set_contact_editor_show_work_address,
-        );
-        add_contact_editor_toggle(
-            &group_contacts_editor,
-            &settings,
-            "Weitere Adressen",
-            "Sonstige postalische Adressen",
-            "contact-editor-show-other-address",
-            AppSettings::contact_editor_show_other_address,
-            AppSettings::set_contact_editor_show_other_address,
-        );
-        add_contact_editor_toggle(
-            &group_contacts_editor,
-            &settings,
-            "Websites",
-            "Homepages und Weblinks",
-            "contact-editor-show-web",
-            AppSettings::contact_editor_show_web,
-            AppSettings::set_contact_editor_show_web,
-        );
-        add_contact_editor_toggle(
-            &group_contacts_editor,
-            &settings,
-            "Beruf und Organisation",
-            "Position, Abteilung und Firma",
-            "contact-editor-show-job",
-            AppSettings::contact_editor_show_job,
-            AppSettings::set_contact_editor_show_job,
-        );
-        add_contact_editor_toggle(
-            &group_contacts_editor,
-            &settings,
-            "Geburts- und Jahrestage",
-            "Persönliche Termine und Jubiläen",
-            "contact-editor-show-dates",
-            AppSettings::contact_editor_show_dates,
-            AppSettings::set_contact_editor_show_dates,
-        );
-        add_contact_editor_toggle(
-            &group_contacts_editor,
-            &settings,
-            "Zusatzangaben",
-            "Zeitzone, Geokoordinaten und Rollen",
-            "contact-editor-show-misc",
-            AppSettings::contact_editor_show_misc,
-            AppSettings::set_contact_editor_show_misc,
-        );
-        add_contact_editor_toggle(
-            &group_contacts_editor,
-            &settings,
-            "Notizen",
-            "Freitext-Notizen zum Kontakt",
-            "contact-editor-show-notes",
-            AppSettings::contact_editor_show_notes,
-            AppSettings::set_contact_editor_show_notes,
-        );
-        add_contact_editor_toggle(
-            &group_contacts_editor,
-            &settings,
-            "Zertifikate",
-            "S/MIME- und Verschlüsselungszertifikate",
-            "contact-editor-show-certs",
-            AppSettings::contact_editor_show_certs,
-            AppSettings::set_contact_editor_show_certs,
-        );
-        page_contacts.add(&group_contacts_editor);
-
         let group_backup = adw::PreferencesGroup::builder()
             .title("Daten und Sicherung")
             .description(
@@ -3954,11 +3807,6 @@ impl PreferencesDialog {
             .description("Sicherheit und Darstellungsoptionen für formatierte E-Mails")
             .build();
 
-        let group_mail_fonts = adw::PreferencesGroup::builder()
-            .title("Schriften und Typografie")
-            .description("Schriftfamilie und Textgröße für Nachrichten und E-Mail-Editor")
-            .build();
-
         let group_app_layout = adw::PreferencesGroup::builder()
             .title("Fenster und Bedienung")
             .description("Globale Sicherheitsabfragen, Statusleiste und Entwickleroptionen")
@@ -4009,31 +3857,6 @@ impl PreferencesDialog {
         }
         group_mail_html.add(&row_html_rendering);
 
-        let row_mail_font_family = adw::EntryRow::builder()
-            .title("Schriftfamilie für Mail und Composer")
-            .text("system-ui, sans-serif")
-            .build();
-        if let Some(settings) = settings.clone() {
-            row_mail_font_family.set_text(&settings.mail_font_family());
-            row_mail_font_family.connect_changed(move |row| {
-                settings.set_mail_font_family(&row.text());
-            });
-        }
-        group_mail_fonts.add(&row_mail_font_family);
-
-        let row_mail_font_size = adw::SpinRow::with_range(8.0, 48.0, 1.0);
-        row_mail_font_size.set_title("Schriftgröße für Mail und Composer");
-        row_mail_font_size.set_subtitle("8–48 Pixel; Standard 16 Pixel");
-        row_mail_font_size.set_digits(0);
-        row_mail_font_size.set_snap_to_ticks(true);
-        if let Some(settings) = settings.clone() {
-            row_mail_font_size.set_value(settings.mail_font_size() as f64);
-            row_mail_font_size.connect_value_notify(move |row| {
-                settings.set_mail_font_size(row.value().round() as u32);
-            });
-        }
-        group_mail_fonts.add(&row_mail_font_size);
-
         let row_mark_read = adw::SwitchRow::builder()
             .title("Nachrichten beim Auswählen als gelesen markieren")
             .subtitle("Die Einstellung gilt für lokale und synchronisierte Mailordner")
@@ -4047,44 +3870,6 @@ impl PreferencesDialog {
             });
         }
         group_mail_reading.add(&row_mark_read);
-
-        let timeout_options = gtk::DropDown::from_strings(&[
-            "Sofort",
-            "Nach 0,5 Sekunden",
-            "Nach 1,5 Sekunden (Standard)",
-            "Nach 3 Sekunden",
-            "Nach 5 Sekunden",
-        ]);
-        timeout_options.set_valign(gtk::Align::Center);
-        let row_mark_read_timeout = adw::ActionRow::builder()
-            .title("Verzögerung vor Gelesen-Markierung")
-            .subtitle("Verhindert vorzeitiges Markieren beim schnellen Durchblättern")
-            .build();
-        row_mark_read_timeout.add_suffix(&timeout_options);
-
-        if let Some(settings) = settings.clone() {
-            let timeout_ms = settings.mail_mark_seen_timeout();
-            let selected_idx = match timeout_ms {
-                t if t <= 0 => 0,
-                t if t <= 800 => 1,
-                t if t <= 2000 => 2,
-                t if t <= 4000 => 3,
-                _ => 4,
-            };
-            timeout_options.set_selected(selected_idx);
-            timeout_options.connect_selected_notify(move |dropdown| {
-                let ms = match dropdown.selected() {
-                    0 => 0,
-                    1 => 500,
-                    2 => 1500,
-                    3 => 3000,
-                    _ => 5000,
-                };
-                settings.set_mail_mark_seen_timeout(ms);
-                settings.set_mark_read_timeout(ms as i32);
-            });
-        }
-        group_mail_reading.add(&row_mark_read_timeout);
 
         let row_mail_show_mark_read_actions = adw::SwitchRow::builder()
             .title("Gelesen-Aktionen in Werkzeugleiste anzeigen")
@@ -4469,86 +4254,6 @@ impl PreferencesDialog {
         }
         group_citations.add(&row_citation_highlighting);
 
-        let citation_color_configs = [
-            ("Zitatebene 1", 1),
-            ("Zitatebene 2", 2),
-            ("Zitatebene 3", 3),
-            ("Zitatebene 4", 4),
-            ("Zitatebene 5", 5),
-        ];
-
-        for (title, level) in citation_color_configs {
-            let initial_color = settings
-                .as_ref()
-                .map(|s| match level {
-                    1 => s.mail_citation_color_1(),
-                    2 => s.mail_citation_color_2(),
-                    3 => s.mail_citation_color_3(),
-                    4 => s.mail_citation_color_4(),
-                    _ => s.mail_citation_color_5(),
-                })
-                .unwrap_or_else(|| match level {
-                    1 => "#729fcf".to_string(),
-                    2 => "#ad7fa8".to_string(),
-                    3 => "#8ae234".to_string(),
-                    4 => "#fcaf3e".to_string(),
-                    _ => "#e9b96e".to_string(),
-                });
-
-            let color_row = adw::ActionRow::builder()
-                .title(title)
-                .subtitle(&initial_color)
-                .build();
-
-            let color_dot = gtk::Label::builder()
-                .use_markup(true)
-                .margin_start(6)
-                .margin_end(6)
-                .build();
-            color_dot.set_markup(&format!(
-                "<span foreground=\"{initial_color}\" font_size=\"x-large\">●</span>"
-            ));
-            color_row.add_prefix(&color_dot);
-
-            let color_dialog = gtk::ColorDialog::builder()
-                .title(&format!("Farbe für {title} auswählen"))
-                .build();
-            let color_button = gtk::ColorDialogButton::new(Some(color_dialog));
-            if let Ok(rgba) = gtk::gdk::RGBA::parse(&initial_color) {
-                color_button.set_rgba(&rgba);
-            }
-            color_button.set_valign(gtk::Align::Center);
-            color_row.add_suffix(&color_button);
-
-            if let Some(settings) = settings.clone() {
-                let color_dot_weak = color_dot.downgrade();
-                let color_row_weak = color_row.downgrade();
-                color_button.connect_rgba_notify(move |btn| {
-                    let rgba = btn.rgba();
-                    let r = (rgba.red() * 255.0).round() as u8;
-                    let g = (rgba.green() * 255.0).round() as u8;
-                    let b = (rgba.blue() * 255.0).round() as u8;
-                    let hex = format!("#{r:02x}{g:02x}{b:02x}");
-                    if let Some(dot) = color_dot_weak.upgrade() {
-                        dot.set_markup(&format!(
-                            "<span foreground=\"{hex}\" font_size=\"x-large\">●</span>"
-                        ));
-                    }
-                    if let Some(row) = color_row_weak.upgrade() {
-                        row.set_subtitle(&hex);
-                    }
-                    match level {
-                        1 => settings.set_mail_citation_color_1(&hex),
-                        2 => settings.set_mail_citation_color_2(&hex),
-                        3 => settings.set_mail_citation_color_3(&hex),
-                        4 => settings.set_mail_citation_color_4(&hex),
-                        _ => settings.set_mail_citation_color_5(&hex),
-                    }
-                });
-            }
-            group_citations.add(&color_row);
-        }
-
         let group_theme = adw::PreferencesGroup::builder()
             .title("Farbschema")
             .description("Systemeinstellung oder festes helles/dunkles Design")
@@ -4748,183 +4453,6 @@ impl PreferencesDialog {
         group_mail_list.add(&row_mail_date_format);
         group_mail_list.add(&row_mail_date_custom);
         group_mail_list.add(&row_mail_date_align);
-
-        let group_mail_columns = adw::PreferencesGroup::builder()
-            .title("Mail-Zeile")
-            .description("Ansichtsprofil, Reihenfolge, sichtbare Spalten und Zusatzinformationen")
-            .build();
-        let row_mail_list_profile = adw::ComboRow::builder()
-            .title("Ansichtsprofil")
-            .subtitle("Standard entspricht Evolutions Messages-Ansicht; Wide priorisiert die Nachrichtenfelder; Kartenansicht einspaltig")
-            .model(&gtk::StringList::new(&[
-                "Standard",
-                "Wide",
-                "Kartenansicht",
-                "Benutzerdefiniert",
-            ]))
-            .build();
-        if let Some(settings) = settings.clone() {
-            row_mail_list_profile.set_selected(match settings.mail_list_view_profile().as_str() {
-                "wide" => 1,
-                "cards" => 2,
-                "custom" => 3,
-                _ => 0,
-            });
-            let settings_for_selection = settings.clone();
-            row_mail_list_profile.connect_selected_notify(move |row| match row.selected() {
-                0 => settings_for_selection.apply_mail_list_view_profile("messages"),
-                1 => settings_for_selection.apply_mail_list_view_profile("wide"),
-                2 => settings_for_selection.apply_mail_list_view_profile("cards"),
-                _ => {
-                    let order = settings_for_selection.mail_list_column_order();
-                    settings_for_selection.set_mail_list_column_order(&order);
-                }
-            });
-            let profile_row = row_mail_list_profile.downgrade();
-            settings.connect_changed(Some("mail-list-view-profile"), move |settings, _| {
-                let Some(row) = profile_row.upgrade() else {
-                    return;
-                };
-                row.set_selected(match settings.string("mail-list-view-profile").as_str() {
-                    "wide" => 1,
-                    "cards" => 2,
-                    "custom" => 3,
-                    _ => 0,
-                });
-            });
-        }
-        group_mail_columns.add(&row_mail_list_profile);
-        group_mail_columns.add(&build_mail_column_order_editor(settings.clone()));
-
-        let row_mail_show_avatar = adw::SwitchRow::builder()
-            .title("Absender-Avatare anzeigen")
-            .subtitle("Zeigt Initialen bzw. Bilder links neben dem Absender")
-            .active(false)
-            .build();
-        if let Some(settings) = settings.clone() {
-            row_mail_show_avatar.set_active(settings.mail_show_avatar());
-            row_mail_show_avatar.connect_active_notify(move |row| {
-                settings.set_mail_show_avatar(row.is_active());
-            });
-        }
-        group_mail_columns.add(&row_mail_show_avatar);
-
-        let row_mail_show_sender = adw::SwitchRow::builder()
-            .title("Absender anzeigen")
-            .subtitle("Blendet die Absender-Spalte in der Nachrichtenliste ein oder aus")
-            .active(true)
-            .build();
-        if let Some(settings) = settings.clone() {
-            row_mail_show_sender.set_active(settings.mail_show_sender());
-            row_mail_show_sender.connect_active_notify(move |row| {
-                settings.set_mail_show_sender(row.is_active());
-            });
-        }
-        group_mail_columns.add(&row_mail_show_sender);
-
-        let row_mail_show_recipient = adw::SwitchRow::builder()
-            .title("Empfänger anzeigen")
-            .subtitle("Zeigt die An- bzw. Cc-Adresse unter dem Absender")
-            .active(false)
-            .build();
-        if let Some(settings) = settings.clone() {
-            row_mail_show_recipient.set_active(settings.mail_show_recipient());
-            row_mail_show_recipient.connect_active_notify(move |row| {
-                settings.set_mail_show_recipient(row.is_active());
-            });
-        }
-        group_mail_columns.add(&row_mail_show_recipient);
-
-        let row_mail_show_date = adw::SwitchRow::builder()
-            .title("Datum anzeigen")
-            .subtitle("Zeigt Datum und Uhrzeit rechts in der Nachrichtenzeile")
-            .active(true)
-            .build();
-        if let Some(settings) = settings.clone() {
-            row_mail_show_date.set_active(settings.mail_show_date());
-            row_mail_show_date.connect_active_notify(move |row| {
-                settings.set_mail_show_date(row.is_active());
-            });
-        }
-        group_mail_columns.add(&row_mail_show_date);
-
-        let row_mail_show_attachment = adw::SwitchRow::builder()
-            .title("Anhangssymbol anzeigen")
-            .subtitle("Zeigt eine Büroklammer, wenn die Nachricht Anhänge enthält")
-            .active(true)
-            .build();
-        if let Some(settings) = settings.clone() {
-            row_mail_show_attachment.set_active(settings.mail_show_attachment());
-            row_mail_show_attachment.connect_active_notify(move |row| {
-                settings.set_mail_show_attachment(row.is_active());
-            });
-        }
-        group_mail_columns.add(&row_mail_show_attachment);
-
-        let row_mail_show_preview_text = adw::SwitchRow::builder()
-            .title("Vorschautext anzeigen")
-            .subtitle("Zeigt den kurzen Nachrichtenauszug unter dem Betreff")
-            .active(false)
-            .build();
-        if let Some(settings) = settings.clone() {
-            row_mail_show_preview_text.set_active(settings.mail_show_preview_text());
-            row_mail_show_preview_text.connect_active_notify(move |row| {
-                settings.set_mail_show_preview_text(row.is_active());
-            });
-        }
-        group_mail_columns.add(&row_mail_show_preview_text);
-
-        let row_mail_show_labels = adw::SwitchRow::builder()
-            .title("Labels anzeigen")
-            .subtitle("Zeigt app-eigene Labels hinter dem Betreff")
-            .active(true)
-            .build();
-        if let Some(settings) = settings.clone() {
-            row_mail_show_labels.set_active(settings.mail_show_labels());
-            row_mail_show_labels.connect_active_notify(move |row| {
-                settings.set_mail_show_labels(row.is_active());
-            });
-        }
-        group_mail_columns.add(&row_mail_show_labels);
-
-        let row_mail_show_size = adw::SwitchRow::builder()
-            .title("Größe anzeigen")
-            .subtitle("Zeigt die vom Mailanbieter gemeldete Nachrichtengröße")
-            .active(false)
-            .build();
-        if let Some(settings) = settings.clone() {
-            row_mail_show_size.set_active(settings.mail_show_size());
-            row_mail_show_size.connect_active_notify(move |row| {
-                settings.set_mail_show_size(row.is_active());
-            });
-        }
-        group_mail_columns.add(&row_mail_show_size);
-
-        let row_mail_show_follow_up_due = adw::SwitchRow::builder()
-            .title("Fälligkeit anzeigen")
-            .subtitle("Zeigt das Fälligkeitsdatum einer Nachverfolgung")
-            .active(false)
-            .build();
-        if let Some(settings) = settings.clone() {
-            row_mail_show_follow_up_due.set_active(settings.mail_show_follow_up_due());
-            row_mail_show_follow_up_due.connect_active_notify(move |row| {
-                settings.set_mail_show_follow_up_due(row.is_active());
-            });
-        }
-        group_mail_columns.add(&row_mail_show_follow_up_due);
-
-        let row_mail_show_location = adw::SwitchRow::builder()
-            .title("Ort anzeigen")
-            .subtitle("Zeigt Konto und Ordner der Nachricht")
-            .active(false)
-            .build();
-        if let Some(settings) = settings.clone() {
-            row_mail_show_location.set_active(settings.mail_show_location());
-            row_mail_show_location.connect_active_notify(move |row| {
-                settings.set_mail_show_location(row.is_active());
-            });
-        }
-        group_mail_columns.add(&row_mail_show_location);
 
         let group_mail_headers_mode = adw::PreferencesGroup::builder()
             .title("Kopfzeilen-Darstellung")
@@ -6147,7 +5675,6 @@ impl PreferencesDialog {
             .title("HTML-Mails")
             .build();
         page_mail_html.add(&group_mail_html);
-        page_mail_html.add(&group_mail_fonts);
         page_mail_html.add(&group_citations);
         let page_mail_labels = adw::PreferencesPage::builder().title("Farben und Labels").build();
         page_mail_labels.add(&group_mail_labels);
@@ -6161,13 +5688,11 @@ impl PreferencesDialog {
             .build();
         page_mail_layout.add(&group_mail_window_layout);
         page_mail_layout.add(&group_mail_list);
-        page_mail_layout.add(&group_mail_columns);
 
         mail_sub_stack.add_titled(&page_mail_general, Some("general"), "Allgemein");
         mail_sub_stack.add_titled(&page_mail_html, Some("html"), "HTML-Mails");
         mail_sub_stack.add_titled(&page_mail_labels, Some("labels"), "Farben und Labels");
         mail_sub_stack.add_titled(&page_mail_headers, Some("headers"), "Kopfzeilen");
-        mail_sub_stack.add_titled(&page_mail_junk, Some("junk"), "Junk und Spam");
         mail_sub_stack.add_titled(
             &page_mail_layout,
             Some("layout"),
@@ -6332,6 +5857,7 @@ impl PreferencesDialog {
             .margin_bottom(8)
             .build();
         security_sub_stack.add_titled(&page_certificates, Some("certificates"), &gettext("Zertifikate & PGP"));
+        security_sub_stack.add_titled(&page_mail_junk, Some("junk"), &gettext("Spam & Junk-Filter"));
         security_sub_stack.add_titled(&page_network, Some("network"), &gettext("Netzwerk & Proxy"));
         security_sub_stack.add_titled(&page_backup, Some("backup"), &gettext("Datensicherung & Import"));
 
@@ -6433,6 +5959,10 @@ impl PreferencesDialog {
                     security_sub_stack.set_visible_child_name("certificates");
                     3
                 }
+                "junk" => {
+                    security_sub_stack.set_visible_child_name("junk");
+                    3
+                }
                 "network" => {
                     security_sub_stack.set_visible_child_name("network");
                     3
@@ -6486,122 +6016,6 @@ impl PreferencesDialog {
 }
 
 const MAX_EDITABLE_MAIL_NORMAL_HEADERS: usize = 64;
-
-fn mail_column_label(column: &str) -> &'static str {
-    match column {
-        "status" => "Status",
-        "attachment" => "Anhang",
-        "flagged" => "Markierung",
-        "sender" => "Absender",
-        "recipient" => "Empfänger",
-        "subject" => "Betreff",
-        "date" => "Datum",
-        "follow-up" => "Nachverfolgung",
-        "important" => "Wichtigkeit",
-        "avatar" => "Avatar",
-        "preview" => "Vorschautext",
-        "size" => "Größe",
-        "follow-up-due" => "Fälligkeit",
-        "location" => "Ort",
-        "messages" => "Nachrichten (Wide)",
-        _ => "Unbekannte Spalte",
-    }
-}
-
-fn build_mail_column_order_editor(settings: Option<AppSettings>) -> gtk::Box {
-    let state = Rc::new(RefCell::new(
-        settings
-            .as_ref()
-            .map(AppSettings::mail_list_column_order)
-            .unwrap_or_else(|| {
-                crate::services::settings_service::MAIL_LIST_COLUMN_IDS
-                    .iter()
-                    .map(|column| (*column).to_string())
-                    .collect()
-            }),
-    ));
-    let list = gtk::ListBox::builder()
-        .selection_mode(gtk::SelectionMode::None)
-        .css_classes(vec!["boxed-list"])
-        .build();
-    rebuild_mail_column_order_list(&list, &state, &settings);
-
-    if let Some(settings) = settings.as_ref() {
-        let state = Rc::clone(&state);
-        let list = list.clone();
-        let settings_for_signal = settings.clone();
-        let settings_for_rows = Some(settings.clone());
-        settings.connect_changed(Some("mail-list-column-order"), move |_, _| {
-            state.replace(settings_for_signal.mail_list_column_order());
-            rebuild_mail_column_order_list(&list, &state, &settings_for_rows);
-        });
-    }
-
-    let editor = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(4)
-        .margin_top(6)
-        .build();
-    editor.append(
-        &gtk::Label::builder()
-            .label("Spaltenreihenfolge")
-            .halign(gtk::Align::Start)
-            .css_classes(vec!["heading"])
-            .build(),
-    );
-    editor.append(&list);
-    editor
-}
-
-fn rebuild_mail_column_order_list(
-    list: &gtk::ListBox,
-    state: &Rc<RefCell<Vec<String>>>,
-    settings: &Option<AppSettings>,
-) {
-    while let Some(child) = list.first_child() {
-        list.remove(&child);
-    }
-    let columns = state.borrow().clone();
-    for (index, column) in columns.iter().enumerate() {
-        let row = adw::ActionRow::builder()
-            .title(mail_column_label(column))
-            .subtitle(column)
-            .build();
-        let up = gtk::Button::builder()
-            .icon_name("go-up-symbolic")
-            .tooltip_text("Spalte nach links verschieben")
-            .css_classes(vec!["flat", "circular"])
-            .sensitive(index > 0)
-            .build();
-        let down = gtk::Button::builder()
-            .icon_name("go-down-symbolic")
-            .tooltip_text("Spalte nach rechts verschieben")
-            .css_classes(vec!["flat", "circular"])
-            .sensitive(index + 1 < columns.len())
-            .build();
-        row.add_suffix(&up);
-        row.add_suffix(&down);
-
-        for (button, target) in [(up, index.checked_sub(1)), (down, Some(index + 1))] {
-            let state = Rc::clone(state);
-            let list = list.clone();
-            let settings = settings.clone();
-            button.connect_clicked(move |_| {
-                let Some(target) = target.filter(|target| *target < state.borrow().len()) else {
-                    return;
-                };
-                state.borrow_mut().swap(index, target);
-                if let Some(settings) = settings.as_ref() {
-                    let order = state.borrow().clone();
-                    settings.set_mail_list_column_order(&order);
-                } else {
-                    rebuild_mail_column_order_list(&list, &state, &settings);
-                }
-            });
-        }
-        list.append(&row);
-    }
-}
 
 fn default_mail_normal_headers_for_editor() -> Vec<(String, bool)> {
     [
@@ -8129,36 +7543,6 @@ fn build_mail_junk_group(settings: Option<AppSettings>) -> adw::PreferencesGroup
         });
     }
 
-    let expander_custom_header = adw::ExpanderRow::builder()
-        .title("Benutzerdefinierte Spam-Kopfzeilen")
-        .subtitle("Zusätzliche Erkennung über Server-Spam-Header (z. B. X-Spam-Flag: YES)")
-        .build();
-
-    let entry_header_name = adw::EntryRow::builder()
-        .title("Header-Feldname (z. B. X-Spam-Flag)")
-        .build();
-    let entry_header_value = adw::EntryRow::builder()
-        .title("Header-Wert (z. B. YES)")
-        .build();
-
-    if let Some(s) = settings.clone() {
-        entry_header_name.set_text(&s.junk_custom_header());
-        let s_name = s.clone();
-        entry_header_name.connect_changed(move |entry| {
-            s_name.set_junk_custom_header(&entry.text());
-        });
-
-        entry_header_value.set_text(&s.junk_custom_header_value());
-        let s_val = s.clone();
-        entry_header_value.connect_changed(move |entry| {
-            s_val.set_junk_custom_header_value(&entry.text());
-        });
-    }
-
-    expander_custom_header.add_row(&entry_header_name);
-    expander_custom_header.add_row(&entry_header_value);
-    group.add(&expander_custom_header);
-
     group
 }
 
@@ -8547,13 +7931,17 @@ mod tests {
 
     #[test]
     fn mail_reading_preferences_structure_and_citations_wired() {
-        let source = include_str!("preferences_dialog.rs");
+        let full_source = include_str!("preferences_dialog.rs");
+        let tests_pos = full_source
+            .find("#[cfg(test)]")
+            .or_else(|| full_source.find("mod tests"))
+            .unwrap_or(full_source.len());
+        let source = &full_source[..tests_pos];
+
         assert!(source.contains("mail_image_loading_policy"));
         assert!(source.contains("set_mail_image_loading_policy"));
         assert!(source.contains("mail_mark_seen"));
         assert!(source.contains("set_mail_mark_seen"));
-        assert!(source.contains("mail_mark_seen_timeout"));
-        assert!(source.contains("set_mail_mark_seen_timeout"));
         assert!(source.contains("mail_caret_mode"));
         assert!(source.contains("set_mail_caret_mode"));
         assert!(source.contains("mail_magic_spacebar"));
@@ -8564,12 +7952,14 @@ mod tests {
         assert!(source.contains("set_mail_headers_collapsed"));
         assert!(source.contains("mail_citation_highlighting"));
         assert!(source.contains("set_mail_citation_highlighting"));
-        assert!(source.contains("mail_citation_color_1"));
-        assert!(source.contains("mail_citation_color_2"));
-        assert!(source.contains("mail_citation_color_3"));
-        assert!(source.contains("mail_citation_color_4"));
-        assert!(source.contains("mail_citation_color_5"));
         assert!(source.contains("Zitate und Hervorhebung"));
+
+        // Verify obsolete micromanagement controls have been cleaned out
+        assert!(!source.contains("citation_color_configs"));
+        assert!(!source.contains("group_mail_columns"));
+        assert!(!source.contains("group_mail_fonts"));
+        assert!(!source.contains("group_contacts_editor"));
+        assert!(!source.contains("expander_custom_header"));
     }
 
     #[test]

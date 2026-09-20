@@ -417,7 +417,7 @@
     </key>
     <key name="mail-show-toolbar" type="b">
       <default>true</default>
-      <summary>Show the classic Evolution mail toolbar</summary>
+      <summary>Show the mail toolbar</summary>
     </key>
     <key name="mail-show-mark-read-actions" type="b">
       <default>false</default>
@@ -811,7 +811,7 @@
       <default>3</default>
       <range min="1" max="100"/>
       <summary>Autocomplete length</summary>
-      <description>The number of characters that must be typed before Evolution will attempt to autocomplete.</description>
+      <description>The number of characters that must be typed before Meridian will attempt to autocomplete.</description>
     </key>
     <key name="contact-completion-show-address" type="b">
       <default>false</default>
