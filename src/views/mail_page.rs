@@ -264,6 +264,14 @@ impl FolderSelection {
         self.source_uid.is_some()
     }
 
+    pub(crate) fn selection_key(&self) -> String {
+        if let Some(source_uid) = &self.source_uid {
+            format!("{}:{}", source_uid, self.folder_name.as_deref().unwrap_or(""))
+        } else {
+            self.folder_id.clone()
+        }
+    }
+
     fn matches(&self, message: &MailMessageObject) -> bool {
         if let Some(source_uid) = self.source_uid.as_deref() {
             return message
@@ -957,6 +965,18 @@ pub(crate) fn format_mail_table_date(
     )
 }
 
+fn format_weekday_name(date: chrono::NaiveDate) -> String {
+    match date.weekday() {
+        chrono::Weekday::Mon => crate::i18n::gettext("Monday"),
+        chrono::Weekday::Tue => crate::i18n::gettext("Tuesday"),
+        chrono::Weekday::Wed => crate::i18n::gettext("Wednesday"),
+        chrono::Weekday::Thu => crate::i18n::gettext("Thursday"),
+        chrono::Weekday::Fri => crate::i18n::gettext("Friday"),
+        chrono::Weekday::Sat => crate::i18n::gettext("Saturday"),
+        chrono::Weekday::Sun => crate::i18n::gettext("Sunday"),
+    }
+}
+
 pub(crate) fn format_mail_table_date_with_now(
     value: &str,
     date_format_style: &str,
@@ -973,18 +993,6 @@ pub(crate) fn format_mail_table_date_with_now(
     let time_pattern = if time_format == "12h" { "%I:%M %p" } else { "%H:%M" };
 
     match date_format_style {
-        "smart" => {
-            if days_diff == 0 {
-                local_dt.format(time_pattern).to_string()
-            } else if days_diff == 1 {
-                crate::i18n::gettext("Yesterday")
-            } else if now_date.year() == msg_date.year() {
-                let month_name = format_month_short(msg_date.month());
-                format!("{}. {}", msg_date.day(), month_name)
-            } else {
-                msg_date.format("%d.%m.%y").to_string()
-            }
-        }
         "short" => msg_date.format("%d.%m.%y").to_string(),
         "full" => msg_date.format("%d.%m.%Y").to_string(),
         "datetime" => format!("{} {}", msg_date.format("%d.%m.%Y"), local_dt.format(time_pattern)),
@@ -997,7 +1005,13 @@ pub(crate) fn format_mail_table_date_with_now(
                     return formatted;
                 }
             }
-            if now_date.year() == msg_date.year() {
+            if days_diff <= 0 {
+                local_dt.format(time_pattern).to_string()
+            } else if days_diff == 1 {
+                crate::i18n::gettext("Yesterday")
+            } else if days_diff < 7 {
+                format_weekday_name(msg_date)
+            } else if now_date.year() == msg_date.year() {
                 let month_name = format_month_short(msg_date.month());
                 format!("{}. {}", msg_date.day(), month_name)
             } else {
@@ -1005,8 +1019,19 @@ pub(crate) fn format_mail_table_date_with_now(
             }
         }
         _ => {
-            // "standard": d.Monat for current year, dd.mm.jj for previous/other years
-            if now_date.year() == msg_date.year() {
+            // "standard" and "smart" styles:
+            // 1. Same day: time only (e.g. "14:30")
+            // 2. Yesterday: "Yesterday" / "Gestern"
+            // 3. Within last 7 days: weekday name (e.g. "Wednesday" / "Mittwoch")
+            // 4. Older within current year: "10. Sep"
+            // 5. Older year: "10.09.25"
+            if days_diff <= 0 {
+                local_dt.format(time_pattern).to_string()
+            } else if days_diff == 1 {
+                crate::i18n::gettext("Yesterday")
+            } else if days_diff < 7 {
+                format_weekday_name(msg_date)
+            } else if now_date.year() == msg_date.year() {
                 let month_name = format_month_short(msg_date.month());
                 format!("{}. {}", msg_date.day(), month_name)
             } else {
@@ -1027,10 +1052,12 @@ fn format_smart_date(
     let msg_date = message_local.date_naive();
     let days_diff = (now_date - msg_date).num_days();
 
-    if days_diff == 0 {
+    if days_diff <= 0 {
         message_local.format(time_pattern).to_string()
     } else if days_diff == 1 {
         crate::i18n::gettext("Yesterday")
+    } else if days_diff < 7 {
+        format_weekday_name(msg_date)
     } else if now_date.year() == msg_date.year() {
         let month_name = format_month_short(msg_date.month());
         format!("{}. {}", msg_date.day(), month_name)
@@ -1271,6 +1298,7 @@ fn mail_list_profile_allows_column(profile: &str, wide_messages: bool, column: &
             "status" | "attachment" | "flagged" | "sender" | "subject" | "date"
         ),
         "wide" => matches!(column, "status" | "flagged" | "messages"),
+        "cards" => false,
         _ => match column {
             "messages" => wide_messages,
             "sender" | "subject" => !wide_messages,
@@ -1595,7 +1623,7 @@ pub(crate) fn prepare_mail_table_layout_from_rows(
 }
 
 pub(crate) fn prepare_mail_table_layout(
-    selection: &gtk::SingleSelection,
+    selection: &gtk::MultiSelection,
     width: f64,
     sender_width: f64,
     recipient_width: f64,
@@ -1980,7 +2008,7 @@ pub(crate) fn draw_mail_table_canvas(
     width: f64,
     height: f64,
     hovered_row: Option<usize>,
-    selected_row: Option<usize>,
+    is_row_selected: &dyn Fn(usize) -> bool,
     is_dark: bool,
     scroll_y: f64,
 ) {
@@ -2032,35 +2060,17 @@ pub(crate) fn draw_mail_table_canvas(
         };
         let h = row.height;
         let is_hovered = Some(row_idx) == hovered_row;
-        let is_row_selected = if let Some(sel) = selected_row {
-            sel == row_idx
-        } else {
-            row.selected
-        };
+        let is_row_selected = is_row_selected(row_idx);
 
-        // Row background state
+        // Row background state: clean flat fill, no borders or left stripe per GNOME HIG
         if is_row_selected {
             if is_dark {
-                cr.set_source_rgba(accent_rgb.0, accent_rgb.1, accent_rgb.2, 0.36);
+                cr.set_source_rgba(accent_rgb.0, accent_rgb.1, accent_rgb.2, 0.32);
             } else {
-                cr.set_source_rgba(accent_rgb.0, accent_rgb.1, accent_rgb.2, 0.26);
+                cr.set_source_rgba(accent_rgb.0, accent_rgb.1, accent_rgb.2, 0.22);
             }
             cr.rectangle(0.0, y, width, h);
             let _ = cr.fill();
-
-            // Prominent accent bar on left edge (4px solid #3584e4)
-            cr.set_source_rgba(accent_rgb.0, accent_rgb.1, accent_rgb.2, 1.0);
-            cr.rectangle(0.0, y, 4.0, h);
-            let _ = cr.fill();
-
-            // Crisp top and bottom borders for high contrast definition
-            cr.set_source_rgba(accent_rgb.0, accent_rgb.1, accent_rgb.2, 0.65);
-            cr.set_line_width(1.0);
-            cr.move_to(0.0, y + 0.5);
-            cr.line_to(width, y + 0.5);
-            cr.move_to(0.0, y + h - 0.5);
-            cr.line_to(width, y + h - 0.5);
-            let _ = cr.stroke();
         } else if is_hovered {
             if is_dark {
                 cr.set_source_rgba(1.0, 1.0, 1.0, 0.05);
@@ -2105,28 +2115,45 @@ pub(crate) fn draw_mail_table_canvas(
                 draw_cairo_flag(cr, 12.0, y + h / 2.0);
             }
 
-            // 2. Circular Avatar with initials
+            // 2. Circular Avatar with initials OR checkmark when selected
             let avatar_cx = 38.0;
             let avatar_cy = y + h / 2.0;
             let avatar_r = 18.0;
-            let (av_r, av_g, av_b) = avatar_color_for_name(&row.sender);
-            cr.set_source_rgb(av_r, av_g, av_b);
-            cr.arc(avatar_cx, avatar_cy, avatar_r, 0.0, std::f64::consts::TAU);
-            let _ = cr.fill();
 
-            let initials = extract_initials(&row.sender);
-            cr.set_source_rgb(1.0, 1.0, 1.0);
-            cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
-            cr.set_font_size(12.0);
-            if let Ok(te) = cr.text_extents(&initials) {
-                cr.move_to(
-                    avatar_cx - te.width() / 2.0 - te.x_bearing(),
-                    avatar_cy - te.height() / 2.0 - te.y_bearing(),
-                );
+            if is_row_selected {
+                // Convey-style selection indicator: vibrant blue circle with white checkmark
+                cr.set_source_rgb(accent_rgb.0, accent_rgb.1, accent_rgb.2);
+                cr.arc(avatar_cx, avatar_cy, avatar_r, 0.0, std::f64::consts::TAU);
+                let _ = cr.fill();
+
+                cr.set_source_rgb(1.0, 1.0, 1.0);
+                cr.set_line_width(2.2);
+                cr.set_line_cap(gtk::cairo::LineCap::Round);
+                cr.set_line_join(gtk::cairo::LineJoin::Round);
+                cr.move_to(avatar_cx - 5.5, avatar_cy);
+                cr.line_to(avatar_cx - 1.5, avatar_cy + 4.0);
+                cr.line_to(avatar_cx + 5.5, avatar_cy - 4.5);
+                let _ = cr.stroke();
             } else {
-                cr.move_to(avatar_cx - 5.0, avatar_cy + 4.0);
+                let (av_r, av_g, av_b) = avatar_color_for_name(&row.sender);
+                cr.set_source_rgb(av_r, av_g, av_b);
+                cr.arc(avatar_cx, avatar_cy, avatar_r, 0.0, std::f64::consts::TAU);
+                let _ = cr.fill();
+
+                let initials = extract_initials(&row.sender);
+                cr.set_source_rgb(1.0, 1.0, 1.0);
+                cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+                cr.set_font_size(12.0);
+                if let Ok(te) = cr.text_extents(&initials) {
+                    cr.move_to(
+                        avatar_cx - te.width() / 2.0 - te.x_bearing(),
+                        avatar_cy - te.height() / 2.0 - te.y_bearing(),
+                    );
+                } else {
+                    cr.move_to(avatar_cx - 5.0, avatar_cy + 4.0);
+                }
+                let _ = cr.show_text(&initials);
             }
-            let _ = cr.show_text(&initials);
 
             // Reply badge overlay
             if row.is_replied {
@@ -2138,7 +2165,7 @@ pub(crate) fn draw_mail_table_canvas(
             let content_w = (width - content_x - right_pad).max(40.0);
 
             // Line 1: Date (right) + Sender (left)
-            let date_w = 70.0f64.min(content_w * 0.40);
+            let date_w = 90.0f64.min(content_w * 0.40);
             let date_x = width - right_pad - date_w;
             pango_layout.set_alignment(gtk::pango::Alignment::Right);
             pango_layout.set_attributes(None);
@@ -2516,8 +2543,25 @@ pub(crate) fn raw_mime_may_contain_crypto(raw_mime: &[u8]) -> bool {
     .any(|marker| mime.contains(marker))
 }
 
-fn selected_mail_message(selection: &gtk::SingleSelection) -> Option<MailMessageObject> {
-    selection.selected_item().and_then(|item| {
+fn selected_mail_message(
+    selection: &gtk::MultiSelection,
+    preferred_index: Option<u32>,
+) -> Option<MailMessageObject> {
+    let bitset = selection.selection();
+    if bitset.is_empty() {
+        return None;
+    }
+    let target_idx = if let Some(idx) = preferred_index {
+        if selection.is_selected(idx) {
+            idx
+        } else {
+            bitset.minimum()
+        }
+    } else {
+        bitset.minimum()
+    };
+
+    selection.item(target_idx).and_then(|item| {
         item.clone()
             .downcast::<MailMessageObject>()
             .ok()
@@ -4234,7 +4278,10 @@ fn fallback_selection_index(item_count: u32, previous_index: Option<u32>) -> Opt
     if item_count == 0 {
         return None;
     }
-    Some(previous_index.unwrap_or(0).min(item_count - 1))
+    match previous_index {
+        Some(idx) => Some(idx.min(item_count - 1)),
+        None => Some(0),
+    }
 }
 
 fn generation_is_current(current: u64, result_generation: u64) -> bool {
@@ -4820,11 +4867,16 @@ mod imp {
         pub todo_paned: gtk::Paned,
         pub preview_widget: RefCell<Option<gtk::Widget>>,
         pub last_export_folder: RefCell<Option<gio::File>>,
-        pub message_selection: RefCell<Option<gtk::SingleSelection>>,
+        pub message_selection: RefCell<Option<gtk::MultiSelection>>,
         pub message_store: RefCell<Option<gio::ListStore>>,
         pub message_filter: RefCell<Option<gtk::CustomFilter>>,
         pub(super) message_filter_state: RefCell<Option<Rc<Cell<MessageFilter>>>>,
-        pub thread_selection: RefCell<Option<gtk::SingleSelection>>,
+        pub thread_selection: RefCell<Option<gtk::MultiSelection>>,
+        pub last_selected_mail_index: Cell<Option<u32>>,
+        pub mail_selection_anchor: Cell<Option<u32>>,
+        pub is_mouse_selecting: Cell<bool>,
+        pub is_auto_selecting: Cell<bool>,
+        pub folder_last_selected_mail: RefCell<HashMap<String, MailSelectionAnchor>>,
         pub thread_root_store: RefCell<Option<gio::ListStore>>,
         pub thread_filter: RefCell<Option<gtk::CustomFilter>>,
         pub thread_members: RefCell<Option<Rc<RefCell<HashMap<String, Vec<MailMessageObject>>>>>>,
@@ -4906,6 +4958,9 @@ mod imp {
         pub search_scope_selector: RefCell<Option<gtk::DropDown>>,
         pub quick_filter: RefCell<Option<gtk::DropDown>>,
         pub search_options_button: RefCell<Option<gtk::MenuButton>>,
+        pub mail_reply_button: RefCell<Option<gtk::Button>>,
+        pub mail_reply_all_button: RefCell<Option<gtk::Button>>,
+        pub mail_forward_button: RefCell<Option<gtk::Button>>,
         pub mail_print_button: RefCell<Option<gtk::Button>>,
         pub mail_delete_button: RefCell<Option<gtk::Button>>,
         pub mail_archive_button: RefCell<Option<gtk::Button>>,
@@ -4917,6 +4972,7 @@ mod imp {
         pub mail_flag_button: RefCell<Option<gtk::Button>>,
         pub mail_important_button: RefCell<Option<gtk::Button>>,
         pub mail_undo_button: RefCell<Option<gtk::Button>>,
+        pub mail_source_button: RefCell<Option<gtk::Button>>,
         pub mail_status_group: RefCell<Option<gtk::Box>>,
         pub mail_status_separator: RefCell<Option<gtk::Separator>>,
         pub message_state: RefCell<Option<gtk::Label>>,
@@ -5163,6 +5219,7 @@ mod imp {
 
             obj.assemble_layout(sidebar, unified_toolbar, message_container, detail_view);
             obj.bind_preview_setting();
+            obj.sync_mail_layout_visibility();
             obj.load_mail_history_async();
             obj.load_initial_data(&source_store, &source_state);
             tracing::debug!(
@@ -5325,31 +5382,16 @@ impl MailPage {
 
     pub(crate) fn sync_preview_actions_labels(&self) {
         let imp = self.imp();
+        // GNOME HIG: Header action buttons are strictly pure icons, never text labels.
         let is_mobile = imp.is_mobile.get();
         let show_labels = if is_mobile {
             false
         } else {
-            let width = imp
-                .preview_actions_row
-                .borrow()
-                .as_ref()
-                .map(|r| r.width())
-                .unwrap_or(0);
-            if width > 0 {
-                width >= 520
-            } else {
-                let inner_width = imp.inner_paned.width();
-                let inner_pos = imp.inner_paned.position();
-                if inner_width == 0 {
-                    true
-                } else {
-                    let preview_width = match imp.mail_layout.get() {
-                        MailLayout::Vertical => inner_width.saturating_sub(inner_pos),
-                        MailLayout::Horizontal => inner_width,
-                    };
-                    preview_width >= 520
-                }
-            }
+            let inner_width = imp.inner_paned.width();
+            let inner_pos = imp.inner_paned.position();
+            let preview_width = inner_width.saturating_sub(inner_pos);
+            let _ = preview_width >= 520;
+            false
         };
         for label in imp.preview_reply_labels.borrow().iter() {
             label.set_visible(show_labels);
@@ -5358,7 +5400,11 @@ impl MailPage {
 
     pub(crate) fn apply_toolbar_button_modes(&self, is_compact: bool) {
         let imp = self.imp();
+        let str_reply = crate::i18n::gettext("Reply");
+        let str_reply_all = crate::i18n::gettext("Reply All");
+        let str_forward = crate::i18n::gettext("Forward");
         let str_print = crate::i18n::gettext("Print");
+        let str_source = crate::i18n::gettext("View Source");
         let str_delete = crate::i18n::gettext("Delete");
         let str_archive = crate::i18n::gettext("Archive");
         let str_junk = crate::i18n::gettext("Junk");
@@ -5368,8 +5414,12 @@ impl MailPage {
         let str_important = crate::i18n::gettext("Important");
         let str_undo = crate::i18n::gettext("Undo");
 
-        let buttons: [(&RefCell<Option<gtk::Button>>, &str, &str); 9] = [
+        let buttons: [(&RefCell<Option<gtk::Button>>, &str, &str); 13] = [
+            (&imp.mail_reply_button, &str_reply, "mail-reply-sender-symbolic"),
+            (&imp.mail_reply_all_button, &str_reply_all, "mail-reply-all-symbolic"),
+            (&imp.mail_forward_button, &str_forward, "mail-forward-symbolic"),
             (&imp.mail_print_button, &str_print, "document-print-symbolic"),
+            (&imp.mail_source_button, &str_source, "code-symbolic"),
             (&imp.mail_delete_button, &str_delete, "user-trash-symbolic"),
             (&imp.mail_archive_button, &str_archive, "package-x-generic-symbolic"),
             (&imp.mail_junk_button, &str_junk, "mail-mark-junk-symbolic"),
@@ -5385,11 +5435,15 @@ impl MailPage {
                 if is_compact {
                     let img = gtk::Image::new();
                     let fallback = match icon {
+                        "mail-reply-sender-symbolic" | "mail-reply-all-symbolic" => "go-previous-symbolic",
+                        "mail-forward-symbolic" => "go-next-symbolic",
                         "document-print-symbolic" => "document-save-symbolic",
+                        "code-symbolic" => "document-properties-symbolic",
                         "mail-read-symbolic" | "mail-unread-symbolic" => "mail-message-new-symbolic",
                         "starred-symbolic" => "starred-symbolic",
                         "mail-mark-important-symbolic" | "mail-mark-junk-symbolic" => "dialog-warning-symbolic",
                         "package-x-generic-symbolic" => "folder-symbolic",
+                        "edit-undo-symbolic" => "edit-undo-symbolic",
                         _ => "image-missing-symbolic",
                     };
                     set_image_icon_with_fallback(&img, icon, fallback);
@@ -5429,8 +5483,7 @@ impl MailPage {
     }
 
     pub(crate) fn sync_toolbar_button_labels(&self) {
-        let is_compact = self.imp().is_mobile.get() || (self.width() > 0 && self.width() < 820);
-        self.apply_toolbar_button_modes(is_compact);
+        self.apply_toolbar_button_modes(true);
     }
 
     pub(crate) fn drill_down_level(&self) -> MailDrillDownLevel {
@@ -5749,29 +5802,11 @@ impl MailPage {
     }
 
     pub fn select_previous_message(&self) -> bool {
-        let Some(selection) = self.imp().message_selection.borrow().as_ref().cloned() else {
-            return false;
-        };
-        let current = selection.selected();
-        if current > 0 && current != gtk::INVALID_LIST_POSITION {
-            selection.set_selected(current - 1);
-            true
-        } else {
-            false
-        }
+        self.select_relative_message(-1)
     }
 
     pub fn select_next_message(&self) -> bool {
-        let Some(selection) = self.imp().message_selection.borrow().as_ref().cloned() else {
-            return false;
-        };
-        let current = selection.selected();
-        if current != gtk::INVALID_LIST_POSITION && current + 1 < selection.n_items() {
-            selection.set_selected(current + 1);
-            true
-        } else {
-            false
-        }
+        self.select_relative_message(1)
     }
 
     fn begin_crypto_request(&self) -> u64 {
@@ -6776,7 +6811,8 @@ impl MailPage {
                 continue;
             };
             if message.id() == message_id {
-                selection.set_selected(index);
+                selection.select_item(index, true);
+                self.imp().last_selected_mail_index.set(Some(index));
                 self.sync_thread_selection(Some(message_id));
                 return true;
             }
@@ -8194,6 +8230,24 @@ impl MailPage {
             .unwrap_or_default()
     }
 
+    pub(crate) fn anchor_for_folder(&self, folder: &FolderSelection) -> MailSelectionAnchor {
+        let key = folder.selection_key();
+        self.imp()
+            .folder_last_selected_mail
+            .borrow()
+            .get(&key)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn save_anchor_for_folder(&self, folder: &FolderSelection, anchor: MailSelectionAnchor) {
+        let key = folder.selection_key();
+        self.imp()
+            .folder_last_selected_mail
+            .borrow_mut()
+            .insert(key, anchor);
+    }
+
     fn folder_sort_order(&self) -> BTreeMap<String, u32> {
         AppSettings::try_new()
             .map(|settings| folder_sort_order_from_setting(&settings.mail_folder_sort_order()))
@@ -8625,25 +8679,37 @@ impl MailPage {
             };
 
             // Handle dropped message
-            if let Some(msg_id) = payload_str.strip_prefix("evolution-message:") {
+            if let Some(msg_ids_str) = payload_str.strip_prefix("evolution-message:") {
                 let drop_action = target
                     .current_drop()
                     .map(|d| d.actions())
                     .unwrap_or(gtk::gdk::DragAction::MOVE);
                 let is_copy = drop_action.contains(gtk::gdk::DragAction::COPY)
                     && !drop_action.contains(gtk::gdk::DragAction::MOVE);
-                let result = if is_copy {
-                    page.copy_message_by_id_to(msg_id, "local", &target_fid)
-                } else {
-                    page.move_message_by_id_to(msg_id, "local", &target_fid)
-                };
-                return match result {
-                    Ok(success) => success,
-                    Err(err) => {
-                        page.show_toast(&format!("Aktion nicht möglich: {err}"));
-                        false
+                let mut all_success = true;
+                for msg_id in msg_ids_str.split(',') {
+                    let msg_id = msg_id.trim();
+                    if msg_id.is_empty() {
+                        continue;
                     }
-                };
+                    let result = if is_copy {
+                        page.copy_message_by_id_to(msg_id, "local", &target_fid)
+                    } else {
+                        page.move_message_by_id_to(msg_id, "local", &target_fid)
+                    };
+                    match result {
+                        Ok(success) => {
+                            if !success {
+                                all_success = false;
+                            }
+                        }
+                        Err(err) => {
+                            page.show_toast(&format!("Aktion nicht möglich: {err}"));
+                            all_success = false;
+                        }
+                    }
+                }
+                return all_success;
             }
 
             // Handle dropped folder reordering
@@ -9084,18 +9150,75 @@ impl MailPage {
     }
 
     fn selected_message(&self) -> Option<MailMessageObject> {
-        self.imp()
-            .thread_selection
-            .borrow()
-            .as_ref()
-            .and_then(selected_mail_message)
-            .or_else(|| {
-                self.imp()
-                    .message_selection
-                    .borrow()
-                    .as_ref()
-                    .and_then(selected_mail_message)
-            })
+        let preferred = self.imp().last_selected_mail_index.get();
+        if self.imp().mail_threading.get() {
+            self.imp()
+                .thread_selection
+                .borrow()
+                .as_ref()
+                .and_then(|sel| selected_mail_message(sel, preferred))
+                .or_else(|| {
+                    self.imp()
+                        .message_selection
+                        .borrow()
+                        .as_ref()
+                        .and_then(|sel| selected_mail_message(sel, preferred))
+                })
+        } else {
+            self.imp()
+                .message_selection
+                .borrow()
+                .as_ref()
+                .and_then(|sel| selected_mail_message(sel, preferred))
+                .or_else(|| {
+                    self.imp()
+                        .thread_selection
+                        .borrow()
+                        .as_ref()
+                        .and_then(|sel| selected_mail_message(sel, preferred))
+                })
+        }
+    }
+
+    pub fn selected_messages(&self) -> Vec<MailMessageObject> {
+        let Some(selection) = self.active_selection() else {
+            return Vec::new();
+        };
+        let bitset = selection.selection();
+        if bitset.is_empty() {
+            if let Some(m) = self.selected_message() {
+                return vec![m];
+            }
+            return Vec::new();
+        }
+        let mut result = Vec::new();
+        let min = bitset.minimum();
+        let max = bitset.maximum();
+        for i in min..=max {
+            if selection.is_selected(i) {
+                if let Some(item) = selection.item(i) {
+                    let msg = item
+                        .clone()
+                        .downcast::<MailMessageObject>()
+                        .ok()
+                        .or_else(|| {
+                            item.downcast::<gtk::TreeListRow>()
+                                .ok()
+                                .and_then(|row| row.item())
+                                .and_then(|obj| obj.downcast::<MailMessageObject>().ok())
+                        });
+                    if let Some(m) = msg {
+                        result.push(m);
+                    }
+                }
+            }
+        }
+        if result.is_empty() {
+            if let Some(m) = self.selected_message() {
+                result.push(m);
+            }
+        }
+        result
     }
 
     fn mail_worker_ui_scope(&self) -> MailWorkerUiScope {
@@ -9193,14 +9316,14 @@ impl MailPage {
 
         if let Some(selection) = self.imp().message_selection.borrow().as_ref().cloned() {
             let notify = notify.clone();
-            selection.connect_selected_item_notify(move |_| {
+            selection.connect_selection_changed(move |_, _, _| {
                 notify();
             });
         }
 
         if let Some(thread_selection) = self.imp().thread_selection.borrow().as_ref().cloned() {
             let notify = notify.clone();
-            thread_selection.connect_selected_item_notify(move |_| {
+            thread_selection.connect_selection_changed(move |_, _, _| {
                 notify();
             });
         }
@@ -9216,7 +9339,7 @@ impl MailPage {
         true
     }
 
-    fn active_selection(&self) -> Option<gtk::SingleSelection> {
+    fn active_selection(&self) -> Option<gtk::MultiSelection> {
         if self.imp().mail_threading.get() {
             self.imp()
                 .thread_selection
@@ -9243,8 +9366,12 @@ impl MailPage {
         let Some(selection) = self.active_selection() else {
             return false;
         };
-        let selected = (selection.selected() != gtk::INVALID_LIST_POSITION)
-            .then_some(selection.selected() as usize);
+        let selected = self.imp().last_selected_mail_index.get()
+            .or_else(|| {
+                let sel = selection.selection();
+                (!sel.is_empty()).then(|| sel.minimum())
+            })
+            .map(|p| p as usize);
         relative_message_index(selection.n_items() as usize, selected, offset).is_some()
     }
 
@@ -9252,13 +9379,18 @@ impl MailPage {
         let Some(selection) = self.active_selection() else {
             return false;
         };
-        let selected = (selection.selected() != gtk::INVALID_LIST_POSITION)
-            .then_some(selection.selected() as usize);
+        let selected = self.imp().last_selected_mail_index.get()
+            .or_else(|| {
+                let sel = selection.selection();
+                (!sel.is_empty()).then(|| sel.minimum())
+            })
+            .map(|p| p as usize);
         let Some(target) = relative_message_index(selection.n_items() as usize, selected, offset)
         else {
             return false;
         };
-        selection.set_selected(target as u32);
+        self.imp().last_selected_mail_index.set(Some(target as u32));
+        selection.select_item(target as u32, true);
         true
     }
 
@@ -9281,12 +9413,17 @@ impl MailPage {
                     .is_some_and(|message| message.is_unread())
             })
             .collect::<Vec<_>>();
-        let selected = (selection.selected() != gtk::INVALID_LIST_POSITION)
-            .then_some(selection.selected() as usize);
+        let selected = self.imp().last_selected_mail_index.get()
+            .or_else(|| {
+                let sel = selection.selection();
+                (!sel.is_empty()).then(|| sel.minimum())
+            })
+            .map(|p| p as usize);
         let Some(target) = matching_message_index(&unread, selected, forward) else {
             return false;
         };
-        selection.set_selected(target as u32);
+        self.imp().last_selected_mail_index.set(Some(target as u32));
+        selection.select_item(target as u32, true);
         true
     }
 
@@ -9304,10 +9441,17 @@ impl MailPage {
     /// remain untouched; local deletion is represented by the app-owned
     /// sidecar until a writable Camel backend is available.
     pub fn delete_selected(&self) -> Result<bool, MailOperationError> {
-        let Some(message) = self.selected_message() else {
+        let messages = self.selected_messages();
+        if messages.is_empty() {
             return Ok(false);
-        };
-        self.delete_message(&message)
+        }
+        let mut any_deleted = false;
+        for message in messages {
+            if self.delete_message(&message)? {
+                any_deleted = true;
+            }
+        }
+        Ok(any_deleted)
     }
 
     /// Increase zoom level in the message viewer.
@@ -9361,10 +9505,7 @@ impl MailPage {
 
     /// Mark all messages belonging to the currently selected thread as read.
     pub fn mark_selected_thread_read(&self) -> Result<usize, MailOperationError> {
-        let Some(selection) = self.imp().message_selection.borrow().as_ref().cloned() else {
-            return Ok(0);
-        };
-        let Some(selected_msg) = selected_mail_message(&selection) else {
+        let Some(selected_msg) = self.selected_message() else {
             return Ok(0);
         };
         let thread_id = selected_msg.thread_id();
@@ -9399,10 +9540,7 @@ impl MailPage {
 
     /// Delete all messages belonging to the currently selected thread.
     pub fn delete_selected_thread(&self) -> Result<usize, MailOperationError> {
-        let Some(selection) = self.imp().message_selection.borrow().as_ref().cloned() else {
-            return Ok(0);
-        };
-        let Some(selected_msg) = selected_mail_message(&selection) else {
+        let Some(selected_msg) = self.selected_message() else {
             return Ok(0);
         };
         let thread_id = selected_msg.thread_id();
@@ -10276,10 +10414,17 @@ impl MailPage {
     }
 
     pub fn mark_selected_unread(&self) -> Result<bool, MailOperationError> {
-        let Some(message) = self.selected_message() else {
+        let messages = self.selected_messages();
+        if messages.is_empty() {
             return Ok(false);
-        };
-        self.mark_message_unread(&message)
+        }
+        let mut any_marked = false;
+        for message in messages {
+            if self.mark_message_unread(&message)? {
+                any_marked = true;
+            }
+        }
+        Ok(any_marked)
     }
 
     pub fn mark_message_read(&self, message: &MailMessageObject) -> Result<bool, MailOperationError> {
@@ -10300,40 +10445,51 @@ impl MailPage {
     }
 
     pub fn mark_selected_read(&self) -> Result<bool, MailOperationError> {
-        let Some(message) = self.selected_message() else {
+        let messages = self.selected_messages();
+        if messages.is_empty() {
             return Ok(false);
-        };
-        self.mark_message_read(&message)
+        }
+        let mut any_marked = false;
+        for message in messages {
+            if self.mark_message_read(&message)? {
+                any_marked = true;
+            }
+        }
+        Ok(any_marked)
     }
 
     pub fn toggle_selected_flagged(&self) -> Result<bool, MailOperationError> {
-        let Some(message) = self.selected_message() else {
+        let messages = self.selected_messages();
+        if messages.is_empty() {
             return Ok(false);
-        };
-        if message
-            .backend_location()
-            .as_ref()
-            .is_some_and(|location| is_graph_backend_location(Some(location)))
-        {
+        }
+        if messages.iter().any(|message| {
+            message
+                .backend_location()
+                .as_ref()
+                .is_some_and(|location| is_graph_backend_location(Some(location)))
+        }) {
             return Err(MailOperationError::Unsupported {
                 operation:
                     crate::services::mail_operations_service::MailOperationKind::SetMessageState,
                 backend: "Graph (bitte die separate Nachverfolgung verwenden)",
             });
         }
-        let next_flagged = !message.is_flagged();
-        message.set_flagged(next_flagged);
-        let command = MailCommand::set_message_state(
-            message.id(),
-            message.backend_location(),
-            message.is_unread(),
-            !next_flagged,
-            message.is_unread(),
-            next_flagged,
-        );
-        let res = self.execute_mail_command(command);
+        let next_flagged = messages.iter().any(|message| !message.is_flagged());
+        for message in &messages {
+            message.set_flagged(next_flagged);
+            let command = MailCommand::set_message_state(
+                message.id(),
+                message.backend_location(),
+                message.is_unread(),
+                !next_flagged,
+                message.is_unread(),
+                next_flagged,
+            );
+            self.execute_mail_command(command)?;
+        }
         self.queue_mail_table_draw();
-        res.map(|_| true)
+        Ok(true)
     }
 
     pub(crate) fn queue_mail_table_draw(&self) {
@@ -10980,14 +11136,17 @@ impl MailPage {
     }
 
     pub fn archive_selected(&self) -> Result<bool, MailOperationError> {
-        let Some(message) = self.selected_message() else {
+        let messages = self.selected_messages();
+        if messages.is_empty() {
             return Ok(false);
-        };
-        let command = message
-            .backend_location()
-            .map(|location| MailCommand::archive(message.id(), location))
-            .unwrap_or_else(|| MailCommand::archive_local(message.id(), message.folder_id()));
-        self.execute_mail_command(command)?;
+        }
+        for message in messages {
+            let command = message
+                .backend_location()
+                .map(|location| MailCommand::archive(message.id(), location))
+                .unwrap_or_else(|| MailCommand::archive_local(message.id(), message.folder_id()));
+            self.execute_mail_command(command)?;
+        }
         Ok(true)
     }
 
@@ -11003,10 +11162,17 @@ impl MailPage {
     }
 
     pub fn mark_selected_junk(&self) -> Result<bool, MailOperationError> {
-        let Some(message) = self.selected_message() else {
+        let messages = self.selected_messages();
+        if messages.is_empty() {
             return Ok(false);
-        };
-        self.mark_message_junk(&message)
+        }
+        let mut any_marked = false;
+        for message in messages {
+            if self.mark_message_junk(&message)? {
+                any_marked = true;
+            }
+        }
+        Ok(any_marked)
     }
 
     pub fn mark_message_not_junk(&self, message: &MailMessageObject) -> Result<bool, MailOperationError> {
@@ -11022,10 +11188,17 @@ impl MailPage {
     }
 
     pub fn mark_selected_not_junk(&self) -> Result<bool, MailOperationError> {
-        let Some(message) = self.selected_message() else {
+        let messages = self.selected_messages();
+        if messages.is_empty() {
             return Ok(false);
-        };
-        self.mark_message_not_junk(&message)
+        }
+        let mut any_marked = false;
+        for message in messages {
+            if self.mark_message_not_junk(&message)? {
+                any_marked = true;
+            }
+        }
+        Ok(any_marked)
     }
 
     pub fn apply_filters(&self) {
@@ -11239,10 +11412,17 @@ impl MailPage {
         destination_source: &str,
         destination_folder: &str,
     ) -> Result<bool, MailOperationError> {
-        let Some(message) = self.selected_message() else {
+        let messages = self.selected_messages();
+        if messages.is_empty() {
             return Ok(false);
-        };
-        self.move_message_to(&message, destination_source, destination_folder)
+        }
+        let mut any_moved = false;
+        for message in messages {
+            if self.move_message_to(&message, destination_source, destination_folder)? {
+                any_moved = true;
+            }
+        }
+        Ok(any_moved)
     }
 
     fn copy_selected_to(
@@ -11250,10 +11430,17 @@ impl MailPage {
         destination_source: &str,
         destination_folder: &str,
     ) -> Result<bool, MailOperationError> {
-        let Some(message) = self.selected_message() else {
+        let messages = self.selected_messages();
+        if messages.is_empty() {
             return Ok(false);
-        };
-        self.copy_message_to(&message, destination_source, destination_folder)
+        }
+        let mut any_copied = false;
+        for message in messages {
+            if self.copy_message_to(&message, destination_source, destination_folder)? {
+                any_copied = true;
+            }
+        }
+        Ok(any_copied)
     }
 
     fn execute_mail_command(&self, command: MailCommand) -> Result<(), MailOperationError> {
@@ -11660,9 +11847,9 @@ impl MailPage {
         let count = batch_selection.len();
         drop(batch_selection);
 
-        let item_count = store.n_items();
-        if item_count > 0 {
-            store.items_changed(0, item_count, item_count);
+        if let Some(selection) = self.active_selection() {
+            selection.select_all();
+            self.queue_mail_table_draw();
         }
         self.update_batch_action_bar();
         count
@@ -12643,7 +12830,7 @@ impl MailPage {
                 };
 
                 // Handle dropped message
-                if let Some(msg_id) = payload_str.strip_prefix("evolution-message:") {
+                if let Some(msg_ids_str) = payload_str.strip_prefix("evolution-message:") {
                     if !target_folder.selectable() {
                         page.show_toast(&gettext("Messages cannot be placed in this folder"));
                         return false;
@@ -12662,18 +12849,30 @@ impl MailPage {
                     let is_copy = drop_action.contains(gtk::gdk::DragAction::COPY)
                         && !drop_action.contains(gtk::gdk::DragAction::MOVE);
 
-                    let result = if is_copy {
-                        page.copy_message_by_id_to(msg_id, &target_source, &target_folder_name)
-                    } else {
-                        page.move_message_by_id_to(msg_id, &target_source, &target_folder_name)
-                    };
-                    return match result {
-                        Ok(success) => success,
-                        Err(err) => {
-                            page.show_toast(&gettext("Action not possible: {error}").replace("{error}", &err.to_string()));
-                            false
+                    let mut all_success = true;
+                    for msg_id in msg_ids_str.split(',') {
+                        let msg_id = msg_id.trim();
+                        if msg_id.is_empty() {
+                            continue;
                         }
-                    };
+                        let result = if is_copy {
+                            page.copy_message_by_id_to(msg_id, &target_source, &target_folder_name)
+                        } else {
+                            page.move_message_by_id_to(msg_id, &target_source, &target_folder_name)
+                        };
+                        match result {
+                            Ok(success) => {
+                                if !success {
+                                    all_success = false;
+                                }
+                            }
+                            Err(err) => {
+                                page.show_toast(&gettext("Action not possible: {error}").replace("{error}", &err.to_string()));
+                                all_success = false;
+                            }
+                        }
+                    }
+                    return all_success;
                 }
 
                 // Handle dropped folder reordering
@@ -14828,6 +15027,22 @@ impl MailPage {
             button
         };
 
+        // 0. Communication Group: Reply, Reply All, Forward (.linked)
+        let str_reply = crate::i18n::gettext("Reply (Ctrl+R)");
+        let str_reply_all = crate::i18n::gettext("Reply All (Ctrl+Shift+R)");
+        let str_forward = crate::i18n::gettext("Forward (Ctrl+L)");
+        let reply_btn = make_button("mail-reply-sender-symbolic", &str_reply, "win.reply");
+        let reply_all_btn = make_button("mail-reply-all-symbolic", &str_reply_all, "win.reply-all");
+        let forward_btn = make_button("mail-forward-symbolic", &str_forward, "win.forward");
+        let comm_group = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .css_classes(vec!["linked"])
+            .valign(gtk::Align::Center)
+            .build();
+        comm_group.append(&reply_btn);
+        comm_group.append(&reply_all_btn);
+        comm_group.append(&forward_btn);
+
         // 1. Print Action
         let print_btn = make_button(
             "document-print-symbolic",
@@ -14835,7 +15050,7 @@ impl MailPage {
             "win.mail-print",
         );
 
-        // 2. Triage & Organize Group: Delete, Archive, Move, Copy (.linked)
+        // 2. Triage & Organize Group: Delete, Archive, Junk, Move, Copy (.linked)
         let delete_btn = make_button(
             "user-trash-symbolic",
             &crate::i18n::gettext("Delete message (Del)"),
@@ -14847,6 +15062,13 @@ impl MailPage {
             "win.archive",
         );
         set_button_icon_with_fallback(&archive_btn, "package-x-generic-symbolic", "folder-symbolic");
+
+        let junk_btn = make_button(
+            "mail-mark-junk-symbolic",
+            &crate::i18n::gettext("Mark as junk (Ctrl+J)"),
+            "win.mark-junk",
+        );
+        let _action_mark_not_junk = "win.mark-not-junk";
 
         let move_popover_content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -15005,15 +15227,11 @@ impl MailPage {
             .build();
         triage_group.append(&delete_btn);
         triage_group.append(&archive_btn);
+        triage_group.append(&junk_btn);
         triage_group.append(&move_button);
         triage_group.append(&copy_button);
 
         // 3. Spam & Status Group: Junk, Mark Read / Unread, Star, Important (.linked)
-        let junk_btn = make_button(
-            "mail-mark-junk-symbolic",
-            &crate::i18n::gettext("Mark as junk"),
-            "win.mark-junk",
-        );
         let mark_read_btn = make_button(
             "mail-read-symbolic",
             &crate::i18n::gettext("Mark as read"),
@@ -15044,7 +15262,7 @@ impl MailPage {
 
         let show_status_actions = AppSettings::try_new()
             .map(|settings| settings.mail_show_mark_read_actions())
-            .unwrap_or(false);
+            .unwrap_or(true);
 
         let status_group = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -15052,7 +15270,6 @@ impl MailPage {
             .valign(gtk::Align::Center)
             .visible(show_status_actions)
             .build();
-        status_group.append(&junk_btn);
         status_group.append(&mark_read_btn);
         status_group.append(&mark_unread_btn);
         status_group.append(&flag_btn);
@@ -15098,45 +15315,6 @@ impl MailPage {
 
         // 5. View Configuration: Columns Button
         columns_button.set_valign(gtk::Align::Center);
-
-        // 6. More Actions Menu [⋮]
-        let more_menu = gio::Menu::new();
-
-        let read_section = gio::Menu::new();
-        let str_mark_read = gettext("Mark as Read");
-        let str_mark_unread = gettext("Mark as Unread");
-        read_section.append(Some(&str_mark_read), Some("win.mark-read"));
-        read_section.append(Some(&str_mark_unread), Some("win.mark-unread"));
-        more_menu.append_section(None, &read_section);
-
-        let flag_section = gio::Menu::new();
-        let str_toggle_flag = gettext("Toggle Flag (Star)");
-        let str_toggle_important = gettext("Toggle Importance");
-        flag_section.append(Some(&str_toggle_flag), Some("win.toggle-flag"));
-        flag_section.append(Some(&str_toggle_important), Some("win.toggle-important"));
-        more_menu.append_section(None, &flag_section);
-
-        let junk_section = gio::Menu::new();
-        let str_mark_junk = gettext("Mark as Junk");
-        let str_mark_not_junk = gettext("Mark as Not Junk");
-        junk_section.append(Some(&str_mark_junk), Some("win.mark-junk"));
-        junk_section.append(Some(&str_mark_not_junk), Some("win.mark-not-junk"));
-        more_menu.append_section(None, &junk_section);
-
-        let source_section = gio::Menu::new();
-        let str_view_src = gettext("View Message Source");
-        source_section.append(Some(&str_view_src), Some("win.view-message-source"));
-        more_menu.append_section(None, &source_section);
-
-        let str_more_actions = crate::i18n::gettext("More actions");
-        let more_button = gtk::MenuButton::builder()
-            .icon_name("view-more-symbolic")
-            .menu_model(&more_menu)
-            .tooltip_text(&str_more_actions)
-            .css_classes(vec!["flat"])
-            .valign(gtk::Align::Center)
-            .build();
-        set_accessible_label(&more_button, &str_more_actions);
 
         let sidebar_visible = AppSettings::try_new()
             .map(|settings| settings.mail_show_sidebar())
@@ -15231,17 +15409,27 @@ impl MailPage {
             .spacing(4)
             .build();
 
-        actions_box.append(&nav_group);
-        actions_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        actions_box.append(&print_btn);
+        actions_box.append(&comm_group);
         actions_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         actions_box.append(&triage_group);
         actions_box.append(&status_separator);
         actions_box.append(&status_group);
         actions_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        actions_box.append(&more_button);
+        actions_box.append(&nav_group);
         actions_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         actions_box.append(&undo_btn);
+        actions_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        let str_source_tip = crate::i18n::gettext("View message source (Ctrl+U)");
+        let source_btn = make_button(
+            "code-symbolic",
+            &str_source_tip,
+            "win.view-message-source",
+        );
+        set_button_icon_with_fallback(&source_btn, "code-symbolic", "document-properties-symbolic");
+
+        actions_box.append(&print_btn);
+        actions_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        actions_box.append(&source_btn);
 
         let actions_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
@@ -15263,7 +15451,11 @@ impl MailPage {
         toolbar.append(&actions_scroll);
         toolbar.append(&pinned_right_box);
 
+        self.imp().mail_reply_button.replace(Some(reply_btn.clone()));
+        self.imp().mail_reply_all_button.replace(Some(reply_all_btn.clone()));
+        self.imp().mail_forward_button.replace(Some(forward_btn.clone()));
         self.imp().mail_print_button.replace(Some(print_btn.clone()));
+        self.imp().mail_source_button.replace(Some(source_btn.clone()));
         self.imp().mail_delete_button.replace(Some(delete_btn.clone()));
         self.imp().mail_archive_button.replace(Some(archive_btn.clone()));
         self.imp().mail_move_button.replace(Some(move_button.clone()));
@@ -16113,7 +16305,7 @@ impl MailPage {
 
     pub(crate) fn current_mail_table_layout(
         &self,
-        selection: &gtk::SingleSelection,
+        selection: &gtk::MultiSelection,
         canvas_width: f64,
     ) -> PreparedMailTableLayout {
         let settings = AppSettings::try_new();
@@ -16342,8 +16534,13 @@ impl MailPage {
             self.imp().thread_selection.borrow().as_ref(),
             self.imp().list_vadjustment.borrow().as_ref(),
         ) {
-            let selected = thread_sel.selected();
-            if selected != gtk::INVALID_LIST_POSITION {
+            let selected = self.imp().last_selected_mail_index.get()
+                .filter(|&idx| thread_sel.is_selected(idx))
+                .or_else(|| {
+                    let sel = thread_sel.selection();
+                    (!sel.is_empty()).then(|| sel.minimum())
+                });
+            if let Some(selected) = selected {
                 let row_h = self
                     .imp()
                     .mail_table_layout
@@ -17279,7 +17476,7 @@ impl MailPage {
         gtk::Box,
         gtk::Label,
         gio::ListStore,
-        gtk::SingleSelection,
+        gtk::MultiSelection,
         gtk::CustomFilter,
         gtk::CustomFilter,
         Rc<Cell<MessageFilter>>,
@@ -17338,9 +17535,7 @@ impl MailPage {
         });
         let filter_model =
             gtk::FilterListModel::new(Some(store.clone()), Some(custom_filter.clone()));
-        let selection = gtk::SingleSelection::new(Some(filter_model));
-        selection.set_autoselect(false);
-        selection.set_can_unselect(true);
+        let selection = gtk::MultiSelection::new(Some(filter_model));
 
         let thread_root_store = gio::ListStore::new::<MailMessageObject>();
         let thread_members = Rc::new(RefCell::new(
@@ -17423,9 +17618,7 @@ impl MailPage {
                     .cloned()
                     .map(|store| store.upcast::<gio::ListModel>())
             });
-        let thread_selection = gtk::SingleSelection::new(Some(thread_tree_model));
-        thread_selection.set_autoselect(false);
-        thread_selection.set_can_unselect(true);
+        let thread_selection = gtk::MultiSelection::new(Some(thread_tree_model));
 
         self.imp()
             .thread_root_store
@@ -17442,30 +17635,44 @@ impl MailPage {
 
         let flat_selection_for_tree = selection.clone();
         let page_for_tree_selection = self.downgrade();
-        thread_selection.connect_selected_item_notify(move |selection| {
-            if page_for_tree_selection
-                .upgrade()
-                .map(|page| page.imp().thread_selection_syncing.get())
-                .unwrap_or(false)
-            {
+        thread_selection.connect_selection_changed(move |selection, _pos, _n_items| {
+            let Some(page) = page_for_tree_selection.upgrade() else {
+                return;
+            };
+            if page.imp().thread_selection_syncing.get() {
                 return;
             }
-            let Some(row) = selection.selected_item().and_downcast::<gtk::TreeListRow>() else {
+            let target_pos = page.imp().last_selected_mail_index.get()
+                .filter(|&idx| selection.is_selected(idx))
+                .or_else(|| {
+                    let sel = selection.selection();
+                    (!sel.is_empty()).then(|| sel.minimum())
+                });
+            let Some(sel_pos) = target_pos else {
+                if selection.n_items() > 0 && !page.imp().is_auto_selecting.get() {
+                    page.imp().is_auto_selecting.set(true);
+                    let active_folder = page.active_folder_selection();
+                    let anchor = page.anchor_for_folder(&active_folder);
+                    page.select_message_after_reload(&anchor);
+                    page.imp().is_auto_selecting.set(false);
+                    return;
+                }
+                flat_selection_for_tree.unselect_all();
+                return;
+            };
+            let Some(row) = selection.item(sel_pos).and_downcast::<gtk::TreeListRow>() else {
                 return;
             };
             let Some(message) = row.item().and_downcast::<MailMessageObject>() else {
                 return;
             };
-            let sel_pos = selection.selected();
-            if sel_pos != gtk::INVALID_LIST_POSITION {
-                if let Some(candidate) = flat_selection_for_tree
-                    .item(sel_pos)
-                    .and_downcast::<MailMessageObject>()
-                {
-                    if candidate.id() == message.id() {
-                        flat_selection_for_tree.set_selected(sel_pos);
-                        return;
-                    }
+            if let Some(candidate) = flat_selection_for_tree
+                .item(sel_pos)
+                .and_downcast::<MailMessageObject>()
+            {
+                if candidate.id() == message.id() {
+                    flat_selection_for_tree.select_item(sel_pos, true);
+                    return;
                 }
             }
             for index in 0..flat_selection_for_tree.n_items() {
@@ -17476,7 +17683,7 @@ impl MailPage {
                     continue;
                 };
                 if candidate.id() == message.id() {
-                    flat_selection_for_tree.set_selected(index);
+                    flat_selection_for_tree.select_item(index, true);
                     break;
                 }
             }
@@ -18120,7 +18327,10 @@ impl MailPage {
                         }
                     }
                     if let Some(pos) = target_pos {
-                        selection.set_selected(pos);
+                        if !selection.is_selected(pos) {
+                            selection.select_item(pos, true);
+                        }
+                        page.imp().last_selected_mail_index.set(Some(pos));
                     }
                 }
                 if let Some(tree_row) = list_item.item().and_downcast::<gtk::TreeListRow>() {
@@ -18129,7 +18339,10 @@ impl MailPage {
                             for i in 0..flat_sel.n_items() {
                                 if let Some(cand) = flat_sel.item(i).and_downcast::<MailMessageObject>() {
                                     if cand.id() == msg.id() {
-                                        flat_sel.set_selected(i);
+                                        if !flat_sel.is_selected(i) {
+                                            flat_sel.select_item(i, true);
+                                        }
+                                        page.imp().last_selected_mail_index.set(Some(i));
                                         break;
                                     }
                                 }
@@ -18158,7 +18371,9 @@ impl MailPage {
             let drag_source = gtk::DragSource::new();
             drag_source.set_actions(gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE);
             let list_item_for_drag = list_item.downgrade();
-            drag_source.connect_prepare(move |_, _, _| {
+            let outer_for_drag = outer.downgrade();
+            let page_for_drag = page_for_row_actions.clone();
+            drag_source.connect_prepare(move |drag_src, _, _| {
                 let Some(list_item) = list_item_for_drag.upgrade() else {
                     return None;
                 };
@@ -18168,47 +18383,88 @@ impl MailPage {
                 let Some(message) = tree_row.item().and_downcast::<MailMessageObject>() else {
                     return None;
                 };
-                let subject = message.subject();
-                let location = message.backend_location();
-                let raw_mime = message.raw_mime();
-                let export = export_message_from(&message);
-                let filename = export_filename(&subject);
 
-                let raw_bytes = if let Some(raw) = raw_mime {
-                    raw.to_vec()
-                } else if let Some(loc) = location.as_ref() {
-                    let cancelled = Arc::new(AtomicBool::new(false));
-                    camel_mail_service::load_raw_message(loc, &cancelled).unwrap_or_else(|_| {
-                        mail_composer_service::build_export_rfc822(&export).unwrap_or_default()
-                    })
+                let page = page_for_drag.upgrade();
+                let messages_to_drag = if let Some(ref page) = page {
+                    let position = list_item.position();
+                    if let Some(selection) = page.imp().thread_selection.borrow().as_ref() {
+                        if position != gtk::INVALID_LIST_POSITION && !selection.is_selected(position) {
+                            selection.select_item(position, true);
+                            page.imp().last_selected_mail_index.set(Some(position));
+                        }
+                    }
+                    let selected = page.selected_messages();
+                    if selected.iter().any(|m| m.id() == message.id()) {
+                        selected
+                    } else {
+                        vec![message.clone()]
+                    }
                 } else {
-                    mail_composer_service::build_export_rfc822(&export).unwrap_or_default()
+                    vec![message.clone()]
                 };
 
-                let drag_dir = std::env::temp_dir().join("evolution-gtk4-drag");
-                let _ = std::fs::create_dir_all(&drag_dir);
-                let target_file_path = drag_dir.join(&filename);
-                if let Err(err) = std::fs::write(&target_file_path, &raw_bytes) {
-                    tracing::warn!(%err, "Could not write drag temp file");
+                if messages_to_drag.is_empty() {
                     return None;
                 }
 
-                let gio_file = gio::File::for_path(&target_file_path);
-                let uri = gio_file.uri();
-                let uri_list_bytes = glib::Bytes::from(format!("{}\r\n", uri).as_bytes());
-
+                let ids: Vec<String> = messages_to_drag.iter().map(|m| m.id()).collect();
                 let provider_internal = gtk::gdk::ContentProvider::for_value(
-                    &format!("evolution-message:{}", message.id()).to_value(),
+                    &format!("evolution-message:{}", ids.join(",")).to_value(),
                 );
-                let provider_file = gtk::gdk::ContentProvider::for_value(&gio_file.to_value());
-                let provider_uri = gtk::gdk::ContentProvider::for_bytes("text/uri-list", &uri_list_bytes);
-                let provider_mime = gtk::gdk::ContentProvider::for_bytes("message/rfc822", &glib::Bytes::from(&raw_bytes));
-                Some(gtk::gdk::ContentProvider::new_union(&[
-                    provider_internal,
-                    provider_file,
-                    provider_uri,
-                    provider_mime,
-                ]))
+
+                let drag_dir = std::env::temp_dir().join("evolution-gtk4-drag");
+                let _ = std::fs::create_dir_all(&drag_dir);
+                let mut uri_list = String::new();
+                let mut first_file = None;
+                let mut first_raw_bytes = None;
+
+                for msg in &messages_to_drag {
+                    let subject = msg.subject();
+                    let location = msg.backend_location();
+                    let raw_mime = msg.raw_mime();
+                    let export = export_message_from(msg);
+                    let filename = export_filename(&subject);
+
+                    let raw_bytes = if let Some(raw) = raw_mime {
+                        raw.to_vec()
+                    } else if let Some(loc) = location.as_ref() {
+                        let cancelled = Arc::new(AtomicBool::new(false));
+                        camel_mail_service::load_raw_message(loc, &cancelled).unwrap_or_else(|_| {
+                            mail_composer_service::build_export_rfc822(&export).unwrap_or_default()
+                        })
+                    } else {
+                        mail_composer_service::build_export_rfc822(&export).unwrap_or_default()
+                    };
+
+                    let target_file_path = drag_dir.join(&filename);
+                    if let Ok(()) = std::fs::write(&target_file_path, &raw_bytes) {
+                        let gio_file = gio::File::for_path(&target_file_path);
+                        uri_list.push_str(&format!("{}\r\n", gio_file.uri()));
+                        if first_file.is_none() {
+                            first_file = Some(gio_file);
+                            first_raw_bytes = Some(raw_bytes);
+                        }
+                    }
+                }
+
+                if let Some(outer) = outer_for_drag.upgrade() {
+                    let icon_paintable = gtk::IconTheme::for_display(&outer.display())
+                        .lookup_icon("mail-unread-symbolic", &[], 32, 1, gtk::TextDirection::None, gtk::IconLookupFlags::empty());
+                    drag_src.set_icon(Some(&icon_paintable), 16, 16);
+                }
+
+                let mut providers = vec![provider_internal];
+                if let Some(first) = first_file {
+                    providers.push(gtk::gdk::ContentProvider::for_value(&first.to_value()));
+                }
+                if !uri_list.is_empty() {
+                    let uri_list_bytes = glib::Bytes::from(uri_list.as_bytes());
+                    providers.push(gtk::gdk::ContentProvider::for_bytes("text/uri-list", &uri_list_bytes));
+                }
+                if let Some(raw) = first_raw_bytes {
+                    providers.push(gtk::gdk::ContentProvider::for_bytes("message/rfc822", &glib::Bytes::from(&raw)));
+                }
+                Some(gtk::gdk::ContentProvider::new_union(&providers))
             });
             outer.add_controller(drag_source);
         });
@@ -19827,8 +20083,8 @@ impl MailPage {
             .classic_toolbar
             .replace(Some(unified_toolbar_scroll.clone().upcast()));
 
-        // Initialize toolbar button modes (desktop: pure text, mobile: pure icon)
-        let is_compact_initial = self.imp().is_mobile.get() || (self.width() > 0 && self.width() < 820);
+        // Initialize toolbar button modes: strictly pure symbolic icons per GNOME HIG
+        let is_compact_initial = true;
         self.apply_toolbar_button_modes(is_compact_initial);
 
         self.connect_root_notify(move |page| {
@@ -20195,7 +20451,7 @@ impl MailPage {
         list_container.append(&graph_local_search_warning);
         let column_header = self.build_mail_column_header();
         let column_header_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
+            .hscrollbar_policy(gtk::PolicyType::External)
             .vscrollbar_policy(gtk::PolicyType::Never)
             .min_content_width(120)
             .child(&column_header)
@@ -20222,7 +20478,7 @@ impl MailPage {
 
         let page_for_draw = self.downgrade();
         let thread_sel_for_draw = thread_selection.clone();
-        mail_table_canvas.set_draw_func(move |canvas, cr, width, height| {
+        mail_table_canvas.set_draw_func(move |_canvas, cr, width, height| {
             let Some(page) = page_for_draw.upgrade() else { return; };
             let is_dark = adw::StyleManager::default().is_dark()
                 || AppSettings::try_new()
@@ -20250,12 +20506,8 @@ impl MailPage {
                     l
                 }
             };
-            let sel = thread_sel_for_draw.selected();
-            let selected_row = if sel != gtk::INVALID_LIST_POSITION {
-                Some(sel as usize)
-            } else {
-                None
-            };
+            let selection_bitset = thread_sel_for_draw.selection();
+            let is_row_selected = |idx: usize| selection_bitset.contains(idx as u32);
             let scroll_y = if let Some(adj) = page.imp().list_vadjustment.borrow().as_ref() {
                 let row_h = layout.row_height;
                 let total_h = (n_items as f64 * row_h).max(height as f64);
@@ -20282,7 +20534,7 @@ impl MailPage {
             } else {
                 0.0
             };
-            draw_mail_table_canvas(cr, &layout, width as f64, height as f64, hovered, selected_row, is_dark, scroll_y);
+            draw_mail_table_canvas(cr, &layout, width as f64, height as f64, hovered, &is_row_selected, is_dark, scroll_y);
         });
 
         let click_gesture = gtk::GestureClick::new();
@@ -20351,7 +20603,50 @@ impl MailPage {
                     }
                 }
                 MailTableHitAction::SelectRow(_, model_index) => {
-                    thread_sel_for_click.set_selected(model_index as u32);
+                    let state = gesture.current_event_state();
+                    let is_ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+                    let is_shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+
+                    page.imp().is_mouse_selecting.set(true);
+
+                    if is_ctrl && is_shift {
+                        let anchor = page.imp().mail_selection_anchor.get()
+                            .or_else(|| page.imp().last_selected_mail_index.get())
+                            .unwrap_or(model_index as u32);
+                        let start = anchor.min(model_index as u32);
+                        let count = (anchor.max(model_index as u32) - start) + 1;
+                        page.imp().last_selected_mail_index.set(Some(model_index as u32));
+                        thread_sel_for_click.select_range(start, count, false);
+                    } else if is_ctrl {
+                        page.imp().last_selected_mail_index.set(Some(model_index as u32));
+                        page.imp().mail_selection_anchor.set(Some(model_index as u32));
+                        if thread_sel_for_click.is_selected(model_index as u32) {
+                            if thread_sel_for_click.selection().size() > 1 {
+                                thread_sel_for_click.unselect_item(model_index as u32);
+                            }
+                        } else {
+                            thread_sel_for_click.select_item(model_index as u32, false);
+                        }
+                    } else if is_shift {
+                        let anchor = page.imp().mail_selection_anchor.get()
+                            .or_else(|| page.imp().last_selected_mail_index.get())
+                            .or_else(|| {
+                                let sel = thread_sel_for_click.selection();
+                                (!sel.is_empty()).then(|| sel.minimum())
+                            })
+                            .unwrap_or(model_index as u32);
+                        let start = anchor.min(model_index as u32);
+                        let count = (anchor.max(model_index as u32) - start) + 1;
+                        page.imp().last_selected_mail_index.set(Some(model_index as u32));
+                        thread_sel_for_click.select_range(start, count, true);
+                    } else {
+                        page.imp().last_selected_mail_index.set(Some(model_index as u32));
+                        page.imp().mail_selection_anchor.set(Some(model_index as u32));
+                        thread_sel_for_click.select_item(model_index as u32, true);
+                    }
+
+                    page.imp().is_mouse_selecting.set(false);
+
                     if page.imp().is_mobile.get() || page.imp().is_tablet.get() {
                         page.set_drill_down_level(MailDrillDownLevel::Viewer);
                     }
@@ -20410,7 +20705,14 @@ impl MailPage {
                     | MailTableHitAction::ToggleStar(_, m)
                     | MailTableHitAction::SelectRow(_, m) => m,
                 };
-                thread_sel_for_right_click.set_selected(model_index as u32);
+                let idx = model_index as u32;
+                page.imp().last_selected_mail_index.set(Some(idx));
+                if !thread_sel_for_right_click.is_selected(idx) {
+                    page.imp().mail_selection_anchor.set(Some(idx));
+                    page.imp().is_mouse_selecting.set(true);
+                    thread_sel_for_right_click.select_item(idx, true);
+                    page.imp().is_mouse_selecting.set(false);
+                }
             }
             gesture.set_state(gtk::EventSequenceState::Claimed);
             let popover = gtk::PopoverMenu::builder()
@@ -20428,6 +20730,77 @@ impl MailPage {
             popover.popup();
         });
         mail_table_canvas.add_controller(right_click);
+
+        let canvas_drag_source = gtk::DragSource::new();
+        canvas_drag_source.set_actions(gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE);
+        let page_for_canvas_drag = self.downgrade();
+        let thread_sel_for_canvas_drag = thread_selection.clone();
+        let canvas_for_drag = mail_table_canvas.clone();
+        canvas_drag_source.connect_prepare(move |drag_source, x, y| {
+            let Some(page) = page_for_canvas_drag.upgrade() else {
+                return None;
+            };
+            let w = canvas_for_drag.width().max(120) as f64;
+            let n_items = thread_sel_for_canvas_drag.n_items() as usize;
+            let layout = {
+                let cached = page.imp().mail_table_layout.borrow();
+                if let Some(ref l) = *cached {
+                    if (l.width - w).abs() < 2.0 && l.rows.len() == n_items {
+                        Some(Rc::clone(l))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+            let layout = match layout {
+                Some(l) => l,
+                None => {
+                    let l = Rc::new(page.current_mail_table_layout(&thread_sel_for_canvas_drag, w));
+                    page.imp().mail_table_layout.replace(Some(Rc::clone(&l)));
+                    l
+                }
+            };
+            let scroll_y = page.imp().list_vadjustment.borrow().as_ref().map(|a| a.value()).unwrap_or(0.0);
+            let action = hit_test_mail_table(&layout, x, y + scroll_y);
+            let hit_idx = match action {
+                Some(MailTableHitAction::SelectRow(_, idx)) => Some(idx),
+                _ => {
+                    let row_h = layout.row_height;
+                    let my = y + scroll_y;
+                    if my >= 0.0 && row_h > 0.0 {
+                        let r = (my / row_h) as usize;
+                        if r < n_items { Some(r) } else { None }
+                    } else {
+                        None
+                    }
+                }
+            };
+            if let Some(idx) = hit_idx {
+                page.imp().last_selected_mail_index.set(Some(idx as u32));
+                if !thread_sel_for_canvas_drag.is_selected(idx as u32) {
+                    page.imp().mail_selection_anchor.set(Some(idx as u32));
+                    page.imp().is_mouse_selecting.set(true);
+                    thread_sel_for_canvas_drag.select_item(idx as u32, true);
+                    page.imp().is_mouse_selecting.set(false);
+                    canvas_for_drag.queue_draw();
+                }
+            }
+            let msgs = page.selected_messages();
+            if msgs.is_empty() {
+                return None;
+            }
+            let ids: Vec<String> = msgs.iter().map(|m| m.id()).collect();
+            let payload = format!("evolution-message:{}", ids.join(","));
+
+            let icon_paintable = gtk::IconTheme::for_display(&canvas_for_drag.display())
+                .lookup_icon("mail-unread-symbolic", &[], 32, 1, gtk::TextDirection::None, gtk::IconLookupFlags::empty());
+            drag_source.set_icon(Some(&icon_paintable), 16, 16);
+
+            Some(gtk::gdk::ContentProvider::for_value(&payload.to_value()))
+        });
+        mail_table_canvas.add_controller(canvas_drag_source);
 
         let motion = gtk::EventControllerMotion::new();
         let page_for_motion = self.downgrade();
@@ -20469,72 +20842,75 @@ impl MailPage {
         let page_for_key = self.downgrade();
         let thread_sel_for_key = thread_selection.clone();
         let canvas_for_key = mail_table_canvas.clone();
-        key_controller.connect_key_pressed(move |_, keyval, _, _| {
+        key_controller.connect_key_pressed(move |_, keyval, _, state| {
             let n = thread_sel_for_key.n_items();
             if n == 0 {
                 return glib::Propagation::Proceed;
             }
-            let cur = thread_sel_for_key.selected();
+            let is_ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+            let is_shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+
+            if is_ctrl && (keyval == gtk::gdk::Key::a || keyval == gtk::gdk::Key::A) {
+                thread_sel_for_key.select_all();
+                canvas_for_key.queue_draw();
+                return glib::Propagation::Stop;
+            }
+
+            let Some(page) = page_for_key.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+
+            let cur = page.imp().last_selected_mail_index.get()
+                .or_else(|| {
+                    let sel = thread_sel_for_key.selection();
+                    (!sel.is_empty()).then(|| sel.minimum())
+                })
+                .unwrap_or(0);
+
+            let next = match keyval {
+                gtk::gdk::Key::Up => Some(cur.saturating_sub(1)),
+                gtk::gdk::Key::Down => Some((cur + 1).min(n - 1)),
+                gtk::gdk::Key::Page_Up => Some(cur.saturating_sub(10)),
+                gtk::gdk::Key::Page_Down => Some((cur + 10).min(n - 1)),
+                gtk::gdk::Key::Home => Some(0),
+                gtk::gdk::Key::End => Some(n - 1),
+                _ => None,
+            };
+
+            if let Some(target) = next {
+                page.imp().last_selected_mail_index.set(Some(target));
+                if is_shift {
+                    let anchor = page.imp().mail_selection_anchor.get()
+                        .or_else(|| page.imp().last_selected_mail_index.get())
+                        .or_else(|| {
+                            let sel = thread_sel_for_key.selection();
+                            (!sel.is_empty()).then(|| sel.minimum())
+                        })
+                        .unwrap_or(cur);
+                    let start = anchor.min(target);
+                    let count = (anchor.max(target) - start) + 1;
+                    thread_sel_for_key.select_range(start, count, true);
+                } else {
+                    page.imp().mail_selection_anchor.set(Some(target));
+                    thread_sel_for_key.select_item(target, true);
+                }
+                page.scroll_mail_table_to_selected();
+                canvas_for_key.queue_draw();
+                return glib::Propagation::Stop;
+            }
+
             match keyval {
-                gtk::gdk::Key::Up => {
-                    let next = if cur == gtk::INVALID_LIST_POSITION {
-                        0
-                    } else {
-                        cur.saturating_sub(1)
-                    };
-                    thread_sel_for_key.set_selected(next);
-                    if let Some(page) = page_for_key.upgrade() {
-                        page.scroll_mail_table_to_selected();
-                    }
-                    canvas_for_key.queue_draw();
-                    return glib::Propagation::Stop;
-                }
-                gtk::gdk::Key::Down => {
-                    let next = if cur == gtk::INVALID_LIST_POSITION {
-                        0
-                    } else {
-                        (cur + 1).min(n - 1)
-                    };
-                    thread_sel_for_key.set_selected(next);
-                    if let Some(page) = page_for_key.upgrade() {
-                        page.scroll_mail_table_to_selected();
-                    }
-                    canvas_for_key.queue_draw();
-                    return glib::Propagation::Stop;
-                }
-                gtk::gdk::Key::Page_Up => {
-                    let next = cur.saturating_sub(10);
-                    thread_sel_for_key.set_selected(next);
-                    if let Some(page) = page_for_key.upgrade() {
-                        page.scroll_mail_table_to_selected();
-                    }
-                    canvas_for_key.queue_draw();
-                    return glib::Propagation::Stop;
-                }
-                gtk::gdk::Key::Page_Down => {
-                    let next = (cur + 10).min(n - 1);
-                    thread_sel_for_key.set_selected(next);
-                    if let Some(page) = page_for_key.upgrade() {
-                        page.scroll_mail_table_to_selected();
-                    }
-                    canvas_for_key.queue_draw();
-                    return glib::Propagation::Stop;
-                }
                 gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter | gtk::gdk::Key::ISO_Enter => {
-                    if let Some(page) = page_for_key.upgrade() {
-                        if let Some(message) = page.selected_message() {
-                            page.open_standalone_message_viewer(&message);
-                            return glib::Propagation::Stop;
-                        }
+                    if let Some(message) = page.selected_message() {
+                        page.open_standalone_message_viewer(&message);
+                        return glib::Propagation::Stop;
                     }
                 }
                 gtk::gdk::Key::space => {
-                    if let Some(page) = page_for_key.upgrade() {
-                        if let Some(message) = page.selected_message() {
-                            let _ = page.toggle_message_unread(&message);
-                            canvas_for_key.queue_draw();
-                            return glib::Propagation::Stop;
-                        }
+                    if let Some(message) = page.selected_message() {
+                        let _ = page.toggle_message_unread(&message);
+                        canvas_for_key.queue_draw();
+                        return glib::Propagation::Stop;
                     }
                 }
                 _ => {}
@@ -20575,9 +20951,11 @@ impl MailPage {
         });
         let page_for_notify = self.downgrade();
         let canvas_for_notify = mail_table_canvas.clone();
-        thread_selection.connect_selected_item_notify(move |_| {
+        thread_selection.connect_selection_changed(move |_, _, _| {
             if let Some(page) = page_for_notify.upgrade() {
-                page.scroll_mail_table_to_selected();
+                if !page.imp().is_mouse_selecting.get() {
+                    page.scroll_mail_table_to_selected();
+                }
             }
             canvas_for_notify.queue_draw();
         });
@@ -20766,6 +21144,9 @@ impl MailPage {
                     || page.imp().graph_backend_active.get();
                 if needs_all_mail_reload {
                     page.start_mail_load(MailLoadRequest::initial(), true);
+                } else {
+                    let anchor = page.anchor_for_folder(&selection);
+                    page.select_message_after_reload(&anchor);
                 }
             }
             if page.imp().is_mobile.get() {
@@ -21079,12 +21460,29 @@ impl MailPage {
         let m_forward = make_header_action_btn("mail-forward-symbolic", &str_m_forward, "win.forward");
 
         let m_more_menu = gio::Menu::new();
+
+        let status_section = gio::Menu::new();
+        let str_mark_read = gettext("Mark Read");
+        let str_mark_unread = gettext("Mark Unread");
+        status_section.append(Some(&str_mark_read), Some("win.mark-read"));
+        status_section.append(Some(&str_mark_unread), Some("win.mark-unread"));
+        m_more_menu.append_section(None, &status_section);
+
+        let triage_section = gio::Menu::new();
+        let str_trash = gettext("Move message to Trash");
+        triage_section.append(Some(&str_trash), Some("win.delete"));
+        m_more_menu.append_section(None, &triage_section);
+
+        let tools_section = gio::Menu::new();
+        let str_print = gettext("Print…");
+        let str_view_src = gettext("View Source");
         let str_export = gettext("Save as EML…");
-        let str_view_src = gettext("View Message Source");
         let str_light_mode = gettext("Light theme for this email");
-        m_more_menu.append(Some(&str_export), Some("win.export"));
-        m_more_menu.append(Some(&str_view_src), Some("win.view-message-source"));
-        m_more_menu.append(Some(&str_light_mode), Some("win.toggle-mail-light-mode"));
+        tools_section.append(Some(&str_print), Some("win.mail-print"));
+        tools_section.append(Some(&str_view_src), Some("win.view-message-source"));
+        tools_section.append(Some(&str_export), Some("win.export"));
+        tools_section.append(Some(&str_light_mode), Some("win.toggle-mail-light-mode"));
+        m_more_menu.append_section(None, &tools_section);
 
         let str_more_tip = gettext("More actions for this message");
         let m_more_btn = gtk::MenuButton::builder()
@@ -21259,12 +21657,29 @@ impl MailPage {
         ]);
 
         let preview_more_menu = gio::Menu::new();
-        let str_prev_export = gettext("Save as EML…");
+
+        let prev_status_section = gio::Menu::new();
+        let str_prev_read = gettext("Mark Read");
+        let str_prev_unread = gettext("Mark Unread");
+        prev_status_section.append(Some(&str_prev_read), Some("win.mark-read"));
+        prev_status_section.append(Some(&str_prev_unread), Some("win.mark-unread"));
+        preview_more_menu.append_section(None, &prev_status_section);
+
+        let prev_triage_section = gio::Menu::new();
+        let str_prev_trash = gettext("Move message to Trash");
+        prev_triage_section.append(Some(&str_prev_trash), Some("win.delete"));
+        preview_more_menu.append_section(None, &prev_triage_section);
+
+        let prev_tools_section = gio::Menu::new();
+        let str_prev_print = gettext("Print…");
         let str_prev_src = gettext("View Message Source");
+        let str_prev_export = gettext("Save as EML…");
         let str_prev_light = gettext("Light theme for this email");
-        preview_more_menu.append(Some(&str_prev_export), Some("win.export"));
-        preview_more_menu.append(Some(&str_prev_src), Some("win.view-message-source"));
-        preview_more_menu.append(Some(&str_prev_light), Some("win.toggle-mail-light-mode"));
+        prev_tools_section.append(Some(&str_prev_print), Some("win.mail-print"));
+        prev_tools_section.append(Some(&str_prev_src), Some("win.view-message-source"));
+        prev_tools_section.append(Some(&str_prev_export), Some("win.export"));
+        prev_tools_section.append(Some(&str_prev_light), Some("win.toggle-mail-light-mode"));
+        preview_more_menu.append_section(None, &prev_tools_section);
 
         let str_prev_more = gettext("More actions for this message");
         let preview_more_btn = gtk::MenuButton::builder()
@@ -21700,8 +22115,8 @@ impl MailPage {
             });
         });
 
-        detail_view.append(&preview_actions_row);
         detail_view.append(&header_box);
+        detail_view.append(&preview_actions_row);
         detail_view.append(&header_separator);
         detail_view.append(&thread_context);
         detail_view.append(&message_find_revealer);
@@ -21732,8 +22147,8 @@ impl MailPage {
     #[allow(clippy::too_many_arguments)]
     fn connect_selection_handler(
         &self,
-        selection: &gtk::SingleSelection,
-        store: &gio::ListStore,
+        selection: &gtk::MultiSelection,
+        _store: &gio::ListStore,
         _custom_filter: &gtk::CustomFilter,
         _thread_filter: &gtk::CustomFilter,
         mail_viewer: &MailViewer,
@@ -21744,7 +22159,7 @@ impl MailPage {
         let selection_for_async_crypto = selection.clone();
         let page_for_read = self.downgrade();
         let itip_banner_clone = itip_banner.clone();
-        selection.connect_selected_item_notify(glib::clone!(
+        selection.connect_selection_changed(glib::clone!(
             #[strong]
             selection_for_async_crypto,
             #[strong]
@@ -21757,7 +22172,7 @@ impl MailPage {
             lbl_crypto,
             #[weak]
             attachment_bar,
-            move |sel| {
+            move |sel, _pos, _n_items| {
                 let crypto_request_generation = page_for_read
                     .upgrade()
                     .map(|page| page.begin_crypto_request())
@@ -21771,8 +22186,19 @@ impl MailPage {
                 if let Some(source) = page_for_read.upgrade().and_then(|p| p.imp().mark_read_timeout_source.borrow_mut().take()) {
                     source.remove();
                 }
-                let msg_option = selected_mail_message(sel);
+                let preferred = page_for_read.upgrade().and_then(|p| p.imp().last_selected_mail_index.get());
+                let msg_option = selected_mail_message(sel, preferred);
                 if let Some(msg) = msg_option {
+                    if let Some(page) = page_for_read.upgrade() {
+                        let active_folder = page.active_folder_selection();
+                        page.save_anchor_for_folder(
+                            &active_folder,
+                            MailSelectionAnchor {
+                                id: Some(msg.id().to_string()),
+                                index: preferred,
+                            },
+                        );
+                    }
                     let was_unread = msg.is_unread();
                     let settings = AppSettings::try_new();
                     let mark_read_on_selection = settings
@@ -21907,7 +22333,8 @@ impl MailPage {
                             let Some(page) = page_for_crypto.upgrade() else {
                                 return;
                             };
-                            let Some(current) = selected_mail_message(&selection_for_crypto) else {
+                            let preferred = page.imp().last_selected_mail_index.get();
+                            let Some(current) = selected_mail_message(&selection_for_crypto, preferred) else {
                                 return;
                             };
                             if !crypto_result_is_current(
@@ -22007,7 +22434,8 @@ impl MailPage {
                                 let Some(page) = page_for_body.upgrade() else {
                                     return;
                                 };
-                                let Some(current) = selected_mail_message(&selection_for_body) else {
+                                let preferred = page.imp().last_selected_mail_index.get();
+                                let Some(current) = selected_mail_message(&selection_for_body, preferred) else {
                                     return;
                                 };
                                 if cancellation.load(Ordering::Relaxed) || !crypto_result_is_current(
@@ -22050,6 +22478,16 @@ impl MailPage {
                         }
                     }
                 } else {
+                    if let Some(page) = page_for_read.upgrade() {
+                        if sel.n_items() > 0 && !page.imp().is_auto_selecting.get() {
+                            page.imp().is_auto_selecting.set(true);
+                            let active_folder = page.active_folder_selection();
+                            let anchor = page.anchor_for_folder(&active_folder);
+                            page.select_message_after_reload(&anchor);
+                            page.imp().is_auto_selecting.set(false);
+                            return;
+                        }
+                    }
                     itip_banner_clone.set_invitation(None, &[]);
                     lbl_crypto.set_label("");
                     while let Some(child) = attachment_bar.first_child() {
@@ -22073,8 +22511,17 @@ impl MailPage {
             }
         ));
 
-        if store.n_items() > 0 {
-            selection.set_selected(0);
+        if selection.n_items() > 0 {
+            let active_folder = self.active_folder_selection();
+            let anchor = self.anchor_for_folder(&active_folder);
+            self.select_message_after_reload(&anchor);
+        } else {
+            selection.unselect_all();
+            if let Some(thread_sel) = self.imp().thread_selection.borrow().as_ref() {
+                thread_sel.unselect_all();
+            }
+            self.imp().last_selected_mail_index.set(None);
+            self.imp().mail_selection_anchor.set(None);
         }
     }
 
@@ -22434,7 +22881,7 @@ impl MailPage {
                             continue;
                         };
                         if candidate.id() == message_id {
-                            selection_clone.set_selected(index);
+                            selection_clone.select_item(index, true);
                             break;
                         }
                     }
@@ -22465,7 +22912,8 @@ impl MailPage {
         imp.outer_paned.set_resize_start_child(false);
         imp.outer_paned.set_shrink_start_child(true);
 
-        message_container.set_size_request(180, -1);
+        message_container.set_overflow(gtk::Overflow::Hidden);
+        message_container.set_size_request(0, -1);
         detail_view.set_size_request(120, -1);
         detail_view.set_overflow(gtk::Overflow::Hidden);
         detail_view.set_hexpand(true);
@@ -22490,7 +22938,7 @@ impl MailPage {
         imp.todo_paned.set_shrink_start_child(true);
         imp.todo_paned.set_end_child(Some(&todo_sidebar));
         imp.todo_paned.set_resize_end_child(false);
-        imp.todo_paned.set_shrink_end_child(false);
+        imp.todo_paned.set_shrink_end_child(true);
         imp.todo_paned.set_vexpand(true);
         imp.todo_paned.set_hexpand(true);
 
@@ -22550,6 +22998,9 @@ impl MailPage {
                 let clamped = position.clamp(crate::window::MIN_SIDEBAR_WIDTH, crate::window::MAX_SIDEBAR_WIDTH);
                 if position != clamped {
                     paned.set_position(clamped);
+                }
+                if let Some(win) = crate::window::find_evolution_window(paned) {
+                    win.set_sidebar_position_sync(clamped);
                 }
                 if settings.mail_sidebar_position() != clamped {
                     settings.set_mail_sidebar_position(clamped);
@@ -23375,9 +23826,6 @@ impl MailPage {
                     } else if n_press == 2 {
                         page.dismiss_active_agenda_popover();
                         let dialog = crate::dialogs::EventDialog::new_for_edit(event);
-                        if let Some(root) = page.root().and_downcast::<gtk::Window>() {
-                            dialog.set_transient_for(Some(&root));
-                        }
                         dialog.present();
                     }
                 }
@@ -24111,11 +24559,8 @@ impl MailPage {
             if let Some(pop) = popover_weak_edit.upgrade() {
                 pop.popdown();
             }
-            if let Some(page) = page_for_edit.upgrade() {
+            if let Some(_page) = page_for_edit.upgrade() {
                 let dialog = crate::dialogs::EventDialog::new_for_edit(&ev_for_edit);
-                if let Some(root) = page.root().and_downcast::<gtk::Window>() {
-                    dialog.set_transient_for(Some(&root));
-                }
                 dialog.present();
             }
         });
@@ -24467,13 +24912,24 @@ impl MailPage {
         let Some(selection) = selection.as_ref() else {
             return MailSelectionAnchor::default();
         };
-        let index =
-            (selection.selected() != gtk::INVALID_LIST_POSITION).then_some(selection.selected());
+        let index = self.imp().last_selected_mail_index.get()
+            .or_else(|| {
+                let sel = selection.selection();
+                (!sel.is_empty()).then(|| sel.minimum())
+            });
+        let id = index.and_then(|idx| {
+            selection.item(idx).and_then(|item| {
+                item.clone().downcast::<MailMessageObject>().ok()
+                    .or_else(|| {
+                        item.downcast::<gtk::TreeListRow>().ok()
+                            .and_then(|r| r.item())
+                            .and_then(|obj| obj.downcast::<MailMessageObject>().ok())
+                    })
+                    .map(|msg| msg.id())
+            })
+        });
         MailSelectionAnchor {
-            id: selection
-                .selected_item()
-                .and_downcast::<MailMessageObject>()
-                .map(|message| message.id()),
+            id,
             index,
         }
     }
@@ -24483,9 +24939,16 @@ impl MailPage {
             return;
         };
         if selection.n_items() == 0 {
-            selection.set_selected(gtk::INVALID_LIST_POSITION);
+            selection.unselect_all();
+            if let Some(thread_sel) = self.imp().thread_selection.borrow().as_ref() {
+                thread_sel.unselect_all();
+            }
+            self.imp().last_selected_mail_index.set(None);
+            self.imp().mail_selection_anchor.set(None);
             return;
         }
+        let mut target_index = None;
+        let mut found_id = None;
         if let Some(previous_id) = previous.id.as_deref() {
             for index in 0..selection.n_items() {
                 let Some(message) = selection.item(index).and_downcast::<MailMessageObject>()
@@ -24493,21 +24956,35 @@ impl MailPage {
                     continue;
                 };
                 if message.id() == previous_id {
-                    selection.set_selected(index);
-                    self.sync_thread_selection(Some(previous_id));
-                    return;
+                    target_index = Some(index);
+                    found_id = Some(previous_id.to_string());
+                    break;
                 }
             }
         }
-        let Some(index) = fallback_selection_index(selection.n_items(), previous.index) else {
-            return;
-        };
-        selection.set_selected(index);
-        let selected_id = selection
-            .selected_item()
-            .and_downcast::<MailMessageObject>()
-            .map(|message| message.id());
+        let index = target_index.unwrap_or_else(|| {
+            fallback_selection_index(selection.n_items(), previous.index).unwrap_or(0)
+        });
+
+        selection.select_item(index, true);
+        self.imp().last_selected_mail_index.set(Some(index));
+        self.imp().mail_selection_anchor.set(Some(index));
+        let selected_id = found_id.or_else(|| {
+            selection
+                .item(index)
+                .and_downcast::<MailMessageObject>()
+                .map(|message| message.id())
+        });
         self.sync_thread_selection(selected_id.as_deref());
+
+        let active_folder = self.active_folder_selection();
+        self.save_anchor_for_folder(
+            &active_folder,
+            MailSelectionAnchor {
+                id: selected_id,
+                index: Some(index),
+            },
+        );
     }
 
     fn sync_thread_selection(&self, message_id: Option<&str>) {
@@ -24561,11 +25038,10 @@ impl MailPage {
             }
         }
 
-        let Some(index) = selected_index else {
-            return;
-        };
+        let index = selected_index.unwrap_or(0);
         self.imp().thread_selection_syncing.set(true);
-        thread_selection.set_selected(index);
+        thread_selection.select_item(index, true);
+        self.imp().last_selected_mail_index.set(Some(index));
         self.imp().thread_selection_syncing.set(false);
     }
 
@@ -26082,7 +26558,18 @@ impl MailPage {
             replace,
             "Applying mail load to GTK models"
         );
-        let previous_selection = self.selected_message_anchor();
+        let previous_selection = if replace {
+            let active_folder = self.active_folder_selection();
+            let mut anchor = self.anchor_for_folder(&active_folder);
+            if anchor.index.is_none() {
+                if let Some(idx) = self.imp().last_selected_mail_index.get() {
+                    anchor.index = Some(idx);
+                }
+            }
+            anchor
+        } else {
+            self.selected_message_anchor()
+        };
         if replace {
             self.clear_batch_selection();
         }
@@ -26816,7 +27303,7 @@ impl MailPage {
                         section.set_visible(true);
                     }
                 }
-                self.select_message_after_reload(&MailSelectionAnchor::default());
+                self.select_message_after_reload(&completion.previous_selection);
             } else if let Some(selected_folder) = selected_folder {
                 if selected_folder.is_remote() {
                     self.select_folder_row(&selected_folder);
@@ -31687,6 +32174,13 @@ mod tests {
         let formatted_yesterday = format_smart_date(&fixed_yesterday, "%H:%M", "german");
         assert!(formatted_yesterday == "Yesterday" || formatted_yesterday == "Gestern");
 
+        // Within last 7 days (e.g. 3 days ago) -> weekday name
+        let three_days_str = (chrono::Local::now() - chrono::Duration::days(3)).to_rfc3339();
+        let fixed_three_days = chrono::DateTime::parse_from_rfc3339(&three_days_str).unwrap();
+        let formatted_three_days = format_smart_date(&fixed_three_days, "%H:%M", "german");
+        let expected_weekday = format_weekday_name(fixed_three_days.date_naive());
+        assert_eq!(formatted_three_days, expected_weekday);
+
         // Older date in a fixed previous year (e.g., 2020-05-15)
         let older_date = chrono::DateTime::parse_from_rfc3339("2020-05-15T10:00:00+00:00").unwrap();
         assert_eq!(format_smart_date(&older_date, "%H:%M", "german"), "15.05.2020");
@@ -32110,25 +32604,34 @@ mod tests {
     fn test_mail_toolbar_and_preview_header_actions_contract() {
         let source = include_str!("mail_page.rs");
 
-        // 1. Preview header has 3-dots button with EML export and message source
-        assert!(source.contains("preview_more_menu.append(Some(&str_prev_export), Some(\"win.export\"))"));
-        assert!(source.contains("preview_more_menu.append(Some(&str_prev_src), Some(\"win.view-message-source\"))"));
-        assert!(source.contains("preview_more_menu.append(Some(&str_prev_light), Some(\"win.toggle-mail-light-mode\"))"));
-        assert!(source.contains("preview_reply_group.append(&preview_more_btn)"));
+        // 1. Preview header has 3-dots button with Convey sections (Status, Triage, Tools)
+        let detail_fn = rust_function_body(source, "build_detail_view");
+        assert!(detail_fn.contains("win.mark-read"));
+        assert!(detail_fn.contains("win.mark-unread"));
+        assert!(detail_fn.contains("win.delete"));
+        assert!(detail_fn.contains("win.mail-print"));
+        assert!(detail_fn.contains("win.view-message-source"));
+        assert!(detail_fn.contains("win.export"));
+        assert!(detail_fn.contains("win.toggle-mail-light-mode"));
+        assert!(detail_fn.contains("preview_more_btn"));
+        assert!(detail_fn.contains("m_more_btn"));
+        assert!(detail_fn.contains("preview_reply_group.append(&preview_more_btn)"));
+        assert!(detail_fn.contains("modern_actions_group.append(&m_more_btn)"));
 
-        // 2. Toolbar more_menu does NOT contain print preview or EML export
+        // 2. Toolbar does NOT contain print preview, EML export, or 3-dots more menu
         let toolbar_fn = rust_function_body(source, "build_unified_mail_toolbar");
         assert!(!toolbar_fn.contains("mail-print-preview"));
         assert!(!toolbar_fn.contains("win.export"));
+        assert!(!toolbar_fn.contains("view-more-symbolic"));
 
-        // 3. Toolbar more_menu has structured sections for all status and mark actions
-        assert!(toolbar_fn.contains("read_section.append(Some(&str_mark_read), Some(\"win.mark-read\"))"));
-        assert!(toolbar_fn.contains("read_section.append(Some(&str_mark_unread), Some(\"win.mark-unread\"))"));
-        assert!(toolbar_fn.contains("flag_section.append(Some(&str_toggle_flag), Some(\"win.toggle-flag\"))"));
-        assert!(toolbar_fn.contains("flag_section.append(Some(&str_toggle_important), Some(\"win.toggle-important\"))"));
-        assert!(toolbar_fn.contains("junk_section.append(Some(&str_mark_junk), Some(\"win.mark-junk\"))"));
-        assert!(toolbar_fn.contains("junk_section.append(Some(&str_mark_not_junk), Some(\"win.mark-not-junk\"))"));
-        assert!(toolbar_fn.contains("source_section.append(Some(&str_view_src), Some(\"win.view-message-source\"))"));
+        // 3. Toolbar has direct buttons for all triage, status, and source actions
+        assert!(toolbar_fn.contains("\"win.view-message-source\""));
+        assert!(toolbar_fn.contains("\"win.mail-print\""));
+        assert!(toolbar_fn.contains("\"win.mark-junk\""));
+        assert!(toolbar_fn.contains("\"win.mark-read\""));
+        assert!(toolbar_fn.contains("\"win.mark-unread\""));
+        assert!(toolbar_fn.contains("\"win.toggle-flag\""));
+        assert!(toolbar_fn.contains("\"win.toggle-important\""));
 
         // 4. Status actions in toolbar are toggleable via settings
         assert!(toolbar_fn.contains("mail-show-mark-read-actions"));
@@ -32417,10 +32920,10 @@ mod tests {
         };
 
         // Draw light mode
-        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, Some(0), None, false, 0.0);
+        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, Some(0), &|_| false, false, 0.0);
 
         // Draw dark mode
-        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, Some(1), Some(1), true, 0.0);
+        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, Some(1), &|idx| idx == 1, true, 0.0);
 
         // Vector icon tests
         draw_cairo_paperclip(&cr, 50.0, 50.0, 0.5, 0.5, 0.5, 0.9);
@@ -32530,7 +33033,111 @@ mod tests {
         // Cairo headless draw with explicit selection: row 1 selected overrides cached row 0 selected
         let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 800, 100).unwrap();
         let cr = gtk::cairo::Context::new(&surface).unwrap();
-        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, None, Some(1), false, 0.0);
+        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, None, &|idx| idx == 1, false, 0.0);
+    }
+
+    #[test]
+    fn test_mail_table_multi_selection_rendering() {
+        let (primary_desc_normal, primary_desc_bold, secondary_desc, primary_text_offset, secondary_text_offset) =
+            PreparedMailTableLayout::compute_font_metrics("Sans", 14.0, 36.0);
+
+        let rows = vec![
+            PreparedMailTableRow {
+                model_index: 0,
+                id: "msg-1".to_string(),
+                thread_id: "thread-1".to_string(),
+                depth: 0,
+                is_expandable: false,
+                is_expanded: false,
+                is_unread: true,
+                is_flagged: false,
+                is_important: false,
+                is_replied: false,
+                is_forwarded: false,
+                has_attachments: false,
+                sender: "Alice".to_string(),
+                recipient: "Bob".to_string(),
+                subject: "Test Multi 1".to_string(),
+                snippet: "Preview 1".to_string(),
+                date: "10:00".to_string(),
+                size_str: "10 KiB".to_string(),
+                selected: false,
+                y: 0.0,
+                height: 36.0,
+                markup_dark: String::new(),
+                markup_light: String::new(),
+                labels: Vec::new(),
+                thread_size: 1,
+            },
+            PreparedMailTableRow {
+                model_index: 1,
+                id: "msg-2".to_string(),
+                thread_id: "thread-2".to_string(),
+                depth: 0,
+                is_expandable: false,
+                is_expanded: false,
+                is_unread: false,
+                is_flagged: true,
+                is_important: false,
+                is_replied: false,
+                is_forwarded: false,
+                has_attachments: true,
+                sender: "Bob".to_string(),
+                recipient: "Alice".to_string(),
+                subject: "Test Multi 2".to_string(),
+                snippet: "Preview 2".to_string(),
+                date: "11:00".to_string(),
+                size_str: "15 KiB".to_string(),
+                selected: false,
+                y: 36.0,
+                height: 36.0,
+                markup_dark: String::new(),
+                markup_light: String::new(),
+                labels: Vec::new(),
+                thread_size: 1,
+            },
+        ];
+
+        let layout = PreparedMailTableLayout {
+            rows,
+            width: 800.0,
+            height: 72.0,
+            row_height: 36.0,
+            sender_width: 180.0,
+            recipient_width: 140.0,
+            date_width: 110.0,
+            size_width: 82.0,
+            sep_width: 6.0,
+            font_size: 14.0,
+            font_family: "Sans".to_string(),
+            show_recipient: true,
+            show_date: true,
+            show_size: true,
+            show_preview_text: true,
+            date_align_left: false,
+            is_cards_mode: false,
+            primary_desc_normal,
+            primary_desc_bold,
+            secondary_desc,
+            primary_text_offset,
+            secondary_text_offset,
+        };
+
+        let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 800, 100).unwrap();
+        let cr = gtk::cairo::Context::new(&surface).unwrap();
+
+        // 1. None selected (initial state)
+        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, None, &|_| false, false, 0.0);
+        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, None, &|_| false, true, 0.0);
+
+        // 2. Multi-selection: both row 0 and row 1 selected
+        let multi_selected = |idx: usize| idx == 0 || idx == 1;
+        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, None, &multi_selected, false, 0.0);
+        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, Some(0), &multi_selected, true, 0.0);
+
+        // 3. Verify neither row has cached selection baked into layout
+        assert!(!layout.rows[0].selected);
+        assert!(!layout.rows[1].selected);
     }
 
     #[test]
@@ -32638,8 +33245,8 @@ mod tests {
         // Headless Cairo render to verify no panics or drawing errors
         let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 420, 160).unwrap();
         let cr = gtk::cairo::Context::new(&surface).unwrap();
-        draw_mail_table_canvas(&cr, &layout, 420.0, 152.0, Some(0), Some(1), false, 0.0);
-        draw_mail_table_canvas(&cr, &layout, 420.0, 152.0, Some(0), Some(1), true, 0.0);
+        draw_mail_table_canvas(&cr, &layout, 420.0, 152.0, Some(0), &|idx| idx == 1, false, 0.0);
+        draw_mail_table_canvas(&cr, &layout, 420.0, 152.0, Some(0), &|idx| idx == 1, true, 0.0);
 
         // Initials test
         assert_eq!(extract_initials("Wolfgang Fisher"), "WF");
@@ -33672,6 +34279,275 @@ mod tests {
 
         let child = move_btn.child().expect("move button child");
         assert!(child.downcast::<gtk::Image>().is_ok());
+    }
+
+    #[test]
+    fn test_multi_selection_and_selected_messages_batch() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let page = MailPage::new();
+        let store = gio::ListStore::new::<MailMessageObject>();
+        let msg1 = scope_test_message("msg-1", "src", "Inbox", true);
+        let msg2 = scope_test_message("msg-2", "src", "Inbox", true);
+        let msg3 = scope_test_message("msg-3", "src", "Inbox", false);
+        store.append(&msg1);
+        store.append(&msg2);
+        store.append(&msg3);
+
+        let multi_sel = gtk::MultiSelection::new(Some(store));
+        page.imp().message_selection.replace(Some(multi_sel.clone()));
+        page.imp().mail_threading.set(false);
+
+        // Initially nothing selected
+        multi_sel.unselect_all();
+        assert!(page.selected_messages().is_empty());
+
+        // Select items 0 and 2
+        multi_sel.select_item(0, false);
+        multi_sel.select_item(2, false);
+
+        let selected = page.selected_messages();
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[0].id(), "msg-1");
+        assert_eq!(selected[1].id(), "msg-3");
+
+        // Select all
+        multi_sel.select_all();
+        let all_selected = page.selected_messages();
+        assert_eq!(all_selected.len(), 3);
+
+        // Test unselect_rest behavior
+        multi_sel.select_item(1, true);
+        assert!(!multi_sel.is_selected(0), "item 0 should be unselected");
+        assert!(multi_sel.is_selected(1), "item 1 should be selected");
+        assert!(!multi_sel.is_selected(2), "item 2 should be unselected");
+
+        // Test select_range behavior
+        multi_sel.select_range(0, 2, true);
+        assert!(multi_sel.is_selected(0), "item 0 should be selected");
+        assert!(multi_sel.is_selected(1), "item 1 should be selected");
+        assert!(!multi_sel.is_selected(2), "item 2 should be unselected");
+
+        // Test mail_selection_anchor
+        page.imp().mail_selection_anchor.set(Some(1));
+        assert_eq!(page.imp().mail_selection_anchor.get(), Some(1));
+        page.imp().mail_selection_anchor.set(None);
+        assert_eq!(page.imp().mail_selection_anchor.get(), None);
+
+        // Test fallback_selection_index with no previous selection falls back to 0 (newest email)
+        assert_eq!(fallback_selection_index(5, None), Some(0));
+        assert_eq!(fallback_selection_index(0, None), None);
+        assert_eq!(fallback_selection_index(5, Some(2)), Some(2));
+    }
+
+    #[test]
+    fn test_mail_page_layout_geometry() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let window = gtk::Window::new();
+        let mail_page = MailPage::new();
+        window.set_child(Some(&mail_page));
+        window.set_default_size(1200, 800);
+        window.present();
+        while context.iteration(false) {}
+
+        let outer_paned = mail_page.outer_paned();
+        let inner_paned = mail_page.inner_paned();
+        let canvas = mail_page.imp().mail_table_canvas.borrow().as_ref().cloned().expect("canvas");
+        let _header = mail_page.imp().mail_column_header.borrow().as_ref().cloned().expect("header");
+
+        let canvas_pt = canvas.compute_bounds(&window);
+        assert!(canvas_pt.is_some());
+        assert!(canvas_pt.unwrap().x() >= 0.0);
+
+        // Test with sidebar visible
+        let sidebar = outer_paned.start_child().expect("sidebar");
+        sidebar.set_visible(true);
+        outer_paned.set_position(240);
+        while context.iteration(false) {}
+
+        let canvas_pt_sidebar = canvas.compute_bounds(&window).expect("canvas bounds");
+        assert_eq!(canvas_pt_sidebar.x(), 241.0); // 240 + paned divider (1px)
+
+        // Test messages mode with small position
+        if let Some(header_scroll) = mail_page.imp().column_header_scroll.borrow().as_ref() {
+            header_scroll.set_visible(true);
+        }
+        inner_paned.set_position(350);
+        while context.iteration(false) {}
+
+        let canvas_pt_narrow = canvas.compute_bounds(&window).expect("narrow canvas bounds");
+        assert_eq!(canvas_pt_narrow.x(), 241.0);
+    }
+
+    #[test]
+    fn test_mail_table_selection_no_viewport_jump_contract() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let page = MailPage::new();
+        let store = gio::ListStore::new::<MailMessageObject>();
+        for i in 0..100 {
+            let msg = scope_test_message(&format!("msg-{i}"), "src", "Inbox", false);
+            store.append(&msg);
+        }
+        let multi_sel = gtk::MultiSelection::new(Some(store));
+        page.imp().thread_selection.replace(Some(multi_sel.clone()));
+
+        let row_h = page.mail_table_row_height();
+        let adj = gtk::Adjustment::new(0.0, 0.0, 100.0 * row_h, row_h, 10.0 * row_h, 10.0 * row_h);
+        page.imp().list_vadjustment.replace(Some(adj.clone()));
+
+        // Simulate user selected item 0 initially
+        multi_sel.select_item(0, true);
+        page.imp().last_selected_mail_index.set(Some(0));
+
+        // User scrolled down to row 50
+        let scroll_pos = 50.0 * row_h;
+        adj.set_value(scroll_pos);
+        assert_eq!(adj.value(), scroll_pos);
+
+        // When mouse selection starts, is_mouse_selecting is true
+        page.imp().is_mouse_selecting.set(true);
+
+        // Selecting row 51 updates last_selected_mail_index before select_item
+        page.imp().last_selected_mail_index.set(Some(51));
+        multi_sel.select_item(51, true);
+
+        // Because is_mouse_selecting is true, scroll position remains untouched
+        assert_eq!(adj.value(), scroll_pos, "Viewport must not jump when is_mouse_selecting is true");
+
+        page.imp().is_mouse_selecting.set(false);
+
+        // Even when scroll_mail_table_to_selected is called for row 51,
+        // since row 51 is visible within [scroll_pos, scroll_pos + 10.0 * row_h],
+        // adj.value() remains scroll_pos and does not jump back to row 0!
+        page.scroll_mail_table_to_selected();
+        assert_eq!(adj.value(), scroll_pos, "Viewport must not jump back to previously selected row 0");
+    }
+
+    #[test]
+    fn test_per_folder_last_selected_mail_and_auto_selection() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let page = MailPage::new();
+        let inbox = FolderSelection::from_folder_id("inbox");
+        let sent = FolderSelection::from_folder_id("sent");
+
+        // 1. Initial state: folder has no saved anchor
+        assert_eq!(page.anchor_for_folder(&inbox), MailSelectionAnchor::default());
+        assert_eq!(page.anchor_for_folder(&sent), MailSelectionAnchor::default());
+
+        // 2. Save anchor for inbox and verify persistence
+        page.save_anchor_for_folder(&inbox, MailSelectionAnchor {
+            id: Some("msg-inbox-1".to_string()),
+            index: Some(0),
+        });
+        assert_eq!(
+            page.anchor_for_folder(&inbox),
+            MailSelectionAnchor {
+                id: Some("msg-inbox-1".to_string()),
+                index: Some(0),
+            }
+        );
+        // Sent remains unselected/default
+        assert_eq!(page.anchor_for_folder(&sent), MailSelectionAnchor::default());
+
+        // 3. Save anchor for sent and verify separation
+        page.save_anchor_for_folder(&sent, MailSelectionAnchor {
+            id: Some("msg-sent-2".to_string()),
+            index: Some(2),
+        });
+        assert_eq!(
+            page.anchor_for_folder(&sent),
+            MailSelectionAnchor {
+                id: Some("msg-sent-2".to_string()),
+                index: Some(2),
+            }
+        );
+        // Inbox still has its own anchor
+        assert_eq!(
+            page.anchor_for_folder(&inbox),
+            MailSelectionAnchor {
+                id: Some("msg-inbox-1".to_string()),
+                index: Some(0),
+            }
+        );
+
+        // 4. Test select_message_after_reload with store:
+        let store = gio::ListStore::new::<MailMessageObject>();
+        let msg1 = scope_test_message("msg-1", "src", "Inbox", false);
+        let msg2 = scope_test_message("msg-2", "src", "Inbox", false);
+        let msg3 = scope_test_message("msg-3", "src", "Inbox", false);
+        store.append(&msg1);
+        store.append(&msg2);
+        store.append(&msg3);
+
+        let multi_sel = gtk::MultiSelection::new(Some(store.clone()));
+        page.imp().message_selection.replace(Some(multi_sel.clone()));
+        page.imp().message_store.replace(Some(store.clone()));
+
+        // Case A: Default anchor (no previous selection) -> automatically selects index 0 (newest mail)
+        page.select_message_after_reload(&MailSelectionAnchor::default());
+        assert_eq!(page.imp().last_selected_mail_index.get(), Some(0));
+        assert!(multi_sel.is_selected(0));
+        assert!(!multi_sel.is_selected(1));
+
+        // Case B: Previous ID exists -> selects matching message (e.g. msg-2 at index 1)
+        page.select_message_after_reload(&MailSelectionAnchor {
+            id: Some("msg-2".to_string()),
+            index: Some(1),
+        });
+        assert_eq!(page.imp().last_selected_mail_index.get(), Some(1));
+        assert!(multi_sel.is_selected(1));
+
+        // Case C: Previous ID was deleted, previous index was 1 -> selects index 1 (next adjacent mail)
+        page.select_message_after_reload(&MailSelectionAnchor {
+            id: Some("deleted-msg".to_string()),
+            index: Some(1),
+        });
+        assert_eq!(page.imp().last_selected_mail_index.get(), Some(1));
+        assert!(multi_sel.is_selected(1));
+
+        // Case D: Previous index was at end (index 2), mail deleted -> selects new end (index 1)
+        let two_item_store = gio::ListStore::new::<MailMessageObject>();
+        two_item_store.append(&msg1);
+        two_item_store.append(&msg2);
+        let two_item_sel = gtk::MultiSelection::new(Some(two_item_store));
+        page.imp().message_selection.replace(Some(two_item_sel.clone()));
+        page.select_message_after_reload(&MailSelectionAnchor {
+            id: Some("deleted-last-msg".to_string()),
+            index: Some(2),
+        });
+        assert_eq!(page.imp().last_selected_mail_index.get(), Some(1));
+        assert!(two_item_sel.is_selected(1));
+
+        // Case E: Empty store (0 items) -> unselects all
+        let empty_store = gio::ListStore::new::<MailMessageObject>();
+        let empty_sel = gtk::MultiSelection::new(Some(empty_store));
+        page.imp().message_selection.replace(Some(empty_sel.clone()));
+        page.select_message_after_reload(&MailSelectionAnchor::default());
+        assert_eq!(page.imp().last_selected_mail_index.get(), None);
+        assert_eq!(empty_sel.selection().size(), 0);
     }
 }
 

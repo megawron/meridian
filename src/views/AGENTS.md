@@ -388,6 +388,15 @@ accessibility helpers, and view-local GTK state.
   (`calendar-month-grid`, `calendar-month-cell`) without isolated cards or rounded gaps,
   supports weekend compression styling (`calendar-compress-weekend`, `.weekend.compressed`),
   and configurable week-by-week scrolling navigation (`calendar-month-scroll-by-week`).
+- Mail message and thread selections utilize `gtk::MultiSelection` to enable contiguous
+  Shift-click, non-contiguous Ctrl-click, and Ctrl-A mass selection without dropping
+  the active mail viewer preview. Dragging any selected message initiates a multi-message
+  payload allowing batch relocation to sidebar folders.
+- Responsive drill-down below the 750px breakpoint elevates the message list to 100%
+  viewport width, transitioning to the full-screen reader upon selection with a back button.
+- Calendar Day and Week views automatically scroll to the configured workday start
+  (`calendar_workday_start_minutes`) upon layout allocation. Time slot selection supports
+  multi-day dragging across date columns with range normalization and global invalidation.
 
 
 ## Work Guidance
