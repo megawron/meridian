@@ -14,6 +14,7 @@ fn main() {
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     prepare_settings_schema(&manifest_dir, &out_dir);
+    compile_locales(&manifest_dir, &out_dir);
 
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         compile_macos_bridge(&manifest_dir, &out_dir);
@@ -276,6 +277,53 @@ fn prepare_settings_schema(manifest_dir: &PathBuf, out_dir: &PathBuf) {
         );
     }
     println!("cargo:rerun-if-changed={}", source.display());
+}
+
+fn compile_locales(manifest_dir: &PathBuf, out_dir: &PathBuf) {
+    let po_dir = manifest_dir.join("../po");
+    if !po_dir.is_dir() {
+        return;
+    }
+
+    let out_locale_dir = out_dir.join("locale");
+    let repo_locale_dir = manifest_dir.join("../data/locale");
+
+    println!("cargo:rerun-if-changed={}", po_dir.display());
+
+    if let Ok(entries) = fs::read_dir(&po_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "po") {
+                println!("cargo:rerun-if-changed={}", path.display());
+                if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    let lang = file_stem;
+
+                    let out_lang_dir = out_locale_dir.join(lang).join("LC_MESSAGES");
+                    let _ = fs::create_dir_all(&out_lang_dir);
+                    let out_mo = out_lang_dir.join("evolution-gtk4.mo");
+
+                    let repo_lang_dir = repo_locale_dir.join(lang).join("LC_MESSAGES");
+                    let _ = fs::create_dir_all(&repo_lang_dir);
+                    let repo_mo = repo_lang_dir.join("evolution-gtk4.mo");
+
+                    let status = Command::new("msgfmt")
+                        .arg("-o")
+                        .arg(&out_mo)
+                        .arg(&path)
+                        .status();
+
+                    if status.is_ok_and(|s| s.success()) {
+                        let _ = fs::copy(&out_mo, &repo_mo);
+                    }
+                }
+            }
+        }
+    }
+
+    println!(
+        "cargo:rustc-env=EVOLUTION_GTK4_LOCALEDIR={}",
+        out_locale_dir.display()
+    );
 }
 
 fn emit_link_metadata(library: &pkg_config::Library) {

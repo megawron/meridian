@@ -30,7 +30,9 @@ localedir = prefix / get_option('localedir')
 iconsdir = datadir / 'icons'
 
 # ── Subdirectories ───────────────────────────────────────────────────────
+i18n = import('i18n')
 subdir('data')
+subdir('po')
 
 # ── Cargo build integration ──────────────────────────────────────────────
 cargo = find_program('cargo')
