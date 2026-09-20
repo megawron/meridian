@@ -1,3 +1,4 @@
+use crate::i18n::gettext;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // MailViewerWindow — Standalone message viewer window (AdwWindow).
@@ -285,60 +286,61 @@ impl MailViewerWindow {
 
         // End actions: Menu, Print, Mark Read/Unread, Junk, Delete
         let menu = gio::Menu::new();
-        menu.append(Some("Nachrichtenquelle anzeigen"), Some("win.view-message-source"));
-        menu.append(Some("Alle Kopfzeilen anzeigen"), Some("win.toggle-all-headers"));
+        menu.append(Some(&gettext("Show message source")), Some("win.view-message-source"));
+        menu.append(Some(&gettext("Show all headers")), Some("win.toggle-all-headers"));
+        menu.append(Some(&gettext("Light style for this email")), Some("win.toggle-mail-light-mode"));
 
         let zoom_section = gio::Menu::new();
-        zoom_section.append(Some("Vergrößern"), Some("win.zoom-in"));
-        zoom_section.append(Some("Verkleinern"), Some("win.zoom-out"));
-        zoom_section.append(Some("Normalgröße"), Some("win.zoom-reset"));
-        menu.append_section(Some("Ansicht"), &zoom_section);
+        zoom_section.append(Some(&gettext("Zoom in")), Some("win.zoom-in"));
+        zoom_section.append(Some(&gettext("Zoom out")), Some("win.zoom-out"));
+        zoom_section.append(Some(&gettext("Normal size")), Some("win.zoom-reset"));
+        menu.append_section(Some(&gettext("View")), &zoom_section);
 
         let search_section = gio::Menu::new();
-        search_section.append(Some("In Nachricht suchen…"), Some("win.find-in-message"));
-        search_section.append(Some("Als EML speichern…"), Some("win.export"));
+        search_section.append(Some(&gettext("Find in message…")), Some("win.find-in-message"));
+        search_section.append(Some(&gettext("Save as EML…")), Some("win.export"));
         menu.append_section(None, &search_section);
 
         let menu_button = gtk::MenuButton::builder()
             .icon_name("open-menu-symbolic")
-            .tooltip_text("Hauptmenü")
+            .tooltip_text(&gettext("Main menu"))
             .menu_model(&menu)
             .css_classes(vec!["flat"])
             .build();
-        set_accessible_label(&menu_button, "Hauptmenü");
+        set_accessible_label(&menu_button, &gettext("Main menu"));
 
         let btn_print = gtk::Button::builder()
             .icon_name("document-print-symbolic")
-            .tooltip_text("Drucken (Strg+P)")
+            .tooltip_text(&gettext("Print (Ctrl+P)"))
             .action_name("win.mail-print")
             .css_classes(vec!["flat"])
             .build();
-        set_accessible_label(&btn_print, "Drucken");
+        set_accessible_label(&btn_print, &gettext("Print"));
 
         let btn_mark_read_unread = gtk::Button::builder()
             .icon_name("mail-mark-read-symbolic")
-            .tooltip_text("Als gelesen/ungelesen markieren")
+            .tooltip_text(&gettext("Mark as read/unread"))
             .action_name("win.toggle-read-unread")
             .css_classes(vec!["flat"])
             .build();
-        set_accessible_label(&btn_mark_read_unread, "Als gelesen oder ungelesen markieren");
+        set_accessible_label(&btn_mark_read_unread, &gettext("Mark as read or unread"));
         self.imp().btn_mark_read_unread.replace(Some(btn_mark_read_unread.clone()));
 
         let btn_junk = gtk::Button::builder()
             .icon_name("mail-mark-junk-symbolic")
-            .tooltip_text("Als Spam einstufen (Strg+J)")
+            .tooltip_text(&gettext("Mark as junk (Ctrl+J)"))
             .action_name("win.mark-junk")
             .css_classes(vec!["flat"])
             .build();
-        set_accessible_label(&btn_junk, "Als Spam einstufen");
+        set_accessible_label(&btn_junk, &gettext("Mark as junk"));
 
         let btn_delete = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
-            .tooltip_text("Nachricht löschen (Entf)")
+            .tooltip_text(&gettext("Delete message (Del)"))
             .action_name("win.delete")
             .css_classes(vec!["flat", "destructive-action"])
             .build();
-        set_accessible_label(&btn_delete, "Nachricht löschen");
+        set_accessible_label(&btn_delete, &gettext("Delete message"));
 
         // Pack end in reverse order: Delete, Junk, Mark, Print, Menu
         header_bar.pack_end(&menu_button);
@@ -381,7 +383,7 @@ impl MailViewerWindow {
             .build();
 
         let crypto_label = gtk::Label::builder()
-            .label("Sicherheit:")
+            .label(&gettext("Security:"))
             .css_classes(vec!["dim-label", "caption"])
             .halign(gtk::Align::End)
             .visible(false)
@@ -397,7 +399,7 @@ impl MailViewerWindow {
         let icon_lock = gtk::Image::new();
         set_image_icon_with_fallback(&icon_lock, "security-high-symbolic", "dialog-information-symbolic");
         let lbl_crypto = gtk::Label::builder()
-            .label("Keine OpenPGP-/S/MIME-Sicherung erkannt")
+            .label(&gettext("No OpenPGP/S/MIME protection detected"))
             .css_classes(vec!["caption"])
             .build();
         crypto_chip.append(&icon_lock);
@@ -443,7 +445,7 @@ impl MailViewerWindow {
 
         // Find in message bar
         let message_find_entry = gtk::SearchEntry::builder()
-            .placeholder_text("In Nachricht suchen")
+            .placeholder_text(&gettext("Find in message"))
             .hexpand(true)
             .build();
         let message_find_status = gtk::Label::builder()
@@ -453,19 +455,19 @@ impl MailViewerWindow {
             .build();
         let find_previous = gtk::Button::builder()
             .icon_name("go-up-symbolic")
-            .tooltip_text("Vorheriger Treffer")
+            .tooltip_text(&gettext("Previous match"))
             .css_classes(vec!["flat"])
             .sensitive(false)
             .build();
         let find_next = gtk::Button::builder()
             .icon_name("go-down-symbolic")
-            .tooltip_text("Nächster Treffer")
+            .tooltip_text(&gettext("Next match"))
             .css_classes(vec!["flat"])
             .sensitive(false)
             .build();
         let find_close = gtk::Button::builder()
             .icon_name("window-close-symbolic")
-            .tooltip_text("Suche schließen (Esc)")
+            .tooltip_text(&gettext("Close search (Esc)"))
             .css_classes(vec!["flat"])
             .build();
 
@@ -534,8 +536,8 @@ impl MailViewerWindow {
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .build();
         let print_cancel_button = gtk::Button::builder()
-            .label("Abbrechen")
-            .tooltip_text("Druckvorbereitung abbrechen")
+            .label(&gettext("Cancel"))
+            .tooltip_text(&gettext("Cancel print preparation"))
             .action_name("win.mail-print-cancel")
             .css_classes(vec!["flat"])
             .visible(false)
@@ -755,6 +757,65 @@ impl MailViewerWindow {
         ));
         self.add_action(&action_source);
 
+        let action_toggle_light = gio::SimpleAction::new_stateful(
+            "toggle-mail-light-mode",
+            None,
+            &false.to_variant(),
+        );
+        action_toggle_light.connect_change_state(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |action, target_state| {
+                if let Some(state) = target_state {
+                    if let Some(force_light) = state.get::<bool>() {
+                        action.set_state(&force_light.to_variant());
+                        if let Some(viewer) = win.imp().mail_viewer.borrow().as_ref() {
+                            viewer.set_light_mode_override(force_light);
+                        }
+                    }
+                }
+            }
+        ));
+        action_toggle_light.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |action, _| {
+                let current = action
+                    .state()
+                    .and_then(|v| v.get::<bool>())
+                    .unwrap_or(false);
+                let next = !current;
+                action.set_state(&next.to_variant());
+                if let Some(viewer) = win.imp().mail_viewer.borrow().as_ref() {
+                    viewer.set_light_mode_override(next);
+                }
+            }
+        ));
+        let is_dark_active = self
+            .imp()
+            .mail_viewer
+            .borrow()
+            .as_ref()
+            .map(|v| v.is_dark_mode_supported_or_active())
+            .unwrap_or_else(|| adw::StyleManager::default().is_dark());
+        action_toggle_light.set_enabled(is_dark_active);
+
+        let action_for_dark = action_toggle_light.clone();
+        let win_weak_dark = self.downgrade();
+        adw::StyleManager::default().connect_dark_notify(move |_| {
+            if let Some(win) = win_weak_dark.upgrade() {
+                let is_dark_active = win
+                    .imp()
+                    .mail_viewer
+                    .borrow()
+                    .as_ref()
+                    .map(|v| v.is_dark_mode_supported_or_active())
+                    .unwrap_or_else(|| adw::StyleManager::default().is_dark());
+                action_for_dark.set_enabled(is_dark_active);
+            }
+        });
+        self.add_action(&action_toggle_light);
+
         let action_find = gio::SimpleAction::new("find-in-message", None);
         action_find.connect_activate(glib::clone!(
             #[weak(rename_to = win)]
@@ -836,7 +897,7 @@ impl MailViewerWindow {
 
         // Update Title & Subtitle
         let subject = if message.subject().trim().is_empty() {
-            "Kein Betreff".to_string()
+            gettext("(No Subject)")
         } else {
             message.subject()
         };
@@ -916,7 +977,7 @@ impl MailViewerWindow {
 
         if attachments.len() > 1 {
             let btn_save_all = gtk::Button::builder()
-                .label("Alle speichern…")
+                .label(&gettext("Save all…"))
                 .icon_name("document-save-symbolic")
                 .css_classes(vec!["flat", "suggested-action"])
                 .valign(gtk::Align::Center)
@@ -926,7 +987,7 @@ impl MailViewerWindow {
             btn_save_all.connect_clicked(move |_| {
                 let Some(win) = win_weak.upgrade() else { return; };
                 let folder_dialog = gtk::FileDialog::builder()
-                    .title("Ordner für alle Anhänge auswählen")
+                    .title(&gettext("Select folder for all attachments"))
                     .modal(true)
                     .build();
                 let atts_to_save = atts.clone();
@@ -942,7 +1003,7 @@ impl MailViewerWindow {
                                 }
                             }
                             if let Some(win) = win_for_toast.upgrade() {
-                                win.show_toast(&format!("{count} Anhänge gespeichert"));
+                                win.show_toast(&gettext("{} attachments saved").replace("{}", &count.to_string()));
                             }
                         }
                     }
@@ -981,7 +1042,7 @@ impl MailViewerWindow {
 
             let btn_open = gtk::Button::builder()
                 .icon_name("document-open-symbolic")
-                .tooltip_text("Anhang öffnen")
+                .tooltip_text(&gettext("Open attachment"))
                 .css_classes(vec!["flat", "circular"])
                 .valign(gtk::Align::Center)
                 .build();
@@ -999,7 +1060,7 @@ impl MailViewerWindow {
 
             let btn_save = gtk::Button::builder()
                 .icon_name("document-save-symbolic")
-                .tooltip_text("Anhang speichern unter…")
+                .tooltip_text(&gettext("Save attachment as…"))
                 .css_classes(vec!["flat", "circular"])
                 .valign(gtk::Align::Center)
                 .build();
@@ -1009,7 +1070,7 @@ impl MailViewerWindow {
             btn_save.connect_clicked(move |_| {
                 let Some(win) = win_weak.upgrade() else { return; };
                 let file_dialog = gtk::FileDialog::builder()
-                    .title("Anhang speichern")
+                    .title(&gettext("Save attachment"))
                     .modal(true)
                     .initial_name(&fname_save)
                     .build();
@@ -1021,7 +1082,7 @@ impl MailViewerWindow {
                         if let Some(path) = file.path() {
                             if fs::write(&path, c_data.as_ref()).is_ok() {
                                 if let Some(win) = win_for_feedback.upgrade() {
-                                    win.show_toast(&format!("{f_name} gespeichert"));
+                                    win.show_toast(&gettext("{filename} saved").replace("{filename}", &f_name));
                                 }
                             }
                         }
@@ -1082,11 +1143,12 @@ impl MailViewerWindow {
         let has_crypto = raw_mime_may_contain_crypto(&raw_mime);
 
         if let Some(label) = self.imp().lbl_crypto.borrow().as_ref() {
-            label.set_label(if has_crypto {
-                "Kryptografie: Prüfung läuft …"
+            let crypto_text = if has_crypto {
+                gettext("Cryptography: Verification in progress…")
             } else {
-                "Keine OpenPGP-/S/MIME-Sicherung erkannt"
-            });
+                gettext("No OpenPGP/S/MIME protection detected")
+            };
+            label.set_label(&crypto_text);
         }
         if let Some(chip) = self.imp().crypto_chip.borrow().as_ref() {
             chip.set_visible(has_crypto);
@@ -1142,7 +1204,7 @@ impl MailViewerWindow {
                 }
                 Err(err) => {
                     if let Some(lbl) = win.imp().lbl_crypto.borrow().as_ref() {
-                        lbl.set_label(&format!("Kryptografie-Fehler: {err}"));
+                        lbl.set_label(&format!("{}: {err}", gettext("Cryptography error")));
                     }
                 }
             }
@@ -1196,10 +1258,10 @@ impl MailViewerWindow {
         if let Some(btn) = self.imp().btn_mark_read_unread.borrow().as_ref() {
             if is_unread {
                 btn.set_icon_name("mail-mark-read-symbolic");
-                btn.set_tooltip_text(Some("Als gelesen markieren (Strg+K)"));
+                btn.set_tooltip_text(Some(&gettext("Mark as read (Ctrl+K)")));
             } else {
                 btn.set_icon_name("mail-mark-unread-symbolic");
-                btn.set_tooltip_text(Some("Als ungelesen markieren (Strg+Umschalt+K)"));
+                btn.set_tooltip_text(Some(&gettext("Mark as unread (Ctrl+Shift+K)")));
             }
         }
     }
@@ -1219,11 +1281,12 @@ impl MailViewerWindow {
             }
         }
 
-        self.show_toast(if unread {
-            "Nachricht als ungelesen markiert"
+        let toast_msg = if unread {
+            gettext("Message marked as unread")
         } else {
-            "Nachricht als gelesen markiert"
-        });
+            gettext("Message marked as read")
+        };
+        self.show_toast(&toast_msg);
     }
 
     // ── Action Handlers ────────────────────────────────────────────────────
@@ -1306,9 +1369,9 @@ impl MailViewerWindow {
 
         crate::dialogs::run_destructive_action(
             self,
-            "Nachricht löschen?",
-            "Die Nachricht wird gelöscht bzw. in den Papierkorb verschoben.",
-            "Löschen",
+            &gettext("Delete message?"),
+            &gettext("The message will be deleted or moved to trash."),
+            &gettext("Delete"),
             move || {
                 let mut deleted = false;
                 if let Some(page_weak) = win.imp().parent_page.borrow().as_ref() {
@@ -1319,7 +1382,7 @@ impl MailViewerWindow {
                 if deleted {
                     win.close();
                 } else {
-                    win.show_toast("Löschen fehlgeschlagen");
+                    win.show_toast(&gettext("Delete failed"));
                 }
             },
         );
@@ -1334,10 +1397,10 @@ impl MailViewerWindow {
             }
         }
         if marked {
-            self.show_toast("Als Spam markiert");
+            self.show_toast(&gettext("Marked as junk"));
             self.close();
         } else {
-            self.show_toast("Spam-Markierung fehlgeschlagen");
+            self.show_toast(&gettext("Failed to mark as junk"));
         }
     }
 
@@ -1353,9 +1416,9 @@ impl MailViewerWindow {
             if let Some(viewer) = self.imp().mail_viewer.borrow().as_ref() {
                 viewer.set_junk_banner_visible(false);
             }
-            self.show_toast("Nicht mehr als Spam eingestuft");
+            self.show_toast(&gettext("Not marked as junk"));
         } else {
-            self.show_toast("Spam-Markierung fehlgeschlagen");
+            self.show_toast(&gettext("Failed to mark as junk"));
         }
     }
 
@@ -1373,8 +1436,8 @@ impl MailViewerWindow {
         let filename = export_filename(&message.subject());
 
         let file_dialog = gtk::FileDialog::builder()
-            .title("E-Mail als EML speichern")
-            .accept_label("Speichern")
+            .title(&gettext("Save email as EML"))
+            .accept_label(&gettext("Save"))
             .initial_name(&filename)
             .modal(true)
             .build();
@@ -1390,7 +1453,7 @@ impl MailViewerWindow {
                 .unwrap_or_else(|| message_clone.html_body().into_bytes());
             if fs::write(&path, &raw_bytes).is_ok() {
                 if let Some(win) = win_weak.upgrade() {
-                    win.show_toast("Nachricht erfolgreich exportiert");
+                    win.show_toast(&gettext("Message exported successfully"));
                 }
             }
         });
@@ -1409,7 +1472,7 @@ impl MailViewerWindow {
             area.set_visible(true);
         }
         if let Some(label) = self.imp().print_status_label.borrow().as_ref() {
-            label.set_label("Druck wird vorbereitet …");
+            label.set_label(&gettext("Preparing print…"));
         }
         if let Some(btn) = self.imp().print_cancel_button.borrow().as_ref() {
             btn.set_visible(true);
@@ -1447,12 +1510,12 @@ impl MailViewerWindow {
                                 if let Some(win) = win_weak2.upgrade() {
                                     match result {
                                         Ok(crate::views::mail_viewer::MailPrintDialogResult::Printed) => {
-                                            win.show_toast("Druckauftrag an das System übergeben");
+                                            win.show_toast(&gettext("Print job sent to system"));
                                         }
                                         Ok(crate::views::mail_viewer::MailPrintDialogResult::Cancelled) => {
-                                            win.show_toast("Drucken abgebrochen");
+                                            win.show_toast(&gettext("Printing cancelled"));
                                         }
-                                        Err(err) => win.show_toast(&format!("Druckfehler: {err}")),
+                                        Err(err) => win.show_toast(&format!("{}: {err}", gettext("Print error"))),
                                     }
                                 }
                             });
@@ -1465,7 +1528,7 @@ impl MailViewerWindow {
                     }
                 }
                 Err(_) => {
-                    win.show_toast("Druckvorbereitung abgebrochen oder fehlgeschlagen");
+                    win.show_toast(&gettext("Print preparation cancelled or failed"));
                 }
             }
         });
@@ -1481,7 +1544,7 @@ impl MailViewerWindow {
         if let Some(btn) = self.imp().print_cancel_button.borrow().as_ref() {
             btn.set_visible(false);
         }
-        self.show_toast("Druckvorgang abgebrochen");
+        self.show_toast(&gettext("Print job cancelled"));
     }
 }
 
@@ -1548,6 +1611,7 @@ mod tests {
         assert!(window.has_action("zoom-out"));
         assert!(window.has_action("zoom-reset"));
         assert!(window.has_action("toggle-all-headers"));
+        assert!(window.has_action("toggle-mail-light-mode"));
         assert!(window.has_action("export"));
         assert!(window.has_action("close"));
         assert_eq!(window.zoom_level(), 1.0);

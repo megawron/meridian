@@ -37,7 +37,7 @@ use crate::services::mail_print_service::MailPrintDocument;
 const MAX_CACHED_DERIVED_BYTES: usize = 4 * 1024 * 1024;
 #[cfg(target_os = "linux")]
 const MAX_FIND_MATCH_COUNT: u32 = 10_000;
-const RENDER_LOADING_TEXT: &str = "Nachricht wird vorbereitet …";
+const RENDER_LOADING_TEXT: &str = "Preparing message…";
 
 mod imp {
     use super::*;
@@ -65,6 +65,7 @@ mod imp {
         pub(super) message_search: RefCell<Option<ActiveMessageSearch>>,
         pub(super) search_generation: Cell<u64>,
         pub remote_images_allowed_for_current: Cell<bool>,
+        pub current_message_force_light: Cell<bool>,
         pub source_generation: Cell<u64>,
         pub render_generation: Cell<u64>,
         pub render_worker_generation: Arc<AtomicU64>,
@@ -174,8 +175,8 @@ impl MailViewer {
 
         // ── 1. Privacy Banner for Remote Images ────────────────────────────
         let banner = adw::Banner::builder()
-            .title("Externe Bilder blockiert – eingebettete Bilder bleiben sichtbar")
-            .button_label("Bilder laden")
+            .title(&crate::i18n::gettext("Remote images blocked – embedded images remain visible"))
+            .button_label(&crate::i18n::gettext("Load Images"))
             .revealed(false)
             .visible(false)
             .build();
@@ -194,8 +195,8 @@ impl MailViewer {
 
         // ── 2. Trash Banner ────────────────────────────────────────────────
         let trash_banner = adw::Banner::builder()
-            .title("Diese Nachricht befindet sich im Papierkorb.")
-            .button_label("Wiederherstellen")
+            .title(&crate::i18n::gettext("This message is in the Trash."))
+            .button_label(&crate::i18n::gettext("Restore"))
             .revealed(false)
             .visible(false)
             .build();
@@ -203,8 +204,8 @@ impl MailViewer {
 
         // ── 3. Junk Banner ─────────────────────────────────────────────────
         let junk_banner = adw::Banner::builder()
-            .title("Diese Nachricht wurde als unerwünschte Werbung (Spam) eingestuft.")
-            .button_label("Kein Spam")
+            .title(&crate::i18n::gettext("This message was marked as junk (spam)."))
+            .button_label(&crate::i18n::gettext("Not Junk"))
             .revealed(false)
             .visible(false)
             .build();
@@ -227,7 +228,7 @@ impl MailViewer {
             .build();
         fallback_view
             .buffer()
-            .set_text("Keine Nachricht ausgewählt.");
+            .set_text(&crate::i18n::gettext("No message selected."));
         let fallback_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
@@ -250,21 +251,21 @@ impl MailViewer {
             // HTML rendering, so a cold EDS start does not compete with the
             // first GTK frame.
             let placeholder = adw::StatusPage::builder()
-                .title("Keine Nachricht ausgewählt")
-                .description("Der sichere Nachrichtendarsteller wird beim Öffnen geladen.")
+                .title(&crate::i18n::gettext("No message selected"))
+                .description(&crate::i18n::gettext("The secure message viewer will load when opened."))
                 .icon_name("mail-read-symbolic")
                 .hexpand(true)
                 .vexpand(true)
                 .build();
             let loading = adw::StatusPage::builder()
-                .title("Nachricht wird geladen …")
-                .description("Die sichere Darstellung wird vorbereitet.")
+                .title(&crate::i18n::gettext("Loading message…"))
+                .description(&crate::i18n::gettext("Preparing secure view."))
                 .icon_name("view-refresh-symbolic")
                 .hexpand(true)
                 .vexpand(true)
                 .build();
             let error_label = gtk::Label::builder()
-                .label("Die HTML-Darstellung ist fehlgeschlagen. Eine sichere Klartextansicht wird angezeigt.")
+                .label(&crate::i18n::gettext("HTML rendering failed. A safe plain text view is displayed."))
                 .wrap(true)
                 .xalign(0.0)
                 .css_classes(vec!["error"])
@@ -325,6 +326,7 @@ impl MailViewer {
                 "mail-image-loading-policy",
                 "render-html",
                 "force-dark-mode",
+                "mail-dark-mode",
                 "mail-font-family",
                 "mail-font-size",
                 "mail-citation-highlighting",
@@ -350,6 +352,13 @@ impl MailViewer {
             });
             self.imp().settings.replace(Some(settings));
         }
+
+        let viewer_weak_dark = self.downgrade();
+        adw::StyleManager::default().connect_dark_notify(move |_| {
+            if let Some(viewer) = viewer_weak_dark.upgrade() {
+                viewer.reload_current();
+            }
+        });
 
         box_container.set_parent(self);
 
@@ -453,6 +462,7 @@ impl MailViewer {
         };
         if message_changed {
             self.imp().remote_images_allowed_for_current.set(false);
+            self.imp().current_message_force_light.set(false);
             self.notify_remote_images_blocked(false);
         }
         if source_changed {
@@ -546,10 +556,7 @@ impl MailViewer {
             source_generation: self.imp().source_generation.get(),
             render_html,
             remote_images_allowed,
-            force_dark_mode: settings
-                .as_ref()
-                .map(AppSettings::force_dark_mode)
-                .unwrap_or(false),
+            force_dark_mode: self.effective_dark_mode(),
             mail_font_family: safe_css_font_family(&mail_font_family),
             mail_font_size: safe_mail_font_size(mail_font_size),
             citation_highlighting,
@@ -1096,6 +1103,59 @@ impl MailViewer {
             }
         }
         self.allow_remote_images();
+    }
+
+    /// Returns whether the mail should be displayed in dark mode.
+    ///
+    /// Respects the per-message light mode override, the application's
+    /// `mail-dark-mode` setting (default: true), and the system/Libadwaita
+    /// theme (`adw::StyleManager::default().is_dark()`), as well as the
+    /// legacy `force-dark-mode` switch.
+    pub fn effective_dark_mode(&self) -> bool {
+        if self.imp().current_message_force_light.get() {
+            return false;
+        }
+        self.is_dark_mode_supported_or_active()
+    }
+
+    /// Returns whether dark mode is currently active for the mail environment
+    /// (either via system/app dark theme with `mail-dark-mode` enabled, or
+    /// via `force-dark-mode`).
+    pub fn is_dark_mode_supported_or_active(&self) -> bool {
+        let settings = self.imp().settings.borrow();
+        let allow_dark = settings
+            .as_ref()
+            .map(AppSettings::mail_dark_mode)
+            .unwrap_or(true);
+        let force_dark = settings
+            .as_ref()
+            .map(AppSettings::force_dark_mode)
+            .unwrap_or(false);
+
+        (allow_dark && adw::StyleManager::default().is_dark()) || force_dark
+    }
+
+    /// Toggle the per-message light mode override for the currently displayed message.
+    /// Returns the new state of the override (`true` if light mode is forced).
+    pub fn toggle_light_mode_override(&self) -> bool {
+        let current = self.imp().current_message_force_light.get();
+        let next = !current;
+        self.imp().current_message_force_light.set(next);
+        self.reload_current();
+        next
+    }
+
+    /// Check if the currently displayed message has a light mode override active.
+    pub fn is_light_mode_override(&self) -> bool {
+        self.imp().current_message_force_light.get()
+    }
+
+    /// Set the per-message light mode override explicitly.
+    pub fn set_light_mode_override(&self, force_light: bool) {
+        if self.imp().current_message_force_light.get() != force_light {
+            self.imp().current_message_force_light.set(force_light);
+            self.reload_current();
+        }
     }
 
     /// Start a search limited to the message currently owned by this viewer.
@@ -2237,6 +2297,7 @@ html, body {
   width: 100% !important;
   max-width: 100% !important;
   min-width: 0 !important;
+  min-height: 100% !important;
   margin: 0 !important;
   padding: 12px !important;
   box-sizing: border-box !important;
@@ -2352,8 +2413,15 @@ fn compose_sanitized_mail_document(
 ) -> String {
     let mail_font_family = safe_css_font_family(mail_font_family);
     let mail_font_size = safe_mail_font_size(mail_font_size);
-    let body_css = if force_dark_mode {
-        r#"
+    let lower = sanitized.to_ascii_lowercase();
+    let has_native_dark_mode = lower.contains("prefers-color-scheme")
+        || lower.contains("supported-color-schemes")
+        || (lower.contains("color-scheme") && lower.contains("dark"));
+
+    let (body_css, dark_inversion_css) = if force_dark_mode {
+        if !render_html || has_native_dark_mode {
+            (
+                r#"
   html {
     color-scheme: dark;
     background-color: #1e1e1e;
@@ -2366,9 +2434,40 @@ fn compose_sanitized_mail_document(
     color: inherit;
     background-color: transparent;
   }
-"#
+"#,
+                "",
+            )
+        } else {
+            (
+                r#"
+  html {
+    color-scheme: dark;
+    background-color: #e1e1e1;
+    color: #2e3436;
+    filter: invert(100%) hue-rotate(180deg);
+    -webkit-filter: invert(100%) hue-rotate(180deg);
+    min-height: 100%;
+  }
+  body {
+    font-family: __FONT_FAMILY__;
+    font-size: __FONT_SIZE__px;
+    line-height: 1.6;
+    color: inherit;
+    background-color: transparent;
+    min-height: 100%;
+  }
+"#,
+                r#"
+  img, video, canvas, svg, iframe, input[type="image"] {
+    filter: invert(100%) hue-rotate(180deg) !important;
+    -webkit-filter: invert(100%) hue-rotate(180deg) !important;
+  }
+"#,
+            )
+        }
     } else {
-        r#"
+        (
+            r#"
   html {
     color-scheme: light;
     background-color: #ffffff;
@@ -2381,7 +2480,9 @@ fn compose_sanitized_mail_document(
     color: inherit;
     background-color: transparent;
   }
-"#
+"#,
+            "",
+        )
     };
     let body_css = body_css
         .replace("__FONT_FAMILY__", &mail_font_family)
@@ -2394,7 +2495,7 @@ fn compose_sanitized_mail_document(
     };
     let baseline_style_tag = format!("<style>{body_css}</style>");
     let override_style_tag = format!(
-        "<style>{USER_MAIL_OVERRIDE_CSS} {citation_css}{remote_images_css}</style>"
+        "<style>{USER_MAIL_OVERRIDE_CSS} {citation_css}{remote_images_css}{dark_inversion_css}</style>"
     );
     let style_tag = format!("{baseline_style_tag}{override_style_tag}");
 
@@ -2412,7 +2513,6 @@ fn compose_sanitized_mail_document(
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; base-uri 'none'; form-action 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src {image_sources}; font-src data:; connect-src 'none'; media-src 'none'; frame-src 'none'; object-src 'none'; worker-src 'none'\">"
     );
 
-    let lower = sanitized.to_ascii_lowercase();
     let has_html_root = render_html && lower.contains("<html");
 
     if has_html_root {
@@ -2492,11 +2592,12 @@ fn html_to_fallback_text(value: &str) -> String {
 }
 
 fn readable_fallback_text(value: Option<&str>) -> String {
+    let fallback = crate::i18n::gettext("(The message has no displayable content.)");
     value
         .map(str::trim)
         .filter(|text| !text.is_empty())
-        .unwrap_or("(Die Nachricht enthält keinen darstellbaren Inhalt.)")
-        .to_string()
+        .map(str::to_string)
+        .unwrap_or(fallback)
 }
 
 /// Return whether a mail body contains an external image source that is
@@ -2765,9 +2866,10 @@ mod tests {
             readable_fallback_text(Some("  Vorschau aus dem Nachrichtentext  ")),
             "Vorschau aus dem Nachrichtentext"
         );
-        assert_eq!(
-            readable_fallback_text(Some("   ")),
-            "(Die Nachricht enthält keinen darstellbaren Inhalt.)"
+        let empty = readable_fallback_text(Some("   "));
+        assert!(
+            empty == "(The message has no displayable content.)"
+                || empty == "(Die Nachricht enthält keinen darstellbaren Inhalt.)"
         );
     }
 
@@ -3244,6 +3346,115 @@ mod tests {
         assert!(
             min_w <= 160,
             "MailViewer minimum width must be <= 160px so it can fit narrow responsive panels, got {min_w}"
+        );
+    }
+
+    #[test]
+    fn test_mail_viewer_composed_document_dark_mode_css() {
+        let colors = test_citation_colors();
+
+        // 1. Standard HTML email in dark mode: Smart Inversion applied
+        let doc_dark_inverted = compose_sanitized_mail_document(
+            "<p>Hallo Dark</p>",
+            true,
+            false,
+            true, // force_dark_mode = true
+            "sans-serif",
+            14,
+            false,
+            &colors,
+        );
+        assert!(doc_dark_inverted.contains("color-scheme: dark"));
+        assert!(doc_dark_inverted.contains("filter: invert(100%) hue-rotate(180deg)"));
+        assert!(doc_dark_inverted.contains("background-color: #e1e1e1"));
+        assert!(doc_dark_inverted.contains("img, video, canvas, svg, iframe, input[type=\"image\"]"));
+
+        // 2. Native dark mode email (contains prefers-color-scheme): Direct dark styling applied, no inversion
+        let doc_dark_native = compose_sanitized_mail_document(
+            "<style>@media (prefers-color-scheme: dark) { body { color: white; } }</style><p>Hallo Dark</p>",
+            true,
+            false,
+            true,
+            "sans-serif",
+            14,
+            false,
+            &colors,
+        );
+        assert!(doc_dark_native.contains("color-scheme: dark"));
+        assert!(doc_dark_native.contains("background-color: #1e1e1e"));
+        assert!(doc_dark_native.contains("color: #eeeeec"));
+        assert!(!doc_dark_native.contains("filter: invert(100%) hue-rotate(180deg)"));
+
+        // 3. Plaintext email in dark mode (render_html = false): Direct dark styling
+        let doc_dark_plain = compose_sanitized_mail_document(
+            "Plain text content",
+            false,
+            false,
+            true,
+            "sans-serif",
+            14,
+            false,
+            &colors,
+        );
+        assert!(doc_dark_plain.contains("color-scheme: dark"));
+        assert!(doc_dark_plain.contains("background-color: #1e1e1e"));
+        assert!(doc_dark_plain.contains("color: #eeeeec"));
+        assert!(!doc_dark_plain.contains("filter: invert(100%) hue-rotate(180deg)"));
+
+        // 4. Light mode email (force_dark_mode = false)
+        let doc_light = compose_sanitized_mail_document(
+            "<p>Hallo Light</p>",
+            true,
+            false,
+            false, // force_dark_mode = false
+            "sans-serif",
+            14,
+            false,
+            &colors,
+        );
+        assert!(doc_light.contains("color-scheme: light"));
+        assert!(doc_light.contains("background-color: #ffffff"));
+        assert!(doc_light.contains("color: #2e3436"));
+        assert!(!doc_light.contains("filter: invert"));
+    }
+
+    #[test]
+    fn test_mail_viewer_light_mode_override_and_message_reset() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let viewer = super::MailViewer::new();
+        assert!(!viewer.is_light_mode_override());
+
+        // Toggle override
+        let toggled = viewer.toggle_light_mode_override();
+        assert!(toggled);
+        assert!(viewer.is_light_mode_override());
+        assert!(!viewer.effective_dark_mode());
+
+        // Explicit set
+        viewer.set_light_mode_override(false);
+        assert!(!viewer.is_light_mode_override());
+
+        // Toggled again
+        viewer.set_light_mode_override(true);
+        assert!(viewer.is_light_mode_override());
+
+        // Loading a new message must reset the light mode override
+        viewer.load_html_for_message(Some("msg-1"), "<p>First</p>", None);
+        // Explicitly set override on msg-1
+        viewer.set_light_mode_override(true);
+        assert!(viewer.is_light_mode_override());
+
+        // Switch to msg-2
+        viewer.load_html_for_message(Some("msg-2"), "<p>Second</p>", None);
+        assert!(
+            !viewer.is_light_mode_override(),
+            "Switching message must reset light mode override"
         );
     }
 }
