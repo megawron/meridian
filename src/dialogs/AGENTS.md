@@ -112,6 +112,13 @@ and updates to the service/settings APIs.
   3. Caret navigation toggle (`mail-caret-mode`) and magic spacebar toggle (`mail-magic-spacebar`).
   4. Display real absolute timestamp vs relative date toggle (`mail-show-real-date`) and collapsed headers toggle (`mail-headers-collapsed`).
   5. Citation highlighting toggle (`mail-citation-highlighting`) and 5 nested quote level color pickers (`mail-citation-color-1` .. `5`) using `gtk::ColorDialogButton` with live preview color dots and hex subtitles.
+- The event editor (`EventDialog`) operates as a non-modal standalone top-level
+  `adw::Window` (`modal: false`, no `set_transient_for`), reproducing upstream
+  Evolution's `ECompEditor` behavior. It can be moved freely across workspaces and
+  monitors without blocking main shell navigation. The right-hand day timeline preview
+  hosts all-day events in a dedicated header box above the scrollable 24-hour canvas,
+  avoiding overlap with the 00:00–01:00 hour slot, and synchronizes the temporary preview
+  chip dynamically with the configured start/end times.
 
 
 ## Verification

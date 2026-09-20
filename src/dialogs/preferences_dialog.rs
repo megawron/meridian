@@ -224,7 +224,6 @@ mod imp {
             self.parent_constructed();
             self.obj().set_content_width(980);
             self.obj().set_content_height(720);
-            self.obj().set_visible(false);
             self.obj().build_ui();
             self.obj().connect_closed(|dialog| {
                 if let Some(window) = crate::window::find_evolution_window(dialog) {
@@ -8743,10 +8742,10 @@ mod tests {
         let dialog = super::PreferencesDialog::new();
         while context.iteration(false) {}
 
-        // Newly constructed Libadwaita dialogs are hidden until presented
+        // Newly constructed Libadwaita dialogs are not mapped until presented
         assert!(
-            !dialog.is_visible(),
-            "PreferencesDialog must not be visible immediately upon creation"
+            !dialog.is_mapped(),
+            "PreferencesDialog must not be mapped immediately upon creation"
         );
         assert_eq!(
             dialog.content_width(),
@@ -9086,6 +9085,26 @@ mod tests {
         assert!(source.contains("refresh_managed_account_rows"));
         assert!(source.contains("is_shared_mailbox"));
         assert!(source.contains("\"Freigegebenes Postfach\""));
+    }
+
+    #[test]
+    fn test_preferences_dialog_present_visible() {
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let window = adw::ApplicationWindow::builder().build();
+        window.present();
+        while context.iteration(false) {}
+        let dialog = super::PreferencesDialog::new();
+        while context.iteration(false) {}
+        dialog.present(Some(&window));
+        for _ in 0..10 {
+            context.iteration(false);
+        }
+        assert!(
+            dialog.is_visible(),
+            "PreferencesDialog must become visible when presented to avoid trapping pointer events in modal backdrop"
+        );
     }
 }
 

@@ -14,7 +14,7 @@ use adw::subclass::prelude::*;
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, Timelike, Utc};
 use gtk::prelude::*;
 use gtk::{gio, glib};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -450,6 +450,7 @@ fn create_categories_picker_popover(entry: &gtk::Entry) -> (gtk::Button, gtk::Po
 }
 
 fn update_day_schedule_timeline(
+    all_day_box: &gtk::Box,
     timeline_fixed: &gtk::Fixed,
     timeline_subtitle: &gtk::Label,
     events_cache: &[CalendarEventRecord],
@@ -461,12 +462,16 @@ fn update_day_schedule_timeline(
     edit_uid: Option<&str>,
     selected_calendar_color: Option<&str>,
 ) {
+    while let Some(child) = all_day_box.first_child() {
+        all_day_box.remove(&child);
+    }
     while let Some(child) = timeline_fixed.first_child() {
         timeline_fixed.remove(&child);
     }
 
     let Some(current_date) = parse_date_lenient(date_str) else {
         timeline_subtitle.set_text("Ungültiges Datum");
+        all_day_box.set_visible(false);
         return;
     };
 
@@ -547,25 +552,29 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
     class_name
 }
 
-    for (idx, (is_preview, title, color)) in all_day_items.iter().enumerate() {
-        let y = idx as f64 * 26.0;
-        let is_dark = adw::StyleManager::default().is_dark();
-        let color_class = ensure_timeline_event_css(color, *is_preview, true, is_dark);
-        let mut classes = vec!["appointment-timeline-event", color_class.as_str()];
-        if *is_preview {
-            classes.push("appointment-timeline-preview");
+    if all_day_items.is_empty() {
+        all_day_box.set_visible(false);
+    } else {
+        all_day_box.set_visible(true);
+        for (is_preview, title, color) in &all_day_items {
+            let is_dark = adw::StyleManager::default().is_dark();
+            let color_class = ensure_timeline_event_css(color, *is_preview, true, is_dark);
+            let mut classes = vec!["appointment-timeline-event", color_class.as_str()];
+            if *is_preview {
+                classes.push("appointment-timeline-preview");
+            }
+            let ev_label = gtk::Label::builder()
+                .label(&format!("{title} (Ganztägig)"))
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .halign(gtk::Align::Fill)
+                .valign(gtk::Align::Start)
+                .width_request(TIMELINE_EVENTS_WIDTH as i32)
+                .height_request(24)
+                .css_classes(classes)
+                .tooltip_text(&format!("{title}\nGanztägiger Termin"))
+                .build();
+            all_day_box.append(&ev_label);
         }
-        let ev_label = gtk::Label::builder()
-            .label(&format!("{title} (Ganztägig)"))
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .halign(gtk::Align::Start)
-            .valign(gtk::Align::Start)
-            .width_request(TIMELINE_EVENTS_WIDTH as i32)
-            .height_request(24)
-            .css_classes(classes)
-            .tooltip_text(&format!("{title}\nGanztägiger Termin"))
-            .build();
-        timeline_fixed.put(&ev_label, TIMELINE_EVENTS_X, y);
     }
 
     // 2. Timed events (existing + preview)
@@ -751,7 +760,7 @@ impl EventDialog {
     pub fn new() -> Self {
         glib::Object::builder()
             .property("title", "Termin — Keine Zusammenfassung")
-            .property("modal", true)
+            .property("modal", false)
             .property("default-width", 880)
             .property("default-height", 680)
             .build()
@@ -760,7 +769,7 @@ impl EventDialog {
     pub fn new_for_date(date: NaiveDate) -> Self {
         glib::Object::builder()
             .property("title", "Termin — Keine Zusammenfassung")
-            .property("modal", true)
+            .property("modal", false)
             .property("default-width", 880)
             .property("default-height", 680)
             .property("initial-date", date.format("%Y-%m-%d").to_string())
@@ -770,7 +779,7 @@ impl EventDialog {
     pub fn new_for_time_range(start: NaiveDateTime, end: NaiveDateTime) -> Self {
         glib::Object::builder()
             .property("title", "Termin — Keine Zusammenfassung")
-            .property("modal", true)
+            .property("modal", false)
             .property("default-width", 880)
             .property("default-height", 680)
             .property("initial-start", start.format("%Y-%m-%d %H:%M").to_string())
@@ -785,7 +794,7 @@ impl EventDialog {
             .unwrap_or_else(|| "Keine Zusammenfassung".to_string());
         glib::Object::builder()
             .property("title", &format!("Termin — {summary}"))
-            .property("modal", true)
+            .property("modal", false)
             .property("default-width", 880)
             .property("default-height", 680)
             .property("edit-component", &event.component)
@@ -1224,6 +1233,14 @@ impl EventDialog {
             .build();
         timeline_container.append(&timeline_subtitle);
 
+        let all_day_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .margin_bottom(6)
+            .visible(false)
+            .build();
+        timeline_container.append(&all_day_box);
+
         let scrolled_timeline = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
@@ -1292,6 +1309,7 @@ impl EventDialog {
         let color_badge_provider = Rc::new(RefCell::new(None::<gtk::CssProvider>));
         let calendar_source_colors_for_timeline = Rc::clone(&calendar_source_colors);
         let update_timeline = {
+            let all_day_box = all_day_box.clone();
             let timeline_fixed = timeline_fixed.clone();
             let timeline_subtitle = timeline_subtitle.clone();
             let events_cache = Rc::clone(&events_cache);
@@ -1329,6 +1347,7 @@ impl EventDialog {
                 }
 
                 update_day_schedule_timeline(
+                    &all_day_box,
                     &timeline_fixed,
                     &timeline_subtitle,
                     &events_cache.borrow(),
@@ -1356,6 +1375,9 @@ impl EventDialog {
             }
             update_tl_sdate();
         });
+
+        let update_tl_edate = update_timeline.clone();
+        entry_end_date.connect_changed(move |_| update_tl_edate());
 
         let update_tl_stime = update_timeline.clone();
         entry_start_time.connect_changed(move |_| update_tl_stime());
@@ -1398,8 +1420,21 @@ impl EventDialog {
         // Auto-scroll timeline to start hour
         let scroll_adj = scrolled_timeline.vadjustment();
         let target_y = ((default_start.hour() as f64 - 1.0).max(0.0)) * HOUR_HEIGHT;
+        let scrolled_flag = Rc::new(Cell::new(false));
+        let scrolled_notify = scrolled_flag.clone();
+        scroll_adj.connect_upper_notify(move |adj| {
+            if !scrolled_notify.get() && adj.upper() > 100.0 {
+                scrolled_notify.set(true);
+                adj.set_value(target_y);
+            }
+        });
+        let scroll_adj_idle = scroll_adj.clone();
+        let scrolled_idle = scrolled_flag.clone();
         glib::idle_add_local_once(move || {
-            scroll_adj.set_value(target_y);
+            if !scrolled_idle.get() && scroll_adj_idle.upper() > 0.0 {
+                scrolled_idle.set(true);
+                scroll_adj_idle.set_value(target_y);
+            }
         });
 
         // Background load of calendar events snapshot for timeline
