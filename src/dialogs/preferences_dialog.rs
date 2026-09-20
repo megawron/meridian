@@ -2736,8 +2736,8 @@ impl PreferencesDialog {
                     return;
                 };
                 let file_dialog = gtk::FileDialog::builder()
-                    .title("Evolution GTK4-Sicherung speichern")
-                    .initial_name("evolution-gtk4-backup.json")
+                    .title("Meridian-Sicherung speichern")
+                    .initial_name("meridian-backup.json")
                     .modal(true)
                     .build();
                 let dialog_for_result = dialog.downgrade();
@@ -2785,7 +2785,7 @@ impl PreferencesDialog {
                     return;
                 };
                 let file_dialog = gtk::FileDialog::builder()
-                    .title("Evolution GTK4-Sicherung öffnen")
+                    .title("Meridian-Sicherung öffnen")
                     .modal(true)
                     .build();
                 let dialog_for_file = dialog.downgrade();
@@ -8989,7 +8989,7 @@ mod tests {
         assert_eq!(settings.draft_autosave_interval_seconds(), 45);
 
         // 9. Test Direct GSettings Boundary Injection into Autosave SpinRow
-        let raw_settings = gio::Settings::new("org.gnome.Evolution4");
+        let raw_settings = gio::Settings::new("com.martingawron.Meridian");
         let _ = raw_settings.set_int("draft-autosave-interval", -10);
         while context.iteration(false) {}
         assert_eq!(row_autosave.value().round() as u32, 0, "Negative interval must clamp spinrow to 0");

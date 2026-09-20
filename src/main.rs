@@ -21,11 +21,10 @@ use glib::ExitCode;
 use gtk::{gio, glib};
 
 /// Application ID following GNOME reverse-DNS convention.
-/// TODO: Update when project name is finalized.
-pub const APP_ID: &str = "org.gnome.Evolution4";
+pub const APP_ID: &str = "com.martingawron.Meridian";
 
 /// Resource base path for GResource lookups.
-pub const RESOURCE_PATH: &str = "/org/gnome/Evolution4";
+pub const RESOURCE_PATH: &str = "/com/martingawron/Meridian";
 
 #[cfg(target_os = "macos")]
 fn setup_platform_environment() {
@@ -80,13 +79,13 @@ fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "evolution_gtk4=debug,warn".into()),
+                .unwrap_or_else(|_| "meridian=debug,warn".into()),
         )
         .with_target(true)
         .with_writer(|| services::log_buffer::LogBufferWriter)
         .init();
 
-    tracing::info!("Starting Evolution GTK4 v{}", env!("CARGO_PKG_VERSION"));
+    tracing::info!("Starting Meridian v{}", env!("CARGO_PKG_VERSION"));
 
     // Create and run the AdwApplication
     let non_unique = std::env::args().any(|a| a == "--non-unique");

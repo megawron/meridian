@@ -6382,7 +6382,7 @@ mod tests {
         );
 
         // Boundary 4: Negative interval via direct GSettings injection
-        let raw_settings = gio::Settings::new("org.gnome.Evolution4");
+        let raw_settings = gio::Settings::new("com.martingawron.Meridian");
         let _ = raw_settings.set_int("draft-autosave-interval", -20);
         while context.iteration(false) {}
         assert!(

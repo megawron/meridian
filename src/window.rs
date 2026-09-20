@@ -107,7 +107,7 @@ mod imp {
             let initial_sidebar_vis = settings.as_ref().map(|s| s.mail_show_sidebar()).unwrap_or(true);
             self.sidebar_visible.set(initial_sidebar_vis);
 
-            window.set_title(Some("Evolution"));
+            window.set_title(Some("Meridian"));
             if let Some(settings) = settings.as_ref() {
                 window.set_default_size(settings.window_width(), settings.window_height());
                 if settings.is_maximized() {
@@ -1644,13 +1644,17 @@ impl EvolutionWindow {
                 let offline = AppSettings::try_new()
                     .map(|s| s.offline_mode())
                     .unwrap_or(false);
-                label.set_label(if offline {
-                    "Evolution GTK4  ·  Offline"
+                let offline_str = crate::i18n::gettext("Offline");
+                let ready_str = crate::i18n::gettext("Ready");
+                let default_status = if offline {
+                    format!("Meridian  ·  {offline_str}")
                 } else {
-                    "Evolution GTK4  ·  Bereit"
-                });
+                    format!("Meridian  ·  {ready_str}")
+                };
+                label.set_label(&default_status);
             } else {
-                label.set_label(&format!("Evolution GTK4  ·  {status_text}"));
+                let status = format!("Meridian  ·  {status_text}");
+                label.set_label(&status);
             }
         }
     }
@@ -1796,7 +1800,7 @@ impl EvolutionWindow {
         }
 
         if let Some(label) = self.imp().status_label.borrow().as_ref() {
-            label.set_label(&format!("Evolution GTK4  ·  {}", snapshot.status_text()));
+            label.set_label(&format!("Meridian  ·  {}", snapshot.status_text()));
         }
 
         if let Some(progress) = self.imp().status_progress.borrow().as_ref() {
@@ -3306,7 +3310,7 @@ impl EvolutionWindow {
             .build();
 
         let status_label = gtk::Label::builder()
-            .label(&format!("Evolution GTK4  ·  {}", crate::i18n::gettext("Ready")))
+            .label(&format!("Meridian  ·  {}", crate::i18n::gettext("Ready")))
             .css_classes(vec!["caption", "dim-label"])
             .halign(gtk::Align::Start)
             .hexpand(true)
