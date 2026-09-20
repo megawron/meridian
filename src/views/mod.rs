@@ -42,7 +42,7 @@ fn module_icon_widget(name: &str) -> gtk::Image {
         "mail" => ("evolution-mail", "mail-unread-symbolic"),
         "contacts" => ("x-office-address-book", "x-office-address-book-symbolic"),
         "calendar" => ("x-office-calendar", "x-office-calendar-symbolic"),
-        "tasks" => ("evolution-tasks-symbolic", "tasks-symbolic"),
+        "tasks" => ("view-list-bullet-symbolic", "tasks-symbolic"),
         "memos" => ("accessories-text-editor", "accessories-text-editor-symbolic"),
         _ => ("evolution-mail", "mail-unread-symbolic"),
     };
@@ -79,19 +79,19 @@ pub fn build_sidebar_module_switcher(
         .row_homogeneous(false)
         .build();
 
-    let modules = [
-        ("mail", "Mail"),
-        ("contacts", "Kontakte"),
-        ("calendar", "Kalender"),
-        ("tasks", "Aufgaben"),
-        ("memos", "Notizen"),
+    let modules: [(&str, String); 5] = [
+        ("mail", crate::i18n::gettext("Mail")),
+        ("contacts", crate::i18n::gettext("Contacts")),
+        ("calendar", crate::i18n::gettext("Calendar")),
+        ("tasks", crate::i18n::gettext("Tasks")),
+        ("memos", crate::i18n::gettext("Memos")),
     ];
 
     let mut buttons_vec = Vec::new();
     let mut labels_vec = Vec::new();
 
-    for (name, label) in modules {
-        let is_active = name == active_view;
+    for (name, label) in &modules {
+        let is_active = *name == active_view;
         let lbl = gtk::Label::builder()
             .label(label)
             .halign(gtk::Align::Start)

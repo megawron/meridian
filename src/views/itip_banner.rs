@@ -1,3 +1,4 @@
+use crate::i18n::gettext;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // ItipBanner — Interactive GNOME Evolution-parity iTIP/iCalendar invitation banner.
@@ -104,14 +105,14 @@ impl ItipBanner {
             .build();
 
         let lbl_method = gtk::Label::builder()
-            .label("Besprechungseinladung")
+            .label(&gettext("Meeting Invitation"))
             .css_classes(vec!["caption", "dim-label"])
             .halign(gtk::Align::Start)
             .build();
         title_vbox.append(&lbl_method);
 
         let lbl_title = gtk::Label::builder()
-            .label("Termin")
+            .label(&gettext("Event"))
             .css_classes(vec!["title-3"])
             .halign(gtk::Align::Start)
             .ellipsize(pango::EllipsizeMode::End)
@@ -120,7 +121,7 @@ impl ItipBanner {
         header_row.append(&title_vbox);
 
         let lbl_status_badge = gtk::Label::builder()
-            .label("Antwort ausstehend")
+            .label(&gettext("Response Pending"))
             .css_classes(vec!["itip-status-badge", "pending"])
             .valign(gtk::Align::Center)
             .build();
@@ -250,7 +251,7 @@ impl ItipBanner {
             .valign(gtk::Align::Center)
             .build();
         let cal_select_lbl = gtk::Label::builder()
-            .label("Kalender:")
+            .label(&gettext("Calendar:"))
             .css_classes(vec!["caption", "dim-label"])
             .build();
         cal_select_box.append(&cal_select_lbl);
@@ -272,18 +273,18 @@ impl ItipBanner {
             .build();
 
         let btn_accept = gtk::Button::builder()
-            .label("Zusagen")
+            .label(&gettext("Accept"))
             .css_classes(vec!["suggested-action"])
-            .tooltip_text("Termin zusagen, in den Kalender übernehmen und Antwort senden")
+            .tooltip_text(&gettext("Accept event, add to calendar and send response"))
             .build();
         let btn_tentative = gtk::Button::builder()
-            .label("Mit Vorbehalt")
-            .tooltip_text("Mit Vorbehalt zusagen und in den Kalender übernehmen")
+            .label(&gettext("Tentative"))
+            .tooltip_text(&gettext("Tentatively accept and add to calendar"))
             .build();
         let btn_decline = gtk::Button::builder()
-            .label("Ablehnen")
+            .label(&gettext("Decline"))
             .css_classes(vec!["destructive-action"])
-            .tooltip_text("Einladung ablehnen und absagen")
+            .tooltip_text(&gettext("Decline invitation and send response"))
             .build();
 
         action_box_request.append(&btn_accept);
@@ -300,9 +301,9 @@ impl ItipBanner {
             .build();
 
         let btn_remove = gtk::Button::builder()
-            .label("Aus Kalender entfernen")
+            .label(&gettext("Remove from Calendar"))
             .css_classes(vec!["destructive-action"])
-            .tooltip_text("Abgesagten Termin aus Ihrem Kalender entfernen")
+            .tooltip_text(&gettext("Remove cancelled event from your calendar"))
             .build();
         action_box_cancel.append(&btn_remove);
         footer_box.append(&action_box_cancel);
@@ -316,9 +317,9 @@ impl ItipBanner {
             .build();
 
         let btn_update = gtk::Button::builder()
-            .label("Kalender aktualisieren")
+            .label(&gettext("Update Calendar"))
             .css_classes(vec!["suggested-action"])
-            .tooltip_text("Teilnehmerstatus im bestehenden Kalendereintrag aktualisieren")
+            .tooltip_text(&gettext("Update attendee status in existing calendar event"))
             .build();
         action_box_reply.append(&btn_update);
         footer_box.append(&action_box_reply);
@@ -332,19 +333,19 @@ impl ItipBanner {
             .build();
 
         let btn_import = gtk::Button::builder()
-            .label("In Kalender eintragen")
+            .label(&gettext("Add to Calendar"))
             .css_classes(vec!["suggested-action"])
-            .tooltip_text("Veröffentlichten Termin in den Kalender übernehmen")
+            .tooltip_text(&gettext("Add published event to calendar"))
             .build();
         action_box_publish.append(&btn_import);
         footer_box.append(&action_box_publish);
 
         // Open in Calendar button (always available on right)
         let btn_open_calendar = gtk::Button::builder()
-            .label("Im Kalender öffnen")
+            .label(&gettext("Open in Calendar"))
             .icon_name("x-office-calendar-symbolic")
             .css_classes(vec!["flat"])
-            .tooltip_text("Zum Kalender wechseln und Datum anzeigen")
+            .tooltip_text(&gettext("Switch to calendar and show date"))
             .valign(gtk::Align::Center)
             .build();
         footer_box.append(&btn_open_calendar);
@@ -412,7 +413,7 @@ impl ItipBanner {
     }
 
     fn setup_calendar_sources(&self) {
-        let sources = vec![("local-calendar".to_string(), "Persönlicher Kalender".to_string())];
+        let sources = vec![("local-calendar".to_string(), gettext("Personal Calendar"))];
         let names: Vec<&str> = sources.iter().map(|(_, name)| name.as_str()).collect();
         let model = gtk::StringList::new(&names);
         self.calendar_dropdown.set_model(Some(&model));
@@ -429,7 +430,7 @@ impl ItipBanner {
         });
         glib::spawn_future_local(async move {
             if let Ok(discovery) = rx.recv().await {
-                let mut sources = vec![("local-calendar".to_string(), "Persönlicher Kalender".to_string())];
+                let mut sources = vec![("local-calendar".to_string(), gettext("Personal Calendar"))];
                 for source in discovery.sources {
                     if source.writable && source.source_uid != "local-calendar" {
                         sources.push((source.source_uid, source.display_name));
@@ -468,7 +469,7 @@ impl ItipBanner {
 
         let event = &invitation.event;
         let title = if event.summary.trim().is_empty() {
-            "Termin ohne Betreff"
+            &gettext("Event without summary")
         } else {
             event.summary.trim()
         };
@@ -481,7 +482,7 @@ impl ItipBanner {
         match invitation.method {
             ItipMethod::Request | ItipMethod::Add => {
                 self.icon.set_icon_name(Some("x-office-calendar-symbolic"));
-                self.lbl_method.set_text("Besprechungseinladung");
+                self.lbl_method.set_text(&gettext("Meeting Invitation"));
                 self.action_box_request.set_visible(true);
                 self.action_box_cancel.set_visible(false);
                 self.action_box_reply.set_visible(false);
@@ -489,7 +490,7 @@ impl ItipBanner {
             }
             ItipMethod::Cancel => {
                 self.icon.set_icon_name(Some("process-stop-symbolic"));
-                self.lbl_method.set_text("Besprechung wurde abgesagt");
+                self.lbl_method.set_text(&gettext("Meeting has been cancelled"));
                 self.banner_box.add_css_class("itip-cancelled");
                 self.action_box_request.set_visible(false);
                 self.action_box_cancel.set_visible(true);
@@ -498,7 +499,7 @@ impl ItipBanner {
             }
             ItipMethod::Reply => {
                 self.icon.set_icon_name(Some("mail-reply-sender-symbolic"));
-                self.lbl_method.set_text("Antwort auf Besprechungseinladung");
+                self.lbl_method.set_text(&gettext("Response to Meeting Invitation"));
                 self.action_box_request.set_visible(false);
                 self.action_box_cancel.set_visible(false);
                 self.action_box_reply.set_visible(true);
@@ -506,7 +507,7 @@ impl ItipBanner {
             }
             ItipMethod::Publish => {
                 self.icon.set_icon_name(Some("x-office-calendar-symbolic"));
-                self.lbl_method.set_text("Veröffentlichter Termin");
+                self.lbl_method.set_text(&gettext("Published Event"));
                 self.action_box_request.set_visible(false);
                 self.action_box_cancel.set_visible(false);
                 self.action_box_reply.set_visible(false);
@@ -514,7 +515,7 @@ impl ItipBanner {
             }
             ItipMethod::Unknown => {
                 self.icon.set_icon_name(Some("x-office-calendar-symbolic"));
-                self.lbl_method.set_text("Kalendereintrag");
+                self.lbl_method.set_text(&gettext("Calendar Entry"));
                 self.action_box_request.set_visible(false);
                 self.action_box_cancel.set_visible(false);
                 self.action_box_reply.set_visible(false);
@@ -524,7 +525,7 @@ impl ItipBanner {
 
         // Time / Date range
         let time_str = if event.all_day {
-            format!("Ganztägig: {}", event.start)
+            format!("{}: {}", gettext("All day"), event.start)
         } else if !event.end.trim().is_empty() {
             format!("{} – {}", event.start, event.end)
         } else {
@@ -551,7 +552,7 @@ impl ItipBanner {
         // Organizer
         if !invitation.organizer.trim().is_empty() {
             let org = invitation.organizer.trim().trim_start_matches("mailto:");
-            self.lbl_organizer.set_text(&format!("Organisator: {org}"));
+            self.lbl_organizer.set_text(&format!("{}: {org}", gettext("Organizer")));
             self.organizer_row.set_visible(true);
         } else {
             self.organizer_row.set_visible(false);
@@ -561,9 +562,9 @@ impl ItipBanner {
         if !invitation.attendees.is_empty() {
             let count = invitation.attendees.len();
             let text = if count == 1 {
-                "1 Teilnehmer".to_string()
+                gettext("1 attendee")
             } else {
-                format!("{count} Teilnehmer")
+                gettext("{} attendees").replace("{}", &count.to_string())
             };
             self.lbl_attendees.set_text(&text);
             self.attendees_row.set_visible(true);
@@ -594,20 +595,20 @@ impl ItipBanner {
 
         match status {
             Some(ItipReplyStatus::Accepted) => {
-                self.lbl_status_badge.set_text("Zugesagt ✓");
+                self.lbl_status_badge.set_text(&gettext("Accepted ✓"));
                 self.lbl_status_badge.add_css_class("accepted");
                 self.banner_box.add_css_class("itip-accepted");
             }
             Some(ItipReplyStatus::Tentative) => {
-                self.lbl_status_badge.set_text("Mit Vorbehalt");
+                self.lbl_status_badge.set_text(&gettext("Tentative"));
                 self.lbl_status_badge.add_css_class("tentative");
             }
             Some(ItipReplyStatus::Declined) => {
-                self.lbl_status_badge.set_text("Abgelehnt");
+                self.lbl_status_badge.set_text(&gettext("Declined"));
                 self.lbl_status_badge.add_css_class("declined");
             }
             None => {
-                self.lbl_status_badge.set_text("Antwort ausstehend");
+                self.lbl_status_badge.set_text(&gettext("Response Pending"));
                 self.lbl_status_badge.add_css_class("pending");
             }
         }
@@ -702,7 +703,7 @@ impl ItipBanner {
                     Ok(()) => {
                         this.update_status_badge(Some(status));
                         if let Some(toast) = this.on_action_toast.borrow().as_ref() {
-                            toast(format!("Termin {status_label} und Kalender aktualisiert"));
+                            toast(format!("{}: {status_label}", gettext("Event updated and calendar refreshed")));
                         }
                         if let Some(draft_cb) = this.on_reply_draft_saved.borrow().as_ref() {
                             draft_cb(&invitation, status);
@@ -713,7 +714,7 @@ impl ItipBanner {
                         this.btn_tentative.set_sensitive(true);
                         this.btn_decline.set_sensitive(true);
                         if let Some(toast) = this.on_action_toast.borrow().as_ref() {
-                            toast(format!("Fehler beim Aktualisieren: {err}"));
+                            toast(format!("{}: {err}", gettext("Error while updating")));
                         }
                     }
                 }
@@ -741,15 +742,15 @@ impl ItipBanner {
             if let Ok(result) = receiver.recv().await {
                 match result {
                     Ok(_) => {
-                        this.btn_remove.set_label("Aus Kalender entfernt");
+                        this.btn_remove.set_label(&gettext("Removed from calendar"));
                         if let Some(toast) = this.on_action_toast.borrow().as_ref() {
-                            toast("Termin aus dem Kalender entfernt".to_string());
+                            toast(gettext("Event removed from calendar"));
                         }
                     }
                     Err(err) => {
                         this.btn_remove.set_sensitive(true);
                         if let Some(toast) = this.on_action_toast.borrow().as_ref() {
-                            toast(format!("Konnte nicht entfernt werden: {err}"));
+                            toast(format!("{}: {err}", gettext("Could not remove event")));
                         }
                     }
                 }
@@ -778,15 +779,15 @@ impl ItipBanner {
             if let Ok(result) = receiver.recv().await {
                 match result {
                     Ok(_) => {
-                        this.btn_update.set_label("Aktualisiert ✓");
+                        this.btn_update.set_label(&format!("{} ✓", gettext("Updated")));
                         if let Some(toast) = this.on_action_toast.borrow().as_ref() {
-                            toast("Kalendereintrag erfolgreich aktualisiert".to_string());
+                            toast(gettext("Calendar event updated successfully"));
                         }
                     }
                     Err(err) => {
                         this.btn_update.set_sensitive(true);
                         if let Some(toast) = this.on_action_toast.borrow().as_ref() {
-                            toast(format!("Fehler bei Aktualisierung: {err}"));
+                            toast(format!("{}: {err}", gettext("Failed to update event")));
                         }
                     }
                 }
@@ -814,15 +815,15 @@ impl ItipBanner {
             if let Ok(result) = receiver.recv().await {
                 match result {
                     Ok(_) => {
-                        this.btn_import.set_label("Eingetragen ✓");
+                        this.btn_import.set_label(&gettext("Added ✓"));
                         if let Some(toast) = this.on_action_toast.borrow().as_ref() {
-                            toast("Termin in Kalender eingetragen".to_string());
+                            toast(gettext("Event added to calendar"));
                         }
                     }
                     Err(err) => {
                         this.btn_import.set_sensitive(true);
                         if let Some(toast) = this.on_action_toast.borrow().as_ref() {
-                            toast(format!("Fehler beim Eintragen: {err}"));
+                            toast(format!("{}: {err}", gettext("Error while adding")));
                         }
                     }
                 }

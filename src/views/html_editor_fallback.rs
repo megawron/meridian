@@ -1,3 +1,4 @@
+use crate::i18n::gettext;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Development fallback for platforms without WebKitGTK 6.0.
@@ -198,7 +199,7 @@ impl HtmlEditor {
         if let Some(toolbar) = self.imp().format_toolbar.borrow().as_ref() {
             toolbar.set_sensitive(false);
             toolbar.set_tooltip_text(Some(
-                "Rich-Text-Formatierung steht im macOS-Entwicklungsfallback nicht zur Verfügung",
+                &gettext("Rich text formatting is not available in macOS development fallback"),
             ));
         }
     }
@@ -248,19 +249,19 @@ impl HtmlEditor {
             .css_classes(vec!["linked"])
             .build();
         for (icon_name, tooltip) in [
-            ("format-text-bold-symbolic", "Fett"),
-            ("format-text-italic-symbolic", "Kursiv"),
-            ("format-text-underline-symbolic", "Unterstrichen"),
-            ("format-list-bulleted-symbolic", "Aufzählung"),
-            ("format-list-numbered-symbolic", "Nummerierte Liste"),
-            ("format-text-direction-ltr-symbolic", "Blockzitat"),
-            ("edit-undo-symbolic", "Rückgängig"),
-            ("edit-redo-symbolic", "Wiederholen"),
+            ("format-text-bold-symbolic", gettext("Bold")),
+            ("format-text-italic-symbolic", gettext("Italic")),
+            ("format-text-underline-symbolic", gettext("Underline")),
+            ("format-list-bulleted-symbolic", gettext("Bullet list")),
+            ("format-list-numbered-symbolic", gettext("Numbered list")),
+            ("format-text-direction-ltr-symbolic", gettext("Block quote")),
+            ("edit-undo-symbolic", gettext("Undo")),
+            ("edit-redo-symbolic", gettext("Redo")),
         ] {
             toolbar.append(
                 &gtk::Button::builder()
                     .icon_name(icon_name)
-                    .tooltip_text(tooltip)
+                    .tooltip_text(&tooltip)
                     .css_classes(vec!["flat"])
                     .sensitive(false)
                     .build(),

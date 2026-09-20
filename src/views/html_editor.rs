@@ -1,3 +1,4 @@
+use crate::i18n::gettext;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // HtmlEditor — WebKitGTK 6.0 based WYSIWYG HTML editor for mail composition.
@@ -336,58 +337,58 @@ impl HtmlEditor {
 
         let btn_bold = gtk::Button::builder()
             .icon_name("format-text-bold-symbolic")
-            .tooltip_text("Fett (Ctrl+B)")
+            .tooltip_text(&gettext("Bold (Ctrl+B)"))
             .css_classes(vec!["flat"])
             .build();
 
         let btn_italic = gtk::Button::builder()
             .icon_name("format-text-italic-symbolic")
-            .tooltip_text("Kursiv (Ctrl+I)")
+            .tooltip_text(&gettext("Italic (Ctrl+I)"))
             .css_classes(vec!["flat"])
             .build();
 
         let btn_underline = gtk::Button::builder()
             .icon_name("format-text-underline-symbolic")
-            .tooltip_text("Unterstrichen (Ctrl+U)")
+            .tooltip_text(&gettext("Underline (Ctrl+U)"))
             .css_classes(vec!["flat"])
             .build();
 
         let btn_strikethrough = gtk::Button::builder()
             .icon_name("format-text-strikethrough-symbolic")
-            .tooltip_text("Durchgestrichen")
+            .tooltip_text(&gettext("Strikethrough"))
             .css_classes(vec!["flat"])
             .build();
 
         let btn_clear = gtk::Button::builder()
             .icon_name("edit-clear-symbolic")
-            .tooltip_text("Formatierung entfernen")
+            .tooltip_text(&gettext("Clear formatting"))
             .css_classes(vec!["flat"])
             .build();
 
         let dropdown_format = gtk::DropDown::from_strings(&[
             "Normal",
-            "Überschrift 1",
-            "Überschrift 2",
-            "Überschrift 3",
-            "Vorformatiert",
+            "Heading 1",
+            "Heading 2",
+            "Heading 3",
+            "Preformatted",
         ]);
         dropdown_format.set_valign(gtk::Align::Center);
 
         let btn_list = gtk::Button::builder()
             .icon_name("view-list-bullet-symbolic")
-            .tooltip_text("Aufzählung")
+            .tooltip_text(&gettext("Bullet list"))
             .css_classes(vec!["flat"])
             .build();
 
         let btn_ordered_list = gtk::Button::builder()
             .icon_name("view-list-ordered-symbolic")
-            .tooltip_text("Nummerierte Liste")
+            .tooltip_text(&gettext("Numbered list"))
             .css_classes(vec!["flat"])
             .build();
 
         let btn_blockquote = gtk::Button::builder()
             .icon_name("format-text-direction-ltr-symbolic")
-            .tooltip_text("Blockzitat")
+            .tooltip_text(&gettext("Block quote"))
             .css_classes(vec!["flat"])
             .build();
 
@@ -402,7 +403,7 @@ impl HtmlEditor {
             .build();
         link_popover_box.append(
             &gtk::Label::builder()
-                .label("Hyperlink einfügen")
+                .label(&gettext("Insert hyperlink"))
                 .halign(gtk::Align::Start)
                 .css_classes(vec!["heading"])
                 .build(),
@@ -411,10 +412,10 @@ impl HtmlEditor {
             .placeholder_text("https://example.com")
             .build();
         let entry_label = gtk::Entry::builder()
-            .placeholder_text("Link-Text (optional)")
+            .placeholder_text(&gettext("Link text (optional)"))
             .build();
         let btn_insert_link_confirm = gtk::Button::builder()
-            .label("Einfügen")
+            .label(&gettext("Insert"))
             .css_classes(vec!["suggested-action"])
             .build();
         link_popover_box.append(&entry_url);
@@ -424,32 +425,32 @@ impl HtmlEditor {
         let link_popover = gtk::Popover::builder().child(&link_popover_box).build();
         let btn_link = gtk::MenuButton::builder()
             .icon_name("insert-link-symbolic")
-            .tooltip_text("Hyperlink einfügen")
+            .tooltip_text(&gettext("Insert hyperlink"))
             .popover(&link_popover)
             .css_classes(vec!["flat"])
             .build();
 
         let btn_rule = gtk::Button::builder()
             .icon_name("insert-object-symbolic")
-            .tooltip_text("Horizontale Linie einfügen")
+            .tooltip_text(&gettext("Insert horizontal rule"))
             .css_classes(vec!["flat"])
             .build();
 
         let btn_image = gtk::Button::builder()
             .icon_name("insert-image-symbolic")
-            .tooltip_text("Bild einfügen")
+            .tooltip_text(&gettext("Insert image"))
             .css_classes(vec!["flat"])
             .build();
 
         let btn_undo = gtk::Button::builder()
             .icon_name("edit-undo-symbolic")
-            .tooltip_text("Rückgängig (Ctrl+Z)")
+            .tooltip_text(&gettext("Undo (Ctrl+Z)"))
             .css_classes(vec!["flat"])
             .build();
 
         let btn_redo = gtk::Button::builder()
             .icon_name("edit-redo-symbolic")
-            .tooltip_text("Wiederholen (Ctrl+Shift+Z)")
+            .tooltip_text(&gettext("Redo (Ctrl+Shift+Z)"))
             .css_classes(vec!["flat"])
             .build();
 
@@ -764,11 +765,11 @@ impl HtmlEditor {
             };
             let parent = editor.root().and_downcast::<gtk::Window>();
             let file_dialog = gtk::FileDialog::builder()
-                .title("Bild zum Einfügen auswählen")
+                .title(&gettext("Select image to insert"))
                 .modal(true)
                 .build();
             let filter = gtk::FileFilter::new();
-            filter.set_name(Some("Bilder (*.png, *.jpg, *.jpeg, *.gif, *.svg, *.webp)"));
+            filter.set_name(Some(&gettext("Images (*.png, *.jpg, *.jpeg, *.gif, *.svg, *.webp)")));
             filter.add_mime_type("image/png");
             filter.add_mime_type("image/jpeg");
             filter.add_mime_type("image/gif");
