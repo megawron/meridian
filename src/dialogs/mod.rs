@@ -91,7 +91,8 @@ pub fn run_destructive_action<W, F>(
     }
 
     let confirmation = adw::AlertDialog::new(Some(title), Some(description));
-    confirmation.add_responses(&[("cancel", "Abbrechen"), ("confirm", confirm_label)]);
+    let cancel_label = crate::i18n::gettext("Cancel");
+    confirmation.add_responses(&[("cancel", &cancel_label), ("confirm", confirm_label)]);
     confirmation.set_response_appearance("confirm", adw::ResponseAppearance::Destructive);
 
     let pending_action = Rc::new(RefCell::new(Some(action)));

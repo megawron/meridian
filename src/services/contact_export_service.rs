@@ -33,11 +33,11 @@ impl ContactExportFormat {
         }
     }
 
-    pub fn display_label(&self) -> &'static str {
+    pub fn display_label(&self) -> String {
         match self {
-            Self::VCard => "vCard (.vcf)",
-            Self::Csv => "Kommagetrennte Werte (.csv)",
-            Self::Ldif => "LDAP Data Interchange Format (.ldif)",
+            Self::VCard => "vCard (.vcf)".to_string(),
+            Self::Csv => crate::i18n::gettext("Comma-Separated Values (.csv)"),
+            Self::Ldif => "LDAP Data Interchange Format (.ldif)".to_string(),
         }
     }
 }
@@ -129,7 +129,7 @@ pub fn export_contacts(
     options: Option<ContactCsvOptions>,
 ) -> Result<String, String> {
     if contacts.is_empty() {
-        return Err("Keine Kontakte zum Exportieren ausgewählt".to_string());
+        return Err(crate::i18n::gettext("No contacts selected for export"));
     }
 
     match format {

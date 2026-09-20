@@ -9,6 +9,7 @@
 mod action_contract;
 mod application;
 mod dialogs;
+pub mod i18n;
 mod models;
 mod services;
 mod views;
@@ -71,6 +72,9 @@ fn setup_platform_environment() {}
 
 fn main() -> ExitCode {
     setup_platform_environment();
+
+    // Initialize GNU gettext internationalization
+    i18n::init_i18n();
 
     // Initialize structured logging with tracing
     tracing_subscriber::fmt()

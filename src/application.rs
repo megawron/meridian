@@ -13,6 +13,7 @@ use adw::subclass::prelude::*;
 use glib::prelude::ToVariant;
 use gtk::{gdk, gio, glib};
 
+use crate::i18n::gettext;
 use crate::services::AppSettings;
 use crate::services::reminder_service::{
     self, ReminderComponentKind, ReminderIdentity, ReminderKind, ReminderScheduler, ReminderStore,
@@ -739,30 +740,34 @@ impl EvolutionApplication {
                 };
                 let notification = gio::Notification::new(&delivery.candidate.title);
                 let body = match delivery.candidate.kind {
-                    ReminderKind::Event => "Kalendertermin ist fällig",
-                    ReminderKind::Task => "Aufgabe ist fällig",
-                    ReminderKind::Memo => "Notiz ist fällig",
-                    ReminderKind::Contact => "Geburtstag oder Jahrestag",
+                    ReminderKind::Event => gettext("Calendar event is due"),
+                    ReminderKind::Task => gettext("Task is due"),
+                    ReminderKind::Memo => gettext("Memo is due"),
+                    ReminderKind::Contact => gettext("Birthday or anniversary"),
                 };
-                notification.set_body(Some(body));
+                notification.set_body(Some(&body));
                 let target = target.to_variant();
+                let open_label = gettext("Open");
+                let snooze_10m = gettext("Snooze 10 minutes");
+                let snooze_1h = gettext("Snooze 1 hour");
+                let dismiss_label = gettext("Dismiss");
                 notification.add_button_with_target_value(
-                    "Öffnen",
+                    &open_label,
                     "app.open-reminder",
                     Some(&target),
                 );
                 notification.add_button_with_target_value(
-                    "10 Minuten snoozen",
+                    &snooze_10m,
                     "app.snooze-reminder-10m",
                     Some(&target),
                 );
                 notification.add_button_with_target_value(
-                    "1 Stunde snoozen",
+                    &snooze_1h,
                     "app.snooze-reminder-1h",
                     Some(&target),
                 );
                 notification.add_button_with_target_value(
-                    "Erledigt",
+                    &dismiss_label,
                     "app.dismiss-reminder",
                     Some(&target),
                 );

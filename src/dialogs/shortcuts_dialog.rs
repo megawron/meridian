@@ -19,16 +19,16 @@ pub fn show_shortcuts_dialog<W: IsA<gtk::Window>>(parent: &W) {
         .build();
 
     for (kind, title) in [
-        (ShortcutGroup::General, "Allgemein & Navigation"),
-        (ShortcutGroup::Mail, "E-Mail Aktionen"),
-        (ShortcutGroup::Modules, "Module wechseln"),
+        (ShortcutGroup::General, crate::i18n::gettext("General & Navigation")),
+        (ShortcutGroup::Mail, crate::i18n::gettext("Mail Actions")),
+        (ShortcutGroup::Modules, crate::i18n::gettext("Switch Modules")),
     ] {
-        let group = gtk::ShortcutsGroup::builder().title(title).build();
+        let group = gtk::ShortcutsGroup::builder().title(&title).build();
         for spec in SHORTCUTS.iter().filter(|spec| spec.group == kind) {
             let accelerator = primary_accelerator(spec.action)
                 .expect("shortcut contract must reference an accelerator binding");
             let shortcut = gtk::ShortcutsShortcut::builder()
-                .title(spec.title)
+                .title(&crate::i18n::gettext(spec.title))
                 .accelerator(accelerator)
                 .build();
             group.append(&shortcut);
