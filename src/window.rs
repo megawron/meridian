@@ -9,7 +9,7 @@
 //           ├── [top] AdwHeaderBar
 //           │   ├── [start] GtkToggleButton (sidebar show/hide)
 //           │   ├── [end] AdwViewSwitcher (Mail/Calendar/Contacts)
-//           │   ├── [end] GtkButton (Neue E-Mail)
+//           │   ├── [end] GtkButton (New Mail)
 //           │   └── [end] GtkMenuButton (primary menu)
 //           └── [content] AdwViewStack
 //               ├── "mail"     → MailPage (3-column split)
@@ -26,6 +26,7 @@ use std::rc::Rc;
 use crate::action_contract::{ACTIONS, ActionScope, MenuPath, menu_actions};
 use crate::application::EvolutionApplication;
 use crate::dialogs::{ReminderDialog, ReminderDialogAction};
+use crate::i18n::{gettext, ngettext};
 use crate::services::AppSettings;
 use crate::services::mail_print_service::MailPrintAction;
 use crate::services::mail_transport_service::{
@@ -42,6 +43,9 @@ use crate::views::accessibility::set_accessible_label;
 use crate::views::{CalendarPage, ContactsPage, MailPage, MemosPage, TasksPage};
 use std::time::Instant;
 
+pub const MIN_SIDEBAR_WIDTH: i32 = 240;
+pub const MAX_SIDEBAR_WIDTH: i32 = 450;
+
 // ─── GObject Subclass ───────────────────────────────────────────────────────
 
 mod imp {
@@ -57,7 +61,7 @@ mod imp {
         pub sidebar_close_button: RefCell<Option<gtk::Button>>,
         pub restore_sidebar_button: RefCell<Option<gtk::Button>>,
         pub right_sidebar_toggle: RefCell<Option<gtk::ToggleButton>>,
-        pub sidebar_visibility_per_view: RefCell<HashMap<String, bool>>,
+        pub sidebar_visible: Cell<bool>,
         pub sidebar_animation: RefCell<Option<adw::TimedAnimation>>,
         pub search_button: RefCell<Option<gtk::ToggleButton>>,
         pub compose_button: RefCell<Option<gtk::Button>>,
@@ -100,6 +104,8 @@ mod imp {
             let window = self.obj();
             let settings = AppSettings::try_new();
             self.settings.replace(settings.clone());
+            let initial_sidebar_vis = settings.as_ref().map(|s| s.mail_show_sidebar()).unwrap_or(true);
+            self.sidebar_visible.set(initial_sidebar_vis);
 
             window.set_title(Some("Evolution"));
             if let Some(settings) = settings.as_ref() {
@@ -263,14 +269,14 @@ fn search_route_for_target(target: Option<&SearchTarget>) -> Result<SearchRoute,
     }
 }
 
-fn search_route_error_message(error: SearchRouteError) -> &'static str {
+fn search_route_error_message(error: SearchRouteError) -> String {
     match error {
-        SearchRouteError::MissingTarget => "Globaler Suchtreffer enthält kein Ziel",
-        SearchRouteError::EmptyMailId => "Globaler Mailtreffer enthält keine lokale ID",
+        SearchRouteError::MissingTarget => gettext("Global search match has no target"),
+        SearchRouteError::EmptyMailId => gettext("Global mail match contains no local ID"),
         SearchRouteError::EmptyComponentUid => {
-            "Globaler Kalender-/Aufgaben-/Notiztreffer enthält keine Komponenten-UID"
+            gettext("Global calendar/task/memo match contains no component UID")
         }
-        SearchRouteError::EmptyContactUid => "Globaler Kontakttreffer enthält keine Kontakt-UID",
+        SearchRouteError::EmptyContactUid => gettext("Global contact match contains no contact UID"),
     }
 }
 
@@ -481,7 +487,7 @@ impl EvolutionWindow {
                 self.finish_reminder_open(
                     superseded,
                     false,
-                    Some("Öffnen durch eine neuere Reminder-Aktion ersetzt".to_string()),
+                    Some(gettext("Open replaced by a newer reminder action")),
                 );
             }
         }
@@ -577,9 +583,10 @@ impl EvolutionWindow {
                         window.finish_reminder_open(
                             identity.clone(),
                             false,
-                            Some(format!(
-                                "Reminder-Quelle konnte nicht geprüft werden: {error}"
-                            )),
+                            Some(
+                                gettext("Could not check reminder source: {error}")
+                                    .replace("{error}", &error.to_string()),
+                            ),
                         );
                     }
                     return;
@@ -593,16 +600,16 @@ impl EvolutionWindow {
             }
             let message = match status {
                 ReminderComponentPresence::MissingSource => {
-                    "Reminder-Quelle ist nicht verfügbar oder wurde entfernt"
+                    gettext("Reminder source is unavailable or was removed")
                 }
                 ReminderComponentPresence::MissingComponent => {
-                    "Reminder-Komponente ist nicht verfügbar oder wurde geändert"
+                    gettext("Reminder component is unavailable or was modified")
                 }
                 ReminderComponentPresence::Found => {
-                    "Komponente konnte nach dem Laden nicht geöffnet werden"
+                    gettext("Component could not be opened after loading")
                 }
             };
-            window.finish_reminder_open(identity, false, Some(message.to_string()));
+            window.finish_reminder_open(identity, false, Some(message));
         });
     }
 
@@ -764,18 +771,11 @@ impl EvolutionWindow {
     }
 
     pub fn is_sidebar_visible_for_active_view(&self) -> bool {
-        let view_name = self.active_view_name();
-        if let Some(&vis) = self.imp().sidebar_visibility_per_view.borrow().get(&view_name) {
-            return vis;
-        }
-        match view_name.as_str() {
-            "mail" => self.mail_page().map(|p| p.is_sidebar_visible()).unwrap_or(true),
-            "calendar" => self.calendar_page().map(|p| p.is_sidebar_visible()).unwrap_or(true),
-            "contacts" => self.contacts_page().map(|p| p.is_sidebar_visible()).unwrap_or(true),
-            "tasks" => self.tasks_page().map(|p| p.is_sidebar_visible()).unwrap_or(true),
-            "memos" => self.memos_page().map(|p| p.is_sidebar_visible()).unwrap_or(true),
-            _ => true,
-        }
+        self.imp().sidebar_visible.get()
+    }
+
+    pub fn is_sidebar_visible(&self) -> bool {
+        self.imp().sidebar_visible.get()
     }
 
     pub fn sync_sidebar_state_for_current_view(&self) {
@@ -815,11 +815,11 @@ impl EvolutionWindow {
             "mail" => self
                 .mail_page()
                 .map(|m| m.active_folder_display_title())
-                .unwrap_or_else(|| "Posteingang".to_string()),
-            "calendar" => "Kalender".to_string(),
-            "contacts" => "Kontakte".to_string(),
-            "tasks" => "Aufgaben".to_string(),
-            "memos" => "Notizen".to_string(),
+                .unwrap_or_else(|| crate::i18n::gettext("Inbox")),
+            "calendar" => crate::i18n::gettext("Calendar"),
+            "contacts" => crate::i18n::gettext("Contacts"),
+            "tasks" => crate::i18n::gettext("Tasks"),
+            "memos" => crate::i18n::gettext("Memos"),
             _ => String::new(),
         };
         self.update_sidebar_title(&title_str);
@@ -838,12 +838,12 @@ impl EvolutionWindow {
             let saved_pos = AppSettings::try_new()
                 .map(|s| s.mail_sidebar_position())
                 .unwrap_or(260)
-                .clamp(240, 1500);
+                .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
             let cur_pos = if is_vis {
                 self.active_view_outer_paned()
                     .map(|p| p.position())
                     .unwrap_or(saved_pos)
-                    .clamp(240, 1500)
+                    .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH)
             } else {
                 saved_pos
             };
@@ -1020,16 +1020,34 @@ impl EvolutionWindow {
             toggle.set_visible(true);
 
             let (tooltip, label) = match self.active_view_name().as_str() {
-                "mail" => ("Aufgabenleiste für heute ein-/ausblenden", "Aufgabenleiste für heute"),
-                "calendar" => ("Aufgaben- und Notizenleiste ein-/ausblenden (Strg+M)", "Aufgaben- und Notizenleiste"),
-                "contacts" => ("Kontaktvorschau ein-/ausblenden (Strg+M)", "Kontaktvorschau"),
-                "tasks" => ("Aufgabenvorschau ein-/ausblenden (Strg+M)", "Aufgabenvorschau"),
-                "memos" => ("Notizenvorschau ein-/ausblenden (Strg+M)", "Notizenvorschau"),
-                _ => ("Rechtes Seitenpanel ein-/ausblenden", "Rechtes Seitenpanel"),
+                "mail" => (
+                    crate::i18n::gettext("Toggle To Do bar for today"),
+                    crate::i18n::gettext("To Do bar for today"),
+                ),
+                "calendar" => (
+                    crate::i18n::gettext("Toggle tasks and memos bar (Ctrl+M)"),
+                    crate::i18n::gettext("Tasks and memos bar"),
+                ),
+                "contacts" => (
+                    crate::i18n::gettext("Toggle contact preview (Ctrl+M)"),
+                    crate::i18n::gettext("Contact preview"),
+                ),
+                "tasks" => (
+                    crate::i18n::gettext("Toggle task preview (Ctrl+M)"),
+                    crate::i18n::gettext("Task preview"),
+                ),
+                "memos" => (
+                    crate::i18n::gettext("Toggle memo preview (Ctrl+M)"),
+                    crate::i18n::gettext("Memo preview"),
+                ),
+                _ => (
+                    crate::i18n::gettext("Toggle right side panel"),
+                    crate::i18n::gettext("Right side panel"),
+                ),
             };
 
-            toggle.set_tooltip_text(Some(tooltip));
-            set_accessible_label(toggle, label);
+            toggle.set_tooltip_text(Some(&tooltip));
+            set_accessible_label(toggle, &label);
 
             let is_vis = self.is_active_view_right_panel_visible();
             if toggle.is_active() != is_vis {
@@ -1083,40 +1101,40 @@ impl EvolutionWindow {
                         if let Some(mail) = self.mail_page() {
                             match mail.drill_down_level() {
                                 crate::views::MailDrillDownLevel::Folders => {
-                                    window_title.set_title("Ordner");
-                                    window_title.set_subtitle("Mail");
+                                    window_title.set_title(&crate::i18n::gettext("Folders"));
+                                    window_title.set_subtitle(&crate::i18n::gettext("Mail"));
                                 }
                                 crate::views::MailDrillDownLevel::Messages => {
                                     let folder = mail
                                         .selected_folder_display_name()
-                                        .unwrap_or_else(|| "Posteingang".to_string());
+                                        .unwrap_or_else(|| crate::i18n::gettext("Inbox"));
                                     window_title.set_title(&folder);
-                                    window_title.set_subtitle("Nachrichten");
+                                    window_title.set_subtitle(&crate::i18n::gettext("Messages"));
                                 }
                                 crate::views::MailDrillDownLevel::Viewer => {
                                     let subj = mail
                                         .selected_message_subject()
-                                        .unwrap_or_else(|| "E-Mail".to_string());
+                                        .unwrap_or_else(|| crate::i18n::gettext("Email"));
                                     window_title.set_title(&subj);
-                                    window_title.set_subtitle("Nachricht");
+                                    window_title.set_subtitle(&crate::i18n::gettext("Message"));
                                 }
                             }
                         }
                     }
                     Some("calendar") => {
-                        window_title.set_title("Kalender");
+                        window_title.set_title(&crate::i18n::gettext("Calendar"));
                         window_title.set_subtitle("");
                     }
                     Some("contacts") => {
-                        window_title.set_title("Kontakte");
+                        window_title.set_title(&crate::i18n::gettext("Contacts"));
                         window_title.set_subtitle("");
                     }
                     Some("tasks") => {
-                        window_title.set_title("Aufgaben");
+                        window_title.set_title(&crate::i18n::gettext("Tasks"));
                         window_title.set_subtitle("");
                     }
                     Some("memos") => {
-                        window_title.set_title("Notizen");
+                        window_title.set_title(&crate::i18n::gettext("Memos"));
                         window_title.set_subtitle("");
                     }
                     _ => {
@@ -1135,9 +1153,9 @@ impl EvolutionWindow {
                         if mail.drill_down_level() == crate::views::MailDrillDownLevel::Viewer {
                             let subj = mail
                                 .selected_message_subject()
-                                .unwrap_or_else(|| "E-Mail".to_string());
+                                .unwrap_or_else(|| crate::i18n::gettext("Email"));
                             window_title.set_title(&subj);
-                            window_title.set_subtitle("Nachricht");
+                            window_title.set_subtitle(&crate::i18n::gettext("Message"));
                         } else {
                             window_title.set_title("");
                             window_title.set_subtitle("");
@@ -1281,13 +1299,9 @@ impl EvolutionWindow {
     }
 
     pub fn toggle_sidebar_animated(&self, show: bool) {
-        let active_view = self.active_view_name();
-        self.imp()
-            .sidebar_visibility_per_view
-            .borrow_mut()
-            .insert(active_view.clone(), show);
+        self.imp().sidebar_visible.set(show);
 
-        let is_mail = active_view == "mail";
+        let is_mail = self.active_view_name() == "mail";
         if is_mail {
             if let Some(mail) = self.mail_page() {
                 mail.imp().sidebar_animating.set(true);
@@ -1295,14 +1309,11 @@ impl EvolutionWindow {
         }
 
         if self.imp().is_mobile.get() {
-            match active_view.as_str() {
-                "mail" => if let Some(m) = self.mail_page() { m.set_sidebar_visible(show); },
-                "calendar" => if let Some(c) = self.calendar_page() { c.set_sidebar_visible(show); },
-                "contacts" => if let Some(c) = self.contacts_page() { c.set_sidebar_visible(show); },
-                "tasks" => if let Some(t) = self.tasks_page() { t.set_sidebar_visible(show); },
-                "memos" => if let Some(m) = self.memos_page() { m.set_sidebar_visible(show); },
-                _ => {}
-            }
+            if let Some(m) = self.mail_page() { m.set_sidebar_visible(show); }
+            if let Some(c) = self.calendar_page() { c.set_sidebar_visible(show); }
+            if let Some(c) = self.contacts_page() { c.set_sidebar_visible(show); }
+            if let Some(t) = self.tasks_page() { t.set_sidebar_visible(show); }
+            if let Some(m) = self.memos_page() { m.set_sidebar_visible(show); }
             if let Some(sb_h) = self.imp().sidebar_header.borrow().as_ref() {
                 sb_h.set_visible(false);
             }
@@ -1314,16 +1325,27 @@ impl EvolutionWindow {
                     mail.imp().sidebar_animating.set(false);
                 }
             }
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_mail_show_sidebar(show);
+            }
             return;
         }
 
         let outer_paned = match self.active_view_outer_paned() {
             Some(p) => p,
             None => {
+                if let Some(m) = self.mail_page() { m.set_sidebar_visible(show); }
+                if let Some(c) = self.calendar_page() { c.set_sidebar_visible(show); }
+                if let Some(c) = self.contacts_page() { c.set_sidebar_visible(show); }
+                if let Some(t) = self.tasks_page() { t.set_sidebar_visible(show); }
+                if let Some(m) = self.memos_page() { m.set_sidebar_visible(show); }
                 if is_mail {
                     if let Some(mail) = self.mail_page() {
                         mail.imp().sidebar_animating.set(false);
                     }
+                }
+                if let Some(settings) = AppSettings::try_new() {
+                    settings.set_mail_show_sidebar(show);
                 }
                 return;
             }
@@ -1332,9 +1354,9 @@ impl EvolutionWindow {
         let target_pos = AppSettings::try_new()
             .map(|s| s.mail_sidebar_position())
             .unwrap_or(260)
-            .clamp(240, 1500);
+            .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
 
-        let is_start_visible = outer_paned.start_child().map(|s| s.is_visible()).unwrap_or(false);
+        let is_start_visible = outer_paned.start_child().map(|s| s.property::<bool>("visible")).unwrap_or(false);
         let current_pos = outer_paned.position();
         let (from_pos, to_pos) = if show {
             let start = if !is_start_visible || current_pos <= 10 {
@@ -1357,6 +1379,11 @@ impl EvolutionWindow {
         }
 
         if show {
+            if let Some(m) = self.mail_page() { m.set_sidebar_visible(true); }
+            if let Some(c) = self.calendar_page() { c.set_sidebar_visible(true); }
+            if let Some(c) = self.contacts_page() { c.set_sidebar_visible(true); }
+            if let Some(t) = self.tasks_page() { t.set_sidebar_visible(true); }
+            if let Some(m) = self.memos_page() { m.set_sidebar_visible(true); }
             if let Some(start) = outer_paned.start_child() {
                 start.set_visible(true);
             }
@@ -1455,6 +1482,12 @@ impl EvolutionWindow {
             }
             if let Some(win) = win_weak_done.upgrade() {
                 win.imp().sidebar_animation.borrow_mut().take();
+                if let Some(m) = win.mail_page() { m.set_sidebar_visible(show); }
+                if let Some(c) = win.calendar_page() { c.set_sidebar_visible(show); }
+                if let Some(c) = win.contacts_page() { c.set_sidebar_visible(show); }
+                if let Some(t) = win.tasks_page() { t.set_sidebar_visible(show); }
+                if let Some(m) = win.memos_page() { m.set_sidebar_visible(show); }
+
                 if !show {
                     if let Some(sb_h) = win.imp().sidebar_header.borrow().as_ref() {
                         sb_h.set_visible(false);
@@ -1488,14 +1521,12 @@ impl EvolutionWindow {
                         action.set_state(&show.to_variant());
                     }
                 }
-                if active_view == "mail" {
-                    if let Some(settings) = AppSettings::try_new() {
-                        if settings.mail_show_sidebar() != show {
-                            settings.set_mail_show_sidebar(show);
-                        }
-                        if show && (settings.mail_sidebar_position() < 240 || settings.mail_sidebar_position() != target_pos) {
-                            settings.set_mail_sidebar_position(target_pos);
-                        }
+                if let Some(settings) = AppSettings::try_new() {
+                    if settings.mail_show_sidebar() != show {
+                        settings.set_mail_show_sidebar(show);
+                    }
+                    if show && (settings.mail_sidebar_position() < MIN_SIDEBAR_WIDTH || settings.mail_sidebar_position() > MAX_SIDEBAR_WIDTH) {
+                        settings.set_mail_sidebar_position(target_pos);
                     }
                 }
             }
@@ -1834,16 +1865,16 @@ impl EvolutionWindow {
                 if show_start_error {
                     let message = match error {
                         MailTransportStartError::AlreadyRunning => {
-                            "Ein Mail-Transport läuft bereits"
+                            gettext("A mail transfer is already in progress")
                         }
                         MailTransportStartError::Offline => {
-                            "Offline-Modus: Nachricht bleibt in der lokalen Warteschlange"
+                            gettext("Offline mode: message remains in the local outgoing queue")
                         }
                         MailTransportStartError::NoQueuedMessages => {
-                            "Keine ausstehenden Nachrichten"
+                            gettext("No pending messages")
                         }
                     };
-                    self.add_toast(&adw::Toast::new(message));
+                    self.add_toast(&adw::Toast::new(&message));
                 }
                 return;
             }
@@ -1976,7 +2007,7 @@ impl EvolutionWindow {
         let route = match search_route_for_target(target.as_ref()) {
             Ok(route) => route,
             Err(error) => {
-                self.add_toast(&adw::Toast::new(search_route_error_message(error)));
+                self.add_toast(&adw::Toast::new(&search_route_error_message(error)));
                 return;
             }
         };
@@ -2011,9 +2042,8 @@ impl EvolutionWindow {
                 SearchRouteDecision::Retry => glib::ControlFlow::Continue,
                 SearchRouteDecision::Failed => {
                     window.finish_search_route(generation);
-                    window.add_toast(&adw::Toast::new(
-                        "Suchtreffer konnte nach begrenztem Warten nicht geöffnet werden",
-                    ));
+                    let msg = gettext("Search match could not be opened after waiting");
+                    window.add_toast(&adw::Toast::new(&msg));
                     glib::ControlFlow::Break
                 }
                 SearchRouteDecision::RejectStale => {
@@ -2023,13 +2053,14 @@ impl EvolutionWindow {
             }
         });
         self.imp().search_route_source.borrow_mut().replace(source);
-        self.add_toast(&adw::Toast::new(match route {
-            SearchRoute::Mail => "Mailbereich geöffnet",
-            SearchRoute::Calendar => "Kalenderbereich geöffnet und Treffer wird gesucht",
-            SearchRoute::Tasks => "Aufgabenbereich geöffnet und Treffer wird gesucht",
-            SearchRoute::Memos => "Notizbereich geöffnet und Treffer wird gesucht",
-            SearchRoute::Contacts => "Kontaktbereich geöffnet und Treffer wird gesucht",
-        }));
+        let msg = match route {
+            SearchRoute::Mail => gettext("Mail view opened"),
+            SearchRoute::Calendar => gettext("Calendar view opened; searching for match"),
+            SearchRoute::Tasks => gettext("Tasks view opened; searching for match"),
+            SearchRoute::Memos => gettext("Memos view opened; searching for match"),
+            SearchRoute::Contacts => gettext("Contacts view opened; searching for match"),
+        };
+        self.add_toast(&adw::Toast::new(&msg));
     }
 
     fn begin_search_route(&self, route: SearchRoute) -> u64 {
@@ -2357,30 +2388,35 @@ impl EvolutionWindow {
     }
 
     fn configure_primary_action(button: &gtk::Button, view_name: &str, is_mobile: bool) {
-        let (icon_name, tooltip, action_name) = match view_name {
+        let (icon_name, label_text, tooltip, action_name) = match view_name {
             "calendar" => (
                 "x-office-calendar-symbolic",
-                "Neuen Termin erstellen (Ctrl+N)",
+                crate::i18n::gettext("New Event"),
+                crate::i18n::gettext("Create new event (Ctrl+N)"),
                 "win.new",
             ),
             "contacts" => (
                 "contact-new-symbolic",
-                "Neuen Kontakt erstellen (Ctrl+N)",
+                crate::i18n::gettext("New Contact"),
+                crate::i18n::gettext("Create new contact (Ctrl+N)"),
                 "win.new",
             ),
             "tasks" => (
                 "task-new-symbolic",
-                "Neue Aufgabe erstellen (Ctrl+N)",
+                crate::i18n::gettext("New Task"),
+                crate::i18n::gettext("Create new task (Ctrl+N)"),
                 "win.new",
             ),
             "memos" => (
                 "document-new-symbolic",
-                "Neue Notiz erstellen (Ctrl+N)",
+                crate::i18n::gettext("New Memo"),
+                crate::i18n::gettext("Create new note (Ctrl+N)"),
                 "win.new",
             ),
             _ => (
                 "mail-message-new-symbolic",
-                "Neue E-Mail erstellen (Ctrl+N)",
+                crate::i18n::gettext("New Mail"),
+                crate::i18n::gettext("Create new email (Ctrl+N)"),
                 "win.new",
             ),
         };
@@ -2390,22 +2426,20 @@ impl EvolutionWindow {
         } else {
             "document-new-symbolic"
         };
-        let label_text = if is_mobile { "" } else { "Neu" };
-        if let Some(content) = button.child().and_downcast::<adw::ButtonContent>() {
-            content.set_icon_name(icon_actual);
-            content.set_label(label_text);
+        if is_mobile {
+            let img = gtk::Image::from_icon_name(icon_actual);
+            button.set_child(Some(&img));
         } else {
-            let content = adw::ButtonContent::builder()
-                .icon_name(icon_actual)
-                .label(label_text)
+            let label = gtk::Label::builder()
+                .label(&label_text)
+                .valign(gtk::Align::Center)
                 .build();
-            button.set_child(Some(&content));
+            button.set_child(Some(&label));
         }
-        button.set_tooltip_text(Some(tooltip));
+        button.set_tooltip_text(Some(&tooltip));
         button.set_action_name(Some(action_name));
         button.add_css_class("suggested-action");
-        let a11y_label = tooltip.split('(').next().unwrap_or("Neu").trim();
-        set_accessible_label(button, a11y_label);
+        set_accessible_label(button, &label_text);
     }
 
     fn set_mail_actions_enabled(&self, enabled: bool) {
@@ -2727,35 +2761,35 @@ impl EvolutionWindow {
         // page construction starts native worker activity; eagerly creating
         // every hidden module can overwhelm a cold Linux EDS session before
         // the first frame has settled.
-        let calendar_bin = Self::lazy_module_bin("Kalender");
+        let calendar_bin = Self::lazy_module_bin(&crate::i18n::gettext("Calendar"));
         view_stack.add_titled_with_icon(
             &calendar_bin,
             Some("calendar"),
-            "Kalender",
+            &crate::i18n::gettext("Calendar"),
             "x-office-calendar-symbolic",
         );
 
-        let contacts_bin = Self::lazy_module_bin("Kontakte");
+        let contacts_bin = Self::lazy_module_bin(&crate::i18n::gettext("Contacts"));
         view_stack.add_titled_with_icon(
             &contacts_bin,
             Some("contacts"),
-            "Kontakte",
+            &crate::i18n::gettext("Contacts"),
             "x-office-address-book-symbolic",
         );
 
-        let tasks_bin = Self::lazy_module_bin("Aufgaben");
+        let tasks_bin = Self::lazy_module_bin(&crate::i18n::gettext("Tasks"));
         view_stack.add_titled_with_icon(
             &tasks_bin,
             Some("tasks"),
-            "Aufgaben",
-            "evolution-tasks-symbolic",
+            &crate::i18n::gettext("Tasks"),
+            "view-list-bullet-symbolic",
         );
 
-        let memos_bin = Self::lazy_module_bin("Notizen");
+        let memos_bin = Self::lazy_module_bin(&crate::i18n::gettext("Memos"));
         view_stack.add_titled_with_icon(
             &memos_bin,
             Some("memos"),
-            "Notizen",
+            &crate::i18n::gettext("Memos"),
             "accessories-text-editor-symbolic",
         );
 
@@ -2770,6 +2804,25 @@ impl EvolutionWindow {
                     .upgrade()
                     .map(|w| (w.imp().is_mobile.get(), w.imp().is_tablet.get()))
                     .unwrap_or((false, false));
+                let (sidebar_pos, sidebar_vis) = window_weak
+                    .upgrade()
+                    .map(|w| {
+                        let pos = AppSettings::try_new()
+                            .map(|s| s.mail_sidebar_position())
+                            .unwrap_or(260)
+                            .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+                        (pos, w.imp().sidebar_visible.get())
+                    })
+                    .unwrap_or_else(|| {
+                        let pos = AppSettings::try_new()
+                            .map(|s| s.mail_sidebar_position())
+                            .unwrap_or(260)
+                            .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+                        let vis = AppSettings::try_new()
+                            .map(|s| s.mail_show_sidebar())
+                            .unwrap_or(true);
+                        (pos, vis)
+                    });
                 match name {
                     "calendar"
                         if calendar_bin
@@ -2779,6 +2832,8 @@ impl EvolutionWindow {
                     {
                         let page = CalendarPage::new();
                         page.set_screen_mode(is_mobile, is_tablet);
+                        page.set_sidebar_position(sidebar_pos);
+                        page.set_sidebar_visible(sidebar_vis);
                         calendar_bin.set_child(Some(&page));
                     }
                     "contacts"
@@ -2789,6 +2844,8 @@ impl EvolutionWindow {
                     {
                         let page = ContactsPage::new();
                         page.set_screen_mode(is_mobile, is_tablet);
+                        page.set_sidebar_position(sidebar_pos);
+                        page.set_sidebar_visible(sidebar_vis);
                         if let Some(bar) = page.search_bar() {
                             if let Some(win) = window_weak.upgrade() {
                                 if let Some(btn) = win.imp().search_button.borrow().as_ref() {
@@ -2812,6 +2869,21 @@ impl EvolutionWindow {
                     {
                         let page = crate::views::TasksPage::new();
                         page.set_screen_mode(is_mobile, is_tablet);
+                        page.set_sidebar_position(sidebar_pos);
+                        page.set_sidebar_visible(sidebar_vis);
+                        if let Some(bar) = page.search_bar() {
+                            if let Some(win) = window_weak.upgrade() {
+                                if let Some(btn) = win.imp().search_button.borrow().as_ref() {
+                                    let btn_clone = btn.clone();
+                                    bar.connect_notify_local(Some("search-mode-enabled"), move |bar, _| {
+                                        let active = bar.is_search_mode();
+                                        if btn_clone.is_active() != active {
+                                            btn_clone.set_active(active);
+                                        }
+                                    });
+                                }
+                            }
+                        }
                         tasks_bin.set_child(Some(&page));
                     }
                     "memos"
@@ -2822,6 +2894,21 @@ impl EvolutionWindow {
                     {
                         let page = crate::views::MemosPage::new();
                         page.set_screen_mode(is_mobile, is_tablet);
+                        page.set_sidebar_position(sidebar_pos);
+                        page.set_sidebar_visible(sidebar_vis);
+                        if let Some(bar) = page.search_bar() {
+                            if let Some(win) = window_weak.upgrade() {
+                                if let Some(btn) = win.imp().search_button.borrow().as_ref() {
+                                    let btn_clone = btn.clone();
+                                    bar.connect_notify_local(Some("search-mode-enabled"), move |bar, _| {
+                                        let active = bar.is_search_mode();
+                                        if btn_clone.is_active() != active {
+                                            btn_clone.set_active(active);
+                                        }
+                                    });
+                                }
+                            }
+                        }
                         memos_bin.set_child(Some(&page));
                     }
                     _ => {}
@@ -2837,30 +2924,31 @@ impl EvolutionWindow {
             let memos_bin = memos_bin.clone();
             let win_weak_sidebar_pos = self.downgrade();
             Rc::new(move |pos: i32| {
-                mail_page.set_sidebar_position(pos);
+                let clamped = pos.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+                mail_page.set_sidebar_position(clamped);
                 if let Some(win) = win_weak_sidebar_pos.upgrade() {
                     if let Some(sb_h) = win.imp().sidebar_header.borrow().as_ref() {
-                        sb_h.set_size_request(pos, -1);
+                        sb_h.set_size_request(clamped, -1);
                     }
                 }
                 if let Some(child) = calendar_bin.child() {
                     if let Ok(page) = child.downcast::<CalendarPage>() {
-                        page.set_sidebar_position(pos);
+                        page.set_sidebar_position(clamped);
                     }
                 }
                 if let Some(child) = contacts_bin.child() {
                     if let Ok(page) = child.downcast::<ContactsPage>() {
-                        page.set_sidebar_position(pos);
+                        page.set_sidebar_position(clamped);
                     }
                 }
                 if let Some(child) = tasks_bin.child() {
                     if let Ok(page) = child.downcast::<TasksPage>() {
-                        page.set_sidebar_position(pos);
+                        page.set_sidebar_position(clamped);
                     }
                 }
                 if let Some(child) = memos_bin.child() {
                     if let Ok(page) = child.downcast::<MemosPage>() {
-                        page.set_sidebar_position(pos);
+                        page.set_sidebar_position(clamped);
                     }
                 }
             })
@@ -2883,12 +2971,12 @@ impl EvolutionWindow {
         ensure_module_loaded(&active_view);
 
         if let Some(settings) = AppSettings::try_new() {
-            let pos = settings.mail_sidebar_position();
+            let pos = settings.mail_sidebar_position().clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
             sync_sidebar_position(pos);
 
             let sync_sidebar_position_for_settings = Rc::clone(&sync_sidebar_position);
             settings.connect_changed(Some("mail-sidebar-position"), move |settings, _| {
-                let pos = settings.int("mail-sidebar-position").clamp(240, 1500);
+                let pos = settings.int("mail-sidebar-position").clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
                 sync_sidebar_position_for_settings(pos);
             });
         }
@@ -2910,11 +2998,11 @@ impl EvolutionWindow {
                         "mail" => window
                             .mail_page()
                             .map(|m| m.active_folder_display_title())
-                            .unwrap_or_else(|| "Posteingang".to_string()),
-                        "calendar" => "Kalender".to_string(),
-                        "contacts" => "Kontakte".to_string(),
-                        "tasks" => "Aufgaben".to_string(),
-                        "memos" => "Notizen".to_string(),
+                            .unwrap_or_else(|| crate::i18n::gettext("Inbox")),
+                        "calendar" => crate::i18n::gettext("Calendar"),
+                        "contacts" => crate::i18n::gettext("Contacts"),
+                        "tasks" => crate::i18n::gettext("Tasks"),
+                        "memos" => crate::i18n::gettext("Memos"),
                         _ => String::new(),
                     };
                     window.update_sidebar_title(&title);
@@ -2939,7 +3027,7 @@ impl EvolutionWindow {
         let initial_sidebar_pos = AppSettings::try_new()
             .map(|s| s.mail_sidebar_position())
             .unwrap_or(260)
-            .clamp(240, 1500);
+            .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
         let initial_sidebar_vis = AppSettings::try_new()
             .map(|s| s.mail_show_sidebar())
             .unwrap_or(true);
@@ -2951,7 +3039,7 @@ impl EvolutionWindow {
             .build();
         sidebar_header.set_overflow(gtk::Overflow::Hidden);
         let sidebar_title = adw::WindowTitle::builder()
-            .title("Posteingang")
+            .title(&crate::i18n::gettext("Inbox"))
             .build();
         sidebar_header.set_title_widget(Some(&sidebar_title));
         sidebar_header.set_size_request(initial_sidebar_pos, -1);
@@ -2961,10 +3049,10 @@ impl EvolutionWindow {
 
         let sidebar_close_btn = gtk::Button::builder()
             .icon_name("sidebar-show-symbolic")
-            .tooltip_text("Seitenleiste einklappen (F9)")
+            .tooltip_text(&crate::i18n::gettext("Collapse Sidebar (F9)"))
             .css_classes(vec!["flat"])
             .build();
-        set_accessible_label(&sidebar_close_btn, "Seitenleiste einklappen");
+        set_accessible_label(&sidebar_close_btn, &crate::i18n::gettext("Collapse Sidebar"));
         let win_weak_close = self.downgrade();
         sidebar_close_btn.connect_clicked(move |_| {
             if let Some(win) = win_weak_close.upgrade() {
@@ -2983,11 +3071,11 @@ impl EvolutionWindow {
 
         let restore_sidebar_btn = gtk::Button::builder()
             .icon_name("sidebar-show-symbolic")
-            .tooltip_text("Seitenleiste einblenden (F9)")
+            .tooltip_text(&crate::i18n::gettext("Show Sidebar (F9)"))
             .css_classes(vec!["flat"])
             .visible(!initial_sidebar_vis)
             .build();
-        set_accessible_label(&restore_sidebar_btn, "Seitenleiste einblenden");
+        set_accessible_label(&restore_sidebar_btn, &crate::i18n::gettext("Show Sidebar"));
         let win_weak_restore = self.downgrade();
         restore_sidebar_btn.connect_clicked(move |_| {
             if let Some(win) = win_weak_restore.upgrade() {
@@ -3001,7 +3089,7 @@ impl EvolutionWindow {
             settings.connect_changed(Some("mail-show-sidebar"), move |settings, _| {
                 let vis = settings.boolean("mail-show-sidebar");
                 if let Some(win) = win_weak_vis.upgrade() {
-                    if win.active_view_name() == "mail" && win.is_sidebar_visible_for_active_view() != vis {
+                    if win.is_sidebar_visible_for_active_view() != vis {
                         win.toggle_sidebar_animated(vis);
                     }
                 }
@@ -3010,10 +3098,10 @@ impl EvolutionWindow {
 
         let search_button = gtk::ToggleButton::builder()
             .icon_name("edit-find-symbolic")
-            .tooltip_text("Suchen (Strg+F)")
+            .tooltip_text(&crate::i18n::gettext("Search (Ctrl+F)"))
             .css_classes(vec!["flat"])
             .build();
-        set_accessible_label(&search_button, "Suchen");
+        set_accessible_label(&search_button, &crate::i18n::gettext("Search"));
         self.imp().search_button.replace(Some(search_button.clone()));
 
         let win_for_search = self.downgrade();
@@ -3058,11 +3146,11 @@ impl EvolutionWindow {
 
         let back_button = gtk::Button::builder()
             .icon_name("go-previous-symbolic")
-            .tooltip_text("Zurück")
+            .tooltip_text(&crate::i18n::gettext("Back"))
             .visible(false)
             .css_classes(vec!["flat"])
             .build();
-        set_accessible_label(&back_button, "Zurück");
+        set_accessible_label(&back_button, &crate::i18n::gettext("Back"));
         let win_weak_for_back = self.downgrade();
         back_button.connect_clicked(move |_| {
             if let Some(win) = win_weak_for_back.upgrade() {
@@ -3073,7 +3161,6 @@ impl EvolutionWindow {
         header_bar.pack_start(&back_button);
 
         let compose_button = gtk::Button::builder()
-            .tooltip_text("Neue E-Mail (Ctrl+N)")
             .action_name("app.compose")
             .css_classes(vec!["suggested-action"])
             .build();
@@ -3143,16 +3230,16 @@ impl EvolutionWindow {
         let menu_button = gtk::MenuButton::builder()
             .icon_name("open-menu-symbolic")
             .menu_model(&menu_model)
-            .tooltip_text("Hauptmenü")
+            .tooltip_text(&crate::i18n::gettext("Main Menu"))
             .primary(true)
             .build();
 
         let right_sidebar_toggle = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-right-symbolic")
-            .tooltip_text("Aufgabenleiste für heute ein-/ausblenden")
+            .tooltip_text(&crate::i18n::gettext("Toggle To Do bar for today"))
             .css_classes(vec!["flat"])
             .build();
-        set_accessible_label(&right_sidebar_toggle, "Aufgabenleiste für heute");
+        set_accessible_label(&right_sidebar_toggle, &crate::i18n::gettext("To Do bar for today"));
         let win_weak_right = self.downgrade();
         right_sidebar_toggle.connect_toggled(move |btn| {
             if let Some(win) = win_weak_right.upgrade() {
@@ -3214,12 +3301,12 @@ impl EvolutionWindow {
 
         let online_toggle = gtk::Button::builder()
             .icon_name("network-idle-symbolic")
-            .tooltip_text("Online-Status (Online/Offline umschalten)")
+            .tooltip_text(&crate::i18n::gettext("Online status (Toggle online/offline)"))
             .css_classes(vec!["flat", "circular"])
             .build();
 
         let status_label = gtk::Label::builder()
-            .label("Evolution GTK4  ·  Bereit")
+            .label(&format!("Evolution GTK4  ·  {}", crate::i18n::gettext("Ready")))
             .css_classes(vec!["caption", "dim-label"])
             .halign(gtk::Align::Start)
             .hexpand(true)
@@ -3276,7 +3363,7 @@ impl EvolutionWindow {
 
         let debug_toggle = gtk::Button::builder()
             .icon_name("utilities-terminal-symbolic")
-            .tooltip_text("Entwickler-Protokollkonsole anzeigen / verbergen (Strg+F12)")
+            .tooltip_text(&crate::i18n::gettext("Show / Hide Developer Log Console (Ctrl+F12)"))
             .css_classes(vec!["flat", "circular"])
             .visible(true)
             .build();
@@ -3499,7 +3586,7 @@ impl EvolutionWindow {
     fn lazy_module_bin(title: &str) -> adw::Bin {
         let status = adw::StatusPage::builder()
             .title(title)
-            .description("Dieser Bereich wird beim ersten Öffnen geladen.")
+            .description(&crate::i18n::gettext("This section will be loaded when opened for the first time."))
             .icon_name("view-refresh-symbolic")
             .vexpand(true)
             .hexpand(true)
@@ -3518,76 +3605,76 @@ impl EvolutionWindow {
         let file_menu = gio::Menu::new();
         let new_menu = gio::Menu::new();
         Self::append_contract_menu(&new_menu, MenuPath::FileNew);
-        file_menu.append_submenu(Some("Neu"), &new_menu);
+        file_menu.append_submenu(Some(&crate::i18n::gettext("New")), &new_menu);
         Self::append_contract_menu(&file_menu, MenuPath::File);
-        menu.append_submenu(Some("Datei"), &file_menu);
+        menu.append_submenu(Some(&crate::i18n::gettext("File")), &file_menu);
 
-        // ─── 2. Bearbeiten (Edit) ──────────────────────────────────────────
+        // ─── 2. Edit ───────────────────────────────────────────────────────
         let edit_menu = gio::Menu::new();
         Self::append_contract_menu(&edit_menu, MenuPath::Edit);
-        menu.append_submenu(Some("Bearbeiten"), &edit_menu);
+        menu.append_submenu(Some(&crate::i18n::gettext("Edit")), &edit_menu);
 
-        // ─── 3. Ansicht (View) ─────────────────────────────────────────────
+        // ─── 3. View ───────────────────────────────────────────────────────
         let view_menu = gio::Menu::new();
         let switch_menu = gio::Menu::new();
         Self::append_contract_menu(&switch_menu, MenuPath::ViewSwitch);
-        view_menu.append_submenu(Some("Bereich wechseln"), &switch_menu);
+        view_menu.append_submenu(Some(&crate::i18n::gettext("Switch Module")), &switch_menu);
         Self::append_contract_menu(&view_menu, MenuPath::View);
 
         let layout_menu = gio::Menu::new();
         Self::append_contract_menu(&layout_menu, MenuPath::ViewLayout);
-        view_menu.append_submenu(Some("Anordnung"), &layout_menu);
+        view_menu.append_submenu(Some(&crate::i18n::gettext("Layout")), &layout_menu);
 
         let columns_menu = gio::Menu::new();
         Self::append_contract_menu(&columns_menu, MenuPath::ViewColumns);
-        view_menu.append_submenu(Some("Sichtbare Spalten"), &columns_menu);
+        view_menu.append_submenu(Some(&crate::i18n::gettext("Visible Columns")), &columns_menu);
 
         let threads_menu = gio::Menu::new();
         Self::append_contract_menu(&threads_menu, MenuPath::ViewThreads);
-        view_menu.append_submenu(Some("Unterhaltungen"), &threads_menu);
+        view_menu.append_submenu(Some(&crate::i18n::gettext("Conversations")), &threads_menu);
 
         let density_menu = gio::Menu::new();
         Self::append_contract_menu(&density_menu, MenuPath::ViewDensity);
-        view_menu.append_submenu(Some("Nachrichtendichte"), &density_menu);
+        view_menu.append_submenu(Some(&crate::i18n::gettext("Message Density")), &density_menu);
 
         let zoom_menu = gio::Menu::new();
         Self::append_contract_menu(&zoom_menu, MenuPath::ViewZoom);
-        view_menu.append_submenu(Some("Textgröße"), &zoom_menu);
+        view_menu.append_submenu(Some(&crate::i18n::gettext("Text Size")), &zoom_menu);
 
         let details_menu = gio::Menu::new();
         Self::append_contract_menu(&details_menu, MenuPath::ViewDetails);
-        view_menu.append_submenu(Some("Weitere Ansichten"), &details_menu);
+        view_menu.append_submenu(Some(&crate::i18n::gettext("Other Views")), &details_menu);
 
-        menu.append_submenu(Some("Ansicht"), &view_menu);
+        menu.append_submenu(Some(&crate::i18n::gettext("View")), &view_menu);
 
-        // ─── 4. Nachricht (Message) ────────────────────────────────────────
+        // ─── 4. Message ────────────────────────────────────────────────────
         let message_menu = gio::Menu::new();
         let goto_menu = gio::Menu::new();
         Self::append_contract_menu(&goto_menu, MenuPath::MessageGoto);
-        message_menu.append_submenu(Some("Gehe zu"), &goto_menu);
+        message_menu.append_submenu(Some(&crate::i18n::gettext("Go to")), &goto_menu);
         Self::append_contract_menu(&message_menu, MenuPath::MessageBeforeForward);
         let forward_menu = gio::Menu::new();
         Self::append_contract_menu(&forward_menu, MenuPath::MessageForward);
-        message_menu.append_submenu(Some("Weiterleiten"), &forward_menu);
+        message_menu.append_submenu(Some(&crate::i18n::gettext("Forward")), &forward_menu);
         Self::append_contract_menu(&message_menu, MenuPath::MessageAfterForward);
-        menu.append_submenu(Some("Nachricht"), &message_menu);
+        menu.append_submenu(Some(&crate::i18n::gettext("Message")), &message_menu);
 
-        // ─── 5. Ordner (Folder) ────────────────────────────────────────────
+        // ─── 5. Folder ─────────────────────────────────────────────────────
         let folder_menu = gio::Menu::new();
         Self::append_contract_menu(&folder_menu, MenuPath::Folder);
-        menu.append_submenu(Some("Ordner"), &folder_menu);
+        menu.append_submenu(Some(&crate::i18n::gettext("Folder")), &folder_menu);
 
-        // ─── 6. Extras (Tools) ─────────────────────────────────────────────
+        // ─── 6. Tools ──────────────────────────────────────────────────────
         let tools_menu = gio::Menu::new();
         let transport_menu = Self::build_transport_menu();
-        tools_menu.append_submenu(Some("Senden und Empfangen"), &transport_menu);
+        tools_menu.append_submenu(Some(&crate::i18n::gettext("Send & Receive")), &transport_menu);
         Self::append_contract_menu(&tools_menu, MenuPath::Tools);
-        menu.append_submenu(Some("Extras"), &tools_menu);
+        menu.append_submenu(Some(&crate::i18n::gettext("Tools")), &tools_menu);
 
-        // ─── 7. Hilfe (Help) ───────────────────────────────────────────────
+        // ─── 7. Help ───────────────────────────────────────────────────────
         let help_menu = gio::Menu::new();
         Self::append_contract_menu(&help_menu, MenuPath::Help);
-        menu.append_submenu(Some("Hilfe"), &help_menu);
+        menu.append_submenu(Some(&crate::i18n::gettext("Help")), &help_menu);
 
         menu
     }
@@ -3600,7 +3687,7 @@ impl EvolutionWindow {
 
     fn append_contract_menu(menu: &gio::Menu, path: MenuPath) {
         for item in menu_actions(path) {
-            menu.append(Some(item.label), Some(item.action));
+            menu.append(Some(&crate::i18n::gettext(item.label)), Some(item.action));
         }
     }
 
@@ -3633,7 +3720,8 @@ impl EvolutionWindow {
             self,
             move |_, _| {
                 if !window.imp().transport_service.stop() {
-                    window.add_toast(&adw::Toast::new("Kein abbrechbarer Mail-Transport läuft"));
+                    let msg = gettext("No cancelable mail transfer is running");
+                    window.add_toast(&adw::Toast::new(&msg));
                 }
                 window.update_transport_presentation(&window.imp().transport_service.snapshot());
             }
@@ -3954,13 +4042,13 @@ impl EvolutionWindow {
                     .map(|mail_page| mail_page.undo());
 
                 let message = match result {
-                    Some(Ok(true)) => "Letzte Mailaktion rückgängig gemacht".to_string(),
-                    Some(Ok(false)) => "Keine Mailaktion zum Rückgängigmachen".to_string(),
+                    Some(Ok(true)) => gettext("Undid last mail action"),
+                    Some(Ok(false)) => gettext("No mail action to undo"),
                     Some(Err(error)) => {
                         tracing::warn!(%error, "Mail undo operation was not applied");
-                        format!("Rückgängig nicht möglich: {error}")
+                        gettext("Undo not possible: {error}").replace("{error}", &error.to_string())
                     }
-                    None => "Mailansicht ist nicht verfügbar".to_string(),
+                    None => gettext("Mail view is unavailable"),
                 };
                 win.add_toast(&adw::Toast::new(&message));
             }
@@ -3974,13 +4062,13 @@ impl EvolutionWindow {
             move |_, _| {
                 let result = win.mail_page().map(|mail_page| mail_page.undelete());
                 let message = match result {
-                    Some(Ok(true)) => "Wiederherstellung wird ausgeführt".to_string(),
-                    Some(Ok(false)) => "Kein Löschen zum Rückgängigmachen".to_string(),
+                    Some(Ok(true)) => gettext("Restoring deleted message"),
+                    Some(Ok(false)) => gettext("No deletion to undo"),
                     Some(Err(error)) => {
                         tracing::warn!(%error, "Mail undelete operation was not applied");
-                        format!("Wiederherstellen nicht möglich: {error}")
+                        gettext("Undelete not possible: {error}").replace("{error}", &error.to_string())
                     }
-                    None => "Mailansicht ist nicht verfügbar".to_string(),
+                    None => gettext("Mail view is unavailable"),
                 };
                 win.add_toast(&adw::Toast::new(&message));
                 win.update_mail_undelete_action_for_current_view();
@@ -4006,13 +4094,13 @@ impl EvolutionWindow {
                     .map(|mail_page| mail_page.redo());
 
                 let message = match result {
-                    Some(Ok(true)) => "Letzte Mailaktion wiederholt".to_string(),
-                    Some(Ok(false)) => "Keine Mailaktion zum Wiederholen".to_string(),
+                    Some(Ok(true)) => gettext("Redid last mail action"),
+                    Some(Ok(false)) => gettext("No mail action to redo"),
                     Some(Err(error)) => {
                         tracing::warn!(%error, "Mail redo operation was not applied");
-                        format!("Wiederholen nicht möglich: {error}")
+                        gettext("Redo not possible: {error}").replace("{error}", &error.to_string())
                     }
-                    None => "Mailansicht ist nicht verfügbar".to_string(),
+                    None => gettext("Mail view is unavailable"),
                 };
                 win.add_toast(&adw::Toast::new(&message));
             }
@@ -4166,9 +4254,8 @@ impl EvolutionWindow {
                     .mail_page()
                     .is_some_and(|mail_page| mail_page.copy_selected_message_link());
                 if !copied {
-                    win.add_toast(&adw::Toast::new(
-                        "Die ausgewählte Nachricht besitzt keine gültige Message-ID",
-                    ));
+                    let msg = gettext("Selected message does not have a valid Message-ID");
+                    win.add_toast(&adw::Toast::new(&msg));
                 }
             }
         ));
@@ -4183,9 +4270,8 @@ impl EvolutionWindow {
                     .mail_page()
                     .is_some_and(|mail_page| mail_page.goto_selected_message_folder());
                 if !navigated {
-                    win.add_toast(&adw::Toast::new(
-                        "Der Ursprungsordner dieser Nachricht ist nicht verfügbar",
-                    ));
+                    let msg = gettext("Original folder of this message is unavailable");
+                    win.add_toast(&adw::Toast::new(&msg));
                 }
             }
         ));
@@ -4200,9 +4286,8 @@ impl EvolutionWindow {
                     .mail_page()
                     .is_some_and(|mail_page| mail_page.present_add_selected_sender());
                 if !presented {
-                    win.add_toast(&adw::Toast::new(
-                        "Die ausgewählte Nachricht besitzt keine gültige Absenderadresse",
-                    ));
+                    let msg = gettext("Selected message does not have a valid sender address");
+                    win.add_toast(&adw::Toast::new(&msg));
                 }
             }
         ));
@@ -4232,7 +4317,8 @@ impl EvolutionWindow {
                     .mail_page()
                     .is_some_and(|mail_page| mail_page.export_selected());
                 if !exported {
-                    win.add_toast(&adw::Toast::new("Keine E-Mail zum Exportieren ausgewählt"));
+                    let msg = gettext("No email selected to export");
+                    win.add_toast(&adw::Toast::new(&msg));
                 }
             }
         ));
@@ -4292,11 +4378,46 @@ impl EvolutionWindow {
                     .mail_page()
                     .is_some_and(|mail_page| mail_page.present_message_source());
                 if !shown {
-                    win.add_toast(&adw::Toast::new("Keine Nachricht ausgewählt"));
+                    let msg = gettext("No message selected");
+                    win.add_toast(&adw::Toast::new(&msg));
                 }
             }
         ));
         self.add_action(&action_message_source);
+
+        let action_toggle_mail_light = gio::SimpleAction::new_stateful(
+            "toggle-mail-light-mode",
+            None,
+            &false.to_variant(),
+        );
+        let win_weak_light_state = self.downgrade();
+        action_toggle_mail_light.connect_change_state(move |action, target_state| {
+            if let Some(target_state) = target_state {
+                if let Some(force_light) = target_state.get::<bool>() {
+                    action.set_state(&force_light.to_variant());
+                    if let Some(win) = win_weak_light_state.upgrade() {
+                        if let Some(mail_page) = win.mail_page() {
+                            mail_page.set_preview_light_mode(force_light);
+                        }
+                    }
+                }
+            }
+        });
+        let win_weak_light_act = self.downgrade();
+        action_toggle_mail_light.connect_activate(move |action, _| {
+            let current = action
+                .state()
+                .and_then(|v| v.get::<bool>())
+                .unwrap_or(false);
+            let next = !current;
+            action.set_state(&next.to_variant());
+            if let Some(win) = win_weak_light_act.upgrade() {
+                if let Some(mail_page) = win.mail_page() {
+                    mail_page.set_preview_light_mode(next);
+                }
+            }
+        });
+        self.add_action(&action_toggle_mail_light);
 
         let action_delete = gio::SimpleAction::new("delete", None);
         action_delete.connect_activate(glib::clone!(
@@ -4304,31 +4425,39 @@ impl EvolutionWindow {
             self,
             move |_, _| {
                 let Some(mail_page) = win.mail_page() else {
-                    win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                    let msg = gettext("Mail view is unavailable");
+                    win.add_toast(&adw::Toast::new(&msg));
                     return;
                 };
                 if !mail_page.has_selected_message() {
-                    win.add_toast(&adw::Toast::new("Keine Nachricht ausgewählt"));
+                    let msg = gettext("No message selected");
+                    win.add_toast(&adw::Toast::new(&msg));
                     return;
                 }
                 let win_for_action = win.clone();
+                let heading = gettext("Delete message?");
+                let body = gettext(
+                    "The selected message will be permanently deleted or moved to Trash.",
+                );
+                let confirm = gettext("Delete");
                 crate::dialogs::run_destructive_action(
                     &win,
-                    "Nachricht löschen?",
-                    "Die ausgewählte Nachricht wird dauerhaft gelöscht bzw. in den Papierkorb verschoben.",
-                    "Löschen",
+                    &heading,
+                    &body,
+                    &confirm,
                     move || {
                         let result = win_for_action.mail_page().map(|mail_page| {
                             mail_page.delete_selected()
                         });
                         let message = match result {
-                            Some(Ok(true)) => "Nachricht gelöscht".to_string(),
-                            Some(Ok(false)) => "Keine Nachricht ausgewählt".to_string(),
+                            Some(Ok(true)) => gettext("Message deleted"),
+                            Some(Ok(false)) => gettext("No message selected"),
                             Some(Err(error)) => {
                                 tracing::warn!(%error, "Mail delete operation was not applied");
-                                format!("Löschen nicht möglich: {error}")
+                                gettext("Delete not possible: {error}")
+                                    .replace("{error}", &error.to_string())
                             }
-                            None => "Mailansicht ist nicht verfügbar".to_string(),
+                            None => gettext("Mail view is unavailable"),
                         };
                         win_for_action.add_toast(&adw::Toast::new(&message));
                     },
@@ -4355,13 +4484,14 @@ impl EvolutionWindow {
                     .map(|mail_page| mail_page.mark_selected_unread());
 
                 let message = match result {
-                    Some(Ok(true)) => "Nachricht als ungelesen markiert".to_string(),
-                    Some(Ok(false)) => "Keine Nachricht ausgewählt".to_string(),
+                    Some(Ok(true)) => gettext("Message marked as unread"),
+                    Some(Ok(false)) => gettext("No message selected"),
                     Some(Err(error)) => {
                         tracing::warn!(%error, "Mark-unread operation was not applied");
-                        format!("Markieren nicht möglich: {error}")
+                        gettext("Marking not possible: {error}")
+                            .replace("{error}", &error.to_string())
                     }
-                    None => "Mailansicht ist nicht verfügbar".to_string(),
+                    None => gettext("Mail view is unavailable"),
                 };
                 win.add_toast(&adw::Toast::new(&message));
             }
@@ -4377,13 +4507,14 @@ impl EvolutionWindow {
                     .mail_page()
                     .map(|mail_page| mail_page.mark_selected_read());
                 let message = match result {
-                    Some(Ok(true)) => "Nachricht als gelesen markiert".to_string(),
-                    Some(Ok(false)) => "Keine Nachricht ausgewählt".to_string(),
+                    Some(Ok(true)) => gettext("Message marked as read"),
+                    Some(Ok(false)) => gettext("No message selected"),
                     Some(Err(error)) => {
                         tracing::warn!(%error, "Mark-read operation was not applied");
-                        format!("Als gelesen markieren nicht möglich: {error}")
+                        gettext("Marking as read not possible: {error}")
+                            .replace("{error}", &error.to_string())
                     }
-                    None => "Mailansicht ist nicht verfügbar".to_string(),
+                    None => gettext("Mail view is unavailable"),
                 };
                 win.add_toast(&adw::Toast::new(&message));
             }
@@ -4399,9 +4530,13 @@ impl EvolutionWindow {
                     .mail_page()
                     .map(|mail_page| mail_page.select_all_visible_messages())
                     .unwrap_or(0);
-                win.add_toast(&adw::Toast::new(&format!(
-                    "{count} sichtbare Nachricht(en) ausgewählt"
-                )));
+                let msg = ngettext(
+                    "{count} visible message selected",
+                    "{count} visible messages selected",
+                    count as u32,
+                )
+                .replace("{count}", &count.to_string());
+                win.add_toast(&adw::Toast::new(&msg));
             }
         ));
         self.add_action(&action_select_all_mail);
@@ -4415,13 +4550,14 @@ impl EvolutionWindow {
                     .mail_page()
                     .map(|mail_page| mail_page.toggle_selected_flagged());
                 let message = match result {
-                    Some(Ok(true)) => "Markierung geändert".to_string(),
-                    Some(Ok(false)) => "Keine Nachricht ausgewählt".to_string(),
+                    Some(Ok(true)) => gettext("Flag changed"),
+                    Some(Ok(false)) => gettext("No message selected"),
                     Some(Err(error)) => {
                         tracing::warn!(%error, "Mail flag operation was not applied");
-                        format!("Markierung nicht möglich: {error}")
+                        gettext("Flagging not possible: {error}")
+                            .replace("{error}", &error.to_string())
                     }
-                    None => "Mailansicht ist nicht verfügbar".to_string(),
+                    None => gettext("Mail view is unavailable"),
                 };
                 win.add_toast(&adw::Toast::new(&message));
             }
@@ -4437,13 +4573,14 @@ impl EvolutionWindow {
                     .mail_page()
                     .map(|mail_page| mail_page.toggle_selected_important());
                 let message = match result {
-                    Some(Ok(true)) => "Wichtigkeitsmarkierung geändert".to_string(),
-                    Some(Ok(false)) => "Keine Nachricht ausgewählt".to_string(),
+                    Some(Ok(true)) => gettext("Importance flag changed"),
+                    Some(Ok(false)) => gettext("No message selected"),
                     Some(Err(error)) => {
                         tracing::warn!(%error, "Mail important operation was not applied");
-                        format!("Wichtigkeitsmarkierung nicht möglich: {error}")
+                        gettext("Setting importance not possible: {error}")
+                            .replace("{error}", &error.to_string())
                     }
-                    None => "Mailansicht ist nicht verfügbar".to_string(),
+                    None => gettext("Mail view is unavailable"),
                 };
                 win.add_toast(&adw::Toast::new(&message));
             }
@@ -4459,7 +4596,8 @@ impl EvolutionWindow {
                     .mail_page()
                     .is_some_and(|mail_page| mail_page.edit_selected_follow_up())
                 {
-                    win.add_toast(&adw::Toast::new("Keine Nachricht ausgewählt"));
+                    let msg = gettext("No message selected");
+                    win.add_toast(&adw::Toast::new(&msg));
                 }
             }
         ));
@@ -4473,7 +4611,8 @@ impl EvolutionWindow {
                 if let Some(mail_page) = win.mail_page() {
                     mail_page.present_label_editor();
                 } else {
-                    win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                    let msg = gettext("Mail view is unavailable");
+                    win.add_toast(&adw::Toast::new(&msg));
                 }
             }
         ));
@@ -4488,7 +4627,8 @@ impl EvolutionWindow {
                     if let Some(mail_page) = win.mail_page() {
                         mail_page.present_folder_destination_dialog(copy);
                     } else {
-                        win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                        let msg = gettext("Mail view is unavailable");
+                        win.add_toast(&adw::Toast::new(&msg));
                     }
                 }
             ));
@@ -4504,13 +4644,14 @@ impl EvolutionWindow {
                     .mail_page()
                     .map(|mail_page| mail_page.archive_selected());
                 let message = match result {
-                    Some(Ok(true)) => "Nachricht archiviert".to_string(),
-                    Some(Ok(false)) => "Keine Nachricht ausgewählt".to_string(),
+                    Some(Ok(true)) => gettext("Message archived"),
+                    Some(Ok(false)) => gettext("No message selected"),
                     Some(Err(error)) => {
                         tracing::warn!(%error, "Mail archive operation was not applied");
-                        format!("Archivieren nicht möglich: {error}")
+                        gettext("Archiving not possible: {error}")
+                            .replace("{error}", &error.to_string())
                     }
-                    None => "Mailansicht ist nicht verfügbar".to_string(),
+                    None => gettext("Mail view is unavailable"),
                 };
                 win.add_toast(&adw::Toast::new(&message));
             }
@@ -4526,13 +4667,14 @@ impl EvolutionWindow {
                     .mail_page()
                     .map(|mail_page| mail_page.mark_selected_junk());
                 let message = match result {
-                    Some(Ok(true)) => "Nachricht als Spam markiert".to_string(),
-                    Some(Ok(false)) => "Keine Nachricht ausgewählt".to_string(),
+                    Some(Ok(true)) => gettext("Message marked as spam"),
+                    Some(Ok(false)) => gettext("No message selected"),
                     Some(Err(error)) => {
                         tracing::warn!(%error, "Mail junk operation was not applied");
-                        format!("Spam-Markierung nicht möglich: {error}")
+                        gettext("Marking as spam not possible: {error}")
+                            .replace("{error}", &error.to_string())
                     }
-                    None => "Mailansicht ist nicht verfügbar".to_string(),
+                    None => gettext("Mail view is unavailable"),
                 };
                 win.add_toast(&adw::Toast::new(&message));
             }
@@ -4548,13 +4690,14 @@ impl EvolutionWindow {
                     .mail_page()
                     .map(|mail_page| mail_page.mark_selected_not_junk());
                 let message = match result {
-                    Some(Ok(true)) => "Spam-Markierung entfernt".to_string(),
-                    Some(Ok(false)) => "Keine Nachricht ausgewählt".to_string(),
+                    Some(Ok(true)) => gettext("Spam mark removed"),
+                    Some(Ok(false)) => gettext("No message selected"),
                     Some(Err(error)) => {
                         tracing::warn!(%error, "Mail not-junk operation was not applied");
-                        format!("Nicht-Spam-Markierung nicht möglich: {error}")
+                        gettext("Removing spam mark not possible: {error}")
+                            .replace("{error}", &error.to_string())
                     }
-                    None => "Mailansicht ist nicht verfügbar".to_string(),
+                    None => gettext("Mail view is unavailable"),
                 };
                 win.add_toast(&adw::Toast::new(&message));
             }
@@ -4674,13 +4817,13 @@ impl EvolutionWindow {
                         return;
                     };
                     let Ok(identity) = parse_reminder_deep_link(uri) else {
-                        win.add_toast(&adw::Toast::new("Ungültiger Reminder-Link"));
+                        let msg = gettext("Invalid reminder link");
+                        win.add_toast(&adw::Toast::new(&msg));
                         return;
                     };
                     if identity.kind != kind {
-                        win.add_toast(&adw::Toast::new(
-                            "Reminder-Link passt nicht zur angeforderten Komponente",
-                        ));
+                        let msg = gettext("Reminder link does not match requested component");
+                        win.add_toast(&adw::Toast::new(&msg));
                         return;
                     }
                     win.open_component(identity);
@@ -4697,7 +4840,8 @@ impl EvolutionWindow {
                 if let Some(mail_page) = win.mail_page() {
                     mail_page.present_new_folder_dialog();
                 } else {
-                    win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                    let msg = gettext("Mail view is unavailable");
+                    win.add_toast(&adw::Toast::new(&msg));
                 }
             }
         ));
@@ -4711,7 +4855,8 @@ impl EvolutionWindow {
                 if let Some(mail_page) = win.mail_page() {
                     mail_page.present_rename_selected_folder();
                 } else {
-                    win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                    let msg = gettext("Mail view is unavailable");
+                    win.add_toast(&adw::Toast::new(&msg));
                 }
             }
         ));
@@ -4725,7 +4870,8 @@ impl EvolutionWindow {
                 if let Some(mail_page) = win.mail_page() {
                     mail_page.present_delete_selected_folder();
                 } else {
-                    win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                    let msg = gettext("Mail view is unavailable");
+                    win.add_toast(&adw::Toast::new(&msg));
                 }
             }
         ));
@@ -4739,7 +4885,8 @@ impl EvolutionWindow {
                 if let Some(mail_page) = win.mail_page() {
                     mail_page.refresh_selected_folder();
                 } else {
-                    win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                    let msg = gettext("Mail view is unavailable");
+                    win.add_toast(&adw::Toast::new(&msg));
                 }
             }
         ));
@@ -4754,23 +4901,27 @@ impl EvolutionWindow {
                     match mail_page.mark_all_read_in_selected_folder() {
                         Ok(count) => {
                             if count > 0 {
-                                win.add_toast(&adw::Toast::new(&format!(
-                                    "{count} Nachricht(en) als gelesen markiert"
-                                )));
+                                let msg = ngettext(
+                                    "{count} message marked as read",
+                                    "{count} messages marked as read",
+                                    count as u32,
+                                )
+                                .replace("{count}", &count.to_string());
+                                win.add_toast(&adw::Toast::new(&msg));
                             } else {
-                                win.add_toast(&adw::Toast::new(
-                                    "Keine ungelesenen Nachrichten im Ordner",
-                                ));
+                                let msg = gettext("No unread messages in folder");
+                                win.add_toast(&adw::Toast::new(&msg));
                             }
                         }
                         Err(error) => {
-                            win.add_toast(&adw::Toast::new(&format!(
-                                "Fehler beim Markieren: {error}"
-                            )));
+                            let msg = gettext("Error marking messages: {error}")
+                                .replace("{error}", &error.to_string());
+                            win.add_toast(&adw::Toast::new(&msg));
                         }
                     }
                 } else {
-                    win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                    let msg = gettext("Mail view is unavailable");
+                    win.add_toast(&adw::Toast::new(&msg));
                 }
             }
         ));
@@ -4783,12 +4934,12 @@ impl EvolutionWindow {
             move |_, _| {
                 if let Some(mail_page) = win.mail_page() {
                     if !mail_page.select_next_unread_folder() {
-                        win.add_toast(&adw::Toast::new(
-                            "Keine weiteren ungelesenen Ordner vorhanden",
-                        ));
+                        let msg = gettext("No more unread folders available");
+                        win.add_toast(&adw::Toast::new(&msg));
                     }
                 } else {
-                    win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                    let msg = gettext("Mail view is unavailable");
+                    win.add_toast(&adw::Toast::new(&msg));
                 }
             }
         ));
@@ -4802,7 +4953,8 @@ impl EvolutionWindow {
                 if let Some(mail_page) = win.mail_page() {
                     mail_page.present_folder_properties_dialog();
                 } else {
-                    win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                    let msg = gettext("Mail view is unavailable");
+                    win.add_toast(&adw::Toast::new(&msg));
                 }
             }
         ));
@@ -4817,7 +4969,8 @@ impl EvolutionWindow {
                 if let Some(mail_page) = win.mail_page() {
                     mail_page.present_folder_subscriptions_dialog();
                 } else {
-                    win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                    let msg = gettext("Mail view is unavailable");
+                    win.add_toast(&adw::Toast::new(&msg));
                 }
             }
         ));
@@ -4832,7 +4985,8 @@ impl EvolutionWindow {
                 if let Some(mail_page) = win.mail_page() {
                     mail_page.present_folder_sort_order_dialog();
                 } else {
-                    win.add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                    let msg = gettext("Mail view is unavailable");
+                    win.add_toast(&adw::Toast::new(&msg));
                 }
             }
         ));
@@ -4970,7 +5124,8 @@ impl EvolutionWindow {
                 if let Some(cal_page) = win.calendar_page() {
                     cal_page.present_calendar_purge_dialog();
                 } else {
-                    win.add_toast(&adw::Toast::new("Kalenderansicht ist nicht verfügbar"));
+                    let msg = gettext("Calendar view is unavailable");
+                    win.add_toast(&adw::Toast::new(&msg));
                 }
             }
         ));
@@ -4985,7 +5140,8 @@ impl EvolutionWindow {
                 if let Some(cal_page) = win.calendar_page() {
                     cal_page.export_calendar_dialog();
                 } else {
-                    win.add_toast(&adw::Toast::new("Kalenderansicht ist nicht verfügbar"));
+                    let msg = gettext("Calendar view is unavailable");
+                    win.add_toast(&adw::Toast::new(&msg));
                 }
             }
         ));
@@ -5061,19 +5217,22 @@ impl EvolutionWindow {
                     match mail_page.mark_selected_thread_read() {
                         Ok(count) => {
                             if count > 0 {
-                                win.add_toast(&adw::Toast::new(&format!(
-                                    "{count} Nachricht(en) der Konversation als gelesen markiert"
-                                )));
+                                let msg = ngettext(
+                                    "{count} conversation message marked as read",
+                                    "{count} conversation messages marked as read",
+                                    count as u32,
+                                )
+                                .replace("{count}", &count.to_string());
+                                win.add_toast(&adw::Toast::new(&msg));
                             } else {
-                                win.add_toast(&adw::Toast::new(
-                                    "Keine ungelesenen Nachrichten in der Konversation",
-                                ));
+                                let msg = gettext("No unread messages in conversation");
+                                win.add_toast(&adw::Toast::new(&msg));
                             }
                         }
                         Err(error) => {
-                            win.add_toast(&adw::Toast::new(&format!(
-                                "Fehler beim Markieren der Konversation: {error}"
-                            )));
+                            let msg = gettext("Error marking conversation: {error}")
+                                .replace("{error}", &error.to_string());
+                            win.add_toast(&adw::Toast::new(&msg));
                         }
                     }
                 }
@@ -5090,15 +5249,19 @@ impl EvolutionWindow {
                     match mail_page.delete_selected_thread() {
                         Ok(count) => {
                             if count > 0 {
-                                win.add_toast(&adw::Toast::new(&format!(
-                                    "{count} Nachricht(en) der Konversation gelöscht"
-                                )));
+                                let msg = ngettext(
+                                    "{count} conversation message deleted",
+                                    "{count} conversation messages deleted",
+                                    count as u32,
+                                )
+                                .replace("{count}", &count.to_string());
+                                win.add_toast(&adw::Toast::new(&msg));
                             }
                         }
                         Err(error) => {
-                            win.add_toast(&adw::Toast::new(&format!(
-                                "Fehler beim Löschen der Konversation: {error}"
-                            )));
+                            let msg = gettext("Error deleting conversation: {error}")
+                                .replace("{error}", &error.to_string());
+                            win.add_toast(&adw::Toast::new(&msg));
                         }
                     }
                 }
@@ -5109,27 +5272,31 @@ impl EvolutionWindow {
         for (action_name, heading, body, success) in [
             (
                 "empty-trash",
-                "Papierkorb leeren?",
-                "Lokale app-eigene Nachrichten werden aus der sichtbaren Papierkorbansicht entfernt. Synchronisierte Ordner werden erst über den Linux-Pfad endgültig geleert.",
-                "Papierkorb geleert",
+                gettext("Empty Trash?"),
+                gettext(
+                    "Local app-specific messages will be removed from the visible Trash view. Synchronized folders are expunged via the backend path.",
+                ),
+                gettext("Trash emptied"),
             ),
             (
                 "empty-junk",
-                "Spam-Ordner leeren?",
-                "Alle lokalen Nachrichten im Spam-Ordner werden unwiderruflich gelöscht.",
-                "Spam-Ordner geleert",
+                gettext("Empty Junk?"),
+                gettext(
+                    "All local messages in the Junk folder will be irrevocably deleted.",
+                ),
+                gettext("Junk folder emptied"),
             ),
             (
                 "expunge",
-                "Papierkorb endgültig leeren?",
-                "Der lokale app-eigene Papierkorb wird geleert. Für synchronisierte Ordner ist der Linux-Pfad erforderlich.",
-                "Papierkorb endgültig geleert",
+                gettext("Permanently empty Trash?"),
+                gettext(
+                    "The local app-specific Trash will be emptied. Synchronized folders require the backend path.",
+                ),
+                gettext("Trash permanently emptied"),
             ),
         ] {
             let action = gio::SimpleAction::new(action_name, None);
-            let heading = heading.to_string();
-            let body = body.to_string();
-            let success = success.to_string();
+            let confirm = gettext("Empty");
             action.connect_activate(glib::clone!(
                 #[weak(rename_to = win)]
                 self,
@@ -5141,7 +5308,7 @@ impl EvolutionWindow {
                         &win,
                         &heading,
                         &body,
-                        "Leeren",
+                        &confirm,
                         move || {
                             if let Some(mail_page) = win_for_action.mail_page() {
                                 if action_key == "empty-junk" {
@@ -5150,8 +5317,8 @@ impl EvolutionWindow {
                                     mail_page.empty_trash_async(&success);
                                 }
                             } else {
-                                win_for_action
-                                    .add_toast(&adw::Toast::new("Mailansicht ist nicht verfügbar"));
+                                let msg = gettext("Mail view is unavailable");
+                                win_for_action.add_toast(&adw::Toast::new(&msg));
                             }
                         },
                     );
@@ -5189,9 +5356,10 @@ impl EvolutionWindow {
                     .mail_page()
                     .is_some_and(|mail_page| mail_page.find_in_displayed_message());
                 if !opened {
-                    window.add_toast(&adw::Toast::new(
-                        "Für die Suche muss eine Nachricht im Vorschaufenster angezeigt sein",
-                    ));
+                    let msg = gettext(
+                        "A message must be displayed in the preview pane to search",
+                    );
+                    window.add_toast(&adw::Toast::new(&msg));
                 }
             }
         ));
@@ -5228,9 +5396,8 @@ impl EvolutionWindow {
                         .mail_page()
                         .is_some_and(|page| page.select_relative_unread_message(forward));
                     if !selected {
-                        window.add_toast(&adw::Toast::new(
-                            "In diesem Ordner gibt es keine ungelesene Nachricht",
-                        ));
+                        let msg = gettext("There are no unread messages in this folder");
+                        window.add_toast(&adw::Toast::new(&msg));
                     }
                 }
             ));
@@ -5291,30 +5458,30 @@ pub(crate) fn format_current_status_date() -> String {
     use chrono::{Datelike, Local, Weekday};
     let now = Local::now();
     let weekday = match now.weekday() {
-        Weekday::Mon => "Montag",
-        Weekday::Tue => "Dienstag",
-        Weekday::Wed => "Mittwoch",
-        Weekday::Thu => "Donnerstag",
-        Weekday::Fri => "Freitag",
-        Weekday::Sat => "Samstag",
-        Weekday::Sun => "Sonntag",
+        Weekday::Mon => crate::i18n::gettext("Monday"),
+        Weekday::Tue => crate::i18n::gettext("Tuesday"),
+        Weekday::Wed => crate::i18n::gettext("Wednesday"),
+        Weekday::Thu => crate::i18n::gettext("Thursday"),
+        Weekday::Fri => crate::i18n::gettext("Friday"),
+        Weekday::Sat => crate::i18n::gettext("Saturday"),
+        Weekday::Sun => crate::i18n::gettext("Sunday"),
     };
     let month = match now.month() {
-        1 => "Januar",
-        2 => "Februar",
-        3 => "März",
-        4 => "April",
-        5 => "Mai",
-        6 => "Juni",
-        7 => "Juli",
-        8 => "August",
-        9 => "September",
-        10 => "Oktober",
-        11 => "November",
-        12 => "Dezember",
-        _ => "",
+        1 => crate::i18n::gettext("January"),
+        2 => crate::i18n::gettext("February"),
+        3 => crate::i18n::gettext("March"),
+        4 => crate::i18n::gettext("April"),
+        5 => crate::i18n::gettext("May"),
+        6 => crate::i18n::gettext("June"),
+        7 => crate::i18n::gettext("July"),
+        8 => crate::i18n::gettext("August"),
+        9 => crate::i18n::gettext("September"),
+        10 => crate::i18n::gettext("October"),
+        11 => crate::i18n::gettext("November"),
+        12 => crate::i18n::gettext("December"),
+        _ => String::new(),
     };
-    format!("{}, {}. {} {}", weekday, now.day(), month, now.year())
+    format!("{}, {} {} {}", weekday, now.day(), month, now.year())
 }
 
 fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
@@ -5336,46 +5503,53 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
         .build();
 
     let title_icon = gtk::Image::from_icon_name("utilities-terminal-symbolic");
+    let title_label_text = gettext("Log Console");
     let title_label = gtk::Label::builder()
-        .label("Protokollkonsole")
+        .label(&title_label_text)
         .css_classes(vec!["heading"])
         .halign(gtk::Align::Start)
         .build();
 
+    let search_placeholder = gettext("Filter logs…");
     let search_entry = gtk::SearchEntry::builder()
-        .placeholder_text("Protokolle filtern…")
+        .placeholder_text(&search_placeholder)
         .hexpand(true)
         .margin_start(16)
         .margin_end(16)
         .build();
 
+    let pause_tooltip = gettext("Pause live updates");
     let pause_button = gtk::ToggleButton::builder()
         .icon_name("media-playback-pause-symbolic")
-        .tooltip_text("Live-Aktualisierung anhalten (Pause)")
+        .tooltip_text(&pause_tooltip)
         .css_classes(vec!["flat"])
         .build();
 
+    let copy_tooltip = gettext("Copy log to clipboard");
     let copy_button = gtk::Button::builder()
         .icon_name("edit-copy-symbolic")
-        .tooltip_text("Protokoll in die Zwischenablage kopieren")
+        .tooltip_text(&copy_tooltip)
         .css_classes(vec!["flat"])
         .build();
 
+    let clear_tooltip = gettext("Clear log");
     let clear_button = gtk::Button::builder()
         .icon_name("edit-clear-symbolic")
-        .tooltip_text("Protokoll leeren")
+        .tooltip_text(&clear_tooltip)
         .css_classes(vec!["flat"])
         .build();
 
+    let collapse_tooltip = gettext("Collapse log console");
     let collapse_button = gtk::Button::builder()
         .icon_name("pan-down-symbolic")
-        .tooltip_text("Protokollkonsole herunterklappen")
+        .tooltip_text(&collapse_tooltip)
         .css_classes(vec!["flat"])
         .build();
 
+    let close_tooltip = gettext("Close log console");
     let close_button = gtk::Button::builder()
         .icon_name("window-close-symbolic")
-        .tooltip_text("Protokollkonsole schließen")
+        .tooltip_text(&close_tooltip)
         .css_classes(vec!["flat"])
         .build();
 
@@ -5780,7 +5954,7 @@ mod tests {
         );
         assert_eq!(
             search_route_error_message(SearchRouteError::MissingTarget),
-            "Globaler Suchtreffer enthält kein Ziel"
+            crate::i18n::gettext("Global search match has no target")
         );
     }
 
@@ -6084,7 +6258,7 @@ mod tests {
         let source = include_str!("window.rs");
         for path in [MenuPath::Edit, MenuPath::MessageAfterForward] {
             assert!(menu_actions(path).any(|item| {
-                item.label == "Löschen rückgängig machen" && item.action == "win.undelete"
+                item.label == "Undelete" && item.action == "win.undelete"
             }));
         }
         assert!(
@@ -6221,6 +6395,116 @@ mod tests {
         // Switch back to mail
         window.set_active_view("mail");
         assert_eq!(mail_page.outer_paned().position(), 330);
+    }
+
+    #[test]
+    fn test_unified_sidebar_width_clamping_and_cross_view_synchronization() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(context) = gtk_test_main_context() else {
+            return;
+        };
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_active_view("mail");
+            settings.set_mail_show_sidebar(true);
+            settings.set_mail_sidebar_position(260);
+        }
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+        window.set_visible(true);
+
+        // 1. Verify bounds constants
+        assert_eq!(MIN_SIDEBAR_WIDTH, 240);
+        assert_eq!(MAX_SIDEBAR_WIDTH, 450);
+
+        let stack = window
+            .imp()
+            .view_stack
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("view stack present");
+
+        let mail_page = stack
+            .child_by_name("mail")
+            .and_downcast::<MailPage>()
+            .expect("mail page");
+
+        let sb_h = window
+            .imp()
+            .sidebar_header
+            .borrow()
+            .clone()
+            .expect("sidebar_header");
+
+        // 2. Synchronize clamped position
+        if let Some(settings) = AppSettings::try_new() {
+            // Setting position to 500 should be clamped to MAX_SIDEBAR_WIDTH (450)
+            settings.set_mail_sidebar_position(500);
+            assert_eq!(mail_page.outer_paned().position(), MAX_SIDEBAR_WIDTH);
+            assert_eq!(sb_h.size_request().0, MAX_SIDEBAR_WIDTH);
+
+            // Setting position to 120 should be clamped to MIN_SIDEBAR_WIDTH (240)
+            settings.set_mail_sidebar_position(120);
+            assert_eq!(mail_page.outer_paned().position(), MIN_SIDEBAR_WIDTH);
+            assert_eq!(sb_h.size_request().0, MIN_SIDEBAR_WIDTH);
+
+            // Setting position to valid 300
+            settings.set_mail_sidebar_position(300);
+            assert_eq!(mail_page.outer_paned().position(), 300);
+            assert_eq!(sb_h.size_request().0, 300);
+        }
+
+        // 3. Switch to calendar and check width and header sync
+        window.set_active_view("calendar");
+        let calendar_bin = stack
+            .child_by_name("calendar")
+            .and_downcast::<adw::Bin>()
+            .expect("calendar bin");
+        let calendar_page = calendar_bin
+            .child()
+            .and_downcast::<CalendarPage>()
+            .expect("calendar page");
+        let calendar_paned = calendar_page.outer_paned().expect("calendar paned");
+        assert_eq!(calendar_paned.position(), 300);
+        assert_eq!(sb_h.size_request().0, 300);
+
+        // 4. Unified collapse/expand
+        window.toggle_sidebar_animated(false);
+        for _ in 0..40 {
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            while context.iteration(false) {}
+        }
+        assert!(!window.is_sidebar_visible_for_active_view());
+        assert!(!calendar_page.is_sidebar_visible());
+        assert!(!mail_page.is_sidebar_visible());
+
+        // Switch to tasks while collapsed
+        window.set_active_view("tasks");
+        let tasks_bin = stack
+            .child_by_name("tasks")
+            .and_downcast::<adw::Bin>()
+            .expect("tasks bin");
+        let tasks_page = tasks_bin
+            .child()
+            .and_downcast::<TasksPage>()
+            .expect("tasks page");
+        assert!(!window.is_sidebar_visible_for_active_view());
+        assert!(!tasks_page.is_sidebar_visible());
+
+        // Expand sidebar
+        window.toggle_sidebar_animated(true);
+        for _ in 0..40 {
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            while context.iteration(false) {}
+        }
+        assert!(window.is_sidebar_visible_for_active_view());
+        assert!(tasks_page.is_sidebar_visible());
+        assert!(calendar_page.is_sidebar_visible());
+        assert!(mail_page.is_sidebar_visible());
     }
 
     #[test]
@@ -6892,12 +7176,13 @@ mod tests {
         let restore_btn = window.imp().restore_sidebar_button.borrow().clone().expect("restore_sidebar_button should exist");
         let close_btn = window.imp().sidebar_close_button.borrow().clone().expect("sidebar_close_button should exist");
 
-        // Initial title in sidebar header is "Posteingang" (not "Evolution")
-        assert_eq!(sidebar_title.title(), "Posteingang");
+        // Initial title in sidebar header is "Inbox"
+        assert_eq!(sidebar_title.title().as_str(), crate::i18n::gettext("Inbox"));
 
         // Update sidebar title test
-        window.update_sidebar_title("Kalender");
-        assert_eq!(sidebar_title.title(), "Kalender");
+        let cal_title = crate::i18n::gettext("Calendar");
+        window.update_sidebar_title(&cal_title);
+        assert_eq!(sidebar_title.title().as_str(), cal_title.as_str());
 
         // When sidebar is visible (default desktop):
         // sidebar_header is visible, restore_btn is hidden
@@ -6979,27 +7264,34 @@ mod tests {
             initial_active
         );
 
-        // Per-view left sidebar test
+        // Unified left sidebar test
         // 1. In mail, collapse sidebar
         window.toggle_sidebar_animated(false);
         assert!(!window.is_sidebar_visible_for_active_view());
 
-        // 2. Switch to calendar: sidebar should default to visible
+        // 2. Switch to calendar: sidebar must remain collapsed (unified across views!)
         if let Some(stack) = window.imp().view_stack.borrow().as_ref() {
             stack.set_visible_child_name("calendar");
         }
         assert_eq!(window.active_view_name(), "calendar");
+        assert!(!window.is_sidebar_visible_for_active_view());
+
+        // 3. Switch to tasks: still collapsed
+        if let Some(stack) = window.imp().view_stack.borrow().as_ref() {
+            stack.set_visible_child_name("tasks");
+        }
+        assert_eq!(window.active_view_name(), "tasks");
+        assert!(!window.is_sidebar_visible_for_active_view());
+
+        // 4. Restore sidebar in tasks
+        window.toggle_sidebar_animated(true);
         assert!(window.is_sidebar_visible_for_active_view());
 
-        // 3. Switch back to mail: sidebar should still be remembered as collapsed
+        // 5. Switch back to mail: sidebar is restored in mail too
         if let Some(stack) = window.imp().view_stack.borrow().as_ref() {
             stack.set_visible_child_name("mail");
         }
         assert_eq!(window.active_view_name(), "mail");
-        assert!(!window.is_sidebar_visible_for_active_view());
-
-        // 4. Restore mail sidebar
-        window.toggle_sidebar_animated(true);
         assert!(window.is_sidebar_visible_for_active_view());
     }
 
@@ -7116,34 +7408,41 @@ mod tests {
         let _lock = GTK_TEST_MUTEX.lock().unwrap();
 
         let button = gtk::Button::new();
-        // Desktop/Tablet: label is "Neu"
+        // Desktop/Tablet: pure text label (GNOME HIG)
         EvolutionWindow::configure_primary_action(&button, "mail", false);
-        let content = button
-            .child()
-            .and_downcast::<adw::ButtonContent>()
-            .expect("ButtonContent child");
-        assert_eq!(content.label().as_str(), "Neu");
-        assert_eq!(
-            content.icon_name().as_str(),
-            "mail-message-new-symbolic"
-        );
+        let child = button.child().expect("Button child");
+        let label = child.downcast::<gtk::Label>().expect("Label child on desktop");
+        assert_eq!(label.label().as_str(), crate::i18n::gettext("New Mail"));
         assert!(button.has_css_class("suggested-action"));
 
-        // Switch to calendar
+        // Switch to calendar: pure text label
         EvolutionWindow::configure_primary_action(&button, "calendar", false);
-        assert_eq!(content.label().as_str(), "Neu");
-        assert_eq!(
-            content.icon_name().as_str(),
-            "x-office-calendar-symbolic"
-        );
+        let child = button.child().expect("Button child");
+        let label = child.downcast::<gtk::Label>().expect("Label child on desktop");
+        assert_eq!(label.label().as_str(), crate::i18n::gettext("New Event"));
 
-        // Mobile mode: label is collapsed ("") for space saving
+        // Switch to contacts: pure text label
+        EvolutionWindow::configure_primary_action(&button, "contacts", false);
+        let child = button.child().expect("Button child");
+        let label = child.downcast::<gtk::Label>().expect("Label child on desktop");
+        assert_eq!(label.label().as_str(), crate::i18n::gettext("New Contact"));
+
+        // Switch to tasks: pure text label
+        EvolutionWindow::configure_primary_action(&button, "tasks", false);
+        let child = button.child().expect("Button child");
+        let label = child.downcast::<gtk::Label>().expect("Label child on desktop");
+        assert_eq!(label.label().as_str(), crate::i18n::gettext("New Task"));
+
+        // Switch to memos: pure text label
+        EvolutionWindow::configure_primary_action(&button, "memos", false);
+        let child = button.child().expect("Button child");
+        let label = child.downcast::<gtk::Label>().expect("Label child on desktop");
+        assert_eq!(label.label().as_str(), crate::i18n::gettext("New Memo"));
+
+        // Mobile mode: pure icon without text (GNOME HIG)
         EvolutionWindow::configure_primary_action(&button, "mail", true);
-        assert_eq!(content.label().as_str(), "");
-        assert_eq!(
-            content.icon_name().as_str(),
-            "mail-message-new-symbolic"
-        );
+        let child = button.child().expect("Button child");
+        assert!(child.downcast::<gtk::Image>().is_ok());
     }
 }
 
