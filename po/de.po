@@ -10,11 +10,11 @@ msgid "New Email"
 msgstr "Neue E-Mail"
 
 #: src/action_contract.rs:134 src/views/contacts_page.rs:2505
-#: src/window.rs:2400 and 1 more
+#: src/window.rs:2402 and 1 more
 msgid "New Contact"
 msgstr "Neuer Kontakt"
 
-#: src/action_contract.rs:135 src/window.rs:2394 src/window.rs:7422
+#: src/action_contract.rs:135 src/window.rs:2396 src/window.rs:7424
 msgid "New Event"
 msgstr "Neuer Termin"
 
@@ -23,7 +23,7 @@ msgstr "Neuer Termin"
 msgid "New Task"
 msgstr "Neue Aufgabe"
 
-#: src/action_contract.rs:136 src/views/memos_page.rs:2372 src/window.rs:2412
+#: src/action_contract.rs:136 src/views/memos_page.rs:2372 src/window.rs:2414
 #: and 1 more
 msgid "New Memo"
 msgstr "Neue Notiz"
@@ -36,7 +36,7 @@ msgstr ""
 msgid "Local Drafts"
 msgstr ""
 
-#: src/action_contract.rs:140 src/action_contract.rs:271 src/window.rs:3670
+#: src/action_contract.rs:140 src/action_contract.rs:271 src/window.rs:3672
 msgid "Send & Receive"
 msgstr ""
 
@@ -646,6 +646,12 @@ msgstr ""
 msgid "Dismiss"
 msgstr ""
 
+#: src/dialogs/about_dialog.rs:8
+msgid ""
+"Modern, fast Mail, Calendar and Groupware Client built with GTK4 and "
+"Libadwaita."
+msgstr ""
+
 #: src/dialogs/account_setup_dialog.rs:2485
 #: src/dialogs/account_setup_dialog.rs:2533
 #: src/dialogs/account_setup_dialog.rs:2572 and 1 more
@@ -902,22 +908,22 @@ msgid "List view not available"
 msgstr ""
 
 #: src/views/calendar_page.rs:2638 src/views/mail_page.rs:23693
-#: src/window.rs:5470
+#: src/window.rs:5472
 msgid "January"
 msgstr "Januar"
 
 #: src/views/calendar_page.rs:2639 src/views/mail_page.rs:23694
-#: src/window.rs:5471
+#: src/window.rs:5473
 msgid "February"
 msgstr "Februar"
 
 #: src/views/calendar_page.rs:2640 src/views/mail_page.rs:23695
-#: src/window.rs:5472
+#: src/window.rs:5474
 msgid "March"
 msgstr "März"
 
 #: src/views/calendar_page.rs:2641 src/views/mail_page.rs:23696
-#: src/window.rs:5473
+#: src/window.rs:5475
 msgid "April"
 msgstr "April"
 
@@ -928,12 +934,12 @@ msgid "May"
 msgstr "Tag"
 
 #: src/views/calendar_page.rs:2643 src/views/mail_page.rs:23698
-#: src/window.rs:5475
+#: src/window.rs:5477
 msgid "June"
 msgstr "Juni"
 
 #: src/views/calendar_page.rs:2644 src/views/mail_page.rs:23699
-#: src/window.rs:5476
+#: src/window.rs:5478
 msgid "July"
 msgstr "Juli"
 
@@ -943,22 +949,22 @@ msgid "August"
 msgstr "August"
 
 #: src/views/calendar_page.rs:2646 src/views/mail_page.rs:23701
-#: src/window.rs:5478
+#: src/window.rs:5480
 msgid "September"
 msgstr "September"
 
 #: src/views/calendar_page.rs:2647 src/views/mail_page.rs:23702
-#: src/window.rs:5479
+#: src/window.rs:5481
 msgid "October"
 msgstr "Oktober"
 
 #: src/views/calendar_page.rs:2648 src/views/mail_page.rs:23703
-#: src/window.rs:5480
+#: src/window.rs:5482
 msgid "November"
 msgstr "November"
 
 #: src/views/calendar_page.rs:2649 src/views/mail_page.rs:23704
-#: src/window.rs:5481
+#: src/window.rs:5483
 msgid "December"
 msgstr "Dezember"
 
@@ -2083,7 +2089,7 @@ msgstr "Adressbuch"
 msgid "{status}; loading contacts."
 msgstr ""
 
-#: src/views/contacts_page.rs:2500 src/window.rs:2401
+#: src/views/contacts_page.rs:2500 src/window.rs:2403
 msgid "Create new contact (Ctrl+N)"
 msgstr "Neuen Kontakt erstellen (Strg+N)"
 
@@ -4518,7 +4524,7 @@ msgstr "Gelöschte Nachrichten anzeigen"
 msgid "Leave emails marked for deletion struck through in the list"
 msgstr "Als gelöscht markierte E-Mails durchgestrichen in der Liste belassen"
 
-#: src/views/mail_page.rs:19451 src/window.rs:3630
+#: src/views/mail_page.rs:19451 src/window.rs:3632
 msgid "Visible Columns"
 msgstr "Sichtbare Spalten"
 
@@ -4968,7 +4974,7 @@ msgstr ""
 msgid "Normal size"
 msgstr ""
 
-#: src/views/mail_viewer_window.rs:297 src/window.rs:3648
+#: src/views/mail_viewer_window.rs:297 src/window.rs:3650
 msgid "View"
 msgstr ""
 
@@ -5066,17 +5072,17 @@ msgstr "Als gelesen markieren"
 msgid "Mark as unread (Ctrl+Shift+K)"
 msgstr "Als ungelesen markieren"
 
-#: src/views/mail_viewer_window.rs:1285 src/window.rs:4487
+#: src/views/mail_viewer_window.rs:1285 src/window.rs:4489
 #, fuzzy
 msgid "Message marked as unread"
 msgstr "Als ungelesen markieren"
 
-#: src/views/mail_viewer_window.rs:1287 src/window.rs:4510
+#: src/views/mail_viewer_window.rs:1287 src/window.rs:4512
 #, fuzzy
 msgid "Message marked as read"
 msgstr "Als gelesen markieren"
 
-#: src/views/mail_viewer_window.rs:1372 src/window.rs:4438
+#: src/views/mail_viewer_window.rs:1372 src/window.rs:4440
 #, fuzzy
 msgid "Delete message?"
 msgstr "Nachricht löschen (Entf)"
@@ -5364,7 +5370,7 @@ msgstr ""
 msgid "Toggle memo preview"
 msgstr ""
 
-#: src/views/memos_page.rs:2367 src/window.rs:2413
+#: src/views/memos_page.rs:2367 src/window.rs:2415
 msgid "Create new note (Ctrl+N)"
 msgstr "Neue Notiz erstellen (Strg+N)"
 
@@ -6256,7 +6262,7 @@ msgstr ""
 msgid "Select task category"
 msgstr ""
 
-#: src/views/tasks_page.rs:4685 src/window.rs:2407
+#: src/views/tasks_page.rs:4685 src/window.rs:2409
 msgid "Create new task (Ctrl+N)"
 msgstr "Neue Aufgabe erstellen (Strg+N)"
 
@@ -7631,7 +7637,7 @@ msgstr ""
 msgid "tasks_page.rs"
 msgstr ""
 
-#: src/window.rs:274 src/window.rs:5957
+#: src/window.rs:274 src/window.rs:5959
 msgid "Global search match has no target"
 msgstr ""
 
@@ -7667,11 +7673,11 @@ msgstr ""
 msgid "Component could not be opened after loading"
 msgstr ""
 
-#: src/window.rs:1024 src/window.rs:3239
+#: src/window.rs:1024 src/window.rs:3241
 msgid "Toggle To Do bar for today"
 msgstr ""
 
-#: src/window.rs:1025 src/window.rs:3242
+#: src/window.rs:1025 src/window.rs:3244
 msgid "To Do bar for today"
 msgstr ""
 
@@ -7707,375 +7713,380 @@ msgstr ""
 msgid "Folders"
 msgstr ""
 
-#: src/window.rs:1868
-msgid "A mail transfer is already in progress"
-msgstr ""
-
-#: src/window.rs:1871
-msgid "Offline mode: message remains in the local outgoing queue"
-msgstr ""
-
-#: src/window.rs:1874
+#: src/window.rs:1647
 #, fuzzy
-msgid "No pending messages"
-msgstr "Nachricht weiterleiten"
+msgid "Offline"
+msgstr "Offline"
 
-#: src/window.rs:2045
-msgid "Search match could not be opened after waiting"
-msgstr ""
-
-#: src/window.rs:2057
-msgid "Mail view opened"
-msgstr ""
-
-#: src/window.rs:2058
-msgid "Calendar view opened; searching for match"
-msgstr ""
-
-#: src/window.rs:2059
-msgid "Tasks view opened; searching for match"
-msgstr ""
-
-#: src/window.rs:2060
-msgid "Memos view opened; searching for match"
-msgstr ""
-
-#: src/window.rs:2061
-msgid "Contacts view opened; searching for match"
-msgstr ""
-
-#: src/window.rs:2395
-msgid "Create new event (Ctrl+N)"
-msgstr "Neuen Termin erstellen (Strg+N)"
-
-#: src/window.rs:2418 src/window.rs:7415
-msgid "New Mail"
-msgstr "Neue E-Mail"
-
-#: src/window.rs:2419
-msgid "Create new email (Ctrl+N)"
-msgstr "Neue E-Mail erstellen (Strg+N)"
-
-#: src/window.rs:3052
-msgid "Collapse Sidebar (F9)"
-msgstr ""
-
-#: src/window.rs:3055
-msgid "Collapse Sidebar"
-msgstr ""
-
-#: src/window.rs:3074
-msgid "Show Sidebar (F9)"
-msgstr ""
-
-#: src/window.rs:3078
-msgid "Show Sidebar"
-msgstr ""
-
-#: src/window.rs:3101
-msgid "Search (Ctrl+F)"
-msgstr ""
-
-#: src/window.rs:3104
-msgid "Search"
-msgstr "Suchen"
-
-#: src/window.rs:3149 src/window.rs:3153
-msgid "Back"
-msgstr "Zurück"
-
-#: src/window.rs:3233
-msgid "Main Menu"
-msgstr ""
-
-#: src/window.rs:3304
-msgid "Online status (Toggle online/offline)"
-msgstr ""
-
-#: src/window.rs:3309
+#: src/window.rs:1648 src/window.rs:3311
 #, fuzzy
 msgid "Ready"
 msgstr "Gelesen"
 
-#: src/window.rs:3366
+#: src/window.rs:1870
+msgid "A mail transfer is already in progress"
+msgstr ""
+
+#: src/window.rs:1873
+msgid "Offline mode: message remains in the local outgoing queue"
+msgstr ""
+
+#: src/window.rs:1876
+#, fuzzy
+msgid "No pending messages"
+msgstr "Nachricht weiterleiten"
+
+#: src/window.rs:2047
+msgid "Search match could not be opened after waiting"
+msgstr ""
+
+#: src/window.rs:2059
+msgid "Mail view opened"
+msgstr ""
+
+#: src/window.rs:2060
+msgid "Calendar view opened; searching for match"
+msgstr ""
+
+#: src/window.rs:2061
+msgid "Tasks view opened; searching for match"
+msgstr ""
+
+#: src/window.rs:2062
+msgid "Memos view opened; searching for match"
+msgstr ""
+
+#: src/window.rs:2063
+msgid "Contacts view opened; searching for match"
+msgstr ""
+
+#: src/window.rs:2397
+msgid "Create new event (Ctrl+N)"
+msgstr "Neuen Termin erstellen (Strg+N)"
+
+#: src/window.rs:2420 src/window.rs:7417
+msgid "New Mail"
+msgstr "Neue E-Mail"
+
+#: src/window.rs:2421
+msgid "Create new email (Ctrl+N)"
+msgstr "Neue E-Mail erstellen (Strg+N)"
+
+#: src/window.rs:3054
+msgid "Collapse Sidebar (F9)"
+msgstr ""
+
+#: src/window.rs:3057
+msgid "Collapse Sidebar"
+msgstr ""
+
+#: src/window.rs:3076
+msgid "Show Sidebar (F9)"
+msgstr ""
+
+#: src/window.rs:3080
+msgid "Show Sidebar"
+msgstr ""
+
+#: src/window.rs:3103
+msgid "Search (Ctrl+F)"
+msgstr ""
+
+#: src/window.rs:3106
+msgid "Search"
+msgstr "Suchen"
+
+#: src/window.rs:3151 src/window.rs:3155
+msgid "Back"
+msgstr "Zurück"
+
+#: src/window.rs:3235
+msgid "Main Menu"
+msgstr ""
+
+#: src/window.rs:3306
+msgid "Online status (Toggle online/offline)"
+msgstr ""
+
+#: src/window.rs:3368
 msgid "Show / Hide Developer Log Console (Ctrl+F12)"
 msgstr ""
 
-#: src/window.rs:3589
+#: src/window.rs:3591
 msgid "This section will be loaded when opened for the first time."
 msgstr ""
 
-#: src/window.rs:3608
+#: src/window.rs:3610
 msgid "New"
 msgstr ""
 
-#: src/window.rs:3610
+#: src/window.rs:3612
 msgid "File"
 msgstr ""
 
-#: src/window.rs:3621
+#: src/window.rs:3623
 msgid "Switch Module"
 msgstr ""
 
-#: src/window.rs:3626
+#: src/window.rs:3628
 msgid "Layout"
 msgstr "Anordnung"
 
-#: src/window.rs:3634
+#: src/window.rs:3636
 #, fuzzy
 msgid "Conversations"
 msgstr "Weitere Aktionen"
 
-#: src/window.rs:3638
+#: src/window.rs:3640
 msgid "Message Density"
 msgstr ""
 
-#: src/window.rs:3642
+#: src/window.rs:3644
 msgid "Text Size"
 msgstr ""
 
-#: src/window.rs:3646
+#: src/window.rs:3648
 msgid "Other Views"
 msgstr ""
 
-#: src/window.rs:3654
+#: src/window.rs:3656
 msgid "Go to"
 msgstr ""
 
-#: src/window.rs:3665
+#: src/window.rs:3667
 msgid "Folder"
 msgstr "Ordner"
 
-#: src/window.rs:3672
+#: src/window.rs:3674
 msgid "Tools"
 msgstr ""
 
-#: src/window.rs:3677
+#: src/window.rs:3679
 msgid "Help"
 msgstr "Hilfe"
 
-#: src/window.rs:3723
+#: src/window.rs:3725
 msgid "No cancelable mail transfer is running"
 msgstr ""
 
-#: src/window.rs:4045
+#: src/window.rs:4047
 #, fuzzy
 msgid "Undid last mail action"
 msgstr "Letzte Aktion rückgängig machen"
 
-#: src/window.rs:4046
+#: src/window.rs:4048
 msgid "No mail action to undo"
 msgstr ""
 
-#: src/window.rs:4049
+#: src/window.rs:4051
 msgid "Undo not possible: {error}"
 msgstr ""
 
-#: src/window.rs:4051 src/window.rs:4071 src/window.rs:4103 and 21 more
+#: src/window.rs:4053 src/window.rs:4073 src/window.rs:4105 and 21 more
 msgid "Mail view is unavailable"
 msgstr ""
 
-#: src/window.rs:4065
+#: src/window.rs:4067
 #, fuzzy
 msgid "Restoring deleted message"
 msgstr "Nachricht löschen (Entf)"
 
-#: src/window.rs:4066
+#: src/window.rs:4068
 msgid "No deletion to undo"
 msgstr ""
 
-#: src/window.rs:4069
+#: src/window.rs:4071
 msgid "Undelete not possible: {error}"
 msgstr ""
 
-#: src/window.rs:4097
+#: src/window.rs:4099
 #, fuzzy
 msgid "Redid last mail action"
 msgstr "Letzte Aktion rückgängig machen"
 
-#: src/window.rs:4098
+#: src/window.rs:4100
 msgid "No mail action to redo"
 msgstr ""
 
-#: src/window.rs:4101
+#: src/window.rs:4103
 msgid "Redo not possible: {error}"
 msgstr ""
 
-#: src/window.rs:4257
+#: src/window.rs:4259
 msgid "Selected message does not have a valid Message-ID"
 msgstr ""
 
-#: src/window.rs:4273
+#: src/window.rs:4275
 msgid "Original folder of this message is unavailable"
 msgstr ""
 
-#: src/window.rs:4289
+#: src/window.rs:4291
 msgid "Selected message does not have a valid sender address"
 msgstr ""
 
-#: src/window.rs:4320
+#: src/window.rs:4322
 #, fuzzy
 msgid "No email selected to export"
 msgstr "Nachrichtenquelle anzeigen"
 
-#: src/window.rs:4453
+#: src/window.rs:4455
 #, fuzzy
 msgid "Message deleted"
 msgstr "Nachrichtenquelle anzeigen"
 
-#: src/window.rs:4457
+#: src/window.rs:4459
 msgid "Delete not possible: {error}"
 msgstr ""
 
-#: src/window.rs:4491
+#: src/window.rs:4493
 msgid "Marking not possible: {error}"
 msgstr ""
 
-#: src/window.rs:4514
+#: src/window.rs:4516
 msgid "Marking as read not possible: {error}"
 msgstr ""
 
-#: src/window.rs:4553
+#: src/window.rs:4555
 msgid "Flag changed"
 msgstr ""
 
-#: src/window.rs:4557
+#: src/window.rs:4559
 msgid "Flagging not possible: {error}"
 msgstr ""
 
-#: src/window.rs:4576
+#: src/window.rs:4578
 #, fuzzy
 msgid "Importance flag changed"
 msgstr "Wichtig"
 
-#: src/window.rs:4580
+#: src/window.rs:4582
 msgid "Setting importance not possible: {error}"
 msgstr ""
 
-#: src/window.rs:4647
+#: src/window.rs:4649
 #, fuzzy
 msgid "Message archived"
 msgstr "Nachrichtenquelle anzeigen"
 
-#: src/window.rs:4651
+#: src/window.rs:4653
 msgid "Archiving not possible: {error}"
 msgstr ""
 
-#: src/window.rs:4670
+#: src/window.rs:4672
 msgid "Message marked as spam"
 msgstr ""
 
-#: src/window.rs:4674
+#: src/window.rs:4676
 msgid "Marking as spam not possible: {error}"
 msgstr ""
 
-#: src/window.rs:4693
+#: src/window.rs:4695
 msgid "Spam mark removed"
 msgstr ""
 
-#: src/window.rs:4697
+#: src/window.rs:4699
 msgid "Removing spam mark not possible: {error}"
 msgstr ""
 
-#: src/window.rs:4820
+#: src/window.rs:4822
 msgid "Invalid reminder link"
 msgstr ""
 
-#: src/window.rs:4825
+#: src/window.rs:4827
 msgid "Reminder link does not match requested component"
 msgstr ""
 
-#: src/window.rs:4912
+#: src/window.rs:4914
 msgid "No unread messages in folder"
 msgstr ""
 
-#: src/window.rs:4917
+#: src/window.rs:4919
 msgid "Error marking messages: {error}"
 msgstr ""
 
-#: src/window.rs:4937
+#: src/window.rs:4939
 msgid "No more unread folders available"
 msgstr ""
 
-#: src/window.rs:5127 src/window.rs:5143
+#: src/window.rs:5129 src/window.rs:5145
 msgid "Calendar view is unavailable"
 msgstr ""
 
-#: src/window.rs:5228
+#: src/window.rs:5230
 msgid "No unread messages in conversation"
 msgstr ""
 
-#: src/window.rs:5233
+#: src/window.rs:5235
 msgid "Error marking conversation: {error}"
 msgstr ""
 
-#: src/window.rs:5262
+#: src/window.rs:5264
 msgid "Error deleting conversation: {error}"
 msgstr ""
 
-#: src/window.rs:5275
+#: src/window.rs:5277
 msgid "Empty Trash?"
 msgstr ""
 
-#: src/window.rs:5279
+#: src/window.rs:5281
 msgid "Trash emptied"
 msgstr ""
 
-#: src/window.rs:5283
+#: src/window.rs:5285
 #, fuzzy
 msgid "Empty Junk?"
 msgstr "Kein Spam"
 
-#: src/window.rs:5287
+#: src/window.rs:5289
 msgid "Junk folder emptied"
 msgstr ""
 
-#: src/window.rs:5291
+#: src/window.rs:5293
 msgid "Permanently empty Trash?"
 msgstr ""
 
-#: src/window.rs:5295
+#: src/window.rs:5297
 msgid "Trash permanently emptied"
 msgstr ""
 
-#: src/window.rs:5299
+#: src/window.rs:5301
 #, fuzzy
 msgid "Empty"
 msgstr "Kein Spam"
 
-#: src/window.rs:5399
+#: src/window.rs:5401
 msgid "There are no unread messages in this folder"
 msgstr ""
 
-#: src/window.rs:5506
+#: src/window.rs:5508
 msgid "Log Console"
 msgstr ""
 
-#: src/window.rs:5513
+#: src/window.rs:5515
 msgid "Filter logs…"
 msgstr ""
 
-#: src/window.rs:5521
+#: src/window.rs:5523
 msgid "Pause live updates"
 msgstr ""
 
-#: src/window.rs:5528
+#: src/window.rs:5530
 msgid "Copy log to clipboard"
 msgstr ""
 
-#: src/window.rs:5535
+#: src/window.rs:5537
 msgid "Clear log"
 msgstr ""
 
-#: src/window.rs:5542
+#: src/window.rs:5544
 msgid "Collapse log console"
 msgstr ""
 
-#: src/window.rs:5549
+#: src/window.rs:5551
 msgid "Close log console"
 msgstr ""
 
-#: src/window.rs:6244 src/window.rs:6258 src/window.rs:6275 and 2 more
+#: src/window.rs:6246 src/window.rs:6260 src/window.rs:6277 and 2 more
 msgid "window.rs"
 msgstr ""
 

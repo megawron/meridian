@@ -7,9 +7,9 @@ from collections import OrderedDict
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POTFILES_PATH = os.path.join(BASE_DIR, "po", "POTFILES.in")
-POT_PATH = os.path.join(BASE_DIR, "po", "evolution-gtk4.pot")
+POT_PATH = os.path.join(BASE_DIR, "po", "meridian.pot")
 DE_PO_PATH = os.path.join(BASE_DIR, "po", "de.po")
-MO_PATH = os.path.join(BASE_DIR, "data", "locale", "de", "LC_MESSAGES", "evolution-gtk4.mo")
+MO_PATH = os.path.join(BASE_DIR, "data", "locale", "de", "LC_MESSAGES", "meridian.mo")
 
 def extract_strings():
     extracted = OrderedDict() # msgid -> list of "file:line"

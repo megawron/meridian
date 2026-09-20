@@ -9,10 +9,10 @@ import re
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PO_DIR = os.path.join(BASE_DIR, "po")
-POT_PATH = os.path.join(PO_DIR, "evolution-gtk4.pot")
+POT_PATH = os.path.join(PO_DIR, "meridian.pot")
 DE_PO_PATH = os.path.join(PO_DIR, "de.po")
 COMPENDIUM = os.path.join(os.path.dirname(BASE_DIR), "evolution", "po", "de.po")
-LOCALEDIR_MO = os.path.join(BASE_DIR, "data", "locale", "de", "LC_MESSAGES", "evolution-gtk4.mo")
+LOCALEDIR_MO = os.path.join(BASE_DIR, "data", "locale", "de", "LC_MESSAGES", "meridian.mo")
 MIG_PATH = os.path.join(BASE_DIR, "scripts", "migrate_mail_page.py")
 
 def main():

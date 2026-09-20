@@ -1,4 +1,4 @@
-i18n.gettext('evolution-gtk4',
+i18n.gettext('meridian',
   preset: 'glib',
   args: [
     '--keyword=gettext',

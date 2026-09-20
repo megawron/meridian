@@ -8,7 +8,7 @@
 pub use gettextrs::{gettext, ngettext, pgettext};
 use std::path::PathBuf;
 
-pub const GETTEXT_PACKAGE: &str = "evolution-gtk4";
+pub const GETTEXT_PACKAGE: &str = "meridian";
 
 /// Initializes gettext localization with system locale and binds textdomain.
 pub fn init_i18n() {
@@ -23,7 +23,7 @@ pub fn init_i18n() {
     // 3. System installed directory (`/usr/share/locale` or `/usr/local/share/locale`)
     let localedir = if let Ok(dir) = std::env::var("LOCALEDIR") {
         PathBuf::from(dir)
-    } else if let Some(dir) = option_env!("EVOLUTION_GTK4_LOCALEDIR") {
+    } else if let Some(dir) = option_env!("MERIDIAN_LOCALEDIR").or(option_env!("EVOLUTION_GTK4_LOCALEDIR")) {
         let pb = PathBuf::from(dir);
         if pb.exists() {
             pb
