@@ -1,5 +1,5 @@
 [package]
-name = "evolution-gtk4"
+name = "meridian"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,7 @@ description.workspace = true
 build = "build.rs"
 
 [[bin]]
-name = "evolution-gtk4"
+name = "meridian"
 path = "main.rs"
 
 [dependencies]

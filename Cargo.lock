@@ -391,49 +391,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "evolution-gtk4"
-version = "0.1.0"
-dependencies = [
- "async-channel",
- "chrono",
- "gdk4",
- "gettext-rs",
- "gio",
- "glib",
- "gtk4",
- "libadwaita",
- "once_cell",
- "pango",
- "pkg-config",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "webkit6",
- "zbus",
-]
-
-[[package]]
-name = "evolution-gtk4-tests"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "gdk4",
- "gio",
- "glib",
- "gtk4",
- "libadwaita",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1260,6 +1217,49 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "meridian"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "chrono",
+ "gdk4",
+ "gettext-rs",
+ "gio",
+ "glib",
+ "gtk4",
+ "libadwaita",
+ "once_cell",
+ "pango",
+ "pkg-config",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "webkit6",
+ "zbus",
+]
+
+[[package]]
+name = "meridian-tests"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "gdk4",
+ "gio",
+ "glib",
+ "gtk4",
+ "libadwaita",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

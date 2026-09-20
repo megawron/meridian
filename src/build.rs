@@ -250,19 +250,17 @@ fn main() {
 /// compiled copy in Cargo's OUT_DIR and let AppSettings use it as a fallback.
 /// Production installs still use the normal system schema search path.
 fn prepare_settings_schema(manifest_dir: &PathBuf, out_dir: &PathBuf) {
-    let source = if manifest_dir
-        .join("data/org.gnome.Evolution4.gschema.xml")
-        .is_file()
-    {
-        manifest_dir.join("data/org.gnome.Evolution4.gschema.xml")
+    let schema_name = "com.martingawron.Meridian.gschema.xml";
+    let source = if manifest_dir.join("data").join(schema_name).is_file() {
+        manifest_dir.join("data").join(schema_name)
     } else {
-        manifest_dir.join("../data/org.gnome.Evolution4.gschema.xml")
+        manifest_dir.join("../data").join(schema_name)
     };
     let schema_dir = out_dir.join("schemas");
     if !source.is_file() || fs::create_dir_all(&schema_dir).is_err() {
         return;
     }
-    let target = schema_dir.join("org.gnome.Evolution4.gschema.xml");
+    let target = schema_dir.join(schema_name);
     if fs::copy(&source, &target).is_err() {
         return;
     }
@@ -271,6 +269,10 @@ fn prepare_settings_schema(manifest_dir: &PathBuf, out_dir: &PathBuf) {
         .arg(&schema_dir)
         .status();
     if status.is_ok_and(|status| status.success()) {
+        println!(
+            "cargo:rustc-env=MERIDIAN_SCHEMA_DIR={}",
+            schema_dir.display()
+        );
         println!(
             "cargo:rustc-env=EVOLUTION_GTK4_SCHEMA_DIR={}",
             schema_dir.display()
@@ -300,11 +302,11 @@ fn compile_locales(manifest_dir: &PathBuf, out_dir: &PathBuf) {
 
                     let out_lang_dir = out_locale_dir.join(lang).join("LC_MESSAGES");
                     let _ = fs::create_dir_all(&out_lang_dir);
-                    let out_mo = out_lang_dir.join("evolution-gtk4.mo");
+                    let out_mo = out_lang_dir.join("meridian.mo");
 
                     let repo_lang_dir = repo_locale_dir.join(lang).join("LC_MESSAGES");
                     let _ = fs::create_dir_all(&repo_lang_dir);
-                    let repo_mo = repo_lang_dir.join("evolution-gtk4.mo");
+                    let repo_mo = repo_lang_dir.join("meridian.mo");
 
                     let status = Command::new("msgfmt")
                         .arg("-o")
@@ -320,6 +322,10 @@ fn compile_locales(manifest_dir: &PathBuf, out_dir: &PathBuf) {
         }
     }
 
+    println!(
+        "cargo:rustc-env=MERIDIAN_LOCALEDIR={}",
+        out_locale_dir.display()
+    );
     println!(
         "cargo:rustc-env=EVOLUTION_GTK4_LOCALEDIR={}",
         out_locale_dir.display()

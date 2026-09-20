@@ -1,10 +1,10 @@
 [package]
-name = "evolution-gtk4-tests"
+name = "meridian-tests"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Comprehensive 4-tier requirement-driven E2E test suite for Evolution GTK4 Preferences & Settings"
+description = "Comprehensive 4-tier requirement-driven E2E test suite for Meridian Preferences & Settings"
 build = "build.rs"
 
 [[test]]

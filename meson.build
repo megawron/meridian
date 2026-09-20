@@ -1,10 +1,10 @@
-# Evolution GTK4 — Meson Build System
+# Meridian — Meson Build System
 # This is the GNOME-standard build system. While the primary build
 # is Cargo-based, Meson handles resource compilation, .desktop file
 # installation, icon installation, and Flatpak integration.
 
 project(
-  'evolution-gtk4',
+  'meridian',
   'rust',
   version: '0.1.0',
   license: 'GPL-3.0-or-later',
@@ -19,7 +19,7 @@ dependency('camel-1.2', version: '>= 3.54')
 dependency('libedataserver-1.2', version: '>= 3.54')
 
 # ── Application metadata ────────────────────────────────────────────────
-application_id = 'org.gnome.Evolution4'
+application_id = 'com.martingawron.Meridian'
 gettext_package = meson.project_name()
 
 # ── Directories ──────────────────────────────────────────────────────────

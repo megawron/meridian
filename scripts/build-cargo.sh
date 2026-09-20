@@ -22,4 +22,4 @@ else
         --target-dir "$target_dir"
 fi
 
-cp "$target_dir/$cargo_profile/evolution-gtk4" "$output"
+cp "$target_dir/$cargo_profile/meridian" "$output"

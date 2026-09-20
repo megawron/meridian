@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Bundle Evolution GTK4 into a proper macOS .app bundle.
+# Bundle Meridian into a proper macOS .app bundle.
 # This ensures that macOS TCC (Transparency, Consent, and Control) recognizes
-# the app as 'org.gnome.Evolution4' and prompts for Calendar, Contacts, and Reminders
+# the app as 'com.martingawron.Meridian' and prompts for Calendar, Contacts, and Reminders
 # permissions, allowing the user to manage them in macOS System Settings.
 
 set -euo pipefail
@@ -16,10 +16,10 @@ cd "${ROOT_DIR}"
 echo "==> Compiling GSettings schemas..."
 glib-compile-schemas data/
 
-echo "==> Building evolution-gtk4 binary with Cargo..."
-cargo build --bin evolution-gtk4
+echo "==> Building meridian binary with Cargo..."
+cargo build --bin meridian
 
-APP_DIR="${ROOT_DIR}/target/Evolution.app"
+APP_DIR="${ROOT_DIR}/target/Meridian.app"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
@@ -29,16 +29,16 @@ echo "==> Assembling ${APP_DIR}..."
 rm -rf "${APP_DIR}"
 mkdir -p "${MACOS_DIR}" "${SCHEMAS_DIR}"
 
-cp target/debug/evolution-gtk4 "${MACOS_DIR}/evolution-gtk4"
+cp target/debug/meridian "${MACOS_DIR}/meridian"
 cp data/Info.plist "${CONTENTS_DIR}/Info.plist"
 cp data/gschemas.compiled "${SCHEMAS_DIR}/"
-cp data/org.gnome.Evolution4.gschema.xml "${SCHEMAS_DIR}/"
+cp data/com.martingawron.Meridian.gschema.xml "${SCHEMAS_DIR}/"
 
 if [ -d data/icons ]; then
     cp -R data/icons "${RESOURCES_DIR}/"
 fi
 
-echo "==> Code-signing Evolution.app (ad-hoc)..."
+echo "==> Code-signing Meridian.app (ad-hoc)..."
 codesign --force --deep -s - "${APP_DIR}"
 
 echo "==> Verifying signature & bundle metadata..."
