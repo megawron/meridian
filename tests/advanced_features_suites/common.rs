@@ -7,8 +7,8 @@ use std::sync::{OnceLock, RwLock};
 use gtk::gio;
 use gtk::gio::prelude::*;
 
-pub const SCHEMA_ID: &str = "org.gnome.Evolution4";
-pub const KEYCHAIN_SERVICE_ID: &str = "org.gnome.Evolution4";
+pub const SCHEMA_ID: &str = "com.martingawron.Meridian";
+pub const KEYCHAIN_SERVICE_ID: &str = "com.martingawron.Meridian";
 
 pub const ERR_SEC_SUCCESS: i32 = 0;
 pub const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
@@ -24,15 +24,18 @@ pub fn init_gtk() -> bool {
     })
 }
 
-/// Obtain the compiled GSettingsSchema for org.gnome.Evolution4.
+/// Obtain the compiled GSettingsSchema for Meridian.
 pub fn get_test_schema() -> gio::SettingsSchema {
     let installed_source = gio::SettingsSchemaSource::default();
     installed_source
         .as_ref()
         .and_then(|source| source.lookup(SCHEMA_ID, true))
         .or_else(|| {
-            let env_dir = std::env::var("EVOLUTION_GTK4_SCHEMA_DIR").ok();
-            let directory = option_env!("EVOLUTION_GTK4_SCHEMA_DIR")
+            let env_dir = std::env::var("MERIDIAN_SCHEMA_DIR")
+                .or_else(|_| std::env::var("EVOLUTION_GTK4_SCHEMA_DIR"))
+                .ok();
+            let directory = option_env!("MERIDIAN_SCHEMA_DIR")
+                .or(option_env!("EVOLUTION_GTK4_SCHEMA_DIR"))
                 .or(env_dir.as_deref())?;
             let source = gio::SettingsSchemaSource::from_directory(
                 directory,
@@ -42,7 +45,7 @@ pub fn get_test_schema() -> gio::SettingsSchema {
             .ok()?;
             source.lookup(SCHEMA_ID, true)
         })
-        .expect("the application settings schema org.gnome.Evolution4 must be available in tests")
+        .expect("the application settings schema com.martingawron.Meridian must be available in tests")
 }
 
 /// Create an isolated, in-memory Settings instance for test execution.

@@ -12,7 +12,7 @@ mod suites;
 #[test]
 fn e2e_suite_initialization() {
     let schema = suites::common::get_test_schema();
-    assert_eq!(schema.id(), "org.gnome.Evolution4");
+    assert_eq!(schema.id(), "com.martingawron.Meridian");
     assert!(schema.has_key("active-view"));
     assert!(schema.has_key("color-scheme"));
     assert!(schema.has_key("mail-layout"));

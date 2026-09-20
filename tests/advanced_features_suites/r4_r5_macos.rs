@@ -3,7 +3,7 @@
 // R4 & R5 E2E Integration Suite: Native macOS Keychain & Portable Mail Engine
 //
 // Tests:
-// - CredentialService facade contract & lifecycle under "org.gnome.Evolution4"
+// - CredentialService facade contract & lifecycle under "com.martingawron.Meridian"
 // - Cross-account credential isolation & multi-service partition
 // - Portable IMAP folder parsing and RFC822 envelope extraction
 // - Portable SMTP recipient delivery sequence and RFC 5321 dot-stuffing
@@ -18,8 +18,8 @@ use crate::advanced_features_suites::r5_portable_engine::{
 #[test]
 fn test_r4_credential_service_facade_service_contract() {
     assert_eq!(
-        KEYCHAIN_SERVICE_ID, "org.gnome.Evolution4",
-        "Keychain service identifier must be exactly 'org.gnome.Evolution4'"
+        KEYCHAIN_SERVICE_ID, "com.martingawron.Meridian",
+        "Keychain service identifier must be exactly 'com.martingawron.Meridian'"
     );
 }
 

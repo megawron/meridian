@@ -541,7 +541,7 @@ fn tier1_backup_clean_gsettings_reset_undefined_keys() {
     for &legacy in LEGACY_KEYS_MUST_NOT_EXIST {
         assert!(
             !schema.has_key(legacy),
-            "Legacy key '{legacy}' must NOT exist in org.gnome.Evolution4 schema"
+            "Legacy key '{legacy}' must NOT exist in com.martingawron.Meridian schema"
         );
     }
 }

@@ -2,7 +2,7 @@
 //
 // R4: Native macOS Keychain Integration Tests
 // Covers:
-// - macOS Keychain FFI & CredentialService CRUD operations under "org.gnome.Evolution4"
+// - macOS Keychain FFI & CredentialService CRUD operations under "com.martingawron.Meridian"
 // - Service isolation, password updates, Unicode/special characters, and deletion
 // - Clean Linux compilation contract (zero macOS symbol leak)
 
@@ -54,8 +54,8 @@ impl<'a> MockCredentialService<'a> {
 #[test]
 fn r4_test_keychain_service_identifier_contract() {
     assert_eq!(
-        KEYCHAIN_SERVICE_ID, "org.gnome.Evolution4",
-        "Keychain service identifier must be exactly 'org.gnome.Evolution4'"
+        KEYCHAIN_SERVICE_ID, "com.martingawron.Meridian",
+        "Keychain service identifier must be exactly 'com.martingawron.Meridian'"
     );
 }
 
@@ -175,10 +175,10 @@ fn r4_test_keychain_service_name_isolation() {
     let store = MockKeychainStore::new();
     // Insert under different service
     store.set_password("other.app.Service", "user1", "other_pass");
-    store.set_password("org.gnome.Evolution4", "user1", "evolution_pass");
+    store.set_password("com.martingawron.Meridian", "user1", "evolution_pass");
 
     assert_eq!(
-        store.get_password("org.gnome.Evolution4", "user1").unwrap(),
+        store.get_password("com.martingawron.Meridian", "user1").unwrap(),
         Some("evolution_pass".to_string())
     );
     assert_eq!(

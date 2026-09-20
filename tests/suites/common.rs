@@ -7,9 +7,9 @@ use gtk::gio::prelude::*;
 use serde_json::{Map, Value};
 
 /// The canonical application ID and schema ID.
-pub const SCHEMA_ID: &str = "org.gnome.Evolution4";
+pub const SCHEMA_ID: &str = "com.martingawron.Meridian";
 
-/// List of 12 legacy keys that MUST NOT exist in org.gnome.Evolution4 schema.
+/// List of 12 legacy keys that MUST NOT exist in schema.
 /// (Feature 2: Clean GSettings Reset Undefined Keys)
 pub const LEGACY_KEYS_MUST_NOT_EXIST: &[&str] = &[
     "sidebar-width",
@@ -26,15 +26,18 @@ pub const LEGACY_KEYS_MUST_NOT_EXIST: &[&str] = &[
     "mail-list-wide-column-order",
 ];
 
-/// Obtain the compiled GSettingsSchema for org.gnome.Evolution4.
+/// Obtain the compiled GSettingsSchema for Meridian.
 pub fn get_test_schema() -> gio::SettingsSchema {
     let installed_source = gio::SettingsSchemaSource::default();
     installed_source
         .as_ref()
         .and_then(|source| source.lookup(SCHEMA_ID, true))
         .or_else(|| {
-            let env_dir = std::env::var("EVOLUTION_GTK4_SCHEMA_DIR").ok();
-            let directory = option_env!("EVOLUTION_GTK4_SCHEMA_DIR")
+            let env_dir = std::env::var("MERIDIAN_SCHEMA_DIR")
+                .or_else(|_| std::env::var("EVOLUTION_GTK4_SCHEMA_DIR"))
+                .ok();
+            let directory = option_env!("MERIDIAN_SCHEMA_DIR")
+                .or(option_env!("EVOLUTION_GTK4_SCHEMA_DIR"))
                 .or(env_dir.as_deref())?;
             let source = gio::SettingsSchemaSource::from_directory(
                 directory,
@@ -44,7 +47,7 @@ pub fn get_test_schema() -> gio::SettingsSchema {
             .ok()?;
             source.lookup(SCHEMA_ID, true)
         })
-        .expect("the application settings schema org.gnome.Evolution4 must be available in tests")
+        .expect("the application settings schema com.martingawron.Meridian must be available in tests")
 }
 
 thread_local! {

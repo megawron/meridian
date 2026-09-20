@@ -124,7 +124,7 @@ fn tier4_workload_complete_account_onboarding_and_send_flow() {
     assert_eq!(conf.incoming.hostname, "imap.gmail.com");
     assert_eq!(conf.outgoing.hostname, "smtp.gmail.com");
 
-    // 2. User enters password, saved to Keychain under org.gnome.Evolution4
+    // 2. User enters password, saved to Keychain under com.martingawron.Meridian
     let store = MockKeychainStore::new();
     let creds = MockCredentialService::new(&store);
     creds.store_password(email, "AppSpecificPassword123").unwrap();

@@ -3330,7 +3330,7 @@ fn tier5_challenger2_m3_multi_account_keychain_isolation_and_boundary_matrix() {
     let store = MockKeychainStore::new();
     let creds = MockCredentialService::new(&store);
 
-    // 1. Matrix of 10 distinct accounts under "org.gnome.Evolution4"
+    // 1. Matrix of 10 distinct accounts under "com.martingawron.Meridian"
     let test_matrix = [
         ("primary@example.com", "Password_Primary_2026!"),
         ("secondary@example.com", "Password_Secondary_#99"),
@@ -3421,7 +3421,7 @@ fn tier5_challenger2_m3_cross_platform_gating_and_cfg_cleanliness() {
     );
 
     // 2. Service identifier contract
-    assert_eq!(KEYCHAIN_SERVICE_ID, "org.gnome.Evolution4");
+    assert_eq!(KEYCHAIN_SERVICE_ID, "com.martingawron.Meridian");
 
     // 3. Native adapter availability contract:
     // On macOS, native_adapter_available() must be true even without libcamel/EDS bridge.
