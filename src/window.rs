@@ -782,33 +782,51 @@ impl EvolutionWindow {
         let view_name = self.active_view_name();
         let is_vis = self.is_sidebar_visible_for_active_view();
 
-        match view_name.as_str() {
-            "mail" => {
-                if let Some(mail) = self.mail_page() {
-                    mail.set_sidebar_visible(is_vis);
-                }
+        if self.imp().is_mobile.get() {
+            if let Some(mail) = self.mail_page() {
+                mail.sync_mail_layout_visibility();
             }
-            "calendar" => {
-                if let Some(cal) = self.calendar_page() {
-                    cal.set_sidebar_visible(is_vis);
-                }
+            if let Some(cal) = self.calendar_page() {
+                cal.sync_calendar_layout_visibility();
             }
-            "contacts" => {
-                if let Some(contacts) = self.contacts_page() {
-                    contacts.set_sidebar_visible(is_vis);
-                }
+            if let Some(contacts) = self.contacts_page() {
+                contacts.sync_contacts_layout_visibility();
             }
-            "tasks" => {
-                if let Some(tasks) = self.tasks_page() {
-                    tasks.set_sidebar_visible(is_vis);
-                }
+            if let Some(tasks) = self.tasks_page() {
+                tasks.sync_tasks_layout_visibility();
             }
-            "memos" => {
-                if let Some(memos) = self.memos_page() {
-                    memos.set_sidebar_visible(is_vis);
-                }
+            if let Some(memos) = self.memos_page() {
+                memos.sync_memos_layout_visibility();
             }
-            _ => {}
+        } else {
+            match view_name.as_str() {
+                "mail" => {
+                    if let Some(mail) = self.mail_page() {
+                        mail.set_sidebar_visible(is_vis);
+                    }
+                }
+                "calendar" => {
+                    if let Some(cal) = self.calendar_page() {
+                        cal.set_sidebar_visible(is_vis);
+                    }
+                }
+                "contacts" => {
+                    if let Some(contacts) = self.contacts_page() {
+                        contacts.set_sidebar_visible(is_vis);
+                    }
+                }
+                "tasks" => {
+                    if let Some(tasks) = self.tasks_page() {
+                        tasks.set_sidebar_visible(is_vis);
+                    }
+                }
+                "memos" => {
+                    if let Some(memos) = self.memos_page() {
+                        memos.set_sidebar_visible(is_vis);
+                    }
+                }
+                _ => {}
+            }
         }
 
         let title_str = match view_name.as_str() {
@@ -1262,6 +1280,7 @@ impl EvolutionWindow {
         if let Some(sb_h) = self.imp().sidebar_header.borrow().as_ref() {
             if is_mobile {
                 sb_h.set_visible(false);
+                sb_h.set_size_request(0, -1);
                 if let Some(res_btn) = self.imp().restore_sidebar_button.borrow().as_ref() {
                     res_btn.set_visible(false);
                 }
@@ -1271,6 +1290,15 @@ impl EvolutionWindow {
             } else {
                 let vis = self.is_sidebar_visible_for_active_view();
                 sb_h.set_visible(vis);
+                let target_pos = AppSettings::try_new()
+                    .map(|s| s.mail_sidebar_position())
+                    .unwrap_or(260)
+                    .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+                if vis {
+                    sb_h.set_size_request(target_pos, -1);
+                } else {
+                    sb_h.set_size_request(0, -1);
+                }
                 if let Some(res_btn) = self.imp().restore_sidebar_button.borrow().as_ref() {
                     res_btn.set_visible(!vis);
                 }
@@ -1295,6 +1323,13 @@ impl EvolutionWindow {
     pub fn update_sidebar_title(&self, title: &str) {
         if let Some(st) = self.imp().sidebar_title.borrow().as_ref() {
             st.set_title(title);
+        }
+    }
+
+    pub fn set_sidebar_position_sync(&self, pos: i32) {
+        let clamped = pos.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+        if let Some(sb_h) = self.imp().sidebar_header.borrow().as_ref() {
+            sb_h.set_size_request(clamped, -1);
         }
     }
 
@@ -1379,11 +1414,6 @@ impl EvolutionWindow {
         }
 
         if show {
-            if let Some(m) = self.mail_page() { m.set_sidebar_visible(true); }
-            if let Some(c) = self.calendar_page() { c.set_sidebar_visible(true); }
-            if let Some(c) = self.contacts_page() { c.set_sidebar_visible(true); }
-            if let Some(t) = self.tasks_page() { t.set_sidebar_visible(true); }
-            if let Some(m) = self.memos_page() { m.set_sidebar_visible(true); }
             if let Some(start) = outer_paned.start_child() {
                 start.set_visible(true);
             }
@@ -1457,7 +1487,7 @@ impl EvolutionWindow {
             }
         });
 
-        let duration = if show { 250 } else { 200 };
+        let duration = if show { 160 } else { 140 };
         let animation = adw::TimedAnimation::builder()
             .widget(&*self)
             .value_from(from_pos)
@@ -1482,6 +1512,11 @@ impl EvolutionWindow {
             }
             if let Some(win) = win_weak_done.upgrade() {
                 win.imp().sidebar_animation.borrow_mut().take();
+                if is_mail {
+                    if let Some(mail) = win.mail_page() {
+                        mail.imp().sidebar_animating.set(false);
+                    }
+                }
                 if let Some(m) = win.mail_page() { m.set_sidebar_visible(show); }
                 if let Some(c) = win.calendar_page() { c.set_sidebar_visible(show); }
                 if let Some(c) = win.contacts_page() { c.set_sidebar_visible(show); }
@@ -1491,6 +1526,7 @@ impl EvolutionWindow {
                 if !show {
                     if let Some(sb_h) = win.imp().sidebar_header.borrow().as_ref() {
                         sb_h.set_visible(false);
+                        sb_h.set_size_request(0, -1);
                         sb_h.set_show_start_title_buttons(true);
                     }
                     if let Some(res_btn) = win.imp().restore_sidebar_button.borrow().as_ref() {
@@ -2827,6 +2863,7 @@ impl EvolutionWindow {
                             .unwrap_or(true);
                         (pos, vis)
                     });
+                let effective_vis = if is_mobile { false } else { sidebar_vis };
                 match name {
                     "calendar"
                         if calendar_bin
@@ -2837,7 +2874,7 @@ impl EvolutionWindow {
                         let page = CalendarPage::new();
                         page.set_screen_mode(is_mobile, is_tablet);
                         page.set_sidebar_position(sidebar_pos);
-                        page.set_sidebar_visible(sidebar_vis);
+                        page.set_sidebar_visible(effective_vis);
                         calendar_bin.set_child(Some(&page));
                     }
                     "contacts"
@@ -2849,7 +2886,7 @@ impl EvolutionWindow {
                         let page = ContactsPage::new();
                         page.set_screen_mode(is_mobile, is_tablet);
                         page.set_sidebar_position(sidebar_pos);
-                        page.set_sidebar_visible(sidebar_vis);
+                        page.set_sidebar_visible(effective_vis);
                         if let Some(bar) = page.search_bar() {
                             if let Some(win) = window_weak.upgrade() {
                                 if let Some(btn) = win.imp().search_button.borrow().as_ref() {
@@ -2874,7 +2911,7 @@ impl EvolutionWindow {
                         let page = crate::views::TasksPage::new();
                         page.set_screen_mode(is_mobile, is_tablet);
                         page.set_sidebar_position(sidebar_pos);
-                        page.set_sidebar_visible(sidebar_vis);
+                        page.set_sidebar_visible(effective_vis);
                         if let Some(bar) = page.search_bar() {
                             if let Some(win) = window_weak.upgrade() {
                                 if let Some(btn) = win.imp().search_button.borrow().as_ref() {
@@ -2899,7 +2936,7 @@ impl EvolutionWindow {
                         let page = crate::views::MemosPage::new();
                         page.set_screen_mode(is_mobile, is_tablet);
                         page.set_sidebar_position(sidebar_pos);
-                        page.set_sidebar_visible(sidebar_vis);
+                        page.set_sidebar_visible(effective_vis);
                         if let Some(bar) = page.search_bar() {
                             if let Some(win) = window_weak.upgrade() {
                                 if let Some(btn) = win.imp().search_button.borrow().as_ref() {
@@ -3486,11 +3523,11 @@ impl EvolutionWindow {
         // Responsive Breakpoints: 3-Tier Model
         // 1. Desktop (> 1000sp): 3 columns
         // 2. Tablet (720sp - 1000sp): 2 columns
-        // 3. Mobile (< 720sp): 1 column drill-down
+        // 3. Mobile (< 750sp): 1 column drill-down
         let bp_tablet =
             adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 1000sp").unwrap());
         let bp_mobile =
-            adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 720sp").unwrap());
+            adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 750sp").unwrap());
 
         let tablet_applied = Rc::new(Cell::new(false));
         let mobile_applied = Rc::new(Cell::new(false));

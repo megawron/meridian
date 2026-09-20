@@ -4560,7 +4560,7 @@ impl TasksPage {
 
         paned.set_start_child(Some(&sidebar_outer_box));
         paned.set_resize_start_child(false);
-        paned.set_shrink_start_child(false);
+        paned.set_shrink_start_child(true);
 
         // ── Main Content (Task List) ────────────────────────────────────
 
@@ -5091,7 +5091,8 @@ impl TasksPage {
         let toolbar_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Never)
-            .propagate_natural_width(true)
+            .propagate_natural_width(false)
+            .min_content_width(0)
             .child(&toolbar)
             .build();
         toolbar_scroll.set_visible(
@@ -7031,6 +7032,8 @@ impl TasksPage {
         preview_paned.set_end_child(Some(&preview_box));
         preview_paned.set_resize_start_child(true);
         preview_paned.set_resize_end_child(true);
+        preview_paned.set_shrink_start_child(true);
+        preview_paned.set_shrink_end_child(true);
         preview_paned.set_position(
             AppSettings::try_new()
                 .map(|settings| settings.task_preview_position(preview_orientation.setting_value()))
@@ -7082,6 +7085,9 @@ impl TasksPage {
                 let clamped = position.clamp(crate::window::MIN_SIDEBAR_WIDTH, crate::window::MAX_SIDEBAR_WIDTH);
                 if position != clamped {
                     paned.set_position(clamped);
+                }
+                if let Some(win) = crate::window::find_evolution_window(paned) {
+                    win.set_sidebar_position_sync(clamped);
                 }
                 if settings.mail_sidebar_position() != clamped {
                     settings.set_mail_sidebar_position(clamped);

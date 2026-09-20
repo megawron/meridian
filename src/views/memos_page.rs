@@ -2068,7 +2068,7 @@ impl MemosPage {
 
         paned.set_start_child(Some(&sidebar_outer_box));
         paned.set_resize_start_child(false);
-        paned.set_shrink_start_child(false);
+        paned.set_shrink_start_child(true);
 
         // ── Main Content (Memo Detail View) ──────────────────────────────
 
@@ -2447,7 +2447,8 @@ impl MemosPage {
         let memos_toolbar_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Never)
-            .propagate_natural_width(true)
+            .propagate_natural_width(false)
+            .min_content_width(0)
             .child(&memos_toolbar)
             .build();
         memos_toolbar_scroll.set_visible(
@@ -2527,7 +2528,7 @@ impl MemosPage {
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .vexpand(true)
             .hexpand(true)
-            .min_content_width(220)
+            .min_content_width(0)
             .build();
 
         let memo_table_header = gtk::DrawingArea::builder()
@@ -2689,7 +2690,7 @@ impl MemosPage {
             .hexpand(true)
             .css_classes(vec!["memo-preview-pane"])
             .build();
-        memo_preview_box.set_size_request(260, -1);
+        memo_preview_box.set_size_request(0, -1);
         let preview_box = memo_preview_box.clone();
 
         let memo_detail_stack = gtk::Stack::builder()
@@ -2737,8 +2738,8 @@ impl MemosPage {
         memo_preview_paned.set_end_child(Some(&preview_box));
         memo_preview_paned.set_resize_start_child(true);
         memo_preview_paned.set_resize_end_child(true);
-        memo_preview_paned.set_shrink_start_child(false);
-        memo_preview_paned.set_shrink_end_child(false);
+        memo_preview_paned.set_shrink_start_child(true);
+        memo_preview_paned.set_shrink_end_child(true);
 
         let initial_preview_pos = AppSettings::try_new()
             .map(|settings| {
@@ -4601,7 +4602,7 @@ impl MemosPage {
 
         paned.set_end_child(Some(&content_box));
         paned.set_resize_end_child(true);
-        paned.set_shrink_end_child(false);
+        paned.set_shrink_end_child(true);
 
         let sidebar_position = AppSettings::try_new()
             .map(|settings| settings.mail_sidebar_position())
@@ -4619,6 +4620,9 @@ impl MemosPage {
                 let clamped = position.clamp(crate::window::MIN_SIDEBAR_WIDTH, crate::window::MAX_SIDEBAR_WIDTH);
                 if position != clamped {
                     paned.set_position(clamped);
+                }
+                if let Some(win) = crate::window::find_evolution_window(paned) {
+                    win.set_sidebar_position_sync(clamped);
                 }
                 if settings.mail_sidebar_position() != clamped {
                     settings.set_mail_sidebar_position(clamped);

@@ -961,20 +961,20 @@ impl ContactsPage {
             }
         } else if is_tablet {
             if let Some(lc) = list_container.as_ref() {
-                lc.set_size_request(240, -1);
+                lc.set_size_request(0, -1);
                 lc.set_visible(true);
             }
             if let Some(db) = detail_box.as_ref() {
-                db.set_size_request(280, -1);
+                db.set_size_request(0, -1);
                 db.set_visible(true);
             }
         } else {
             if let Some(lc) = list_container.as_ref() {
-                lc.set_size_request(280, -1);
+                lc.set_size_request(0, -1);
                 lc.set_visible(true);
             }
             if let Some(db) = detail_box.as_ref() {
-                db.set_size_request(340, -1);
+                db.set_size_request(0, -1);
                 db.set_visible(true);
             }
         }
@@ -1264,6 +1264,7 @@ impl ContactsPage {
                                 backend_name: collection.backend_name.clone(),
                                 enabled: collection.enabled,
                                 parent_name: Some(account_name),
+                                color: None,
                             });
                         }
                     }
@@ -2704,7 +2705,7 @@ impl ContactsPage {
 
         paned.set_start_child(Some(&sidebar_outer_box));
         paned.set_resize_start_child(false);
-        paned.set_shrink_start_child(false);
+        paned.set_shrink_start_child(true);
 
         // ── Contact Detail (Content) ────────────────────────────────────
 
@@ -4075,7 +4076,8 @@ impl ContactsPage {
         let contacts_toolbar_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Never)
-            .propagate_natural_width(true)
+            .propagate_natural_width(false)
+            .min_content_width(0)
             .child(&contacts_toolbar)
             .build();
         contacts_toolbar_scroll.set_visible(
@@ -4426,8 +4428,8 @@ impl ContactsPage {
             });
         }
 
-        list_container.set_size_request(280, -1);
-        detail_box.set_size_request(340, -1);
+        list_container.set_size_request(0, -1);
+        detail_box.set_size_request(0, -1);
         detail_box.set_vexpand(true);
         detail_box.set_hexpand(true);
 
@@ -4441,8 +4443,8 @@ impl ContactsPage {
         preview_paned.set_end_child(Some(&detail_box));
         preview_paned.set_resize_start_child(false);
         preview_paned.set_resize_end_child(true);
-        preview_paned.set_shrink_start_child(false);
-        preview_paned.set_shrink_end_child(false);
+        preview_paned.set_shrink_start_child(true);
+        preview_paned.set_shrink_end_child(true);
 
         let vpane_pos = AppSettings::try_new()
             .map(|s| s.contact_vpane_position())
@@ -4485,8 +4487,8 @@ impl ContactsPage {
         paned.set_end_child(Some(&content_box));
         paned.set_resize_start_child(false);
         paned.set_resize_end_child(true);
-        paned.set_shrink_start_child(false);
-        paned.set_shrink_end_child(false);
+        paned.set_shrink_start_child(true);
+        paned.set_shrink_end_child(true);
 
         let sidebar_position = AppSettings::try_new()
             .map(|settings| settings.mail_sidebar_position())
@@ -4503,6 +4505,9 @@ impl ContactsPage {
                 }
                 let position = paned.position();
                 if (80..=1500).contains(&position) {
+                    if let Some(win) = crate::window::find_evolution_window(paned) {
+                        win.set_sidebar_position_sync(position);
+                    }
                     if settings_for_notify.mail_sidebar_position() != position {
                         settings_for_notify.set_mail_sidebar_position(position);
                     }
