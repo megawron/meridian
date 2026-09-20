@@ -13,6 +13,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::i18n::{gettext, ngettext};
 use crate::services::calendar_category_service::CalendarCategoryStore;
 use crate::services::calendar_category_service::category_names_from_ical_component;
 use crate::services::calendar_export_service::{CalendarExportFormat, export_calendar_events};
@@ -1099,6 +1100,7 @@ mod imp {
         pub calendar_next_button: RefCell<Option<gtk::Button>>,
         pub calendar_today_button: RefCell<Option<gtk::Button>>,
         pub new_event_button: RefCell<Option<gtk::Button>>,
+        pub btn_availability: RefCell<Option<gtk::Button>>,
         pub selected_time_slot: RefCell<Option<SelectedTimeSlot>>,
         pub syncing_calendar_view: Cell<bool>,
         pub month_grid: RefCell<Option<gtk::Grid>>,
@@ -1234,6 +1236,7 @@ mod imp {
                 calendar_next_button: RefCell::new(None),
                 calendar_today_button: RefCell::new(None),
                 new_event_button: RefCell::new(None),
+                btn_availability: RefCell::new(None),
                 selected_time_slot: RefCell::new(None),
                 syncing_calendar_view: Cell::new(false),
                 month_grid: RefCell::new(None),
@@ -1500,6 +1503,27 @@ impl CalendarPage {
         imp.is_mobile.set(is_mobile);
         imp.is_tablet.set(is_tablet);
         self.sync_calendar_layout_visibility();
+        self.sync_toolbar_button_labels();
+    }
+
+    pub(crate) fn apply_toolbar_button_modes(&self, is_compact: bool) {
+        let imp = self.imp();
+        if let Some(btn) = imp.btn_availability.borrow().as_ref() {
+            if is_compact {
+                btn.set_child(Some(&gtk::Image::from_icon_name("appointment-soon-symbolic")));
+            } else {
+                let label = gtk::Label::builder()
+                    .label(&crate::i18n::gettext("Free/Busy"))
+                    .valign(gtk::Align::Center)
+                    .build();
+                btn.set_child(Some(&label));
+            }
+        }
+    }
+
+    pub(crate) fn sync_toolbar_button_labels(&self) {
+        let is_compact = self.imp().is_mobile.get() || (self.width() > 0 && self.width() < 820);
+        self.apply_toolbar_button_modes(is_compact);
     }
 
     pub(crate) fn can_navigate_back(&self) -> bool {
@@ -1579,7 +1603,7 @@ impl CalendarPage {
     pub fn is_sidebar_visible(&self) -> bool {
         if let Some(paned) = self.imp().outer_paned.borrow().as_ref() {
             if let Some(start) = paned.start_child() {
-                return start.is_visible();
+                return start.property::<bool>("visible");
             }
         }
         true
@@ -1594,7 +1618,7 @@ impl CalendarPage {
                 let saved_pos = AppSettings::try_new()
                     .map(|s| s.mail_sidebar_position())
                     .unwrap_or(260)
-                    .clamp(240, 1500);
+                    .clamp(crate::window::MIN_SIDEBAR_WIDTH, crate::window::MAX_SIDEBAR_WIDTH);
                 if paned.position() < 180 {
                     paned.set_position(saved_pos);
                 }
@@ -1741,13 +1765,13 @@ impl CalendarPage {
         let status = srv.check_permission(crate::services::MacosPermissionKind::Calendar);
         match status {
             crate::services::MacosPermissionStatus::NotDetermined => {
-                banner.set_title("Apple Kalender verbinden: Möchten Sie Ihre macOS Kalender und Termine in Evolution anzeigen?");
-                banner.set_button_label(Some("Apple Kalender verbinden"));
+                banner.set_title(&gettext("Connect Apple Calendar: Would you like to view your macOS calendars and appointments in Evolution?"));
+                banner.set_button_label(Some(&gettext("Connect Apple Calendar")));
                 banner.set_revealed(true);
             }
             crate::services::MacosPermissionStatus::Denied => {
-                banner.set_title("Zugriff auf Apple Kalender nicht erlaubt. In den macOS Systemeinstellungen aktivieren.");
-                banner.set_button_label(Some("Systemeinstellungen öffnen"));
+                banner.set_title(&gettext("Access to Apple Calendar not allowed. Enable it in macOS System Settings."));
+                banner.set_button_label(Some(&gettext("Open System Settings")));
                 banner.set_revealed(true);
             }
             _ => {
@@ -1788,31 +1812,33 @@ impl CalendarPage {
     pub fn print_visible_agenda(&self) {
         let events = self.loaded_calendar_events();
         if events.is_empty() {
-            show_toast_for_widget(self, "Keine Termine zum Drucken verfügbar");
+            show_toast_for_widget(self, &crate::i18n::gettext("No events available to print"));
             return;
         }
         let view_name = match *self.imp().current_view.borrow() {
-            CalendarView::Day => "Tagesansicht",
-            CalendarView::Week => "Wochenansicht",
-            CalendarView::WorkWeek => "Arbeitswochenansicht",
-            CalendarView::Month => "Monatsansicht",
-            CalendarView::Agenda => "Agenda",
-            CalendarView::Year => "Jahresübersicht",
-            CalendarView::List => "Terminliste",
+            CalendarView::Day => crate::i18n::gettext("Day View"),
+            CalendarView::Week => crate::i18n::gettext("Week View"),
+            CalendarView::WorkWeek => crate::i18n::gettext("Work Week View"),
+            CalendarView::Month => crate::i18n::gettext("Month View"),
+            CalendarView::Agenda => crate::i18n::gettext("Agenda"),
+            CalendarView::Year => crate::i18n::gettext("Year Overview"),
+            CalendarView::List => crate::i18n::gettext("Event List"),
         };
-        match build_calendar_list_print_document(&events, Some(view_name)) {
+        match build_calendar_list_print_document(&events, Some(&view_name)) {
             Ok(doc) => {
                 show_toast_for_widget(
                     self,
                     &format!(
-                        "Druckdokument vorbereitet ({} Zeichen, {} Termine); Print-Portal ist Linux-Handoff",
+                        "{}: {} ({} chars, {} events)",
+                        crate::i18n::gettext("Print document prepared"),
+                        view_name,
                         doc.html.len(),
                         doc.event_count
                     ),
                 );
             }
             Err(err) => {
-                show_toast_for_widget(self, &format!("Drucken fehlgeschlagen: {err}"));
+                show_toast_for_widget(self, &gettext("Printing failed: {error}").replace("{error}", &err.to_string()));
             }
         }
     }
@@ -1821,7 +1847,7 @@ impl CalendarPage {
     pub fn export_calendar_dialog(&self) {
         let events = self.loaded_calendar_events();
         if events.is_empty() {
-            show_toast_for_widget(self, "Keine Termine zum Exportieren verfügbar");
+            show_toast_for_widget(self, &gettext("No appointments available to export"));
             return;
         }
         let Some(root) = self.root().and_downcast::<gtk::Window>() else {
@@ -1829,15 +1855,15 @@ impl CalendarPage {
         };
 
         let filter_ics = gtk::FileFilter::new();
-        filter_ics.set_name(Some("iCalendar (*.ics)"));
+        filter_ics.set_name(Some(&gettext("iCalendar (*.ics)")));
         filter_ics.add_pattern("*.ics");
 
         let filter_csv = gtk::FileFilter::new();
-        filter_csv.set_name(Some("Kommagetrennte Werte (*.csv)"));
+        filter_csv.set_name(Some(&gettext("Comma-Separated Values (*.csv)")));
         filter_csv.add_pattern("*.csv");
 
         let filter_rdf = gtk::FileFilter::new();
-        filter_rdf.set_name(Some("RDF / RSS 1.0 (*.rdf)"));
+        filter_rdf.set_name(Some(&gettext("RDF / RSS 1.0 (*.rdf)")));
         filter_rdf.add_pattern("*.rdf");
 
         let filters = gio::ListStore::new::<gtk::FileFilter>();
@@ -1846,10 +1872,10 @@ impl CalendarPage {
         filters.append(&filter_rdf);
 
         let file_dialog = gtk::FileDialog::builder()
-            .title("Kalender exportieren")
+            .title(&gettext("Export Calendar"))
             .filters(&filters)
             .default_filter(&filter_ics)
-            .initial_name("kalender.ics")
+            .initial_name("calendar.ics")
             .modal(true)
             .build();
 
@@ -1891,13 +1917,15 @@ impl CalendarPage {
             match save_res {
                 Ok(_) => show_toast_for_widget(
                     &page,
-                    &format!(
-                        "{} Termin(e) als {} exportiert",
-                        events.len(),
-                        format.display_label()
-                    ),
+                    &ngettext(
+                        "1 appointment exported as {format}",
+                        "{n} appointments exported as {format}",
+                        events.len() as u32,
+                    )
+                    .replace("{format}", format.display_label())
+                    .replace("{n}", &events.len().to_string()),
                 ),
-                Err(err) => show_toast_for_widget(&page, &format!("Exportfehler: {err}")),
+                Err(err) => show_toast_for_widget(&page, &gettext("Export error: {error}").replace("{error}", &err.to_string())),
             }
         });
     }
@@ -1913,10 +1941,10 @@ impl CalendarPage {
         let has_cached_index = self.imp().calendar_snapshot_index.borrow().is_some();
         let needs_preview = !has_cached_index;
         if has_cached_index {
-            self.set_calendar_loading_status(true, "Aktualisierung läuft …");
+            self.set_calendar_loading_status(true, &gettext("Update in progress…"));
         } else {
             self.bump_calendar_revision();
-            self.set_calendar_loading_status(true, "Kalender werden geladen …");
+            self.set_calendar_loading_status(true, &gettext("Loading calendars…"));
             self.imp().calendar_list_projection_count.set(None);
             self.refresh_task_sidebar();
             self.refresh_task_and_memo_panes();
@@ -1978,7 +2006,7 @@ impl CalendarPage {
                     let snapshot_index = Arc::new(CalendarSnapshotIndex::new(Arc::new(snapshot)));
                     (snapshot_index, origin, warning)
                 })
-                .map_err(|_| "Der Kalender-Worker ist unerwartet fehlgeschlagen".to_string());
+                .map_err(|_| gettext("The calendar worker failed unexpectedly"));
                 if cancellation.load(Ordering::Acquire) {
                     return;
                 }
@@ -2014,8 +2042,8 @@ impl CalendarPage {
             if let Some(page) = page.upgrade()
                 && page.finish_calendar_snapshot_load(generation, &cancellation_for_receiver)
             {
-                page.set_calendar_load_error("Kalender konnten nicht geladen werden");
-                page.set_calendar_loading_status(false, "Kalender konnten nicht geladen werden");
+                page.set_calendar_load_error(&gettext("Calendars could not be loaded"));
+                page.set_calendar_loading_status(false, &gettext("Calendars could not be loaded"));
                 page.refresh_calendar_views();
             }
         });
@@ -2032,7 +2060,7 @@ impl CalendarPage {
             .borrow_mut()
             .cancel(generation)
         {
-            self.set_calendar_loading_status(false, "Kalender-Laden abgebrochen");
+            self.set_calendar_loading_status(false, &gettext("Calendar loading cancelled"));
         }
     }
 
@@ -2054,13 +2082,9 @@ impl CalendarPage {
             Ok(result) => result,
             Err(error) => {
                 if self.finish_calendar_snapshot_load(generation, &cancellation) {
-                    self.set_calendar_load_error(&format!(
-                        "Kalender konnten nicht geladen werden: {error}"
-                    ));
-                    self.set_calendar_loading_status(
-                        false,
-                        &format!("Kalender konnten nicht geladen werden: {error}"),
-                    );
+                    let err_msg = gettext("Calendars could not be loaded: {error}").replace("{error}", &error.to_string());
+                    self.set_calendar_load_error(&err_msg);
+                    self.set_calendar_loading_status(false, &err_msg);
                     self.refresh_calendar_views();
                 }
                 return;
@@ -2070,32 +2094,36 @@ impl CalendarPage {
 
         let Some(event_list) = self.imp().event_list.borrow().as_ref().cloned() else {
             if self.finish_calendar_snapshot_load(generation, &cancellation) {
-                self.set_calendar_load_error("Kalenderansicht nicht verfügbar");
-                self.set_calendar_loading_status(false, "Kalenderansicht nicht verfügbar");
+                let err_msg = gettext("Calendar view not available");
+                self.set_calendar_load_error(&err_msg);
+                self.set_calendar_loading_status(false, &err_msg);
                 self.refresh_calendar_views();
             }
             return;
         };
         let Some(event_records) = self.imp().event_records.borrow().as_ref().cloned() else {
             if self.finish_calendar_snapshot_load(generation, &cancellation) {
-                self.set_calendar_load_error("Kalenderdaten nicht verfügbar");
-                self.set_calendar_loading_status(false, "Kalenderdaten nicht verfügbar");
+                let err_msg = gettext("Calendar data not available");
+                self.set_calendar_load_error(&err_msg);
+                self.set_calendar_loading_status(false, &err_msg);
                 self.refresh_calendar_views();
             }
             return;
         };
         let Some(task_records) = self.imp().task_records.borrow().as_ref().cloned() else {
             if self.finish_calendar_snapshot_load(generation, &cancellation) {
-                self.set_calendar_load_error("Aufgabendaten nicht verfügbar");
-                self.set_calendar_loading_status(false, "Aufgabendaten nicht verfügbar");
+                let err_msg = gettext("Task data not available");
+                self.set_calendar_load_error(&err_msg);
+                self.set_calendar_loading_status(false, &err_msg);
                 self.refresh_calendar_views();
             }
             return;
         };
         let Some(memo_records) = self.imp().memo_records.borrow().as_ref().cloned() else {
             if self.finish_calendar_snapshot_load(generation, &cancellation) {
-                self.set_calendar_load_error("Notizdaten nicht verfügbar");
-                self.set_calendar_loading_status(false, "Notizdaten nicht verfügbar");
+                let err_msg = gettext("Memo data not available");
+                self.set_calendar_load_error(&err_msg);
+                self.set_calendar_loading_status(false, &err_msg);
                 self.refresh_calendar_views();
             }
             return;
@@ -2124,28 +2152,42 @@ impl CalendarPage {
         if !preview && !self.finish_calendar_snapshot_load(generation, &cancellation) {
             return;
         }
+        let cached_status = gettext("Cached calendar state is displayed · update in progress…");
         self.set_calendar_loading_status(
             preview,
             if preview {
-                "Gespeicherter Kalenderstand wird angezeigt · Aktualisierung läuft …"
+                &cached_status
             } else {
                 ""
             },
         );
         let origin_str = match origin {
-            CalendarDataOrigin::Eds => "verbundenen Kalendern",
-            CalendarDataOrigin::Graph => "verbundenen Kalendern",
-            CalendarDataOrigin::Local => "lokalem Kalenderbestand",
+            CalendarDataOrigin::Eds => gettext("connected calendars"),
+            CalendarDataOrigin::Graph => gettext("connected calendars"),
+            CalendarDataOrigin::Local => gettext("local calendar"),
         };
         let status_msg = if preview {
-            format!("{count} gespeicherte Termin(e) · Aktualisierung läuft …")
+            ngettext(
+                "{count} cached appointment · update in progress…",
+                "{count} cached appointments · update in progress…",
+                count as u32,
+            )
+            .replace("{count}", &count.to_string())
         } else if count == 0 {
-            format!("Keine Termine aus {origin_str} gefunden")
+            gettext("No appointments found from {origin}").replace("{origin}", &origin_str)
         } else {
-            format!("{count} Termin(e) aus {origin_str} geladen.")
+            ngettext(
+                "{count} appointment loaded from {origin}.",
+                "{count} appointments loaded from {origin}.",
+                count as u32,
+            )
+            .replace("{count}", &count.to_string())
+            .replace("{origin}", &origin_str)
         };
         let status_msg = if let Some(warning) = warning {
-            format!("{status_msg} · Aktualisierung unvollständig: {warning}")
+            gettext("{status} · update incomplete: {warning}")
+                .replace("{status}", &status_msg)
+                .replace("{warning}", &warning)
         } else {
             status_msg
         };
@@ -2240,23 +2282,24 @@ impl CalendarPage {
     }
 
     fn calendar_state_row(&self) -> adw::ActionRow {
+        let fallback_state = gettext("The last confirmed calendar state is not available.");
         let (title, subtitle) = match self.calendar_data_state() {
             CalendarDataState::Loading => (
-                "Kalender werden geladen …".to_string(),
-                "Diese Ansicht wird nach dem bestätigten Snapshot aktualisiert.".to_string(),
+                gettext("Loading calendars…"),
+                gettext("This view will be updated after the confirmed snapshot."),
             ),
             CalendarDataState::Error => (
-                "Kalender konnten nicht geladen werden".to_string(),
+                gettext("Calendars could not be loaded"),
                 self.imp()
                     .calendar_load_error
                     .borrow()
                     .as_deref()
-                    .unwrap_or("Der zuletzt bestätigte Kalenderstand ist nicht verfügbar.")
+                    .unwrap_or(&fallback_state)
                     .to_string(),
             ),
             CalendarDataState::Ready => (
-                "Kalenderansicht".to_string(),
-                "Noch keine bestätigten Kalenderdaten verfügbar.".to_string(),
+                gettext("Calendar View"),
+                gettext("No confirmed calendar data available yet."),
             ),
         };
         adw::ActionRow::builder()
@@ -2368,7 +2411,7 @@ impl CalendarPage {
         self.invalidate_calendar_mutation();
         self.cancel_calendar_snapshot_load();
         self.cancel_calendar_projection();
-        let message = format!("Kalender-Synchronisierung fehlgeschlagen: {error}");
+        let message = gettext("Calendar synchronization failed: {error}").replace("{error}", error);
         self.set_calendar_load_error(&message);
         self.set_calendar_loading_status(false, &message);
         self.refresh_task_sidebar();
@@ -2434,10 +2477,10 @@ impl CalendarPage {
                             &hidden_sources,
                         )))
                     }
-                    _ => Err("Für diese Ansicht gibt es keinen Projektion-Worker".to_string()),
+                    _ => Err(gettext("There is no projection worker for this view")),
                 })
                 .unwrap_or_else(|_| {
-                    Err("Die Kalenderansicht konnte nicht vorbereitet werden".to_string())
+                    Err(gettext("Could not prepare calendar view"))
                 });
                 if cancellation.load(Ordering::Acquire) {
                     return;
@@ -2475,7 +2518,7 @@ impl CalendarPage {
                     {
                         page.show_calendar_projection_error(
                             view,
-                            &format!("Der Projektion-Worker/kanal wurde beendet: {error}"),
+                            &gettext("The projection worker/channel was closed: {error}").replace("{error}", &error.to_string()),
                         );
                     }
                 }
@@ -2572,39 +2615,39 @@ impl CalendarPage {
     }
 
     fn show_calendar_projection_error(&self, view: CalendarView, error: &str) {
-        let message = format!("Kalenderansicht konnte nicht aufgebaut werden: {error}");
+        let message = gettext("Calendar view could not be constructed: {error}").replace("{error}", error);
         match view {
             CalendarView::Year => {
                 if let Some(container) = self.imp().year_view.borrow().as_ref() {
                     clear_box(container);
-                    container.append(&empty_period_row("Jahresansicht nicht verfügbar", &message));
+                    container.append(&empty_period_row(&gettext("Year view not available"), &message));
                 }
             }
             CalendarView::List => {
                 if let Some(container) = self.imp().list_view.borrow().as_ref() {
                     clear_box(container);
-                    container.append(&empty_period_row("Listenansicht nicht verfügbar", &message));
+                    container.append(&empty_period_row(&gettext("List view not available"), &message));
                 }
             }
             _ => {}
         }
     }
 
-    fn month_name(month: u32) -> &'static str {
+    fn month_name(month: u32) -> String {
         match month {
-            1 => "Januar",
-            2 => "Februar",
-            3 => "März",
-            4 => "April",
-            5 => "Mai",
-            6 => "Juni",
-            7 => "Juli",
-            8 => "August",
-            9 => "September",
-            10 => "Oktober",
-            11 => "November",
-            12 => "Dezember",
-            _ => "August",
+            1 => crate::i18n::gettext("January"),
+            2 => crate::i18n::gettext("February"),
+            3 => crate::i18n::gettext("March"),
+            4 => crate::i18n::gettext("April"),
+            5 => crate::i18n::gettext("May"),
+            6 => crate::i18n::gettext("June"),
+            7 => crate::i18n::gettext("July"),
+            8 => crate::i18n::gettext("August"),
+            9 => crate::i18n::gettext("September"),
+            10 => crate::i18n::gettext("October"),
+            11 => crate::i18n::gettext("November"),
+            12 => crate::i18n::gettext("December"),
+            _ => crate::i18n::gettext("August"),
         }
     }
 
@@ -2732,7 +2775,7 @@ impl CalendarPage {
             .replace(Some(source_list.clone()));
 
         let calendar_state = gtk::Label::builder()
-            .label("Kalender werden nach der Synchronisation angezeigt")
+            .label(&gettext("Calendars will be shown after synchronization"))
             .css_classes(vec!["dim-label"])
             .wrap(false)
             .ellipsize(gtk::pango::EllipsizeMode::End)
@@ -2746,7 +2789,7 @@ impl CalendarPage {
             .replace(Some(calendar_state.clone()));
 
         let local_item_state = gtk::Label::builder()
-            .label("Keine lokalen .ics-Daten geladen")
+            .label(&gettext("No local .ics data loaded"))
             .css_classes(vec!["dim-label"])
             .wrap(false)
             .ellipsize(gtk::pango::EllipsizeMode::End)
@@ -2776,10 +2819,10 @@ impl CalendarPage {
             .memo_records
             .replace(Some(Rc::clone(&memo_records)));
 
-        let category_model = gtk::StringList::new(&["Alle Kategorien"]);
+        let category_model = gtk::StringList::new(&[&crate::i18n::gettext("All Categories")]);
         let category_selector =
             gtk::DropDown::new(Some(category_model.clone()), None::<&gtk::Expression>);
-        category_selector.set_tooltip_text(Some("Terminkategorie auswählen"));
+        category_selector.set_tooltip_text(Some(&crate::i18n::gettext("Select event category")));
         self.imp()
             .calendar_category_model
             .replace(Some(category_model.clone()));
@@ -2788,7 +2831,7 @@ impl CalendarPage {
             .replace(Some(category_selector.clone()));
 
         let calendar_search_entry = gtk::SearchEntry::builder()
-            .placeholder_text("Termine durchsuchen…")
+            .placeholder_text(&crate::i18n::gettext("Search events…"))
             .hexpand(true)
             .width_chars(6)
             .build();
@@ -2927,7 +2970,7 @@ impl CalendarPage {
             .build();
         let drawer_icon = gtk::Image::from_icon_name("x-office-calendar-symbolic");
         let drawer_title = gtk::Label::builder()
-            .label("Kalender")
+            .label(&crate::i18n::gettext("Calendar"))
             .halign(gtk::Align::Start)
             .hexpand(true)
             .ellipsize(gtk::pango::EllipsizeMode::End)
@@ -2958,37 +3001,37 @@ impl CalendarPage {
 
         let prev_btn = gtk::Button::builder()
             .icon_name("go-previous-symbolic")
-            .tooltip_text("Vorheriger Zeitraum")
+            .tooltip_text(&crate::i18n::gettext("Previous period"))
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&prev_btn, "Vorherigen Kalenderzeitraum anzeigen");
+        set_accessible_label(&prev_btn, &crate::i18n::gettext("Show previous period"));
 
         let today_btn = gtk::Button::builder()
-            .label("Heute")
-            .tooltip_text("Zu heute wechseln")
+            .label(&crate::i18n::gettext("Today"))
+            .tooltip_text(&crate::i18n::gettext("Switch to today"))
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&today_btn, "Zum heutigen Datum wechseln");
+        set_accessible_label(&today_btn, &crate::i18n::gettext("Switch to today"));
 
         let next_btn = gtk::Button::builder()
             .icon_name("go-next-symbolic")
-            .tooltip_text("Nächster Zeitraum")
+            .tooltip_text(&crate::i18n::gettext("Next period"))
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&next_btn, "Nächsten Kalenderzeitraum anzeigen");
+        set_accessible_label(&next_btn, &crate::i18n::gettext("Show next period"));
         self.imp()
             .calendar_prev_button
             .replace(Some(prev_btn.clone()));
         self.imp()
-            .calendar_next_button
-            .replace(Some(next_btn.clone()));
-        self.imp()
             .calendar_today_button
             .replace(Some(today_btn.clone()));
+        self.imp()
+            .calendar_next_button
+            .replace(Some(next_btn.clone()));
 
         let nav_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["linked", "calendar-nav-group"])
+            .spacing(4)
             .valign(gtk::Align::Center)
             .build();
         nav_box.append(&prev_btn);
@@ -2996,9 +3039,7 @@ impl CalendarPage {
         nav_box.append(&next_btn);
 
         let date_label = gtk::Label::builder()
-            .label("")
-            .css_classes(vec!["title-3", "heading", "calendar-title-date"])
-            .valign(gtk::Align::Center)
+            .css_classes(vec!["calendar-month-date-label"])
             .halign(gtk::Align::Center)
             .build();
         self.imp()
@@ -3007,11 +3048,14 @@ impl CalendarPage {
 
         let btn_availability = gtk::Button::builder()
             .icon_name("appointment-soon-symbolic")
-            .tooltip_text("Freie Zeiten anzeigen (Verfügbarkeit)")
+            .tooltip_text(&crate::i18n::gettext("Show free/busy availability"))
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&btn_availability, "Freie Zeiten anzeigen");
+        set_accessible_label(&btn_availability, &crate::i18n::gettext("Show free/busy"));
+        self.imp()
+            .btn_availability
+            .replace(Some(btn_availability.clone()));
 
         btn_availability.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
@@ -3044,37 +3088,45 @@ impl CalendarPage {
             .borrow_mut()
             .set_view(initial_calendar_view, configured_first_weekday());
 
+        let str_day = crate::i18n::gettext("Day");
+        let str_week = crate::i18n::gettext("Week");
+        let str_workweek = crate::i18n::gettext("Work Week");
+        let str_month = crate::i18n::gettext("Month");
+        let str_agenda = crate::i18n::gettext("Agenda");
+        let str_year = crate::i18n::gettext("Year");
+        let str_list = crate::i18n::gettext("List");
+
         let day_btn = gtk::ToggleButton::builder()
-            .label("Tag")
+            .label(&str_day)
             .active(initial_calendar_view == CalendarView::Day)
             .build();
         let week_btn = gtk::ToggleButton::builder()
-            .label("Woche")
+            .label(&str_week)
             .group(&day_btn)
             .active(initial_calendar_view == CalendarView::Week)
             .build();
         let workweek_btn = gtk::ToggleButton::builder()
-            .label("Arbeitswoche")
+            .label(&str_workweek)
             .group(&day_btn)
             .active(initial_calendar_view == CalendarView::WorkWeek)
             .build();
         let month_btn = gtk::ToggleButton::builder()
-            .label("Monat")
+            .label(&str_month)
             .group(&day_btn)
             .active(initial_calendar_view == CalendarView::Month)
             .build();
         let agenda_btn = gtk::ToggleButton::builder()
-            .label("Agenda")
+            .label(&str_agenda)
             .group(&day_btn)
             .active(initial_calendar_view == CalendarView::Agenda)
             .build();
         let year_btn = gtk::ToggleButton::builder()
-            .label("Jahr")
+            .label(&str_year)
             .group(&day_btn)
             .active(initial_calendar_view == CalendarView::Year)
             .build();
         let list_btn = gtk::ToggleButton::builder()
-            .label("Liste")
+            .label(&str_list)
             .group(&day_btn)
             .active(initial_calendar_view == CalendarView::List)
             .build();
@@ -3088,19 +3140,20 @@ impl CalendarPage {
         view_toggle.append(&list_btn);
 
         let view_names = [
-            "Tag",
-            "Woche",
-            "Arbeitswoche",
-            "Monat",
-            "Agenda",
-            "Jahr",
-            "Liste",
+            str_day.as_str(),
+            str_week.as_str(),
+            str_workweek.as_str(),
+            str_month.as_str(),
+            str_agenda.as_str(),
+            str_year.as_str(),
+            str_list.as_str(),
         ];
         let dropdown_model = gtk::StringList::new(&view_names);
         let calendar_view_dropdown =
             gtk::DropDown::new(Some(dropdown_model), None::<&gtk::Expression>);
         calendar_view_dropdown.set_valign(gtk::Align::Center);
-        calendar_view_dropdown.set_tooltip_text(Some("Kalenderansicht auswählen"));
+        let str_select_view = crate::i18n::gettext("Select calendar view");
+        calendar_view_dropdown.set_tooltip_text(Some(&str_select_view));
         calendar_view_dropdown.set_selected(calendar_view_to_index(initial_calendar_view));
         calendar_view_dropdown.set_visible(false);
         self.imp()
@@ -3131,57 +3184,109 @@ impl CalendarPage {
             .unwrap_or(true);
         let tag_vpane_toggle_btn = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-right-symbolic")
-            .tooltip_text("Aufgaben- und Notizenleiste ein-/ausblenden (Strg+M)")
+            .tooltip_text(&gettext("Toggle task and memo pane (Ctrl+M)"))
             .active(show_tag_vpane_initial)
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&tag_vpane_toggle_btn, "Aufgaben- und Notizenleiste ein- oder ausblenden");
+        set_accessible_label(&tag_vpane_toggle_btn, &gettext("Show or hide task and memo pane"));
         self.imp()
             .tag_vpane_toggle_btn
             .replace(Some(tag_vpane_toggle_btn.clone()));
 
-        let sidebar_visible = true;
+        let sidebar_visible = AppSettings::try_new()
+            .map(|s| s.mail_show_sidebar())
+            .unwrap_or(true);
+        sidebar_outer_box.set_visible(sidebar_visible);
         let sidebar_toggle = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-symbolic")
-            .tooltip_text("Seitenleiste ein-/ausblenden (F9)")
+            .tooltip_text(&gettext("Toggle sidebar (F9)"))
             .active(sidebar_visible)
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&sidebar_toggle, "Seitenleiste ein- oder ausblenden");
+        set_accessible_label(&sidebar_toggle, &gettext("Show or hide sidebar"));
         self.imp()
             .calendar_sidebar_toggle
             .replace(Some(sidebar_toggle.clone()));
 
         let sidebar_for_toggle = sidebar_outer_box.clone();
+        let page_weak_for_sidebar = self.downgrade();
         sidebar_toggle.connect_toggled(move |toggle| {
             let is_active = toggle.is_active();
-            sidebar_for_toggle.set_visible(is_active);
+            if let Some(page) = page_weak_for_sidebar.upgrade() {
+                if let Some(win) = crate::window::find_evolution_window(&page) {
+                    if win.is_sidebar_visible_for_active_view() != is_active {
+                        win.toggle_sidebar_animated(is_active);
+                        return;
+                    }
+                }
+                page.set_sidebar_visible(is_active);
+                if let Some(settings) = AppSettings::try_new() {
+                    settings.set_mail_show_sidebar(is_active);
+                }
+            } else {
+                sidebar_for_toggle.set_visible(is_active);
+            }
         });
 
-        let btn_print_calendar = gtk::Button::builder()
-            .icon_name("document-print-symbolic")
-            .tooltip_text("Kalenderansicht drucken (Strg+P)")
-            .css_classes(vec!["flat"])
-            .valign(gtk::Align::Center)
+        let more_popover = gtk::Popover::builder().build();
+        let more_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .margin_start(4)
+            .margin_end(4)
+            .margin_top(4)
+            .margin_bottom(4)
             .build();
-        set_accessible_label(&btn_print_calendar, "Kalender drucken");
+
+        let print_calendar_btn = gtk::Button::builder()
+            .tooltip_text(&crate::i18n::gettext("Print calendar view (Ctrl+P)"))
+            .css_classes(vec!["flat"])
+            .halign(gtk::Align::Fill)
+            .build();
+        set_accessible_label(&print_calendar_btn, &crate::i18n::gettext("Print calendar view"));
+        let print_btn_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        print_btn_box.append(&gtk::Image::from_icon_name("document-print-symbolic"));
+        print_btn_box.append(
+            &gtk::Label::builder()
+                .label(&crate::i18n::gettext("Print calendar view"))
+                .halign(gtk::Align::Start)
+                .hexpand(true)
+                .build(),
+        );
+        print_calendar_btn.set_child(Some(&print_btn_box));
+
         let page_weak_for_print = self.downgrade();
-        btn_print_calendar.connect_clicked(move |_| {
+        let popover_weak_for_print = more_popover.downgrade();
+        print_calendar_btn.connect_clicked(move |_| {
+            if let Some(popover) = popover_weak_for_print.upgrade() {
+                popover.popdown();
+            }
             if let Some(page) = page_weak_for_print.upgrade() {
                 page.print_visible_agenda();
             }
         });
+        more_box.append(&print_calendar_btn);
+        more_popover.set_child(Some(&more_box));
+
+        let more_button = gtk::MenuButton::builder()
+            .icon_name("view-more-symbolic")
+            .popover(&more_popover)
+            .tooltip_text(&crate::i18n::gettext("More actions"))
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&more_button, &crate::i18n::gettext("More actions"));
 
         let actions_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(2)
+            .spacing(4)
             .valign(gtk::Align::Center)
             .css_classes(vec!["calendar-actions-group"])
             .build();
-        actions_box.append(&btn_print_calendar);
         actions_box.append(&btn_availability);
+        actions_box.append(&more_button);
 
         let start_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -3602,22 +3707,22 @@ impl CalendarPage {
             match hit {
                 MonthCanvasHit::Event { event, date, .. } => {
                     let time_str = if event.all_day {
-                        "Ganztägig".to_string()
+                        crate::i18n::gettext("All Day")
                     } else {
                         let (start_min, end_min, _) = event_occurrence_times_for_date(&event, date, 30);
                         format!("{}-{}", format_clock_minutes(start_min), format_clock_minutes(end_min))
                     };
                     let loc_str = if !event.location.is_empty() {
-                        format!("\nOrt: {}", event.location)
+                        format!("\n{}: {}", crate::i18n::gettext("Location"), event.location)
                     } else {
                         String::new()
                     };
-                    let tip = format!("{}\nZeit: {}{}\nKalender: {}", event.summary, time_str, loc_str, event.source_display_name);
+                    let tip = format!("{}\n{}: {}{}\n{}: {}", event.summary, crate::i18n::gettext("Time"), time_str, loc_str, crate::i18n::gettext("Calendar"), event.source_display_name);
                     tooltip.set_text(Some(&tip));
                     true
                 }
                 MonthCanvasHit::Overflow { date } => {
-                    tooltip.set_text(Some(&format!("Alle Termine für {} in Tagesansicht anzeigen", date.format("%d.%m.%Y"))));
+                    tooltip.set_text(Some(&format!("{} {}", crate::i18n::gettext("Show all events in day view for"), date.format("%d.%m.%Y"))));
                     true
                 }
                 _ => false,
@@ -3810,7 +3915,7 @@ impl CalendarPage {
         ));
         month_container.add_controller(scroll_controller);
 
-        calendar_stack.add_titled(&month_container, Some("month"), "Monat");
+        calendar_stack.add_titled(&month_container, Some("month"), &crate::i18n::gettext("Month"));
 
         // 2. Day View
         let day_view = gtk::Box::builder()
@@ -3824,7 +3929,7 @@ impl CalendarPage {
             .vexpand(true)
             .build();
         self.imp().day_view.replace(Some(day_view.clone()));
-        calendar_stack.add_titled(&day_view, Some("day"), "Tag");
+        calendar_stack.add_titled(&day_view, Some("day"), &crate::i18n::gettext("Day"));
 
         // 3. Week View
         let week_view = gtk::Box::builder()
@@ -3838,7 +3943,7 @@ impl CalendarPage {
             .vexpand(true)
             .build();
         self.imp().week_view.replace(Some(week_view.clone()));
-        calendar_stack.add_titled(&week_view, Some("week"), "Woche");
+        calendar_stack.add_titled(&week_view, Some("week"), &crate::i18n::gettext("Week"));
 
         // 4. Workweek time grid
         let workweek_view = gtk::Box::builder()
@@ -3854,7 +3959,7 @@ impl CalendarPage {
         self.imp()
             .workweek_view
             .replace(Some(workweek_view.clone()));
-        calendar_stack.add_titled(&workweek_view, Some("workweek"), "Arbeitswoche");
+        calendar_stack.add_titled(&workweek_view, Some("workweek"), &crate::i18n::gettext("Work Week"));
 
         // 5. Agenda View: high-performance Cairo canvas with date headers and event rows
         let agenda_view = gtk::Box::builder()
@@ -3865,7 +3970,7 @@ impl CalendarPage {
         self.imp().agenda_view.replace(Some(agenda_view.clone()));
 
         let agenda_title_label = gtk::Label::builder()
-            .label("Kommende Termine")
+            .label(&crate::i18n::gettext("Upcoming Events"))
             .css_classes(vec!["title-3"])
             .halign(gtk::Align::Start)
             .margin_start(16)
@@ -3933,7 +4038,7 @@ impl CalendarPage {
             canvas_for_adj.queue_draw();
         });
 
-        calendar_stack.add_titled(&agenda_view, Some("agenda"), "Agenda");
+        calendar_stack.add_titled(&agenda_view, Some("agenda"), &crate::i18n::gettext("Agenda"));
 
         // Wire draw function
         let page_weak_draw = self.downgrade();
@@ -4512,7 +4617,7 @@ impl CalendarPage {
             if let Some(target) = Self::hit_test_year_canvas(&layout, x as f64, logical_y) {
                 match target {
                     YearCanvasHitTarget::MonthHeader(m) => {
-                        tooltip.set_text(Some(&format!("Zur Monatsansicht für {} {}", Self::calendar_month_name(m), year)));
+                        tooltip.set_text(Some(&format!("{}: {} {}", crate::i18n::gettext("Go to month view for"), Self::calendar_month_name(m), year)));
                         true
                     }
                     YearCanvasHitTarget::Day(date) => {
@@ -4521,9 +4626,9 @@ impl CalendarPage {
                         let text = if count == 0 {
                             format_date(date)
                         } else if count == 1 {
-                            format!("{} · 1 Termin", format_date(date))
+                            format!("{} · 1 {}", format_date(date), crate::i18n::gettext("event"))
                         } else {
-                            format!("{} · {} Termine", format_date(date), count)
+                            format!("{} · {} {}", format_date(date), count, crate::i18n::gettext("events"))
                         };
                         tooltip.set_text(Some(&text));
                         true
@@ -4542,7 +4647,7 @@ impl CalendarPage {
             }
         });
 
-        calendar_stack.add_titled(&year_view, Some("year"), "Jahr");
+        calendar_stack.add_titled(&year_view, Some("year"), &crate::i18n::gettext("Year"));
 
         // 7. List View: permanent high-performance Cairo canvas with native ScrolledWindow
         let list_view = gtk::Box::builder()
@@ -4553,7 +4658,7 @@ impl CalendarPage {
         self.imp().list_view.replace(Some(list_view.clone()));
 
         let list_count_label = gtk::Label::builder()
-            .label("0 gefilterte Termine")
+            .label(&crate::i18n::gettext("0 filtered events"))
             .css_classes(vec!["title-3", "dim-label"])
             .halign(gtk::Align::Start)
             .margin_start(16)
@@ -4811,7 +4916,7 @@ impl CalendarPage {
             }
         });
 
-        calendar_stack.add_titled(&list_view, Some("list"), "Liste");
+        calendar_stack.add_titled(&list_view, Some("list"), &crate::i18n::gettext("List"));
 
         calendar_stack.set_visible_child_name(match initial_calendar_view {
             CalendarView::Day => "day",
@@ -5051,7 +5156,7 @@ impl CalendarPage {
             .spacing(6)
             .build();
         let taskpad_title = gtk::Label::builder()
-            .label("Aufgaben")
+            .label(&gettext("Tasks"))
             .css_classes(vec!["heading", "title-4"])
             .halign(gtk::Align::Start)
             .build();
@@ -5065,7 +5170,7 @@ impl CalendarPage {
         let taskpad_spacer = gtk::Box::builder().hexpand(true).build();
         let taskpad_add_btn = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text("Neue Aufgabe erstellen")
+            .tooltip_text(&gettext("Create new task"))
             .css_classes(vec!["flat", "circular"])
             .build();
         taskpad_add_btn.connect_clicked(move |btn| {
@@ -5280,7 +5385,7 @@ impl CalendarPage {
             .spacing(6)
             .build();
         let memopad_title = gtk::Label::builder()
-            .label("Notizen")
+            .label(&gettext("Memos"))
             .css_classes(vec!["heading", "title-4"])
             .halign(gtk::Align::Start)
             .build();
@@ -5294,7 +5399,7 @@ impl CalendarPage {
         let memopad_spacer = gtk::Box::builder().hexpand(true).build();
         let memopad_add_btn = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text("Neue Notiz erstellen")
+            .tooltip_text(&gettext("Create new memo"))
             .css_classes(vec!["flat", "circular"])
             .build();
         memopad_add_btn.connect_clicked(move |btn| {
@@ -5527,7 +5632,7 @@ impl CalendarPage {
         let sidebar_position = AppSettings::try_new()
             .map(|settings| settings.mail_sidebar_position())
             .unwrap_or(260)
-            .clamp(240, 1500);
+            .clamp(crate::window::MIN_SIDEBAR_WIDTH, crate::window::MAX_SIDEBAR_WIDTH);
         paned.set_position(sidebar_position);
         if let Some(settings) = AppSettings::try_new() {
             paned.connect_position_notify(move |paned| {
@@ -5537,8 +5642,12 @@ impl CalendarPage {
                     }
                 }
                 let position = paned.position();
-                if (180..=1500).contains(&position) && settings.mail_sidebar_position() != position {
-                    settings.set_mail_sidebar_position(position);
+                let clamped = position.clamp(crate::window::MIN_SIDEBAR_WIDTH, crate::window::MAX_SIDEBAR_WIDTH);
+                if position != clamped {
+                    paned.set_position(clamped);
+                }
+                if settings.mail_sidebar_position() != clamped {
+                    settings.set_mail_sidebar_position(clamped);
                 }
             });
         }
@@ -5548,7 +5657,11 @@ impl CalendarPage {
         key_controller.connect_key_pressed(move |_, key, _, modifiers| {
             if key == gtk::gdk::Key::F9 {
                 if let Some(page) = page_weak_for_keys.upgrade() {
-                    if let Some(btn) = page.imp().calendar_sidebar_toggle.borrow().as_ref() {
+                    if let Some(win) = crate::window::find_evolution_window(&page) {
+                        let cur = win.is_sidebar_visible_for_active_view();
+                        win.toggle_sidebar_animated(!cur);
+                        return glib::Propagation::Stop;
+                    } else if let Some(btn) = page.imp().calendar_sidebar_toggle.borrow().as_ref() {
                         btn.set_active(!btn.is_active());
                         return glib::Propagation::Stop;
                     }
@@ -5616,8 +5729,8 @@ impl CalendarPage {
         #[cfg(all(target_os = "macos", macos_bridge))]
         let macos_banner = {
             let banner = adw::Banner::builder()
-                .title("Apple Kalender verbinden: Möchten Sie Ihre macOS Kalender und Termine in Evolution anzeigen?")
-                .button_label("Apple Kalender verbinden")
+                .title(&gettext("Connect Apple Calendar: Would you like to view your macOS calendars and appointments in Evolution?"))
+                .button_label(&gettext("Connect Apple Calendar"))
                 .revealed(false)
                 .build();
             let page_weak = self.downgrade();
@@ -5646,7 +5759,7 @@ impl CalendarPage {
                                             if let Some(page) = page_weak_sync.upgrade() {
                                                 page.reload_calendar_data();
                                                 if let Some(win) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
-                                                    win.add_toast(&adw::Toast::new("Apple Kalender erfolgreich verbunden!"));
+                                                    win.add_toast(&adw::Toast::new(&gettext("Apple Calendar connected successfully!")));
                                                 }
                                                 page.update_macos_permission_banner();
                                             }
@@ -5704,7 +5817,7 @@ impl CalendarPage {
                                     if let Some(page) = page_weak_sync.upgrade() {
                                         page.reload_calendar_data();
                                         if let Some(win) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
-                                            win.add_toast(&adw::Toast::new("Apple Kalender erfolgreich verbunden!"));
+                                            win.add_toast(&adw::Toast::new(&gettext("Apple Calendar connected successfully!")));
                                         }
                                         page.update_macos_permission_banner();
                                     }
@@ -5734,6 +5847,21 @@ impl CalendarPage {
                 });
             }
         }
+
+        // Initialize toolbar button modes (desktop: pure text, mobile: pure icon)
+        let is_compact_initial = self.imp().is_mobile.get() || (self.width() > 0 && self.width() < 820);
+        self.apply_toolbar_button_modes(is_compact_initial);
+
+        self.connect_root_notify(move |page| {
+            if let Some(win) = page.root().and_downcast::<gtk::Window>() {
+                let page_weak = page.downgrade();
+                win.connect_default_width_notify(move |_| {
+                    if let Some(page) = page_weak.upgrade() {
+                        page.sync_toolbar_button_labels();
+                    }
+                });
+            }
+        });
     }
 
     fn select_calendar_view(&self, view: CalendarView) {
@@ -6030,7 +6158,7 @@ impl CalendarPage {
                     .active(item.enabled && selector.is_selected(&source_uid))
                     .sensitive(item.enabled)
                     .valign(gtk::Align::Center)
-                    .tooltip_text("Kalender in den Ansichten ein-/ausblenden")
+                    .tooltip_text(&gettext("Show or hide calendar in views"))
                     .css_classes(vec![color_class.as_str()])
                     .build();
 
@@ -6091,7 +6219,7 @@ impl CalendarPage {
                     let sync_icon =
                         gtk::Image::from_icon_name("media-playlist-repeat-symbolic");
                     sync_icon.add_css_class("dim-label");
-                    sync_icon.set_tooltip_text(Some("Synchronisierter Kalender"));
+                    sync_icon.set_tooltip_text(Some(&gettext("Synchronized calendar")));
                     sync_icon.set_valign(gtk::Align::Center);
                     child_box.append(&sync_icon);
                 }
@@ -6140,7 +6268,7 @@ impl CalendarPage {
 
         if let Some(state_lbl) = calendar_state {
             if displayed_sources == 0 {
-                state_lbl.set_label("Keine Kalenderquellen verfügbar");
+                state_lbl.set_label(&gettext("No calendar sources available"));
                 state_lbl.set_visible(true);
             } else {
                 state_lbl.set_visible(false);
@@ -6159,7 +6287,7 @@ impl CalendarPage {
             let group = source
                 .parent_name
                 .clone()
-                .unwrap_or_else(|| "Auf diesem Computer".to_string());
+                .unwrap_or_else(|| crate::i18n::gettext("On This Computer"));
             items.push(
                 crate::models::source_selector::SourceSelectorItem::new(
                     &source.uid,
@@ -6188,7 +6316,7 @@ impl CalendarPage {
                 items.push(
                     crate::models::source_selector::SourceSelectorItem::new(
                         &cal_uid,
-                        "Kalender",
+                        &crate::i18n::gettext("Calendar"),
                         "calendar",
                         true,
                         true,
@@ -6200,17 +6328,17 @@ impl CalendarPage {
         }
 
         if CalendarStoreService::new().is_writable() && !items.iter().any(|i| i.uid == "local-calendar") {
-            let color = calendar_source_color("local-calendar", "Lokaler Kalender");
+            let color = calendar_source_color("local-calendar", &crate::i18n::gettext("Local Calendar"));
             items.push(
                 crate::models::source_selector::SourceSelectorItem::new(
                     "local-calendar",
-                    "Lokaler Kalender",
+                    &crate::i18n::gettext("Local Calendar"),
                     "local",
                     true,
                     true,
                 )
                 .with_color(color)
-                .with_group("Auf diesem Computer"),
+                .with_group(crate::i18n::gettext("On This Computer")),
             );
         }
 
@@ -6259,8 +6387,8 @@ impl CalendarPage {
                 if page.imp().calendar_source_selector.borrow().sources().is_empty() {
                     let status = discovery
                         .error
-                        .map(|error| format!("Kalender sind nicht erreichbar: {error}"))
-                        .unwrap_or_else(|| "Keine Kalenderquellen verfügbar".to_string());
+                        .map(|error| gettext("Calendars are unreachable: {error}").replace("{error}", &error.to_string()))
+                        .unwrap_or_else(|| gettext("No calendar sources available"));
                     state_lbl.set_label(&status);
                     state_lbl.set_visible(true);
                 } else {
@@ -6324,7 +6452,7 @@ impl CalendarPage {
                     let dialog = crate::dialogs::SourcePropertiesDialog::new(
                         &uid_props,
                         &name_props,
-                        "Kalender",
+                        &crate::i18n::gettext("Calendar"),
                         &col_props,
                         is_writable,
                         is_primary,
@@ -6372,7 +6500,7 @@ impl CalendarPage {
                     let page_weak_save = page.downgrade();
                     let dialog = crate::dialogs::ManageGroupsDialog::new(
                         root_window.as_ref(),
-                        "Kalender",
+                        &crate::i18n::gettext("Calendar"),
                         &current_sel,
                         move |updated_selector| {
                             if let Some(page) = page_weak_save.upgrade() {
@@ -6401,7 +6529,7 @@ impl CalendarPage {
 
         let popover = crate::models::source_selector::create_source_context_popover(
             is_primary,
-            "Kalender",
+            &crate::i18n::gettext("Calendar"),
             on_exclusive,
             on_select_all,
             on_set_default,
@@ -6481,7 +6609,7 @@ impl CalendarPage {
                 task_list.set_visible(false);
                 if let Some(state) = self.imp().task_state.borrow().as_ref() {
                     state.set_visible(true);
-                    state.set_label("Aufgaben werden zusammen mit dem Kalender-Snapshot geladen …");
+                    state.set_label(&gettext("Tasks are being loaded together with the calendar snapshot…"));
                 }
                 return;
             }
@@ -6489,12 +6617,13 @@ impl CalendarPage {
                 task_list.set_visible(false);
                 if let Some(state) = self.imp().task_state.borrow().as_ref() {
                     state.set_visible(true);
+                    let default_err = gettext("Tasks could not be loaded");
                     state.set_label(
                         self.imp()
                             .calendar_load_error
                             .borrow()
                             .as_deref()
-                            .unwrap_or("Aufgaben konnten nicht geladen werden"),
+                            .unwrap_or(&default_err),
                     );
                 }
                 return;
@@ -6529,13 +6658,16 @@ impl CalendarPage {
         if let Some(state) = self.imp().task_state.borrow().as_ref() {
             state.set_visible(visible_count == 0);
             let label = if all_count == 0 {
-                "Keine Aufgaben geladen".to_string()
+                gettext("No tasks loaded")
             } else if visible_count == 0 {
-                "Keine sichtbaren Aufgaben".to_string()
-            } else if visible_count == 1 {
-                "1 Aufgabe aus synchronisiertem/lokalem Bestand geladen".to_string()
+                gettext("No visible tasks")
             } else {
-                format!("{visible_count} Aufgaben aus synchronisiertem/lokalem Bestand geladen")
+                ngettext(
+                    "1 task loaded from synchronized/local data",
+                    "{n} tasks loaded from synchronized/local data",
+                    visible_count as u32,
+                )
+                .replace("{n}", &visible_count.to_string())
             };
             state.set_label(&label);
         }
@@ -6554,7 +6686,7 @@ impl CalendarPage {
                 taskpad_canvas.set_visible(false);
                 if let Some(state) = self.imp().taskpad_state.borrow().as_ref() {
                     state.set_visible(true);
-                    state.set_label("Aufgaben werden geladen …");
+                    state.set_label(&gettext("Loading tasks…"));
                 }
                 if let Some(count) = self.imp().taskpad_count.borrow().as_ref() {
                     count.set_label("");
@@ -6565,12 +6697,13 @@ impl CalendarPage {
                 taskpad_canvas.set_visible(false);
                 if let Some(state) = self.imp().taskpad_state.borrow().as_ref() {
                     state.set_visible(true);
+                    let default_err = gettext("Tasks could not be loaded");
                     state.set_label(
                         self.imp()
                             .calendar_load_error
                             .borrow()
                             .as_deref()
-                            .unwrap_or("Aufgaben konnten nicht geladen werden"),
+                            .unwrap_or(&default_err),
                     );
                 }
                 if let Some(count) = self.imp().taskpad_count.borrow().as_ref() {
@@ -6620,11 +6753,12 @@ impl CalendarPage {
         }
         if let Some(state) = self.imp().taskpad_state.borrow().as_ref() {
             state.set_visible(visible_count == 0);
-            state.set_label(if records.borrow().is_empty() {
-                "Keine Aufgaben geladen"
+            let empty_label = if records.borrow().is_empty() {
+                gettext("No tasks loaded")
             } else {
-                "Keine passenden Aufgaben"
-            });
+                gettext("No tasks match the filter")
+            };
+            state.set_label(&empty_label);
         }
     }
 
@@ -6641,7 +6775,7 @@ impl CalendarPage {
                 memopad_canvas.set_visible(false);
                 if let Some(state) = self.imp().memopad_state.borrow().as_ref() {
                     state.set_visible(true);
-                    state.set_label("Notizen werden geladen …");
+                    state.set_label(&gettext("Loading memos…"));
                 }
                 if let Some(count) = self.imp().memopad_count.borrow().as_ref() {
                     count.set_label("");
@@ -6652,12 +6786,13 @@ impl CalendarPage {
                 memopad_canvas.set_visible(false);
                 if let Some(state) = self.imp().memopad_state.borrow().as_ref() {
                     state.set_visible(true);
+                    let default_err = gettext("Memos could not be loaded");
                     state.set_label(
                         self.imp()
                             .calendar_load_error
                             .borrow()
                             .as_deref()
-                            .unwrap_or("Notizen konnten nicht geladen werden"),
+                            .unwrap_or(&default_err),
                     );
                 }
                 if let Some(count) = self.imp().memopad_count.borrow().as_ref() {
@@ -6702,11 +6837,12 @@ impl CalendarPage {
         }
         if let Some(state) = self.imp().memopad_state.borrow().as_ref() {
             state.set_visible(visible_count == 0);
-            state.set_label(if records.borrow().is_empty() {
-                "Keine Notizen geladen"
+            let empty_label = if records.borrow().is_empty() {
+                gettext("No memos loaded")
             } else {
-                "Keine passenden Notizen"
-            });
+                gettext("No memos match the filter")
+            };
+            state.set_label(&empty_label);
         }
     }
 
@@ -6999,7 +7135,7 @@ impl CalendarPage {
             self.imp().calendar_category_filter.replace(None);
         }
 
-        let mut names = vec!["Alle Kategorien".to_string()];
+        let mut names = vec![crate::i18n::gettext("All Categories")];
         names.extend(categories);
         let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
         model.splice(0, model.n_items(), &name_refs);
@@ -7017,15 +7153,18 @@ impl CalendarPage {
             if let Some(label) = self.imp().calendar_data_state.borrow().as_ref() {
                 match self.calendar_data_state() {
                     CalendarDataState::Loading => {
-                        label.set_label("Kalender werden geladen …");
+                        label.set_label(&crate::i18n::gettext("Loading calendars…"));
                     }
-                    CalendarDataState::Error => label.set_label(
-                        self.imp()
-                            .calendar_load_error
-                            .borrow()
-                            .as_deref()
-                            .unwrap_or("Kalender konnten nicht geladen werden"),
-                    ),
+                    CalendarDataState::Error => {
+                        let default_err = crate::i18n::gettext("Failed to load calendars");
+                        label.set_label(
+                            self.imp()
+                                .calendar_load_error
+                                .borrow()
+                                .as_deref()
+                                .unwrap_or(&default_err),
+                        );
+                    }
                     CalendarDataState::Ready => {}
                 }
             }
@@ -7081,7 +7220,8 @@ impl CalendarPage {
             CalendarView::Day => format_date(date),
             CalendarView::Week => {
                 format!(
-                    "Woche {}",
+                    "{} {}",
+                    crate::i18n::gettext("Week"),
                     format_calendar_range(
                         viewport.visible_range.start,
                         viewport.visible_range.last_inclusive(),
@@ -7098,19 +7238,19 @@ impl CalendarPage {
                     .last()
                     .copied()
                     .unwrap_or(viewport.visible_range.last_inclusive());
-                format!("Arbeitswoche {}", format_calendar_range(start, end))
+                format!("{} {}", crate::i18n::gettext("Work Week"), format_calendar_range(start, end))
             }
             CalendarView::Month => {
                 format!("{} {}", Self::month_name(date.month()), date.year())
             }
-            CalendarView::Agenda => format!("Agenda ab {}", format_date(date)),
-            CalendarView::Year => format!("Jahr {}", date.year()),
+            CalendarView::Agenda => format!("{} {}", crate::i18n::gettext("Agenda from"), format_date(date)),
+            CalendarView::Year => format!("{} {}", crate::i18n::gettext("Year"), date.year()),
             CalendarView::List => self
                 .imp()
                 .calendar_list_projection_count
                 .get()
-                .map(|count| format!("Alle Termine ({count})"))
-                .unwrap_or_else(|| "Alle Termine".to_string()),
+                .map(|count| format!("{} ({count})", crate::i18n::gettext("All Events")))
+                .unwrap_or_else(|| crate::i18n::gettext("All Events")),
         };
         label.set_label(&text);
     }
@@ -7239,7 +7379,7 @@ impl CalendarPage {
                 .hexpand(true)
                 .build();
             let day_name = gtk::Label::builder()
-                .label(weekday_name(*day))
+                .label(&weekday_name(*day))
                 .css_classes(vec!["heading"])
                 .halign(gtk::Align::Center)
                 .build();
@@ -7260,7 +7400,7 @@ impl CalendarPage {
 
         // Row 1: All-Day Row
         let all_day_label = gtk::Label::builder()
-            .label("Ganztägig")
+            .label(&crate::i18n::gettext("All Day"))
             .css_classes(vec!["calendar-allday-label"])
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
@@ -7678,8 +7818,9 @@ impl CalendarPage {
                 let found = find_chip_at(&placed_chips_tt.borrow(), x as f64, y as f64, w, slot_height as f64);
                 if let Some(idx) = found {
                     let chip = &placed_chips_tt.borrow()[idx];
+                    let untitled = gettext("(Untitled)");
                     let title = if chip.event.summary.trim().is_empty() {
-                        "(Ohne Titel)"
+                        untitled.as_str()
                     } else {
                         chip.event.summary.as_str()
                     };
@@ -7918,11 +8059,11 @@ impl CalendarPage {
                     let target_identity = calendar_event_identity_from_parts(source_uid, uid, recurrence_id);
                     unique_event_for_identity(&records.borrow(), &target_identity)
                 }) else {
-                    show_toast_for_widget(&page, "Der gezogene Termin ist nicht mehr geladen");
+                    show_toast_for_widget(&page, &gettext("The dragged appointment is no longer loaded"));
                     return false;
                 };
                 let Some(start_date) = occurrence_date.or_else(|| event_start_date(&event)) else {
-                    show_toast_for_widget(&page, "Der Termin besitzt kein gültiges Startdatum");
+                    show_toast_for_widget(&page, &gettext("The appointment has no valid start date"));
                     return false;
                 };
                 let delta_days = (target_date - start_date).num_days();
@@ -8024,12 +8165,12 @@ impl CalendarPage {
         let workday_text = configured_workday_text();
 
         if let Some(title_lbl) = self.imp().agenda_title_label.borrow().as_ref() {
-            title_lbl.set_label(&format!(
-                "Kommende Termine · {} bis {} · Arbeitszeit: {}",
-                format_date(start_date),
-                format_date(end_date),
-                workday_text
-            ));
+            title_lbl.set_label(
+                &gettext("Upcoming appointments · {start} to {end} · Working hours: {hours}")
+                    .replace("{start}", &format_date(start_date))
+                    .replace("{end}", &format_date(end_date))
+                    .replace("{hours}", &workday_text),
+            );
         }
 
         let query = self.imp().calendar_search_query.borrow().clone();
@@ -8073,8 +8214,8 @@ impl CalendarPage {
             if is_empty {
                 clear_box(empty_box);
                 let empty_row = empty_period_row(
-                    "Keine kommenden Termine",
-                    "Für die nächsten 90 Tage sind keine VEVENTs geladen.",
+                    &gettext("No upcoming appointments"),
+                    &gettext("No VEVENTs loaded for the next 90 days."),
                 );
                 empty_box.append(&empty_row);
                 empty_box.set_visible(true);
@@ -8146,7 +8287,7 @@ impl CalendarPage {
         let prev_btn = gtk::Button::builder()
             .icon_name("go-previous-symbolic")
             .css_classes(vec!["flat", "calendar-year-nav-arrow"])
-            .tooltip_text("Vorheriges Jahr")
+            .tooltip_text(&gettext("Previous year"))
             .build();
         let page_prev = self.downgrade();
         prev_btn.connect_clicked(move |_| {
@@ -8164,7 +8305,7 @@ impl CalendarPage {
                 } else {
                     vec!["flat", "calendar-year-nav-btn"]
                 })
-                .tooltip_text(&format!("Jahr {y} anzeigen"))
+                .tooltip_text(&gettext("Show year {y}").replace("{y}", &y.to_string()))
                 .build();
             let page_y = self.downgrade();
             year_btn.connect_clicked(move |_| {
@@ -8178,7 +8319,7 @@ impl CalendarPage {
         let next_btn = gtk::Button::builder()
             .icon_name("go-next-symbolic")
             .css_classes(vec!["flat", "calendar-year-nav-arrow"])
-            .tooltip_text("Nächstes Jahr")
+            .tooltip_text(&gettext("Next year"))
             .build();
         let page_next = self.downgrade();
         next_btn.connect_clicked(move |_| {
@@ -8191,10 +8332,10 @@ impl CalendarPage {
         let today_year = Local::now().date_naive().year();
         if current_year != today_year {
             let today_btn = gtk::Button::builder()
-                .label("Heute")
+                .label(&crate::i18n::gettext("Today"))
                 .css_classes(vec!["flat", "pill"])
                 .margin_start(12)
-                .tooltip_text("Zum heutigen Jahr zurückkehren")
+                .tooltip_text(&crate::i18n::gettext("Return to current year"))
                 .build();
             let page_today = self.downgrade();
             today_btn.connect_clicked(move |_| {
@@ -8359,8 +8500,9 @@ impl CalendarPage {
                 let (bg, hover, active, fg) = pastel_colors_for_hex(&color, is_dark);
                 let chip_class = ensure_event_chip_css_class(&bg, &hover, &active, &fg);
 
+                let untitled = gettext("(Untitled)");
                 let title = if item.event.summary.trim().is_empty() {
-                    "(Ohne Titel)"
+                    untitled.as_str()
                 } else {
                     item.event.summary.as_str()
                 };
@@ -8477,7 +8619,7 @@ impl CalendarPage {
 
         let list_btn = gtk::Button::builder()
             .icon_name("view-list-symbolic")
-            .tooltip_text("Als Liste anzeigen")
+            .tooltip_text(&gettext("Show as list"))
             .css_classes(if current_mode == YearPreviewMode::List {
                 vec!["suggested-action"]
             } else {
@@ -8498,7 +8640,7 @@ impl CalendarPage {
 
         let sched_btn = gtk::Button::builder()
             .icon_name("x-office-calendar-symbolic")
-            .tooltip_text("Als Tagesplan anzeigen")
+            .tooltip_text(&gettext("Show as schedule"))
             .css_classes(if current_mode == YearPreviewMode::Schedule {
                 vec!["suggested-action"]
             } else {
@@ -8521,12 +8663,12 @@ impl CalendarPage {
         // Orientation toggle button
         let current_orientation = self.imp().year_preview_orientation.get();
         let (orient_icon, orient_tooltip) = match current_orientation {
-            YearPreviewOrientation::Side => ("pan-down-symbolic", "Vorschau unten anzeigen"),
-            YearPreviewOrientation::Bottom => ("sidebar-show-right-symbolic", "Vorschau rechts anzeigen"),
+            YearPreviewOrientation::Side => ("pan-down-symbolic", gettext("Show preview at bottom")),
+            YearPreviewOrientation::Bottom => ("sidebar-show-right-symbolic", gettext("Show preview on right")),
         };
         let orient_btn = gtk::Button::builder()
             .icon_name(orient_icon)
-            .tooltip_text(orient_tooltip)
+            .tooltip_text(&orient_tooltip)
             .css_classes(vec!["flat"])
             .build();
         let page_for_orient = self.downgrade();
@@ -8545,7 +8687,7 @@ impl CalendarPage {
         // Open in Day View button
         let open_day_btn = gtk::Button::builder()
             .icon_name("go-jump-symbolic")
-            .tooltip_text("In Tagesansicht öffnen")
+            .tooltip_text(&gettext("Open in Day View"))
             .css_classes(vec!["flat"])
             .build();
         let page_for_open = self.downgrade();
@@ -8621,11 +8763,14 @@ impl CalendarPage {
                         .css_classes(vec!["dim-label"])
                         .build();
                     let empty_lbl = gtk::Label::builder()
-                        .label("Keine Termine")
+                        .label(&gettext("No appointments"))
                         .css_classes(vec!["dim-label", "heading"])
                         .build();
                     let empty_sub = gtk::Label::builder()
-                        .label(&format!("Für {} sind keine Termine eingetragen.", format_date(date)))
+                        .label(
+                            &gettext("No appointments scheduled for {date}.")
+                                .replace("{date}", &format_date(date)),
+                        )
                         .wrap(true)
                         .wrap_mode(pango::WrapMode::WordChar)
                         .justify(gtk::Justification::Center)
@@ -8697,7 +8842,7 @@ impl CalendarPage {
             .build();
 
         let title = if event.summary.trim().is_empty() {
-            "(Ohne Betreff)".to_string()
+            gettext("(Untitled)")
         } else {
             event.summary.clone()
         };
@@ -8713,7 +8858,7 @@ impl CalendarPage {
 
         // Time and details
         let time_str = if event.all_day {
-            "Ganztägig".to_string()
+            crate::i18n::gettext("All Day")
         } else {
             let (_, _, text) = event_occurrence_times_for_date(event, date, 30);
             if !text.is_empty() {
@@ -8770,26 +8915,12 @@ impl CalendarPage {
             });
         }
 
-        row.set_tooltip_text(Some(&format!("{}\n(Klicken zum Bearbeiten)", title)));
+        row.set_tooltip_text(Some(&format!("{}\n{}", title, crate::i18n::gettext("(Click to edit)"))));
         event_list.append(&row);
     }
 
-    fn calendar_month_name(month: u32) -> &'static str {
-        match month {
-            1 => "Januar",
-            2 => "Februar",
-            3 => "März",
-            4 => "April",
-            5 => "Mai",
-            6 => "Juni",
-            7 => "Juli",
-            8 => "August",
-            9 => "September",
-            10 => "Oktober",
-            11 => "November",
-            12 => "Dezember",
-            _ => "",
-        }
+    fn calendar_month_name(month: u32) -> String {
+        Self::month_name(month)
     }
 
     fn prepare_year_canvas_layout(
@@ -8976,11 +9107,11 @@ impl CalendarPage {
             } else {
                 cr.set_source_rgba(fg, fg, fg, primary_alpha);
             }
-            if let Ok(ext) = cr.text_extents(m_name) {
+            if let Ok(ext) = cr.text_extents(&m_name) {
                 let tx = m.card_x + (m.card_w - ext.width()) / 2.0;
                 let ty = m.card_y + 19.0;
                 cr.move_to(tx, ty);
-                let _ = cr.show_text(m_name);
+                let _ = cr.show_text(&m_name);
             }
 
             // Weekday headers
@@ -9161,8 +9292,8 @@ impl CalendarPage {
             if let Some(state_box) = state_box.as_ref() {
                 clear_box(state_box);
                 state_box.append(&empty_period_row(
-                    "Jahresansicht nicht verfügbar",
-                    "Das ausgewählte Kalenderjahr liegt außerhalb des unterstützten Datumsbereichs.",
+                    &gettext("Year view not available"),
+                    &gettext("The selected calendar year is outside the supported date range."),
                 ));
                 state_box.set_visible(true);
             }
@@ -9281,11 +9412,14 @@ impl CalendarPage {
             .set(Some(events.len()));
 
         let count_str = if events.is_empty() {
-            "Keine passenden Termine".to_string()
-        } else if events.len() == 1 {
-            "1 gefilterter Termin".to_string()
+            gettext("No matching appointments")
         } else {
-            format!("{} gefilterte Termine", events.len())
+            ngettext(
+                "1 filtered appointment",
+                "{n} filtered appointments",
+                events.len() as u32,
+            )
+            .replace("{n}", &events.len().to_string())
         };
 
         if let Some(count_lbl) = self.imp().calendar_list_count_label.borrow().as_ref() {
@@ -9303,13 +9437,14 @@ impl CalendarPage {
                     .as_ref()
                     .map(|index| index.snapshot.events.len())
                     .unwrap_or(0);
+                let title = if all_count == 0 {
+                    gettext("No appointments loaded")
+                } else {
+                    gettext("No appointments match the filter")
+                };
                 let empty_row = empty_period_row(
-                    if all_count == 0 {
-                        "Keine Termine geladen"
-                    } else {
-                        "Keine Termine entsprechen den Filtern"
-                    },
-                    "Die Listenansicht ist unabhängig vom aktuellen Datumsanker.",
+                    &title,
+                    &gettext("The list view is independent of the current date anchor."),
                 );
                 empty_box.append(&empty_row);
                 empty_box.set_visible(true);
@@ -9587,8 +9722,8 @@ impl CalendarPage {
             configured_weekday_names_full()
         };
         let labels = self.imp().month_header_labels.borrow();
-        for (label, &name) in labels.iter().zip(names.iter()) {
-            label.set_text(name);
+        for (label, name) in labels.iter().zip(names.iter()) {
+            label.set_text(name.as_str());
         }
     }
 
@@ -9620,6 +9755,8 @@ impl CalendarPage {
 
         let weekday_names_full = configured_weekday_names_full();
         let weekday_names_short = configured_weekday_names_short();
+        let full_refs: Vec<&str> = weekday_names_full.iter().map(|s| s.as_str()).collect();
+        let short_refs: Vec<&str> = weekday_names_short.iter().map(|s| s.as_str()).collect();
 
         let layout = prepare_month_layout(
             &viewport,
@@ -9628,8 +9765,8 @@ impl CalendarPage {
             show_week_numbers,
             &workdays,
             compress_weekend,
-            &weekday_names_full,
-            &weekday_names_short,
+            &full_refs,
+            &short_refs,
             is_dark,
             6,
         );
@@ -9655,7 +9792,7 @@ impl CalendarPage {
             return;
         }
         if let Some(error) = event_mutation_error(&event) {
-            show_toast_for_widget(self, error);
+            show_toast_for_widget(self, &error);
             return;
         }
         let updated_component =
@@ -9692,7 +9829,7 @@ impl CalendarPage {
             if !page.calendar_event_mutation_is_current(&mutation_token) {
                 show_toast_for_widget(
                     &page,
-                    "Der Kalenderstand hat sich geändert; die Terminverschiebung wurde verworfen",
+                    &gettext("The calendar state has changed; the event move was discarded"),
                 );
                 page.reload_calendar_data();
                 return;
@@ -9703,7 +9840,7 @@ impl CalendarPage {
                     page.finish_calendar_mutation(&mutation_token);
                     show_toast_for_widget(
                         &page,
-                        &format!("Terminverschiebung konnte nicht bestätigt werden: {error}"),
+                        &format!("{}: {error}", crate::i18n::gettext("Failed to confirm event move")),
                     );
                     page.reload_calendar_data();
                     return;
@@ -9745,13 +9882,13 @@ impl CalendarPage {
                     page.bump_calendar_revision();
                     page.rebuild_calendar_index_from_records();
                     page.refresh_calendar_views();
-                    show_toast_for_widget(&page, &format!("Termin verschoben ({})", result.uid));
+                    show_toast_for_widget(&page, &format!("{} ({})", crate::i18n::gettext("Event moved"), result.uid));
                 }
                 Err(error) => {
                     page.finish_calendar_mutation(&mutation_token);
                     show_toast_for_widget(
                         &page,
-                        &format!("Termin konnte nicht verschoben werden: {error}"),
+                        &format!("{}: {error}", crate::i18n::gettext("Could not move event")),
                     );
                     page.reload_calendar_data();
                 }
@@ -9778,7 +9915,7 @@ impl CalendarPage {
         let Some(identity) = CalendarEventIdentity::from_event(&event) else {
             show_toast_for_widget(
                 action_button,
-                "Der Termin besitzt keine eindeutige Identität und wurde nicht übertragen",
+                &gettext("The appointment has no unique identity and was not transferred"),
             );
             return;
         };
@@ -9819,7 +9956,7 @@ impl CalendarPage {
                 action_button.set_sensitive(true);
                 show_toast_for_widget(
                     &action_button,
-                    "Der Kalenderstand hat sich geändert; der Übertragungsstand wird neu geladen",
+                    &gettext("The calendar state has changed; refreshing transfer status"),
                 );
                 page.reload_calendar_data();
                 return;
@@ -9830,34 +9967,34 @@ impl CalendarPage {
                 Ok(Ok((created, None))) => {
                     show_toast_for_widget(
                         &action_button,
-                        &format!("Termin nach Lokal kopiert ({})", created.uid),
+                        &gettext("Appointment copied to local ({id})")
+                            .replace("{id}", &created.uid),
                     );
                     page.reload_calendar_data();
                 }
                 Ok(Ok((created, Some(Ok(removed))))) => {
                     show_toast_for_widget(
                         &action_button,
-                        &format!(
-                            "Termin nach Lokal verschoben ({} → {})",
-                            removed.uid, created.uid
-                        ),
+                        &gettext("Appointment moved to local ({old} → {new})")
+                            .replace("{old}", &removed.uid)
+                            .replace("{new}", &created.uid),
                     );
                     page.reload_calendar_data();
                 }
                 Ok(Ok((created, Some(Err(error))))) => {
                     show_toast_for_widget(
                         &action_button,
-                        &format!(
-                            "Kopie nach Lokal erstellt ({}), Quelle blieb wegen Fehler erhalten: {error}",
-                            created.uid
-                        ),
+                        &gettext("Copy created locally ({id}), source was kept due to error: {error}")
+                            .replace("{id}", &created.uid)
+                            .replace("{error}", &error.to_string()),
                     );
                     page.reload_calendar_data();
                 }
                 Ok(Err(error)) => {
                     show_toast_for_widget(
                         &action_button,
-                        &format!("Termin konnte nicht nach Lokal übertragen werden: {error}"),
+                        &gettext("Appointment could not be transferred to local: {error}")
+                            .replace("{error}", &error.to_string()),
                     );
                     // Creation failed, so the source was intentionally never removed.
                     page.reload_calendar_data();
@@ -9865,7 +10002,8 @@ impl CalendarPage {
                 Err(error) => {
                     show_toast_for_widget(
                         &action_button,
-                        &format!("Termin-Übertragungskanal wurde beendet: {error}"),
+                        &gettext("Appointment transfer channel closed: {error}")
+                            .replace("{error}", &error.to_string()),
                     );
                     page.reload_calendar_data();
                 }
@@ -9880,25 +10018,25 @@ impl CalendarPage {
         recurring: bool,
     ) {
         if let Some(error) = event_mutation_error(event) {
-            show_toast_for_widget(anchor, error);
+            show_toast_for_widget(anchor, &error);
             return;
         }
 
         let Some(identity) = CalendarEventIdentity::from_event(event) else {
-            show_toast_for_widget(anchor, "Der Termin besitzt keine eindeutige Identität");
+            show_toast_for_widget(anchor, &gettext("The appointment has no unique identity"));
             return;
         };
 
         if recurring {
             let scope_dialog = adw::AlertDialog::new(
-                Some("Wiederkehrenden Termin löschen"),
-                Some("Wählen Sie den Löschumfang. Einzelne Vorkommen und künftige Vorkommen werden erst angeboten, wenn der Backend-Adapter sie ohne Datenverlust als Ausnahme bzw. Serienaufteilung bestätigen kann."),
+                Some(&gettext("Delete recurring appointment")),
+                Some(&gettext("Choose the deletion scope. Single occurrences and future occurrences are offered once the backend adapter can confirm them without data loss as exception or split.")),
             );
             scope_dialog.add_responses(&[
-                ("cancel", "Abbrechen"),
-                ("this", "Nur diesen Termin"),
-                ("future", "Diesen und künftige"),
-                ("series", "Ganze Serie löschen"),
+                ("cancel", &gettext("Cancel")),
+                ("this", &gettext("Only this appointment")),
+                ("future", &gettext("This and future")),
+                ("series", &gettext("Delete entire series")),
             ]);
             scope_dialog.set_response_appearance("series", adw::ResponseAppearance::Destructive);
             let event_for_scope = event.clone();
@@ -9922,11 +10060,11 @@ impl CalendarPage {
                     }
                     Ok(CalendarDeletePlan::UnsupportedOccurrenceScope { scope }) => {
                         let description = match scope {
-                            CalendarRecurringDeleteScope::ThisOccurrence => "Dieses einzelne Vorkommen kann der aktuelle Backend-Adapter noch nicht verlustfrei löschen; die Serie bleibt unverändert.",
-                            CalendarRecurringDeleteScope::ThisAndFuture => "Eine Serienaufteilung ab diesem Vorkommen kann der aktuelle Backend-Adapter noch nicht verlustfrei durchführen; die Serie bleibt unverändert.",
+                            CalendarRecurringDeleteScope::ThisOccurrence => gettext("The current backend adapter cannot yet delete this single occurrence without data loss; the series remains unchanged."),
+                            CalendarRecurringDeleteScope::ThisAndFuture => gettext("A split starting at this occurrence cannot yet be performed by the current backend adapter without data loss; the series remains unchanged."),
                             CalendarRecurringDeleteScope::EntireSeries => unreachable!(),
                         };
-                        show_toast_for_widget(&anchor_clone, description);
+                        show_toast_for_widget(&anchor_clone, &description);
                     }
                     Err(error) => show_toast_for_widget(&anchor_clone, &error),
                 }
@@ -9936,9 +10074,9 @@ impl CalendarPage {
         }
 
         let confirmation_message = if event.source_uid == "local-calendar" {
-            "Der Termin wird dauerhaft aus dem lokalen Kalender entfernt."
+            gettext("The appointment will be permanently removed from the local calendar.")
         } else {
-            "Der Termin wird dauerhaft aus dem synchronisierten Kalender entfernt."
+            gettext("The appointment will be permanently removed from the synchronized calendar.")
         };
 
         let page_weak = self.downgrade();
@@ -9948,9 +10086,9 @@ impl CalendarPage {
 
         crate::dialogs::run_destructive_action(
             anchor,
-            "Termin löschen?",
-            confirmation_message,
-            "Löschen",
+            &gettext("Delete appointment?"),
+            &confirmation_message,
+            &gettext("Delete"),
             move || {
                 if let Some(page) = page_weak.upgrade() {
                     page.execute_delete_event(&anchor_clone, &event_clone, &identity_clone);
@@ -9990,7 +10128,7 @@ impl CalendarPage {
             if !page.calendar_event_mutation_is_current(&mutation_token) {
                 show_toast_for_widget(
                     &anchor_for_result,
-                    "Der Kalenderstand hat sich geändert; das Löschergebnis wurde verworfen",
+                    &gettext("The calendar state has changed; the deletion result was discarded"),
                 );
                 page.reload_calendar_data();
                 return;
@@ -10011,7 +10149,7 @@ impl CalendarPage {
                     page.refresh_calendar_views();
                     show_toast_for_widget(
                         &anchor_for_result,
-                        &format!("Termin gelöscht ({})", result.uid),
+                        &gettext("Appointment deleted ({id})").replace("{id}", &result.uid),
                     );
                     if let Some(window) = anchor_for_result.root().and_downcast::<crate::window::EvolutionWindow>() {
                         window.refresh_calendar_page();
@@ -10021,7 +10159,8 @@ impl CalendarPage {
                     page.finish_calendar_mutation(&mutation_token);
                     show_toast_for_widget(
                         &anchor_for_result,
-                        &format!("ECal bestätigte eine andere Termin-UID ({}); nichts wurde entfernt", result.uid),
+                        &gettext("ECal confirmed a different appointment UID ({id}); nothing was removed")
+                            .replace("{id}", &result.uid),
                     );
                     page.reload_calendar_data();
                 }
@@ -10029,7 +10168,8 @@ impl CalendarPage {
                     page.finish_calendar_mutation(&mutation_token);
                     show_toast_for_widget(
                         &anchor_for_result,
-                        &format!("Termin konnte nicht gelöscht werden: {error}"),
+                        &gettext("Appointment could not be deleted: {error}")
+                            .replace("{error}", &error.to_string()),
                     );
                     page.reload_calendar_data();
                 }
@@ -10037,7 +10177,8 @@ impl CalendarPage {
                     page.finish_calendar_mutation(&mutation_token);
                     show_toast_for_widget(
                         &anchor_for_result,
-                        &format!("Termin-Löschkanal wurde beendet: {error}"),
+                        &gettext("Appointment deletion channel closed: {error}")
+                            .replace("{error}", &error.to_string()),
                     );
                     page.reload_calendar_data();
                 }
@@ -10265,7 +10406,7 @@ pub(crate) fn prepare_taskpad_layout(tasks: &[TaskRecord], today: NaiveDate) -> 
 
     for task in tasks {
         let title = if task.summary.trim().is_empty() {
-            "(Ohne Betreff)".to_string()
+            crate::i18n::gettext("(No Subject)")
         } else {
             task.summary.clone()
         };
@@ -10274,11 +10415,11 @@ pub(crate) fn prepare_taskpad_layout(tasks: &[TaskRecord], today: NaiveDate) -> 
             let date_str = task.due.split_whitespace().next().unwrap_or(&task.due);
             if let Ok(due_date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
                 let text = if due_date == today {
-                    "Heute".to_string()
+                    crate::i18n::gettext("Today")
                 } else if due_date == today + chrono::Duration::days(1) {
-                    "Morgen".to_string()
+                    crate::i18n::gettext("Tomorrow")
                 } else if due_date == today - chrono::Duration::days(1) {
-                    "Gestern".to_string()
+                    crate::i18n::gettext("Yesterday")
                 } else {
                     due_date.format("%d.%m.%Y").to_string()
                 };
@@ -10318,7 +10459,7 @@ pub(crate) fn prepare_memopad_layout(memos: &[MemoRecord]) -> PreparedMemopadLay
 
     for memo in memos {
         let title = if memo.summary.trim().is_empty() {
-            "(Ohne Titel)".to_string()
+            gettext("(Untitled)")
         } else {
             memo.summary.clone()
         };
@@ -10630,7 +10771,7 @@ fn show_taskpad_context_menu(
         .build();
 
     // 1. Edit
-    let edit = gtk::Button::with_label("Aufgabe bearbeiten");
+    let edit = gtk::Button::with_label(&gettext("Edit Task"));
     edit.set_halign(gtk::Align::Fill);
     edit.add_css_class("flat");
     let popover_for_edit = popover.clone();
@@ -10647,11 +10788,11 @@ fn show_taskpad_context_menu(
 
     // 2. Toggle completion
     let toggle_label = if task.completed {
-        "Als unerledigt markieren"
+        gettext("Mark as Incomplete")
     } else {
-        "Als erledigt markieren"
+        gettext("Mark as Completed")
     };
-    let toggle = gtk::Button::with_label(toggle_label);
+    let toggle = gtk::Button::with_label(&toggle_label);
     toggle.set_halign(gtk::Align::Fill);
     toggle.add_css_class("flat");
     toggle.set_sensitive(!task.source_uid.trim().is_empty());
@@ -10691,7 +10832,7 @@ fn show_memopad_context_menu(
         .build();
 
     // 1. Edit
-    let edit = gtk::Button::with_label("Notiz öffnen");
+    let edit = gtk::Button::with_label(&gettext("Open Memo"));
     edit.set_halign(gtk::Align::Fill);
     edit.add_css_class("flat");
     let popover_for_edit = popover.clone();
@@ -11769,8 +11910,9 @@ fn draw_time_grid_chip(
     );
     let _ = cr.fill();
 
+    let untitled = gettext("(Untitled)");
     let title = if chip.event.summary.trim().is_empty() {
-        "(Ohne Titel)"
+        untitled.as_str()
     } else {
         chip.event.summary.as_str()
     };
@@ -11852,7 +11994,7 @@ pub(crate) fn build_prepared_agenda_items(
         if events.is_empty() {
             continue;
         }
-        let text = format!("{} · KW {:02}", format_date(date), date.iso_week().week());
+        let text = format!("{} · {} {:02}", format_date(date), gettext("Wk"), date.iso_week().week());
         let is_today = date == today;
         items.push(PreparedAgendaItem::DateHeader {
             date,
@@ -11872,7 +12014,7 @@ pub(crate) fn build_prepared_agenda_items(
                 let identity = CalendarEventIdentity::from_event(event);
                 let time_str = event_time_text_with_12h(event, is_12h);
                 let title = if event.summary.trim().is_empty() {
-                    "(Ohne Titel)".to_string()
+                    gettext("(Untitled)")
                 } else {
                     event.summary.trim().to_string()
                 };
@@ -12021,7 +12163,7 @@ pub(crate) fn draw_agenda_canvas(
                     cr.set_font_size(11.0);
                     cr.set_source_rgba(1.0, 1.0, 1.0, 1.0);
                     cr.move_to(badge_x + 9.0, badge_y + 14.5);
-                    let _ = cr.show_text("Heute");
+                    let _ = cr.show_text(&crate::i18n::gettext("Today"));
                     let _ = cr.restore();
                 }
             }
@@ -12159,7 +12301,7 @@ fn prepare_calendar_list_row(event: &CalendarEventRecord) -> PreparedCalendarLis
         String::new()
     };
     let time_str = if event.all_day {
-        "Ganztägig".to_string()
+        crate::i18n::gettext("All Day")
     } else if !event.end.is_empty() {
         let t1 = event.start.split(' ').nth(1).unwrap_or(&event.start);
         let t2 = event.end.split(' ').nth(1).unwrap_or(&event.end);
@@ -12170,7 +12312,7 @@ fn prepare_calendar_list_row(event: &CalendarEventRecord) -> PreparedCalendarLis
         "-".to_string()
     };
     let title = if event.summary.trim().is_empty() {
-        "(Ohne Titel)".to_string()
+        crate::i18n::gettext("(Untitled)")
     } else {
         event.summary.trim().to_string()
     };
@@ -12374,7 +12516,7 @@ fn show_calendar_event_context_menu(
         .build();
 
     // 1. Edit
-    let edit = gtk::Button::with_label("Termin bearbeiten");
+    let edit = gtk::Button::with_label(&gettext("Edit Appointment"));
     edit.set_halign(gtk::Align::Fill);
     edit.add_css_class("flat");
     edit.set_sensitive(writable);
@@ -12391,7 +12533,7 @@ fn show_calendar_event_context_menu(
     menu_box.append(&edit);
 
     // 2. Print
-    let print = gtk::Button::with_label("Termin drucken");
+    let print = gtk::Button::with_label(&gettext("Print Appointment"));
     print.set_halign(gtk::Align::Fill);
     print.add_css_class("flat");
     print.set_sensitive(action_state.can_print);
@@ -12400,8 +12542,9 @@ fn show_calendar_event_context_menu(
     let anchor_for_print = anchor_widget.clone();
     print.connect_clicked(move |_| {
         popover_for_print.popdown();
+        let default_summary = gettext("Appointment");
         let summary_display = if event_for_print.summary.trim().is_empty() {
-            "Termin"
+            default_summary.as_str()
         } else {
             event_for_print.summary.trim()
         };
@@ -12409,21 +12552,23 @@ fn show_calendar_event_context_menu(
             Ok(doc) => {
                 show_toast_for_widget(
                     &anchor_for_print,
-                    &format!(
-                        "Druckansicht für „{summary_display}“ vorbereitet ({} Zeichen); Print-Portal ist Linux-Handoff",
-                        doc.html.len()
-                    ),
+                    &gettext("Print view for “{summary}” prepared ({count} characters); Print portal is Linux handoff")
+                        .replace("{summary}", summary_display)
+                        .replace("{count}", &doc.html.len().to_string()),
                 );
             }
             Err(err) => {
-                show_toast_for_widget(&anchor_for_print, &format!("Drucken fehlgeschlagen: {err}"));
+                show_toast_for_widget(
+                    &anchor_for_print,
+                    &gettext("Printing failed: {error}").replace("{error}", &err.to_string()),
+                );
             }
         }
     });
     menu_box.append(&print);
 
     // 3. Export
-    let export = gtk::Button::with_label("Termin exportieren");
+    let export = gtk::Button::with_label(&gettext("Export Appointment"));
     export.set_halign(gtk::Align::Fill);
     export.add_css_class("flat");
     export.set_sensitive(action_state.can_export);
@@ -12439,7 +12584,7 @@ fn show_calendar_event_context_menu(
                 filter_ics.add_pattern("*.ics");
 
                 let filter_csv = gtk::FileFilter::new();
-                filter_csv.set_name(Some("Kommagetrennte Werte (*.csv)"));
+                filter_csv.set_name(Some(&gettext("Comma-separated values (*.csv)")));
                 filter_csv.add_pattern("*.csv");
 
                 let filter_rdf = gtk::FileFilter::new();
@@ -12452,7 +12597,7 @@ fn show_calendar_event_context_menu(
                 filters.append(&filter_rdf);
 
                 let safe_name = if event_for_export.summary.trim().is_empty() {
-                    "termin".to_string()
+                    "appointment".to_string()
                 } else {
                     event_for_export
                         .summary
@@ -12460,10 +12605,10 @@ fn show_calendar_event_context_menu(
                         .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
                         .collect::<String>()
                 };
-                let initial_name = format!("{}.ics", if safe_name.is_empty() { "termin" } else { &safe_name });
+                let initial_name = format!("{}.ics", if safe_name.is_empty() { "appointment" } else { &safe_name });
 
                 let file_dialog = gtk::FileDialog::builder()
-                    .title("Termin exportieren")
+                    .title(&gettext("Export Appointment"))
                     .filters(&filters)
                     .default_filter(&filter_ics)
                     .initial_name(&initial_name)
@@ -12502,11 +12647,13 @@ fn show_calendar_event_context_menu(
                     match save_result {
                         Ok(_) => show_toast_for_widget(
                             &anchor_for_result,
-                            &format!("Termin als {} exportiert", format.display_label()),
+                            &gettext("Appointment exported as {format}")
+                                .replace("{format}", &format.display_label()),
                         ),
                         Err(error) => show_toast_for_widget(
                             &anchor_for_result,
-                            &format!("Termin konnte nicht gespeichert werden: {error}"),
+                            &gettext("Appointment could not be saved: {error}")
+                                .replace("{error}", &error.to_string()),
                         ),
                     }
                 });
@@ -12516,7 +12663,7 @@ fn show_calendar_event_context_menu(
     menu_box.append(&export);
 
     // 4. Copy
-    let copy = gtk::Button::with_label("In lokalen Kalender kopieren");
+    let copy = gtk::Button::with_label(&gettext("Copy to Local Calendar"));
     copy.set_halign(gtk::Align::Fill);
     copy.add_css_class("flat");
     copy.set_sensitive(action_state.can_copy_to_local);
@@ -12533,7 +12680,7 @@ fn show_calendar_event_context_menu(
     menu_box.append(&copy);
 
     // 5. Move
-    let move_btn = gtk::Button::with_label("In lokalen Kalender verschieben");
+    let move_btn = gtk::Button::with_label(&gettext("Move to Local Calendar"));
     move_btn.set_halign(gtk::Align::Fill);
     move_btn.add_css_class("flat");
     move_btn.set_sensitive(action_state.can_move_to_local);
@@ -12550,7 +12697,7 @@ fn show_calendar_event_context_menu(
     menu_box.append(&move_btn);
 
     // 6. Delete
-    let delete = gtk::Button::with_label("Termin löschen");
+    let delete = gtk::Button::with_label(&gettext("Delete Appointment"));
     delete.set_halign(gtk::Align::Fill);
     delete.add_css_class("flat");
     delete.add_css_class("destructive-action");
@@ -12594,7 +12741,7 @@ fn show_calendar_day_context_menu(
         .build();
 
     // 1. Neuer Termin
-    let new_btn = gtk::Button::with_label("Neuer Termin…");
+    let new_btn = gtk::Button::with_label(&gettext("New Appointment…"));
     new_btn.set_halign(gtk::Align::Fill);
     new_btn.add_css_class("flat");
     let popover_for_new = popover.clone();
@@ -12616,7 +12763,7 @@ fn show_calendar_day_context_menu(
     menu_box.append(&new_btn);
 
     // 2. In Tagesansicht öffnen
-    let day_btn = gtk::Button::with_label("In Tagesansicht öffnen");
+    let day_btn = gtk::Button::with_label(&gettext("Open in Day View"));
     day_btn.set_halign(gtk::Align::Fill);
     day_btn.add_css_class("flat");
     let popover_for_day = popover.clone();
@@ -12700,11 +12847,11 @@ fn handle_dropped_event_payload(
             calendar_event_identity_from_parts(source_uid, uid, recurrence_id);
         unique_event_for_identity(&records.borrow(), &target_identity)
     }) else {
-        show_toast_for_widget(page, "Der gezogene Termin ist nicht mehr geladen");
+        show_toast_for_widget(page, &gettext("The dragged appointment is no longer loaded"));
         return false;
     };
     let Some(start_date) = occurrence_date.or_else(|| event_start_date(&event)) else {
-        show_toast_for_widget(page, "Der Termin besitzt kein gültiges Startdatum");
+        show_toast_for_widget(page, &gettext("The appointment has no valid start date"));
         return false;
     };
     let delta_days = (target_date - start_date).num_days();
@@ -12755,12 +12902,11 @@ fn shift_event_component_full(
     delta_minutes: i64,
 ) -> Result<String, String> {
     if raw.trim().is_empty() {
-        return Err("Der Termin enthält keine iCalendar-Daten".to_string());
+        return Err(gettext("The appointment contains no iCalendar data"));
     }
     if ical_property(raw, "RECURRENCE-ID").is_some() {
         return Err(
-            "Serienausnahmen mit RECURRENCE-ID können nicht per Ziehen verschoben werden; der Kalenderdienst kann die Ausnahme nicht eindeutig adressieren"
-                .to_string(),
+            gettext("Recurring exceptions with RECURRENCE-ID cannot be moved by dragging; the calendar service cannot address the exception unambiguously"),
         );
     }
 
@@ -12772,9 +12918,10 @@ fn shift_event_component_full(
         let Some(shifted) =
             shift_ical_datetime_value_full(&value, delta_days, delta_minutes)
         else {
-            return Err(format!(
-                "{property_name} konnte beim Verschieben nicht ausgewertet werden"
-            ));
+            return Err(
+                gettext("{property} could not be evaluated while moving")
+                    .replace("{property}", property_name),
+            );
         };
         let property_prefix = ical_property_prefix(&updated, property_name)
             .unwrap_or_else(|| property_name.to_string());
@@ -12821,7 +12968,8 @@ fn shift_ical_date_list_property_full(
                 .split(',')
                 .map(|value| {
                     shift_ical_datetime_value_full(value, delta_days, delta_minutes).ok_or_else(|| {
-                        format!("{property_name} konnte beim Verschieben nicht ausgewertet werden")
+                        gettext("{property} could not be evaluated while moving")
+                            .replace("{property}", property_name)
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -12860,7 +13008,7 @@ fn shift_rrule_full(
         return Ok(raw.to_string());
     };
     let parsed_rule = parse_recurrence_rule(&rule).ok_or_else(|| {
-        "Die Wiederholungsregel ist ungültig und wurde nicht verschoben".to_string()
+        gettext("The recurrence rule is invalid and was not moved")
     })?;
 
     // A date shift is exact for daily rules and weekly rules. Weekly BYDAY
@@ -12870,8 +13018,7 @@ fn shift_rrule_full(
     // writing a plausible-looking but wrong recurrence.
     if !matches!(parsed_rule.frequency.as_str(), "DAILY" | "WEEKLY") {
         return Err(
-            "Diese Wiederholung kann nicht sicher per Ziehen verschoben werden; bitte den Termin bearbeiten"
-                .to_string(),
+            gettext("This recurrence cannot be moved safely by dragging; please edit the appointment"),
         );
     }
 
@@ -12884,7 +13031,7 @@ fn shift_rrule_full(
             };
             if key.eq_ignore_ascii_case("UNTIL") {
                 let shifted = shift_ical_datetime_value_full(value, delta_days, delta_minutes).ok_or_else(|| {
-                    "RRULE-UNTIL konnte beim Verschieben nicht ausgewertet werden".to_string()
+                    gettext("RRULE-UNTIL could not be evaluated while moving")
                 })?;
                 changed = true;
                 return Ok(format!("{key}={shifted}"));
@@ -12894,8 +13041,7 @@ fn shift_rrule_full(
                     .split(',')
                     .map(|token| {
                         let by_day = parse_extended_weekday_token(token).ok_or_else(|| {
-                            "RRULE-BYDAY konnte beim Verschieben nicht ausgewertet werden"
-                                .to_string()
+                            gettext("RRULE-BYDAY could not be evaluated while moving")
                         })?;
                         Ok(format_shifted_recurrence_day(by_day, delta_days))
                     })
@@ -12908,8 +13054,7 @@ fn shift_rrule_full(
                 "BYMONTHDAY" | "BYMONTH" | "BYSETPOS"
             ) {
                 return Err(
-                    "Diese Wiederholung enthält Filter, die beim Ziehen nicht sicher verschoben werden können"
-                        .to_string(),
+                    gettext("This recurrence contains filters that cannot be moved safely by dragging"),
                 );
             }
             Ok(part.to_string())
@@ -13477,39 +13622,55 @@ pub(crate) fn is_workday_cell(
     is_workday_time && workdays.contains(&day_weekday)
 }
 
-fn configured_weekday_names_short() -> [&'static str; 7] {
+fn configured_weekday_names_short() -> [String; 7] {
     configured_weekday_names()
 }
 
-fn configured_weekday_names_full() -> [&'static str; 7] {
+fn configured_weekday_names_full() -> [String; 7] {
     if configured_first_weekday() == Weekday::Sun {
         [
-            "Sonntag",
-            "Montag",
-            "Dienstag",
-            "Mittwoch",
-            "Donnerstag",
-            "Freitag",
-            "Samstag",
+            crate::i18n::gettext("Sunday"),
+            crate::i18n::gettext("Monday"),
+            crate::i18n::gettext("Tuesday"),
+            crate::i18n::gettext("Wednesday"),
+            crate::i18n::gettext("Thursday"),
+            crate::i18n::gettext("Friday"),
+            crate::i18n::gettext("Saturday"),
         ]
     } else {
         [
-            "Montag",
-            "Dienstag",
-            "Mittwoch",
-            "Donnerstag",
-            "Freitag",
-            "Samstag",
-            "Sonntag",
+            crate::i18n::gettext("Monday"),
+            crate::i18n::gettext("Tuesday"),
+            crate::i18n::gettext("Wednesday"),
+            crate::i18n::gettext("Thursday"),
+            crate::i18n::gettext("Friday"),
+            crate::i18n::gettext("Saturday"),
+            crate::i18n::gettext("Sunday"),
         ]
     }
 }
 
-fn configured_weekday_names() -> [&'static str; 7] {
+fn configured_weekday_names() -> [String; 7] {
     if configured_first_weekday() == Weekday::Sun {
-        ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"]
+        [
+            crate::i18n::gettext("Sun"),
+            crate::i18n::gettext("Mon"),
+            crate::i18n::gettext("Tue"),
+            crate::i18n::gettext("Wed"),
+            crate::i18n::gettext("Thu"),
+            crate::i18n::gettext("Fri"),
+            crate::i18n::gettext("Sat"),
+        ]
     } else {
-        ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+        [
+            crate::i18n::gettext("Mon"),
+            crate::i18n::gettext("Tue"),
+            crate::i18n::gettext("Wed"),
+            crate::i18n::gettext("Thu"),
+            crate::i18n::gettext("Fri"),
+            crate::i18n::gettext("Sat"),
+            crate::i18n::gettext("Sun"),
+        ]
     }
 }
 
@@ -13577,16 +13738,16 @@ fn shift_month(date: NaiveDate, direction: i32) -> NaiveDate {
     NaiveDate::from_ymd_opt(year, month as u32, 1).unwrap_or(date)
 }
 
-fn weekday_name(date: NaiveDate) -> &'static str {
-    [
-        "Montag",
-        "Dienstag",
-        "Mittwoch",
-        "Donnerstag",
-        "Freitag",
-        "Samstag",
-        "Sonntag",
-    ][date.weekday().num_days_from_monday() as usize]
+fn weekday_name(date: NaiveDate) -> String {
+    match date.weekday() {
+        Weekday::Mon => crate::i18n::gettext("Monday"),
+        Weekday::Tue => crate::i18n::gettext("Tuesday"),
+        Weekday::Wed => crate::i18n::gettext("Wednesday"),
+        Weekday::Thu => crate::i18n::gettext("Thursday"),
+        Weekday::Fri => crate::i18n::gettext("Friday"),
+        Weekday::Sat => crate::i18n::gettext("Saturday"),
+        Weekday::Sun => crate::i18n::gettext("Sunday"),
+    }
 }
 
 fn format_calendar_range(start: NaiveDate, end: NaiveDate) -> String {
@@ -13683,20 +13844,22 @@ fn format_calendar_task_date(value: &str) -> String {
 fn calendar_task_subtitle(task: &TaskRecord) -> String {
     let mut details = Vec::new();
     if !task.due.trim().is_empty() {
-        details.push(format!("Fällig: {}", format_calendar_task_date(&task.due)));
+        details.push(
+            gettext("Due: {date}").replace("{date}", &format_calendar_task_date(&task.due)),
+        );
     }
     if task.priority > 0 {
         let priority = match task.priority {
-            1..=4 => "hoch",
-            5 => "normal",
-            _ => "niedrig",
+            1..=4 => gettext("high"),
+            5 => gettext("normal"),
+            _ => gettext("low"),
         };
-        details.push(format!("Priorität: {priority}"));
+        details.push(format!("{}: {priority}", gettext("Priority")));
     }
     details.push(if task.completed {
-        "Erledigt".to_string()
+        gettext("Completed")
     } else {
-        "Offen".to_string()
+        gettext("Open")
     });
     if !task.source_display_name.trim().is_empty() {
         details.push(task.source_display_name.clone());
@@ -13765,7 +13928,7 @@ pub(crate) fn toggle_task_completion(
             }
             show_toast_for_widget(
                 &page,
-                "Der Kalenderstand hat sich geändert; die Aufgabenänderung wurde verworfen",
+                &gettext("The calendar state has changed; the task modification was discarded"),
             );
             page.reload_calendar_data();
             return;
@@ -13780,7 +13943,8 @@ pub(crate) fn toggle_task_completion(
                 }
                 show_toast_for_widget(
                     &page,
-                    &format!("Aufgabenänderung konnte nicht bestätigt werden: {error}"),
+                    &gettext("Task modification could not be confirmed: {error}")
+                        .replace("{error}", &error.to_string()),
                 );
                 page.reload_calendar_data();
                 return;
@@ -13795,7 +13959,7 @@ pub(crate) fn toggle_task_completion(
                         check.set_active(task.completed);
                         check.set_sensitive(true);
                     }
-                    show_toast_for_widget(&page, "Aufgabendaten sind nicht mehr verfügbar");
+                    show_toast_for_widget(&page, &gettext("Task data is no longer available"));
                     page.reload_calendar_data();
                     return;
                 };
@@ -13811,7 +13975,7 @@ pub(crate) fn toggle_task_completion(
                     }
                     show_toast_for_widget(
                         &page,
-                        "Die bestätigte Aufgabe ist nicht mehr geladen; die Ansicht wird neu geladen",
+                        &gettext("The confirmed task is no longer loaded; refreshing view"),
                     );
                     page.reload_calendar_data();
                     return;
@@ -13831,10 +13995,10 @@ pub(crate) fn toggle_task_completion(
                 page.refresh_taskpad();
                 show_toast_for_widget(
                     &page,
-                    if completed {
-                        "Aufgabe erledigt"
+                    &if completed {
+                        gettext("Task completed")
                     } else {
-                        "Aufgabe wieder geöffnet"
+                        gettext("Task reopened")
                     },
                 );
             }
@@ -13846,7 +14010,8 @@ pub(crate) fn toggle_task_completion(
                 }
                 show_toast_for_widget(
                     &page,
-                    &format!("Aufgabe konnte nicht geändert werden: {error}"),
+                    &gettext("Task could not be modified: {error}")
+                        .replace("{error}", &error.to_string()),
                 );
                 page.reload_calendar_data();
             }
@@ -13868,7 +14033,7 @@ fn wire_task_completion_toggle(page: &CalendarPage, check: &gtk::CheckButton, ta
 
 fn append_calendar_task_row(page: &CalendarPage, task_list: &gtk::ListBox, task: TaskRecord) {
     let title = if task.summary.trim().is_empty() {
-        "(Ohne Betreff)".to_string()
+        gettext("(No Subject)")
     } else {
         task.summary.clone()
     };
@@ -13882,15 +14047,16 @@ fn append_calendar_task_row(page: &CalendarPage, task_list: &gtk::ListBox, task:
         row.add_css_class("dim-label");
     }
 
+    let check_tooltip = if task.source_uid.trim().is_empty() {
+        gettext("Imported tasks are read-only")
+    } else {
+        gettext("Mark task as completed")
+    };
     let check = gtk::CheckButton::builder()
         .active(task.completed)
         .sensitive(!task.source_uid.trim().is_empty())
         .valign(gtk::Align::Center)
-        .tooltip_text(if task.source_uid.trim().is_empty() {
-            "Importierte Aufgaben sind schreibgeschützt"
-        } else {
-            "Aufgabe als erledigt markieren"
-        })
+        .tooltip_text(&check_tooltip)
         .build();
     row.add_prefix(&check);
     task_list.append(&row);
@@ -14039,12 +14205,14 @@ fn format_full_german_date(date: NaiveDate) -> String {
 fn format_duration_text(minutes: u32) -> String {
     let hours = minutes / 60;
     let mins = minutes % 60;
+    let hr_str = crate::i18n::gettext("hr");
+    let min_str = crate::i18n::gettext("min");
     if hours > 0 && mins > 0 {
-        format!("{hours} Std. {mins} Min.")
+        format!("{hours} {hr_str} {mins} {min_str}")
     } else if hours > 0 {
-        format!("{hours} Std.")
+        format!("{hours} {hr_str}")
     } else {
-        format!("{mins} Min.")
+        format!("{mins} {min_str}")
     }
 }
 
@@ -14052,15 +14220,15 @@ fn format_recurrence_summary(event: &CalendarEventRecord) -> Option<String> {
     let rule_raw = ical_property(&event.component, "RRULE")?;
     let rule_upper = rule_raw.to_uppercase();
     if rule_upper.contains("FREQ=DAILY") {
-        Some("Täglich wiederkehrend".to_string())
+        Some(crate::i18n::gettext("Daily recurrence"))
     } else if rule_upper.contains("FREQ=WEEKLY") {
-        Some("Wöchentlich wiederkehrend".to_string())
+        Some(crate::i18n::gettext("Weekly recurrence"))
     } else if rule_upper.contains("FREQ=MONTHLY") {
-        Some("Monatlich wiederkehrend".to_string())
+        Some(crate::i18n::gettext("Monthly recurrence"))
     } else if rule_upper.contains("FREQ=YEARLY") {
-        Some("Jährlich wiederkehrend".to_string())
+        Some(crate::i18n::gettext("Yearly recurrence"))
     } else {
-        Some("Wiederkehrender Termin".to_string())
+        Some(crate::i18n::gettext("Recurring event"))
     }
 }
 
@@ -14171,12 +14339,12 @@ pub(crate) fn event_occurrence_times_for_date(
         format!("{start_str}–{end_str}")
     } else if occ_start_dt.date() < day && occ_end_dt.date() == day {
         let end_str = format_clock_minutes(end_min);
-        format!("bis {end_str}")
+        format!("{} {end_str}", crate::i18n::gettext("until"))
     } else if occ_start_dt.date() == day && occ_end_dt.date() > day {
         let start_str = format_clock_minutes(start_min);
-        format!("ab {start_str}")
+        format!("{} {start_str}", crate::i18n::gettext("from"))
     } else {
-        "Ganztägig".to_string()
+        crate::i18n::gettext("All Day")
     };
 
     (start_min, end_min, time_text)
@@ -14188,7 +14356,7 @@ fn prompt_delete_calendar_event<W: IsA<gtk::Widget> + Clone + 'static>(
     event: &CalendarEventRecord,
 ) {
     if let Some(error) = event_mutation_error(event) {
-        show_toast_for_widget(widget, error);
+        show_toast_for_widget(widget, &error);
         return;
     }
     let recurring = ical_property(&event.component, "RRULE").is_some()
@@ -14197,14 +14365,18 @@ fn prompt_delete_calendar_event<W: IsA<gtk::Widget> + Clone + 'static>(
 
     if recurring {
         let scope_dialog = adw::AlertDialog::new(
-            Some("Wiederkehrenden Termin löschen"),
-            Some("Wählen Sie den Löschumfang. Einzelne Vorkommen und künftige Vorkommen werden erst angeboten, wenn der Backend-Adapter sie ohne Datenverlust als Ausnahme bzw. Serienaufteilung bestätigen kann."),
+            Some(&crate::i18n::gettext("Delete recurring appointment")),
+            Some(&crate::i18n::gettext("Choose the deletion scope. Single occurrences and future occurrences are offered once the backend adapter can confirm them without data loss as exception or split.")),
         );
+        let cancel_label = crate::i18n::gettext("Cancel");
+        let this_label = crate::i18n::gettext("Only this appointment");
+        let future_label = crate::i18n::gettext("This and future");
+        let series_label = crate::i18n::gettext("Delete entire series");
         scope_dialog.add_responses(&[
-            ("cancel", "Abbrechen"),
-            ("this", "Nur diesen Termin"),
-            ("future", "Diesen und künftige"),
-            ("series", "Ganze Serie löschen"),
+            ("cancel", &cancel_label),
+            ("this", &this_label),
+            ("future", &future_label),
+            ("series", &series_label),
         ]);
         scope_dialog.set_response_appearance("series", adw::ResponseAppearance::Destructive);
         let event_for_scope = event.clone();
@@ -14230,11 +14402,11 @@ fn prompt_delete_calendar_event<W: IsA<gtk::Widget> + Clone + 'static>(
                 }
                 Ok(CalendarDeletePlan::UnsupportedOccurrenceScope { scope }) => {
                     let description = match scope {
-                        CalendarRecurringDeleteScope::ThisOccurrence => "Dieses einzelne Vorkommen kann der aktuelle Backend-Adapter noch nicht verlustfrei löschen; die Serie bleibt unverändert.",
-                        CalendarRecurringDeleteScope::ThisAndFuture => "Eine Serienaufteilung ab diesem Vorkommen kann der aktuelle Backend-Adapter noch nicht verlustfrei durchführen; die Serie bleibt unverändert.",
+                        CalendarRecurringDeleteScope::ThisOccurrence => crate::i18n::gettext("The current backend adapter cannot yet delete this single occurrence without data loss; the series remains unchanged."),
+                        CalendarRecurringDeleteScope::ThisAndFuture => crate::i18n::gettext("A split starting at this occurrence cannot yet be performed by the current backend adapter without data loss; the series remains unchanged."),
                         CalendarRecurringDeleteScope::EntireSeries => unreachable!(),
                     };
-                    show_toast_for_widget(&widget_for_scope, description);
+                    show_toast_for_widget(&widget_for_scope, &description);
                 }
                 Err(error) => show_toast_for_widget(&widget_for_scope, &error),
             }
@@ -14252,9 +14424,9 @@ fn execute_delete_calendar_event<W: IsA<gtk::Widget> + Clone + 'static>(
     event: &CalendarEventRecord,
 ) {
     let confirmation_message = if event.source_uid == "local-calendar" {
-        "Der Termin wird dauerhaft aus dem lokalen Kalender entfernt."
+        crate::i18n::gettext("The appointment will be permanently removed from the local calendar.")
     } else {
-        "Der Termin wird dauerhaft aus dem synchronisierten Kalender entfernt."
+        crate::i18n::gettext("The appointment will be permanently removed from the synchronized calendar.")
     };
     let page_weak_for_action = page.downgrade();
     let widget_for_action = widget.clone();
@@ -14262,9 +14434,9 @@ fn execute_delete_calendar_event<W: IsA<gtk::Widget> + Clone + 'static>(
 
     crate::dialogs::run_destructive_action(
         widget,
-        "Termin löschen?",
-        confirmation_message,
-        "Löschen",
+        &crate::i18n::gettext("Delete appointment?"),
+        &confirmation_message,
+        &crate::i18n::gettext("Delete"),
         move || {
             let Some(page) = page_weak_for_action.upgrade() else {
                 return;
@@ -14272,20 +14444,20 @@ fn execute_delete_calendar_event<W: IsA<gtk::Widget> + Clone + 'static>(
             let Some(identity) = identity_for_action.clone() else {
                 show_toast_for_widget(
                     &widget_for_action,
-                    "Der Termin besitzt keine eindeutige Identität und wurde nicht gelöscht",
+                    &crate::i18n::gettext("The appointment has no unique identity and was not deleted"),
                 );
                 return;
             };
             let Some(event_record) = page.unique_loaded_calendar_event(&identity) else {
                 show_toast_for_widget(
                     &widget_for_action,
-                    "Der Termin ist nicht eindeutig geladen und wurde nicht gelöscht",
+                    &crate::i18n::gettext("The appointment is not uniquely loaded and was not deleted"),
                 );
                 page.reload_calendar_data();
                 return;
             };
             if let Some(error) = event_mutation_error(&event_record) {
-                show_toast_for_widget(&widget_for_action, error);
+                show_toast_for_widget(&widget_for_action, &error);
                 return;
             }
             let mutation_token = page.begin_calendar_mutation(Some(identity.clone()));
@@ -14317,7 +14489,7 @@ fn execute_delete_calendar_event<W: IsA<gtk::Widget> + Clone + 'static>(
                 if !page.calendar_event_mutation_is_current(&mutation_token) {
                     show_toast_for_widget(
                         &widget_for_result,
-                        "Der Kalenderstand hat sich geändert; das Löschergebnis wurde verworfen",
+                        &crate::i18n::gettext("The calendar state has changed; the deletion result was discarded"),
                     );
                     page.reload_calendar_data();
                     return;
@@ -14342,7 +14514,7 @@ fn execute_delete_calendar_event<W: IsA<gtk::Widget> + Clone + 'static>(
                         page.refresh_calendar_views();
                         show_toast_for_widget(
                             &widget_for_result,
-                            &format!("Termin gelöscht ({})", result.uid),
+                            &crate::i18n::gettext("Appointment deleted ({id})").replace("{id}", &result.uid),
                         );
                         if let Some(window) = widget_for_result
                             .root()
@@ -14355,10 +14527,7 @@ fn execute_delete_calendar_event<W: IsA<gtk::Widget> + Clone + 'static>(
                         page.finish_calendar_mutation(&mutation_token);
                         show_toast_for_widget(
                             &widget_for_result,
-                            &format!(
-                                "ECal bestätigte eine andere Termin-UID ({}); nichts wurde entfernt",
-                                result.uid
-                            ),
+                            &crate::i18n::gettext("ECal confirmed a different appointment UID ({id}); nothing was removed").replace("{id}", &result.uid),
                         );
                         page.reload_calendar_data();
                     }
@@ -14366,7 +14535,7 @@ fn execute_delete_calendar_event<W: IsA<gtk::Widget> + Clone + 'static>(
                         page.finish_calendar_mutation(&mutation_token);
                         show_toast_for_widget(
                             &widget_for_result,
-                            &format!("Termin konnte nicht gelöscht werden: {error}"),
+                            &crate::i18n::gettext("Appointment could not be deleted: {error}").replace("{error}", &error.to_string()),
                         );
                         page.reload_calendar_data();
                     }
@@ -14374,7 +14543,7 @@ fn execute_delete_calendar_event<W: IsA<gtk::Widget> + Clone + 'static>(
                         page.finish_calendar_mutation(&mutation_token);
                         show_toast_for_widget(
                             &widget_for_result,
-                            &format!("Löschauftrag fehlgeschlagen: {error}"),
+                            &crate::i18n::gettext("Delete operation failed: {error}").replace("{error}", &error.to_string()),
                         );
                         page.reload_calendar_data();
                     }
@@ -14430,7 +14599,7 @@ fn parse_ical_attendees(component: &str) -> Vec<CalendarAttendeeInfo> {
             if !email.is_empty() {
                 email.clone()
             } else {
-                "Teilnehmer".to_string()
+                crate::i18n::gettext("Attendee")
             }
         });
         attendees.push(CalendarAttendeeInfo {
@@ -14513,30 +14682,33 @@ fn format_alarm_summary(component: &str) -> Option<String> {
         if let AlarmTrigger::Relative { offset_seconds, .. } = &alarm.trigger {
             let abs_sec = offset_seconds.abs();
             let time_str = if *offset_seconds == 0 {
-                "Zur Startzeit".to_string()
+                crate::i18n::gettext("At start time")
             } else if abs_sec < 3600 {
                 let mins = abs_sec / 60;
-                format!("{mins} Min. vorher")
+                crate::i18n::ngettext("{n} min before", "{n} min before", mins as u32)
+                    .replace("{n}", &mins.to_string())
             } else if abs_sec < 86400 {
                 let hours = abs_sec / 3600;
                 if hours == 1 {
-                    "1 Std. vorher".to_string()
+                    crate::i18n::gettext("1 hour before")
                 } else {
-                    format!("{hours} Std. vorher")
+                    crate::i18n::ngettext("{n} hour before", "{n} hours before", hours as u32)
+                        .replace("{n}", &hours.to_string())
                 }
             } else {
                 let days = abs_sec / 86400;
                 if days == 1 {
-                    "1 Tag vorher".to_string()
+                    crate::i18n::gettext("1 day before")
                 } else {
-                    format!("{days} Tage vorher")
+                    crate::i18n::ngettext("{n} day before", "{n} days before", days as u32)
+                        .replace("{n}", &days.to_string())
                 }
             };
             summaries.push(time_str);
         }
     }
     if summaries.is_empty() {
-        Some("Erinnerung eingerichtet".to_string())
+        Some(crate::i18n::gettext("Reminder set"))
     } else {
         Some(summaries.join(", "))
     }
@@ -14546,20 +14718,20 @@ fn extract_event_badges(component: &str) -> Vec<(String, &'static str)> {
     let mut badges = Vec::new();
     if let Some(status) = ical_property(component, "STATUS") {
         match status.trim().to_ascii_uppercase().as_str() {
-            "TENTATIVE" => badges.push(("Vorläufig".to_string(), "warning-pill")),
-            "CANCELLED" => badges.push(("Abgesagt".to_string(), "destructive-pill")),
+            "TENTATIVE" => badges.push((crate::i18n::gettext("Tentative"), "warning-pill")),
+            "CANCELLED" => badges.push((crate::i18n::gettext("Cancelled"), "destructive-pill")),
             _ => {}
         }
     }
     if let Some(transp) = ical_property(component, "TRANSP") {
         if transp.trim().eq_ignore_ascii_case("TRANSPARENT") {
-            badges.push(("Frei".to_string(), "success-pill"));
+            badges.push((crate::i18n::gettext("Free"), "success-pill"));
         }
     }
     if let Some(class) = ical_property(component, "CLASS") {
         match class.trim().to_ascii_uppercase().as_str() {
-            "PRIVATE" => badges.push(("Privat".to_string(), "neutral-pill")),
-            "CONFIDENTIAL" => badges.push(("Vertraulich".to_string(), "neutral-pill")),
+            "PRIVATE" => badges.push((crate::i18n::gettext("Private"), "neutral-pill")),
+            "CONFIDENTIAL" => badges.push((crate::i18n::gettext("Confidential"), "neutral-pill")),
             _ => {}
         }
     }
@@ -14584,13 +14756,15 @@ fn show_calendar_event_details_popover_full<W: IsA<gtk::Widget> + Clone + 'stati
 ) {
     let identity = CalendarEventIdentity::from_event(event);
     let color = event_color_for_record(event);
+    let cal_default = crate::i18n::gettext("Calendar");
     let cal_name = if event.source_display_name.trim().is_empty() {
-        "Kalender"
+        cal_default.as_str()
     } else {
         event.source_display_name.trim()
     };
+    let untitled_default = crate::i18n::gettext("(Untitled)");
     let title = if event.summary.trim().is_empty() {
-        "(Ohne Titel)"
+        untitled_default.as_str()
     } else {
         event.summary.as_str()
     };
@@ -14670,7 +14844,7 @@ fn show_calendar_event_details_popover_full<W: IsA<gtk::Widget> + Clone + 'stati
     let edit_btn = gtk::Button::builder()
         .icon_name("document-edit-symbolic")
         .css_classes(vec!["flat", "circular"])
-        .tooltip_text("Termin bearbeiten")
+        .tooltip_text(&crate::i18n::gettext("Edit Appointment"))
         .valign(gtk::Align::Center)
         .build();
     let popover_edit = popover.clone();
@@ -14689,7 +14863,7 @@ fn show_calendar_event_details_popover_full<W: IsA<gtk::Widget> + Clone + 'stati
     let del_btn = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
         .css_classes(vec!["flat", "circular", "destructive-action"])
-        .tooltip_text("Termin löschen")
+        .tooltip_text(&crate::i18n::gettext("Delete Appointment"))
         .valign(gtk::Align::Center)
         .build();
     let popover_del = popover.clone();
@@ -14708,7 +14882,7 @@ fn show_calendar_event_details_popover_full<W: IsA<gtk::Widget> + Clone + 'stati
     let close_btn = gtk::Button::builder()
         .icon_name("window-close-symbolic")
         .css_classes(vec!["flat", "circular"])
-        .tooltip_text("Schließen")
+        .tooltip_text(&crate::i18n::gettext("Close"))
         .valign(gtk::Align::Center)
         .build();
     let popover_close = popover.clone();
@@ -14761,7 +14935,7 @@ fn show_calendar_event_details_popover_full<W: IsA<gtk::Widget> + Clone + 'stati
     time_details_box.append(&date_label);
 
     let duration_str = if event.all_day {
-        "Ganztägig".to_string()
+        crate::i18n::gettext("All Day")
     } else {
         let (start_min, end_min, _) = event_occurrence_times_for_date(event, effective_date, 30);
         let diff = end_min.saturating_sub(start_min);
@@ -14837,7 +15011,7 @@ fn show_calendar_event_details_popover_full<W: IsA<gtk::Widget> + Clone + 'stati
         conf_box.append(&conf_icon);
 
         let conf_btn = gtk::Button::builder()
-            .label("An Besprechung teilnehmen")
+            .label(&crate::i18n::gettext("Join meeting"))
             .icon_name("call-start-symbolic")
             .css_classes(vec!["suggested-action", "pill"])
             .valign(gtk::Align::Center)
@@ -14872,7 +15046,7 @@ fn show_calendar_event_details_popover_full<W: IsA<gtk::Widget> + Clone + 'stati
 
         if let Some(org_name) = organizer {
             let org_label = gtk::Label::builder()
-                .label(&format!("Organisator: {org_name}"))
+                .label(&crate::i18n::gettext("Organizer: {name}").replace("{name}", &org_name))
                 .xalign(0.0)
                 .css_classes(vec!["caption"])
                 .selectable(true)
@@ -14904,8 +15078,9 @@ fn show_calendar_event_details_popover_full<W: IsA<gtk::Widget> + Clone + 'stati
                 att_flow.append(&chip);
             }
             if attendees.len() > 6 {
+                let rem = attendees.len() - 6;
                 let more_chip = gtk::Label::builder()
-                    .label(&format!("+{} weitere", attendees.len() - 6))
+                    .label(&crate::i18n::ngettext("+{n} more", "+{n} more", rem as u32).replace("{n}", &rem.to_string()))
                     .css_classes(vec!["caption", "dim-label"])
                     .build();
                 att_flow.append(&more_chip);
@@ -14929,7 +15104,7 @@ fn show_calendar_event_details_popover_full<W: IsA<gtk::Widget> + Clone + 'stati
         alarm_box.append(&alarm_icon);
 
         let alarm_label = gtk::Label::builder()
-            .label(&format!("Erinnerung: {alarm_summary}"))
+            .label(&crate::i18n::gettext("Reminder: {summary}").replace("{summary}", &alarm_summary))
             .xalign(0.0)
             .selectable(true)
             .hexpand(true)
@@ -15026,7 +15201,7 @@ fn show_calendar_event_details_popover_full<W: IsA<gtk::Widget> + Clone + 'stati
 
     // ── Edit Button at Bottom ──
     let edit_full_btn = gtk::Button::builder()
-        .label("Termin bearbeiten")
+        .label(&crate::i18n::gettext("Edit Appointment"))
         .css_classes(vec!["suggested-action"])
         .margin_top(4)
         .halign(gtk::Align::Fill)
@@ -15136,8 +15311,9 @@ fn calendar_grid_event_chip(
     custom_time_text: Option<&str>,
     row_span: usize,
 ) -> gtk::Widget {
+    let untitled_default = crate::i18n::gettext("(Untitled)");
     let title = if event.summary.trim().is_empty() {
-        "(Ohne Titel)"
+        untitled_default.as_str()
     } else {
         event.summary.as_str()
     };
@@ -15202,7 +15378,7 @@ fn calendar_grid_event_chip(
         .build();
 
     chip_button.set_child(Some(&label));
-    set_accessible_label(&chip_button, &format!("Termin öffnen: {title}"));
+    set_accessible_label(&chip_button, &crate::i18n::gettext("Open appointment: {title}").replace("{title}", title));
     if !event.source_display_name.is_empty() {
         chip_button.set_tooltip_text(Some(&format!(
             "{title}\n{time_text} · {}",
@@ -15257,10 +15433,11 @@ fn calendar_event_row(page: &CalendarPage, event: &CalendarEventRecord) -> adw::
     if !event.source_display_name.trim().is_empty() {
         details.push(event.source_display_name.trim().to_string());
     }
+    let untitled = crate::i18n::gettext("(Untitled)");
     let row = adw::ActionRow::builder()
         .title(
             glib::markup_escape_text(if event.summary.trim().is_empty() {
-                "(Ohne Titel)"
+                untitled.as_str()
             } else {
                 event.summary.as_str()
             })
@@ -15274,10 +15451,11 @@ fn calendar_event_row(page: &CalendarPage, event: &CalendarEventRecord) -> adw::
     let color = event_color_for_record(event);
     let category_dot = gtk::Label::new(None);
     category_dot.set_markup(&format!("<span foreground=\"{color}\">●</span>"));
+    let default_cal = crate::i18n::gettext("Calendar");
     category_dot.set_tooltip_text(Some(if !event.source_display_name.is_empty() {
         event.source_display_name.as_str()
     } else {
-        "Kalender"
+        default_cal.as_str()
     }));
     row.add_prefix(&category_dot);
     let event_identity_for_activation = CalendarEventIdentity::from_event(event);
@@ -15296,7 +15474,7 @@ fn calendar_event_row(page: &CalendarPage, event: &CalendarEventRecord) -> adw::
 
 fn open_event_editor_for_widget<W: IsA<gtk::Widget>>(widget: &W, event: &CalendarEventRecord) {
     if let Some(error) = event_mutation_error(event) {
-        show_toast_for_widget(widget, error);
+        show_toast_for_widget(widget, &error);
         return;
     }
     let dialog = crate::dialogs::EventDialog::new_for_edit(event);
@@ -15327,7 +15505,7 @@ fn event_time_text(event: &CalendarEventRecord) -> String {
 
 fn event_time_text_with_12h(event: &CalendarEventRecord, use_12h: bool) -> String {
     if event.all_day || event.start.len() <= 10 {
-        return "Ganztägig".to_string();
+        return crate::i18n::gettext("All Day");
     }
     if !use_12h {
         if let (Some(start_str), Some(end_str)) = (quick_time_str(&event.start), quick_time_str(&event.end)) {
@@ -15387,13 +15565,21 @@ pub(crate) fn calendar_source_color(source_uid: &str, source_display_name: &str)
     } else {
         source_uid.trim()
     };
-    if key.eq_ignore_ascii_case("feiertage")
-        || key.to_lowercase().contains("holiday")
-        || key.to_lowercase().contains("feiertag")
+    let lower_key = key.to_lowercase();
+    let holidays_str = gettext("Holidays").to_lowercase();
+    let holiday_str = gettext("Holiday").to_lowercase();
+    let birthdays_str = gettext("Birthdays").to_lowercase();
+    let birthday_str = gettext("Birthday").to_lowercase();
+    if lower_key.contains("holiday")
+        || lower_key.contains(&holidays_str)
+        || lower_key.contains(&holiday_str)
     {
         return "#2ec27e".to_string(); // GNOME Green 4
     }
-    if key.to_lowercase().contains("geburtstag") || key.to_lowercase().contains("birthday") {
+    if lower_key.contains("birthday")
+        || lower_key.contains(&birthdays_str)
+        || lower_key.contains(&birthday_str)
+    {
         return "#9141ac".to_string(); // GNOME Purple 3
     }
     let mut hash = 0u64;
@@ -15407,7 +15593,7 @@ pub(crate) fn event_color_for_record(event: &CalendarEventRecord) -> String {
     if let Some(color) = category_color_for_component(&event.component) {
         return color;
     }
-    if event.source_display_name != "Lokaler Kalender" && !event.source_display_name.is_empty() {
+    if event.source_display_name != "Local Calendar" && event.source_display_name != crate::i18n::gettext("Local Calendar") && !event.source_display_name.is_empty() {
         return calendar_source_color(&event.source_uid, &event.source_display_name);
     }
     if let Some(color) = ical_property(&event.component, "COLOR")
@@ -15812,20 +15998,20 @@ fn plan_calendar_event_transfer(
     destination_writable: bool,
 ) -> Result<CalendarTransferPlan, String> {
     if let Some(error) = event_mutation_error(event) {
-        return Err(error.to_string());
+        return Err(error);
     }
     if !destination_writable {
-        return Err("Das Ziel ist nicht als schreibfähig bestätigt".to_string());
+        return Err(crate::i18n::gettext("The destination is not confirmed as writable"));
     }
     let destination_uid = destination_uid.trim();
     if destination_uid.is_empty() {
-        return Err("Für das Ziel fehlt die Kalenderkennung".to_string());
+        return Err(crate::i18n::gettext("Missing calendar identity for destination"));
     }
     if event.source_uid.trim() == destination_uid {
-        return Err("Quelle und Ziel sind derselbe Kalender".to_string());
+        return Err(crate::i18n::gettext("Source and destination are the same calendar"));
     }
     if event.component.trim().is_empty() {
-        return Err("Für diesen Termin sind keine iCalendar-Daten verfügbar".to_string());
+        return Err(crate::i18n::gettext("No calendar data available for this appointment"));
     }
     Ok(CalendarTransferPlan {
         kind,
@@ -15841,10 +16027,10 @@ fn plan_calendar_event_delete(
     scope: CalendarRecurringDeleteScope,
 ) -> Result<CalendarDeletePlan, String> {
     if let Some(error) = event_mutation_error(event) {
-        return Err(error.to_string());
+        return Err(error);
     }
     if event.source_uid.trim().is_empty() || event.uid.trim().is_empty() {
-        return Err("Der Termin besitzt keine eindeutige Quelle und UID".to_string());
+        return Err(crate::i18n::gettext("The appointment has no unique source and UID"));
     }
     if calendar_event_is_recurring(event)
         && !matches!(scope, CalendarRecurringDeleteScope::EntireSeries)
@@ -16387,25 +16573,25 @@ fn calendar_event_identity_from_action_row(
     }
 }
 
-fn event_mutation_error(event: &CalendarEventRecord) -> Option<&'static str> {
+fn event_mutation_error(event: &CalendarEventRecord) -> Option<String> {
     if calendar_recurrence_id(event).is_some() {
         return Some(
-            "Serienausnahmen mit RECURRENCE-ID können über die verfügbare Kalender-API nicht sicher geändert werden",
+            crate::i18n::gettext("Recurring exceptions with RECURRENCE-ID cannot be safely modified via the available calendar API"),
         );
     }
     if event.source_uid.trim().is_empty() {
-        return Some("Dieser Termin stammt aus einer schreibgeschützten importierten Quelle");
+        return Some(crate::i18n::gettext("This appointment originates from a read-only imported source"));
     }
     if event.uid.trim().is_empty() {
-        return Some("Dieser Termin besitzt keine stabile UID und kann nicht geändert werden");
+        return Some(crate::i18n::gettext("This appointment does not have a stable UID and cannot be modified"));
     }
     if event.component.trim().is_empty() {
-        return Some("Für diesen Termin sind keine iCalendar-Daten verfügbar");
+        return Some(crate::i18n::gettext("No calendar data available for this appointment"));
     }
     match ical_property(&event.component, "UID") {
         Some(uid) if uid == event.uid => None,
-        Some(_) => Some("Die Termin-UID und die iCalendar-UID stimmen nicht überein"),
-        None => Some("Die iCalendar-Komponente besitzt keine stabile UID"),
+        Some(_) => Some(crate::i18n::gettext("The appointment UID and the iCalendar UID do not match")),
+        None => Some(crate::i18n::gettext("The iCalendar component does not possess a stable UID")),
     }
 }
 
@@ -16415,8 +16601,7 @@ fn validated_event_mutation_component(
 ) -> Result<String, String> {
     if result.uid != event.uid {
         return Err(
-            "Der Kalenderdienst lieferte eine andere Termin-UID zurück; die Ansicht wurde nicht geändert"
-                .to_string(),
+            crate::i18n::gettext("The calendar service returned a different appointment UID; the view was not modified"),
         );
     }
     let component = result
@@ -16424,13 +16609,11 @@ fn validated_event_mutation_component(
         .clone()
         .filter(|component| !component.trim().is_empty())
         .ok_or_else(|| {
-            "Der Kalenderdienst bestätigte die Änderung ohne iCalendar-Komponente; die Ansicht wurde nicht geändert"
-                .to_string()
+            crate::i18n::gettext("The calendar service confirmed the change without an iCalendar component; the view was not modified")
         })?;
     if ical_property(&component, "UID").as_deref() != Some(event.uid.as_str()) {
         return Err(
-            "Der Kalenderdienst lieferte eine iCalendar-Komponente mit anderer UID zurück; die Ansicht wurde nicht geändert"
-                .to_string(),
+            crate::i18n::gettext("The calendar service returned an iCalendar component with a different UID; the view was not modified"),
         );
     }
     let returned_recurrence_id = ical_property(&component, "RECURRENCE-ID")
@@ -16438,8 +16621,7 @@ fn validated_event_mutation_component(
         .filter(|value| !value.is_empty());
     if returned_recurrence_id != calendar_recurrence_id(event) {
         return Err(
-            "Der Kalenderdienst lieferte eine andere Serienausnahme zurück; die Ansicht wurde nicht geändert"
-                .to_string(),
+            crate::i18n::gettext("The calendar service returned a different recurring exception; the view was not modified"),
         );
     }
     Ok(component)
@@ -16571,18 +16753,18 @@ fn append_event_row(
 
     let edit_button = gtk::Button::builder()
         .icon_name("document-edit-symbolic")
-        .tooltip_text("Termin bearbeiten")
+        .tooltip_text(&crate::i18n::gettext("Edit Appointment"))
         .css_classes(vec!["flat"])
         .valign(gtk::Align::Center)
         .build();
-    set_accessible_label(&edit_button, "Termin bearbeiten");
+    set_accessible_label(&edit_button, &crate::i18n::gettext("Edit Appointment"));
     let delete_button = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
-        .tooltip_text("Termin löschen")
+        .tooltip_text(&crate::i18n::gettext("Delete Appointment"))
         .css_classes(vec!["flat", "destructive-action"])
         .valign(gtk::Align::Center)
         .build();
-    set_accessible_label(&delete_button, "Termin löschen");
+    set_accessible_label(&delete_button, &crate::i18n::gettext("Delete Appointment"));
     let action_state =
         calendar_event_action_state(&event, CalendarStoreService::new().is_writable());
     let writable = action_state.can_edit;
@@ -16591,36 +16773,36 @@ fn append_event_row(
     delete_button.set_sensitive(action_state.can_delete);
     let print_button = gtk::Button::builder()
         .icon_name("document-print-symbolic")
-        .tooltip_text("Termin drucken")
+        .tooltip_text(&crate::i18n::gettext("Print Appointment"))
         .css_classes(vec!["flat"])
         .valign(gtk::Align::Center)
         .build();
-    set_accessible_label(&print_button, "Termin drucken");
+    set_accessible_label(&print_button, &crate::i18n::gettext("Print Appointment"));
     print_button.set_sensitive(action_state.can_print);
     let export_button = gtk::Button::builder()
         .icon_name("document-save-symbolic")
-        .tooltip_text("Termin exportieren (iCalendar, CSV, RDF)")
+        .tooltip_text(&crate::i18n::gettext("Export Appointment (iCalendar, CSV, RDF)"))
         .css_classes(vec!["flat"])
         .valign(gtk::Align::Center)
         .build();
-    set_accessible_label(&export_button, "Termin exportieren");
+    set_accessible_label(&export_button, &crate::i18n::gettext("Export Appointment"));
     export_button.set_sensitive(action_state.can_export);
     let copy_button = gtk::Button::builder()
         .icon_name("edit-copy-symbolic")
-        .tooltip_text("Termin in lokalen Kalender kopieren")
+        .tooltip_text(&crate::i18n::gettext("Copy to Local Calendar"))
         .css_classes(vec!["flat"])
         .valign(gtk::Align::Center)
         .sensitive(action_state.can_copy_to_local)
         .build();
-    set_accessible_label(&copy_button, "Termin in lokalen Kalender kopieren");
+    set_accessible_label(&copy_button, &crate::i18n::gettext("Copy to Local Calendar"));
     let move_button = gtk::Button::builder()
         .icon_name("go-jump-symbolic")
-        .tooltip_text("Termin in lokalen Kalender verschieben")
+        .tooltip_text(&crate::i18n::gettext("Move to Local Calendar"))
         .css_classes(vec!["flat"])
         .valign(gtk::Align::Center)
         .sensitive(action_state.can_move_to_local)
         .build();
-    set_accessible_label(&move_button, "Termin in lokalen Kalender verschieben");
+    set_accessible_label(&move_button, &crate::i18n::gettext("Move to Local Calendar"));
     row.add_suffix(&edit_button);
     row.add_suffix(&print_button);
     row.add_suffix(&export_button);
@@ -16641,19 +16823,19 @@ fn append_event_row(
         let Some(identity) = event_identity_for_edit.as_ref() else {
             show_toast_for_widget(
                 &edit_button_for_click,
-                "Der Termin besitzt keine eindeutige Identität und wurde nicht geöffnet",
+                &crate::i18n::gettext("The appointment has no unique identity and was not opened"),
             );
             return;
         };
         let Some(event_for_edit) = page.unique_loaded_calendar_event(identity) else {
             show_toast_for_widget(
                 &edit_button_for_click,
-                "Der Termin ist nicht eindeutig geladen und wurde nicht geöffnet",
+                &crate::i18n::gettext("The appointment is not uniquely loaded and was not opened"),
             );
             return;
         };
         if let Some(error) = event_mutation_error(&event_for_edit) {
-            show_toast_for_widget(&edit_button_for_click, error);
+            show_toast_for_widget(&edit_button_for_click, &error);
             return;
         }
         let dialog = crate::dialogs::EventDialog::new_for_edit(&event_for_edit);
@@ -16681,22 +16863,21 @@ fn append_event_row(
     let event_for_print = event.clone();
     print_button.connect_clicked(move |btn| {
         let summary_display = if event_for_print.summary.trim().is_empty() {
-            "Termin"
+            crate::i18n::gettext("Appointment")
         } else {
-            event_for_print.summary.trim()
+            event_for_print.summary.trim().to_string()
         };
         match build_event_print_document(&event_for_print) {
             Ok(doc) => {
                 show_toast_for_widget(
                     btn,
-                    &format!(
-                        "Druckansicht für „{summary_display}“ vorbereitet ({} Zeichen); Print-Portal ist Linux-Handoff",
-                        doc.html.len()
-                    ),
+                    &crate::i18n::gettext("Print preview for “{title}” prepared ({count} characters); print portal is Linux handoff")
+                        .replace("{title}", &summary_display)
+                        .replace("{count}", &doc.html.len().to_string()),
                 );
             }
             Err(err) => {
-                show_toast_for_widget(btn, &format!("Drucken fehlgeschlagen: {err}"));
+                show_toast_for_widget(btn, &crate::i18n::gettext("Printing failed: {error}").replace("{error}", &err.to_string()));
             }
         }
     });
@@ -16712,7 +16893,7 @@ fn append_event_row(
         {
             show_toast_for_widget(
                 &export_button,
-                "Für diesen Termin sind keine Kalenderdaten verfügbar",
+                &crate::i18n::gettext("No calendar data available for this appointment"),
             );
             return;
         }
@@ -16724,15 +16905,18 @@ fn append_event_row(
         };
 
         let filter_ics = gtk::FileFilter::new();
-        filter_ics.set_name(Some("iCalendar (*.ics)"));
+        let ics_name = crate::i18n::gettext("iCalendar (*.ics)");
+        filter_ics.set_name(Some(&ics_name));
         filter_ics.add_pattern("*.ics");
 
         let filter_csv = gtk::FileFilter::new();
-        filter_csv.set_name(Some("Kommagetrennte Werte (*.csv)"));
+        let csv_name = crate::i18n::gettext("Comma-separated values (*.csv)");
+        filter_csv.set_name(Some(&csv_name));
         filter_csv.add_pattern("*.csv");
 
         let filter_rdf = gtk::FileFilter::new();
-        filter_rdf.set_name(Some("RDF / RSS 1.0 (*.rdf)"));
+        let rdf_name = crate::i18n::gettext("RDF / RSS 1.0 (*.rdf)");
+        filter_rdf.set_name(Some(&rdf_name));
         filter_rdf.add_pattern("*.rdf");
 
         let filters = gio::ListStore::new::<gtk::FileFilter>();
@@ -16741,7 +16925,7 @@ fn append_event_row(
         filters.append(&filter_rdf);
 
         let safe_name = if event_for_export.summary.trim().is_empty() {
-            "termin".to_string()
+            "appointment".to_string()
         } else {
             event_for_export
                 .summary
@@ -16752,14 +16936,14 @@ fn append_event_row(
         let initial_name = format!(
             "{}.ics",
             if safe_name.is_empty() {
-                "termin"
+                "appointment"
             } else {
                 &safe_name
             }
         );
 
         let file_dialog = gtk::FileDialog::builder()
-            .title("Termin exportieren")
+            .title(&crate::i18n::gettext("Export Appointment"))
             .filters(&filters)
             .default_filter(&filter_ics)
             .initial_name(&initial_name)
@@ -16800,11 +16984,11 @@ fn append_event_row(
             match save_result {
                 Ok(_) => show_toast_for_widget(
                     &export_button_for_result,
-                    &format!("Termin als {} exportiert", format.display_label()),
+                    &crate::i18n::gettext("Appointment exported as {format}").replace("{format}", format.display_label()),
                 ),
                 Err(error) => show_toast_for_widget(
                     &export_button_for_result,
-                    &format!("Termin konnte nicht gespeichert werden: {error}"),
+                    &crate::i18n::gettext("Appointment could not be saved: {error}").replace("{error}", &error.to_string()),
                 ),
             }
         });
@@ -16847,19 +17031,23 @@ fn append_event_row(
     let delete_scope_confirmed_for_signal = Rc::clone(&delete_scope_confirmed);
     delete_button_for_signal.connect_clicked(move |_| {
         if let Some(error) = event_mutation_error(&event_for_delete) {
-            show_toast_for_widget(&delete_button, error);
+            show_toast_for_widget(&delete_button, &error);
             return;
         }
         if recurring && !delete_scope_confirmed_for_signal.replace(false) {
             let scope_dialog = adw::AlertDialog::new(
-                Some("Wiederkehrenden Termin löschen"),
-                Some("Wählen Sie den Löschumfang. Einzelne Vorkommen und künftige Vorkommen werden erst angeboten, wenn der Backend-Adapter sie ohne Datenverlust als Ausnahme bzw. Serienaufteilung bestätigen kann."),
+                Some(&crate::i18n::gettext("Delete recurring appointment")),
+                Some(&crate::i18n::gettext("Choose the deletion scope. Single occurrences and future occurrences are offered once the backend adapter can confirm them without data loss as exception or split.")),
             );
+            let cancel_label = crate::i18n::gettext("Cancel");
+            let this_label = crate::i18n::gettext("Only this appointment");
+            let future_label = crate::i18n::gettext("This and future");
+            let series_label = crate::i18n::gettext("Delete entire series");
             scope_dialog.add_responses(&[
-                ("cancel", "Abbrechen"),
-                ("this", "Nur diesen Termin"),
-                ("future", "Diesen und künftige"),
-                ("series", "Ganze Serie löschen"),
+                ("cancel", &cancel_label),
+                ("this", &this_label),
+                ("future", &future_label),
+                ("series", &series_label),
             ]);
             scope_dialog.set_response_appearance("series", adw::ResponseAppearance::Destructive);
             let event_for_scope = event_for_delete.clone();
@@ -16883,11 +17071,11 @@ fn append_event_row(
                     }
                     Ok(CalendarDeletePlan::UnsupportedOccurrenceScope { scope }) => {
                         let description = match scope {
-                            CalendarRecurringDeleteScope::ThisOccurrence => "Dieses einzelne Vorkommen kann der aktuelle Backend-Adapter noch nicht verlustfrei löschen; die Serie bleibt unverändert.",
-                            CalendarRecurringDeleteScope::ThisAndFuture => "Eine Serienaufteilung ab diesem Vorkommen kann der aktuelle Backend-Adapter noch nicht verlustfrei durchführen; die Serie bleibt unverändert.",
+                            CalendarRecurringDeleteScope::ThisOccurrence => crate::i18n::gettext("The current backend adapter cannot yet delete this single occurrence without data loss; the series remains unchanged."),
+                            CalendarRecurringDeleteScope::ThisAndFuture => crate::i18n::gettext("A split starting at this occurrence cannot yet be performed by the current backend adapter without data loss; the series remains unchanged."),
                             CalendarRecurringDeleteScope::EntireSeries => unreachable!(),
                         };
-                        show_toast_for_widget(&delete_button_for_scope, description);
+                        show_toast_for_widget(&delete_button_for_scope, &description);
                     }
                     Err(error) => show_toast_for_widget(&delete_button_for_scope, &error),
                 }
@@ -16896,9 +17084,9 @@ fn append_event_row(
             return;
         }
         let confirmation_message = if event_for_delete.source_uid == "local-calendar" {
-            "Der Termin wird dauerhaft aus dem lokalen Kalender entfernt."
+            crate::i18n::gettext("The appointment will be permanently removed from the local calendar.")
         } else {
-            "Der Termin wird dauerhaft aus dem synchronisierten Kalender entfernt."
+            crate::i18n::gettext("The appointment will be permanently removed from the synchronized calendar.")
         };
         let event_records_for_action = Rc::clone(&event_records_for_delete);
         let event_list_for_action = event_list_for_delete.clone();
@@ -16907,9 +17095,9 @@ fn append_event_row(
         let event_identity_for_action = event_identity_for_delete.clone();
         crate::dialogs::run_destructive_action(
             &delete_button,
-            "Termin löschen?",
-            confirmation_message,
-            "Löschen",
+            &crate::i18n::gettext("Delete appointment?"),
+            &confirmation_message,
+            &crate::i18n::gettext("Delete"),
             move || {
                 let Some(page) = page_weak_for_action.upgrade() else {
                     return;
@@ -16917,20 +17105,20 @@ fn append_event_row(
                 let Some(identity) = event_identity_for_action.clone() else {
                     show_toast_for_widget(
                         &delete_button_for_action,
-                        "Der Termin besitzt keine eindeutige Identität und wurde nicht gelöscht",
+                        &crate::i18n::gettext("The appointment has no unique identity and was not deleted"),
                     );
                     return;
                 };
                 let Some(event_for_action) = page.unique_loaded_calendar_event(&identity) else {
                     show_toast_for_widget(
                         &delete_button_for_action,
-                        "Der Termin ist nicht eindeutig geladen und wurde nicht gelöscht",
+                        &crate::i18n::gettext("The appointment is not uniquely loaded and was not deleted"),
                     );
                     page.reload_calendar_data();
                     return;
                 };
                 if let Some(error) = event_mutation_error(&event_for_action) {
-                    show_toast_for_widget(&delete_button_for_action, error);
+                    show_toast_for_widget(&delete_button_for_action, &error);
                     return;
                 }
                 let mutation_token =
@@ -16965,7 +17153,7 @@ fn append_event_row(
                         delete_button_for_result.set_sensitive(true);
                         show_toast_for_widget(
                             &delete_button_for_result,
-                            "Der Kalenderstand hat sich geändert; das Löschergebnis wurde verworfen",
+                            &crate::i18n::gettext("The calendar state has changed; the deletion result was discarded"),
                         );
                         page.reload_calendar_data();
                         return;
@@ -16991,7 +17179,7 @@ fn append_event_row(
                             page.refresh_calendar_views();
                             show_toast_for_widget(
                                 &delete_button_for_result,
-                                &format!("Termin gelöscht ({})", result.uid),
+                                &crate::i18n::gettext("Appointment deleted ({id})").replace("{id}", &result.uid),
                             );
                             if let Some(window) = delete_button_for_result
                                 .root()
@@ -17005,10 +17193,7 @@ fn append_event_row(
                             delete_button_for_result.set_sensitive(true);
                             show_toast_for_widget(
                                 &delete_button_for_result,
-                                &format!(
-                                    "ECal bestätigte eine andere Termin-UID ({}); nichts wurde entfernt",
-                                    result.uid
-                                ),
+                                &crate::i18n::gettext("ECal confirmed a different appointment UID ({id}); nothing was removed").replace("{id}", &result.uid),
                             );
                             page.reload_calendar_data();
                         }
@@ -17017,7 +17202,7 @@ fn append_event_row(
                             delete_button_for_result.set_sensitive(true);
                             show_toast_for_widget(
                                 &delete_button_for_result,
-                                &format!("Termin konnte nicht gelöscht werden: {error}"),
+                                &crate::i18n::gettext("Appointment could not be deleted: {error}").replace("{error}", &error.to_string()),
                             );
                             page.reload_calendar_data();
                         }
@@ -17026,7 +17211,7 @@ fn append_event_row(
                             delete_button_for_result.set_sensitive(true);
                             show_toast_for_widget(
                                 &delete_button_for_result,
-                                &format!("Termin-Löschkanal wurde beendet: {error}"),
+                                &crate::i18n::gettext("Appointment deletion channel closed: {error}").replace("{error}", &error.to_string()),
                             );
                             page.reload_calendar_data();
                         }
@@ -17065,7 +17250,7 @@ fn append_event_row(
             .margin_bottom(6)
             .build();
 
-        let edit = gtk::Button::with_label("Termin bearbeiten");
+        let edit = gtk::Button::with_label(&crate::i18n::gettext("Edit Appointment"));
         edit.set_halign(gtk::Align::Fill);
         edit.add_css_class("flat");
         edit.set_sensitive(writable);
@@ -17077,7 +17262,7 @@ fn append_event_row(
         });
         menu_box.append(&edit);
 
-        let print = gtk::Button::with_label("Termin drucken");
+        let print = gtk::Button::with_label(&crate::i18n::gettext("Print Appointment"));
         print.set_halign(gtk::Align::Fill);
         print.add_css_class("flat");
         print.set_sensitive(action_state.can_print);
@@ -17089,7 +17274,7 @@ fn append_event_row(
         });
         menu_box.append(&print);
 
-        let export = gtk::Button::with_label("Termin exportieren");
+        let export = gtk::Button::with_label(&crate::i18n::gettext("Export Appointment"));
         export.set_halign(gtk::Align::Fill);
         export.add_css_class("flat");
         export.set_sensitive(action_state.can_export);
@@ -17101,7 +17286,7 @@ fn append_event_row(
         });
         menu_box.append(&export);
 
-        let copy = gtk::Button::with_label("In lokalen Kalender kopieren");
+        let copy = gtk::Button::with_label(&crate::i18n::gettext("Copy to Local Calendar"));
         copy.set_halign(gtk::Align::Fill);
         copy.add_css_class("flat");
         copy.set_sensitive(action_state.can_copy_to_local);
@@ -17113,7 +17298,7 @@ fn append_event_row(
         });
         menu_box.append(&copy);
 
-        let move_to_local = gtk::Button::with_label("In lokalen Kalender verschieben");
+        let move_to_local = gtk::Button::with_label(&crate::i18n::gettext("Move to Local Calendar"));
         move_to_local.set_halign(gtk::Align::Fill);
         move_to_local.add_css_class("flat");
         move_to_local.set_sensitive(action_state.can_move_to_local);
@@ -17125,7 +17310,7 @@ fn append_event_row(
         });
         menu_box.append(&move_to_local);
 
-        let delete = gtk::Button::with_label("Termin löschen");
+        let delete = gtk::Button::with_label(&crate::i18n::gettext("Delete Appointment"));
         delete.set_halign(gtk::Align::Fill);
         delete.add_css_class("flat");
         delete.add_css_class("destructive-action");
@@ -17234,9 +17419,9 @@ mod tests {
         CalendarEventRecord {
             uid: "event-1".to_string(),
             source_uid: "source-1".to_string(),
-            source_display_name: "Kalender".to_string(),
+            source_display_name: "Calendar".to_string(),
             component: String::new(),
-            summary: "Termin".to_string(),
+            summary: "Appointment".to_string(),
             start: start.to_string(),
             end: String::new(),
             location: String::new(),
@@ -17290,27 +17475,27 @@ mod tests {
     #[test]
     fn calendar_search_text_includes_event_metadata() {
         let mut event = event_with_start("2026-08-10 12:00");
-        event.location = "Berlin Büro".to_string();
-        event.description = "Quartalsplanung".to_string();
+        event.location = "Berlin Office".to_string();
+        event.description = "Quarterly planning".to_string();
         let search = calendar_event_search_text(&event);
-        assert!(search.contains("berlin büro"));
-        assert!(search.contains("quartalsplanung"));
+        assert!(search.contains("berlin office"));
+        assert!(search.contains("quarterly planning"));
         assert!(search.contains("2026-08-10"));
     }
 
     #[test]
     fn task_completion_toggle_preserves_nested_alarm_data() {
         let task = concat!(
-            "BEGIN:VTODO\r\nUID:task-1\r\nSUMMARY:Bericht\r\n",
+            "BEGIN:VTODO\r\nUID:task-1\r\nSUMMARY:Report\r\n",
             "STATUS:NEEDS-ACTION\r\nPERCENT-COMPLETE:0\r\n",
             "BEGIN:VALARM\r\nTRIGGER:-PT15M\r\nACTION:DISPLAY\r\n",
-            "DESCRIPTION:Erinnerung\r\nEND:VALARM\r\nEND:VTODO\r\n"
+            "DESCRIPTION:Reminder\r\nEND:VALARM\r\nEND:VTODO\r\n"
         );
         let completed = set_task_completion_component(task, true);
         assert!(completed.contains("STATUS:COMPLETED"));
         assert!(completed.contains("PERCENT-COMPLETE:100"));
         assert!(completed.contains("TRIGGER:-PT15M"));
-        assert!(completed.contains("DESCRIPTION:Erinnerung"));
+        assert!(completed.contains("DESCRIPTION:Reminder"));
 
         let reopened = set_task_completion_component(&completed, false);
         assert!(reopened.contains("STATUS:NEEDS-ACTION"));
@@ -18420,7 +18605,8 @@ mod tests {
         event.end = "2026-08-10 10:45".to_string();
         assert_eq!(event_time_text(&event), "09:30–10:45");
         event.all_day = true;
-        assert_eq!(event_time_text(&event), "Ganztägig");
+        let time_txt = event_time_text(&event);
+        assert_eq!(time_txt, crate::i18n::gettext("All Day"));
     }
 
     #[test]
@@ -18500,7 +18686,10 @@ mod tests {
         );
         let error =
             shift_event_component(raw, 1).expect_err("complex series must not be corrupted");
-        assert!(error.contains("nicht sicher"));
+        assert_eq!(
+            error,
+            crate::i18n::gettext("This recurrence cannot be moved safely by dragging; please edit the appointment")
+        );
     }
 
     #[test]
@@ -18557,9 +18746,9 @@ mod tests {
         let event = CalendarEventRecord {
             uid: "event-1".to_string(),
             source_uid: "source-1".to_string(),
-            source_display_name: "Kalender".to_string(),
+            source_display_name: "Calendar".to_string(),
             component: "BEGIN:VEVENT\r\nUID:event-1\r\nEND:VEVENT\r\n".to_string(),
-            summary: "Termin".to_string(),
+            summary: "Appointment".to_string(),
             start: "2026-08-10".to_string(),
             end: "2026-08-11".to_string(),
             location: String::new(),
@@ -18598,9 +18787,9 @@ mod tests {
         let task = TaskRecord {
             uid: "task-101".to_string(),
             source_uid: "source-work".to_string(),
-            source_display_name: "Arbeit".to_string(),
-            component: "BEGIN:VTODO\r\nUID:task-101\r\nSUMMARY:Bericht fertigstellen\r\nCATEGORIES:Projekt,Wichtig\r\nDESCRIPTION:Detaillierte Analyse\r\nEND:VTODO\r\n".to_string(),
-            summary: "Bericht fertigstellen".to_string(),
+            source_display_name: "Work".to_string(),
+            component: "BEGIN:VTODO\r\nUID:task-101\r\nSUMMARY:Finalize report\r\nCATEGORIES:Project,Important\r\nDESCRIPTION:Detailed analysis\r\nEND:VTODO\r\n".to_string(),
+            summary: "Finalize report".to_string(),
             due: "2026-09-10".to_string(),
             priority: 1,
             completed: false,
@@ -18622,57 +18811,57 @@ mod tests {
 
         // 3. Search query matching summary
         assert!(task_matches_calendar_filter(
-            &task, "bericht", None, &hidden
+            &task, "report", None, &hidden
         ));
-        assert!(task_matches_calendar_filter(&task, "FERTIG", None, &hidden));
+        assert!(task_matches_calendar_filter(&task, "FINALIZE", None, &hidden));
 
         // 4. Search query matching component / description
         assert!(task_matches_calendar_filter(
-            &task, "analyse", None, &hidden
+            &task, "analysis", None, &hidden
         ));
 
         // 5. Search query mismatch
         assert!(!task_matches_calendar_filter(
-            &task, "urlaub", None, &hidden
+            &task, "vacation", None, &hidden
         ));
 
         // 6. Category matching
         assert!(task_matches_calendar_filter(
             &task,
             "",
-            Some("Projekt"),
+            Some("Project"),
             &hidden
         ));
         assert!(task_matches_calendar_filter(
             &task,
             "",
-            Some("wichtig"),
+            Some("important"),
             &hidden
         ));
         assert!(!task_matches_calendar_filter(
             &task,
             "",
-            Some("Privat"),
+            Some("Personal"),
             &hidden
         ));
 
         // 7. Combined query and category match
         assert!(task_matches_calendar_filter(
             &task,
-            "bericht",
-            Some("Projekt"),
+            "report",
+            Some("Project"),
             &hidden
         ));
         assert!(!task_matches_calendar_filter(
             &task,
-            "bericht",
-            Some("Privat"),
+            "report",
+            Some("Personal"),
             &hidden
         ));
         assert!(!task_matches_calendar_filter(
             &task,
-            "urlaub",
-            Some("Projekt"),
+            "vacation",
+            Some("Project"),
             &hidden
         ));
     }
@@ -18682,10 +18871,10 @@ mod tests {
         let memo = MemoRecord {
             uid: "memo-202".to_string(),
             source_uid: "source-notes".to_string(),
-            source_display_name: "Notizen".to_string(),
-            component: "BEGIN:VJOURNAL\r\nUID:memo-202\r\nSUMMARY:Architektur Meeting\r\nCATEGORIES:Ideen,Technik\r\nDESCRIPTION:Diskussion über GTK4 Paned Layout\r\nEND:VJOURNAL\r\n".to_string(),
-            summary: "Architektur Meeting".to_string(),
-            description: "Diskussion über GTK4 Paned Layout".to_string(),
+            source_display_name: "Notes".to_string(),
+            component: "BEGIN:VJOURNAL\r\nUID:memo-202\r\nSUMMARY:Architecture Meeting\r\nCATEGORIES:Ideas,Tech\r\nDESCRIPTION:Discussion about GTK4 Paned Layout\r\nEND:VJOURNAL\r\n".to_string(),
+            summary: "Architecture Meeting".to_string(),
+            description: "Discussion about GTK4 Paned Layout".to_string(),
             updated: "2026-09-04".to_string(),
         };
         let hidden = HashSet::new();
@@ -18709,7 +18898,7 @@ mod tests {
         ));
         assert!(memo_matches_calendar_filter(
             &memo,
-            "ARCHITEKTUR",
+            "ARCHITECTURE",
             None,
             &hidden
         ));
@@ -18720,7 +18909,7 @@ mod tests {
         // 5. Search query mismatch
         assert!(!memo_matches_calendar_filter(
             &memo,
-            "einkaufsliste",
+            "shopping list",
             None,
             &hidden
         ));
@@ -18729,19 +18918,19 @@ mod tests {
         assert!(memo_matches_calendar_filter(
             &memo,
             "",
-            Some("Ideen"),
+            Some("Ideas"),
             &hidden
         ));
         assert!(memo_matches_calendar_filter(
             &memo,
             "",
-            Some("technik"),
+            Some("tech"),
             &hidden
         ));
         assert!(!memo_matches_calendar_filter(
             &memo,
             "",
-            Some("Privat"),
+            Some("Personal"),
             &hidden
         ));
 
@@ -18749,13 +18938,13 @@ mod tests {
         assert!(memo_matches_calendar_filter(
             &memo,
             "paned",
-            Some("Technik"),
+            Some("Tech"),
             &hidden
         ));
         assert!(!memo_matches_calendar_filter(
             &memo,
             "paned",
-            Some("Privat"),
+            Some("Personal"),
             &hidden
         ));
     }
@@ -18765,19 +18954,19 @@ mod tests {
         let mut memo = MemoRecord {
             uid: "m1".to_string(),
             source_uid: "s1".to_string(),
-            source_display_name: "Persönlich".to_string(),
+            source_display_name: "Personal".to_string(),
             component: String::new(),
-            summary: "Titel".to_string(),
-            description: "Erste Zeile\nZweite Zeile".to_string(),
+            summary: "Title".to_string(),
+            description: "First line\nSecond line".to_string(),
             updated: "2026-09-04 12:00".to_string(),
         };
         assert_eq!(calendar_memo_subtitle(&memo), "2026-09-04 12:00");
 
         memo.updated.clear();
-        assert_eq!(calendar_memo_subtitle(&memo), "Erste Zeile");
+        assert_eq!(calendar_memo_subtitle(&memo), "First line");
 
         memo.description.clear();
-        assert_eq!(calendar_memo_subtitle(&memo), "Persönlich");
+        assert_eq!(calendar_memo_subtitle(&memo), "Personal");
 
         memo.source_display_name.clear();
         assert_eq!(calendar_memo_subtitle(&memo), "");
@@ -19100,7 +19289,14 @@ mod tests {
 
         let Some(settings) = AppSettings::try_new() else {
             let names = configured_weekday_names();
-            assert!(names[0] == "Mo" || names[0] == "So");
+            assert_eq!(
+                names[0],
+                if configured_first_weekday() == Weekday::Sun {
+                    crate::i18n::gettext("Sun")
+                } else {
+                    crate::i18n::gettext("Mon")
+                }
+            );
             return;
         };
 
@@ -19109,18 +19305,36 @@ mod tests {
         // 1. Basic Monday vs Sunday switching
         settings.set_calendar_week_start("monday");
         assert_eq!(configured_first_weekday(), Weekday::Mon);
-        assert_eq!(configured_weekday_names()[0], "Mo");
+        let mon_names = configured_weekday_names();
+        assert_eq!(mon_names[0], crate::i18n::gettext("Mon"));
         assert_eq!(
-            configured_weekday_names(),
-            ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+            mon_names,
+            [
+                crate::i18n::gettext("Mon"),
+                crate::i18n::gettext("Tue"),
+                crate::i18n::gettext("Wed"),
+                crate::i18n::gettext("Thu"),
+                crate::i18n::gettext("Fri"),
+                crate::i18n::gettext("Sat"),
+                crate::i18n::gettext("Sun"),
+            ]
         );
 
         settings.set_calendar_week_start("sunday");
         assert_eq!(configured_first_weekday(), Weekday::Sun);
-        assert_eq!(configured_weekday_names()[0], "So");
+        let sun_names = configured_weekday_names();
+        assert_eq!(sun_names[0], crate::i18n::gettext("Sun"));
         assert_eq!(
-            configured_weekday_names(),
-            ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"]
+            sun_names,
+            [
+                crate::i18n::gettext("Sun"),
+                crate::i18n::gettext("Mon"),
+                crate::i18n::gettext("Tue"),
+                crate::i18n::gettext("Wed"),
+                crate::i18n::gettext("Thu"),
+                crate::i18n::gettext("Fri"),
+                crate::i18n::gettext("Sat"),
+            ]
         );
 
         // 2. Adversarial rapid stress cycling (50 iterations)
@@ -19128,11 +19342,13 @@ mod tests {
             if i % 2 == 0 {
                 settings.set_calendar_week_start("monday");
                 assert_eq!(configured_first_weekday(), Weekday::Mon);
-                assert_eq!(configured_weekday_names()[0], "Mo");
+                let n = configured_weekday_names();
+                assert_eq!(n[0], crate::i18n::gettext("Mon"));
             } else {
                 settings.set_calendar_week_start("sunday");
                 assert_eq!(configured_first_weekday(), Weekday::Sun);
-                assert_eq!(configured_weekday_names()[0], "So");
+                let n = configured_weekday_names();
+                assert_eq!(n[0], crate::i18n::gettext("Sun"));
             }
         }
 
@@ -19144,10 +19360,11 @@ mod tests {
                 Weekday::Mon,
                 "Invalid week-start '{invalid}' must safely default to Monday"
             );
+            let n = configured_weekday_names();
             assert_eq!(
-                configured_weekday_names()[0],
-                "Mo",
-                "Invalid week-start '{invalid}' must safely default to 'Mo'"
+                n[0],
+                crate::i18n::gettext("Mon"),
+                "Invalid week-start '{invalid}' must safely default to Monday"
             );
         }
 
@@ -19433,7 +19650,7 @@ mod tests {
         let event = CalendarEventRecord {
             uid: "single-1".to_string(),
             source_uid: "local-calendar".to_string(),
-            source_display_name: "Privat".to_string(),
+            source_display_name: "Personal".to_string(),
             component: "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:single-1\r\nDTSTART:20260909T100000\r\nDTEND:20260909T113000\r\nSUMMARY:Meeting\r\nEND:VEVENT\r\nEND:VCALENDAR".to_string(),
             summary: "Meeting".to_string(),
             start: "2026-09-09 10:00".to_string(),
@@ -19454,9 +19671,9 @@ mod tests {
         let event = CalendarEventRecord {
             uid: "weekly-1".to_string(),
             source_uid: "local-calendar".to_string(),
-            source_display_name: "Arbeit".to_string(),
-            component: "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:weekly-1\r\nDTSTART:20260107T140000\r\nDTEND:20260107T153000\r\nRRULE:FREQ=WEEKLY\r\nSUMMARY:Team-Standup\r\nEND:VEVENT\r\nEND:VCALENDAR".to_string(),
-            summary: "Team-Standup".to_string(),
+            source_display_name: "Work".to_string(),
+            component: "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:weekly-1\r\nDTSTART:20260107T140000\r\nDTEND:20260107T153000\r\nRRULE:FREQ=WEEKLY\r\nSUMMARY:Team Standup\r\nEND:VEVENT\r\nEND:VCALENDAR".to_string(),
+            summary: "Team Standup".to_string(),
             start: "2026-01-07 14:00".to_string(),
             end: "2026-01-07 15:30".to_string(),
             location: String::new(),
@@ -19477,9 +19694,9 @@ mod tests {
         let event = CalendarEventRecord {
             uid: "multiday-1".to_string(),
             source_uid: "local-calendar".to_string(),
-            source_display_name: "Schicht".to_string(),
-            component: "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:multiday-1\r\nDTSTART:20260907T220000\r\nDTEND:20260908T040000\r\nSUMMARY:Nachtdienst\r\nEND:VEVENT\r\nEND:VCALENDAR".to_string(),
-            summary: "Nachtdienst".to_string(),
+            source_display_name: "Shift".to_string(),
+            component: "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:multiday-1\r\nDTSTART:20260907T220000\r\nDTEND:20260908T040000\r\nSUMMARY:Night shift\r\nEND:VEVENT\r\nEND:VCALENDAR".to_string(),
+            summary: "Night shift".to_string(),
             start: "2026-09-07 22:00".to_string(),
             end: "2026-09-08 04:00".to_string(),
             location: String::new(),
@@ -19490,28 +19707,34 @@ mod tests {
         let (d1_start, d1_end, d1_text) = event_occurrence_times_for_date(&event, day1, 30);
         assert_eq!(d1_start, 1320); // 22:00
         assert_eq!(d1_end, 1440);   // 24:00 / midnight
-        assert_eq!(d1_text, "ab 22:00");
+        assert_eq!(d1_text, format!("{} 22:00", crate::i18n::gettext("from")));
 
         let day2 = NaiveDate::from_ymd_opt(2026, 9, 8).unwrap();
         let (d2_start, d2_end, d2_text) = event_occurrence_times_for_date(&event, day2, 30);
         assert_eq!(d2_start, 0);   // 00:00 / midnight
         assert_eq!(d2_end, 240);   // 04:00
-        assert_eq!(d2_text, "bis 04:00");
+        assert_eq!(d2_text, format!("{} 04:00", crate::i18n::gettext("until")));
     }
 
     #[test]
     fn test_duration_and_recurrence_formatting() {
-        assert_eq!(format_duration_text(90), "1 Std. 30 Min.");
-        assert_eq!(format_duration_text(60), "1 Std.");
-        assert_eq!(format_duration_text(120), "2 Std.");
-        assert_eq!(format_duration_text(45), "45 Min.");
+        let d90 = format_duration_text(90);
+        assert_eq!(d90, format!("1 {} 30 {}", crate::i18n::gettext("hr"), crate::i18n::gettext("min")));
+        let d60 = format_duration_text(60);
+        assert_eq!(d60, format!("1 {}", crate::i18n::gettext("hr")));
+        let d120 = format_duration_text(120);
+        assert_eq!(d120, format!("2 {}", crate::i18n::gettext("hr")));
+        let d45 = format_duration_text(45);
+        assert_eq!(d45, format!("45 {}", crate::i18n::gettext("min")));
 
         let mut event = event_with_start("2026-09-09 10:00");
         event.component = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nRRULE:FREQ=WEEKLY;BYDAY=MO\r\nEND:VEVENT\r\nEND:VCALENDAR".to_string();
-        assert_eq!(format_recurrence_summary(&event), Some("Wöchentlich wiederkehrend".to_string()));
+        let weekly = format_recurrence_summary(&event);
+        assert_eq!(weekly, Some(crate::i18n::gettext("Weekly recurrence")));
 
         event.component = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nRRULE:FREQ=DAILY\r\nEND:VEVENT\r\nEND:VCALENDAR".to_string();
-        assert_eq!(format_recurrence_summary(&event), Some("Täglich wiederkehrend".to_string()));
+        let daily = format_recurrence_summary(&event);
+        assert_eq!(daily, Some(crate::i18n::gettext("Daily recurrence")));
     }
 
     #[test]
@@ -19537,9 +19760,9 @@ mod tests {
         assert_eq!(
             badges,
             vec![
-                ("Vorläufig".to_string(), "warning-pill"),
-                ("Frei".to_string(), "success-pill"),
-                ("Vertraulich".to_string(), "neutral-pill"),
+                (crate::i18n::gettext("Tentative"), "warning-pill"),
+                (crate::i18n::gettext("Free"), "success-pill"),
+                (crate::i18n::gettext("Confidential"), "neutral-pill"),
             ]
         );
     }
@@ -19548,7 +19771,10 @@ mod tests {
     fn test_progressive_enhancement_alarms() {
         let component = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\nEND:VEVENT\r\nEND:VCALENDAR";
         let summary = format_alarm_summary(component);
-        assert_eq!(summary, Some("15 Min. vorher".to_string()));
+        assert_eq!(
+            summary,
+            Some(crate::i18n::ngettext("{n} min before", "{n} min before", 15).replace("{n}", "15"))
+        );
     }
 
     #[test]
@@ -19586,15 +19812,15 @@ mod tests {
         assert_eq!(short.len(), 7);
         assert_eq!(full.len(), 7);
         if configured_first_weekday() == Weekday::Mon {
-            assert_eq!(short[0], "Mo");
-            assert_eq!(short[6], "So");
-            assert_eq!(full[0], "Montag");
-            assert_eq!(full[6], "Sonntag");
+            assert_eq!(short[0], crate::i18n::gettext("Mon"));
+            assert_eq!(short[6], crate::i18n::gettext("Sun"));
+            assert_eq!(full[0], crate::i18n::gettext("Monday"));
+            assert_eq!(full[6], crate::i18n::gettext("Sunday"));
         } else {
-            assert_eq!(short[0], "So");
-            assert_eq!(short[6], "Sa");
-            assert_eq!(full[0], "Sonntag");
-            assert_eq!(full[6], "Samstag");
+            assert_eq!(short[0], crate::i18n::gettext("Sun"));
+            assert_eq!(short[6], crate::i18n::gettext("Sat"));
+            assert_eq!(full[0], crate::i18n::gettext("Sunday"));
+            assert_eq!(full[6], crate::i18n::gettext("Saturday"));
         }
     }
 
@@ -19933,8 +20159,8 @@ mod tests {
         events_by_date.entry(days[3]).or_insert_with(Vec::new).push(event2.clone());
 
         let workdays: HashSet<Weekday> = [Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri].into_iter().collect();
-        let weekday_names_full = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"];
-        let weekday_names_short = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+        let weekday_names_full = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+        let weekday_names_short = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
         let layout = prepare_month_layout(
             &viewport,
@@ -19992,8 +20218,8 @@ mod tests {
         events_by_date.entry(days[0]).or_insert_with(Vec::new).push(event);
 
         let workdays: HashSet<Weekday> = [Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri].into_iter().collect();
-        let weekday_names_full = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"];
-        let weekday_names_short = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+        let weekday_names_full = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+        let weekday_names_short = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
         let layout = prepare_month_layout(
             &viewport,
@@ -20073,12 +20299,12 @@ mod tests {
         let event = CalendarEventRecord {
             uid: "list-ev-1".to_string(),
             source_uid: "s1".to_string(),
-            source_display_name: "Arbeit".to_string(),
-            component: "BEGIN:VEVENT\r\nUID:list-ev-1\r\nDTSTART:20260915T140000\r\nDTEND:20260915T150000\r\nSUMMARY:Projektbesprechung\r\nCATEGORIES:Business\r\nLOCATION:Konferenzraum A\r\nEND:VEVENT\r\n".to_string(),
-            summary: "Projektbesprechung".to_string(),
+            source_display_name: "Work".to_string(),
+            component: "BEGIN:VEVENT\r\nUID:list-ev-1\r\nDTSTART:20260915T140000\r\nDTEND:20260915T150000\r\nSUMMARY:Project Meeting\r\nCATEGORIES:Business\r\nLOCATION:Conference Room A\r\nEND:VEVENT\r\n".to_string(),
+            summary: "Project Meeting".to_string(),
             start: "2026-09-15 14:00".to_string(),
             end: "2026-09-15 15:00".to_string(),
-            location: "Konferenzraum A".to_string(),
+            location: "Conference Room A".to_string(),
             description: String::new(),
             all_day: false,
         };
@@ -20106,21 +20332,21 @@ mod tests {
         let ev1 = CalendarEventRecord {
             uid: "ev-1".to_string(),
             source_uid: "src-1".to_string(),
-            source_display_name: "Privat".to_string(),
-            component: "BEGIN:VEVENT\r\nUID:ev-1\r\nDTSTART:20260915T140000\r\nDTEND:20260915T150000\r\nSUMMARY:Besprechung\r\nLOCATION:Büro\r\nCATEGORIES:Work\r\nEND:VEVENT\r\n".to_string(),
-            summary: "Besprechung".to_string(),
+            source_display_name: "Personal".to_string(),
+            component: "BEGIN:VEVENT\r\nUID:ev-1\r\nDTSTART:20260915T140000\r\nDTEND:20260915T150000\r\nSUMMARY:Meeting\r\nLOCATION:Office\r\nCATEGORIES:Work\r\nEND:VEVENT\r\n".to_string(),
+            summary: "Meeting".to_string(),
             start: "2026-09-15 14:00".to_string(),
             end: "2026-09-15 15:00".to_string(),
-            location: "Büro".to_string(),
+            location: "Office".to_string(),
             description: String::new(),
             all_day: false,
         };
         let ev2 = CalendarEventRecord {
             uid: "ev-2".to_string(),
             source_uid: "src-1".to_string(),
-            source_display_name: "Privat".to_string(),
-            component: "BEGIN:VEVENT\r\nUID:ev-2\r\nDTSTART:20260915T090000\r\nDTEND:20260915T100000\r\nSUMMARY:Frühstück\r\nEND:VEVENT\r\n".to_string(),
-            summary: "Frühstück".to_string(),
+            source_display_name: "Personal".to_string(),
+            component: "BEGIN:VEVENT\r\nUID:ev-2\r\nDTSTART:20260915T090000\r\nDTEND:20260915T100000\r\nSUMMARY:Breakfast\r\nEND:VEVENT\r\n".to_string(),
+            summary: "Breakfast".to_string(),
             start: "2026-09-15 09:00".to_string(),
             end: "2026-09-15 10:00".to_string(),
             location: String::new(),
@@ -20130,9 +20356,9 @@ mod tests {
         let ev3 = CalendarEventRecord {
             uid: "ev-3".to_string(),
             source_uid: "src-2".to_string(),
-            source_display_name: "Arbeit".to_string(),
-            component: "BEGIN:VEVENT\r\nUID:ev-3\r\nDTSTART;VALUE=DATE:20260916\r\nSUMMARY:Ganztags-Event\r\nEND:VEVENT\r\n".to_string(),
-            summary: "Ganztags-Event".to_string(),
+            source_display_name: "Work".to_string(),
+            component: "BEGIN:VEVENT\r\nUID:ev-3\r\nDTSTART;VALUE=DATE:20260916\r\nSUMMARY:All-day Event\r\nEND:VEVENT\r\n".to_string(),
+            summary: "All-day Event".to_string(),
             start: "2026-09-16".to_string(),
             end: "2026-09-16".to_string(),
             location: String::new(),
@@ -20156,7 +20382,7 @@ mod tests {
                 assert!(*is_today);
                 assert_eq!(*y, 0.0);
                 assert_eq!(*height, 36.0);
-                assert!(text.contains("KW 38"));
+                assert!(text.contains(&format!("{} 38", crate::i18n::gettext("Wk"))));
             }
             _ => panic!("Expected DateHeader"),
         }
@@ -20165,7 +20391,7 @@ mod tests {
         match &items[1] {
             PreparedAgendaItem::EventRow { record, title, y, height, .. } => {
                 assert_eq!(record.uid, "ev-2");
-                assert_eq!(title, "Frühstück");
+                assert_eq!(title, "Breakfast");
                 assert_eq!(*y, 36.0);
                 assert_eq!(*height, 46.0);
             }
@@ -20176,9 +20402,9 @@ mod tests {
         match &items[2] {
             PreparedAgendaItem::EventRow { record, title, category, sub, y, height, .. } => {
                 assert_eq!(record.uid, "ev-1");
-                assert_eq!(title, "Besprechung");
+                assert_eq!(title, "Meeting");
                 assert_eq!(category.as_deref(), Some("Work"));
-                assert!(sub.contains("Büro"));
+                assert!(sub.contains("Office"));
                 assert_eq!(*y, 82.0);
                 assert_eq!(*height, 46.0);
             }
@@ -20200,7 +20426,7 @@ mod tests {
         match &items[4] {
             PreparedAgendaItem::EventRow { record, time_str, y, height, .. } => {
                 assert_eq!(record.uid, "ev-3");
-                assert_eq!(time_str, "Ganztägig");
+                assert_eq!(time_str, &crate::i18n::gettext("All Day"));
                 assert_eq!(*y, 164.0);
                 assert_eq!(*height, 46.0);
             }
@@ -20214,7 +20440,7 @@ mod tests {
         let items = vec![
             PreparedAgendaItem::DateHeader {
                 date: d,
-                text: "Di., 15.09.2026".to_string(),
+                text: "Tue, Sep 15, 2026".to_string(),
                 is_today: false,
                 y: 0.0,
                 height: 36.0,
@@ -20275,9 +20501,9 @@ mod tests {
         let ev_allday = CalendarEventRecord {
             uid: "ev-allday".to_string(),
             source_uid: "s1".to_string(),
-            source_display_name: "Kalender".to_string(),
-            component: "BEGIN:VEVENT\r\nUID:ev-allday\r\nDTSTART;VALUE=DATE:20260915\r\nSUMMARY:Ganztag\r\nEND:VEVENT\r\n".to_string(),
-            summary: "Ganztag".to_string(),
+            source_display_name: "Calendar".to_string(),
+            component: "BEGIN:VEVENT\r\nUID:ev-allday\r\nDTSTART;VALUE=DATE:20260915\r\nSUMMARY:All-day\r\nEND:VEVENT\r\n".to_string(),
+            summary: "All-day".to_string(),
             start: "2026-09-15".to_string(),
             end: "2026-09-15".to_string(),
             location: String::new(),
@@ -20289,9 +20515,9 @@ mod tests {
         let ev_morning = CalendarEventRecord {
             uid: "ev-morning".to_string(),
             source_uid: "s1".to_string(),
-            source_display_name: "Kalender".to_string(),
-            component: "BEGIN:VEVENT\r\nUID:ev-morning\r\nDTSTART:20260915T090000\r\nDTEND:20260915T100000\r\nSUMMARY:Frühstück\r\nEND:VEVENT\r\n".to_string(),
-            summary: "Frühstück".to_string(),
+            source_display_name: "Calendar".to_string(),
+            component: "BEGIN:VEVENT\r\nUID:ev-morning\r\nDTSTART:20260915T090000\r\nDTEND:20260915T100000\r\nSUMMARY:Breakfast\r\nEND:VEVENT\r\n".to_string(),
+            summary: "Breakfast".to_string(),
             start: "2026-09-15 09:00".to_string(),
             end: "2026-09-15 10:00".to_string(),
             location: String::new(),
@@ -20303,9 +20529,9 @@ mod tests {
         let ev_recurring = CalendarEventRecord {
             uid: "ev-recurring".to_string(),
             source_uid: "s1".to_string(),
-            source_display_name: "Kalender".to_string(),
-            component: "BEGIN:VEVENT\r\nUID:ev-recurring\r\nDTSTART:20260106T140000\r\nDTEND:20260106T150000\r\nRRULE:FREQ=WEEKLY;BYDAY=TU\r\nSUMMARY:Wöchentliches Meeting\r\nEND:VEVENT\r\n".to_string(),
-            summary: "Wöchentliches Meeting".to_string(),
+            source_display_name: "Calendar".to_string(),
+            component: "BEGIN:VEVENT\r\nUID:ev-recurring\r\nDTSTART:20260106T140000\r\nDTEND:20260106T150000\r\nRRULE:FREQ=WEEKLY;BYDAY=TU\r\nSUMMARY:Weekly Meeting\r\nEND:VEVENT\r\n".to_string(),
+            summary: "Weekly Meeting".to_string(),
             start: "2026-09-15 14:00".to_string(),
             end: "2026-09-15 15:00".to_string(),
             location: String::new(),
@@ -20331,7 +20557,7 @@ mod tests {
         let items = vec![
             PreparedAgendaItem::DateHeader {
                 date: d,
-                text: "Di., 15.09.2026 · KW 38 · Ein sehr langer Titel für ein Datumsheader um Truncation zu testen".to_string(),
+                text: "Tue, Sep 15, 2026 · Wk 38 · A very long title for date header to test truncation".to_string(),
                 is_today: true,
                 y: 0.0,
                 height: 36.0,
@@ -20341,21 +20567,21 @@ mod tests {
                 record: CalendarEventRecord {
                     uid: "e1".to_string(),
                     source_uid: "s1".to_string(),
-                    source_display_name: "Kalender mit sehr langem Namen für Truncation-Tests".to_string(),
+                    source_display_name: "Calendar with a very long name for truncation tests".to_string(),
                     component: String::new(),
-                    summary: "Team Meeting mit einem extrem langen Titel der definitiv abgeschnitten werden muss".to_string(),
+                    summary: "Team meeting with an extremely long title that definitely needs truncation".to_string(),
                     start: "2026-09-15 10:00".to_string(),
                     end: "2026-09-15 11:00".to_string(),
-                    location: "Konferenzraum 3 im zweiten Obergeschoss Gebäude B".to_string(),
+                    location: "Conference Room 3 on the second floor Building B".to_string(),
                     description: String::new(),
                     all_day: false,
                 },
                 identity: None,
                 color: (0.21, 0.52, 0.89),
                 time_str: "10:00–11:00".to_string(),
-                title: "Team Meeting mit einem extrem langen Titel der definitiv abgeschnitten werden muss".to_string(),
-                sub: "Konferenzraum 3 · Kalender".to_string(),
-                category: Some("Eine sehr lange Kategoriebezeichnung".to_string()),
+                title: "Team meeting with an extremely long title that definitely needs truncation".to_string(),
+                sub: "Conference Room 3 · Calendar".to_string(),
+                category: Some("A very long category designation".to_string()),
                 y: 36.0,
                 height: 46.0,
             },
@@ -20404,22 +20630,22 @@ mod tests {
         let event = CalendarEventRecord {
             uid: "prep-1".to_string(),
             source_uid: "src-1".to_string(),
-            source_display_name: "Privat".to_string(),
-            component: "BEGIN:VEVENT\r\nUID:prep-1\r\nDTSTART:20260915T100000\r\nDTEND:20260915T113000\r\nSUMMARY:Zahnarzt\r\nCATEGORIES:Gesundheit\r\nLOCATION:Praxis Dr. Schmidt\r\nEND:VEVENT\r\n".to_string(),
-            summary: "Zahnarzt".to_string(),
+            source_display_name: "Personal".to_string(),
+            component: "BEGIN:VEVENT\r\nUID:prep-1\r\nDTSTART:20260915T100000\r\nDTEND:20260915T113000\r\nSUMMARY:Dentist\r\nCATEGORIES:Health\r\nLOCATION:Office Dr. Smith\r\nEND:VEVENT\r\n".to_string(),
+            summary: "Dentist".to_string(),
             start: "2026-09-15 10:00".to_string(),
             end: "2026-09-15 11:30".to_string(),
-            location: "Praxis Dr. Schmidt".to_string(),
+            location: "Office Dr. Smith".to_string(),
             description: String::new(),
             all_day: false,
         };
 
         let prepared = prepare_calendar_list_row(&event);
-        assert_eq!(prepared.title, "Zahnarzt");
+        assert_eq!(prepared.title, "Dentist");
         assert_eq!(prepared.time_str, "10:00 – 11:30");
-        assert_eq!(prepared.category.as_deref(), Some("Gesundheit"));
-        assert!(prepared.sub.contains("Praxis Dr. Schmidt"));
-        assert!(prepared.sub.contains("Privat"));
+        assert_eq!(prepared.category.as_deref(), Some("Health"));
+        assert!(prepared.sub.contains("Office Dr. Smith"));
+        assert!(prepared.sub.contains("Personal"));
         assert!(prepared.identity.is_some());
     }
 
@@ -20435,6 +20661,39 @@ mod tests {
         assert!(source.contains("end_box.append(&view_switcher_box)"));
         // Verify date_label has halign Center
         assert!(source.contains(".halign(gtk::Align::Center)"));
+    }
+
+    #[test]
+    fn test_calendar_toolbar_more_menu_and_availability_button_modes() {
+        let source = include_str!("calendar_page.rs");
+        // Print action moved to more_popover
+        assert!(source.contains("more_popover"));
+        assert!(source.contains("view-more-symbolic"));
+        assert!(source.contains("Print calendar view"));
+        // Availability button mode switching
+        assert!(source.contains("pub(crate) fn apply_toolbar_button_modes"));
+        assert!(source.contains("pub(crate) fn sync_toolbar_button_labels"));
+        assert!(source.contains("Free/Busy"));
+        assert!(source.contains("appointment-soon-symbolic"));
+
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let page = CalendarPage::new();
+        // Desktop mode: text label "Free/Busy"
+        page.apply_toolbar_button_modes(false);
+        let avail_btn = page.imp().btn_availability.borrow().as_ref().cloned().unwrap();
+        let child = avail_btn.child().expect("availability button should have a child");
+        assert!(child.downcast::<gtk::Label>().is_ok());
+
+        // Compact mode: icon "appointment-soon-symbolic"
+        page.apply_toolbar_button_modes(true);
+        let child = avail_btn.child().expect("availability button should have a child");
+        assert!(child.downcast::<gtk::Image>().is_ok());
     }
 
     #[test]
@@ -20456,12 +20715,12 @@ mod tests {
             all_day,
         };
 
-        let ev_allday = make_event("1", "Ganztag", "00:00", "23:59", true);
-        let ev_0700 = make_event("2", "Mail gucken", "07:00", "08:00", false);
-        let ev_0800 = make_event("3", "Arbeit", "08:00", "09:00", false);
+        let ev_allday = make_event("1", "All-day", "00:00", "23:59", true);
+        let ev_0700 = make_event("2", "Check mail", "07:00", "08:00", false);
+        let ev_0800 = make_event("3", "Work", "08:00", "09:00", false);
         let ev_0900 = make_event("4", "Simon", "09:00", "10:00", false);
-        let ev_1630 = make_event("5", "Mail gucken Nachmittag", "16:30", "17:30", false);
-        let ev_2230 = make_event("6", "Fokuszeit", "22:30", "23:30", false);
+        let ev_1630 = make_event("5", "Check mail afternoon", "16:30", "17:30", false);
+        let ev_2230 = make_event("6", "Focus time", "22:30", "23:30", false);
 
         // Put in scrambled order (like the bug where 22:30 was placed first)
         let mut events = vec![
@@ -20479,12 +20738,12 @@ mod tests {
         assert_eq!(
             ordered_summaries,
             vec![
-                "Ganztag",
-                "Mail gucken",
-                "Arbeit",
+                "All-day",
+                "Check mail",
+                "Work",
                 "Simon",
-                "Mail gucken Nachmittag",
-                "Fokuszeit"
+                "Check mail afternoon",
+                "Focus time"
             ],
             "Events on a day must sort strictly chronologically with all-day events first"
         );
@@ -20576,13 +20835,13 @@ mod tests {
     #[test]
     fn test_calendar_gnome_color_palette_and_unified_selection() {
         // Verify GNOME HIG color palette compliance
-        let holiday_col = calendar_source_color("holidays", "Feiertage");
+        let holiday_col = calendar_source_color("holidays", "Holidays");
         assert_eq!(holiday_col, "#2ec27e", "Holidays should use GNOME Green 4");
 
-        let birthday_col = calendar_source_color("birthdays", "Geburtstage");
+        let birthday_col = calendar_source_color("birthdays", "Birthdays");
         assert_eq!(birthday_col, "#9141ac", "Birthdays should use GNOME Purple 3");
 
-        let default_source_col = calendar_source_color("local-calendar", "Persönlich");
+        let default_source_col = calendar_source_color("local-calendar", "Personal");
         let valid_gnome_colors = [
             "#3584e4", "#2ec27e", "#e66100", "#e01b24",
             "#9141ac", "#2aa198", "#e5a50a", "#986a44",
@@ -20741,14 +21000,14 @@ mod tests {
 
         // Verify orientation icons and regression against missing symbolic icons
         let (side_icon, _) = match YearPreviewOrientation::Side {
-            YearPreviewOrientation::Side => ("pan-down-symbolic", "Vorschau unten anzeigen"),
-            YearPreviewOrientation::Bottom => ("sidebar-show-right-symbolic", "Vorschau rechts anzeigen"),
+            YearPreviewOrientation::Side => ("pan-down-symbolic", crate::i18n::gettext("Show preview at bottom")),
+            YearPreviewOrientation::Bottom => ("sidebar-show-right-symbolic", crate::i18n::gettext("Show preview on right")),
         };
         assert_eq!(side_icon, "pan-down-symbolic");
 
         let (bottom_icon, _) = match YearPreviewOrientation::Bottom {
-            YearPreviewOrientation::Side => ("pan-down-symbolic", "Vorschau unten anzeigen"),
-            YearPreviewOrientation::Bottom => ("sidebar-show-right-symbolic", "Vorschau rechts anzeigen"),
+            YearPreviewOrientation::Side => ("pan-down-symbolic", crate::i18n::gettext("Show preview at bottom")),
+            YearPreviewOrientation::Bottom => ("sidebar-show-right-symbolic", crate::i18n::gettext("Show preview on right")),
         };
         assert_eq!(bottom_icon, "sidebar-show-right-symbolic");
 
@@ -20866,7 +21125,7 @@ mod tests {
         let work_event = CalendarEventRecord {
             uid: "ev-work".to_string(),
             source_uid: "macos:calendar:12:GoogleAcc:work-id".to_string(),
-            source_display_name: "Arbeit".to_string(),
+            source_display_name: "Work".to_string(),
             component: "BEGIN:VEVENT\r\nUID:ev-work\r\nSUMMARY:Meeting\r\nEND:VEVENT\r\n".to_string(),
             summary: "Meeting".to_string(),
             start: "2026-09-15 10:00".to_string(),
@@ -20879,7 +21138,7 @@ mod tests {
         let private_event = CalendarEventRecord {
             uid: "ev-priv".to_string(),
             source_uid: "macos:calendar:12:GoogleAcc:priv-id".to_string(),
-            source_display_name: "Privat".to_string(),
+            source_display_name: "Personal".to_string(),
             component: "BEGIN:VEVENT\r\nUID:ev-priv\r\nSUMMARY:Doctor\r\nEND:VEVENT\r\n".to_string(),
             summary: "Doctor".to_string(),
             start: "2026-09-15 14:00".to_string(),
@@ -20892,11 +21151,11 @@ mod tests {
         // 1. Color matches the sidebar source color!
         assert_eq!(
             event_color_for_record(&work_event),
-            calendar_source_color("macos:calendar:12:GoogleAcc:work-id", "Arbeit")
+            calendar_source_color("macos:calendar:12:GoogleAcc:work-id", "Work")
         );
         assert_eq!(
             event_color_for_record(&private_event),
-            calendar_source_color("macos:calendar:12:GoogleAcc:priv-id", "Privat")
+            calendar_source_color("macos:calendar:12:GoogleAcc:priv-id", "Personal")
         );
         // And they are not all the same default blue!
         assert_ne!(
@@ -20906,7 +21165,7 @@ mod tests {
 
         // 2. Filter matching by source display name
         let mut hidden = HashSet::new();
-        hidden.insert("Arbeit".to_string());
+        hidden.insert("Work".to_string());
 
         assert!(!event_matches_calendar_filter_with_options(
             &work_event,
@@ -20941,30 +21200,30 @@ mod tests {
         let tasks = vec![
             TaskRecord {
                 source_uid: "src-1".to_string(),
-                source_display_name: "Privat".to_string(),
+                source_display_name: "Personal".to_string(),
                 uid: "t-1".to_string(),
                 component: String::new(),
-                summary: "Milch kaufen".to_string(),
+                summary: "Buy milk".to_string(),
                 due: "2026-09-15 12:00".to_string(),
                 completed: false,
                 priority: 0,
             },
             TaskRecord {
                 source_uid: "src-1".to_string(),
-                source_display_name: "Privat".to_string(),
+                source_display_name: "Personal".to_string(),
                 uid: "t-2".to_string(),
                 component: String::new(),
-                summary: "Bericht schreiben".to_string(),
+                summary: "Write report".to_string(),
                 due: "2026-09-10 12:00".to_string(),
                 completed: false,
                 priority: 0,
             },
             TaskRecord {
                 source_uid: "src-1".to_string(),
-                source_display_name: "Privat".to_string(),
+                source_display_name: "Personal".to_string(),
                 uid: "t-3".to_string(),
                 component: String::new(),
-                summary: "Archiviert".to_string(),
+                summary: "Archived".to_string(),
                 due: String::new(),
                 completed: true,
                 priority: 0,
@@ -20975,8 +21234,9 @@ mod tests {
         assert_eq!(layout.items.len(), 3);
         assert_eq!(layout.total_height, 36.0 * 3.0);
 
-        // Task 1: Due today -> "Heute", not overdue
-        assert_eq!(layout.items[0].due_text.as_deref(), Some("Heute"));
+        // Task 1: Due today -> "Today", not overdue
+        let due0 = layout.items[0].due_text.as_deref();
+        assert_eq!(due0, Some(crate::i18n::gettext("Today").as_str()));
         assert!(!layout.items[0].is_overdue);
 
         // Task 2: Due in the past (2026-09-10 < 2026-09-15) and not completed -> is_overdue
@@ -21006,16 +21266,16 @@ mod tests {
         let memos = vec![
             MemoRecord {
                 source_uid: "src-memo".to_string(),
-                source_display_name: "Notizen".to_string(),
+                source_display_name: "Notes".to_string(),
                 uid: "m-1".to_string(),
                 component: String::new(),
-                summary: "Einkaufsliste".to_string(),
-                description: "Brot, Butter, Käse".to_string(),
+                summary: "Shopping list".to_string(),
+                description: "Bread, butter, cheese".to_string(),
                 updated: "15.09.2026".to_string(),
             },
             MemoRecord {
                 source_uid: "src-memo".to_string(),
-                source_display_name: "Notizen".to_string(),
+                source_display_name: "Notes".to_string(),
                 uid: "m-2".to_string(),
                 component: String::new(),
                 summary: "".to_string(),
@@ -21027,8 +21287,8 @@ mod tests {
         let layout = prepare_memopad_layout(&memos);
         assert_eq!(layout.items.len(), 2);
         assert_eq!(layout.total_height, 34.0 * 2.0);
-        assert_eq!(layout.items[0].title, "Einkaufsliste");
-        assert_eq!(layout.items[1].title, "(Ohne Titel)");
+        assert_eq!(layout.items[0].title, "Shopping list");
+        assert_eq!(layout.items[1].title, crate::i18n::gettext("(Untitled)"));
 
         // Hit testing
         let hit0 = hit_test_memopad(&layout, 50.0, 15.0);
@@ -21112,8 +21372,8 @@ mod tests {
         events_by_date.entry(days[1]).or_insert_with(Vec::new).push(event_occ_1);
 
         let workdays: HashSet<Weekday> = [Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri].into_iter().collect();
-        let weekday_names_full = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"];
-        let weekday_names_short = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+        let weekday_names_full = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+        let weekday_names_short = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
         let layout = prepare_month_layout(
             &viewport,
