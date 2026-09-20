@@ -693,7 +693,7 @@ where
 {
     let popover_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(4)
+        .spacing(2)
         .margin_start(6)
         .margin_end(6)
         .margin_top(6)
@@ -702,10 +702,41 @@ where
 
     let popover = gtk::Popover::builder().child(&popover_box).build();
 
-    let btn_exclusive = gtk::Button::builder()
-        .label(format!("Nur diese(n) {domain_label} anzeigen"))
-        .css_classes(vec!["flat"])
-        .build();
+    let make_btn = |icon_name: &str, label_text: &str| -> gtk::Button {
+        let btn = gtk::Button::builder()
+            .css_classes(vec!["flat"])
+            .halign(gtk::Align::Fill)
+            .build();
+        let row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(10)
+            .margin_start(6)
+            .margin_end(6)
+            .margin_top(4)
+            .margin_bottom(4)
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .build();
+        let icon = gtk::Image::builder()
+            .icon_name(icon_name)
+            .pixel_size(16)
+            .css_classes(vec!["dim-label"])
+            .build();
+        let label = gtk::Label::builder()
+            .label(label_text)
+            .halign(gtk::Align::Start)
+            .xalign(0.0)
+            .build();
+        row.append(&icon);
+        row.append(&label);
+        btn.set_child(Some(&row));
+        btn
+    };
+
+    let btn_exclusive = make_btn(
+        "view-eye-symbolic",
+        &crate::i18n::gettext("Show Only This {domain}").replace("{domain}", domain_label),
+    );
     let pop_weak = popover.downgrade();
     btn_exclusive.connect_clicked(move |_| {
         if let Some(p) = pop_weak.upgrade() {
@@ -715,10 +746,10 @@ where
     });
     popover_box.append(&btn_exclusive);
 
-    let btn_all = gtk::Button::builder()
-        .label(format!("Alle {domain_label} anzeigen"))
-        .css_classes(vec!["flat"])
-        .build();
+    let btn_all = make_btn(
+        "view-refresh-symbolic",
+        &crate::i18n::gettext("Show All {domain}").replace("{domain}", domain_label),
+    );
     let pop_weak2 = popover.downgrade();
     btn_all.connect_clicked(move |_| {
         if let Some(p) = pop_weak2.upgrade() {
@@ -729,10 +760,10 @@ where
     popover_box.append(&btn_all);
 
     if !is_primary {
-        let btn_default = gtk::Button::builder()
-            .label("Als Standard festlegen")
-            .css_classes(vec!["flat"])
-            .build();
+        let btn_default = make_btn(
+            "emblem-ok-symbolic",
+            &crate::i18n::gettext("Set as Default"),
+        );
         let pop_weak3 = popover.downgrade();
         btn_default.connect_clicked(move |_| {
             if let Some(p) = pop_weak3.upgrade() {
@@ -748,10 +779,10 @@ where
     }
 
     if let Some(on_properties) = on_properties {
-        let btn_props = gtk::Button::builder()
-            .label("Eigenschaften…")
-            .css_classes(vec!["flat"])
-            .build();
+        let btn_props = make_btn(
+            "document-properties-symbolic",
+            &crate::i18n::gettext("Properties…"),
+        );
         let pop_weak4 = popover.downgrade();
         btn_props.connect_clicked(move |_| {
             if let Some(p) = pop_weak4.upgrade() {
@@ -763,10 +794,10 @@ where
     }
 
     if let Some(on_manage_groups) = on_manage_groups {
-        let btn_groups = gtk::Button::builder()
-            .label("Gruppen verwalten…")
-            .css_classes(vec!["flat"])
-            .build();
+        let btn_groups = make_btn(
+            "folder-symbolic",
+            &crate::i18n::gettext("Manage Groups…"),
+        );
         let pop_weak5 = popover.downgrade();
         btn_groups.connect_clicked(move |_| {
             if let Some(p) = pop_weak5.upgrade() {

@@ -120,6 +120,12 @@ pub(crate) enum PreparedAgendaItem {
 }
 
 impl PreparedAgendaItem {
+    pub(crate) fn date(&self) -> NaiveDate {
+        match self {
+            Self::DateHeader { date, .. } | Self::EventRow { date, .. } => *date,
+        }
+    }
+
     pub(crate) fn y(&self) -> f64 {
         match self {
             Self::DateHeader { y, .. } | Self::EventRow { y, .. } => *y,
@@ -3447,18 +3453,11 @@ impl CalendarPage {
             let Some(hit) = hit_test_month_canvas(x, y, w, h, &layout) else { return };
 
             match hit {
-                MonthCanvasHit::Event { event, date, .. } => {
+                MonthCanvasHit::Event { event, .. } => {
                     if n_press == 2 {
                         if let Some(identity) = CalendarEventIdentity::from_event(&event) {
                             page.open_event_editor_for_identity(drawing_area, &identity);
                         }
-                    } else if n_press == 1 {
-                        show_calendar_event_details_popover(
-                            &page,
-                            drawing_area,
-                            &event,
-                            Some(date),
-                        );
                     }
                 }
                 MonthCanvasHit::Overflow { date } => {
@@ -3510,6 +3509,26 @@ impl CalendarPage {
                 _ => {}
             }
         });
+
+        let page_weak_release = self.downgrade();
+        click_gesture.connect_released(move |gesture, n_press, x, y| {
+            if n_press == 1 {
+                let (Some(page), Some(widget)) = (page_weak_release.upgrade(), gesture.widget()) else { return };
+                let Some(drawing_area) = widget.downcast_ref::<gtk::DrawingArea>() else { return };
+                let layout_rc = page.imp().month_layout.borrow().as_ref().cloned();
+                let Some(layout) = layout_rc else { return };
+                let w = drawing_area.width() as f64;
+                let h = drawing_area.height() as f64;
+                if let Some(MonthCanvasHit::Event { event, date, .. }) = hit_test_month_canvas(x, y, w, h, &layout) {
+                    show_calendar_event_details_popover(
+                        &page,
+                        drawing_area,
+                        &event,
+                        Some(date),
+                    );
+                }
+            }
+        });
         month_canvas.add_controller(click_gesture);
 
         // Right Click Gesture (Context Menu)
@@ -3526,9 +3545,9 @@ impl CalendarPage {
             let h = drawing_area.height() as f64;
             let Some(hit) = hit_test_month_canvas(x, y, w, h, &layout) else { return };
 
+            let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
             match hit {
                 MonthCanvasHit::Event { event, .. } => {
-                    let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
                     show_calendar_event_context_menu(&page, drawing_area, &event, rect);
                 }
                 MonthCanvasHit::DayCell { date } => {
@@ -3539,12 +3558,45 @@ impl CalendarPage {
                         end_minute: 600,
                     }));
                     drawing_area.queue_draw();
-                    show_calendar_day_context_menu(&page, date, x, y);
+                    show_calendar_day_context_menu(&page, drawing_area, date, None, rect);
                 }
                 _ => {}
             }
         });
         month_canvas.add_controller(right_click_gesture);
+
+        let long_press_gesture = gtk::GestureLongPress::new();
+        let page_weak_lp = self.downgrade();
+        long_press_gesture.connect_pressed(move |gesture, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let (Some(page), Some(widget)) = (page_weak_lp.upgrade(), gesture.widget()) else { return };
+            let Some(drawing_area) = widget.downcast_ref::<gtk::DrawingArea>() else { return };
+            let layout_rc = page.imp().month_layout.borrow().as_ref().cloned();
+            let Some(layout) = layout_rc else { return };
+
+            let w = drawing_area.width() as f64;
+            let h = drawing_area.height() as f64;
+            let Some(hit) = hit_test_month_canvas(x, y, w, h, &layout) else { return };
+
+            let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            match hit {
+                MonthCanvasHit::Event { event, .. } => {
+                    show_calendar_event_context_menu(&page, drawing_area, &event, rect);
+                }
+                MonthCanvasHit::DayCell { date } => {
+                    page.set_selected_time_slot(Some(SelectedTimeSlot {
+                        date,
+                        end_date: date,
+                        start_minute: 540,
+                        end_minute: 600,
+                    }));
+                    drawing_area.queue_draw();
+                    show_calendar_day_context_menu(&page, drawing_area, date, None, rect);
+                }
+                _ => {}
+            }
+        });
+        month_canvas.add_controller(long_press_gesture);
 
         // Drag Gesture (Range Selection across days)
         let drag_gesture = gtk::GestureDrag::new();
@@ -4112,12 +4164,14 @@ impl CalendarPage {
         let agenda_right_click = gtk::GestureClick::builder().button(3).build();
         let page_weak_right = self.downgrade();
         agenda_right_click.connect_pressed(move |gesture, _n_press, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
             let Some(page) = page_weak_right.upgrade() else { return };
             let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
             area.grab_focus();
             let items_ref = page.imp().agenda_items.borrow();
             let scroll_y = page.imp().agenda_vadjustment.borrow().as_ref().map(|v| v.value()).unwrap_or(0.0);
             let logical_y = y + scroll_y;
+            let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
             if let Some(idx) = hit_test_agenda_canvas(&items_ref, logical_y) {
                 if let Some(record) = items_ref[idx].record().cloned() {
                     page.imp().agenda_selected_row.set(Some(idx));
@@ -4128,14 +4182,56 @@ impl CalendarPage {
                             .select_event(Some(id.clone()), Some(idx));
                     }
                     area.queue_draw();
-
-                    let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
                     drop(items_ref);
                     show_calendar_event_context_menu(&page, &area, &record, rect);
+                } else {
+                    let d = items_ref[idx].date();
+                    drop(items_ref);
+                    show_calendar_day_context_menu(&page, &area, d, None, rect);
                 }
+            } else {
+                drop(items_ref);
+                let cur_date = *page.imp().current_date.borrow();
+                show_calendar_day_context_menu(&page, &area, cur_date, None, rect);
             }
         });
         agenda_canvas.add_controller(agenda_right_click);
+
+        let agenda_long_press = gtk::GestureLongPress::new();
+        let page_weak_alp = self.downgrade();
+        agenda_long_press.connect_pressed(move |gesture, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let Some(page) = page_weak_alp.upgrade() else { return };
+            let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
+            area.grab_focus();
+            let items_ref = page.imp().agenda_items.borrow();
+            let scroll_y = page.imp().agenda_vadjustment.borrow().as_ref().map(|v| v.value()).unwrap_or(0.0);
+            let logical_y = y + scroll_y;
+            let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            if let Some(idx) = hit_test_agenda_canvas(&items_ref, logical_y) {
+                if let Some(record) = items_ref[idx].record().cloned() {
+                    page.imp().agenda_selected_row.set(Some(idx));
+                    if let Some(id) = items_ref[idx].identity() {
+                        page.imp()
+                            .view_state
+                            .borrow_mut()
+                            .select_event(Some(id.clone()), Some(idx));
+                    }
+                    area.queue_draw();
+                    drop(items_ref);
+                    show_calendar_event_context_menu(&page, &area, &record, rect);
+                } else {
+                    let d = items_ref[idx].date();
+                    drop(items_ref);
+                    show_calendar_day_context_menu(&page, &area, d, None, rect);
+                }
+            } else {
+                drop(items_ref);
+                let cur_date = *page.imp().current_date.borrow();
+                show_calendar_day_context_menu(&page, &area, cur_date, None, rect);
+            }
+        });
+        agenda_canvas.add_controller(agenda_long_press);
 
         // Motion controller (hover & cursor)
         let agenda_motion = gtk::EventControllerMotion::new();
@@ -4552,6 +4648,74 @@ impl CalendarPage {
         });
         year_canvas.add_controller(click_gesture);
 
+        // Secondary / Right click gesture
+        let year_right_click = gtk::GestureClick::builder().button(3).build();
+        let page_weak_yrc = self.downgrade();
+        year_right_click.connect_pressed(move |gesture, _n_press, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let Some(page) = page_weak_yrc.upgrade() else { return };
+            let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
+            area.grab_focus();
+            let year = page.current_calendar_viewport().anchor_date.year();
+            let show_week_numbers = AppSettings::try_new()
+                .map(|s| s.calendar_show_week_numbers())
+                .unwrap_or(false);
+            let first_weekday = configured_first_weekday();
+            let width = area.width() as f64;
+            let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
+            let scroll_y = page.imp().year_vadjustment.borrow().as_ref().map(|v| v.value()).unwrap_or(0.0);
+            let logical_y = y + scroll_y;
+            let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            if let Some(target) = Self::hit_test_year_canvas(&layout, x, logical_y) {
+                match target {
+                    YearCanvasHitTarget::Day(target_date) => {
+                        page.select_calendar_day(target_date);
+                        show_calendar_day_context_menu(&page, &area, target_date, None, rect);
+                    }
+                    YearCanvasHitTarget::MonthHeader(m) => {
+                        if let Some(first_of_month) = NaiveDate::from_ymd_opt(year, m, 1) {
+                            show_calendar_day_context_menu(&page, &area, first_of_month, None, rect);
+                        }
+                    }
+                }
+            }
+        });
+        year_canvas.add_controller(year_right_click);
+
+        // Long press gesture (touch / mobile)
+        let year_long_press = gtk::GestureLongPress::new();
+        let page_weak_ylp = self.downgrade();
+        year_long_press.connect_pressed(move |gesture, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let Some(page) = page_weak_ylp.upgrade() else { return };
+            let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
+            area.grab_focus();
+            let year = page.current_calendar_viewport().anchor_date.year();
+            let show_week_numbers = AppSettings::try_new()
+                .map(|s| s.calendar_show_week_numbers())
+                .unwrap_or(false);
+            let first_weekday = configured_first_weekday();
+            let width = area.width() as f64;
+            let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
+            let scroll_y = page.imp().year_vadjustment.borrow().as_ref().map(|v| v.value()).unwrap_or(0.0);
+            let logical_y = y + scroll_y;
+            let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            if let Some(target) = Self::hit_test_year_canvas(&layout, x, logical_y) {
+                match target {
+                    YearCanvasHitTarget::Day(target_date) => {
+                        page.select_calendar_day(target_date);
+                        show_calendar_day_context_menu(&page, &area, target_date, None, rect);
+                    }
+                    YearCanvasHitTarget::MonthHeader(m) => {
+                        if let Some(first_of_month) = NaiveDate::from_ymd_opt(year, m, 1) {
+                            show_calendar_day_context_menu(&page, &area, first_of_month, None, rect);
+                        }
+                    }
+                }
+            }
+        });
+        year_canvas.add_controller(year_long_press);
+
         // Motion controller for hover & pointer cursor
         let motion = gtk::EventControllerMotion::new();
         let page_weak_motion = self.downgrade();
@@ -4764,11 +4928,13 @@ impl CalendarPage {
         let list_right_click = gtk::GestureClick::builder().button(3).build();
         let page_weak_right = self.downgrade();
         list_right_click.connect_pressed(move |gesture, _n_press, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
             let Some(page) = page_weak_right.upgrade() else { return };
             let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
             let row_height = 46.0f64;
             let idx = (y / row_height).floor() as usize;
             let events_ref = page.imp().calendar_list_events.borrow();
+            let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
             if idx < events_ref.len() && y >= 0.0 {
                 let item = &events_ref[idx];
                 page.imp()
@@ -4776,12 +4942,45 @@ impl CalendarPage {
                     .borrow_mut()
                     .select_event(item.identity.clone(), Some(idx));
                 area.queue_draw();
-
-                let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
-                show_calendar_event_context_menu(&page, &area, &item.record, rect);
+                let record = item.record.clone();
+                drop(events_ref);
+                show_calendar_event_context_menu(&page, &area, &record, rect);
+            } else {
+                drop(events_ref);
+                let cur_date = *page.imp().current_date.borrow();
+                show_calendar_day_context_menu(&page, &area, cur_date, None, rect);
             }
         });
         list_canvas.add_controller(list_right_click);
+
+        // Long press context menu (touch / mobile)
+        let list_long_press = gtk::GestureLongPress::new();
+        let page_weak_llp = self.downgrade();
+        list_long_press.connect_pressed(move |gesture, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let Some(page) = page_weak_llp.upgrade() else { return };
+            let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
+            let row_height = 46.0f64;
+            let idx = (y / row_height).floor() as usize;
+            let events_ref = page.imp().calendar_list_events.borrow();
+            let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            if idx < events_ref.len() && y >= 0.0 {
+                let item = &events_ref[idx];
+                page.imp()
+                    .view_state
+                    .borrow_mut()
+                    .select_event(item.identity.clone(), Some(idx));
+                area.queue_draw();
+                let record = item.record.clone();
+                drop(events_ref);
+                show_calendar_event_context_menu(&page, &area, &record, rect);
+            } else {
+                drop(events_ref);
+                let cur_date = *page.imp().current_date.borrow();
+                show_calendar_day_context_menu(&page, &area, cur_date, None, rect);
+            }
+        });
+        list_canvas.add_controller(list_long_press);
 
         // Motion controller (hover & cursor)
         let list_motion = gtk::EventControllerMotion::new();
@@ -5249,16 +5448,41 @@ impl CalendarPage {
             let Some(page) = page_weak_rc.upgrade() else { return };
             let Some(drawing_area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
             let layout_opt = page.imp().taskpad_layout.borrow().clone();
-            let Some(layout) = layout_opt else { return };
-            if let Some((idx, _in_check)) = hit_test_taskpad(&layout, x, y) {
-                page.imp().taskpad_selected_index.replace(Some(idx));
-                drawing_area.queue_draw();
-                let task = &layout.items[idx].record;
-                let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
-                show_taskpad_context_menu(&page, &drawing_area, task, rect);
+            let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            if let Some(layout) = layout_opt {
+                if let Some((idx, _in_check)) = hit_test_taskpad(&layout, x, y) {
+                    page.imp().taskpad_selected_index.replace(Some(idx));
+                    drawing_area.queue_draw();
+                    let task = &layout.items[idx].record;
+                    show_taskpad_context_menu(&page, &drawing_area, task, rect);
+                    return;
+                }
             }
+            show_taskpad_empty_context_menu(&page, &drawing_area, rect);
         });
         taskpad_canvas.add_controller(right_click);
+
+        // Long-press gesture (touch / mobile)
+        let taskpad_long_press = gtk::GestureLongPress::new();
+        let page_weak_tplp = self.downgrade();
+        taskpad_long_press.connect_pressed(move |gesture, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let Some(page) = page_weak_tplp.upgrade() else { return };
+            let Some(drawing_area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
+            let layout_opt = page.imp().taskpad_layout.borrow().clone();
+            let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            if let Some(layout) = layout_opt {
+                if let Some((idx, _in_check)) = hit_test_taskpad(&layout, x, y) {
+                    page.imp().taskpad_selected_index.replace(Some(idx));
+                    drawing_area.queue_draw();
+                    let task = &layout.items[idx].record;
+                    show_taskpad_context_menu(&page, &drawing_area, task, rect);
+                    return;
+                }
+            }
+            show_taskpad_empty_context_menu(&page, &drawing_area, rect);
+        });
+        taskpad_canvas.add_controller(taskpad_long_press);
 
         // Motion / Hover controller
         let motion = gtk::EventControllerMotion::new();
@@ -5474,16 +5698,41 @@ impl CalendarPage {
             let Some(page) = page_weak_memo_rc.upgrade() else { return };
             let Some(drawing_area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
             let layout_opt = page.imp().memopad_layout.borrow().clone();
-            let Some(layout) = layout_opt else { return };
-            if let Some(idx) = hit_test_memopad(&layout, x, y) {
-                page.imp().memopad_selected_index.replace(Some(idx));
-                drawing_area.queue_draw();
-                let memo = &layout.items[idx].record;
-                let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
-                show_memopad_context_menu(&page, &drawing_area, memo, rect);
+            let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            if let Some(layout) = layout_opt {
+                if let Some(idx) = hit_test_memopad(&layout, x, y) {
+                    page.imp().memopad_selected_index.replace(Some(idx));
+                    drawing_area.queue_draw();
+                    let memo = &layout.items[idx].record;
+                    show_memopad_context_menu(&page, &drawing_area, memo, rect);
+                    return;
+                }
             }
+            show_memopad_empty_context_menu(&page, &drawing_area, rect);
         });
         memopad_canvas.add_controller(memo_right_click);
+
+        // Long-press gesture (touch / mobile)
+        let memopad_long_press = gtk::GestureLongPress::new();
+        let page_weak_mplp = self.downgrade();
+        memopad_long_press.connect_pressed(move |gesture, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let Some(page) = page_weak_mplp.upgrade() else { return };
+            let Some(drawing_area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
+            let layout_opt = page.imp().memopad_layout.borrow().clone();
+            let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            if let Some(layout) = layout_opt {
+                if let Some(idx) = hit_test_memopad(&layout, x, y) {
+                    page.imp().memopad_selected_index.replace(Some(idx));
+                    drawing_area.queue_draw();
+                    let memo = &layout.items[idx].record;
+                    show_memopad_context_menu(&page, &drawing_area, memo, rect);
+                    return;
+                }
+            }
+            show_memopad_empty_context_menu(&page, &drawing_area, rect);
+        });
+        memopad_canvas.add_controller(memopad_long_press);
 
         // Motion / Hover controller
         let memo_motion = gtk::EventControllerMotion::new();
@@ -6249,6 +6498,32 @@ impl CalendarPage {
                     );
                 });
                 row.add_controller(right_click);
+
+                let long_press = gtk::GestureLongPress::new();
+                let page_weak_for_lp = self.downgrade();
+                let source_uid_for_lp = source_uid.clone();
+                let display_name_for_lp = item.display_name.clone();
+                let color_for_lp = color_hex.clone();
+                let source_list_weak_lp = source_list.downgrade();
+                long_press.connect_pressed(move |gesture, x, y| {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    let (Some(page), Some(list)) =
+                        (page_weak_for_lp.upgrade(), source_list_weak_lp.upgrade())
+                    else {
+                        return;
+                    };
+                    page.present_calendar_source_context_menu(
+                        &list,
+                        x,
+                        y,
+                        &source_uid_for_lp,
+                        &display_name_for_lp,
+                        &color_for_lp,
+                        is_writable,
+                        is_primary,
+                    );
+                });
+                row.add_controller(long_press);
 
                 source_list.append(&row);
                 displayed_sources += 1;
@@ -7866,22 +8141,12 @@ impl CalendarPage {
                 let found = find_chip_at(&placed_chips_click.borrow(), click_x, click_y, w, slot_height as f64);
 
                 if let Some(chip_idx) = found {
-                    gesture.set_state(gtk::EventSequenceState::Claimed);
                     let chip = &placed_chips_click.borrow()[chip_idx];
                     if n_press == 2 {
+                        gesture.set_state(gtk::EventSequenceState::Claimed);
                         if let Some(id) = CalendarEventIdentity::from_event(&chip.event) {
                             page.open_event_editor_for_identity(&area, &id);
                         }
-                    } else if n_press == 1 {
-                        let (cx, cy, cw, ch) = chip_rect_coordinates(chip, w, slot_height as f64);
-                        let rect = gdk::Rectangle::new(cx as i32, cy as i32, cw as i32, ch as i32);
-                        show_calendar_event_details_popover_full(
-                            &page,
-                            &area,
-                            &chip.event,
-                            Some(target_date),
-                            Some(rect),
-                        );
                     }
                 } else {
                     // Clicked on an empty time slot
@@ -7966,6 +8231,29 @@ impl CalendarPage {
                             glib::Propagation::Proceed
                         });
                         dialog.present();
+                    }
+                }
+            });
+
+            let page_weak_release = self.downgrade();
+            let placed_chips_release = placed_chips_rc.clone();
+            click_gesture.connect_released(move |gesture, n_press, click_x, click_y| {
+                if n_press == 1 {
+                    let Some(page) = page_weak_release.upgrade() else { return };
+                    let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
+                    let w = area.width() as f64;
+                    let found = find_chip_at(&placed_chips_release.borrow(), click_x, click_y, w, slot_height as f64);
+                    if let Some(chip_idx) = found {
+                        let chip = &placed_chips_release.borrow()[chip_idx];
+                        let (cx, cy, cw, ch) = chip_rect_coordinates(chip, w, slot_height as f64);
+                        let rect = gdk::Rectangle::new(cx as i32, cy as i32, cw as i32, ch as i32);
+                        show_calendar_event_details_popover_full(
+                            &page,
+                            &area,
+                            &chip.event,
+                            Some(target_date),
+                            Some(rect),
+                        );
                     }
                 }
             });
@@ -8117,6 +8405,78 @@ impl CalendarPage {
                 }
             });
             drawing_area.add_controller(drag_source);
+
+            // Secondary / Right click context menu
+            let time_grid_right_click = gtk::GestureClick::builder().button(3).build();
+            let page_weak_tgrc = self.downgrade();
+            let placed_chips_tgrc = placed_chips_rc.clone();
+            time_grid_right_click.connect_pressed(move |gesture, _n_press, x, y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let Some(page) = page_weak_tgrc.upgrade() else { return };
+                let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
+                let w = area.width() as f64;
+                let found = find_chip_at(&placed_chips_tgrc.borrow(), x, y, w, slot_height as f64);
+                let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+
+                if let Some(chip_idx) = found {
+                    let chip = &placed_chips_tgrc.borrow()[chip_idx];
+                    show_calendar_event_context_menu(&page, &area, &chip.event, rect);
+                } else {
+                    let slot = ((y / slot_height as f64).floor() as usize).min(slot_count.saturating_sub(1));
+                    let start_min = (slot * interval_minutes as usize) as u32;
+                    let end_min = ((slot + 1) * interval_minutes as usize) as u32;
+
+                    page.imp().selected_time_slot.replace(Some(SelectedTimeSlot {
+                        date: target_date,
+                        end_date: target_date,
+                        start_minute: start_min,
+                        end_minute: end_min,
+                    }));
+                    if let Some(parent) = area.parent() {
+                        parent.queue_draw();
+                    } else {
+                        area.queue_draw();
+                    }
+                    show_calendar_day_context_menu(&page, &area, target_date, Some((start_min, end_min)), rect);
+                }
+            });
+            drawing_area.add_controller(time_grid_right_click);
+
+            // Long press context menu (touch / mobile)
+            let time_grid_long_press = gtk::GestureLongPress::new();
+            let page_weak_tglp = self.downgrade();
+            let placed_chips_tglp = placed_chips_rc.clone();
+            time_grid_long_press.connect_pressed(move |gesture, x, y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let Some(page) = page_weak_tglp.upgrade() else { return };
+                let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
+                let w = area.width() as f64;
+                let found = find_chip_at(&placed_chips_tglp.borrow(), x, y, w, slot_height as f64);
+                let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+
+                if let Some(chip_idx) = found {
+                    let chip = &placed_chips_tglp.borrow()[chip_idx];
+                    show_calendar_event_context_menu(&page, &area, &chip.event, rect);
+                } else {
+                    let slot = ((y / slot_height as f64).floor() as usize).min(slot_count.saturating_sub(1));
+                    let start_min = (slot * interval_minutes as usize) as u32;
+                    let end_min = ((slot + 1) * interval_minutes as usize) as u32;
+
+                    page.imp().selected_time_slot.replace(Some(SelectedTimeSlot {
+                        date: target_date,
+                        end_date: target_date,
+                        start_minute: start_min,
+                        end_minute: end_min,
+                    }));
+                    if let Some(parent) = area.parent() {
+                        parent.queue_draw();
+                    } else {
+                        area.queue_draw();
+                    }
+                    show_calendar_day_context_menu(&page, &area, target_date, Some((start_min, end_min)), rect);
+                }
+            });
+            drawing_area.add_controller(time_grid_long_press);
 
             // Drop target: Rescheduling a dropped event onto this day / time
             let drop_target = gtk::DropTarget::new(glib::Type::STRING, gdk::DragAction::MOVE);
@@ -10879,9 +11239,7 @@ fn show_taskpad_context_menu(
         .build();
 
     // 1. Edit
-    let edit = gtk::Button::with_label(&gettext("Edit Task"));
-    edit.set_halign(gtk::Align::Fill);
-    edit.add_css_class("flat");
+    let edit = make_context_menu_button("document-edit-symbolic", &gettext("Edit Task"), false);
     let popover_for_edit = popover.clone();
     let page_weak_edit = page.downgrade();
     let source_uid = task.source_uid.clone();
@@ -10895,14 +11253,12 @@ fn show_taskpad_context_menu(
     menu_box.append(&edit);
 
     // 2. Toggle completion
-    let toggle_label = if task.completed {
-        gettext("Mark as Incomplete")
+    let (toggle_icon, toggle_label) = if task.completed {
+        ("checkbox-symbolic", gettext("Mark as Incomplete"))
     } else {
-        gettext("Mark as Completed")
+        ("checkbox-checked-symbolic", gettext("Mark as Completed"))
     };
-    let toggle = gtk::Button::with_label(&toggle_label);
-    toggle.set_halign(gtk::Align::Fill);
-    toggle.add_css_class("flat");
+    let toggle = make_context_menu_button(toggle_icon, &toggle_label, false);
     toggle.set_sensitive(!task.source_uid.trim().is_empty());
     let popover_for_toggle = popover.clone();
     let page_weak_toggle = page.downgrade();
@@ -10946,9 +11302,7 @@ fn show_memopad_context_menu(
         .build();
 
     // 1. Edit
-    let edit = gtk::Button::with_label(&gettext("Open Memo"));
-    edit.set_halign(gtk::Align::Fill);
-    edit.add_css_class("flat");
+    let edit = make_context_menu_button("document-open-symbolic", &gettext("Open Memo"), false);
     let popover_for_edit = popover.clone();
     let page_weak_edit = page.downgrade();
     let source_uid = memo.source_uid.clone();
@@ -10960,6 +11314,94 @@ fn show_memopad_context_menu(
         }
     });
     menu_box.append(&edit);
+
+    popover.set_parent(anchor_widget);
+    popover.set_child(Some(&menu_box));
+    popover.connect_closed(|p| {
+        let p = p.clone();
+        glib::idle_add_local_once(move || {
+            p.unparent();
+        });
+    });
+    popover.popup();
+}
+
+fn show_taskpad_empty_context_menu(
+    page: &CalendarPage,
+    anchor_widget: &gtk::DrawingArea,
+    rect: gdk::Rectangle,
+) {
+    let popover = gtk::Popover::builder()
+        .has_arrow(false)
+        .pointing_to(&rect)
+        .build();
+    let menu_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(2)
+        .margin_start(6)
+        .margin_end(6)
+        .margin_top(6)
+        .margin_bottom(6)
+        .build();
+
+    let new_btn = make_context_menu_button("list-add-symbolic", &gettext("New Task…"), false);
+    let popover_for_new = popover.clone();
+    let page_weak_new = page.downgrade();
+    new_btn.connect_clicked(move |_| {
+        popover_for_new.popdown();
+        if let Some(page) = page_weak_new.upgrade() {
+            if let Some(root) = page.root() {
+                if let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() {
+                    window.present_new_task();
+                }
+            }
+        }
+    });
+    menu_box.append(&new_btn);
+
+    popover.set_parent(anchor_widget);
+    popover.set_child(Some(&menu_box));
+    popover.connect_closed(|p| {
+        let p = p.clone();
+        glib::idle_add_local_once(move || {
+            p.unparent();
+        });
+    });
+    popover.popup();
+}
+
+fn show_memopad_empty_context_menu(
+    page: &CalendarPage,
+    anchor_widget: &gtk::DrawingArea,
+    rect: gdk::Rectangle,
+) {
+    let popover = gtk::Popover::builder()
+        .has_arrow(false)
+        .pointing_to(&rect)
+        .build();
+    let menu_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(2)
+        .margin_start(6)
+        .margin_end(6)
+        .margin_top(6)
+        .margin_bottom(6)
+        .build();
+
+    let new_btn = make_context_menu_button("list-add-symbolic", &gettext("New Memo…"), false);
+    let popover_for_new = popover.clone();
+    let page_weak_new = page.downgrade();
+    new_btn.connect_clicked(move |_| {
+        popover_for_new.popdown();
+        if let Some(page) = page_weak_new.upgrade() {
+            if let Some(root) = page.root() {
+                if let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() {
+                    window.present_new_memo();
+                }
+            }
+        }
+    });
+    menu_box.append(&new_btn);
 
     popover.set_parent(anchor_widget);
     popover.set_child(Some(&menu_box));
@@ -12636,6 +13078,51 @@ fn draw_calendar_list_row(
     );
 }
 
+fn make_context_menu_button(
+    icon_name: &str,
+    label_text: &str,
+    destructive: bool,
+) -> gtk::Button {
+    let btn = gtk::Button::builder()
+        .has_frame(false)
+        .halign(gtk::Align::Fill)
+        .build();
+    btn.add_css_class("flat");
+    if destructive {
+        btn.add_css_class("destructive-action");
+    }
+
+    let hbox = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_start(4)
+        .margin_end(4)
+        .margin_top(4)
+        .margin_bottom(4)
+        .build();
+
+    let icon = gtk::Image::builder()
+        .icon_name(icon_name)
+        .pixel_size(16)
+        .valign(gtk::Align::Center)
+        .build();
+    if !destructive {
+        icon.add_css_class("dim-label");
+    }
+
+    let label = gtk::Label::builder()
+        .label(label_text)
+        .xalign(0.0)
+        .hexpand(true)
+        .valign(gtk::Align::Center)
+        .build();
+
+    hbox.append(&icon);
+    hbox.append(&label);
+    btn.set_child(Some(&hbox));
+    btn
+}
+
 fn show_calendar_event_context_menu(
     page: &CalendarPage,
     anchor_widget: &impl glib::object::IsA<gtk::Widget>,
@@ -12661,9 +13148,7 @@ fn show_calendar_event_context_menu(
         .build();
 
     // 1. Edit
-    let edit = gtk::Button::with_label(&gettext("Edit Appointment"));
-    edit.set_halign(gtk::Align::Fill);
-    edit.add_css_class("flat");
+    let edit = make_context_menu_button("document-edit-symbolic", &gettext("Edit Appointment"), false);
     edit.set_sensitive(writable);
     let popover_for_edit = popover.clone();
     let page_weak_edit = page.downgrade();
@@ -12677,45 +13162,40 @@ fn show_calendar_event_context_menu(
     });
     menu_box.append(&edit);
 
-    // 2. Print
-    let print = gtk::Button::with_label(&gettext("Print Appointment"));
-    print.set_halign(gtk::Align::Fill);
-    print.add_css_class("flat");
-    print.set_sensitive(action_state.can_print);
-    let popover_for_print = popover.clone();
-    let event_for_print = event.clone();
-    let anchor_for_print = anchor_widget.clone();
-    print.connect_clicked(move |_| {
-        popover_for_print.popdown();
-        let default_summary = gettext("Appointment");
-        let summary_display = if event_for_print.summary.trim().is_empty() {
-            default_summary.as_str()
-        } else {
-            event_for_print.summary.trim()
-        };
-        match build_event_print_document(&event_for_print) {
-            Ok(doc) => {
-                show_toast_for_widget(
-                    &anchor_for_print,
-                    &gettext("Print view for “{summary}” prepared ({count} characters); Print portal is Linux handoff")
-                        .replace("{summary}", summary_display)
-                        .replace("{count}", &doc.html.len().to_string()),
-                );
-            }
-            Err(err) => {
-                show_toast_for_widget(
-                    &anchor_for_print,
-                    &gettext("Printing failed: {error}").replace("{error}", &err.to_string()),
-                );
-            }
+    // 2. Copy
+    let copy = make_context_menu_button("edit-copy-symbolic", &gettext("Copy to Local Calendar"), false);
+    copy.set_sensitive(action_state.can_copy_to_local);
+    let popover_for_copy = popover.clone();
+    let page_weak_copy = page.downgrade();
+    let event_for_copy = event.clone();
+    let anchor_for_copy = anchor_widget.clone();
+    copy.connect_clicked(move |_| {
+        popover_for_copy.popdown();
+        if let Some(page) = page_weak_copy.upgrade() {
+            page.transfer_event_to_local(event_for_copy.clone(), CalendarTransferKind::Copy, &anchor_for_copy);
         }
     });
-    menu_box.append(&print);
+    menu_box.append(&copy);
 
-    // 3. Export
-    let export = gtk::Button::with_label(&gettext("Export Appointment"));
-    export.set_halign(gtk::Align::Fill);
-    export.add_css_class("flat");
+    // 3. Move
+    let move_btn = make_context_menu_button("folder-symbolic", &gettext("Move to Local Calendar"), false);
+    move_btn.set_sensitive(action_state.can_move_to_local);
+    let popover_for_move = popover.clone();
+    let page_weak_move = page.downgrade();
+    let event_for_move = event.clone();
+    let anchor_for_move = anchor_widget.clone();
+    move_btn.connect_clicked(move |_| {
+        popover_for_move.popdown();
+        if let Some(page) = page_weak_move.upgrade() {
+            page.transfer_event_to_local(event_for_move.clone(), CalendarTransferKind::Move, &anchor_for_move);
+        }
+    });
+    menu_box.append(&move_btn);
+
+    menu_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    // 4. Export
+    let export = make_context_menu_button("document-save-symbolic", &gettext("Export Appointment"), false);
     export.set_sensitive(action_state.can_export);
     let popover_for_export = popover.clone();
     let event_for_export = event.clone();
@@ -12807,45 +13287,43 @@ fn show_calendar_event_context_menu(
     });
     menu_box.append(&export);
 
-    // 4. Copy
-    let copy = gtk::Button::with_label(&gettext("Copy to Local Calendar"));
-    copy.set_halign(gtk::Align::Fill);
-    copy.add_css_class("flat");
-    copy.set_sensitive(action_state.can_copy_to_local);
-    let popover_for_copy = popover.clone();
-    let page_weak_copy = page.downgrade();
-    let event_for_copy = event.clone();
-    let anchor_for_copy = anchor_widget.clone();
-    copy.connect_clicked(move |_| {
-        popover_for_copy.popdown();
-        if let Some(page) = page_weak_copy.upgrade() {
-            page.transfer_event_to_local(event_for_copy.clone(), CalendarTransferKind::Copy, &anchor_for_copy);
+    // 5. Print
+    let print = make_context_menu_button("printer-symbolic", &gettext("Print Appointment"), false);
+    print.set_sensitive(action_state.can_print);
+    let popover_for_print = popover.clone();
+    let event_for_print = event.clone();
+    let anchor_for_print = anchor_widget.clone();
+    print.connect_clicked(move |_| {
+        popover_for_print.popdown();
+        let default_summary = gettext("Appointment");
+        let summary_display = if event_for_print.summary.trim().is_empty() {
+            default_summary.as_str()
+        } else {
+            event_for_print.summary.trim()
+        };
+        match build_event_print_document(&event_for_print) {
+            Ok(doc) => {
+                show_toast_for_widget(
+                    &anchor_for_print,
+                    &gettext("Print view for “{summary}” prepared ({count} characters); Print portal is Linux handoff")
+                        .replace("{summary}", summary_display)
+                        .replace("{count}", &doc.html.len().to_string()),
+                );
+            }
+            Err(err) => {
+                show_toast_for_widget(
+                    &anchor_for_print,
+                    &gettext("Printing failed: {error}").replace("{error}", &err.to_string()),
+                );
+            }
         }
     });
-    menu_box.append(&copy);
+    menu_box.append(&print);
 
-    // 5. Move
-    let move_btn = gtk::Button::with_label(&gettext("Move to Local Calendar"));
-    move_btn.set_halign(gtk::Align::Fill);
-    move_btn.add_css_class("flat");
-    move_btn.set_sensitive(action_state.can_move_to_local);
-    let popover_for_move = popover.clone();
-    let page_weak_move = page.downgrade();
-    let event_for_move = event.clone();
-    let anchor_for_move = anchor_widget.clone();
-    move_btn.connect_clicked(move |_| {
-        popover_for_move.popdown();
-        if let Some(page) = page_weak_move.upgrade() {
-            page.transfer_event_to_local(event_for_move.clone(), CalendarTransferKind::Move, &anchor_for_move);
-        }
-    });
-    menu_box.append(&move_btn);
+    menu_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
     // 6. Delete
-    let delete = gtk::Button::with_label(&gettext("Delete Appointment"));
-    delete.set_halign(gtk::Align::Fill);
-    delete.add_css_class("flat");
-    delete.add_css_class("destructive-action");
+    let delete = make_context_menu_button("user-trash-symbolic", &gettext("Delete Appointment"), true);
     delete.set_sensitive(action_state.can_delete);
     let popover_for_delete = popover.clone();
     let page_weak_delete = page.downgrade();
@@ -12872,12 +13350,12 @@ fn show_calendar_event_context_menu(
 
 fn show_calendar_day_context_menu(
     page: &CalendarPage,
+    anchor_widget: &impl glib::object::IsA<gtk::Widget>,
     date: NaiveDate,
-    x: f64,
-    y: f64,
+    time_slot: Option<(u32, u32)>,
+    rect: gdk::Rectangle,
 ) {
-    let Some(canvas) = page.imp().month_canvas.borrow().as_ref().cloned() else { return };
-    let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+    let anchor_widget = anchor_widget.as_ref();
     let popover = gtk::Popover::builder()
         .has_arrow(false)
         .pointing_to(&rect)
@@ -12891,25 +13369,56 @@ fn show_calendar_day_context_menu(
         .margin_bottom(6)
         .build();
 
-    // 1. Neuer Termin
-    let new_btn = gtk::Button::with_label(&gettext("New Appointment…"));
-    new_btn.set_halign(gtk::Align::Fill);
-    new_btn.add_css_class("flat");
+    // 1. New Appointment…
+    let new_btn = make_context_menu_button("list-add-symbolic", &gettext("New Appointment…"), false);
     let popover_for_new = popover.clone();
     let page_weak_new = page.downgrade();
     new_btn.connect_clicked(move |_| {
         popover_for_new.popdown();
         if let Some(page) = page_weak_new.upgrade() {
-            let dialog = crate::dialogs::EventDialog::new_for_date(date);
+            let dialog = if let Some((s_min, e_min)) = time_slot {
+                let start_time = date.and_hms_opt(0, 0, 0).unwrap() + Duration::minutes(s_min as i64);
+                let end_time = date.and_hms_opt(0, 0, 0).unwrap() + Duration::minutes(e_min as i64);
+                crate::dialogs::EventDialog::new_for_time_range(start_time, end_time)
+            } else {
+                crate::dialogs::EventDialog::new_for_date(date)
+            };
+            let page_for_refresh = page.downgrade();
+            dialog.connect_close_request(move |_| {
+                if let Some(page) = page_for_refresh.upgrade() {
+                    page.reload_calendar_data();
+                }
+                glib::Propagation::Proceed
+            });
             dialog.present();
         }
     });
     menu_box.append(&new_btn);
 
-    // 2. In Tagesansicht öffnen
-    let day_btn = gtk::Button::with_label(&gettext("Open in Day View"));
-    day_btn.set_halign(gtk::Align::Fill);
-    day_btn.add_css_class("flat");
+    // 2. New All-Day Event…
+    let allday_btn = make_context_menu_button("appointment-soon-symbolic", &gettext("New All-Day Event…"), false);
+    let popover_for_allday = popover.clone();
+    let page_weak_allday = page.downgrade();
+    allday_btn.connect_clicked(move |_| {
+        popover_for_allday.popdown();
+        if let Some(page) = page_weak_allday.upgrade() {
+            let dialog = crate::dialogs::EventDialog::new_all_day_for_date(date);
+            let page_for_refresh = page.downgrade();
+            dialog.connect_close_request(move |_| {
+                if let Some(page) = page_for_refresh.upgrade() {
+                    page.reload_calendar_data();
+                }
+                glib::Propagation::Proceed
+            });
+            dialog.present();
+        }
+    });
+    menu_box.append(&allday_btn);
+
+    menu_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    // 3. Open in Day View
+    let day_btn = make_context_menu_button("x-office-calendar-symbolic", &gettext("Open in Day View"), false);
     let popover_for_day = popover.clone();
     let page_weak_day = page.downgrade();
     day_btn.connect_clicked(move |_| {
@@ -12926,7 +13435,46 @@ fn show_calendar_day_context_menu(
     });
     menu_box.append(&day_btn);
 
-    popover.set_parent(&canvas);
+    // 4. Open in Week View
+    let week_btn = make_context_menu_button("view-calendar-week-symbolic", &gettext("Open in Week View"), false);
+    let popover_for_week = popover.clone();
+    let page_weak_week = page.downgrade();
+    week_btn.connect_clicked(move |_| {
+        popover_for_week.popdown();
+        if let Some(page) = page_weak_week.upgrade() {
+            *page.imp().current_date.borrow_mut() = date;
+            page.imp()
+                .view_state
+                .borrow_mut()
+                .set_anchor(date, configured_first_weekday());
+            page.imp().view_state.borrow_mut().select_civil_day(date);
+            page.select_calendar_view(CalendarView::Week);
+        }
+    });
+    menu_box.append(&week_btn);
+
+    menu_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    // 5. Go to Today
+    let today_btn = make_context_menu_button("go-jump-symbolic", &gettext("Go to Today"), false);
+    let popover_for_today = popover.clone();
+    let page_weak_today = page.downgrade();
+    today_btn.connect_clicked(move |_| {
+        popover_for_today.popdown();
+        if let Some(page) = page_weak_today.upgrade() {
+            let today = Local::now().date_naive();
+            page.imp()
+                .view_state
+                .borrow_mut()
+                .today(today, configured_first_weekday());
+            *page.imp().current_date.borrow_mut() = today;
+            page.sync_mini_calendar();
+            page.refresh_calendar_views();
+        }
+    });
+    menu_box.append(&today_btn);
+
+    popover.set_parent(anchor_widget);
     popover.set_child(Some(&menu_box));
     popover.connect_closed(|p| {
         let p = p.clone();
@@ -15533,8 +16081,8 @@ fn calendar_grid_event_chip(
     let target_day = day;
 
     let gesture = gtk::GestureClick::new();
-    gesture.connect_pressed(move |gesture, n_press, _x, _y| {
-        gesture.set_state(gtk::EventSequenceState::Claimed);
+    gesture.set_button(1);
+    gesture.connect_released(move |gesture, n_press, _x, _y| {
         let (Some(page), Some(widget)) = (page_weak_for_click.upgrade(), gesture.widget()) else {
             return;
         };
@@ -15547,6 +16095,30 @@ fn calendar_grid_event_chip(
         }
     });
     chip_button.add_controller(gesture);
+
+    let right_click = gtk::GestureClick::builder().button(3).build();
+    let page_weak_for_rc = page.downgrade();
+    let event_for_rc = event.clone();
+    right_click.connect_pressed(move |gesture, _, x, y| {
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+        if let (Some(page), Some(widget)) = (page_weak_for_rc.upgrade(), gesture.widget()) {
+            let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            show_calendar_event_context_menu(&page, &widget, &event_for_rc, rect);
+        }
+    });
+    chip_button.add_controller(right_click);
+
+    let long_press = gtk::GestureLongPress::new();
+    let page_weak_for_lp = page.downgrade();
+    let event_for_lp = event.clone();
+    long_press.connect_pressed(move |gesture, x, y| {
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+        if let (Some(page), Some(widget)) = (page_weak_for_lp.upgrade(), gesture.widget()) {
+            let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            show_calendar_event_context_menu(&page, &widget, &event_for_lp, rect);
+        }
+    });
+    chip_button.add_controller(long_press);
 
     let key_controller = gtk::EventControllerKey::new();
     let event_for_key = event.clone();
@@ -15610,6 +16182,35 @@ fn calendar_event_row(page: &CalendarPage, event: &CalendarEventRecord) -> adw::
         };
         page.open_event_editor_for_identity(row, identity);
     });
+
+    let right_click = gtk::GestureClick::builder().button(3).build();
+    let page_weak_rc = page.downgrade();
+    let row_weak_rc = row.downgrade();
+    let event_rc = event.clone();
+    right_click.connect_pressed(move |gesture, _, x, y| {
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+        let (Some(page), Some(row)) = (page_weak_rc.upgrade(), row_weak_rc.upgrade()) else {
+            return;
+        };
+        let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+        show_calendar_event_context_menu(&page, &row, &event_rc, rect);
+    });
+    row.add_controller(right_click);
+
+    let long_press = gtk::GestureLongPress::new();
+    let page_weak_lp = page.downgrade();
+    let row_weak_lp = row.downgrade();
+    let event_lp = event.clone();
+    long_press.connect_pressed(move |gesture, x, y| {
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+        let (Some(page), Some(row)) = (page_weak_lp.upgrade(), row_weak_lp.upgrade()) else {
+            return;
+        };
+        let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+        show_calendar_event_context_menu(&page, &row, &event_lp, rect);
+    });
+    row.add_controller(long_press);
+
     row
 }
 
@@ -16948,7 +17549,6 @@ fn append_event_row(
     set_accessible_label(&delete_button, &crate::i18n::gettext("Delete Appointment"));
     let action_state =
         calendar_event_action_state(&event, CalendarStoreService::new().is_writable());
-    let writable = action_state.can_edit;
     let recurring = action_state.recurring;
     edit_button.set_sensitive(action_state.can_edit);
     delete_button.set_sensitive(action_state.can_delete);
@@ -16993,8 +17593,6 @@ fn append_event_row(
 
     let event_identity_for_edit = CalendarEventIdentity::from_event(&event);
     let page_weak_for_edit = page.downgrade();
-    let edit_button_for_context = edit_button.clone();
-    let print_button_for_context = print_button.clone();
     let edit_button_for_signal = edit_button.clone();
     let edit_button_for_click = edit_button.clone();
     edit_button_for_signal.connect_clicked(move |_| {
@@ -17061,9 +17659,6 @@ fn append_event_row(
     });
 
     let event_for_export = event.clone();
-    let export_button_for_context = export_button.clone();
-    let copy_button_for_context = copy_button.clone();
-    let move_button_for_context = move_button.clone();
     let export_button_for_signal = export_button.clone();
     export_button_for_signal.connect_clicked(move |_| {
         if event_for_export.component.trim().is_empty()
@@ -17203,7 +17798,6 @@ fn append_event_row(
     let event_records_for_delete = Rc::clone(&event_records);
     let event_list_for_delete = event_list.clone();
     let page_weak_for_delete = page.downgrade();
-    let delete_button_for_context = delete_button.clone();
     let delete_button_for_signal = delete_button.clone();
     let delete_scope_confirmed = Rc::new(Cell::new(false));
     let delete_scope_confirmed_for_signal = Rc::clone(&delete_scope_confirmed);
@@ -17406,112 +18000,32 @@ fn append_event_row(
     let context_click = gtk::GestureClick::builder().button(3).build();
     let row_weak_for_context = row.downgrade();
     let page_weak_for_context = page.downgrade();
-    context_click.connect_pressed(move |_, _, x, y| {
-        let Some(row_for_context) = row_weak_for_context.upgrade() else {
+    let event_for_context = event.clone();
+    context_click.connect_pressed(move |gesture, _, x, y| {
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+        let (Some(page), Some(row)) = (page_weak_for_context.upgrade(), row_weak_for_context.upgrade()) else {
             return;
         };
-        if let Some(page) = page_weak_for_context.upgrade() {
-            page.select_calendar_event_identity(calendar_event_identity_from_action_row(
-                &row_for_context,
-            ));
-        }
-        let popover = gtk::Popover::builder()
-            .has_arrow(false)
-            .pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1))
-            .build();
-        let menu_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(2)
-            .margin_start(6)
-            .margin_end(6)
-            .margin_top(6)
-            .margin_bottom(6)
-            .build();
-
-        let edit = gtk::Button::with_label(&crate::i18n::gettext("Edit Appointment"));
-        edit.set_halign(gtk::Align::Fill);
-        edit.add_css_class("flat");
-        edit.set_sensitive(writable);
-        let popover_for_edit = popover.clone();
-        let edit_button_for_menu = edit_button_for_context.clone();
-        edit.connect_clicked(move |_| {
-            popover_for_edit.popdown();
-            edit_button_for_menu.activate();
-        });
-        menu_box.append(&edit);
-
-        let print = gtk::Button::with_label(&crate::i18n::gettext("Print Appointment"));
-        print.set_halign(gtk::Align::Fill);
-        print.add_css_class("flat");
-        print.set_sensitive(action_state.can_print);
-        let popover_for_print = popover.clone();
-        let print_button_for_menu = print_button_for_context.clone();
-        print.connect_clicked(move |_| {
-            popover_for_print.popdown();
-            print_button_for_menu.activate();
-        });
-        menu_box.append(&print);
-
-        let export = gtk::Button::with_label(&crate::i18n::gettext("Export Appointment"));
-        export.set_halign(gtk::Align::Fill);
-        export.add_css_class("flat");
-        export.set_sensitive(action_state.can_export);
-        let popover_for_export = popover.clone();
-        let export_button_for_menu = export_button_for_context.clone();
-        export.connect_clicked(move |_| {
-            popover_for_export.popdown();
-            export_button_for_menu.activate();
-        });
-        menu_box.append(&export);
-
-        let copy = gtk::Button::with_label(&crate::i18n::gettext("Copy to Local Calendar"));
-        copy.set_halign(gtk::Align::Fill);
-        copy.add_css_class("flat");
-        copy.set_sensitive(action_state.can_copy_to_local);
-        let popover_for_copy = popover.clone();
-        let copy_button_for_menu = copy_button_for_context.clone();
-        copy.connect_clicked(move |_| {
-            popover_for_copy.popdown();
-            copy_button_for_menu.activate();
-        });
-        menu_box.append(&copy);
-
-        let move_to_local = gtk::Button::with_label(&crate::i18n::gettext("Move to Local Calendar"));
-        move_to_local.set_halign(gtk::Align::Fill);
-        move_to_local.add_css_class("flat");
-        move_to_local.set_sensitive(action_state.can_move_to_local);
-        let popover_for_move = popover.clone();
-        let move_button_for_menu = move_button_for_context.clone();
-        move_to_local.connect_clicked(move |_| {
-            popover_for_move.popdown();
-            move_button_for_menu.activate();
-        });
-        menu_box.append(&move_to_local);
-
-        let delete = gtk::Button::with_label(&crate::i18n::gettext("Delete Appointment"));
-        delete.set_halign(gtk::Align::Fill);
-        delete.add_css_class("flat");
-        delete.add_css_class("destructive-action");
-        delete.set_sensitive(writable);
-        let popover_for_delete = popover.clone();
-        let delete_button_for_menu = delete_button_for_context.clone();
-        delete.connect_clicked(move |_| {
-            popover_for_delete.popdown();
-            delete_button_for_menu.activate();
-        });
-        menu_box.append(&delete);
-
-        popover.set_child(Some(&menu_box));
-        popover.set_parent(&row_for_context);
-        let popover_weak = popover.downgrade();
-        popover.connect_closed(move |_| {
-            if let Some(popover) = popover_weak.upgrade() {
-                popover.unparent();
-            }
-        });
-        popover.popup();
+        page.select_calendar_event_identity(calendar_event_identity_from_action_row(&row));
+        let rect = gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+        show_calendar_event_context_menu(&page, &row, &event_for_context, rect);
     });
     row.add_controller(context_click);
+
+    let row_long_press = gtk::GestureLongPress::new();
+    let row_weak_for_lp = row.downgrade();
+    let page_weak_for_lp = page.downgrade();
+    let event_for_lp = event.clone();
+    row_long_press.connect_pressed(move |gesture, x, y| {
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+        let (Some(page), Some(row)) = (page_weak_for_lp.upgrade(), row_weak_for_lp.upgrade()) else {
+            return;
+        };
+        page.select_calendar_event_identity(calendar_event_identity_from_action_row(&row));
+        let rect = gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+        show_calendar_event_context_menu(&page, &row, &event_for_lp, rect);
+    });
+    row.add_controller(row_long_press);
 
     let double_click = gtk::GestureClick::builder().button(1).build();
     let edit_button_for_double_click = edit_button.clone();
@@ -21678,6 +22192,68 @@ mod tests {
             elapsed.as_millis() < 50,
             "1-year query for 1999 series took too long: {elapsed:?}"
         );
+    }
+
+    #[test]
+    fn test_calendar_context_menu_gestures_and_hig_contract() {
+        let source = include_str!("calendar_page.rs");
+
+        // Ensure make_context_menu_button helper is used
+        assert!(source.contains("fn make_context_menu_button("));
+
+        // Time grid context menus
+        assert!(source.contains("time_grid_right_click"));
+        assert!(source.contains("time_grid_long_press"));
+
+        // All-day event chip context menus
+        assert!(source.contains("chip_button.add_controller(right_click);"));
+        assert!(source.contains("chip_button.add_controller(long_press);"));
+
+        // Month canvas context menus
+        assert!(source.contains("month_canvas.add_controller(right_click_gesture);"));
+        assert!(source.contains("month_canvas.add_controller(long_press_gesture);"));
+
+        // Agenda canvas context menus
+        assert!(source.contains("agenda_canvas.add_controller(agenda_right_click);"));
+        assert!(source.contains("agenda_canvas.add_controller(agenda_long_press);"));
+
+        // List canvas context menus
+        assert!(source.contains("list_canvas.add_controller(list_right_click);"));
+        assert!(source.contains("list_canvas.add_controller(list_long_press);"));
+
+        // Year canvas context menus
+        assert!(source.contains("year_canvas.add_controller(year_right_click);"));
+        assert!(source.contains("year_canvas.add_controller(year_long_press);"));
+
+        // Taskpad & Memopad context menus and empty fallbacks
+        assert!(source.contains("taskpad_canvas.add_controller(taskpad_long_press);"));
+        assert!(source.contains("memopad_canvas.add_controller(memopad_long_press);"));
+        assert!(source.contains("show_taskpad_empty_context_menu(&page, &drawing_area, rect);"));
+        assert!(source.contains("show_memopad_empty_context_menu(&page, &drawing_area, rect);"));
+        assert!(source.contains("window.present_new_task();"));
+        assert!(source.contains("window.present_new_memo();"));
+
+        // Calendar sidebar source row long press
+        assert!(source.contains("row.add_controller(right_click);"));
+        assert!(source.contains("row.add_controller(long_press);"));
+
+        // Calendar event row and list event row context menus
+        assert!(source.contains("row.add_controller(row_long_press);"));
+
+        // Day context menu actions
+        assert!(source.contains("\"New Appointment…\""));
+        assert!(source.contains("\"New All-Day Event…\""));
+        assert!(source.contains("\"Open in Day View\""));
+        assert!(source.contains("\"Open in Week View\""));
+        assert!(source.contains("\"Go to Today\""));
+
+        // Event context menu actions
+        assert!(source.contains("\"Edit Appointment\""));
+        assert!(source.contains("\"Copy to Local Calendar\""));
+        assert!(source.contains("\"Move to Local Calendar\""));
+        assert!(source.contains("\"Export Appointment\""));
+        assert!(source.contains("\"Print Appointment\""));
+        assert!(source.contains("\"Delete Appointment\""));
     }
 }
 

@@ -12777,6 +12777,30 @@ impl MailPage {
         });
         folder_list.add_controller(local_folder_click);
 
+        let local_folder_long_press = gtk::GestureLongPress::builder()
+            .propagation_phase(gtk::PropagationPhase::Capture)
+            .build();
+        let list_weak_lp = folder_list.downgrade();
+        let page_for_local_folder_lp = self.downgrade();
+        local_folder_long_press.connect_pressed(move |gesture, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let (Some(page), Some(list)) =
+                (page_for_local_folder_lp.upgrade(), list_weak_lp.upgrade())
+            else {
+                return;
+            };
+            let Some(row) = list.row_at_y(y as i32) else {
+                return;
+            };
+            let Some(target) = Self::folder_row_data(&row)
+                .and_then(|data| popup_folder_target(data.selection(), true))
+            else {
+                return;
+            };
+            page.present_folder_context_menu(&list, x, y, target);
+        });
+        folder_list.add_controller(local_folder_long_press);
+
         let dynamic_folder_store = gio::ListStore::new::<FolderObject>();
         let dynamic_folder_children =
             Rc::new(RefCell::new(HashMap::<String, gio::ListStore>::new()));
@@ -12890,6 +12914,41 @@ impl MailPage {
                 page.present_folder_context_menu(&row, x, y, target);
             });
             row.add_controller(right_click);
+
+            let long_press = gtk::GestureLongPress::builder()
+                .propagation_phase(gtk::PropagationPhase::Capture)
+                .build();
+            let list_item_for_lp = list_item.downgrade();
+            let row_for_lp = row.downgrade();
+            let page_for_lp = page_for_dynamic_folder_menu.clone();
+            long_press.connect_pressed(move |gesture, x, y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let (Some(page), Some(list_item), Some(row)) = (
+                    page_for_lp.upgrade(),
+                    list_item_for_lp.upgrade(),
+                    row_for_lp.upgrade(),
+                ) else {
+                    return;
+                };
+                let Some(tree_row) = list_item.item().and_downcast::<gtk::TreeListRow>() else {
+                    return;
+                };
+                let Some(folder) = tree_row.item().and_downcast::<FolderObject>() else {
+                    return;
+                };
+                let selection = FolderSelection {
+                    folder_id: folder.id(),
+                    source_uid: folder.source_uid(),
+                    folder_name: folder
+                        .folder_name()
+                        .filter(|folder_name| !folder_name.trim().is_empty()),
+                };
+                let Some(target) = popup_folder_target(selection, folder.selectable()) else {
+                    return;
+                };
+                page.present_folder_context_menu(&row, x, y, target);
+            });
+            row.add_controller(long_press);
 
             let click = gtk::GestureClick::builder()
                 .button(gtk::gdk::BUTTON_PRIMARY)
@@ -17785,6 +17844,17 @@ impl MailPage {
             }
         });
         header.add_controller(header_context_gesture);
+
+        let header_long_press = gtk::GestureLongPress::new();
+        let page_for_header_lp = self.downgrade();
+        let header_weak_lp = header.downgrade();
+        header_long_press.connect_pressed(move |gesture, x, y| {
+            if let (Some(page), Some(header)) = (page_for_header_lp.upgrade(), header_weak_lp.upgrade()) {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                page.show_mail_header_context_menu(&header, x, y);
+            }
+        });
+        header.add_controller(header_long_press);
         let scrollbar_spacer = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .visible(false)
@@ -18190,6 +18260,27 @@ impl MailPage {
                 page.present_follow_up_editor(&message);
             });
             btn_follow_up.add_controller(right_click_follow_up);
+
+            let long_press_follow_up = gtk::GestureLongPress::new();
+            let list_item_for_fu_lp = list_item.downgrade();
+            let page_for_fu_lp = page_for_row_actions.clone();
+            long_press_follow_up.connect_pressed(move |gesture, _, _| {
+                let (Some(page), Some(list_item)) = (
+                    page_for_fu_lp.upgrade(),
+                    list_item_for_fu_lp.upgrade(),
+                ) else {
+                    return;
+                };
+                let Some(tree_row) = list_item.item().and_downcast::<gtk::TreeListRow>() else {
+                    return;
+                };
+                let Some(message) = tree_row.item().and_downcast::<MailMessageObject>() else {
+                    return;
+                };
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                page.present_follow_up_editor(&message);
+            });
+            btn_follow_up.add_controller(long_press_follow_up);
 
             let btn_important = gtk::Button::builder()
                 .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
@@ -18698,6 +18789,77 @@ impl MailPage {
                 popover.popup();
             });
             outer.add_controller(right_click);
+
+            let long_press = gtk::GestureLongPress::new();
+            let list_item_for_lp = list_item.downgrade();
+            let outer_for_lp = outer.downgrade();
+            let page_for_lp = page_for_row_actions.clone();
+            long_press.connect_pressed(move |gesture, x, y| {
+                let (Some(page), Some(list_item), Some(outer)) = (
+                    page_for_lp.upgrade(),
+                    list_item_for_lp.upgrade(),
+                    outer_for_lp.upgrade(),
+                ) else {
+                    return;
+                };
+                let position = list_item.position();
+                if let Some(selection) = page.imp().thread_selection.borrow().as_ref() {
+                    let mut target_pos = if position != gtk::INVALID_LIST_POSITION {
+                        Some(position)
+                    } else {
+                        None
+                    };
+                    if target_pos.is_none() {
+                        if let Some(target_item) = list_item.item() {
+                            for idx in 0..selection.n_items() {
+                                if selection.item(idx).as_ref() == Some(&target_item) {
+                                    target_pos = Some(idx);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if let Some(pos) = target_pos {
+                        if !selection.is_selected(pos) {
+                            selection.select_item(pos, true);
+                        }
+                        page.imp().last_selected_mail_index.set(Some(pos));
+                    }
+                }
+                if let Some(tree_row) = list_item.item().and_downcast::<gtk::TreeListRow>() {
+                    if let Some(msg) = tree_row.item().and_downcast::<MailMessageObject>() {
+                        if let Some(flat_sel) = page.imp().message_selection.borrow().as_ref() {
+                            for i in 0..flat_sel.n_items() {
+                                if let Some(cand) = flat_sel.item(i).and_downcast::<MailMessageObject>() {
+                                    if cand.id() == msg.id() {
+                                        if !flat_sel.is_selected(i) {
+                                            flat_sel.select_item(i, true);
+                                        }
+                                        page.imp().last_selected_mail_index.set(Some(i));
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+
+                let popover = gtk::PopoverMenu::builder()
+                    .menu_model(&Self::message_context_menu())
+                    .has_arrow(false)
+                    .pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1))
+                    .build();
+                popover.set_parent(&outer);
+                popover.connect_closed(|popover| {
+                    let popover = popover.clone();
+                    glib::idle_add_local_once(move || {
+                        popover.unparent();
+                    });
+                });
+                popover.popup();
+            });
+            outer.add_controller(long_press);
 
             let drag_source = gtk::DragSource::new();
             drag_source.set_actions(gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE);
@@ -20879,6 +21041,7 @@ impl MailPage {
         });
 
         let click_gesture = gtk::GestureClick::new();
+        click_gesture.set_button(1);
         let page_for_click = self.downgrade();
         let thread_sel_for_click = thread_selection.clone();
         let canvas_for_click = mail_table_canvas.clone();
@@ -20908,11 +21071,11 @@ impl MailPage {
             };
             let scroll_y = page.imp().list_vadjustment.borrow().as_ref().map(|a| a.value()).unwrap_or(0.0);
             let Some(action) = hit_test_mail_table(&layout, x, y + scroll_y) else { return; };
-            gesture.set_state(gtk::EventSequenceState::Claimed);
             canvas_for_click.grab_focus();
 
             match action {
                 MailTableHitAction::ToggleExpander(_, model_index) => {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
                     if let Some(item) = thread_sel_for_click.item(model_index as u32) {
                         if let Some(tree_row) = item.downcast_ref::<gtk::TreeListRow>() {
                             tree_row.set_expanded(!tree_row.is_expanded());
@@ -20920,6 +21083,7 @@ impl MailPage {
                     }
                 }
                 MailTableHitAction::ToggleStatus(_, model_index) => {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
                     if let Some(item) = thread_sel_for_click.item(model_index as u32) {
                         let msg = if let Some(tree_row) = item.downcast_ref::<gtk::TreeListRow>() {
                             tree_row.item().and_downcast::<MailMessageObject>()
@@ -20932,6 +21096,7 @@ impl MailPage {
                     }
                 }
                 MailTableHitAction::ToggleStar(_, model_index) => {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
                     if let Some(item) = thread_sel_for_click.item(model_index as u32) {
                         let msg = if let Some(tree_row) = item.downcast_ref::<gtk::TreeListRow>() {
                             tree_row.item().and_downcast::<MailMessageObject>()
@@ -20988,9 +21153,6 @@ impl MailPage {
 
                     page.imp().is_mouse_selecting.set(false);
 
-                    if page.imp().is_mobile.get() || page.imp().is_tablet.get() {
-                        page.set_drill_down_level(MailDrillDownLevel::Viewer);
-                    }
                     if n_press == 2 {
                         if let Some(item) = thread_sel_for_click.item(model_index as u32) {
                             let msg = if let Some(tree_row) = item.downcast_ref::<gtk::TreeListRow>() {
@@ -21006,6 +21168,27 @@ impl MailPage {
                 }
             }
             canvas_for_click.queue_draw();
+        });
+
+        let page_for_release = self.downgrade();
+        let canvas_for_release = mail_table_canvas.clone();
+        click_gesture.connect_released(move |_gesture, n_press, x, y| {
+            if n_press != 1 {
+                return;
+            }
+            let Some(page) = page_for_release.upgrade() else { return; };
+            if page.imp().is_mobile.get() || page.imp().is_tablet.get() {
+                let w = canvas_for_release.width().max(120) as f64;
+                let scroll_y = page.imp().list_vadjustment.borrow().as_ref().map(|a| a.value()).unwrap_or(0.0);
+                let layout = page.imp().mail_table_layout.borrow().clone();
+                if let Some(l) = layout {
+                    if (l.width - w).abs() < 2.0 {
+                        if let Some(MailTableHitAction::SelectRow(_, _)) = hit_test_mail_table(&l, x, y + scroll_y) {
+                            page.set_drill_down_level(MailDrillDownLevel::Viewer);
+                        }
+                    }
+                }
+            }
         });
         mail_table_canvas.add_controller(click_gesture);
 
@@ -21071,6 +21254,56 @@ impl MailPage {
             popover.popup();
         });
         mail_table_canvas.add_controller(right_click);
+
+        let canvas_long_press = gtk::GestureLongPress::new();
+        let page_for_canvas_lp = self.downgrade();
+        let thread_sel_for_canvas_lp = thread_selection.clone();
+        let canvas_for_lp = mail_table_canvas.clone();
+        canvas_long_press.connect_pressed(move |gesture, x, y| {
+            let Some(page) = page_for_canvas_lp.upgrade() else { return; };
+            let w = canvas_for_lp.width().max(120) as f64;
+            let layout_cell = page.imp().mail_table_layout.borrow().clone();
+            let layout = match layout_cell {
+                Some(l) => l,
+                None => {
+                    let l = Rc::new(page.current_mail_table_layout(&thread_sel_for_canvas_lp, w));
+                    page.imp().mail_table_layout.replace(Some(Rc::clone(&l)));
+                    l
+                }
+            };
+            let scroll_y = page.imp().list_vadjustment.borrow().as_ref().map(|a| a.value()).unwrap_or(0.0);
+            if let Some(action) = hit_test_mail_table(&layout, x, y + scroll_y) {
+                let model_index = match action {
+                    MailTableHitAction::ToggleExpander(_, m)
+                    | MailTableHitAction::ToggleStatus(_, m)
+                    | MailTableHitAction::ToggleStar(_, m)
+                    | MailTableHitAction::SelectRow(_, m) => m,
+                };
+                let idx = model_index as u32;
+                page.imp().last_selected_mail_index.set(Some(idx));
+                if !thread_sel_for_canvas_lp.is_selected(idx) {
+                    page.imp().mail_selection_anchor.set(Some(idx));
+                    page.imp().is_mouse_selecting.set(true);
+                    thread_sel_for_canvas_lp.select_item(idx, true);
+                    page.imp().is_mouse_selecting.set(false);
+                }
+            }
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let popover = gtk::PopoverMenu::builder()
+                .menu_model(&MailPage::message_context_menu())
+                .has_arrow(false)
+                .pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1))
+                .build();
+            popover.set_parent(&canvas_for_lp);
+            popover.connect_closed(|popover| {
+                let popover = popover.clone();
+                glib::idle_add_local_once(move || {
+                    popover.unparent();
+                });
+            });
+            popover.popup();
+        });
+        mail_table_canvas.add_controller(canvas_long_press);
 
         let canvas_drag_source = gtk::DragSource::new();
         canvas_drag_source.set_actions(gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE);
@@ -21655,6 +21888,48 @@ impl MailPage {
             .css_classes(vec!["mail-modern-header-card"])
             .visible(false)
             .build();
+
+        let header_rc = gtk::GestureClick::builder().button(3).build();
+        let card_weak_rc = modern_header_card.downgrade();
+        header_rc.connect_pressed(move |gesture, _, x, y| {
+            let Some(card) = card_weak_rc.upgrade() else { return; };
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let popover = gtk::PopoverMenu::builder()
+                .menu_model(&MailPage::message_context_menu())
+                .has_arrow(false)
+                .pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1))
+                .build();
+            popover.set_parent(&card);
+            popover.connect_closed(|popover| {
+                let popover = popover.clone();
+                glib::idle_add_local_once(move || {
+                    popover.unparent();
+                });
+            });
+            popover.popup();
+        });
+        modern_header_card.add_controller(header_rc);
+
+        let header_lp = gtk::GestureLongPress::new();
+        let card_weak_lp = modern_header_card.downgrade();
+        header_lp.connect_pressed(move |gesture, x, y| {
+            let Some(card) = card_weak_lp.upgrade() else { return; };
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let popover = gtk::PopoverMenu::builder()
+                .menu_model(&MailPage::message_context_menu())
+                .has_arrow(false)
+                .pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1))
+                .build();
+            popover.set_parent(&card);
+            popover.connect_closed(|popover| {
+                let popover = popover.clone();
+                glib::idle_add_local_once(move || {
+                    popover.unparent();
+                });
+            });
+            popover.popup();
+        });
+        modern_header_card.add_controller(header_lp);
 
         let modern_top_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -23090,6 +23365,33 @@ impl MailPage {
                 chip.append(&text);
                 chip.append(&btn_open);
                 chip.append(&btn_save);
+
+                let attach_right_click = gtk::GestureClick::builder().button(3).build();
+                let chip_weak_rc = chip.downgrade();
+                let filename_rc = attachment.filename.clone();
+                let content_rc = attachment.content.clone();
+                let parent_rc = attachment_bar.root().and_downcast::<gtk::Window>();
+                attach_right_click.connect_pressed(move |gesture, _, x, y| {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    if let Some(c) = chip_weak_rc.upgrade() {
+                        Self::show_attachment_chip_context_menu(&c, x, y, &filename_rc, &content_rc, parent_rc.as_ref());
+                    }
+                });
+                chip.add_controller(attach_right_click);
+
+                let attach_long_press = gtk::GestureLongPress::new();
+                let chip_weak_lp = chip.downgrade();
+                let filename_lp = attachment.filename.clone();
+                let content_lp = attachment.content.clone();
+                let parent_lp = attachment_bar.root().and_downcast::<gtk::Window>();
+                attach_long_press.connect_pressed(move |gesture, x, y| {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    if let Some(c) = chip_weak_lp.upgrade() {
+                        Self::show_attachment_chip_context_menu(&c, x, y, &filename_lp, &content_lp, parent_lp.as_ref());
+                    }
+                });
+                chip.add_controller(attach_long_press);
+
                 attachment_bar.append(&chip);
             }
         }
@@ -23100,6 +23402,131 @@ impl MailPage {
             thread_context.set_visible(false);
         }
     }
+
+fn show_attachment_chip_context_menu(
+    chip: &gtk::Box,
+    x: f64,
+    y: f64,
+    filename: &str,
+    content: &std::sync::Arc<[u8]>,
+    parent_window: Option<&gtk::Window>,
+) {
+    let popover = gtk::Popover::builder()
+        .has_arrow(false)
+        .pointing_to(&gdk::Rectangle::new(x as i32, y as i32, 1, 1))
+        .build();
+    let menu_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(2)
+        .margin_start(6)
+        .margin_end(6)
+        .margin_top(6)
+        .margin_bottom(6)
+        .build();
+
+    let make_menu_btn = |icon_name: &str, label_text: &str| -> gtk::Button {
+        let btn = gtk::Button::builder()
+            .css_classes(vec!["flat"])
+            .halign(gtk::Align::Fill)
+            .build();
+        let row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(10)
+            .margin_start(6)
+            .margin_end(6)
+            .margin_top(4)
+            .margin_bottom(4)
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .build();
+        let icon = gtk::Image::builder()
+            .icon_name(icon_name)
+            .pixel_size(16)
+            .css_classes(vec!["dim-label"])
+            .build();
+        let label = gtk::Label::builder()
+            .label(label_text)
+            .halign(gtk::Align::Start)
+            .xalign(0.0)
+            .build();
+        row.append(&icon);
+        row.append(&label);
+        btn.set_child(Some(&row));
+        btn
+    };
+
+    let btn_open = make_menu_btn("document-open-symbolic", &gettext("Open Attachment"));
+    let pop_open = popover.clone();
+    let fname_open = filename.to_string();
+    let cont_open = content.clone();
+    btn_open.connect_clicked(move |_| {
+        pop_open.popdown();
+        let temp_dir = std::env::temp_dir().join("evolution4-attachments");
+        let _ = fs::create_dir_all(&temp_dir);
+        let temp_path = temp_dir.join(&fname_open);
+        if fs::write(&temp_path, cont_open.as_ref()).is_ok() {
+            let uri = format!("file://{}", temp_path.to_string_lossy());
+            let _ = gio::AppInfo::launch_default_for_uri(
+                &uri,
+                None::<&gio::AppLaunchContext>,
+            );
+        }
+    });
+    menu_box.append(&btn_open);
+
+    let btn_save = make_menu_btn("document-save-symbolic", &gettext("Save As…"));
+    let pop_save = popover.clone();
+    let fname_save = filename.to_string();
+    let cont_save = content.clone();
+    let parent_clone = parent_window.cloned();
+    let chip_for_save = chip.clone();
+    btn_save.connect_clicked(move |_| {
+        pop_save.popdown();
+        let parent = parent_clone
+            .as_ref()
+            .cloned()
+            .or_else(|| chip_for_save.root().and_downcast::<gtk::Window>());
+        let Some(parent) = parent.as_ref() else {
+            return;
+        };
+        let file_dialog = gtk::FileDialog::builder()
+            .title(&gettext("Save Attachment"))
+            .modal(true)
+            .initial_name(&fname_save)
+            .build();
+        let cont = cont_save.clone();
+        file_dialog.save(Some(parent), None::<&gio::Cancellable>, move |result| {
+            if let Ok(file) = result {
+                if let Some(path) = file.path() {
+                    let _ = fs::write(&path, cont.as_ref());
+                }
+            }
+        });
+    });
+    menu_box.append(&btn_save);
+
+    menu_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    let btn_copy = make_menu_btn("edit-copy-symbolic", &gettext("Copy Filename"));
+    let pop_copy = popover.clone();
+    let fname_copy = filename.to_string();
+    let chip_for_copy = chip.clone();
+    btn_copy.connect_clicked(move |_| {
+        pop_copy.popdown();
+        chip_for_copy.display().clipboard().set_text(&fname_copy);
+    });
+    menu_box.append(&btn_copy);
+
+    popover.set_parent(chip);
+    popover.set_child(Some(&menu_box));
+    popover.connect_closed(|p| {
+        let p = p.clone();
+        glib::idle_add_local_once(move || {
+            p.unparent();
+        });
+    });
+    popover.popup();
+}
 
     fn thread_context_cache_is_current(&self) -> bool {
         thread_context_members_are_current(
@@ -23228,6 +23655,74 @@ impl MailPage {
                     }
                 });
             }
+
+            let right_click = gtk::GestureClick::builder().button(3).build();
+            let pill_weak_rc = pill_btn.downgrade();
+            let sel_for_rc = selection_opt.clone();
+            let msg_id_rc = message.id();
+            right_click.connect_pressed(move |gesture, _, x, y| {
+                if let Some(sel) = sel_for_rc.as_ref() {
+                    for index in 0..sel.n_items() {
+                        if let Some(c) = sel.item(index).and_downcast::<MailMessageObject>() {
+                            if c.id() == msg_id_rc {
+                                sel.select_item(index, true);
+                                break;
+                            }
+                        }
+                    }
+                }
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                if let Some(pill) = pill_weak_rc.upgrade() {
+                    let popover = gtk::PopoverMenu::builder()
+                        .menu_model(&MailPage::message_context_menu())
+                        .has_arrow(false)
+                        .pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1))
+                        .build();
+                    popover.set_parent(&pill);
+                    popover.connect_closed(|popover| {
+                        let popover = popover.clone();
+                        glib::idle_add_local_once(move || {
+                            popover.unparent();
+                        });
+                    });
+                    popover.popup();
+                }
+            });
+            pill_btn.add_controller(right_click);
+
+            let long_press = gtk::GestureLongPress::new();
+            let pill_weak_lp = pill_btn.downgrade();
+            let sel_for_lp = selection_opt.clone();
+            let msg_id_lp = message.id();
+            long_press.connect_pressed(move |gesture, x, y| {
+                if let Some(sel) = sel_for_lp.as_ref() {
+                    for index in 0..sel.n_items() {
+                        if let Some(c) = sel.item(index).and_downcast::<MailMessageObject>() {
+                            if c.id() == msg_id_lp {
+                                sel.select_item(index, true);
+                                break;
+                            }
+                        }
+                    }
+                }
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                if let Some(pill) = pill_weak_lp.upgrade() {
+                    let popover = gtk::PopoverMenu::builder()
+                        .menu_model(&MailPage::message_context_menu())
+                        .has_arrow(false)
+                        .pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1))
+                        .build();
+                    popover.set_parent(&pill);
+                    popover.connect_closed(|popover| {
+                        let popover = popover.clone();
+                        glib::idle_add_local_once(move || {
+                            popover.unparent();
+                        });
+                    });
+                    popover.popup();
+                }
+            });
+            pill_btn.add_controller(long_press);
 
             thread_bar_box.append(&pill_btn);
         }
@@ -29555,6 +30050,38 @@ mod tests {
     }
 
     #[test]
+    fn test_mail_context_menu_gestures_and_hig_contract() {
+        let source = include_str!("mail_page.rs");
+
+        // Message ListView row context menus (secondary click & long press)
+        assert!(source.contains("outer.add_controller(right_click);"));
+        assert!(source.contains("outer.add_controller(long_press);"));
+
+        // Message ListView follow-up long press
+        assert!(source.contains("btn_follow_up.add_controller(long_press_follow_up);"));
+
+        // Mail table canvas controllers (primary click with deferred mobile drilldown, secondary click, long press)
+        assert!(source.contains("mail_table_canvas.add_controller(click_gesture);"));
+        assert!(source.contains("mail_table_canvas.add_controller(right_click);"));
+        assert!(source.contains("mail_table_canvas.add_controller(canvas_long_press);"));
+
+        // Modern header card context menu (secondary click & long press)
+        assert!(source.contains("modern_header_card.add_controller(header_rc);"));
+        assert!(source.contains("modern_header_card.add_controller(header_lp);"));
+
+        // Thread pills context menu (secondary click & long press)
+        assert!(source.contains("pill_btn.add_controller(right_click);"));
+        assert!(source.contains("pill_btn.add_controller(long_press);"));
+
+        // Attachment chip context menu
+        assert!(source.contains("fn show_attachment_chip_context_menu("));
+
+        // Folder sidebar context menus (secondary click & long press)
+        assert!(source.contains("folder_list.add_controller(local_folder_click);"));
+        assert!(source.contains("folder_list.add_controller(local_folder_long_press);"));
+    }
+
+    #[test]
     fn reader_reply_forward_variants_parse_list_post_safely() {
         assert_eq!(
             list_post_recipient_from_headers(Some(
@@ -31548,15 +32075,17 @@ mod tests {
             sidebar
                 .matches("propagation_phase(gtk::PropagationPhase::Capture)")
                 .count(),
-            2
+            4
         );
         assert!(sidebar.contains("local_folder_click.connect_pressed(move|gesture"));
         assert!(sidebar.contains("right_click.connect_pressed(move|gesture"));
+        assert!(sidebar.contains("local_folder_long_press.connect_pressed(move|gesture"));
+        assert!(sidebar.contains("long_press.connect_pressed(move|gesture"));
         assert_eq!(
             sidebar
                 .matches("gesture.set_state(gtk::EventSequenceState::Claimed)")
                 .count(),
-            2
+            4
         );
     }
 

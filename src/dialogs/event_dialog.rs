@@ -44,6 +44,7 @@ mod imp {
         pub initial_date: RefCell<Option<String>>,
         pub initial_start: RefCell<Option<String>>,
         pub initial_end: RefCell<Option<String>>,
+        pub initial_allday: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -65,6 +66,7 @@ mod imp {
                     glib::ParamSpecString::builder("initial-date").build(),
                     glib::ParamSpecString::builder("initial-start").build(),
                     glib::ParamSpecString::builder("initial-end").build(),
+                    glib::ParamSpecBoolean::builder("initial-allday").build(),
                 ]
             })
         }
@@ -87,6 +89,9 @@ mod imp {
                 "initial-end" => {
                     *self.initial_end.borrow_mut() = value.get().expect("string property")
                 }
+                "initial-allday" => {
+                    self.initial_allday.set(value.get().unwrap_or(false))
+                }
                 _ => {}
             }
         }
@@ -99,6 +104,7 @@ mod imp {
                 "initial-date" => self.initial_date.borrow().to_value(),
                 "initial-start" => self.initial_start.borrow().to_value(),
                 "initial-end" => self.initial_end.borrow().to_value(),
+                "initial-allday" => self.initial_allday.get().to_value(),
                 _ => glib::Value::from_type(pspec.value_type()),
             }
         }
@@ -776,6 +782,17 @@ impl EventDialog {
             .build()
     }
 
+    pub fn new_all_day_for_date(date: NaiveDate) -> Self {
+        glib::Object::builder()
+            .property("title", "Termin — Keine Zusammenfassung")
+            .property("modal", false)
+            .property("default-width", 880)
+            .property("default-height", 680)
+            .property("initial-date", date.format("%Y-%m-%d").to_string())
+            .property("initial-allday", true)
+            .build()
+    }
+
     pub fn new_for_time_range(start: NaiveDateTime, end: NaiveDateTime) -> Self {
         glib::Object::builder()
             .property("title", "Termin — Keine Zusammenfassung")
@@ -1321,7 +1338,6 @@ impl EventDialog {
             let edit_uid = edit_uid.clone();
             let row_calendar = row_calendar.clone();
             let calendar_source_colors = Rc::clone(&calendar_source_colors_for_timeline);
-            let color_badge = color_badge.clone();
             let color_badge_provider = Rc::clone(&color_badge_provider);
             Rc::new(move || {
                 let selected_idx = row_calendar.selected() as usize;
@@ -1398,6 +1414,9 @@ impl EventDialog {
             btn_end_time_allday.set_sensitive(!active);
             update_tl_allday();
         });
+        if self.imp().initial_allday.get() {
+            row_allday.set_active(true);
+        }
 
         let window_title_clone = window_title.clone();
         let dialog_weak_title = self.downgrade();
@@ -3729,6 +3748,14 @@ mod tests {
         assert!(dialog_src.contains("total_cols"));
         assert!(dialog_src.contains("col_width"));
         assert!(dialog_src.contains("TIMELINE_EVENTS_X + col_idx as f64 * (col_width + col_gap)"));
+    }
+
+    #[test]
+    fn test_event_dialog_initial_allday_contract() {
+        let dialog_src = include_str!("event_dialog.rs");
+        assert!(dialog_src.contains("pub fn new_all_day_for_date("));
+        assert!(dialog_src.contains("initial-allday"));
+        assert!(dialog_src.contains("row_allday.set_active(true);"));
     }
 }
 
