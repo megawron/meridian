@@ -3,9 +3,9 @@
 // TasksPage — Dedicated Task and Todo (VTODO) manager view.
 //
 // Features:
-// - Category list sidebar ("Alle Aufgaben", "Heute fällig", "Wichtig", "Erledigt")
+// - Category list sidebar ("All Tasks", "Due Today", "Important", "Completed")
 // - Dynamic Task list with checkable boxes, priority chips, and due dates
-// - "+ Neue Aufgabe" task creation dialog connection
+// - "+ New Task" task creation dialog connection
 
 use chrono::{Duration, Local, NaiveDate, NaiveDateTime, Utc};
 use gtk::{gio, glib};
@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use crate::dialogs::event_dialog::AlarmEditor;
+use crate::i18n::{gettext, ngettext};
 use crate::models::task_item::TaskItemObject;
 use crate::services::calendar_category_service::{
     CalendarCategory, CalendarCategoryStore, category_names_from_ical_component,
@@ -86,6 +87,7 @@ mod imp {
         pub(super) task_assign_button: RefCell<Option<gtk::Button>>,
         pub(super) task_open_url_button: RefCell<Option<gtk::Button>>,
         pub(super) task_print_button: RefCell<Option<gtk::Button>>,
+        pub(super) task_print_list_button: RefCell<Option<gtk::Button>>,
         pub(super) task_copy_button: RefCell<Option<gtk::Button>>,
         pub(super) task_cut_button: RefCell<Option<gtk::Button>>,
         pub(super) task_paste_button: RefCell<Option<gtk::Button>>,
@@ -224,70 +226,70 @@ enum TaskSearchMode {
 }
 
 const TASK_FILTER_OPTIONS: [(TaskFilter, &str, &str); 16] = [
-    (TaskFilter::All, "view-list-symbolic", "Alle Aufgaben"),
-    (TaskFilter::Today, "alarm-symbolic", "Heute fällig"),
+    (TaskFilter::All, "view-list-symbolic", "All Tasks"),
+    (TaskFilter::Today, "alarm-symbolic", "Due Today"),
     (
         TaskFilter::Next7,
         "appointment-soon-symbolic",
-        "Nächste 7 Tage",
+        "Next 7 Days",
     ),
     (
         TaskFilter::Next30,
         "appointment-soon-symbolic",
-        "Nächste 30 Tage",
+        "Next 30 Days",
     ),
     (
         TaskFilter::Next365,
         "appointment-soon-symbolic",
-        "Aktiv · nächste 365 Tage",
+        "Active · Next 365 Days",
     ),
     (
         TaskFilter::Overdue,
         "appointment-missed-symbolic",
-        "Überfällig",
+        "Overdue",
     ),
     (
         TaskFilter::Scheduled,
         "x-office-calendar-symbolic",
-        "Mit Fälligkeit",
+        "With Due Date",
     ),
-    (TaskFilter::NoDue, "view-list-symbolic", "Ohne Fälligkeit"),
+    (TaskFilter::NoDue, "view-list-symbolic", "Without Due Date"),
     (
         TaskFilter::WithAttachments,
         "mail-attachment-symbolic",
-        "Mit Anhängen",
+        "With Attachments",
     ),
     (
         TaskFilter::Started,
         "media-playback-start-symbolic",
-        "Begonnen",
+        "Started",
     ),
     (
         TaskFilter::WithoutCategory,
         "tag-symbolic",
-        "Ohne Kategorie",
+        "Without Category",
     ),
     (
         TaskFilter::Uncompleted,
         "view-list-symbolic",
-        "Offene Aufgaben",
+        "Open Tasks",
     ),
     (
         TaskFilter::Important,
         "emblem-important-symbolic",
-        "Wichtig",
+        "Important",
     ),
     (
         TaskFilter::InProgress,
         "media-playback-start-symbolic",
-        "In Bearbeitung",
+        "In Progress",
     ),
     (
         TaskFilter::Cancelled,
         "window-close-symbolic",
-        "Abgebrochen",
+        "Cancelled",
     ),
-    (TaskFilter::Completed, "emblem-ok-symbolic", "Erledigt"),
+    (TaskFilter::Completed, "emblem-ok-symbolic", "Completed"),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -545,14 +547,14 @@ fn selected_task_candidate<'a>(
     candidates: &'a [TaskExportCandidate],
 ) -> Result<&'a TaskExportCandidate, String> {
     let [identity] = selection else {
-        return Err("Diese Aktion ist nur für genau eine Aufgabe verfügbar".to_string());
+        return Err(gettext("This action is only available for exactly one task"));
     };
     let matches = candidates
         .iter()
         .filter(|candidate| candidate.identity == *identity)
         .collect::<Vec<_>>();
     let [candidate] = matches.as_slice() else {
-        return Err("Die ausgewählte Aufgabe ist nicht mehr verfügbar".to_string());
+        return Err(gettext("The selected task is no longer available"));
     };
     Ok(candidate)
 }
@@ -586,7 +588,7 @@ fn validated_task_vtodo_component(
         || uids.len() != 1
         || uids.first().map(String::as_str) != Some(expected_identity.task_uid.as_str())
     {
-        return Err("Eine ausgewählte Aufgabe enthält keine gültige VTODO-Komponente".to_string());
+        return Err(gettext("A selected task does not contain a valid VTODO component"));
     }
     Ok(lines.join("\r\n"))
 }
@@ -613,42 +615,42 @@ fn task_preview_document(
 
     push(
         &mut fields,
-        "Zusammenfassung",
-        Some(first("SUMMARY").unwrap_or_else(|| "Unbenannt".to_string())),
+        &gettext("Summary"),
+        Some(first("SUMMARY").unwrap_or_else(|| gettext("Untitled"))),
     );
-    push(&mut fields, "Ort", first("LOCATION"));
+    push(&mut fields, &gettext("Location"), first("LOCATION"));
     push(&mut fields, "GEO", first("GEO"));
-    push(&mut fields, "Kommentar", first("COMMENT"));
-    push(&mut fields, "Beginn", first("DTSTART"));
-    push(&mut fields, "Wiederholung", first("RRULE"));
-    push(&mut fields, "Fällig", first("DUE"));
-    push(&mut fields, "Geschätzte Dauer", first("ESTIMATED-DURATION"));
-    push(&mut fields, "Status", first("STATUS"));
-    push(&mut fields, "Kategorien", first("CATEGORIES"));
-    push(&mut fields, "Priorität", first("PRIORITY"));
-    push(&mut fields, "Sichtbarkeit", first("CLASS"));
-    push(&mut fields, "Organisator", first("ORGANIZER"));
+    push(&mut fields, &gettext("Comment"), first("COMMENT"));
+    push(&mut fields, &gettext("Start"), first("DTSTART"));
+    push(&mut fields, &gettext("Recurrence"), first("RRULE"));
+    push(&mut fields, &gettext("Due"), first("DUE"));
+    push(&mut fields, &gettext("Estimated Duration"), first("ESTIMATED-DURATION"));
+    push(&mut fields, &gettext("Status"), first("STATUS"));
+    push(&mut fields, &gettext("Categories"), first("CATEGORIES"));
+    push(&mut fields, &gettext("Priority"), first("PRIORITY"));
+    push(&mut fields, &gettext("Classification"), first("CLASS"));
+    push(&mut fields, &gettext("Organizer"), first("ORGANIZER"));
     let attendees = all("ATTENDEE");
     if !attendees.is_empty() {
-        fields.push(("Teilnehmende".to_string(), attendees.join("\n")));
+        fields.push((gettext("Attendees"), attendees.join("\n")));
     }
     push(&mut fields, "URL", first("URL"));
-    push(&mut fields, "Beschreibung", first("DESCRIPTION"));
-    push(&mut fields, "Alternativbeschreibung", first("X-ALT-DESC"));
+    push(&mut fields, &gettext("Description"), first("DESCRIPTION"));
+    push(&mut fields, &gettext("Alternative Description"), first("X-ALT-DESC"));
     let attachments = task_top_level_attachment_lines(&component)
         .into_iter()
         .map(|attachment| match attachment.kind {
-            TaskAttachmentValueKind::Uri => format!("URI (nicht geöffnet): {}", attachment.value),
-            TaskAttachmentValueKind::Binary => "Binäranhang".to_string(),
-            TaskAttachmentValueKind::Other => format!("Anhang: {}", attachment.value),
+            TaskAttachmentValueKind::Uri => format!("{}: {}", gettext("URI (not opened)"), attachment.value),
+            TaskAttachmentValueKind::Binary => gettext("Binary attachment"),
+            TaskAttachmentValueKind::Other => format!("{}: {}", gettext("Attachment"), attachment.value),
         })
         .collect::<Vec<_>>();
     if !attachments.is_empty() {
-        fields.push(("Anhänge".to_string(), attachments.join("\n")));
+        fields.push((gettext("Attachments"), attachments.join("\n")));
     }
 
     if fields.is_empty() {
-        return Err("Die ausgewählte Aufgabe enthält keine darstellbaren Felder".to_string());
+        return Err(gettext("The selected task contains no displayable fields"));
     }
     let text = fields
         .into_iter()
@@ -731,7 +733,7 @@ fn strip_task_valarms(component: &str) -> Result<String, String> {
         }
         if line.eq_ignore_ascii_case("END:VALARM") {
             if alarm_depth == 0 {
-                return Err("Die ausgewählte Aufgabe enthält einen ungültigen Alarm".to_string());
+                return Err(gettext("The selected task contains an invalid alarm"));
             }
             alarm_depth -= 1;
             continue;
@@ -741,7 +743,7 @@ fn strip_task_valarms(component: &str) -> Result<String, String> {
         }
     }
     if alarm_depth != 0 {
-        return Err("Die ausgewählte Aufgabe enthält einen unvollständigen Alarm".to_string());
+        return Err(gettext("The selected task contains an incomplete alarm"));
     }
     Ok(result.join("\r\n"))
 }
@@ -763,15 +765,15 @@ fn build_task_forward_payload(
 fn validate_task_open_url(value: &str) -> Result<String, String> {
     let value = value.trim();
     let Some((scheme, _)) = value.split_once(':') else {
-        return Err("Die Aufgaben-URL benötigt http oder https".to_string());
+        return Err(gettext("Task URL requires http or https"));
     };
     if !matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https") {
-        return Err("Nur http- und https-Aufgaben-URLs werden unterstützt".to_string());
+        return Err(gettext("Only http and https task URLs are supported"));
     }
     // Reuse the hardened URI authority/port policy already shared by the memo
     // surface, while narrowing this task action to upstream's web-page intent.
     crate::services::memo_surface_service::validate_open_url(value)
-        .map_err(|_| "Die Aufgaben-URL ist ungültig".to_string())
+        .map_err(|_| gettext("Task URL is invalid"))
 }
 
 fn selected_task_open_url(
@@ -784,7 +786,7 @@ fn selected_task_open_url(
         .expect("selected_task_candidate validated one identity");
     let component = validated_task_vtodo_component(candidate, identity)?;
     let url = ical_property(&component, "URL")
-        .ok_or_else(|| "Die ausgewählte Aufgabe hat keine URL".to_string())?;
+        .ok_or_else(|| gettext("The selected task has no URL"))?;
     validate_task_open_url(&url)
 }
 
@@ -808,17 +810,17 @@ enum TaskListPrintAction {
 }
 
 impl TaskListPrintAction {
-    fn preparing_label(self) -> &'static str {
+    fn preparing_label(self) -> String {
         match self {
-            Self::Print => "Druckliste wird vorbereitet …",
-            Self::Preview => "Druckvorschau wird vorbereitet …",
+            Self::Print => gettext("Preparing print list…"),
+            Self::Preview => gettext("Preparing print preview…"),
         }
     }
 
-    fn preparation_label(self) -> &'static str {
+    fn preparation_label(self) -> String {
         match self {
-            Self::Print => "Druckdokument vorbereitet",
-            Self::Preview => "Druckvorschau vorbereitet",
+            Self::Print => gettext("Print document prepared"),
+            Self::Preview => gettext("Print preview prepared"),
         }
     }
 }
@@ -852,11 +854,15 @@ fn build_task_print_document(
 
     let mut html_fields = Vec::new();
     let mut text_fields = Vec::new();
+    let status_label = crate::i18n::gettext("Status");
+    let due_label = crate::i18n::gettext("Due");
+    let priority_label = crate::i18n::gettext("Priority");
+    let categories_label = crate::i18n::gettext("Categories");
     for (label, value) in [
-        ("Status", status.to_string()),
-        ("Fällig", due),
-        ("Priorität", priority),
-        ("Kategorien", categories),
+        (status_label.as_str(), status),
+        (due_label.as_str(), due),
+        (priority_label.as_str(), priority),
+        (categories_label.as_str(), categories),
     ] {
         if !value.trim().is_empty() {
             let (html, text) = task_print_field(label, &value);
@@ -865,11 +871,13 @@ fn build_task_print_document(
         }
     }
     if !description.trim().is_empty() {
+        let desc_label = gettext("Description");
         html_fields.push(format!(
-            "<h2>Beschreibung</h2><pre>{}</pre>",
+            "<h2>{}</h2><pre>{}</pre>",
+            glib::markup_escape_text(&desc_label),
             glib::markup_escape_text(&description)
         ));
-        text_fields.push(format!("Beschreibung:\n{description}"));
+        text_fields.push(format!("{desc_label}:\n{description}"));
     }
 
     Ok(TaskPrintDocument {
@@ -891,21 +899,21 @@ fn build_task_list_print_document(
     candidates: &[TaskExportCandidate],
 ) -> Result<TaskListPrintDocument, String> {
     if visible.is_empty() {
-        return Err("Es sind keine sichtbaren Aufgaben zum Drucken vorhanden".to_string());
+        return Err(gettext("No visible tasks available to print"));
     }
     let mut seen = HashSet::new();
     let mut html_rows = Vec::with_capacity(visible.len());
     let mut text_rows = Vec::with_capacity(visible.len());
     for identity in visible {
         if !seen.insert(identity.clone()) {
-            return Err("Die sichtbare Aufgabenliste enthält eine doppelte Identität".to_string());
+            return Err(gettext("The visible task list contains a duplicate identity"));
         }
         let matches = candidates
             .iter()
             .filter(|candidate| candidate.identity == *identity)
             .collect::<Vec<_>>();
         let [candidate] = matches.as_slice() else {
-            return Err("Eine sichtbare Aufgabe ist nicht mehr eindeutig verfügbar".to_string());
+            return Err(gettext("A visible task is no longer uniquely available"));
         };
         let component = validated_task_vtodo_component(candidate, identity)?;
         let completion = if task_component_is_completed_for_purge(&component) {
@@ -915,7 +923,7 @@ fn build_task_list_print_document(
         };
         let status = task_status_label(&component);
         let summary =
-            ical_property(&component, "SUMMARY").unwrap_or_else(|| "Unbenannt".to_string());
+            ical_property(&component, "SUMMARY").unwrap_or_else(|| gettext("Untitled"));
         let due = property_local_display(&component, "DUE", false).unwrap_or_default();
         let priority = ical_property(&component, "PRIORITY").unwrap_or_default();
         let categories = category_names_from_ical_component(&component).join(", ");
@@ -942,17 +950,21 @@ fn build_task_list_print_document(
         ));
     }
     let headings = [
-        "Erledigt",
-        "Status",
-        "Zusammenfassung",
-        "Fällig",
-        "Priorität",
-        "Quelle",
-        "Kategorien",
+        gettext("Completed"),
+        gettext("Status"),
+        gettext("Summary"),
+        gettext("Due"),
+        gettext("Priority"),
+        gettext("Source"),
+        gettext("Categories"),
     ];
+    let print_title = gettext("Print Tasks");
+    let print_h1 = gettext("Tasks");
     Ok(TaskListPrintDocument {
         html: format!(
-            "<!doctype html><html><head><meta charset=\"utf-8\"><title>Print Tasks</title></head><body><h1>Aufgaben</h1><table><thead><tr>{}</tr></thead><tbody>{}</tbody></table></body></html>",
+            "<!doctype html><html><head><meta charset=\"utf-8\"><title>{}</title></head><body><h1>{}</h1><table><thead><tr>{}</tr></thead><tbody>{}</tbody></table></body></html>",
+            glib::markup_escape_text(&print_title),
+            glib::markup_escape_text(&print_h1),
             headings
                 .iter()
                 .map(|heading| format!("<th>{}</th>", glib::markup_escape_text(heading)))
@@ -975,31 +987,36 @@ fn prepare_task_list_print(
     task_store: &gio::ListStore,
     action: TaskListPrintAction,
 ) {
-    show_toast_for_widget(button, action.preparing_label());
+    show_toast_for_widget(button, &action.preparing_label());
     // Snapshot only the rows currently displayed by the list.  This is
     // deliberately independent of selection and does not consult a backend.
     let visible = match task_visible_identities(task_list) {
         Ok(visible) => visible,
         Err(error) => {
-            show_toast_for_widget(
-                button,
-                &format!("Druckliste konnte nicht vorbereitet werden: {error}"),
-            );
+            let msg = gettext("Could not prepare print list: {error}").replace("{error}", &error);
+            show_toast_for_widget(button, &msg);
             return;
         }
     };
     let document = build_task_list_print_document(&visible, &task_export_candidates(task_store));
     match document {
-        Ok(document) => page.show_toast(&format!(
-            "{} ({} Aufgaben, {} Zeichen); GTK-Druckdialog/Portal ist Linux-Handoff",
-            action.preparation_label(),
-            document.row_count,
-            document.plain_text.chars().count()
-        )),
-        Err(error) => show_toast_for_widget(
-            button,
-            &format!("Druckliste konnte nicht vorbereitet werden: {error}"),
-        ),
+        Ok(document) => {
+            let count_chars = ngettext(
+                "{count} task, {chars} characters",
+                "{count} tasks, {chars} characters",
+                document.row_count as u32,
+            )
+            .replace("{count}", &document.row_count.to_string())
+            .replace("{chars}", &document.plain_text.chars().count().to_string());
+            let msg = gettext("{action} ({count_chars}); GTK print dialog / portal is Linux handoff")
+                .replace("{action}", &action.preparation_label())
+                .replace("{count_chars}", &count_chars);
+            page.show_toast(&msg);
+        }
+        Err(error) => {
+            let msg = gettext("Could not prepare print list: {error}").replace("{error}", &error);
+            show_toast_for_widget(button, &msg);
+        }
     }
 }
 
@@ -1014,10 +1031,10 @@ impl TaskLifecycleBatchOperation {
         matches!(self, Self::Complete)
     }
 
-    fn progress_label(self) -> &'static str {
+    fn progress_label(self) -> String {
         match self {
-            Self::Complete => "Aufgaben werden als erledigt markiert …",
-            Self::Incomplete => "Aufgaben werden als offen markiert …",
+            Self::Complete => gettext("Marking tasks as completed…"),
+            Self::Incomplete => gettext("Marking tasks as incomplete…"),
         }
     }
 }
@@ -1094,28 +1111,27 @@ fn resolve_task_lifecycle_selection(
     local_writable: bool,
 ) -> Result<Vec<TaskLifecycleMutation>, String> {
     if selection.is_empty() {
-        return Err("Keine Aufgaben ausgewählt".to_string());
+        return Err(gettext("No tasks selected"));
     }
     let mut resolved = Vec::with_capacity(selection.len());
     let mut seen = HashSet::with_capacity(selection.len());
     for identity in selection {
         if !seen.insert(identity.clone()) {
-            return Err("Eine ausgewählte Aufgabe wurde mehrfach aufgelöst".to_string());
+            return Err(gettext("A selected task was resolved multiple times"));
         }
         let matches = candidates
             .iter()
             .filter(|candidate| candidate.identity == *identity)
             .collect::<Vec<_>>();
         let [candidate] = matches.as_slice() else {
-            return Err("Die ausgewählte Aufgabe ist nicht mehr eindeutig verfügbar".to_string());
+            return Err(gettext("The selected task is no longer uniquely available"));
         };
         let component = validated_task_vtodo_component(candidate, identity)?;
         if task_source_capability(&identity.source_uid, capabilities, local_writable)
             != TaskSourceCapability::Writable
         {
             return Err(
-                "Mindestens eine ausgewählte Aufgabenliste ist nicht schreibfähig oder nicht verfügbar"
-                    .to_string(),
+                gettext("At least one selected task list is read-only or unavailable"),
             );
         }
         resolved.push(TaskLifecycleMutation {
@@ -1156,7 +1172,7 @@ fn transform_task_lifecycle_component(
     if matches!(operation, TaskLifecycleBatchOperation::Complete)
         && NaiveDateTime::parse_from_str(completed_timestamp, "%Y%m%dT%H%M%SZ").is_err()
     {
-        return Err("Der Abschlusszeitpunkt ist ungültig".to_string());
+        return Err(gettext("The completion timestamp is invalid"));
     }
     let component = match operation {
         TaskLifecycleBatchOperation::Complete => {
@@ -1196,7 +1212,7 @@ fn build_task_lifecycle_batch_plan(
         }
     };
     if !should_run {
-        return Err("Für diese Stapelaktion gibt es keine passenden Aufgaben".to_string());
+        return Err(gettext("There are no matching tasks for this batch action"));
     }
     let mutations = resolved
         .into_iter()
@@ -1262,11 +1278,11 @@ fn reduce_task_lifecycle_batch_results(
             }
             [] => reduction.failures.push((
                 mutation.identity.clone(),
-                "Das Backend hat kein Ergebnis für diese Aufgabe geliefert".to_string(),
+                gettext("The backend returned no result for this task"),
             )),
             _ => reduction.failures.push((
                 mutation.identity.clone(),
-                "Das Backend hat mehrdeutige Ergebnisse für diese Aufgabe geliefert".to_string(),
+                gettext("The backend returned ambiguous results for this task"),
             )),
         }
     }
@@ -1332,8 +1348,9 @@ fn validate_task_bulk_duration(value: &str) -> Result<Option<String>, String> {
     if value.is_empty() {
         return Ok(None);
     }
+    let duration_err = || gettext("ESTIMATED-DURATION must be an ISO 8601 duration such as PT1H");
     let Some(rest) = value.strip_prefix('P') else {
-        return Err("ESTIMATED-DURATION muss eine ISO-8601-Dauer wie PT1H sein".to_string());
+        return Err(duration_err());
     };
     let mut in_time = false;
     let mut digits = String::new();
@@ -1347,13 +1364,13 @@ fn validate_task_bulk_duration(value: &str) -> Result<Option<String>, String> {
         }
         if character == 'T' {
             if in_time || saw_week || !digits.is_empty() {
-                return Err("ESTIMATED-DURATION muss eine ISO-8601-Dauer wie PT1H sein".to_string());
+                return Err(duration_err());
             }
             in_time = true;
             continue;
         }
         if digits.is_empty() {
-            return Err("ESTIMATED-DURATION muss eine ISO-8601-Dauer wie PT1H sein".to_string());
+            return Err(duration_err());
         }
         let order = match (in_time, character) {
             (false, 'W') => 1,
@@ -1362,11 +1379,11 @@ fn validate_task_bulk_duration(value: &str) -> Result<Option<String>, String> {
             (true, 'M') => 4,
             (true, 'S') => 5,
             _ => {
-                return Err("ESTIMATED-DURATION muss eine ISO-8601-Dauer wie PT1H sein".to_string());
+                return Err(duration_err());
             }
         };
         if order <= last_order || (character == 'W' && saw_unit) || (saw_week && character != 'W') {
-            return Err("ESTIMATED-DURATION muss eine ISO-8601-Dauer wie PT1H sein".to_string());
+            return Err(duration_err());
         }
         last_order = order;
         saw_unit = true;
@@ -1374,7 +1391,7 @@ fn validate_task_bulk_duration(value: &str) -> Result<Option<String>, String> {
         digits.clear();
     }
     if !saw_unit || !digits.is_empty() {
-        return Err("ESTIMATED-DURATION muss eine ISO-8601-Dauer wie PT1H sein".to_string());
+        return Err(duration_err());
     }
     Ok(Some(value.to_string()))
 }
@@ -1393,8 +1410,7 @@ fn transform_task_bulk_edit_component(
         .is_some_and(|timezone| !timezone.trim().is_empty())
     {
         return Err(
-            "Zeitzonen-Stapelbearbeitung benötigt native VTIMEZONE-Unterstützung (Linux-Handoff)"
-                .to_string(),
+            gettext("Timezone batch editing requires native VTIMEZONE support (Linux handoff)"),
         );
     }
     let editor = task_editor_draft_from_component(component);
@@ -1416,7 +1432,7 @@ fn transform_task_bulk_edit_component(
         && let (Some(start), Some(due)) = (start, due)
         && due <= start
     {
-        return Err("Das Fälligkeitsdatum muss nach dem Beginn liegen".to_string());
+        return Err(gettext("Due date must be after start date"));
     }
     let mut result = apply_task_date_pair_mutations(
         component,
@@ -1569,7 +1585,7 @@ fn build_task_bulk_edit_plan(
     completed_timestamp: &str,
 ) -> Result<TaskBulkEditPlan, String> {
     if !draft.has_changes() {
-        return Err("Für die Stapelbearbeitung wurde kein Feld ausgewählt".to_string());
+        return Err(gettext("No field selected for batch editing"));
     }
     let resolved =
         resolve_task_lifecycle_selection(selection, candidates, capabilities, local_writable)?;
@@ -1636,7 +1652,7 @@ fn reduce_task_bulk_edit_result(
                         source_uid: String::new(),
                         task_uid: String::new(),
                     }),
-                "Das Backend lieferte ein veraltetes oder mehrdeutiges Stapelergebnis".to_string(),
+                gettext("The backend returned an outdated or ambiguous batch result"),
             )),
             unattempted: plan.mutations.len(),
             invalid_result: true,
@@ -1759,44 +1775,44 @@ fn present_task_bulk_edit_dialog(
         .margin_top(6)
         .build();
     let hint = gtk::Label::builder()
-        .label("Nur aktivierte Felder werden geändert. Leere Datums-, Prioritäts-, Klasse- oder Dauerwerte entfernen die jeweilige Eigenschaft.")
+        .label(&gettext("Only enabled fields will be modified. Empty date, priority, classification, or duration values remove the corresponding property."))
         .wrap(true)
         .halign(gtk::Align::Start)
         .css_classes(vec!["dim-label"])
         .build();
     content.append(&hint);
-    let (dtstart_check, dtstart) = task_bulk_edit_field(&content, "Beginn", "YYYY-MM-DD");
-    let (due_check, due) = task_bulk_edit_field(&content, "Fälligkeit", "YYYY-MM-DD");
+    let (dtstart_check, dtstart) = task_bulk_edit_field(&content, &gettext("Start"), "YYYY-MM-DD");
+    let (due_check, due) = task_bulk_edit_field(&content, &gettext("Due Date"), "YYYY-MM-DD");
     let (completed_check, completed) =
-        task_bulk_edit_field(&content, "Abgeschlossen", "YYYY-MM-DD");
+        task_bulk_edit_field(&content, &gettext("Completed"), "YYYY-MM-DD");
     let (status_check, status) = task_bulk_edit_field(
         &content,
-        "Status",
+        &gettext("Status"),
         "NEEDS-ACTION | IN-PROCESS | COMPLETED | CANCELLED",
     );
-    let (priority_check, priority) = task_bulk_edit_field(&content, "Priorität", "0 bis 9");
-    let (percent_check, percent) = task_bulk_edit_field(&content, "Fortschritt", "0 bis 100");
+    let (priority_check, priority) = task_bulk_edit_field(&content, &gettext("Priority"), &gettext("0 to 9"));
+    let (percent_check, percent) = task_bulk_edit_field(&content, &gettext("Progress"), &gettext("0 to 100"));
     let (class_check, class) = task_bulk_edit_field(
         &content,
-        "Klassifizierung",
+        &gettext("Classification"),
         "PUBLIC | PRIVATE | CONFIDENTIAL",
     );
-    let (duration_check, duration) = task_bulk_edit_field(&content, "Geschätzte Dauer", "PT1H");
+    let (duration_check, duration) = task_bulk_edit_field(&content, &gettext("Estimated Duration"), "PT1H");
     let (categories_add_check, categories_add) =
-        task_bulk_edit_field(&content, "Kategorien hinzufügen", "Kommagetrennt");
+        task_bulk_edit_field(&content, &gettext("Add Categories"), &gettext("Comma-separated"));
     let (categories_remove_check, categories_remove) =
-        task_bulk_edit_field(&content, "Kategorien entfernen", "Kommagetrennt");
+        task_bulk_edit_field(&content, &gettext("Remove Categories"), &gettext("Comma-separated"));
     let timezone =
-        gtk::CheckButton::with_label("Zeitzone (native VTIMEZONE-Unterstützung erforderlich)");
+        gtk::CheckButton::with_label(&gettext("Timezone (native VTIMEZONE support required)"));
     timezone.set_sensitive(false);
     content.append(&timezone);
     let dialog = adw::AlertDialog::builder()
-        .heading("Aufgaben stapelweise bearbeiten")
-        .body("Die Änderungen werden nacheinander auf die ausgewählten Aufgaben angewendet.")
+        .heading(&gettext("Batch Edit Tasks"))
+        .body(&gettext("The changes will be applied sequentially to the selected tasks."))
         .extra_child(&content)
         .default_response("apply")
         .build();
-    dialog.add_responses(&[("cancel", "Abbrechen"), ("apply", "Anwenden")]);
+    dialog.add_responses(&[("cancel", &gettext("Cancel")), ("apply", &gettext("Apply"))]);
     let page_weak = page.downgrade();
     let button_for_result = button.clone();
     let dialog_parent = button.root();
@@ -1833,7 +1849,7 @@ fn present_task_bulk_edit_dialog(
         if !draft.has_changes() {
             show_toast_for_widget(
                 &button_for_result,
-                "Für die Stapelbearbeitung wurde kein Feld ausgewählt",
+                &gettext("No field selected for batch editing"),
             );
             return;
         }
@@ -1901,7 +1917,7 @@ fn start_task_bulk_edit(
             {
                 result.failure = Some((
                     mutation.identity,
-                    "Eine Aufgabenliste ist nicht mehr schreibfähig".to_string(),
+                    gettext("A task list is no longer writable"),
                 ));
                 break;
             }
@@ -1990,7 +2006,7 @@ fn start_task_bulk_edit(
                 );
                 show_toast_for_widget(
                     &button_for_result,
-                    "Stapelbearbeitungsergebnis ging verloren; autoritative Daten werden neu geladen",
+                    &gettext("Batch edit result was lost; authoritative data will be reloaded"),
                 );
                 return;
             }
@@ -2040,15 +2056,26 @@ fn start_task_bulk_edit(
             );
         }
         match (applied, failure.is_some() || recovery_required, unattempted) {
-            (count, false, 0) => page.show_toast(&format!(
-                "{count} Aufgabe{} bearbeitet",
-                if count == 1 { "" } else { "n" }
-            )),
-            (count, true, pending) => page.show_toast(&format!(
-                "{count} Aufgabe{} bearbeitet; Fehler, {pending} nicht versucht",
-                if count == 1 { "" } else { "n" }
-            )),
-            _ => page.show_toast("Keine Aufgabe bearbeitet"),
+            (count, false, 0) => {
+                let msg = ngettext(
+                    "{count} task modified",
+                    "{count} tasks modified",
+                    count as u32,
+                )
+                .replace("{count}", &count.to_string());
+                page.show_toast(&msg);
+            }
+            (count, true, pending) => {
+                let msg = ngettext(
+                    "{count} task modified; error, {pending} not attempted",
+                    "{count} tasks modified; error, {pending} not attempted",
+                    count as u32,
+                )
+                .replace("{count}", &count.to_string())
+                .replace("{pending}", &pending.to_string());
+                page.show_toast(&msg);
+            }
+            _ => page.show_toast(&gettext("No tasks modified")),
         }
     });
 }
@@ -2083,28 +2110,27 @@ fn resolve_task_delete_selection(
     local_writable: bool,
 ) -> Result<Vec<TaskDeleteResolved>, String> {
     if selection.is_empty() {
-        return Err("Keine Aufgaben ausgewählt".to_string());
+        return Err(gettext("No tasks selected"));
     }
     let mut seen = HashSet::with_capacity(selection.len());
     let mut resolved = Vec::with_capacity(selection.len());
     for identity in selection {
         if !seen.insert(identity.clone()) {
-            return Err("Eine ausgewählte Aufgabe wurde mehrfach aufgelöst".to_string());
+            return Err(gettext("A selected task was resolved multiple times"));
         }
         let matches = candidates
             .iter()
             .filter(|candidate| candidate.identity == *identity)
             .collect::<Vec<_>>();
         let [candidate] = matches.as_slice() else {
-            return Err("Die ausgewählte Aufgabe ist nicht mehr eindeutig verfügbar".to_string());
+            return Err(gettext("The selected task is no longer uniquely available"));
         };
         let component = validated_task_vtodo_component(candidate, identity)?;
         if task_source_capability(&identity.source_uid, capabilities, local_writable)
             != TaskSourceCapability::Writable
         {
             return Err(
-                "Mindestens eine ausgewählte Aufgabenliste ist nicht schreibfähig oder nicht verfügbar"
-                    .to_string(),
+                gettext("At least one selected task list is read-only or unavailable"),
             );
         }
         resolved.push(TaskDeleteResolved {
@@ -2131,8 +2157,7 @@ fn build_task_delete_plan(
         } = resolved;
         if task_has_top_level_property(&component, "RECURRENCE-ID") {
             return Err(
-                "Serienaufgaben mit RECURRENCE-ID können ohne MOD_THIS-Unterstützung nicht sicher gelöscht werden"
-                    .to_string(),
+                gettext("Recurring tasks with RECURRENCE-ID cannot be safely deleted without MOD_THIS support"),
             );
         }
         // Upstream offers an iTIP cancellation/retract prompt only for the
@@ -2144,8 +2169,7 @@ fn build_task_delete_plan(
                 || task_has_top_level_property(&component, "ATTENDEE"))
         {
             return Err(
-                "Diese zugewiesene Aufgabe benötigt eine iTIP-Stornierungsbenachrichtigung (Linux-Handoff)"
-                    .to_string(),
+                gettext("This assigned task requires an iTIP cancellation notice (Linux handoff)"),
             );
         }
         mutations.push(TaskDeleteMutation {
@@ -2173,13 +2197,12 @@ fn build_task_purge_plan(
             continue;
         }
         if !seen.insert(candidate.identity.clone()) {
-            return Err("Eine erledigte Aufgabe ist nicht mehr eindeutig verfügbar".to_string());
+            return Err(gettext("A completed task is no longer uniquely available"));
         }
         let component = validated_task_vtodo_component(candidate, &candidate.identity)?;
         if task_has_top_level_property(&component, "RECURRENCE-ID") {
             return Err(
-                "Eine erledigte Serieninstanz benötigt native MOD_THIS-Unterstützung (Linux-Handoff)"
-                    .to_string(),
+                gettext("A completed recurring instance requires native MOD_THIS support (Linux handoff)"),
             );
         }
         mutations.push(TaskDeleteMutation {
@@ -2188,7 +2211,7 @@ fn build_task_purge_plan(
         });
     }
     if mutations.is_empty() {
-        return Err("Keine erledigten Aufgaben in schreibfähigen Aufgabenlisten".to_string());
+        return Err(gettext("No completed tasks in writable task lists"));
     }
     Ok(TaskDeletePlan { mutations })
 }
@@ -2200,22 +2223,19 @@ fn task_delete_confirmation(plan: &TaskDeletePlan) -> TaskDeleteConfirmation {
     {
         let summary = glib::markup_escape_text(&mutation.summary);
         return TaskDeleteConfirmation {
-            title: format!("Aufgabe „{summary}“ löschen?"),
-            description: "Alle Informationen zu dieser Aufgabe werden unwiderruflich gelöscht."
-                .to_string(),
+            title: gettext("Delete task “{summary}”?").replace("{summary}", &summary),
+            description: gettext("All information about this task will be irrevocably deleted."),
         };
     }
     TaskDeleteConfirmation {
-        title: if count == 1 {
-            "Aufgabe löschen?".to_string()
-        } else {
-            format!("{count} Aufgaben löschen?")
-        },
-        description: if count == 1 {
-            "Alle Informationen zu dieser Aufgabe werden unwiderruflich gelöscht.".to_string()
-        } else {
-            format!("Alle Informationen zu diesen {count} Aufgaben werden unwiderruflich gelöscht.")
-        },
+        title: ngettext("Delete task?", "Delete {count} tasks?", count as u32)
+            .replace("{count}", &count.to_string()),
+        description: ngettext(
+            "All information about this task will be irrevocably deleted.",
+            "All information about these {count} tasks will be irrevocably deleted.",
+            count as u32,
+        )
+        .replace("{count}", &count.to_string()),
     }
 }
 
@@ -2286,7 +2306,7 @@ fn reduce_task_delete_batch_result(
                 source_uid: String::new(),
                 task_uid: String::new(),
             }),
-            "Das Backend lieferte ein veraltetes oder mehrdeutiges Lösch-Ergebnis".to_string(),
+            gettext("The backend returned an outdated or ambiguous delete result"),
         ));
         reduction.unattempted = expected;
         return reduction;
@@ -2307,7 +2327,7 @@ fn build_selected_task_export(
     candidates: &[TaskExportCandidate],
 ) -> Result<String, String> {
     if selection.is_empty() {
-        return Err("Keine Aufgaben ausgewählt".to_string());
+        return Err(gettext("No tasks selected"));
     }
 
     let mut components = Vec::with_capacity(selection.len());
@@ -2317,7 +2337,7 @@ fn build_selected_task_export(
             .filter(|candidate| candidate.identity == *identity)
             .collect::<Vec<_>>();
         let [candidate] = matches.as_slice() else {
-            return Err("Die ausgewählte Aufgabe ist nicht mehr verfügbar".to_string());
+            return Err(gettext("The selected task is no longer available"));
         };
         components.push(validated_task_vtodo_component(candidate, identity)?);
     }
@@ -2376,17 +2396,17 @@ fn task_paste_destination(
         local_writable,
     ) else {
         return Err(
-            "Keine schreibfähige Standard-Aufgabenliste für Einfügen verfügbar".to_string(),
+            gettext("No writable default task list available for paste"),
         );
     };
     let Some(source_uid) = source_uids.get(index) else {
-        return Err("Die Ziel-Aufgabenliste ist nicht eindeutig verfügbar".to_string());
+        return Err(gettext("The destination task list is not uniquely available"));
     };
     if task_source_capability(source_uid, capabilities, local_writable)
         != TaskSourceCapability::Writable
     {
         return Err(
-            "Die Ziel-Aufgabenliste ist nicht schreibfähig oder nicht verfügbar".to_string(),
+            gettext("The destination task list is read-only or unavailable"),
         );
     }
     Ok(source_uid.clone())
@@ -2424,7 +2444,7 @@ fn parse_task_clipboard_payload(payload: &str) -> Result<Vec<String>, String> {
             .is_none_or(|line| !line.eq_ignore_ascii_case("END:VCALENDAR"))
     {
         return Err(
-            "Die Zwischenablage enthält keine gültige VCALENDAR-Aufgabenauswahl".to_string(),
+            gettext("Clipboard does not contain a valid VCALENDAR task selection"),
         );
     }
     let mut components = Vec::new();
@@ -2440,8 +2460,7 @@ fn parse_task_clipboard_payload(payload: &str) -> Result<Vec<String>, String> {
                 .is_some_and(|prefix| prefix.eq_ignore_ascii_case("BEGIN:"))
             {
                 return Err(
-                    "Die Zwischenablage enthält keine ausschließlich portablen VTODO-Komponenten"
-                        .to_string(),
+                    gettext("Clipboard does not contain exclusively portable VTODO components"),
                 );
             }
             continue;
@@ -2460,8 +2479,7 @@ fn parse_task_clipboard_payload(payload: &str) -> Result<Vec<String>, String> {
             if depth == 0 {
                 if !line.eq_ignore_ascii_case("END:VTODO") {
                     return Err(
-                        "Die Zwischenablage enthält eine ungültig verschachtelte Aufgabe"
-                            .to_string(),
+                        gettext("Clipboard contains an invalid nested task"),
                     );
                 }
                 components.push(component.join("\r\n"));
@@ -2470,7 +2488,7 @@ fn parse_task_clipboard_payload(payload: &str) -> Result<Vec<String>, String> {
         }
     }
     if !component.is_empty() || components.is_empty() {
-        return Err("Die Zwischenablage enthält keine vollständige VTODO-Aufgabe".to_string());
+        return Err(gettext("Clipboard does not contain a complete VTODO task"));
     }
     Ok(components)
 }
@@ -2494,31 +2512,31 @@ fn plan_task_clipboard_paste_with_uids(
     fresh_uids: &[String],
 ) -> Result<TaskPastePlan, String> {
     if destination_uid.trim().is_empty() {
-        return Err("Die Ziel-Aufgabenliste ist ungültig".to_string());
+        return Err(gettext("The destination task list is invalid"));
     }
     let components = parse_task_clipboard_payload(payload)?;
     if components.len() != fresh_uids.len() {
-        return Err("Die Einfügeplanung enthält keine eindeutigen neuen Aufgaben-UIDs".to_string());
+        return Err(gettext("Paste planning does not contain unique new task UIDs"));
     }
     let mut identities = existing.iter().cloned().collect::<HashSet<_>>();
     let mut mutations = Vec::with_capacity(components.len());
     for (component, fresh_uid) in components.into_iter().zip(fresh_uids) {
         if task_component_requires_vtimezone(&component) {
-            return Err("Aufgaben mit TZID benötigen VTIMEZONE-Unterstützung und werden nicht unsicher eingefügt".to_string());
+            return Err(gettext("Tasks with TZID require VTIMEZONE support and will not be pasted insecurely"));
         }
         let original_uid = ical_properties(&component, "UID");
         let [_original_uid] = original_uid.as_slice() else {
-            return Err("Eine Zwischenablage-Aufgabe hat keine eindeutige UID".to_string());
+            return Err(gettext("A clipboard task does not have a unique UID"));
         };
         if fresh_uid.trim().is_empty() {
-            return Err("Die Zwischenablage-Aufgaben sind nicht eindeutig".to_string());
+            return Err(gettext("Clipboard tasks are not unique"));
         }
         let identity = TaskSelectionIdentity {
             source_uid: destination_uid.to_string(),
             task_uid: fresh_uid.clone(),
         };
         if !identities.insert(identity.clone()) {
-            return Err("Eine neue Aufgaben-UID kollidiert bereits in der Zielquelle".to_string());
+            return Err(gettext("A new task UID already collides in the destination source"));
         }
         let component = update_ical_property(&component, "UID", Some(fresh_uid));
         let component = validated_task_vtodo_component(
@@ -3089,25 +3107,25 @@ fn parse_task_date_property(
     match declared_type.as_deref() {
         Some("DATE") => {
             if value.len() != 8 || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-                return Err("Der iCalendar-Wert ist kein gültiges Datum".to_string());
+                return Err(gettext("The iCalendar value is not a valid date"));
             }
             NaiveDate::parse_from_str(value, "%Y%m%d")
                 .map(|date| (TaskDateValueKind::DateOnly, date))
-                .map_err(|_| "Der iCalendar-Wert ist kein gültiges Datum".to_string())
+                .map_err(|_| gettext("The iCalendar value is not a valid date"))
         }
         Some("DATE-TIME") => parse_task_datetime_date(value)
             .map(|date| (TaskDateValueKind::DateTime, date))
-            .ok_or_else(|| "Der iCalendar-Wert ist kein gültiger Zeitstempel".to_string()),
-        Some(_) => Err("Der iCalendar-Wert hat einen nicht unterstützten Typ".to_string()),
+            .ok_or_else(|| gettext("The iCalendar value is not a valid timestamp")),
+        Some(_) => Err(gettext("The iCalendar value has an unsupported type")),
         None if value.len() == 8 && value.bytes().all(|byte| byte.is_ascii_digit()) => {
             NaiveDate::parse_from_str(value, "%Y%m%d")
                 .map(|date| (TaskDateValueKind::DateOnly, date))
-                .map_err(|_| "Der iCalendar-Wert ist kein gültiges Datum".to_string())
+                .map_err(|_| gettext("The iCalendar value is not a valid date"))
         }
         None => parse_task_datetime_date(value)
             .map(|date| (TaskDateValueKind::DateTime, date))
             .ok_or_else(|| {
-                "Der iCalendar-Wert ist kein gültiges Datum oder Zeitstempel".to_string()
+                gettext("The iCalendar value is not a valid date or timestamp")
             }),
     }
 }
@@ -3125,19 +3143,19 @@ fn parse_task_datetime_date(value: &str) -> Option<NaiveDate> {
 fn parse_task_date_only_input(value: &str, field: &str) -> Result<NaiveDate, String> {
     let value = value.trim();
     if value.is_empty() {
-        return Err(format!("{field} darf nicht leer sein"));
+        return Err(gettext("{field} cannot be empty").replace("{field}", field));
     }
     if value.chars().any(|character| character.is_control()) {
-        return Err(format!("{field} enthält ungültige Steuerzeichen"));
+        return Err(gettext("{field} contains invalid control characters").replace("{field}", field));
     }
     if value.len() != 10
         || value.as_bytes().get(4) != Some(&b'-')
         || value.as_bytes().get(7) != Some(&b'-')
     {
-        return Err(format!("{field} muss YYYY-MM-DD entsprechen"));
+        return Err(gettext("{field} must match YYYY-MM-DD").replace("{field}", field));
     }
     NaiveDate::parse_from_str(value, "%Y-%m-%d")
-        .map_err(|_| format!("{field} muss ein gültiges Datum enthalten"))
+        .map_err(|_| gettext("{field} must contain a valid date").replace("{field}", field))
 }
 
 fn task_date_mutation(
@@ -3176,7 +3194,7 @@ fn task_lifecycle_for_date_with_presence(
 ) -> Result<TaskLifecycleValues, String> {
     let status = normalize_task_status(status)?;
     if completed.is_some_and(|date| date > today) {
-        return Err("Das Abschlussdatum darf nicht in der Zukunft liegen".to_string());
+        return Err(gettext("Completion date cannot be in the future"));
     }
 
     match status {
@@ -3202,7 +3220,7 @@ fn task_lifecycle_for_date_with_presence(
             completed: if completion_present {
                 completed
             } else {
-                return Err("Erledigte Aufgaben benötigen ein Abschlussdatum".to_string());
+                return Err(gettext("Completed tasks require a completion date"));
             },
             completion_present: true,
         }),
@@ -3261,13 +3279,13 @@ fn validate_task_recurrence(
         return Ok(());
     }
     if !has_start {
-        return Err("Wiederkehrende Aufgaben benötigen ein DTSTART".to_string());
+        return Err(gettext("Recurring tasks require a DTSTART"));
     }
     if recurrence
         .chars()
         .any(|character| character == '\r' || character == '\n' || character.is_control())
     {
-        return Err("Die Wiederholungsregel enthält ungültige Zeichen".to_string());
+        return Err(gettext("The recurrence rule contains invalid characters"));
     }
     if task_recurrence_is_unchanged(existing, recurrence) {
         return Ok(());
@@ -3276,24 +3294,24 @@ fn validate_task_recurrence(
     let mut frequency = None;
     for part in recurrence.split(';') {
         let Some((key, value)) = part.split_once('=') else {
-            return Err("Die Wiederholungsregel hat eine ungültige Syntax".to_string());
+            return Err(gettext("Recurrence rule has invalid syntax"));
         };
         if key.trim().is_empty() || value.trim().is_empty() {
-            return Err("Die Wiederholungsregel hat eine ungültige Syntax".to_string());
+            return Err(gettext("Recurrence rule has invalid syntax"));
         }
         if key.trim().eq_ignore_ascii_case("FREQ") {
             frequency = Some(value.trim().to_ascii_uppercase());
         }
     }
     let Some(frequency) = frequency else {
-        return Err("Die Wiederholungsregel benötigt FREQ".to_string());
+        return Err(gettext("Recurrence rule requires FREQ"));
     };
     if !matches!(
         frequency.as_str(),
         "DAILY" | "WEEKLY" | "MONTHLY" | "YEARLY"
     ) || parse_recurrence_rule(recurrence).is_none()
     {
-        return Err("Die Wiederholungsregel ist ungültig".to_string());
+        return Err(gettext("Recurrence rule is invalid"));
     }
     Ok(())
 }
@@ -3575,12 +3593,19 @@ fn task_search_haystack(task: &TaskItemObject) -> String {
     let component = task.component();
     let categories = ical_properties(&component, "CATEGORIES").join(" ");
     let description = ical_property(&component, "DESCRIPTION").unwrap_or_default();
+    let status_aliases = match task_status_value(&component) {
+        "IN-PROCESS" => "in progress",
+        "COMPLETED" => "completed",
+        "CANCELLED" => "cancelled",
+        _ => "not started",
+    };
     format!(
-        "{} {} {} {} {} {} {}",
+        "{} {} {} {} {} {} {} {}",
         task.title(),
         task.due_date(),
         task.priority(),
         task_status_label(&component),
+        status_aliases,
         categories,
         description,
         component,
@@ -3612,8 +3637,8 @@ impl TasksPage {
         }
     }
 
-    /// Trigger the same editor as the page-local “Neue Aufgabe” button.
-    /// The main Evolution toolbar uses this when the Aufgaben module is
+    /// Trigger the same editor as the page-local “New Task” button.
+    /// The main Evolution toolbar uses this when the Tasks module is
     /// active, so both entry points preserve one creation workflow.
     pub fn present_new_task(&self) {
         if let Some(button) = self.imp().new_task_button.borrow().as_ref() {
@@ -3655,7 +3680,7 @@ impl TasksPage {
     pub fn is_sidebar_visible(&self) -> bool {
         if let Some(paned) = self.imp().outer_paned.borrow().as_ref() {
             if let Some(start) = paned.start_child() {
-                return start.is_visible();
+                return start.property::<bool>("visible");
             }
         }
         true
@@ -3670,7 +3695,7 @@ impl TasksPage {
                 let saved_pos = AppSettings::try_new()
                     .map(|s| s.mail_sidebar_position())
                     .unwrap_or(260)
-                    .clamp(240, 1500);
+                    .clamp(crate::window::MIN_SIDEBAR_WIDTH, crate::window::MAX_SIDEBAR_WIDTH);
                 if paned.position() < 180 {
                     paned.set_position(saved_pos);
                 }
@@ -3688,6 +3713,36 @@ impl TasksPage {
         imp.is_mobile.set(is_mobile);
         imp.is_tablet.set(is_tablet);
         self.sync_tasks_layout_visibility();
+        self.sync_toolbar_button_labels();
+    }
+
+    pub(crate) fn apply_toolbar_button_modes(&self, is_compact: bool) {
+        let imp = self.imp();
+        let complete_label = crate::i18n::gettext("Completed");
+        let delete_label = crate::i18n::gettext("Delete");
+        let buttons: [(&RefCell<Option<gtk::Button>>, &str, &str); 2] = [
+            (&imp.task_complete_button, &complete_label, "emblem-ok-symbolic"),
+            (&imp.task_delete_selection_button, &delete_label, "user-trash-symbolic"),
+        ];
+
+        for (cell, text, icon) in buttons {
+            if let Some(btn) = cell.borrow().as_ref() {
+                if is_compact {
+                    btn.set_child(Some(&gtk::Image::from_icon_name(icon)));
+                } else {
+                    let label = gtk::Label::builder()
+                        .label(text)
+                        .valign(gtk::Align::Center)
+                        .build();
+                    btn.set_child(Some(&label));
+                }
+            }
+        }
+    }
+
+    pub(crate) fn sync_toolbar_button_labels(&self) {
+        let is_compact = self.imp().is_mobile.get() || (self.width() > 0 && self.width() < 820);
+        self.apply_toolbar_button_modes(is_compact);
     }
 
     pub(crate) fn can_navigate_back(&self) -> bool {
@@ -3805,6 +3860,10 @@ impl TasksPage {
                 paned.set_position(pos);
             }
         }
+    }
+
+    pub fn search_bar(&self) -> Option<gtk::SearchBar> {
+        self.imp().task_search_bar.borrow().clone()
     }
 
     pub(crate) fn focus_search(&self) {
@@ -3977,7 +4036,7 @@ impl TasksPage {
                     .active(item.enabled && selector.is_selected(&source_uid))
                     .sensitive(item.enabled)
                     .valign(gtk::Align::Center)
-                    .tooltip_text("Aufgabenliste in den Ansichten ein-/ausblenden")
+                    .tooltip_text(&gettext("Show/hide task list in views"))
                     .css_classes(vec![color_class.as_str()])
                     .build();
 
@@ -4021,7 +4080,7 @@ impl TasksPage {
                 if item.backend_name != "local" && source_uid != "local-calendar" {
                     let sync_icon = gtk::Image::from_icon_name("media-playlist-repeat-symbolic");
                     sync_icon.add_css_class("dim-label");
-                    sync_icon.set_tooltip_text(Some("Synchronisierte Aufgabenliste"));
+                    sync_icon.set_tooltip_text(Some(&gettext("Synchronized task list")));
                     sync_icon.set_valign(gtk::Align::Center);
                     child_box.append(&sync_icon);
                 }
@@ -4175,7 +4234,7 @@ impl TasksPage {
                     let dialog = crate::dialogs::SourcePropertiesDialog::new(
                         &uid_props,
                         &name_props,
-                        "Aufgabenliste",
+                        &gettext("Task List"),
                         &col_props,
                         is_writable,
                         is_primary,
@@ -4227,7 +4286,7 @@ impl TasksPage {
                     let page_weak_save = page.downgrade();
                     let dialog = crate::dialogs::ManageGroupsDialog::new(
                         root_window.as_ref(),
-                        "Aufgaben",
+                        &gettext("Tasks"),
                         &current_sel,
                         move |updated_selector| {
                             if let Some(p) = page_weak_save.upgrade() {
@@ -4254,7 +4313,7 @@ impl TasksPage {
 
         let popover = crate::models::source_selector::create_source_context_popover(
             is_primary,
-            "Aufgabenliste",
+            &gettext("Task List"),
             on_exclusive,
             on_select_all,
             on_set_default,
@@ -4311,7 +4370,7 @@ impl TasksPage {
                     CalendarStoreService::new().is_writable(),
                 ) != TaskSourceCapability::Writable
                 {
-                    self.show_toast("Diese Aufgabenliste ist nicht als schreibfähig bestätigt");
+                    self.show_toast(&gettext("This task list is not confirmed as writable"));
                     return true;
                 }
                 self.open_task_dialog(task_store, task_list, empty_tasks, Some(task));
@@ -4423,38 +4482,38 @@ impl TasksPage {
         // Retain button instances in imp() for background source action handling
         let new_task_source_button = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text("Neue lokale Aufgabenliste")
+            .tooltip_text(&gettext("New local task list"))
             .css_classes(vec!["flat", "circular"])
             .build();
-        set_accessible_label(&new_task_source_button, "Neue lokale Aufgabenliste");
+        set_accessible_label(&new_task_source_button, &gettext("New local task list"));
         let copy_task_source_button = gtk::Button::builder()
             .icon_name("edit-copy-symbolic")
-            .tooltip_text("Ausgewählte Aufgabenliste kopieren")
+            .tooltip_text(&gettext("Copy selected task list"))
             .css_classes(vec!["flat", "circular"])
             .sensitive(false)
             .build();
-        set_accessible_label(&copy_task_source_button, "Ausgewählte Aufgabenliste kopieren");
+        set_accessible_label(&copy_task_source_button, &gettext("Copy selected task list"));
         let rename_task_source_button = gtk::Button::builder()
             .icon_name("document-edit-symbolic")
-            .tooltip_text("Ausgewählte Aufgabenliste umbenennen")
+            .tooltip_text(&gettext("Rename selected task list"))
             .css_classes(vec!["flat", "circular"])
             .sensitive(false)
             .build();
-        set_accessible_label(&rename_task_source_button, "Ausgewählte Aufgabenliste umbenennen");
+        set_accessible_label(&rename_task_source_button, &gettext("Rename selected task list"));
         let properties_task_source_button = gtk::Button::builder()
             .icon_name("document-properties-symbolic")
-            .tooltip_text("Eigenschaften der ausgewählten Aufgabenliste")
+            .tooltip_text(&gettext("Selected task list properties"))
             .css_classes(vec!["flat", "circular"])
             .sensitive(false)
             .build();
-        set_accessible_label(&properties_task_source_button, "Eigenschaften der ausgewählten Aufgabenliste");
+        set_accessible_label(&properties_task_source_button, &gettext("Selected task list properties"));
         let delete_task_source_button = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
-            .tooltip_text("Ausgewählte Aufgabenliste löschen")
+            .tooltip_text(&gettext("Delete selected task list"))
             .css_classes(vec!["flat", "circular", "destructive-action"])
             .sensitive(false)
             .build();
-        set_accessible_label(&delete_task_source_button, "Ausgewählte Aufgabenliste löschen");
+        set_accessible_label(&delete_task_source_button, &gettext("Delete selected task list"));
 
         self.imp().task_source_new_button.replace(Some(new_task_source_button.clone()));
         self.imp().task_source_copy_button.replace(Some(copy_task_source_button.clone()));
@@ -4478,9 +4537,9 @@ impl TasksPage {
             .visible(false)
             .css_classes(vec!["sidebar-drawer-header"])
             .build();
-        let drawer_icon = gtk::Image::from_icon_name("evolution-tasks-symbolic");
+        let drawer_icon = gtk::Image::from_icon_name("view-list-bullet-symbolic");
         let drawer_title = gtk::Label::builder()
-            .label("Aufgaben")
+            .label(&crate::i18n::gettext("Tasks"))
             .halign(gtk::Align::Start)
             .hexpand(true)
             .ellipsize(gtk::pango::EllipsizeMode::End)
@@ -4522,30 +4581,34 @@ impl TasksPage {
             .build();
 
         let search_mode_model = gtk::StringList::new(&[
-            "Alle Felder",
-            "Zusammenfassung",
-            "Beschreibung",
-            "Erweitert",
+            &crate::i18n::gettext("All Fields"),
+            &crate::i18n::gettext("Summary"),
+            &crate::i18n::gettext("Description"),
+            &crate::i18n::gettext("Advanced"),
         ]);
         let search_mode_selector =
             gtk::DropDown::new(Some(search_mode_model), None::<&gtk::Expression>);
         search_mode_selector.set_selected(self.imp().task_search_mode.get().index());
-        search_mode_selector.set_tooltip_text(Some(
-            "Suchfeld wählen; Erweitert unterstützt summary:, description:, category:, due:, start:, status: und has:attachment",
-        ));
+        search_mode_selector.set_tooltip_text(Some(&crate::i18n::gettext(
+            "Select search field; Advanced supports summary:, description:, category:, due:, start:, status:, and has:attachment",
+        )));
 
         let search_entry = gtk::SearchEntry::builder()
-            .placeholder_text("Aufgaben durchsuchen…")
+            .placeholder_text(&crate::i18n::gettext("Search tasks…"))
             .width_chars(36)
             .build();
-        search_entry.set_tooltip_text(Some(
-            "Mehrere Begriffe werden kombiniert. Im Modus Erweitert: category:Work due:next7 has:attachment",
-        ));
+        search_entry.set_tooltip_text(Some(&crate::i18n::gettext(
+            "Multiple terms are combined. In Advanced mode: category:Work due:next7 has:attachment",
+        )));
         self.imp().search_entry.replace(Some(search_entry.clone()));
 
-        let sort_model = gtk::StringList::new(&["Fälligkeit", "Titel", "Priorität"]);
+        let sort_model = gtk::StringList::new(&[
+            &crate::i18n::gettext("Due Date"),
+            &crate::i18n::gettext("Title"),
+            &crate::i18n::gettext("Priority"),
+        ]);
         let sort_selector = gtk::DropDown::new(Some(sort_model), None::<&gtk::Expression>);
-        sort_selector.set_tooltip_text(Some("Aufgaben sortieren"));
+        sort_selector.set_tooltip_text(Some(&crate::i18n::gettext("Sort tasks")));
         sort_selector.set_selected(match self.imp().task_sort.get() {
             TaskSort::Title => 1,
             TaskSort::Priority => 2,
@@ -4562,26 +4625,26 @@ impl TasksPage {
             } else {
                 "view-sort-ascending-symbolic"
             });
-            button.set_tooltip_text(Some(if descending {
-                "Absteigend sortiert"
+            button.set_tooltip_text(Some(&if descending {
+                crate::i18n::gettext("Sorted descending")
             } else {
-                "Aufsteigend sortiert"
+                crate::i18n::gettext("Sorted ascending")
             }));
             set_accessible_label(
                 button,
-                if descending {
-                    "Sortierung aufsteigend ändern"
+                &if descending {
+                    crate::i18n::gettext("Change sort to ascending")
                 } else {
-                    "Sortierung absteigend ändern"
+                    crate::i18n::gettext("Change sort to descending")
                 },
             );
         };
         set_direction_button(&direction_button, self.imp().task_sort_descending.get());
 
-        let source_model = gtk::StringList::new(&["Alle Aufgabenlisten"]);
+        let source_model = gtk::StringList::new(&[&crate::i18n::gettext("All Task Lists")]);
         let source_selector =
             gtk::DropDown::new(Some(source_model.clone()), None::<&gtk::Expression>);
-        source_selector.set_tooltip_text(Some("Aufgabenliste auswählen"));
+        source_selector.set_tooltip_text(Some(&crate::i18n::gettext("Select task list")));
         self.imp()
             .task_source_model
             .replace(Some(source_model.clone()));
@@ -4606,10 +4669,10 @@ impl TasksPage {
             }
         });
 
-        let category_model = gtk::StringList::new(&["Alle Kategorien"]);
+        let category_model = gtk::StringList::new(&[&crate::i18n::gettext("All Categories")]);
         let category_selector =
             gtk::DropDown::new(Some(category_model.clone()), None::<&gtk::Expression>);
-        category_selector.set_tooltip_text(Some("Aufgabenkategorie auswählen"));
+        category_selector.set_tooltip_text(Some(&crate::i18n::gettext("Select task category")));
         self.imp()
             .task_category_model
             .replace(Some(category_model.clone()));
@@ -4619,18 +4682,18 @@ impl TasksPage {
 
         let btn_add_task = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text("Neue Aufgabe (Strg+N)")
-            .css_classes(vec!["flat"])
+            .tooltip_text(&crate::i18n::gettext("Create new task (Ctrl+N)"))
+            .css_classes(vec!["suggested-action"])
             .valign(gtk::Align::Center)
             .build();
         set_button_icon_with_fallback(&btn_add_task, "list-add-symbolic", "document-new-symbolic");
-        set_accessible_label(&btn_add_task, "Neue Aufgabe erstellen");
+        set_accessible_label(&btn_add_task, &crate::i18n::gettext("New Task"));
         self.imp()
             .new_task_button
             .replace(Some(btn_add_task.clone()));
 
         let selection_status = gtk::Label::builder()
-            .label("Keine Auswahl")
+            .label(&crate::i18n::gettext("No selection"))
             .css_classes(vec!["dim-label"])
             .valign(gtk::Align::Center)
             .build();
@@ -4640,183 +4703,185 @@ impl TasksPage {
 
         let forward_selection_button = gtk::Button::builder()
             .icon_name("mail-forward-symbolic")
-            .tooltip_text("Ausgewählte Aufgabe als iCalendar weiterleiten")
+            .tooltip_text(&crate::i18n::gettext("Forward selected task as iCalendar"))
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
             &forward_selection_button,
-            "Ausgewählte Aufgabe als iCalendar weiterleiten",
+            &crate::i18n::gettext("Forward selected task as iCalendar"),
         );
         let assign_selection_button = gtk::Button::builder()
             .icon_name("avatar-default-symbolic")
-            .tooltip_text("Ausgewählte Aufgabe zuweisen")
+            .tooltip_text(&crate::i18n::gettext("Assign selected task"))
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
-        set_accessible_label(&assign_selection_button, "Ausgewählte Aufgabe zuweisen");
+        set_accessible_label(&assign_selection_button, &crate::i18n::gettext("Assign selected task"));
         let open_url_selection_button = gtk::Button::builder()
             .icon_name("external-link-symbolic")
-            .tooltip_text("URL der ausgewählten Aufgabe öffnen")
+            .tooltip_text(&crate::i18n::gettext("Open URL of selected task"))
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
             &open_url_selection_button,
-            "URL der ausgewählten Aufgabe öffnen",
+            &crate::i18n::gettext("Open URL of selected task"),
         );
         let print_selection_button = gtk::Button::builder()
             .icon_name("document-print-symbolic")
-            .tooltip_text("Ausgewählte Aufgabe drucken")
+            .tooltip_text(&crate::i18n::gettext("Print selected task"))
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
-        set_accessible_label(&print_selection_button, "Ausgewählte Aufgabe drucken");
+        set_accessible_label(&print_selection_button, &crate::i18n::gettext("Print selected task"));
         let print_list_button = gtk::Button::builder()
             .icon_name("document-print-symbolic")
-            .tooltip_text("Sichtbare Aufgabenliste drucken (Strg+P)")
+            .tooltip_text(&crate::i18n::gettext("Print visible task list (Ctrl+P)"))
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&print_list_button, "Sichtbare Aufgabenliste drucken");
+        set_accessible_label(&print_list_button, &crate::i18n::gettext("Print visible task list"));
         let print_list_preview_button = gtk::Button::builder()
             .icon_name("document-print-preview-symbolic")
-            .tooltip_text("Druckvorschau der sichtbaren Aufgabenliste vorbereiten")
+            .tooltip_text(&crate::i18n::gettext("Prepare print preview of visible task list"))
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(
             &print_list_preview_button,
-            "Druckvorschau der sichtbaren Aufgabenliste vorbereiten",
+            &crate::i18n::gettext("Prepare print preview of visible task list"),
         );
         let refresh_source_button = gtk::Button::builder()
             .icon_name("view-refresh-symbolic")
-            .tooltip_text("Ausgewählte Aufgabenliste beim Anbieter aktualisieren (F5)")
+            .tooltip_text(&crate::i18n::gettext("Refresh selected task list from provider (F5)"))
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
             &refresh_source_button,
-            "Ausgewählte Aufgabenliste aktualisieren",
+            &crate::i18n::gettext("Refresh selected task list"),
         );
         let copy_selection_button = gtk::Button::builder()
             .icon_name("edit-copy-symbolic")
-            .tooltip_text("Ausgewählte Aufgaben in die Zwischenablage kopieren (Strg+C)")
+            .tooltip_text(&crate::i18n::gettext("Copy selected tasks to clipboard (Ctrl+C)"))
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
             &copy_selection_button,
-            "Ausgewählte Aufgaben in die Zwischenablage kopieren",
+            &crate::i18n::gettext("Copy selected tasks to clipboard"),
         );
         let cut_selection_button = gtk::Button::builder()
             .icon_name("edit-cut-symbolic")
-            .tooltip_text("Ausgewählte Aufgaben ausschneiden (Strg+X)")
+            .tooltip_text(&crate::i18n::gettext("Cut selected tasks (Ctrl+X)"))
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
-        set_accessible_label(&cut_selection_button, "Ausgewählte Aufgaben ausschneiden");
+        set_accessible_label(&cut_selection_button, &crate::i18n::gettext("Cut selected tasks"));
         let paste_selection_button = gtk::Button::builder()
             .icon_name("edit-paste-symbolic")
-            .tooltip_text("Aufgaben aus der Zwischenablage einfügen (Strg+V)")
+            .tooltip_text(&crate::i18n::gettext("Paste tasks from clipboard (Ctrl+V)"))
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
             &paste_selection_button,
-            "Aufgaben aus der Zwischenablage einfügen",
+            &crate::i18n::gettext("Paste tasks from clipboard"),
         );
         let select_all_tasks_button = gtk::Button::builder()
             .icon_name("edit-select-all-symbolic")
-            .tooltip_text("Alle sichtbaren Aufgaben auswählen (Strg+A)")
+            .tooltip_text(&crate::i18n::gettext("Select all visible tasks (Ctrl+A)"))
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(
             &select_all_tasks_button,
-            "Alle sichtbaren Aufgaben auswählen",
+            &crate::i18n::gettext("Select all visible tasks"),
         );
         let bulk_edit_button = gtk::Button::builder()
             .icon_name("document-edit-symbolic")
-            .tooltip_text("Ausgewählte Aufgaben gemeinsam bearbeiten")
+            .tooltip_text(&crate::i18n::gettext("Edit selected tasks together"))
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
             &bulk_edit_button,
-            "Ausgewählte Aufgaben gemeinsam bearbeiten",
+            &crate::i18n::gettext("Edit selected tasks together"),
         );
         let complete_selection_button = gtk::Button::builder()
             .icon_name("emblem-ok-symbolic")
-            .tooltip_text("Ausgewählte Aufgaben als erledigt markieren")
+            .tooltip_text(&crate::i18n::gettext("Mark selected tasks as completed"))
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
             &complete_selection_button,
-            "Ausgewählte Aufgaben als erledigt markieren",
+            &crate::i18n::gettext("Mark selected tasks as completed"),
         );
         let incomplete_selection_button = gtk::Button::builder()
             .icon_name("view-refresh-symbolic")
-            .tooltip_text("Ausgewählte Aufgaben als offen markieren")
+            .tooltip_text(&crate::i18n::gettext("Mark selected tasks as incomplete"))
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
             &incomplete_selection_button,
-            "Ausgewählte Aufgaben als offen markieren",
+            &crate::i18n::gettext("Mark selected tasks as incomplete"),
         );
         let delete_selection_button = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
-            .tooltip_text("Ausgewählte Aufgaben löschen (Entf)")
+            .tooltip_text(&crate::i18n::gettext("Delete selected tasks (Delete)"))
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
-        set_accessible_label(&delete_selection_button, "Ausgewählte Aufgaben löschen");
+        set_accessible_label(&delete_selection_button, &crate::i18n::gettext("Delete selected tasks"));
         let purge_button = gtk::Button::builder()
             .icon_name("edit-clear-all-symbolic")
-            .tooltip_text("Alle erledigten Aufgaben dauerhaft löschen (Strg+E)")
+            .tooltip_text(&crate::i18n::gettext("Permanently purge all completed tasks (Ctrl+E)"))
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
-        set_accessible_label(&purge_button, "Alle erledigten Aufgaben dauerhaft löschen");
+        set_accessible_label(&purge_button, &crate::i18n::gettext("Permanently purge all completed tasks"));
         let export_selection_button = gtk::Button::builder()
             .icon_name("document-save-symbolic")
-            .tooltip_text("Ausgewählte Aufgaben gemeinsam als iCalendar exportieren")
+            .tooltip_text(&crate::i18n::gettext("Export selected tasks as iCalendar"))
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
             &export_selection_button,
-            "Ausgewählte Aufgaben gemeinsam als iCalendar exportieren",
+            &crate::i18n::gettext("Export selected tasks as iCalendar"),
         );
         let preview_visible = AppSettings::try_new()
             .map(|settings| settings.task_preview_visible())
             .unwrap_or(true);
         let preview_toggle = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-right-symbolic")
-            .tooltip_text("Aufgabenvorschau ein-/ausblenden (Strg+M)")
+            .tooltip_text(&crate::i18n::gettext("Toggle task preview (Ctrl+M)"))
             .active(preview_visible)
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&preview_toggle, "Aufgabenvorschau ein- oder ausblenden");
+        set_accessible_label(&preview_toggle, &crate::i18n::gettext("Toggle task preview"));
 
-        let sidebar_visible = true;
+        let sidebar_visible = AppSettings::try_new()
+            .map(|s| s.mail_show_sidebar())
+            .unwrap_or(true);
         sidebar_outer_box.set_visible(sidebar_visible);
         let sidebar_toggle = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-symbolic")
@@ -4831,12 +4896,26 @@ impl TasksPage {
             .replace(Some(sidebar_toggle.clone()));
 
         let sidebar_for_toggle = sidebar_outer_box.clone();
+        let page_weak_for_sidebar = self.downgrade();
         sidebar_toggle.connect_toggled(move |toggle| {
             let is_active = toggle.is_active();
-            sidebar_for_toggle.set_visible(is_active);
+            if let Some(page) = page_weak_for_sidebar.upgrade() {
+                if let Some(win) = crate::window::find_evolution_window(&page) {
+                    if win.is_sidebar_visible_for_active_view() != is_active {
+                        win.toggle_sidebar_animated(is_active);
+                        return;
+                    }
+                }
+                page.set_sidebar_visible(is_active);
+                if let Some(settings) = AppSettings::try_new() {
+                    settings.set_mail_show_sidebar(is_active);
+                }
+            } else {
+                sidebar_for_toggle.set_visible(is_active);
+            }
         });
         let preview_orientation_model =
-            gtk::StringList::new(&["Vorschau unten", "Vorschau daneben"]);
+            gtk::StringList::new(&[&crate::i18n::gettext("Preview Below"), &crate::i18n::gettext("Preview Beside")]);
         let preview_orientation_selector =
             gtk::DropDown::new(Some(preview_orientation_model), None::<&gtk::Expression>);
         let preview_orientation = AppSettings::try_new()
@@ -4845,12 +4924,13 @@ impl TasksPage {
             })
             .unwrap_or(TaskPreviewOrientation::Classic);
         preview_orientation_selector.set_selected(preview_orientation.index());
-        preview_orientation_selector.set_tooltip_text(Some("Anordnung der Aufgabenvorschau"));
+        preview_orientation_selector.set_tooltip_text(Some(&crate::i18n::gettext("Task preview layout")));
 
         self.imp().task_forward_button.replace(Some(forward_selection_button.clone()));
         self.imp().task_assign_button.replace(Some(assign_selection_button.clone()));
         self.imp().task_open_url_button.replace(Some(open_url_selection_button.clone()));
         self.imp().task_print_button.replace(Some(print_selection_button.clone()));
+        self.imp().task_print_list_button.replace(Some(print_list_button.clone()));
         self.imp().task_copy_button.replace(Some(copy_selection_button.clone()));
         self.imp().task_cut_button.replace(Some(cut_selection_button.clone()));
         self.imp().task_paste_button.replace(Some(paste_selection_button.clone()));
@@ -4867,7 +4947,7 @@ impl TasksPage {
         self.imp().task_preview_orientation.replace(Some(preview_orientation_selector.clone()));
 
         // ── GNOME HIG Unified Toolbar Construction ──
-        // 1. Triage group (.linked): Erledigt, Löschen
+        // 1. Triage group (.linked): Complete, Delete
         let triage_group = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .css_classes(vec!["linked"])
@@ -4876,104 +4956,23 @@ impl TasksPage {
         triage_group.append(&complete_selection_button);
         triage_group.append(&delete_selection_button);
 
-        // 2. Clipboard group (.linked): Ausschneiden, Kopieren, Einfügen
-        let clipboard_group = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["linked"])
-            .valign(gtk::Align::Center)
-            .build();
-        clipboard_group.append(&cut_selection_button);
-        clipboard_group.append(&copy_selection_button);
-        clipboard_group.append(&paste_selection_button);
-
-        // 3. Left Toolbar Section (no redundant Add Task button, already present in header bar)
-        let left_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(4)
-            .halign(gtk::Align::Start)
-            .valign(gtk::Align::Center)
-            .build();
-        left_box.append(&triage_group);
-        left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        left_box.append(&clipboard_group);
-        left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        left_box.append(&print_list_button);
-
-        // 4. Center Filter View Switcher (Linked pills for key views + DropDown for all)
-        let filter_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(4)
-            .valign(gtk::Align::Center)
-            .build();
-
-        let view_toggle = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["linked"])
-            .valign(gtk::Align::Center)
-            .build();
-
+        // 2. Filter DropDown (all 16 task filters consolidated in one place)
         let initial_filter = self.imp().task_filter.get();
-
-        let all_btn = gtk::ToggleButton::builder()
-            .label("Alle")
-            .tooltip_text("Alle Aufgaben anzeigen")
-            .active(initial_filter == TaskFilter::All)
-            .build();
-        set_accessible_label(&all_btn, "Alle Aufgaben anzeigen");
-
-        let today_btn = gtk::ToggleButton::builder()
-            .label("Heute")
-            .tooltip_text("Heute fällige Aufgaben anzeigen")
-            .group(&all_btn)
-            .active(initial_filter == TaskFilter::Today)
-            .build();
-        set_accessible_label(&today_btn, "Heute fällige Aufgaben anzeigen");
-
-        let next7_btn = gtk::ToggleButton::builder()
-            .label("Nächste 7 Tage")
-            .tooltip_text("In den nächsten 7 Tagen fällige Aufgaben anzeigen")
-            .group(&all_btn)
-            .active(initial_filter == TaskFilter::Next7)
-            .build();
-        set_accessible_label(&next7_btn, "In den nächsten 7 Tagen fällige Aufgaben anzeigen");
-
-        let overdue_btn = gtk::ToggleButton::builder()
-            .label("Überfällig")
-            .tooltip_text("Überfällige Aufgaben anzeigen")
-            .group(&all_btn)
-            .active(initial_filter == TaskFilter::Overdue)
-            .build();
-        set_accessible_label(&overdue_btn, "Überfällige Aufgaben anzeigen");
-
-        let completed_btn = gtk::ToggleButton::builder()
-            .label("Erledigt")
-            .tooltip_text("Erledigte Aufgaben anzeigen")
-            .group(&all_btn)
-            .active(initial_filter == TaskFilter::Completed)
-            .build();
-        set_accessible_label(&completed_btn, "Erledigte Aufgaben anzeigen");
-
-        view_toggle.append(&all_btn);
-        view_toggle.append(&today_btn);
-        view_toggle.append(&next7_btn);
-        view_toggle.append(&overdue_btn);
-        view_toggle.append(&completed_btn);
-
-        let filter_options_names: Vec<&str> =
-            TASK_FILTER_OPTIONS.iter().map(|(_, _, label)| *label).collect();
-        let filter_options_model = gtk::StringList::new(&filter_options_names);
+        let filter_options_names: Vec<String> =
+            TASK_FILTER_OPTIONS.iter().map(|(_, _, label)| crate::i18n::gettext(*label)).collect();
+        let filter_options_refs: Vec<&str> =
+            filter_options_names.iter().map(|s| s.as_str()).collect();
+        let filter_options_model = gtk::StringList::new(&filter_options_refs);
         let filter_dropdown = gtk::DropDown::new(
             Some(filter_options_model),
             None::<&gtk::Expression>,
         );
         filter_dropdown.set_valign(gtk::Align::Center);
-        filter_dropdown.set_tooltip_text(Some("Weitere Aufgabenfilter auswählen"));
+        filter_dropdown.set_tooltip_text(Some(&crate::i18n::gettext("Select task filter")));
+        set_accessible_label(&filter_dropdown, &crate::i18n::gettext("Task filter"));
         filter_dropdown.set_selected(task_filter_index(initial_filter) as u32);
 
-        filter_box.append(&view_toggle);
-        filter_box.append(&filter_dropdown);
-
-        // 5. Sort group (.linked)
+        // 3. Sort group (.linked)
         let sort_group = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .css_classes(vec!["linked"])
@@ -4983,16 +4982,7 @@ impl TasksPage {
         sort_group.append(&sort_selector);
         sort_group.append(&direction_button);
 
-        // 6. Search Toggle Button
-        let search_toggle_btn = gtk::ToggleButton::builder()
-            .icon_name("edit-find-symbolic")
-            .tooltip_text("Aufgaben durchsuchen (Strg+F)")
-            .css_classes(vec!["flat"])
-            .valign(gtk::Align::Center)
-            .build();
-        set_accessible_label(&search_toggle_btn, "Aufgaben durchsuchen");
-
-        // 7. More Actions Popover Menu ([⋮])
+        // 4. More Actions Popover Menu ([⋮])
         let more_popover_content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(2)
@@ -5032,18 +5022,22 @@ impl TasksPage {
             item_btn
         };
 
-        more_popover_content.append(&make_popover_item("Alle Aufgaben auswählen (Strg+A)", "edit-select-all-symbolic", &select_all_tasks_button, &more_popover));
-        more_popover_content.append(&make_popover_item("Als offen markieren", "view-refresh-symbolic", &incomplete_selection_button, &more_popover));
-        more_popover_content.append(&make_popover_item("Mehrere Aufgaben bearbeiten…", "document-edit-symbolic", &bulk_edit_button, &more_popover));
-        more_popover_content.append(&make_popover_item("Erledigte Aufgaben bereinigen… (Strg+E)", "edit-clear-all-symbolic", &purge_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Select All Tasks (Ctrl+A)"), "edit-select-all-symbolic", &select_all_tasks_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Mark as Incomplete"), "view-refresh-symbolic", &incomplete_selection_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Cut (Ctrl+X)"), "edit-cut-symbolic", &cut_selection_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Copy (Ctrl+C)"), "edit-copy-symbolic", &copy_selection_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Paste (Ctrl+V)"), "edit-paste-symbolic", &paste_selection_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Edit Multiple Tasks…"), "document-edit-symbolic", &bulk_edit_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Purge Completed Tasks… (Ctrl+E)"), "edit-clear-all-symbolic", &purge_button, &more_popover));
         more_popover_content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        more_popover_content.append(&make_popover_item("Aufgabe zuweisen…", "avatar-default-symbolic", &assign_selection_button, &more_popover));
-        more_popover_content.append(&make_popover_item("Als iCalendar weiterleiten…", "mail-forward-symbolic", &forward_selection_button, &more_popover));
-        more_popover_content.append(&make_popover_item("URL der Aufgabe öffnen", "external-link-symbolic", &open_url_selection_button, &more_popover));
-        more_popover_content.append(&make_popover_item("Als iCalendar exportieren…", "document-save-symbolic", &export_selection_button, &more_popover));
-        more_popover_content.append(&make_popover_item("Druckvorschau…", "document-print-preview-symbolic", &print_list_preview_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Assign Task…"), "avatar-default-symbolic", &assign_selection_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Forward as iCalendar…"), "mail-forward-symbolic", &forward_selection_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Open Task URL"), "external-link-symbolic", &open_url_selection_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Export as iCalendar…"), "document-save-symbolic", &export_selection_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Print Task List… (Ctrl+P)"), "document-print-symbolic", &print_list_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Print Preview…"), "document-print-preview-symbolic", &print_list_preview_button, &more_popover));
         more_popover_content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        more_popover_content.append(&make_popover_item("Aufgabenliste aktualisieren (F5)", "view-refresh-symbolic", &refresh_source_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Refresh Task List (F5)"), "view-refresh-symbolic", &refresh_source_button, &more_popover));
         more_popover_content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
         let preview_orientation_box = gtk::Box::builder()
@@ -5052,7 +5046,7 @@ impl TasksPage {
             .margin_start(4)
             .margin_end(4)
             .build();
-        preview_orientation_box.append(&gtk::Label::builder().label("Vorschau:").halign(gtk::Align::Start).css_classes(vec!["dim-label"]).build());
+        preview_orientation_box.append(&gtk::Label::builder().label(&crate::i18n::gettext("Preview:")).halign(gtk::Align::Start).css_classes(vec!["dim-label"]).build());
         preview_orientation_selector.set_valign(gtk::Align::Center);
         preview_orientation_box.append(&preview_orientation_selector);
         more_popover_content.append(&preview_orientation_box);
@@ -5060,53 +5054,24 @@ impl TasksPage {
         let more_button = gtk::MenuButton::builder()
             .icon_name("view-more-symbolic")
             .popover(&more_popover)
-            .tooltip_text("Weitere Aktionen")
+            .tooltip_text(&crate::i18n::gettext("More Actions"))
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&more_button, "Weitere Aktionen");
+        set_accessible_label(&more_button, &crate::i18n::gettext("More Actions"));
 
-        // 8. Layout Switcher (.linked: 3-Panel / Vertical, Classic / Bottom, List Only)
-        let layout_group = gtk::Box::builder()
+        // 5. Left Toolbar Section: Triage (Complete, Delete) + More menu
+        let left_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["linked"])
+            .spacing(4)
+            .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .build();
+        left_box.append(&triage_group);
+        left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        left_box.append(&more_button);
 
-        let layout_vertical_btn = gtk::ToggleButton::builder()
-            .icon_name("sidebar-show-right-symbolic")
-            .tooltip_text("Dreispalten-Ansicht (Vorschau rechts)")
-            .active(preview_visible && preview_orientation == TaskPreviewOrientation::Vertical)
-            .css_classes(vec!["flat"])
-            .valign(gtk::Align::Center)
-            .build();
-        set_accessible_label(&layout_vertical_btn, "Dreispalten-Ansicht (Vorschau rechts)");
-
-        let layout_classic_btn = gtk::ToggleButton::builder()
-            .icon_name("pan-down-symbolic")
-            .tooltip_text("Klassische Ansicht (Vorschau unten)")
-            .group(&layout_vertical_btn)
-            .active(preview_visible && preview_orientation == TaskPreviewOrientation::Classic)
-            .css_classes(vec!["flat"])
-            .valign(gtk::Align::Center)
-            .build();
-        set_accessible_label(&layout_classic_btn, "Klassische Ansicht (Vorschau unten)");
-
-        let layout_list_only_btn = gtk::ToggleButton::builder()
-            .icon_name("view-list-symbolic")
-            .tooltip_text("Nur Liste (Vorschau ausblenden)")
-            .group(&layout_vertical_btn)
-            .active(!preview_visible)
-            .css_classes(vec!["flat"])
-            .valign(gtk::Align::Center)
-            .build();
-        set_accessible_label(&layout_list_only_btn, "Nur Liste (Vorschau ausblenden)");
-
-        layout_group.append(&layout_vertical_btn);
-        layout_group.append(&layout_classic_btn);
-        layout_group.append(&layout_list_only_btn);
-
-        // 9. Right Toolbar Section
+        // 6. Right Toolbar Section: Sort -> Filter Dropdown (Right-Aligned)
         let right_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(4)
@@ -5115,19 +5080,12 @@ impl TasksPage {
             .build();
         right_box.append(&sort_group);
         right_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        right_box.append(&search_toggle_btn);
-        right_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        right_box.append(&more_button);
-        right_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        right_box.append(&layout_group);
+        right_box.append(&filter_dropdown);
 
-        let left_spacer = gtk::Box::builder().hexpand(true).build();
-        let right_spacer = gtk::Box::builder().hexpand(true).build();
+        let spacer = gtk::Box::builder().hexpand(true).build();
 
         toolbar.append(&left_box);
-        toolbar.append(&left_spacer);
-        toolbar.append(&filter_box);
-        toolbar.append(&right_spacer);
+        toolbar.append(&spacer);
         toolbar.append(&right_box);
 
         let toolbar_scroll = gtk::ScrolledWindow::builder()
@@ -5154,12 +5112,6 @@ impl TasksPage {
         self.imp()
             .task_search_bar
             .replace(Some(task_search_bar.clone()));
-
-        task_search_bar
-            .bind_property("search-mode-enabled", &search_toggle_btn, "active")
-            .bidirectional()
-            .sync_create()
-            .build();
 
         let search_content_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -5190,9 +5142,9 @@ impl TasksPage {
             }
         });
 
-        let search_toggle_for_stop = search_toggle_btn.clone();
+        let search_bar_for_stop = task_search_bar.clone();
         search_entry.connect_stop_search(move |_| {
-            search_toggle_for_stop.set_active(false);
+            search_bar_for_stop.set_search_mode(false);
         });
 
         let task_store = gio::ListStore::new::<TaskItemObject>();
@@ -5207,7 +5159,7 @@ impl TasksPage {
             .build();
 
         let empty_tasks = gtk::Label::builder()
-            .label("Aufgaben werden geladen…")
+            .label(&gettext("Loading tasks…"))
             .css_classes(vec!["dim-label", "task-empty-state-title"])
             .margin_top(36)
             .build();
@@ -5227,22 +5179,22 @@ impl TasksPage {
             .visible(false)
             .build();
         let preview_find_entry = gtk::SearchEntry::builder()
-            .placeholder_text("In Vorschau suchen")
+            .placeholder_text(&gettext("Search in preview"))
             .hexpand(true)
             .sensitive(false)
             .build();
         let preview_find_previous = gtk::Button::builder()
             .icon_name("go-up-symbolic")
-            .tooltip_text("Vorheriger Treffer")
+            .tooltip_text(&gettext("Previous match"))
             .build();
         let preview_find_next = gtk::Button::builder()
             .icon_name("go-down-symbolic")
-            .tooltip_text("Nächster Treffer")
+            .tooltip_text(&gettext("Next match"))
             .build();
         let preview_find_status = gtk::Label::new(None);
         let preview_find_close = gtk::Button::builder()
             .icon_name("window-close-symbolic")
-            .tooltip_text("Vorschau-Suche schließen")
+            .tooltip_text(&gettext("Close preview search"))
             .build();
         preview_find_bar.append(&preview_find_entry);
         preview_find_bar.append(&preview_find_previous);
@@ -5265,8 +5217,8 @@ impl TasksPage {
             .build();
         let preview_empty_state = adw::StatusPage::builder()
             .icon_name("document-properties-symbolic")
-            .title("Keine Aufgabe ausgewählt")
-            .description("Wählen Sie eine Aufgabe aus der Liste aus, um Details und Notizen anzuzeigen.")
+            .title(&gettext("No task selected"))
+            .description(&gettext("Select a task from the list to view details and notes."))
             .vexpand(true)
             .hexpand(true)
             .build();
@@ -5336,43 +5288,25 @@ impl TasksPage {
         });
 
         let page_weak_for_preview_toggle = self.downgrade();
-        let layout_list_only_for_toggle = layout_list_only_btn.clone();
-        let layout_vert_for_toggle = layout_vertical_btn.clone();
-        let layout_classic_for_toggle = layout_classic_btn.clone();
-        let prev_orient_selector_for_toggle = preview_orientation_selector.clone();
         preview_toggle.connect_toggled(move |toggle| {
             let active = toggle.is_active();
             if let Some(settings) = AppSettings::try_new() {
                 settings.set_task_preview_visible(active);
             }
-            if !active {
-                if !layout_list_only_for_toggle.is_active() {
-                    layout_list_only_for_toggle.set_active(true);
-                }
-            } else {
-                let orientation = TaskPreviewOrientation::from_index(prev_orient_selector_for_toggle.selected());
-                match orientation {
-                    TaskPreviewOrientation::Vertical => {
-                        if !layout_vert_for_toggle.is_active() {
-                            layout_vert_for_toggle.set_active(true);
-                        }
-                    }
-                    TaskPreviewOrientation::Classic => {
-                        if !layout_classic_for_toggle.is_active() {
-                            layout_classic_for_toggle.set_active(true);
-                        }
-                    }
-                }
-            }
             if let Some(page) = page_weak_for_preview_toggle.upgrade() {
+                if let Some(preview_paned) = page.imp().task_preview_paned.borrow().as_ref() {
+                    if let Some(detail_box) = preview_paned.end_child() {
+                        detail_box.set_visible(active);
+                    }
+                }
                 refresh_task_preview(&page);
+                if let Some(win) = crate::window::find_evolution_window(&page) {
+                    win.sync_right_sidebar_toggle();
+                }
             }
         });
 
         let page_weak_for_preview_orientation = self.downgrade();
-        let preview_toggle_for_orient = preview_toggle.clone();
-        let layout_vert_for_orient = layout_vertical_btn.clone();
-        let layout_classic_for_orient = layout_classic_btn.clone();
         preview_orientation_selector.connect_selected_notify(move |selector| {
             let sel = selector.selected();
             if sel == gtk::INVALID_LIST_POSITION {
@@ -5382,51 +5316,8 @@ impl TasksPage {
             if let Some(settings) = AppSettings::try_new() {
                 settings.set_task_preview_orientation(orientation.setting_value());
             }
-            if preview_toggle_for_orient.is_active() {
-                match orientation {
-                    TaskPreviewOrientation::Vertical => {
-                        if !layout_vert_for_orient.is_active() {
-                            layout_vert_for_orient.set_active(true);
-                        }
-                    }
-                    TaskPreviewOrientation::Classic => {
-                        if !layout_classic_for_orient.is_active() {
-                            layout_classic_for_orient.set_active(true);
-                        }
-                    }
-                }
-            }
             if let Some(page) = page_weak_for_preview_orientation.upgrade() {
                 apply_task_preview_paned_layout(&page, orientation);
-            }
-        });
-
-        let preview_toggle_for_vert = preview_toggle.clone();
-        let prev_orient_selector_for_vert = preview_orientation_selector.clone();
-        layout_vertical_btn.connect_toggled(move |btn| {
-            if btn.is_active() {
-                prev_orient_selector_for_vert.set_selected(TaskPreviewOrientation::Vertical.index());
-                if !preview_toggle_for_vert.is_active() {
-                    preview_toggle_for_vert.set_active(true);
-                }
-            }
-        });
-
-        let preview_toggle_for_classic = preview_toggle.clone();
-        let prev_orient_selector_for_classic = preview_orientation_selector.clone();
-        layout_classic_btn.connect_toggled(move |btn| {
-            if btn.is_active() {
-                prev_orient_selector_for_classic.set_selected(TaskPreviewOrientation::Classic.index());
-                if !preview_toggle_for_classic.is_active() {
-                    preview_toggle_for_classic.set_active(true);
-                }
-            }
-        });
-
-        let preview_toggle_for_list = preview_toggle.clone();
-        layout_list_only_btn.connect_toggled(move |btn| {
-            if btn.is_active() && preview_toggle_for_list.is_active() {
-                preview_toggle_for_list.set_active(false);
             }
         });
 
@@ -5469,7 +5360,7 @@ impl TasksPage {
             ) {
                 Ok(payload) => {
                     button.display().clipboard().set_text(&payload);
-                    show_toast_for_widget(button, "Aufgabe(n) in die Zwischenablage kopiert");
+                    show_toast_for_widget(button, &gettext("Tasks copied to clipboard"));
                 }
                 Err(error) => show_toast_for_widget(button, &error),
             }
@@ -5495,7 +5386,7 @@ impl TasksPage {
                 CalendarStoreService::new().is_writable(),
                 false,
             ) {
-                show_toast_for_widget(button, "Ausschneiden ist für diese Auswahl nicht verfügbar");
+                show_toast_for_widget(button, &gettext("Cut is not available for this selection"));
                 return;
             }
             let payload = match build_selected_task_export(&selection, &candidates) {
@@ -5548,7 +5439,7 @@ impl TasksPage {
         let preview_toggle_for_keys = preview_toggle.clone();
         let preview_find_bar_for_keys = preview_find_bar.clone();
         let preview_find_entry_for_keys = preview_find_entry.clone();
-        let search_toggle_for_keys = search_toggle_btn.clone();
+        let search_bar_for_keys = task_search_bar.clone();
         let sidebar_toggle_for_keys = sidebar_toggle.clone();
         let clipboard_keys = gtk::EventControllerKey::new();
         clipboard_keys.connect_key_pressed(move |_, key, _, modifiers| {
@@ -5572,8 +5463,8 @@ impl TasksPage {
                     }
                     return glib::Propagation::Proceed;
                 } else {
-                    let is_active = search_toggle_for_keys.is_active();
-                    search_toggle_for_keys.set_active(!is_active);
+                    let is_active = search_bar_for_keys.is_search_mode();
+                    search_bar_for_keys.set_search_mode(!is_active);
                     return glib::Propagation::Stop;
                 }
             }
@@ -5630,6 +5521,21 @@ impl TasksPage {
         });
         self.add_controller(page_key_controller);
 
+        // Initialize toolbar button modes (desktop: pure text, mobile: pure icon)
+        let is_compact_initial = self.imp().is_mobile.get() || (self.width() > 0 && self.width() < 820);
+        self.apply_toolbar_button_modes(is_compact_initial);
+
+        self.connect_root_notify(move |page| {
+            if let Some(win) = page.root().and_downcast::<gtk::Window>() {
+                let page_weak = page.downgrade();
+                win.connect_default_width_notify(move |_| {
+                    if let Some(page) = page_weak.upgrade() {
+                        page.sync_toolbar_button_labels();
+                    }
+                });
+            }
+        });
+
         let page_weak_for_bulk_edit = self.downgrade();
         let task_store_for_bulk_edit = task_store.clone();
         let task_list_for_bulk_edit = task_list.clone();
@@ -5681,8 +5587,8 @@ impl TasksPage {
                 return;
             };
             let file_dialog = gtk::FileDialog::builder()
-                .title("Aufgabenauswahl als iCalendar speichern")
-                .initial_name("aufgaben.ics")
+                .title(&gettext("Save Task Selection as iCalendar"))
+                .initial_name("tasks.ics")
                 .modal(true)
                 .build();
             let button_for_result = button.clone();
@@ -5702,12 +5608,15 @@ impl TasksPage {
                 match save_result {
                     Ok(_) => show_toast_for_widget(
                         &button_for_result,
-                        "Aufgabenauswahl als iCalendar exportiert",
+                        &gettext("Task selection exported as iCalendar"),
                     ),
-                    Err(error) => show_toast_for_widget(
-                        &button_for_result,
-                        &format!("iCalendar konnte nicht gespeichert werden: {error}"),
-                    ),
+                    Err(error) => {
+                        let msg = gettext("Could not save iCalendar: {error}").replace("{error}", &error.to_string());
+                        show_toast_for_widget(
+                            &button_for_result,
+                            &msg,
+                        );
+                    }
                 }
             });
         });
@@ -5727,7 +5636,7 @@ impl TasksPage {
                     button.display().clipboard().set_text(&payload);
                     show_toast_for_widget(
                         button,
-                        "METHOD:PUBLISH bereitgestellt; echtes iTIP-Weiterleiten ist Linux-Handoff",
+                        &gettext("METHOD:PUBLISH prepared; true iTIP forward is Linux handoff"),
                     );
                 }
                 Err(error) => show_toast_for_widget(button, &error),
@@ -5774,11 +5683,14 @@ impl TasksPage {
                 None::<&gio::AppLaunchContext>,
                 None::<&gio::Cancellable>,
                 move |result| match result {
-                    Ok(()) => show_toast_for_widget(&button_for_result, "URL geöffnet"),
-                    Err(error) => show_toast_for_widget(
-                        &button_for_result,
-                        &format!("URL konnte nicht geöffnet werden: {error}"),
-                    ),
+                    Ok(()) => show_toast_for_widget(&button_for_result, &gettext("URL opened")),
+                    Err(error) => {
+                        let msg = gettext("Could not open URL: {error}").replace("{error}", &error.to_string());
+                        show_toast_for_widget(
+                            &button_for_result,
+                            &msg,
+                        );
+                    }
                 },
             );
         });
@@ -5789,23 +5701,29 @@ impl TasksPage {
             let Some(page) = page_weak_for_print.upgrade() else {
                 return;
             };
-            show_toast_for_widget(button, "Druckdokument wird vorbereitet …");
+            show_toast_for_widget(button, &gettext("Preparing print document…"));
             let selection = page.imp().task_selection.borrow().clone();
             match build_task_print_document(
                 &selection,
                 &task_export_candidates(&task_store_for_print),
             ) {
-                Ok(document) => show_toast_for_widget(
-                    button,
-                    &format!(
-                        "Druckdokument vorbereitet ({} Zeichen); GTK-Druckdialog/Portal ist Linux-Handoff",
-                        document.plain_text.chars().count()
-                    ),
-                ),
-                Err(error) => show_toast_for_widget(
-                    button,
-                    &format!("Druckdokument konnte nicht vorbereitet werden: {error}"),
-                ),
+                Ok(document) => {
+                    let chars = document.plain_text.chars().count().to_string();
+                    let msg = gettext("Print document prepared ({chars} characters); GTK print dialog / portal is Linux handoff")
+                        .replace("{chars}", &chars);
+                    show_toast_for_widget(
+                        button,
+                        &msg,
+                    );
+                }
+                Err(error) => {
+                    let msg = gettext("Could not prepare print document: {error}")
+                        .replace("{error}", &error);
+                    show_toast_for_widget(
+                        button,
+                        &msg,
+                    );
+                }
             }
         });
 
@@ -5988,7 +5906,7 @@ impl TasksPage {
                 CalendarStoreService::new().is_writable(),
             ) != TaskSourceCapability::Writable
             {
-                page.show_toast("Diese Aufgabenliste ist nicht als schreibfähig bestätigt");
+                page.show_toast(&gettext("This task list is not confirmed as writable"));
                 return;
             }
             page.open_task_dialog(
@@ -6173,11 +6091,6 @@ impl TasksPage {
         let task_store_for_categories = task_store.clone();
         let empty_tasks_for_categories = empty_tasks.clone();
         let syncing_filter_for_apply = Rc::clone(&syncing_filter);
-        let all_btn_for_apply = all_btn.clone();
-        let today_btn_for_apply = today_btn.clone();
-        let next7_btn_for_apply = next7_btn.clone();
-        let overdue_btn_for_apply = overdue_btn.clone();
-        let completed_btn_for_apply = completed_btn.clone();
         let filter_dropdown_for_apply = filter_dropdown.clone();
 
         let apply_filter = move |filter: TaskFilter| {
@@ -6194,20 +6107,6 @@ impl TasksPage {
                 settings.set_task_filter(filter.setting_value());
             }
 
-            match filter {
-                TaskFilter::All => all_btn_for_apply.set_active(true),
-                TaskFilter::Today => today_btn_for_apply.set_active(true),
-                TaskFilter::Next7 => next7_btn_for_apply.set_active(true),
-                TaskFilter::Overdue => overdue_btn_for_apply.set_active(true),
-                TaskFilter::Completed => completed_btn_for_apply.set_active(true),
-                _ => {
-                    all_btn_for_apply.set_active(false);
-                    today_btn_for_apply.set_active(false);
-                    next7_btn_for_apply.set_active(false);
-                    overdue_btn_for_apply.set_active(false);
-                    completed_btn_for_apply.set_active(false);
-                }
-            }
             filter_dropdown_for_apply.set_selected(task_filter_index(filter) as u32);
             render_task_rows(
                 &page,
@@ -6217,41 +6116,6 @@ impl TasksPage {
             );
             syncing_filter_for_apply.set(false);
         };
-
-        let apply_for_all = apply_filter.clone();
-        all_btn.connect_toggled(move |btn| {
-            if btn.is_active() {
-                apply_for_all(TaskFilter::All);
-            }
-        });
-
-        let apply_for_today = apply_filter.clone();
-        today_btn.connect_toggled(move |btn| {
-            if btn.is_active() {
-                apply_for_today(TaskFilter::Today);
-            }
-        });
-
-        let apply_for_next7 = apply_filter.clone();
-        next7_btn.connect_toggled(move |btn| {
-            if btn.is_active() {
-                apply_for_next7(TaskFilter::Next7);
-            }
-        });
-
-        let apply_for_overdue = apply_filter.clone();
-        overdue_btn.connect_toggled(move |btn| {
-            if btn.is_active() {
-                apply_for_overdue(TaskFilter::Overdue);
-            }
-        });
-
-        let apply_for_completed = apply_filter.clone();
-        completed_btn.connect_toggled(move |btn| {
-            if btn.is_active() {
-                apply_for_completed(TaskFilter::Completed);
-            }
-        });
 
         let apply_for_dropdown = apply_filter.clone();
         filter_dropdown.connect_selected_notify(move |dropdown| {
@@ -6393,17 +6257,17 @@ impl TasksPage {
                 } else {
                     "view-sort-ascending-symbolic"
                 });
-                direction_button_for_settings.set_tooltip_text(Some(if descending {
-                    "Absteigend sortiert"
+                direction_button_for_settings.set_tooltip_text(Some(&if descending {
+                    crate::i18n::gettext("Sorted descending")
                 } else {
-                    "Aufsteigend sortiert"
+                    crate::i18n::gettext("Sorted ascending")
                 }));
                 set_accessible_label(
                     &direction_button_for_settings,
-                    if descending {
-                        "Sortierung aufsteigend ändern"
+                    &if descending {
+                        crate::i18n::gettext("Change sort to ascending")
                     } else {
-                        "Sortierung absteigend ändern"
+                        crate::i18n::gettext("Change sort to descending")
                     },
                 );
                 if let Some(page) = page_weak.upgrade() {
@@ -6527,12 +6391,12 @@ impl TasksPage {
                         tracing::warn!(%warning, "Task data loaded with a backend warning");
                     }
                     if result.snapshot.tasks.is_empty() {
-                        empty_tasks_for_load.set_label(match result.origin {
-                            CalendarDataOrigin::Eds => "Keine synchronisierten Aufgaben geladen",
+                        empty_tasks_for_load.set_label(&match result.origin {
+                            CalendarDataOrigin::Eds => gettext("No synchronized tasks loaded"),
                             CalendarDataOrigin::Graph => {
-                                "Keine Aufgaben aus Microsoft Graph geladen"
+                                gettext("No tasks loaded from Microsoft Graph")
                             }
-                            CalendarDataOrigin::Local => "Keine lokalen Aufgaben geladen",
+                            CalendarDataOrigin::Local => gettext("No local tasks loaded"),
                         });
                         empty_tasks_for_load.set_visible(true);
                     } else {
@@ -6555,7 +6419,7 @@ impl TasksPage {
                     if page.imp().task_refresh_generation.get() != load_generation {
                         return;
                     }
-                    empty_tasks_for_load.set_label("Aufgaben konnten nicht geladen werden");
+                    empty_tasks_for_load.set_label(&gettext("Could not load tasks"));
                     empty_tasks_for_load.set_visible(true);
                     tracing::debug!(%error, "Task snapshot unavailable");
                 }
@@ -6633,11 +6497,11 @@ impl TasksPage {
             .valign(gtk::Align::Center)
             .build();
         let quick_add_entry = gtk::Entry::builder()
-            .placeholder_text("Neue Aufgabe hinzufügen… (Eingabetaste drücken)")
+            .placeholder_text(&crate::i18n::gettext("Add new task… (Press Enter)"))
             .hexpand(true)
             .css_classes(vec!["task-quick-add-entry"])
             .build();
-        set_accessible_label(&quick_add_entry, "Neue Aufgabe schnell hinzufügen");
+        set_accessible_label(&quick_add_entry, &crate::i18n::gettext("Quickly add new task"));
         quick_add_box.append(&quick_add_icon);
         quick_add_box.append(&quick_add_entry);
 
@@ -6726,16 +6590,18 @@ impl TasksPage {
                     Ok(Ok(_)) => {
                         if let Some(page) = page_for_done.upgrade() {
                             page.refresh_tasks();
+                            let msg = gettext("Task “{summary}” added").replace("{summary}", &text_for_toast);
                             show_toast_for_widget(
                                 &entry_for_done,
-                                &format!("Aufgabe »{}« hinzugefügt", text_for_toast),
+                                &msg,
                             );
                         }
                     }
                     Ok(Err(err)) => {
+                        let msg = gettext("Could not create task: {error}").replace("{error}", &err.to_string());
                         show_toast_for_widget(
                             &entry_for_done,
-                            &format!("Aufgabe konnte nicht erstellt werden: {err}"),
+                            &msg,
                         );
                     }
                     Err(_) => {}
@@ -6762,7 +6628,7 @@ impl TasksPage {
             .hexpand(true)
             .css_classes(vec!["tasks-table-header"])
             .build();
-        set_accessible_label(&task_table_header, "Aufgabentabellen-Kopfzeile");
+        set_accessible_label(&task_table_header, &gettext("Task table header"));
 
         let task_table_canvas = gtk::DrawingArea::builder()
             .content_height(100)
@@ -6772,7 +6638,7 @@ impl TasksPage {
             .focus_on_click(true)
             .css_classes(vec!["tasks-table-canvas"])
             .build();
-        set_accessible_label(&task_table_canvas, "Aufgabenliste Canvas");
+        set_accessible_label(&task_table_canvas, &gettext("Task list canvas"));
 
         self.imp()
             .task_table_header
@@ -7126,22 +6992,17 @@ impl TasksPage {
         tasks_content_box.append(&task_table_header);
         tasks_content_box.append(&task_table_canvas);
 
-        let task_clamp = adw::Clamp::builder()
-            .maximum_size(950)
-            .tightening_threshold(650)
-            .child(&tasks_content_box)
-            .build();
         let task_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .child(&task_clamp)
+            .child(&tasks_content_box)
             .vexpand(true)
             .build();
 
         let empty_status_page = adw::StatusPage::builder()
-            .icon_name("evolution-tasks-symbolic")
-            .title("Keine Aufgaben")
-            .description("Wählen Sie eine Aufgabenliste aus oder erstellen Sie eine neue Aufgabe.")
+            .icon_name("view-list-bullet-symbolic")
+            .title(&gettext("No Tasks"))
+            .description(&gettext("Select a task list or create a new task."))
             .vexpand(true)
             .hexpand(true)
             .build();
@@ -7208,7 +7069,7 @@ impl TasksPage {
         let sidebar_position = AppSettings::try_new()
             .map(|settings| settings.mail_sidebar_position())
             .unwrap_or(260)
-            .clamp(240, 1500);
+            .clamp(crate::window::MIN_SIDEBAR_WIDTH, crate::window::MAX_SIDEBAR_WIDTH);
         paned.set_position(sidebar_position);
         if let Some(settings) = AppSettings::try_new() {
             paned.connect_position_notify(move |paned| {
@@ -7218,8 +7079,12 @@ impl TasksPage {
                     }
                 }
                 let position = paned.position();
-                if (180..=1500).contains(&position) && settings.mail_sidebar_position() != position {
-                    settings.set_mail_sidebar_position(position);
+                let clamped = position.clamp(crate::window::MIN_SIDEBAR_WIDTH, crate::window::MAX_SIDEBAR_WIDTH);
+                if position != clamped {
+                    paned.set_position(clamped);
+                }
+                if settings.mail_sidebar_position() != clamped {
+                    settings.set_mail_sidebar_position(clamped);
                 }
             });
         }
@@ -7261,12 +7126,12 @@ impl TasksPage {
             Rc::new(RefCell::new(HashMap::<String, TaskSourceCapability>::new()));
 
         let dialog_title = if editing {
-            "Aufgabe bearbeiten"
+            gettext("Edit Task")
         } else {
-            "Neue Aufgabe"
+            gettext("New Task")
         };
         let dialog = adw::Window::builder()
-            .title(dialog_title)
+            .title(&dialog_title)
             .modal(true)
             .default_width(540)
             .default_height(520)
@@ -7279,10 +7144,10 @@ impl TasksPage {
 
         let toolbar_view = adw::ToolbarView::new();
         let header_bar = adw::HeaderBar::new();
-        let cancel_button = gtk::Button::with_label("Abbrechen");
+        let cancel_button = gtk::Button::with_label(&gettext("Cancel"));
         header_bar.pack_start(&cancel_button);
         let save_button = gtk::Button::builder()
-            .label("Speichern")
+            .label(&gettext("Save"))
             .css_classes(vec!["suggested-action"])
             .build();
         header_bar.pack_end(&save_button);
@@ -7297,10 +7162,10 @@ impl TasksPage {
             .margin_bottom(20)
             .build();
 
-        let source_model = gtk::StringList::new(&["Aufgabenlisten werden geladen…"]);
+        let source_model = gtk::StringList::new(&[&gettext("Loading task lists…")]);
         let source_uids = Rc::new(RefCell::new(Vec::<String>::new()));
         let source_row = adw::ComboRow::builder()
-            .title("Aufgabenliste")
+            .title(&gettext("Task List"))
             .model(&source_model)
             .build();
         source_row.set_sensitive(!editing);
@@ -7326,50 +7191,50 @@ impl TasksPage {
                 save_button_for_selection.set_sensitive(writable);
             }
         });
-        let details = adw::PreferencesGroup::builder().title("Details").build();
+        let details = adw::PreferencesGroup::builder().title(&gettext("Details")).build();
         details.add(&source_row);
 
-        let title_entry = adw::EntryRow::builder().title("Titel").build();
+        let title_entry = adw::EntryRow::builder().title(&gettext("Title")).build();
         details.add(&title_entry);
         let dtstart_entry = adw::EntryRow::builder()
-            .title("Beginn (YYYY-MM-DD, optional)")
+            .title(&gettext("Start (YYYY-MM-DD, optional)"))
             .build();
-        dtstart_entry.set_tooltip_text(Some(
-            "Neue Werte sind date-only. Importierte date-time-Werte bleiben unverändert, solange sie nicht bearbeitet werden.",
-        ));
+        dtstart_entry.set_tooltip_text(Some(&gettext(
+            "New values are date-only. Imported date-time values remain unchanged unless edited.",
+        )));
         details.add(&dtstart_entry);
         let due_entry = adw::EntryRow::builder()
-            .title("Fällig am (YYYY-MM-DD, optional)")
+            .title(&gettext("Due (YYYY-MM-DD, optional)"))
             .build();
-        due_entry.set_tooltip_text(Some(
-            "Neue Werte sind date-only. Importierte date-time-Werte bleiben unverändert, solange sie nicht bearbeitet werden.",
-        ));
+        due_entry.set_tooltip_text(Some(&gettext(
+            "New values are date-only. Imported date-time values remain unchanged unless edited.",
+        )));
         details.add(&due_entry);
         let completed_entry = adw::EntryRow::builder()
-            .title("Abgeschlossen am (YYYY-MM-DD, optional)")
+            .title(&gettext("Completed (YYYY-MM-DD, optional)"))
             .build();
-        completed_entry.set_tooltip_text(Some(
-            "Ein Abschlussdatum ist nur für den Status Erledigt zulässig und darf nicht in der Zukunft liegen.",
-        ));
+        completed_entry.set_tooltip_text(Some(&gettext(
+            "A completion date is only permitted for Completed status and must not be in the future.",
+        )));
         details.add(&completed_entry);
         let recurrence_entry = adw::EntryRow::builder()
-            .title("Wiederholung (RRULE, optional)")
+            .title(&gettext("Recurrence (RRULE, optional)"))
             .build();
-        recurrence_entry.set_tooltip_text(Some("z. B. FREQ=WEEKLY;BYDAY=MO;COUNT=10"));
+        recurrence_entry.set_tooltip_text(Some(&gettext("e.g. FREQ=WEEKLY;BYDAY=MO;COUNT=10")));
         details.add(&recurrence_entry);
         let rdate_entry = adw::EntryRow::builder()
-            .title("Zusätzliche Fälligkeiten (RDATE, kommasepariert)")
+            .title(&gettext("Additional Due Dates (RDATE, comma-separated)"))
             .build();
-        rdate_entry.set_tooltip_text(Some("z. B. 20260812,20260819"));
+        rdate_entry.set_tooltip_text(Some(&gettext("e.g. 20260812,20260819")));
         details.add(&rdate_entry);
         let exdate_entry = adw::EntryRow::builder()
-            .title("Ausnahmen (EXDATE, kommasepariert)")
+            .title(&gettext("Exceptions (EXDATE, comma-separated)"))
             .build();
-        exdate_entry.set_tooltip_text(Some("z. B. 20260815,20260822"));
+        exdate_entry.set_tooltip_text(Some(&gettext("e.g. 20260815,20260822")));
         details.add(&exdate_entry);
 
         let priority_row = adw::ActionRow::builder()
-            .title("Priorität (1 = hoch, 0 = normal)")
+            .title(&gettext("Priority (1 = high, 0 = normal)"))
             .build();
         let priority_spin = gtk::SpinButton::with_range(0.0, 9.0, 1.0);
         priority_spin.set_numeric(true);
@@ -7378,23 +7243,23 @@ impl TasksPage {
         details.add(&priority_row);
 
         let status_row = adw::ComboRow::builder()
-            .title("Status")
+            .title(&crate::i18n::gettext("Status"))
             .model(&gtk::StringList::new(&[
-                "Nicht begonnen",
-                "In Bearbeitung",
-                "Erledigt",
-                "Abgebrochen",
+                &crate::i18n::gettext("Not Started"),
+                &crate::i18n::gettext("In Progress"),
+                &crate::i18n::gettext("Completed"),
+                &crate::i18n::gettext("Cancelled"),
             ]))
             .build();
         details.add(&status_row);
         let percent_row = adw::SpinRow::with_range(0.0, 100.0, 1.0);
-        percent_row.set_title("Fortschritt (Prozent)");
+        percent_row.set_title(&gettext("Progress (Percent)"));
         percent_row.set_digits(0);
         percent_row.set_snap_to_ticks(true);
         details.add(&percent_row);
 
         let categories_entry = adw::EntryRow::builder()
-            .title("Kategorien (Komma getrennt)")
+            .title(&gettext("Categories (Comma-separated)"))
             .build();
         details.add(&categories_entry);
         let attachment_view = gtk::TextView::builder()
@@ -7415,11 +7280,11 @@ impl TasksPage {
         attachment_scroll.set_child(Some(&attachment_view));
         let attachment_picker = gtk::Button::builder()
             .icon_name("mail-attachment-symbolic")
-            .tooltip_text("Dateien als Aufgabenanhänge auswählen")
+            .tooltip_text(&gettext("Select files as task attachments"))
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&attachment_picker, "Dateien als Aufgabenanhänge auswählen");
+        set_accessible_label(&attachment_picker, &gettext("Select files as task attachments"));
         let attachment_header = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(6)
@@ -7428,7 +7293,7 @@ impl TasksPage {
             .margin_top(6)
             .build();
         let attachment_title = gtk::Label::builder()
-            .label("Anhänge (URI- oder vollständige ATTACH-Zeile pro Zeile)")
+            .label(&gettext("Attachments (one URI or full ATTACH line per line)"))
             .halign(gtk::Align::Start)
             .hexpand(true)
             .build();
@@ -7461,7 +7326,7 @@ impl TasksPage {
                 return;
             };
             let file_dialog = gtk::FileDialog::builder()
-                .title("Aufgabenanhänge auswählen")
+                .title(&gettext("Select Task Attachments"))
                 .modal(true)
                 .build();
             let attachment_buffer_for_result = attachment_buffer_for_picker.clone();
@@ -7494,7 +7359,7 @@ impl TasksPage {
         });
 
         let description_group = adw::PreferencesGroup::builder()
-            .title("Beschreibung")
+            .title(&gettext("Description"))
             .build();
         let description_view = gtk::TextView::builder()
             .wrap_mode(gtk::WrapMode::WordChar)
@@ -7550,22 +7415,21 @@ impl TasksPage {
             if let Some(percent) = initial_draft.unsupported_percent.as_deref() {
                 imported.push(format!("PERCENT-COMPLETE={percent}"));
             }
+            let msg = gettext("Imported values are preserved unchanged until edited: {values}")
+                .replace("{values}", &imported.join(", "));
             let imported_label = gtk::Label::builder()
-                .label(format!(
-                    "Importierte Werte werden unverändert bewahrt, bis sie bearbeitet werden: {}",
-                    imported.join(", ")
-                ))
+                .label(&msg)
                 .wrap(true)
                 .halign(gtk::Align::Start)
                 .css_classes(vec!["warning", "dim-label"])
                 .build();
             details.add(&imported_label);
-            status_row.set_tooltip_text(Some(
-                "Importierter, nicht unterstützter STATUS-Wert; unverändert bewahrt",
-            ));
-            percent_row.set_tooltip_text(Some(
-                "Importierter, nicht unterstützter PERCENT-COMPLETE-Wert; unverändert bewahrt",
-            ));
+            status_row.set_tooltip_text(Some(&gettext(
+                "Imported unsupported STATUS value; preserved unchanged",
+            )));
+            percent_row.set_tooltip_text(Some(&gettext(
+                "Imported unsupported PERCENT-COMPLETE value; preserved unchanged",
+            )));
         }
         let percent_adjustment = percent_row.adjustment();
         // Imported VTODO lifecycle values can be outside the portable picker
@@ -7804,16 +7668,16 @@ impl TasksPage {
                 *uid != "local-calendar" && !uids.iter().any(|candidate| candidate == uid)
             });
             if let Some(uid) = preserved_source_uid {
-                names.push(format!("Nicht verfügbare Quelle · {uid}"));
+                names.push(gettext("Unavailable Source · {source}").replace("{source}", uid));
                 uids.push(uid.to_string());
                 capabilities.insert(uid.to_string(), TaskSourceCapability::Unavailable);
             }
             if local_calendar_available {
-                names.push("Lokale Aufgabenliste".to_string());
+                names.push(gettext("Local Task List"));
                 uids.push("local-calendar".to_string());
                 capabilities.insert("local-calendar".to_string(), TaskSourceCapability::Writable);
             } else if edit_source_uid_for_load.as_deref() == Some("local-calendar") {
-                names.push("Nicht verfügbare Quelle · local-calendar".to_string());
+                names.push(gettext("Unavailable Source · {source}").replace("{source}", "local-calendar"));
                 uids.push("local-calendar".to_string());
                 capabilities.insert(
                     "local-calendar".to_string(),
@@ -7822,9 +7686,9 @@ impl TasksPage {
             }
             if names.is_empty() {
                 names.push(if discovery_failed {
-                    "Aufgabenlisten sind nicht erreichbar".to_string()
+                    gettext("Task lists are unreachable")
                 } else {
-                    "Keine aktive Aufgabenliste verfügbar".to_string()
+                    gettext("No active task list available")
                 });
             }
             let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
@@ -7874,7 +7738,7 @@ impl TasksPage {
             } else {
                 let selected = source_row.selected() as usize;
                 let Some(source_uid) = source_uids_for_save.borrow().get(selected).cloned() else {
-                    show_toast_for_widget(&dialog, "Keine aktive Aufgabenliste ist ausgewählt");
+                    show_toast_for_widget(&dialog, &gettext("No active task list is selected"));
                     return;
                 };
                 source_uid
@@ -7882,7 +7746,7 @@ impl TasksPage {
             if !task_source_is_writable(&source_uid, &source_capabilities_for_save) {
                 show_toast_for_widget(
                     &dialog,
-                    "Die ausgewählte Aufgabenliste ist nicht schreibfähig oder nicht verfügbar",
+                    &gettext("The selected task list is read-only or unavailable"),
                 );
                 return;
             };
@@ -7956,7 +7820,7 @@ impl TasksPage {
             if !task_source_is_writable(&source_uid, &source_capabilities_for_save) {
                 show_toast_for_widget(
                     &dialog,
-                    "Die Aufgabenliste ist nicht mehr schreibfähig oder nicht verfügbar",
+                    &gettext("The task list is no longer writable or unavailable"),
                 );
                 return;
             }
@@ -7985,7 +7849,7 @@ impl TasksPage {
                 {
                     if let Err(error) = sender.send_blocking(TaskSaveWorkerMessage::Finished(Err(
                         crate::services::ecal_service::ECalMutationError::Backend(
-                            "Die Aufgabenliste ist unmittelbar vor dem Speichern nicht mehr schreibfähig".to_string(),
+                            gettext("The task list is no longer writable immediately prior to save"),
                         ),
                     ))) {
                         tracing::debug!(%error, "Capability failure result was dropped");
@@ -8036,8 +7900,7 @@ impl TasksPage {
                         Ok(result)
                     } else {
                         Err(crate::services::ecal_service::ECalMutationError::Backend(
-                            "Backend bestätigte keine autoritative VTODO-Komponente; bitte neu laden"
-                                .to_string(),
+                            gettext("Backend did not confirm an authoritative VTODO component; please reload"),
                         ))
                     }
                 });
@@ -8111,10 +7974,13 @@ impl TasksPage {
                     cancel_button_for_result.set_sensitive(true);
                     dirty_for_result.set(result_state.dirty);
                     match result {
-                        Err(error) => show_toast_for_widget(
-                            &dialog,
-                            &format!("Aufgabe konnte nicht gespeichert werden: {error}"),
-                        ),
+                        Err(error) => {
+                            let msg = gettext("Could not save task: {error}").replace("{error}", &error.to_string());
+                            show_toast_for_widget(
+                                &dialog,
+                                &msg,
+                            );
+                        }
                         Ok(_) => unreachable!("successful results must update the row"),
                     }
                     return;
@@ -8132,7 +7998,7 @@ impl TasksPage {
                     cancel_button_for_result.set_sensitive(true);
                     show_toast_for_widget(
                         &dialog,
-                        "Das bestätigte Aufgaben-Ergebnis gehört zu einer anderen UID",
+                        &gettext("The confirmed task result belongs to a different UID"),
                     );
                     return;
                 }
@@ -8146,7 +8012,7 @@ impl TasksPage {
                     dialog_state_for_result.set(TaskEditorDialogState::Dirty);
                     save_button_for_result.set_sensitive(true);
                     cancel_button_for_result.set_sensitive(true);
-                    show_toast_for_widget(&dialog, "ECal lieferte keine gültige Aufgaben-UID");
+                    show_toast_for_widget(&dialog, &gettext("ECal returned no valid task UID"));
                     return;
                 }
                 let Some(component) = result
@@ -8159,7 +8025,7 @@ impl TasksPage {
                     cancel_button_for_result.set_sensitive(true);
                     show_toast_for_widget(
                         &dialog,
-                        "Backend bestätigte keine autoritative Aufgabe; bitte neu laden",
+                        &gettext("Backend did not confirm an authoritative task; please reload"),
                     );
                     return;
                 };
@@ -8174,9 +8040,10 @@ impl TasksPage {
                         dialog_state_for_result.set(TaskEditorDialogState::Dirty);
                         save_button_for_result.set_sensitive(true);
                         cancel_button_for_result.set_sensitive(true);
+                        let msg = gettext("Confirmed task is invalid: {error}").replace("{error}", &error);
                         show_toast_for_widget(
                             &dialog,
-                            &format!("Bestätigte Aufgabe ist ungültig: {error}"),
+                            &msg,
                         );
                         return;
                     }
@@ -8214,9 +8081,9 @@ impl TasksPage {
                         &empty_tasks_for_result,
                     );
                     let message = if task_to_edit_for_result.is_some() {
-                        format!("Aufgabe aktualisiert ({uid})")
+                        gettext("Task updated ({uid})").replace("{uid}", &uid)
                     } else {
-                        format!("Aufgabe gespeichert ({uid})")
+                        gettext("Task saved ({uid})").replace("{uid}", &uid)
                     };
                     page.show_toast(&message);
                 }
@@ -8247,7 +8114,10 @@ impl TasksPage {
                 TaskCloseDecision::Allow => return glib::Propagation::Proceed,
                 TaskCloseDecision::BlockSave => {
                     if let Some(dialog) = dialog_weak_for_close.upgrade() {
-                        show_toast_for_widget(&dialog, "Speichern läuft noch; bitte kurz warten");
+                        show_toast_for_widget(
+                            &dialog,
+                            &gettext("Save is still in progress; please wait a moment"),
+                        );
                     }
                     return glib::Propagation::Stop;
                 }
@@ -8255,7 +8125,7 @@ impl TasksPage {
                     if let Some(dialog) = dialog_weak_for_close.upgrade() {
                         show_toast_for_widget(
                             &dialog,
-                            "Speichern wird gerade verbindlich ausgeführt; Schließen ist nicht verfügbar",
+                            &gettext("Save is currently committing; close is not available"),
                         );
                     }
                     return glib::Propagation::Stop;
@@ -8264,13 +8134,13 @@ impl TasksPage {
                 TaskCloseDecision::Prompt => close_prompt_open_for_close.set(true),
             }
             let confirmation = adw::AlertDialog::new(
-                Some("Ungespeicherte Aufgabenänderungen"),
-                Some("Die Aufgabe wurde seit dem letzten bestätigten Speichern geändert."),
+                Some(&gettext("Unsaved Task Changes")),
+                Some(&gettext("The task was modified since the last confirmed save.")),
             );
             confirmation.add_responses(&[
-                ("continue", "Weiter bearbeiten"),
-                ("save", "Speichern"),
-                ("discard", "Verwerfen"),
+                ("continue", &gettext("Keep Editing")),
+                ("save", &gettext("Save")),
+                ("discard", &gettext("Discard")),
             ]);
             confirmation.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
             let dialog_weak_for_response = dialog_weak_for_close.clone();
@@ -8327,7 +8197,7 @@ impl TasksPage {
                             if let Some(dialog) = dialog_weak_for_cancel.upgrade() {
                                 show_toast_for_widget(
                                     &dialog,
-                                    "Speichern wird gerade verbindlich ausgeführt; Abbrechen ist nicht verfügbar",
+                                    &gettext("Save is currently committing; cancel is not available"),
                                 );
                             }
                         }
@@ -8338,7 +8208,7 @@ impl TasksPage {
                     if let Some(dialog) = dialog_weak_for_cancel.upgrade() {
                         show_toast_for_widget(
                             &dialog,
-                            "Speichern wird gerade verbindlich ausgeführt; Abbrechen ist nicht verfügbar",
+                            &gettext("Save is currently committing; cancel is not available"),
                         );
                     }
                 }
@@ -8431,7 +8301,7 @@ pub(crate) fn prepare_task_table_layout(
         let completed = task_is_completed(task);
         let raw_title = task.title();
         let title = if raw_title.trim().is_empty() {
-            "(Ohne Betreff)".to_string()
+            crate::i18n::gettext("(No Subject)")
         } else {
             raw_title
         };
@@ -8440,11 +8310,11 @@ pub(crate) fn prepare_task_table_layout(
         let parsed_due = task_due_date(&due_raw);
         let (due_display, is_overdue) = if let Some(due) = parsed_due {
             let text = if due == today {
-                "Heute".to_string()
+                crate::i18n::gettext("Today")
             } else if due == today + chrono::Duration::days(1) {
-                "Morgen".to_string()
+                crate::i18n::gettext("Tomorrow")
             } else if due == today - chrono::Duration::days(1) {
-                "Gestern".to_string()
+                crate::i18n::gettext("Yesterday")
             } else {
                 due.format("%d.%m.%Y").to_string()
             };
@@ -8621,13 +8491,17 @@ pub(crate) fn draw_task_table_header(
     cr.line_to(width, height - 0.5);
     cr.stroke().ok();
 
+    let col_title_label = crate::i18n::gettext("Summary");
+    let col_status_label = crate::i18n::gettext("Status");
+    let col_due_label = crate::i18n::gettext("Due Date");
+    let col_cat_label = crate::i18n::gettext("Categories");
     let columns = [
         (TaskTableColumn::Completed, 0.0, layout.col_check_w, "✓"),
         (TaskTableColumn::Priority, layout.col_check_w, layout.col_prio_w, "!"),
-        (TaskTableColumn::Title, layout.col_check_w + layout.col_prio_w, layout.col_title_w, "Betreff"),
-        (TaskTableColumn::Status, layout.col_check_w + layout.col_prio_w + layout.col_title_w, layout.col_status_w, "Status"),
-        (TaskTableColumn::DueDate, layout.col_check_w + layout.col_prio_w + layout.col_title_w + layout.col_status_w, layout.col_due_w, "Fälligkeit"),
-        (TaskTableColumn::Category, layout.col_check_w + layout.col_prio_w + layout.col_title_w + layout.col_status_w + layout.col_due_w, layout.col_cat_w, "Kategorien"),
+        (TaskTableColumn::Title, layout.col_check_w + layout.col_prio_w, layout.col_title_w, col_title_label.as_str()),
+        (TaskTableColumn::Status, layout.col_check_w + layout.col_prio_w + layout.col_title_w, layout.col_status_w, col_status_label.as_str()),
+        (TaskTableColumn::DueDate, layout.col_check_w + layout.col_prio_w + layout.col_title_w + layout.col_status_w, layout.col_due_w, col_due_label.as_str()),
+        (TaskTableColumn::Category, layout.col_check_w + layout.col_prio_w + layout.col_title_w + layout.col_status_w + layout.col_due_w, layout.col_cat_w, col_cat_label.as_str()),
     ];
 
     cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
@@ -8864,7 +8738,10 @@ pub(crate) fn toggle_task_item_completion(page: &TasksPage, task: &TaskItemObjec
     let source_uid = task.source_uid();
     if !task_source_is_writable_on_page(page, &source_uid) {
         if let Some(canvas) = page.imp().task_table_canvas.borrow().as_ref() {
-            show_toast_for_widget(canvas, "Diese Aufgabenliste ist nicht als schreibfähig bestätigt");
+            show_toast_for_widget(
+                canvas,
+                &gettext("This task list is not confirmed as writable"),
+            );
         }
         return;
     }
@@ -8911,7 +8788,10 @@ pub(crate) fn toggle_task_item_completion(page: &TasksPage, task: &TaskItemObjec
                 tracing::debug!(%error, "Task status mutation channel closed");
                 if let Some(page) = page_weak.upgrade() {
                     if let Some(canvas) = page.imp().task_table_canvas.borrow().as_ref() {
-                        show_toast_for_widget(canvas, "Aufgabenstatus konnte nicht aktualisiert werden");
+                        show_toast_for_widget(
+                            canvas,
+                            &gettext("Could not update task status"),
+                        );
                     }
                 }
                 return;
@@ -8939,7 +8819,10 @@ pub(crate) fn toggle_task_item_completion(page: &TasksPage, task: &TaskItemObjec
             Err(error) => {
                 if let Some(page) = page_weak.upgrade() {
                     if let Some(canvas) = page.imp().task_table_canvas.borrow().as_ref() {
-                        show_toast_for_widget(canvas, &format!("Aufgabe konnte nicht aktualisiert werden: {error}"));
+                        show_toast_for_widget(
+                            canvas,
+                            &gettext("Could not update task: {error}").replace("{error}", &error.to_string()),
+                        );
                     }
                 }
             }
@@ -8967,7 +8850,7 @@ fn show_task_table_context_menu(
         .build();
 
     // 1. Edit
-    let edit = gtk::Button::with_label("Aufgabe bearbeiten");
+    let edit = gtk::Button::with_label(&gettext("Edit task"));
     edit.set_halign(gtk::Align::Fill);
     edit.add_css_class("flat");
     let popover_for_edit = popover.clone();
@@ -8990,11 +8873,11 @@ fn show_task_table_context_menu(
     // 2. Toggle completion
     let completed = task_is_completed(task);
     let toggle_label = if completed {
-        "Als offen markieren"
+        gettext("Mark as incomplete")
     } else {
-        "Als erledigt markieren"
+        gettext("Mark as completed")
     };
-    let toggle = gtk::Button::with_label(toggle_label);
+    let toggle = gtk::Button::with_label(&toggle_label);
     toggle.set_halign(gtk::Align::Fill);
     toggle.add_css_class("flat");
     toggle.set_sensitive(task_source_is_writable_on_page(page, &task.source_uid()));
@@ -9010,7 +8893,7 @@ fn show_task_table_context_menu(
     menu_box.append(&toggle);
 
     // 3. Delete
-    let delete = gtk::Button::with_label("Aufgabe löschen");
+    let delete = gtk::Button::with_label(&gettext("Delete task"));
     delete.set_halign(gtk::Align::Fill);
     delete.add_css_class("flat");
     delete.add_css_class("destructive-action");
@@ -9132,55 +9015,107 @@ fn render_task_rows(
     update_task_selection_controls(page);
     empty_tasks.set_visible(visible == 0);
     if visible == 0 {
-        empty_tasks.set_label(if query_is_empty(&query) && category_filter.is_none() {
+        let label = if query_is_empty(&query) && category_filter.is_none() {
             match filter {
-                TaskFilter::All => "Keine Aufgaben geladen",
-                TaskFilter::Today => "Keine heute fällige Aufgabe",
-                TaskFilter::Next7 => "Keine Aufgabe in den nächsten 7 Tagen",
-                TaskFilter::Next30 => "Keine Aufgabe in den nächsten 30 Tagen",
-                TaskFilter::Next365 => "Keine aktive Aufgabe in den nächsten 365 Tagen",
-                TaskFilter::Important => "Keine wichtigen Aufgaben",
-                TaskFilter::Overdue => "Keine überfällige Aufgabe",
-                TaskFilter::Scheduled => "Keine Aufgabe mit Fälligkeit",
-                TaskFilter::NoDue => "Keine Aufgabe ohne Fälligkeit",
-                TaskFilter::WithAttachments => "Keine Aufgabe mit Anhängen",
-                TaskFilter::Started => "Keine begonnene Aufgabe",
-                TaskFilter::WithoutCategory => "Keine Aufgabe ohne Kategorie",
-                TaskFilter::Uncompleted => "Keine offene Aufgabe",
-                TaskFilter::InProgress => "Keine Aufgabe in Bearbeitung",
-                TaskFilter::Cancelled => "Keine abgebrochene Aufgabe",
-                TaskFilter::Completed => "Keine erledigten Aufgaben",
+                TaskFilter::All => gettext("No tasks loaded"),
+                TaskFilter::Today => gettext("No task due today"),
+                TaskFilter::Next7 => gettext("No task due in next 7 days"),
+                TaskFilter::Next30 => gettext("No task due in next 30 days"),
+                TaskFilter::Next365 => gettext("No active task due in next 365 days"),
+                TaskFilter::Important => gettext("No important tasks"),
+                TaskFilter::Overdue => gettext("No overdue task"),
+                TaskFilter::Scheduled => gettext("No task with due date"),
+                TaskFilter::NoDue => gettext("No task without due date"),
+                TaskFilter::WithAttachments => gettext("No task with attachments"),
+                TaskFilter::Started => gettext("No started task"),
+                TaskFilter::WithoutCategory => gettext("No task without category"),
+                TaskFilter::Uncompleted => gettext("No open task"),
+                TaskFilter::InProgress => gettext("No task in progress"),
+                TaskFilter::Cancelled => gettext("No cancelled task"),
+                TaskFilter::Completed => gettext("No completed tasks"),
             }
         } else {
-            "Keine passenden Aufgaben"
-        });
+            gettext("No matching tasks")
+        };
+        empty_tasks.set_label(&label);
     }
 
     if let Some(status_page) = page.imp().task_empty_status_page.borrow().as_ref() {
         let (title, description) = if query_is_empty(&query) && category_filter.is_none() {
             match filter {
-                TaskFilter::All => ("Keine Aufgaben", "Wählen Sie eine Aufgabenliste aus oder erstellen Sie eine neue Aufgabe."),
-                TaskFilter::Today => ("Heute keine Aufgaben", "Für heute sind keine Aufgaben geplant oder fällig."),
-                TaskFilter::Next7 => ("Keine Aufgaben in 7 Tagen", "In den nächsten 7 Tagen stehen keine fälligen Aufgaben an."),
-                TaskFilter::Next30 => ("Keine Aufgaben im Monat", "In den nächsten 30 Tagen stehen keine Aufgaben an."),
-                TaskFilter::Next365 => ("Keine Aufgaben im Jahr", "Im nächsten Jahr stehen keine aktiven Aufgaben an."),
-                TaskFilter::Important => ("Keine wichtigen Aufgaben", "Es sind keine Aufgaben mit hoher Priorität vorhanden."),
-                TaskFilter::Overdue => ("Keine überfälligen Aufgaben", "Sehr gut! Keine fälligen Aufgaben sind in Verzug."),
-                TaskFilter::Scheduled => ("Keine geplanten Aufgaben", "Keine Aufgaben mit Fälligkeitsdatum vorhanden."),
-                TaskFilter::NoDue => ("Keine Aufgaben ohne Fälligkeit", "Alle Aufgaben haben ein zugewiesenes Fälligkeitsdatum."),
-                TaskFilter::WithAttachments => ("Keine Aufgaben mit Anhängen", "Es wurden keine Aufgaben mit Dateianhängen gefunden."),
-                TaskFilter::Started => ("Keine begonnenen Aufgaben", "Es gibt keine Aufgaben mit Status 'Begonnen'."),
-                TaskFilter::WithoutCategory => ("Keine Aufgaben ohne Kategorie", "Allen Aufgaben ist mindestens eine Kategorie zugewiesen."),
-                TaskFilter::Uncompleted => ("Keine offenen Aufgaben", "Alle Aufgaben in dieser Liste sind bereits erledigt!"),
-                TaskFilter::InProgress => ("Keine Aufgaben in Bearbeitung", "Aktuell wird an keinen Aufgaben aktiv gearbeitet."),
-                TaskFilter::Cancelled => ("Keine abgebrochenen Aufgaben", "Es liegen keine verworfenen oder abgebrochenen Aufgaben vor."),
-                TaskFilter::Completed => ("Keine erledigten Aufgaben", "Bisher wurden noch keine Aufgaben als erledigt markiert."),
+                TaskFilter::All => (
+                    gettext("No Tasks"),
+                    gettext("Select a task list or create a new task."),
+                ),
+                TaskFilter::Today => (
+                    gettext("No Tasks Today"),
+                    gettext("No tasks scheduled or due today."),
+                ),
+                TaskFilter::Next7 => (
+                    gettext("No Tasks in 7 Days"),
+                    gettext("No tasks due in the next 7 days."),
+                ),
+                TaskFilter::Next30 => (
+                    gettext("No Tasks This Month"),
+                    gettext("No tasks due in the next 30 days."),
+                ),
+                TaskFilter::Next365 => (
+                    gettext("No Tasks This Year"),
+                    gettext("No active tasks scheduled in the next year."),
+                ),
+                TaskFilter::Important => (
+                    gettext("No Important Tasks"),
+                    gettext("There are no high priority tasks."),
+                ),
+                TaskFilter::Overdue => (
+                    gettext("No Overdue Tasks"),
+                    gettext("Great! No due tasks are overdue."),
+                ),
+                TaskFilter::Scheduled => (
+                    gettext("No Scheduled Tasks"),
+                    gettext("No tasks with a due date found."),
+                ),
+                TaskFilter::NoDue => (
+                    gettext("No Tasks Without Due Date"),
+                    gettext("All tasks have an assigned due date."),
+                ),
+                TaskFilter::WithAttachments => (
+                    gettext("No Tasks With Attachments"),
+                    gettext("No tasks with file attachments were found."),
+                ),
+                TaskFilter::Started => (
+                    gettext("No Started Tasks"),
+                    gettext("There are no tasks with status 'Started'."),
+                ),
+                TaskFilter::WithoutCategory => (
+                    gettext("No Tasks Without Category"),
+                    gettext("All tasks are assigned to at least one category."),
+                ),
+                TaskFilter::Uncompleted => (
+                    gettext("No Open Tasks"),
+                    gettext("All tasks in this list are already completed!"),
+                ),
+                TaskFilter::InProgress => (
+                    gettext("No Tasks In Progress"),
+                    gettext("No tasks are currently being actively worked on."),
+                ),
+                TaskFilter::Cancelled => (
+                    gettext("No Cancelled Tasks"),
+                    gettext("There are no discarded or cancelled tasks."),
+                ),
+                TaskFilter::Completed => (
+                    gettext("No Completed Tasks"),
+                    gettext("No tasks have been marked as completed yet."),
+                ),
             }
         } else {
-            ("Keine passenden Aufgaben", "Überprüfen Sie den Suchbegriff oder die Filtereinstellungen.")
+            (
+                gettext("No matching tasks"),
+                gettext("Check your search term or filter settings."),
+            )
         };
-        status_page.set_title(title);
-        status_page.set_description(Some(description));
+        status_page.set_title(&title);
+        status_page.set_description(Some(&description));
     }
     if let Some(stack) = page.imp().task_container_stack.borrow().as_ref() {
         stack.set_visible_child_name(if visible == 0 { "empty" } else { "list" });
@@ -9215,11 +9150,11 @@ fn task_visible_identities(task_list: &gtk::ListBox) -> Result<Vec<TaskSelection
         let next = current.next_sibling();
         let row = current
             .downcast::<gtk::ListBoxRow>()
-            .map_err(|_| "Eine sichtbare Aufgabenzeile ist ungültig".to_string())?;
+            .map_err(|_| gettext("A visible task row is invalid"))?;
         let action_row = row
             .child()
             .and_downcast::<adw::ActionRow>()
-            .ok_or_else(|| "Eine sichtbare Aufgabenzeile ist nicht mehr verfügbar".to_string())?;
+            .ok_or_else(|| gettext("A visible task row is no longer available"))?;
         let read_data = |key: &str| unsafe {
             action_row
                 .data::<String>(key)
@@ -9227,10 +9162,10 @@ fn task_visible_identities(task_list: &gtk::ListBox) -> Result<Vec<TaskSelection
         };
         let source_uid = read_data("task-source-uid")
             .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| "Eine sichtbare Aufgabe hat keine gültige Quelle".to_string())?;
+            .ok_or_else(|| gettext("A visible task does not have a valid source"))?;
         let task_uid = read_data("task-id")
             .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| "Eine sichtbare Aufgabe hat keine gültige Kennung".to_string())?;
+            .ok_or_else(|| gettext("A visible task does not have a valid identifier"))?;
         identities.push(TaskSelectionIdentity {
             source_uid,
             task_uid,
@@ -9362,13 +9297,14 @@ fn update_task_selection_controls(page: &TasksPage) {
     }
     if let Some(assign_button) = page.imp().task_assign_button.borrow().as_ref() {
         assign_button.set_sensitive(assignment_enabled);
-        assign_button.set_tooltip_text(Some(if page.imp().task_assignment_running.get() {
-            "Aufgabe wird zugewiesen …"
+        let tooltip = if page.imp().task_assignment_running.get() {
+            gettext("Assigning task…")
         } else if assignment_enabled {
-            "Ausgewählte Aufgabe zuweisen"
+            gettext("Assign selected task")
         } else {
-            "Zuweisen benötigt genau eine schreibfähige Aufgabe und Anbieter-Unterstützung"
-        }));
+            gettext("Assigning requires exactly one writable task and backend support")
+        };
+        assign_button.set_tooltip_text(Some(&tooltip));
     }
     if let Some(open_url_button) = page.imp().task_open_url_button.borrow().as_ref() {
         open_url_button.set_sensitive(state.open_url_enabled);
@@ -9384,11 +9320,12 @@ fn update_task_selection_controls(page: &TasksPage) {
     }
     if let Some(paste_button) = page.imp().task_paste_button.borrow().as_ref() {
         paste_button.set_sensitive(clipboard_state.paste_enabled);
-        paste_button.set_tooltip_text(Some(if paste_destination.is_ok() {
-            "Aufgaben aus der Zwischenablage in die Standard-Aufgabenliste einfügen"
+        let tooltip = if paste_destination.is_ok() {
+            gettext("Paste tasks from clipboard into default task list")
         } else {
-            "Keine schreibfähige Standard-Aufgabenliste verfügbar"
-        }));
+            gettext("No writable default task list available")
+        };
+        paste_button.set_tooltip_text(Some(&tooltip));
     }
     if let Some(select_all_button) = page.imp().task_select_all_button.borrow().as_ref() {
         select_all_button.set_sensitive(clipboard_state.select_all_enabled);
@@ -9425,7 +9362,7 @@ fn update_task_selection_controls(page: &TasksPage) {
     let delete_tooltip = delete_plan
         .as_ref()
         .err()
-        .map_or_else(|| "Ausgewählte Aufgaben löschen".to_string(), Clone::clone);
+        .map_or_else(|| gettext("Delete selected tasks"), Clone::clone);
     if let Some(delete_button) = page.imp().task_delete_selection_button.borrow().as_ref() {
         delete_button.set_sensitive(delete_enabled);
         delete_button.set_tooltip_text(Some(&delete_tooltip));
@@ -9433,24 +9370,26 @@ fn update_task_selection_controls(page: &TasksPage) {
     let purge_plan = build_task_purge_plan(&candidates, &capabilities, local_writable);
     if let Some(purge_button) = page.imp().task_purge_button.borrow().as_ref() {
         purge_button.set_sensitive(!mutation_running && purge_plan.is_ok());
-        purge_button.set_tooltip_text(Some(purge_plan.as_ref().err().map_or(
-            "Alle erledigten Aufgaben dauerhaft löschen (Strg+E)",
-            String::as_str,
-        )));
+        let tooltip = purge_plan.as_ref().err().map_or_else(
+            || gettext("Permanently delete all completed tasks (Ctrl+E)"),
+            Clone::clone,
+        );
+        purge_button.set_tooltip_text(Some(&tooltip));
     }
     if let Some(refresh_button) = page.imp().task_refresh_button.borrow().as_ref() {
         refresh_button.set_sensitive(refresh_enabled);
-        refresh_button.set_tooltip_text(Some(if page.imp().task_refresh_running.get() {
-            "Aufgabenliste wird aktualisiert…"
+        let tooltip = if page.imp().task_refresh_running.get() {
+            gettext("Refreshing task list…")
         } else if primary_source.is_none() {
-            "Zum Aktualisieren eine einzelne Aufgabenliste auswählen"
+            gettext("Select a single task list to refresh")
         } else if refresh_known_unsupported {
-            "Diese Aufgabenliste unterstützt keine Anbieter-Aktualisierung"
+            gettext("This task list does not support provider refresh")
         } else if !refresh_enabled {
-            "Die ausgewählte Aufgabenliste ist nicht verfügbar"
+            gettext("The selected task list is not available")
         } else {
-            "Ausgewählte Aufgabenliste beim Anbieter aktualisieren"
-        }));
+            gettext("Refresh selected task list with provider")
+        };
+        refresh_button.set_tooltip_text(Some(&tooltip));
     }
     let source_action_state = task_source_action_state(
         primary_source.as_deref(),
@@ -9459,56 +9398,61 @@ fn update_task_selection_controls(page: &TasksPage) {
     );
     if let Some(button) = page.imp().task_source_new_button.borrow().as_ref() {
         button.set_sensitive(!mutation_running);
-        button.set_tooltip_text(Some(if mutation_running {
-            "Eine andere Aufgabenänderung läuft bereits"
+        let tooltip = if mutation_running {
+            gettext("Another task operation is already in progress")
         } else {
-            "Neue lokale Aufgabenliste"
-        }));
+            gettext("New local task list")
+        };
+        button.set_tooltip_text(Some(&tooltip));
     }
     if let Some(button) = page.imp().task_source_copy_button.borrow().as_ref() {
         button.set_sensitive(source_action_state.copy_enabled);
-        button.set_tooltip_text(Some(if primary_source.is_none() {
-            "Zum Kopieren eine einzelne Aufgabenliste auswählen"
+        let tooltip = if primary_source.is_none() {
+            gettext("Select a single task list to copy")
         } else if !source_action_state.copy_enabled {
-            "Die ausgewählte Aufgabenliste ist nicht als EDS-Quelle verfügbar"
+            gettext("The selected task list is not available as an EDS source")
         } else {
-            "Ausgewählte Aufgabenliste kopieren"
-        }));
+            gettext("Copy selected task list")
+        };
+        button.set_tooltip_text(Some(&tooltip));
     }
     if let Some(button) = page.imp().task_source_rename_button.borrow().as_ref() {
         button.set_sensitive(source_action_state.rename_enabled);
-        button.set_tooltip_text(Some(if primary_source.is_none() {
-            "Zum Umbenennen eine einzelne Aufgabenliste auswählen"
+        let tooltip = if primary_source.is_none() {
+            gettext("Select a single task list to rename")
         } else if !source_action_state.rename_enabled {
-            "Nur schreibfähige Aufgabenlisten außerhalb einer Sammlung können umbenannt werden"
+            gettext("Only writable task lists outside of a collection can be renamed")
         } else {
-            "Ausgewählte Aufgabenliste umbenennen"
-        }));
+            gettext("Rename selected task list")
+        };
+        button.set_tooltip_text(Some(&tooltip));
     }
     if let Some(button) = page.imp().task_source_properties_button.borrow().as_ref() {
         button.set_sensitive(source_action_state.properties_enabled);
-        button.set_tooltip_text(Some(if primary_source.is_none() {
-            "Zum Bearbeiten eine einzelne Aufgabenliste auswählen"
+        let tooltip = if primary_source.is_none() {
+            gettext("Select a single task list to edit")
         } else if !source_action_state.properties_enabled {
-            "Die Eigenschaften dieser Aufgabenliste sind nicht schreibbar"
+            gettext("The properties of this task list are not writable")
         } else {
-            "Eigenschaften der ausgewählten Aufgabenliste"
-        }));
+            gettext("Properties of the selected task list")
+        };
+        button.set_tooltip_text(Some(&tooltip));
     }
     if let Some(button) = page.imp().task_source_delete_button.borrow().as_ref() {
         button.set_sensitive(source_action_state.delete_enabled);
-        button.set_tooltip_text(Some(if primary_source.is_none() {
-            "Zum Löschen eine einzelne Aufgabenliste auswählen"
+        let tooltip = if primary_source.is_none() {
+            gettext("Select a single task list to delete")
         } else if !source_action_state.delete_enabled {
-            "Diese Aufgabenliste kann nicht entfernt werden"
+            gettext("This task list cannot be removed")
         } else {
-            "Ausgewählte Aufgabenliste löschen"
-        }));
+            gettext("Delete selected task list")
+        };
+        button.set_tooltip_text(Some(&tooltip));
     }
     let label = match selection.len() {
-        0 => "Keine Auswahl".to_string(),
-        1 => "1 Aufgabe ausgewählt".to_string(),
-        count => format!("{count} Aufgaben ausgewählt"),
+        0 => gettext("No selection"),
+        count => ngettext("1 task selected", "{count} tasks selected", count as u32)
+            .replace("{count}", &count.to_string()),
     };
     if let Some(selection_status) = page.imp().task_selection_status.borrow().as_ref() {
         selection_status.set_label(&label);
@@ -9577,7 +9521,7 @@ fn start_task_source_refresh(page: &TasksPage, button: &gtk::Button) {
         return;
     }
     let Some(source_uid) = page.imp().task_source_filter.borrow().clone() else {
-        show_toast_for_widget(button, "Zum Aktualisieren eine Aufgabenliste auswählen");
+        show_toast_for_widget(button, &gettext("Select a task list to refresh"));
         return;
     };
     if !page
@@ -9594,7 +9538,7 @@ fn start_task_source_refresh(page: &TasksPage, button: &gtk::Button) {
     {
         show_toast_for_widget(
             button,
-            "Die ausgewählte Aufgabenliste ist nicht mehr verfügbar",
+            &gettext("The selected task list is no longer available"),
         );
         return;
     }
@@ -9606,7 +9550,7 @@ fn start_task_source_refresh(page: &TasksPage, button: &gtk::Button) {
     {
         show_toast_for_widget(
             button,
-            "Diese Aufgabenliste unterstützt keine Anbieter-Aktualisierung",
+            &gettext("This task list does not support provider refresh"),
         );
         return;
     }
@@ -9622,7 +9566,7 @@ fn start_task_source_refresh(page: &TasksPage, button: &gtk::Button) {
     page.imp().task_refresh_generation.set(generation);
     page.imp().task_refresh_running.set(true);
     update_task_selection_controls(page);
-    show_toast_for_widget(button, "Aufgabenliste wird aktualisiert…");
+    show_toast_for_widget(button, &gettext("Refreshing task list…"));
 
     let (sender, receiver) = async_channel::bounded(1);
     let source_uid_for_worker = source_uid.clone();
@@ -9635,8 +9579,7 @@ fn start_task_source_refresh(page: &TasksPage, button: &gtk::Button) {
                     && (reload.origin != CalendarDataOrigin::Eds || reload.warning.is_some())
                 {
                     Err(TaskRefreshFailure::Backend(
-                        "Die aktualisierte Aufgabenliste konnte nicht autoritativ neu geladen werden"
-                            .to_string(),
+                        gettext("The refreshed task list could not be reloaded authoritatively"),
                     ))
                 } else {
                     Ok((outcome, reload))
@@ -9686,9 +9629,9 @@ fn start_task_source_refresh(page: &TasksPage, button: &gtk::Button) {
                     reload,
                 );
                 page.reload_task_category_metadata();
-                page.show_toast(match outcome {
-                    ECalRefreshOutcome::LocalReloadOnly => "Lokale Aufgabenliste wurde neu geladen",
-                    ECalRefreshOutcome::RemoteRefreshed => "Aufgabenliste wurde aktualisiert",
+                page.show_toast(&match outcome {
+                    ECalRefreshOutcome::LocalReloadOnly => gettext("Local task list was reloaded"),
+                    ECalRefreshOutcome::RemoteRefreshed => gettext("Task list was refreshed"),
                 });
             }
             Err(TaskRefreshFailure::Unsupported) => {
@@ -9696,7 +9639,7 @@ fn start_task_source_refresh(page: &TasksPage, button: &gtk::Button) {
                     .task_refresh_unsupported_sources
                     .borrow_mut()
                     .insert(source_uid);
-                page.show_toast("Diese Aufgabenliste unterstützt keine Anbieter-Aktualisierung");
+                page.show_toast(&gettext("This task list does not support provider refresh"));
             }
             Err(TaskRefreshFailure::Backend(message)) => page.show_toast(&message),
         }
@@ -9796,7 +9739,10 @@ fn refresh_task_preview(page: &TasksPage) {
     let (identity, text) = match document {
         Ok(document) => (Some(document.identity), document.text),
         Err(_error) if selection.len() != 1 => (None, "".to_string()),
-        Err(error) => (None, format!("Vorschau nicht verfügbar: {error}")),
+        Err(error) => (
+            None,
+            gettext("Preview not available: {error}").replace("{error}", &error),
+        ),
     };
     if let Some(stack) = page.imp().task_preview_stack.borrow().as_ref() {
         if selection.len() != 1 || text.trim().is_empty() {
@@ -9855,8 +9801,7 @@ fn apply_task_lifecycle_successes(
         let [task] = matches.as_slice() else {
             reduction.failures.push((
                 success.identity.clone(),
-                "Die bestätigte Aufgabe ist nicht mehr eindeutig geladen; bitte neu laden"
-                    .to_string(),
+                gettext("The confirmed task is no longer uniquely loaded; please reload"),
             ));
             continue;
         };
@@ -9908,7 +9853,7 @@ fn start_task_lifecycle_batch(
     page.imp().task_lifecycle_batch_running.set(true);
     task_list.set_sensitive(false);
     update_task_selection_controls(page);
-    show_toast_for_widget(button, operation.progress_label());
+    show_toast_for_widget(button, &operation.progress_label());
 
     let (sender, receiver) = async_channel::bounded(1);
     let plan_for_worker = plan.clone();
@@ -9927,8 +9872,7 @@ fn start_task_lifecycle_batch(
                 {
                     return TaskLifecycleDispatchResult::Failure {
                         identity: mutation.identity,
-                        error: "Die Aufgabenliste ist unmittelbar vor der Stapelaktion nicht mehr schreibfähig"
-                            .to_string(),
+                        error: gettext("The task list is no longer writable immediately prior to the batch action"),
                     };
                 }
                 match service.modify_component(
@@ -10007,7 +9951,7 @@ fn start_task_lifecycle_batch(
                 update_task_selection_controls(&page);
                 show_toast_for_widget(
                     &button,
-                    "Die Stapelaktion wurde nicht bestätigt; Aufgaben wurden nicht lokal geändert",
+                    &gettext("The batch action was not confirmed; tasks were not modified locally"),
                 );
                 return;
             }
@@ -10020,17 +9964,28 @@ fn start_task_lifecycle_batch(
             update_task_selection_controls(&page);
         }
         match (reduction.successes.len(), reduction.failures.len()) {
-            (successes, 0) => page.show_toast(&format!(
-                "{successes} Aufgabe{} aktualisiert",
-                if successes == 1 { "" } else { "n" }
-            )),
-            (0, failures) => page.show_toast(&format!(
-                "Keine Aufgabe aktualisiert; {failures} Fehler. Bitte autoritative Daten neu laden"
-            )),
-            (successes, failures) => page.show_toast(&format!(
-                "{successes} Aufgabe{} aktualisiert; {failures} Fehler. Fehlgeschlagene Aufgaben blieben unverändert",
-                if successes == 1 { "" } else { "n" }
-            )),
+            (successes, 0) => page.show_toast(
+                &ngettext("1 task updated", "{count} tasks updated", successes as u32)
+                    .replace("{count}", &successes.to_string()),
+            ),
+            (0, failures) => page.show_toast(
+                &ngettext(
+                    "No tasks updated; 1 error. Please reload authoritative data",
+                    "No tasks updated; {count} errors. Please reload authoritative data",
+                    failures as u32,
+                )
+                .replace("{count}", &failures.to_string()),
+            ),
+            (successes, failures) => page.show_toast(
+                &format!(
+                    "{}; {}. {}",
+                    ngettext("1 task updated", "{count} tasks updated", successes as u32)
+                        .replace("{count}", &successes.to_string()),
+                    ngettext("1 error", "{count} errors", failures as u32)
+                        .replace("{count}", &failures.to_string()),
+                    gettext("Failed tasks remained unchanged"),
+                ),
+            ),
         }
     });
 }
@@ -10081,8 +10036,7 @@ fn reduce_task_paste_worker_result(
                         source_uid: String::new(),
                         task_uid: String::new(),
                     }),
-                "Das Backend lieferte ein veraltetes oder mehrdeutiges Einfüge-Ergebnis"
-                    .to_string(),
+                gettext("The backend returned an outdated or ambiguous paste result"),
             )),
             unattempted: expected
                 .iter()
@@ -10205,13 +10159,13 @@ fn start_task_clipboard_paste(
             Ok(None) => {
                 page.imp().task_paste_batch_running.set(false);
                 update_task_selection_controls(&page);
-                show_toast_for_widget(&button_for_result, "Die Zwischenablage enthält keinen Text");
+                show_toast_for_widget(&button_for_result, &gettext("The clipboard contains no text"));
                 return;
             }
             Err(error) => {
                 page.imp().task_paste_batch_running.set(false);
                 update_task_selection_controls(&page);
-                show_toast_for_widget(&button_for_result, &format!("Zwischenablage nicht lesbar: {error}"));
+                show_toast_for_widget(&button_for_result, &gettext("Clipboard could not be read: {error}").replace("{error}", &error.to_string()));
                 return;
             }
         };
@@ -10233,7 +10187,7 @@ fn start_task_clipboard_paste(
                 update_task_selection_controls(&page);
                 show_toast_for_widget(
                     &button_for_result,
-                    "Die Standard-Aufgabenliste hat sich geändert oder ist nicht mehr schreibfähig",
+                    &gettext("The default task list has changed or is no longer writable"),
                 );
                 return;
             }
@@ -10271,7 +10225,7 @@ fn start_task_clipboard_paste(
         };
         task_list.set_sensitive(false);
         update_task_selection_controls(&page);
-        show_toast_for_widget(&button_for_result, "Aufgaben werden eingefügt …");
+        show_toast_for_widget(&button_for_result, &gettext("Pasting tasks…"));
         let (sender, receiver) = async_channel::bounded(1);
         let plan_for_worker = plan.clone();
         std::thread::spawn(move || {
@@ -10287,8 +10241,7 @@ fn start_task_clipboard_paste(
                 {
                     result.failure = Some((
                         mutation.identity,
-                        "Die Ziel-Aufgabenliste ist unmittelbar vor dem Einfügen nicht mehr schreibfähig"
-                            .to_string(),
+                        gettext("The target task list is no longer writable immediately prior to pasting"),
                     ));
                     break;
                 }
@@ -10373,7 +10326,7 @@ fn start_task_clipboard_paste(
                     );
                     show_toast_for_widget(
                         &button,
-                        "Einfüge-Ergebnis ging verloren; autoritative Aufgaben werden neu geladen",
+                        &gettext("Paste result was lost; reloading authoritative tasks"),
                     );
                     return;
                 }
@@ -10390,7 +10343,7 @@ fn start_task_clipboard_paste(
                 {
                     reduction.failure = Some((
                         mutation.identity.clone(),
-                        "Eine bestätigte neue Aufgabe kollidiert mit der aktuellen Auswahl".to_string(),
+                        gettext("A confirmed new task conflicts with the current selection"),
                     ));
                     recovery_required = true;
                     continue;
@@ -10421,20 +10374,33 @@ fn start_task_clipboard_paste(
                 );
             }
             match (reduction.created.len(), reduction.failure.is_some(), reduction.unattempted.len()) {
-                (created, false, 0) => page.show_toast(&format!(
-                    "{created} Aufgabe{} eingefügt",
-                    if created == 1 { "" } else { "n" }
-                )),
-                (0, true, unattempted) => page.show_toast(&format!(
-                    "Keine Aufgabe eingefügt; ein Fehler ist aufgetreten. {unattempted} Aufgabe{} wurden nicht versucht",
-                    if unattempted == 1 { "" } else { "n" }
-                )),
-                (created, true, unattempted) => page.show_toast(&format!(
-                    "{created} Aufgabe{} eingefügt; ein Fehler. {unattempted} Aufgabe{} wurden nicht versucht",
-                    if created == 1 { "" } else { "n" },
-                    if unattempted == 1 { "" } else { "n" }
-                )),
-                _ => page.show_toast("Das Einfügen lieferte kein bestätigtes Ergebnis"),
+                (created, false, 0) => page.show_toast(&ngettext(
+                    "1 task pasted",
+                    "{count} tasks pasted",
+                    created as u32,
+                ).replace("{count}", &created.to_string())),
+                (0, true, unattempted) => {
+                    let unattempted_str = ngettext(
+                        "1 task was not attempted",
+                        "{count} tasks were not attempted",
+                        unattempted as u32,
+                    ).replace("{count}", &unattempted.to_string());
+                    page.show_toast(&gettext("No tasks pasted; an error occurred. {unattempted}").replace("{unattempted}", &unattempted_str));
+                }
+                (created, true, unattempted) => {
+                    let created_str = ngettext(
+                        "1 task pasted",
+                        "{count} tasks pasted",
+                        created as u32,
+                    ).replace("{count}", &created.to_string());
+                    let unattempted_str = ngettext(
+                        "1 task was not attempted",
+                        "{count} tasks were not attempted",
+                        unattempted as u32,
+                    ).replace("{count}", &unattempted.to_string());
+                    page.show_toast(&gettext("{created}; an error occurred. {unattempted}").replace("{created}", &created_str).replace("{unattempted}", &unattempted_str));
+                }
+                _ => page.show_toast(&gettext("Pasting did not return a confirmed result")),
             }
         });
     });
@@ -10465,7 +10431,7 @@ fn present_task_delete_confirmation(
     };
     let prompt = task_delete_confirmation(&plan);
     let dialog = adw::AlertDialog::new(Some(&prompt.title), Some(&prompt.description));
-    dialog.add_responses(&[("cancel", "Nicht löschen"), ("delete", "Löschen")]);
+    dialog.add_responses(&[("cancel", &gettext("Do Not Delete")), ("delete", &gettext("Delete"))]);
     dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
     let page_weak = page.downgrade();
     let task_store = task_store.clone();
@@ -10517,14 +10483,17 @@ fn present_task_purge_confirmation(
         }
     };
     let count = plan.mutations.len();
+    let body = ngettext(
+        "1 completed task will be permanently deleted from all writable task lists and cannot be recovered.",
+        "{count} completed tasks will be permanently deleted from all writable task lists and cannot be recovered.",
+        count as u32,
+    )
+    .replace("{count}", &count.to_string());
     let dialog = adw::AlertDialog::new(
-        Some("Erledigte Aufgaben endgültig löschen?"),
-        Some(&format!(
-            "{count} erledigte Aufgabe{} werden aus allen schreibfähigen Aufgabenlisten dauerhaft gelöscht und können nicht wiederhergestellt werden.",
-            if count == 1 { "" } else { "n" }
-        )),
+        Some(&gettext("Permanently Delete Completed Tasks?")),
+        Some(&body),
     );
-    dialog.add_responses(&[("cancel", "Nicht löschen"), ("delete", "Endgültig löschen")]);
+    dialog.add_responses(&[("cancel", &gettext("Do Not Delete")), ("delete", &gettext("Permanently Delete"))]);
     dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
     let page_weak = page.downgrade();
     let task_store = task_store.clone();
@@ -10664,14 +10633,12 @@ fn start_task_delete_batch(
             plan
         }
         Ok(_) => {
-            show_toast_for_widget(
-                button,
-                if purge_completed {
-                    "Die Menge erledigter Aufgaben hat sich vor dem Löschen geändert"
-                } else {
-                    "Die Aufgaben-Auswahl hat sich vor dem Löschen geändert"
-                },
-            );
+            let message = if purge_completed {
+                gettext("The set of completed tasks changed prior to deletion")
+            } else {
+                gettext("The task selection changed prior to deletion")
+            };
+            show_toast_for_widget(button, &message);
             return;
         }
         Err(error) => {
@@ -10688,7 +10655,7 @@ fn start_task_delete_batch(
     page.imp().task_delete_batch_running.set(true);
     task_list.set_sensitive(false);
     update_task_selection_controls(page);
-    show_toast_for_widget(button, "Aufgaben werden gelöscht …");
+    show_toast_for_widget(button, &gettext("Deleting tasks…"));
 
     let capabilities = page.imp().task_source_capabilities.borrow().clone();
     let plan_for_worker = plan.clone();
@@ -10706,8 +10673,7 @@ fn start_task_delete_batch(
             {
                 result.failure = Some((
                     mutation.identity,
-                    "Die Aufgabenliste ist unmittelbar vor dem Löschen nicht mehr schreibfähig"
-                        .to_string(),
+                    gettext("The task list is no longer writable immediately prior to deletion"),
                 ));
                 break;
             }
@@ -10722,7 +10688,7 @@ fn start_task_delete_batch(
                 Ok(_) => {
                     result.failure = Some((
                         mutation.identity,
-                        "Das Backend bestätigte das Löschen einer anderen Aufgabe".to_string(),
+                        gettext("The backend confirmed the deletion of a different task"),
                     ));
                     break;
                 }
@@ -10766,7 +10732,7 @@ fn start_task_delete_batch(
                 );
                 show_toast_for_widget(
                     &button,
-                    "Lösch-Ergebnis ging verloren; autoritative Aufgaben werden neu geladen",
+                    &gettext("Deletion result was lost; reloading authoritative tasks"),
                 );
                 return;
             }
@@ -10779,20 +10745,37 @@ fn start_task_delete_batch(
             reduction.failure.is_some(),
             reduction.unattempted.len(),
         ) {
-            (removed, false, 0) => page.show_toast(&format!(
-                "{removed} Aufgabe{} gelöscht",
-                if removed == 1 { "" } else { "n" }
-            )),
-            (0, true, unattempted) => page.show_toast(&format!(
-                "Keine Aufgabe gelöscht; ein Fehler ist aufgetreten. {unattempted} Aufgabe{} wurden nicht versucht",
-                if unattempted == 1 { "" } else { "n" }
-            )),
-            (removed, true, unattempted) => page.show_toast(&format!(
-                "{removed} Aufgabe{} gelöscht; ein Fehler. {unattempted} Aufgabe{} wurden nicht versucht",
-                if removed == 1 { "" } else { "n" },
-                if unattempted == 1 { "" } else { "n" }
-            )),
-            _ => page.show_toast("Das Löschen lieferte kein bestätigtes Ergebnis"),
+            (removed, false, 0) => page.show_toast(
+                &ngettext("1 task deleted", "{count} tasks deleted", removed as u32)
+                    .replace("{count}", &removed.to_string()),
+            ),
+            (0, true, unattempted) => page.show_toast(
+                &format!(
+                    "{}; {}",
+                    gettext("No tasks deleted; an error occurred"),
+                    ngettext(
+                        "1 task was not attempted",
+                        "{count} tasks were not attempted",
+                        unattempted as u32,
+                    )
+                    .replace("{count}", &unattempted.to_string()),
+                ),
+            ),
+            (removed, true, unattempted) => page.show_toast(
+                &format!(
+                    "{}; {}; {}",
+                    ngettext("1 task deleted", "{count} tasks deleted", removed as u32)
+                        .replace("{count}", &removed.to_string()),
+                    gettext("an error occurred"),
+                    ngettext(
+                        "1 task was not attempted",
+                        "{count} tasks were not attempted",
+                        unattempted as u32,
+                    )
+                    .replace("{count}", &unattempted.to_string()),
+                ),
+            ),
+            _ => page.show_toast(&gettext("Deletion did not return a confirmed result")),
         }
     });
 }
@@ -10828,7 +10811,7 @@ fn refresh_task_category_model(
     categories.sort_by_cached_key(|category| category.to_lowercase());
     categories.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
 
-    let mut names = vec!["Alle Kategorien".to_string()];
+    let mut names = vec![gettext("All Categories")];
     names.extend(categories.clone());
     let selected = current_filter
         .as_deref()
@@ -11151,7 +11134,7 @@ fn normalize_task_date_list(value: &str, field: &str) -> Result<String, String> 
         .chars()
         .any(|character| character == '\r' || character == '\n')
     {
-        return Err(format!("{field} enthält ungültige Zeilenumbrüche"));
+        return Err(gettext("{field} contains invalid line breaks").replace("{field}", field));
     }
     value
         .split(',')
@@ -11162,7 +11145,8 @@ fn normalize_task_date_list(value: &str, field: &str) -> Result<String, String> 
                 .or_else(|| parse_ical_date(value))
                 .map(|date| date.format("%Y%m%d").to_string())
                 .ok_or_else(|| {
-                    format!("{field} muss gültige YYYY-MM-DD- oder YYYYMMDD-Werte enthalten")
+                    gettext("{field} must contain valid YYYY-MM-DD or YYYYMMDD values")
+                        .replace("{field}", field)
                 })
         })
         .collect::<Result<Vec<_>, _>>()
@@ -11199,18 +11183,18 @@ fn task_status_from_index(index: u32) -> &'static str {
     }
 }
 
-fn task_status_label(raw: &str) -> &'static str {
+fn task_status_label(raw: &str) -> String {
     if ical_property(raw, "STATUS")
         .as_deref()
         .is_some_and(|status| normalize_task_status(status).is_err())
     {
-        return "Importierter Status";
+        return crate::i18n::gettext("Imported Status");
     }
     match task_status_value(raw) {
-        "IN-PROCESS" => "In Bearbeitung",
-        "COMPLETED" => "Erledigt",
-        "CANCELLED" => "Abgebrochen",
-        _ => "Nicht begonnen",
+        "IN-PROCESS" => crate::i18n::gettext("In Progress"),
+        "COMPLETED" => crate::i18n::gettext("Completed"),
+        "CANCELLED" => crate::i18n::gettext("Cancelled"),
+        _ => crate::i18n::gettext("Not Started"),
     }
 }
 
@@ -11235,7 +11219,7 @@ fn normalize_task_status(value: &str) -> Result<&'static str, String> {
         "IN-PROCESS" => Ok("IN-PROCESS"),
         "COMPLETED" => Ok("COMPLETED"),
         "CANCELLED" => Ok("CANCELLED"),
-        _ => Err("Der Aufgabenstatus ist ungültig".to_string()),
+        _ => Err(gettext("The task status is invalid")),
     }
 }
 
@@ -11332,39 +11316,38 @@ fn append_task_row(
         let is_tomorrow = parsed == context.today + chrono::Duration::days(1);
 
         let due_chip = if is_overdue {
-            format!("<span foreground=\"#e01b24\" weight=\"bold\">⚠️ Überfällig: {due}</span>")
+            format!("<span foreground=\"#e01b24\" weight=\"bold\">⚠️ {}: {due}</span>", crate::i18n::gettext("Overdue"))
         } else if is_today {
-            "<span foreground=\"#e66100\" weight=\"bold\">📅 Heute fällig</span>".to_string()
+            format!("<span foreground=\"#e66100\" weight=\"bold\">📅 {}</span>", crate::i18n::gettext("Due Today"))
         } else if is_tomorrow {
-            format!("<span foreground=\"#3584e4\" weight=\"medium\">📅 Morgen ({due})</span>")
+            format!("<span foreground=\"#3584e4\" weight=\"medium\">📅 {} ({due})</span>", crate::i18n::gettext("Tomorrow"))
         } else {
-            format!("<span alpha=\"80%\">📅 Fällig: {due}</span>")
+            format!("<span alpha=\"80%\">📅 {}: {due}</span>", crate::i18n::gettext("Due"))
         };
         subtitle_parts.push(due_chip);
 
         if let Some(next) = recurrence_due && Some(next) != parsed_due {
-            subtitle_parts.push(format!("<span alpha=\"70%\">🔁 Nächste: {}</span>", next.format("%Y-%m-%d")));
+            subtitle_parts.push(format!("<span alpha=\"70%\">🔁 {}: {}</span>", crate::i18n::gettext("Next"), next.format("%Y-%m-%d")));
         }
     } else if let Some(next) = recurrence_due {
-        subtitle_parts.push(format!("<span alpha=\"80%\">🔁 Fälligkeit: {}</span>", next.format("%Y-%m-%d")));
+        subtitle_parts.push(format!("<span alpha=\"80%\">🔁 {}: {}</span>", crate::i18n::gettext("Due Date"), next.format("%Y-%m-%d")));
     }
 
     // 2. Priority indicator
     let prio_num = task.priority().parse::<u32>().ok();
     if let Some(p) = prio_num {
         if (1..=4).contains(&p) {
-            subtitle_parts.push("<span foreground=\"#e01b24\" weight=\"bold\">❗ Hohe Priorität</span>".to_string());
+            subtitle_parts.push(format!("<span foreground=\"#e01b24\" weight=\"bold\">❗ {}</span>", crate::i18n::gettext("High Priority")));
         } else if (6..=9).contains(&p) {
-            subtitle_parts.push("<span alpha=\"60%\">⚪ Niedrige Priorität</span>".to_string());
+            subtitle_parts.push(format!("<span alpha=\"60%\">⚪ {}</span>", crate::i18n::gettext("Low Priority")));
         }
     }
 
     // 3. Status indicator
-    let status = task_status_label(&task.component());
-    if status == "In Bearbeitung" {
-        subtitle_parts.push("<span foreground=\"#3584e4\" weight=\"medium\">⏳ In Bearbeitung</span>".to_string());
-    } else if status == "Abgebrochen" {
-        subtitle_parts.push("<span alpha=\"55%\">⛔ Abgebrochen</span>".to_string());
+    match task_status_value(&task.component()) {
+        "IN-PROCESS" => subtitle_parts.push(format!("<span foreground=\"#3584e4\" weight=\"medium\">⏳ {}</span>", crate::i18n::gettext("In Progress"))),
+        "CANCELLED" => subtitle_parts.push(format!("<span alpha=\"55%\">⛔ {}</span>", crate::i18n::gettext("Cancelled"))),
+        _ => {},
     }
 
     // 4. Categories
@@ -11380,9 +11363,9 @@ fn append_task_row(
 
     let subtitle = if subtitle_parts.is_empty() {
         if completed {
-            "<span foreground=\"#26a269\">✓ Erledigt</span>".to_string()
+            format!("<span foreground=\"#26a269\">✓ {}</span>", crate::i18n::gettext("Completed"))
         } else {
-            "<span alpha=\"50%\">Keine Fälligkeit</span>".to_string()
+            format!("<span alpha=\"50%\">{}</span>", crate::i18n::gettext("No due date"))
         }
     } else {
         subtitle_parts.join(" · ")
@@ -11413,9 +11396,9 @@ fn append_task_row(
     set_accessible_label(
         &check,
         &if completed {
-            format!("Aufgabe als offen markieren: {}", task.title())
+            gettext("Mark task as incomplete: {title}").replace("{title}", &task.title())
         } else {
-            format!("Aufgabe als erledigt markieren: {}", task.title())
+            gettext("Mark task as completed: {title}").replace("{title}", &task.title())
         },
     );
     let task_clone = task.clone();
@@ -11440,7 +11423,7 @@ fn append_task_row(
             updating_for_callback.set(false);
             show_toast_for_widget(
                 button,
-                "Diese Aufgabenliste ist nicht als schreibfähig bestätigt",
+                &gettext("This task list is not confirmed as writable"),
             );
             return;
         }
@@ -11494,7 +11477,7 @@ fn append_task_row(
                     tracing::debug!(%error, "Task status mutation channel closed");
                     show_toast_for_widget(
                         &button_for_result,
-                        "Aufgabenstatus konnte nicht aktualisiert werden",
+                        &gettext("Could not update task status"),
                     );
                     return;
                 }
@@ -11529,7 +11512,7 @@ fn append_task_row(
                     updating_for_result.set(false);
                     show_toast_for_widget(
                         &button_for_result,
-                        &format!("Aufgabe konnte nicht aktualisiert werden: {error}"),
+                        &gettext("Could not update task: {error}").replace("{error}", &error.to_string()),
                     );
                 }
             }
@@ -11537,7 +11520,7 @@ fn append_task_row(
         });
     });
     let task_icon = gtk::Image::builder()
-        .icon_name("evolution-tasks-symbolic")
+        .icon_name("view-list-bullet-symbolic")
         .pixel_size(16)
         .valign(gtk::Align::Center)
         .css_classes(vec!["task-row-icon"])
@@ -11547,21 +11530,19 @@ fn append_task_row(
     if let Some(color) = category_color_for_component(category_metadata, &task.component()) {
         let category_dot = gtk::Label::new(None);
         category_dot.set_markup(&format!("<span foreground=\"{color}\">●</span>"));
-        category_dot.set_tooltip_text(Some("Aufgabenkategorie"));
+        category_dot.set_tooltip_text(Some(&gettext("Task category")));
         row.add_prefix(&category_dot);
     }
 
+    let quick_edit_label = gettext("Quickly edit status, priority, due date, and categories");
     let quick_edit_button = gtk::Button::builder()
         .icon_name("view-more-symbolic")
-        .tooltip_text("Status, Priorität, Fälligkeit und Kategorien schnell bearbeiten")
+        .tooltip_text(&quick_edit_label)
         .css_classes(vec!["flat", "circular", "task-row-btn"])
         .valign(gtk::Align::Center)
         .sensitive(task_source_is_writable_on_page(page, &task.source_uid()))
         .build();
-    set_accessible_label(
-        &quick_edit_button,
-        "Status, Priorität, Fälligkeit und Kategorien schnell bearbeiten",
-    );
+    set_accessible_label(&quick_edit_button, &quick_edit_label);
     row.add_suffix(&quick_edit_button);
     connect_task_quick_editor(
         page,
@@ -11572,13 +11553,14 @@ fn append_task_row(
         task,
     );
 
+    let edit_label = gettext("Edit task");
     let edit_button = gtk::Button::builder()
         .icon_name("document-edit-symbolic")
-        .tooltip_text("Aufgabe bearbeiten")
+        .tooltip_text(&edit_label)
         .css_classes(vec!["flat", "circular", "task-row-btn"])
         .valign(gtk::Align::Center)
         .build();
-    set_accessible_label(&edit_button, "Aufgabe bearbeiten");
+    set_accessible_label(&edit_button, &edit_label);
     row.add_suffix(&edit_button);
     let page_weak_for_edit = page.downgrade();
     let task_for_edit = task.clone();
@@ -11594,7 +11576,7 @@ fn append_task_row(
         if !task_source_is_writable_on_page(&page, &task_for_edit.source_uid()) {
             show_toast_for_widget(
                 &edit_button_for_closure,
-                "Diese Aufgabenliste ist nicht als schreibfähig bestätigt",
+                &gettext("This task list is not confirmed as writable"),
             );
             return;
         }
@@ -11606,20 +11588,21 @@ fn append_task_row(
         );
     });
 
+    let export_label = gettext("Export task as iCalendar");
     let export_button = gtk::Button::builder()
         .icon_name("document-save-symbolic")
-        .tooltip_text("Aufgabe als iCalendar exportieren")
+        .tooltip_text(&export_label)
         .css_classes(vec!["flat", "circular", "task-row-btn"])
         .valign(gtk::Align::Center)
         .build();
-    set_accessible_label(&export_button, "Aufgabe als iCalendar exportieren");
+    set_accessible_label(&export_button, &export_label);
     row.add_suffix(&export_button);
     let task_component_for_export = task.component();
     export_button.connect_clicked(move |button| {
         if task_component_for_export.trim().is_empty() {
             show_toast_for_widget(
                 button,
-                "Für diese Aufgabe sind keine iCalendar-Daten verfügbar",
+                &gettext("No iCalendar data available for this task"),
             );
             return;
         }
@@ -11630,8 +11613,8 @@ fn append_task_row(
             return;
         };
         let file_dialog = gtk::FileDialog::builder()
-            .title("Aufgabe als iCalendar speichern")
-            .initial_name("aufgabe.ics")
+            .title(&gettext("Save Task as iCalendar"))
+            .initial_name("task.ics")
             .modal(true)
             .build();
         let component = task_component_for_export.clone();
@@ -11649,23 +11632,27 @@ fn append_task_row(
             );
             match save_result {
                 Ok(_) => {
-                    show_toast_for_widget(&button_for_result, "Aufgabe als iCalendar exportiert")
+                    show_toast_for_widget(
+                        &button_for_result,
+                        &gettext("Task exported as iCalendar"),
+                    )
                 }
                 Err(error) => show_toast_for_widget(
                     &button_for_result,
-                    &format!("iCalendar konnte nicht gespeichert werden: {error}"),
+                    &gettext("Could not save iCalendar: {error}").replace("{error}", &error.to_string()),
                 ),
             }
         });
     });
 
+    let delete_label = gettext("Delete task");
     let delete_button = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
-        .tooltip_text("Aufgabe löschen")
+        .tooltip_text(&delete_label)
         .css_classes(vec!["flat", "circular", "destructive-action", "task-row-btn"])
         .valign(gtk::Align::Center)
         .build();
-    set_accessible_label(&delete_button, "Aufgabe löschen");
+    set_accessible_label(&delete_button, &delete_label);
     row.add_suffix(&delete_button);
     let task_store_for_delete = task_store.clone();
     let task_list_for_delete = task_list.clone();
@@ -11681,7 +11668,7 @@ fn append_task_row(
             .ancestor(gtk::ListBoxRow::static_type())
             .and_downcast::<gtk::ListBoxRow>()
         else {
-            show_toast_for_widget(button, "Die Aufgabe ist nicht mehr verfügbar");
+            show_toast_for_widget(button, &gettext("The task is no longer available"));
             return;
         };
         // Row and context deletion must target the clicked task, not a prior
@@ -11740,7 +11727,7 @@ fn append_task_row(
             .margin_bottom(6)
             .build();
 
-        let edit = gtk::Button::with_label("Aufgabe bearbeiten");
+        let edit = gtk::Button::with_label(&gettext("Edit task"));
         edit.set_halign(gtk::Align::Fill);
         edit.add_css_class("flat");
         let popover_for_edit = popover.clone();
@@ -11751,11 +11738,12 @@ fn append_task_row(
         });
         menu_box.append(&edit);
 
-        let toggle = gtk::Button::with_label(if task_is_completed(&task_for_context) {
-            "Als offen markieren"
+        let toggle_label = if task_is_completed(&task_for_context) {
+            gettext("Mark as incomplete")
         } else {
-            "Als erledigt markieren"
-        });
+            gettext("Mark as completed")
+        };
+        let toggle = gtk::Button::with_label(&toggle_label);
         toggle.set_halign(gtk::Align::Fill);
         toggle.add_css_class("flat");
         toggle.set_sensitive(!task_for_context.source_uid().is_empty());
@@ -11767,7 +11755,7 @@ fn append_task_row(
         });
         menu_box.append(&toggle);
 
-        let export = gtk::Button::with_label("Als iCalendar exportieren");
+        let export = gtk::Button::with_label(&gettext("Export as iCalendar"));
         export.set_halign(gtk::Align::Fill);
         export.add_css_class("flat");
         let popover_for_export = popover.clone();
@@ -11778,7 +11766,7 @@ fn append_task_row(
         });
         menu_box.append(&export);
 
-        let delete = gtk::Button::with_label("Aufgabe löschen");
+        let delete = gtk::Button::with_label(&gettext("Delete task"));
         delete.set_halign(gtk::Align::Fill);
         delete.add_css_class("flat");
         delete.add_css_class("destructive-action");
@@ -11901,7 +11889,7 @@ fn initial_sync_task_sources() -> Vec<ECalSourceCapability> {
     if CalendarStoreService::new().is_writable() {
         sources.push(ECalSourceCapability {
             source_uid: "local-calendar".to_string(),
-            display_name: "Lokale Aufgabenliste".to_string(),
+            display_name: gettext("Local Task List"),
             connected: true,
             available: true,
             source_writable: true,
@@ -11918,7 +11906,7 @@ fn initial_sync_task_sources() -> Vec<ECalSourceCapability> {
         let task_uid = format!("account-tasks-{}", collection.uid);
         sources.push(ECalSourceCapability {
             source_uid: task_uid,
-            display_name: "Aufgaben".to_string(),
+            display_name: gettext("Tasks"),
             connected: true,
             available: true,
             source_writable: true,
@@ -11936,7 +11924,7 @@ fn initial_sync_task_sources() -> Vec<ECalSourceCapability> {
         if !sources.iter().any(|s| s.source_uid == task_uid) {
             sources.push(ECalSourceCapability {
                 source_uid: task_uid,
-                display_name: "Aufgaben".to_string(),
+                display_name: gettext("Tasks"),
                 connected: true,
                 available: true,
                 source_writable: true,
@@ -11978,7 +11966,7 @@ fn apply_task_sources(
             let task_uid = format!("account-tasks-{}", collection.uid);
             sources.push(ECalSourceCapability {
                 source_uid: task_uid,
-                display_name: "Aufgaben".to_string(),
+                display_name: gettext("Tasks"),
                 connected: true,
                 available: true,
                 source_writable: true,
@@ -12010,7 +11998,7 @@ fn apply_task_sources(
             let task_uid = format!("account-tasks-{}", profile.id);
             sources.push(ECalSourceCapability {
                 source_uid: task_uid,
-                display_name: "Aufgaben".to_string(),
+                display_name: gettext("Tasks"),
                 connected: true,
                 available: true,
                 source_writable: true,
@@ -12033,7 +12021,7 @@ fn apply_task_sources(
         )
     });
 
-    let mut names = vec!["Alle Aufgabenlisten".to_string()];
+    let mut names = vec![gettext("All Task Lists")];
     let mut uids = Vec::new();
     let mut capabilities = HashMap::new();
     let mut metadata = HashMap::new();
@@ -12063,7 +12051,7 @@ fn apply_task_sources(
         && !uids.iter().any(|uid| uid == preferred_source_uid)
         && preferred_source_uid != "local-calendar"
     {
-        names.push(format!("Nicht verfügbare Quelle · {preferred_source_uid}"));
+        names.push(gettext("Unavailable Source · {source}").replace("{source}", preferred_source_uid));
         uids.push(preferred_source_uid.to_string());
         capabilities.insert(
             preferred_source_uid.to_string(),
@@ -12071,7 +12059,7 @@ fn apply_task_sources(
         );
     }
     if CalendarStoreService::new().is_writable() && !uids.iter().any(|u| u == "local-calendar") {
-        names.push("Lokale Aufgabenliste".to_string());
+        names.push(gettext("Local Task List"));
         capabilities.insert("local-calendar".to_string(), TaskSourceCapability::Writable);
         uids.push("local-calendar".to_string());
     }
@@ -12104,7 +12092,7 @@ fn apply_task_sources(
         }
         let parent_name = crate::services::eds_service::resolve_source_parent_name(&source.source_uid);
         let group = if parent_name.trim().is_empty() {
-            "Auf diesem Computer".to_string()
+            gettext("On This Computer")
         } else {
             parent_name
         };
@@ -12122,17 +12110,19 @@ fn apply_task_sources(
         );
     }
     if CalendarStoreService::new().is_writable() && !items.iter().any(|i| i.uid == "local-calendar") {
-        let color = calendar_source_color("local-calendar", "Lokale Aufgabenliste");
+        let local_name = gettext("Local Task List");
+        let group_name = gettext("On This Computer");
+        let color = calendar_source_color("local-calendar", &local_name);
         items.push(
             SourceSelectorItem::new(
                 "local-calendar",
-                "Lokale Aufgabenliste",
+                &local_name,
                 "local",
                 true,
                 true,
             )
             .with_color(color)
-            .with_group("Auf diesem Computer"),
+            .with_group(group_name),
         );
     }
 
@@ -12233,9 +12223,7 @@ fn start_task_source_discovery(
                 if let Some(page) = page_weak.upgrade()
                     && show_error
                 {
-                    page.show_toast(&format!(
-                        "Aufgabenlisten konnten nicht neu eingelesen werden: {error}"
-                    ));
+                    page.show_toast(&gettext("Could not reload task lists: {error}").replace("{error}", &error.to_string()));
                     return;
                 }
                 (Vec::new(), None)
@@ -12338,7 +12326,7 @@ fn normalize_task_assignment_property(input: &str, property_name: &str) -> Resul
             .chars()
             .any(|character| matches!(character, '\r' | '\n'))
     {
-        return Err(format!("{property_name} darf nicht leer sein"));
+        return Err(gettext("{property} cannot be empty").replace("{property}", property_name));
     }
     if let Some((property, value)) = input.split_once(':') {
         let actual_name = property.split(';').next().unwrap_or_default();
@@ -12346,7 +12334,7 @@ fn normalize_task_assignment_property(input: &str, property_name: &str) -> Resul
             || property.is_empty()
             || value.trim().is_empty()
         {
-            return Err(format!("Ungültige {property_name}-Eigenschaft"));
+            return Err(gettext("Invalid {property} property").replace("{property}", property_name));
         }
         return Ok(format!("{property}:{}", value.trim()));
     }
@@ -12356,9 +12344,7 @@ fn normalize_task_assignment_property(input: &str, property_name: &str) -> Resul
         .unwrap_or(input)
         .trim();
     let Some((local, domain)) = address.rsplit_once('@') else {
-        return Err(format!(
-            "{property_name} benötigt eine gültige E-Mail-Adresse"
-        ));
+        return Err(gettext("{property} requires a valid email address").replace("{property}", property_name));
     };
     if local.is_empty()
         || domain.is_empty()
@@ -12366,9 +12352,7 @@ fn normalize_task_assignment_property(input: &str, property_name: &str) -> Resul
             .chars()
             .any(|character| character.is_whitespace() || matches!(character, ',' | ';' | ':'))
     {
-        return Err(format!(
-            "{property_name} benötigt eine gültige E-Mail-Adresse"
-        ));
+        return Err(gettext("{property} requires a valid email address").replace("{property}", property_name));
     }
     if property_name.eq_ignore_ascii_case("ATTENDEE") {
         Ok(format!(
@@ -12399,7 +12383,7 @@ fn parse_task_assignment_update(
         }
     }
     if attendee_lines.is_empty() {
-        return Err("Mindestens eine teilnehmende Person ist erforderlich".to_string());
+        return Err(gettext("At least one attendee is required"));
     }
     Ok(TaskAssignmentUpdate {
         organizer_line,
@@ -12495,7 +12479,7 @@ fn present_task_assignment_dialog(
     ) {
         show_toast_for_widget(
             button,
-            "Diese Aufgabe oder ihr Anbieter unterstützt keine Zuweisung",
+            &gettext("This task or its provider does not support assignment"),
         );
         return;
     }
@@ -12503,7 +12487,7 @@ fn present_task_assignment_dialog(
         return;
     };
     let Ok(component) = validated_task_vtodo_component(candidate, &candidate.identity) else {
-        show_toast_for_widget(button, "Die ausgewählte Aufgabe ist nicht mehr gültig");
+        show_toast_for_widget(button, &gettext("The selected task is no longer valid"));
         return;
     };
     let identity = candidate.identity.clone();
@@ -12511,7 +12495,7 @@ fn present_task_assignment_dialog(
     let draft = task_assignment_draft(&component);
     let organizer_entry = gtk::Entry::builder()
         .text(&draft.organizer)
-        .placeholder_text("organizer@example.org oder vollständige ORGANIZER-Zeile")
+        .placeholder_text(&gettext("organizer@example.org or full ORGANIZER line"))
         .hexpand(true)
         .build();
     let attendee_view = gtk::TextView::builder()
@@ -12531,14 +12515,14 @@ fn present_task_assignment_dialog(
         .build();
     content.append(
         &gtk::Label::builder()
-            .label("Organisator")
+            .label(&gettext("Organizer"))
             .halign(gtk::Align::Start)
             .build(),
     );
     content.append(&organizer_entry);
     content.append(
         &gtk::Label::builder()
-            .label("Teilnehmende (eine E-Mail- oder vollständige ATTENDEE-Zeile pro Zeile)")
+            .label(&gettext("Attendees (one email or full ATTENDEE line per line)"))
             .wrap(true)
             .halign(gtk::Align::Start)
             .build(),
@@ -12546,16 +12530,16 @@ fn present_task_assignment_dialog(
     content.append(&attendee_scroll);
     content.append(
         &gtk::Label::builder()
-            .label("Die Zuweisungsdaten werden gespeichert. Der Versand von iTIP-Benachrichtigungen benötigt die native Linux-/EDS-Laufzeit.")
+            .label(&gettext("Assignment data will be saved. Sending iTIP notifications requires the native Linux/EDS runtime."))
             .wrap(true)
             .xalign(0.0)
             .css_classes(vec!["dim-label"])
             .build(),
     );
-    let dialog = adw::AlertDialog::new(Some("Aufgabe zuweisen"), None);
+    let dialog = adw::AlertDialog::new(Some(&gettext("Assign Task")), None);
     dialog.set_extra_child(Some(&content));
-    dialog.add_response("cancel", "Abbrechen");
-    dialog.add_response("assign", "Zuweisen");
+    dialog.add_response("cancel", &gettext("Cancel"));
+    dialog.add_response("assign", &gettext("Assign"));
     dialog.set_response_appearance("assign", adw::ResponseAppearance::Suggested);
     dialog.set_default_response(Some("assign"));
     dialog.set_close_response("cancel");
@@ -12578,22 +12562,22 @@ fn present_task_assignment_dialog(
             &page.imp().task_source_metadata.borrow(),
             task_mutation_batch_running(&page),
         ) {
-            page.show_toast("Die Aufgabe oder Anbieter-Capability hat sich geändert");
+            page.show_toast(&gettext("The task or provider capability has changed"));
             return;
         }
         let Ok(current) = selected_task_candidate(
             std::slice::from_ref(&identity),
             &current_candidates,
         ) else {
-            page.show_toast("Die Aufgabe ist nicht mehr verfügbar");
+            page.show_toast(&gettext("The task is no longer available"));
             return;
         };
         let Ok(current_component) = validated_task_vtodo_component(current, &identity) else {
-            page.show_toast("Die Aufgabe ist nicht mehr gültig");
+            page.show_toast(&gettext("The task is no longer valid"));
             return;
         };
         if current_component != initial_component {
-            page.show_toast("Die Aufgabe wurde inzwischen geändert; Zuweisung bitte erneut öffnen");
+            page.show_toast(&gettext("The task was modified in the meantime; please reopen assignment"));
             return;
         }
         let buffer = attendee_view.buffer();
@@ -12631,8 +12615,7 @@ fn present_task_assignment_dialog(
                                 && task.uid == identity_for_worker.task_uid
                         });
                     confirmed.then_some(reload).ok_or_else(|| {
-                        "Die Zuweisung wurde gespeichert, konnte aber nicht autoritativ neu geladen werden"
-                            .to_string()
+                        gettext("The assignment was saved, but could not be reloaded authoritatively")
                     })
                 });
             if let Err(error) = sender.send_blocking(result) {
@@ -12669,7 +12652,7 @@ fn present_task_assignment_dialog(
                         .clipboard()
                         .set_text(&request_payload);
                     page.show_toast(
-                        "Aufgabe wurde zugewiesen und METHOD:REQUEST bereitgestellt; echter iTIP-Versand bleibt Linux-/EDS-Handoff",
+                        &gettext("Task was assigned and METHOD:REQUEST prepared; actual iTIP sending requires Linux/EDS handoff"),
                     );
                 }
                 Err(error) => page.show_toast(&error),
@@ -12711,49 +12694,49 @@ fn task_source_color_hex(color: &gtk::gdk::RGBA) -> String {
 
 fn present_new_local_task_source(page: &TasksPage, button: &gtk::Button) {
     if task_mutation_batch_running(page) {
-        show_toast_for_widget(button, "Eine andere Aufgabenänderung läuft bereits");
+        show_toast_for_widget(button, &gettext("Another task operation is already in progress"));
         return;
     }
     let name_entry = gtk::Entry::builder()
-        .placeholder_text("Name der Aufgabenliste")
+        .placeholder_text(&gettext("Task list name"))
         .activates_default(true)
         .hexpand(true)
         .build();
     let color_dialog = gtk::ColorDialog::builder()
-        .title("Farbe der Aufgabenliste")
+        .title(&gettext("Task List Color"))
         .build();
     let color_button = gtk::ColorDialogButton::new(Some(color_dialog));
     if let Ok(color) = gtk::gdk::RGBA::parse("#62a0ea") {
         color_button.set_rgba(&color);
     }
-    color_button.set_tooltip_text(Some("Farbe der Aufgabenliste auswählen"));
-    let default_check = gtk::CheckButton::with_label("Als Standard-Aufgabenliste verwenden");
+    color_button.set_tooltip_text(Some(&gettext("Select task list color")));
+    let default_check = gtk::CheckButton::with_label(&gettext("Use as default task list"));
     let content = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(8)
         .build();
     content.append(
         &gtk::Label::builder()
-            .label("Name")
+            .label(&gettext("Name"))
             .halign(gtk::Align::Start)
             .build(),
     );
     content.append(&name_entry);
     content.append(
         &gtk::Label::builder()
-            .label("Farbe")
+            .label(&gettext("Color"))
             .halign(gtk::Align::Start)
             .build(),
     );
     content.append(&color_button);
     content.append(&default_check);
     let dialog = adw::AlertDialog::new(
-        Some("Neue lokale Aufgabenliste"),
-        Some("Die Aufgabenliste wird im lokalen EDS-Kalenderdienst angelegt."),
+        Some(&gettext("New Local Task List")),
+        Some(&gettext("The task list will be created in the local EDS calendar service.")),
     );
     dialog.set_extra_child(Some(&content));
-    dialog.add_response("cancel", "Abbrechen");
-    dialog.add_response("create", "Erstellen");
+    dialog.add_response("cancel", &gettext("Cancel"));
+    dialog.add_response("create", &gettext("Create"));
     dialog.set_response_appearance("create", adw::ResponseAppearance::Suggested);
     dialog.set_default_response(Some("create"));
     dialog.set_close_response("cancel");
@@ -12768,7 +12751,7 @@ fn present_new_local_task_source(page: &TasksPage, button: &gtk::Button) {
         };
         let display_name = name_entry.text().trim().to_string();
         if display_name.is_empty() {
-            show_toast_for_widget(&button_for_result, "Der Name darf nicht leer sein");
+            show_toast_for_widget(&button_for_result, &gettext("Name cannot be empty"));
             return;
         }
         let color = task_source_color_hex(&color_button.rgba());
@@ -12776,11 +12759,11 @@ fn present_new_local_task_source(page: &TasksPage, button: &gtk::Button) {
         let Some(generation) = begin_task_source_management(&page) else {
             show_toast_for_widget(
                 &button_for_result,
-                "Eine andere Aufgabenänderung läuft bereits",
+                &gettext("Another task operation is already in progress"),
             );
             return;
         };
-        show_toast_for_widget(&button_for_result, "Aufgabenliste wird erstellt …");
+        show_toast_for_widget(&button_for_result, &gettext("Creating task list…"));
         let (sender, receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
             let result = ECalService::new().create_local_source(
@@ -12813,19 +12796,19 @@ fn present_new_local_task_source(page: &TasksPage, button: &gtk::Button) {
                     }
                     match created.status {
                         ECalLocalSourceCreateStatus::Available => {
-                            page.show_toast("Lokale Aufgabenliste wurde erstellt");
+                            page.show_toast(&gettext("Local task list was created"));
                         }
                         ECalLocalSourceCreateStatus::CreatedUnavailable(warning) => {
-                            page.show_toast(&format!(
-                                "Aufgabenliste wurde erstellt, ist aber noch nicht verfügbar: {warning}"
-                            ));
+                            page.show_toast(&gettext(
+                                "Task list was created, but is not yet available: {warning}",
+                            ).replace("{warning}", &warning));
                         }
                     }
                     start_task_source_discovery(&page, Some(created.source_uid), true);
                 }
                 Err(ECalServiceError::Unsupported) => {
                     page.show_toast(
-                        "Lokale EDS-Aufgabenlisten werden von diesem Backend nicht unterstützt",
+                        &gettext("Local EDS task lists are not supported by this backend"),
                     );
                 }
                 Err(ECalServiceError::Backend(message)) => page.show_toast(&message),
@@ -12838,7 +12821,7 @@ fn present_new_local_task_source(page: &TasksPage, button: &gtk::Button) {
 
 fn task_source_custom_file_label(uri: Option<&str>) -> String {
     let Some(uri) = uri.filter(|uri| !uri.trim().is_empty()) else {
-        return "Keine iCalendar-Datei ausgewählt".to_string();
+        return gettext("No iCalendar file selected");
     };
     gio::File::for_uri(uri)
         .path()
@@ -12848,7 +12831,7 @@ fn task_source_custom_file_label(uri: Option<&str>) -> String {
 
 fn present_task_source_properties(page: &TasksPage, button: &gtk::Button) {
     let Some((source_uid, _)) = current_task_source_metadata(page) else {
-        show_toast_for_widget(button, "Zum Bearbeiten eine Aufgabenliste auswählen");
+        show_toast_for_widget(button, &gettext("Select a task list to edit"));
         return;
     };
     let state = task_source_action_state(
@@ -12859,15 +12842,15 @@ fn present_task_source_properties(page: &TasksPage, button: &gtk::Button) {
     if !state.properties_enabled {
         show_toast_for_widget(
             button,
-            "Die Eigenschaften dieser Aufgabenliste sind nicht schreibbar",
+            &gettext("The properties of this task list are not writable"),
         );
         return;
     }
     let Some(generation) = begin_task_source_management(page) else {
-        show_toast_for_widget(button, "Eine andere Aufgabenänderung läuft bereits");
+        show_toast_for_widget(button, &gettext("Another task operation is already in progress"));
         return;
     };
-    show_toast_for_widget(button, "Aufgabenlisten-Eigenschaften werden geladen …");
+    show_toast_for_widget(button, &gettext("Loading task list properties…"));
     let source_uid_for_worker = source_uid.clone();
     let (sender, receiver) = async_channel::bounded(1);
     std::thread::spawn(move || {
@@ -12896,7 +12879,7 @@ fn present_task_source_properties(page: &TasksPage, button: &gtk::Button) {
             Err(ECalServiceError::Unsupported) => {
                 page.imp().task_source_management_running.set(false);
                 page.show_toast(
-                    "Provider-spezifische Eigenschaften sind für diese Aufgabenliste noch nicht verfügbar",
+                    &gettext("Provider-specific properties are not yet available for this task list"),
                 );
                 update_task_selection_controls(&page);
             }
@@ -12917,12 +12900,12 @@ fn present_loaded_task_source_properties(
 ) {
     let name_entry = gtk::Entry::builder()
         .text(&properties.display_name)
-        .placeholder_text("Name der Aufgabenliste")
+        .placeholder_text(&gettext("Task list name"))
         .activates_default(true)
         .hexpand(true)
         .build();
     let color_dialog = gtk::ColorDialog::builder()
-        .title("Farbe der Aufgabenliste")
+        .title(&gettext("Task List Color"))
         .build();
     let color_button = gtk::ColorDialogButton::new(Some(color_dialog));
     if let Ok(color) = gtk::gdk::RGBA::parse(&properties.color) {
@@ -12930,16 +12913,16 @@ fn present_loaded_task_source_properties(
     }
     let email_entry = gtk::Entry::builder()
         .text(&properties.email_address)
-        .placeholder_text("E-Mail-Adresse (optional)")
+        .placeholder_text(&gettext("Email address (optional)"))
         .hexpand(true)
         .build();
     let default_was_selected = AppSettings::try_new()
         .is_some_and(|settings| settings.default_task_source_uid() == properties.source_uid);
-    let default_check = gtk::CheckButton::with_label("Als Standard-Aufgabenliste verwenden");
+    let default_check = gtk::CheckButton::with_label(&gettext("Use as default task list"));
     default_check.set_active(default_was_selected);
 
     let custom_file_uri = Rc::new(RefCell::new(properties.custom_file_uri.clone()));
-    let custom_file_check = gtk::CheckButton::with_label("Vorhandene iCalendar-Datei verwenden");
+    let custom_file_check = gtk::CheckButton::with_label(&gettext("Use existing iCalendar file"));
     custom_file_check.set_active(!properties.is_builtin && properties.custom_file_uri.is_some());
     custom_file_check.set_sensitive(!properties.is_builtin);
     let custom_file_label = gtk::Label::builder()
@@ -12951,7 +12934,7 @@ fn present_loaded_task_source_properties(
         .halign(gtk::Align::Start)
         .build();
     let choose_file_button = gtk::Button::builder()
-        .label("Datei wählen …")
+        .label(&gettext("Choose File…"))
         .sensitive(!properties.is_builtin && properties.custom_file_uri.is_some())
         .build();
     let file_row = gtk::Box::builder()
@@ -12962,12 +12945,12 @@ fn present_loaded_task_source_properties(
     file_row.append(&choose_file_button);
     file_row.set_visible(!properties.is_builtin && properties.custom_file_uri.is_some());
     let custom_writable_check =
-        gtk::CheckButton::with_label("Evolution darf die iCalendar-Datei aktualisieren");
+        gtk::CheckButton::with_label(&gettext("Evolution may update the iCalendar file"));
     custom_writable_check.set_active(properties.custom_file_writable);
     custom_writable_check
         .set_visible(!properties.is_builtin && properties.custom_file_uri.is_some());
     let builtin_hint = gtk::Label::builder()
-        .label("Die eingebaute Aufgabenliste kann keine externe iCalendar-Datei verwenden.")
+        .label(&gettext("The built-in task list cannot use an external iCalendar file."))
         .wrap(true)
         .xalign(0.0)
         .css_classes(vec!["dim-label"])
@@ -12979,13 +12962,13 @@ fn present_loaded_task_source_properties(
         .spacing(8)
         .build();
     for (label, widget) in [
-        ("Name", name_entry.clone().upcast::<gtk::Widget>()),
-        ("Farbe", color_button.clone().upcast::<gtk::Widget>()),
-        ("E-Mail", email_entry.clone().upcast::<gtk::Widget>()),
+        (gettext("Name"), name_entry.clone().upcast::<gtk::Widget>()),
+        (gettext("Color"), color_button.clone().upcast::<gtk::Widget>()),
+        (gettext("Email"), email_entry.clone().upcast::<gtk::Widget>()),
     ] {
         content.append(
             &gtk::Label::builder()
-                .label(label)
+                .label(&label)
                 .halign(gtk::Align::Start)
                 .build(),
         );
@@ -12998,12 +12981,12 @@ fn present_loaded_task_source_properties(
     content.append(&builtin_hint);
 
     let dialog = adw::AlertDialog::new(
-        Some("Eigenschaften der Aufgabenliste"),
-        Some("Lokale EDS-Eigenschaften bearbeiten"),
+        Some(&gettext("Task List Properties")),
+        Some(&gettext("Edit local EDS properties")),
     );
     dialog.set_extra_child(Some(&content));
-    dialog.add_response("cancel", "Abbrechen");
-    dialog.add_response("save", "Speichern");
+    dialog.add_response("cancel", &gettext("Cancel"));
+    dialog.add_response("save", &gettext("Save"));
     dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
     dialog.set_default_response(Some("save"));
     dialog.set_close_response("cancel");
@@ -13047,7 +13030,7 @@ fn present_loaded_task_source_properties(
             return;
         };
         let file_dialog = gtk::FileDialog::builder()
-            .title("iCalendar-Datei auswählen")
+            .title(&gettext("Select iCalendar File"))
             .modal(true)
             .build();
         let file_label = file_label_for_choose.clone();
@@ -13124,18 +13107,18 @@ fn present_loaded_task_source_properties(
                     }
                     match updated.status {
                         ECalLocalSourceCreateStatus::Available => {
-                            page.show_toast("Aufgabenlisten-Eigenschaften wurden gespeichert");
+                            page.show_toast(&gettext("Task list properties were saved"));
                         }
                         ECalLocalSourceCreateStatus::CreatedUnavailable(warning) => {
-                            page.show_toast(&format!(
-                                "Eigenschaften wurden gespeichert, die Aufgabenliste ist aber noch nicht verfügbar: {warning}"
-                            ));
+                            page.show_toast(&gettext(
+                                "Properties were saved, but the task list is not yet available: {warning}",
+                            ).replace("{warning}", &warning));
                         }
                     }
                     start_task_source_discovery(&page, Some(updated.source_uid), true);
                 }
                 Err(ECalServiceError::Unsupported) => page.show_toast(
-                    "Provider-spezifische Eigenschaften sind für diese Aufgabenliste noch nicht verfügbar",
+                    &gettext("Provider-specific properties are not yet available for this task list"),
                 ),
                 Err(ECalServiceError::Backend(message)) => page.show_toast(&message),
             }
@@ -13147,7 +13130,7 @@ fn present_loaded_task_source_properties(
 
 fn present_task_source_rename(page: &TasksPage, button: &gtk::Button) {
     let Some((source_uid, source)) = current_task_source_metadata(page) else {
-        show_toast_for_widget(button, "Zum Umbenennen eine Aufgabenliste auswählen");
+        show_toast_for_widget(button, &gettext("Select a task list to rename"));
         return;
     };
     let state = task_source_action_state(
@@ -13156,7 +13139,7 @@ fn present_task_source_rename(page: &TasksPage, button: &gtk::Button) {
         task_mutation_batch_running(page),
     );
     if !state.rename_enabled {
-        show_toast_for_widget(button, "Diese Aufgabenliste kann nicht umbenannt werden");
+        show_toast_for_widget(button, &gettext("This task list cannot be renamed"));
         return;
     }
 
@@ -13172,18 +13155,18 @@ fn present_task_source_rename(page: &TasksPage, button: &gtk::Button) {
         .build();
     content.append(
         &gtk::Label::builder()
-            .label("Neuer Name")
+            .label(&gettext("New Name"))
             .halign(gtk::Align::Start)
             .build(),
     );
     content.append(&entry);
     let dialog = adw::AlertDialog::new(
-        Some("Aufgabenliste umbenennen"),
-        Some("Der neue Name wird direkt in der ausgewählten EDS-Quelle gespeichert."),
+        Some(&gettext("Rename Task List")),
+        Some(&gettext("The new name will be saved directly in the selected EDS source.")),
     );
     dialog.set_extra_child(Some(&content));
-    dialog.add_response("cancel", "Abbrechen");
-    dialog.add_response("rename", "Umbenennen");
+    dialog.add_response("cancel", &gettext("Cancel"));
+    dialog.add_response("rename", &gettext("Rename"));
     dialog.set_response_appearance("rename", adw::ResponseAppearance::Suggested);
     dialog.set_default_response(Some("rename"));
     dialog.set_close_response("cancel");
@@ -13198,7 +13181,7 @@ fn present_task_source_rename(page: &TasksPage, button: &gtk::Button) {
         };
         let display_name = entry.text().trim().to_string();
         if display_name.is_empty() {
-            show_toast_for_widget(&button_for_result, "Der Name darf nicht leer sein");
+            show_toast_for_widget(&button_for_result, &gettext("Name cannot be empty"));
             return;
         }
         if display_name == source.display_name {
@@ -13207,11 +13190,11 @@ fn present_task_source_rename(page: &TasksPage, button: &gtk::Button) {
         let Some(generation) = begin_task_source_management(&page) else {
             show_toast_for_widget(
                 &button_for_result,
-                "Eine andere Aufgabenänderung läuft bereits",
+                &gettext("Another task operation is already in progress"),
             );
             return;
         };
-        show_toast_for_widget(&button_for_result, "Aufgabenliste wird umbenannt …");
+        show_toast_for_widget(&button_for_result, &gettext("Renaming task list…"));
         let (sender, receiver) = async_channel::bounded(1);
         let source_uid_for_worker = source_uid.clone();
         std::thread::spawn(move || {
@@ -13239,11 +13222,11 @@ fn present_task_source_rename(page: &TasksPage, button: &gtk::Button) {
             let preferred = page.imp().task_source_filter.borrow().clone();
             match result {
                 Ok(()) => {
-                    page.show_toast("Aufgabenliste wurde umbenannt");
+                    page.show_toast(&gettext("Task list was renamed"));
                     start_task_source_discovery(&page, preferred, true);
                 }
                 Err(ECalServiceError::Unsupported) => {
-                    page.show_toast("Umbenennen wird von diesem Backend nicht unterstützt");
+                    page.show_toast(&gettext("Renaming is not supported by this backend"));
                     start_task_source_discovery(&page, preferred, false);
                 }
                 Err(ECalServiceError::Backend(message)) => {
@@ -13259,7 +13242,7 @@ fn present_task_source_rename(page: &TasksPage, button: &gtk::Button) {
 
 fn present_task_source_copy(page: &TasksPage, button: &gtk::Button) {
     let Some((source_uid, source)) = current_task_source_metadata(page) else {
-        show_toast_for_widget(button, "Zum Kopieren eine Aufgabenliste auswählen");
+        show_toast_for_widget(button, &gettext("Select a task list to copy"));
         return;
     };
     let state = task_source_action_state(
@@ -13268,7 +13251,7 @@ fn present_task_source_copy(page: &TasksPage, button: &gtk::Button) {
         task_mutation_batch_running(page),
     );
     if !state.copy_enabled {
-        show_toast_for_widget(button, "Diese Aufgabenliste kann nicht kopiert werden");
+        show_toast_for_widget(button, &gettext("This task list cannot be copied"));
         return;
     }
     let mut destinations = page
@@ -13286,7 +13269,7 @@ fn present_task_source_copy(page: &TasksPage, button: &gtk::Button) {
         )
     });
     if destinations.is_empty() {
-        show_toast_for_widget(button, "Es ist keine andere EDS-Aufgabenliste verfügbar");
+        show_toast_for_widget(button, &gettext("No other EDS task list is available"));
         return;
     }
     let destination_names = destinations
@@ -13305,28 +13288,26 @@ fn present_task_source_copy(page: &TasksPage, button: &gtk::Button) {
     let destination_selector =
         gtk::DropDown::new(Some(destination_model), None::<&gtk::Expression>);
     destination_selector.set_selected(0);
-    destination_selector.set_tooltip_text(Some("Ziel-Aufgabenliste auswählen"));
+    destination_selector.set_tooltip_text(Some(&gettext("Select target task list")));
     let content = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(8)
         .build();
     content.append(
         &gtk::Label::builder()
-            .label("Ziel-Aufgabenliste")
+            .label(&gettext("Target Task List"))
             .halign(gtk::Align::Start)
             .build(),
     );
     content.append(&destination_selector);
     let dialog = adw::AlertDialog::new(
-        Some("Aufgabenliste kopieren"),
-        Some(&format!(
-            "Alle Aufgaben aus „{}“ werden in die gewählte Liste kopiert. Gleiche UIDs werden aktualisiert.",
-            source.display_name
-        )),
+        Some(&gettext("Copy Task List")),
+        Some(&gettext("All tasks from “{name}” will be copied to the selected list. Duplicate UIDs will be updated.")
+            .replace("{name}", &source.display_name)),
     );
     dialog.set_extra_child(Some(&content));
-    dialog.add_response("cancel", "Abbrechen");
-    dialog.add_response("copy", "Kopieren");
+    dialog.add_response("cancel", &gettext("Cancel"));
+    dialog.add_response("copy", &gettext("Copy"));
     dialog.set_response_appearance("copy", adw::ResponseAppearance::Suggested);
     dialog.set_default_response(Some("copy"));
     dialog.set_close_response("cancel");
@@ -13343,17 +13324,17 @@ fn present_task_source_copy(page: &TasksPage, button: &gtk::Button) {
             .get(destination_selector.selected() as usize)
             .cloned()
         else {
-            show_toast_for_widget(&button_for_result, "Ungültige Ziel-Aufgabenliste");
+            show_toast_for_widget(&button_for_result, &gettext("Invalid target task list"));
             return;
         };
         let Some(generation) = begin_task_source_management(&page) else {
             show_toast_for_widget(
                 &button_for_result,
-                "Eine andere Aufgabenänderung läuft bereits",
+                &gettext("Another task operation is already in progress"),
             );
             return;
         };
-        show_toast_for_widget(&button_for_result, "Aufgabenliste wird kopiert …");
+        show_toast_for_widget(&button_for_result, &gettext("Copying task list…"));
         let (sender, receiver) = async_channel::bounded(1);
         let source_uid_for_worker = source_uid.clone();
         std::thread::spawn(move || {
@@ -13399,19 +13380,23 @@ fn present_task_source_copy(page: &TasksPage, button: &gtk::Button) {
                         }
                     } else {
                         page.show_toast(
-                            "Die Kopie wurde bestätigt, konnte aber nicht autoritativ neu geladen werden",
+                            &gettext("The copy was confirmed, but could not be reloaded authoritatively"),
                         );
                     }
                     let changed = copy.copied_count;
                     let created = copy.copied_count.saturating_sub(copy.updated_count);
                     match copy.status {
-                        ECalSourceCopyStatus::Complete => page.show_toast(&format!(
-                            "Aufgabenliste wurde kopiert ({changed} Aufgaben; {} neu, {} aktualisiert)",
-                            created, copy.updated_count
-                        )),
-                        ECalSourceCopyStatus::PartialFailure(message) => page.show_toast(&format!(
-                            "Aufgabenliste wurde teilweise kopiert ({changed} bestätigt): {message}"
-                        )),
+                        ECalSourceCopyStatus::Complete => page.show_toast(&gettext(
+                            "Task list was copied ({changed} tasks; {created} new, {updated} updated)",
+                        )
+                        .replace("{changed}", &changed.to_string())
+                        .replace("{created}", &created.to_string())
+                        .replace("{updated}", &copy.updated_count.to_string())),
+                        ECalSourceCopyStatus::PartialFailure(message) => page.show_toast(&gettext(
+                            "Task list was partially copied ({changed} confirmed): {message}",
+                        )
+                        .replace("{changed}", &changed.to_string())
+                        .replace("{message}", &message)),
                     }
                     start_task_source_discovery(
                         &page,
@@ -13420,7 +13405,7 @@ fn present_task_source_copy(page: &TasksPage, button: &gtk::Button) {
                     );
                 }
                 Err(ECalServiceError::Unsupported) => {
-                    page.show_toast("Kopieren wird von diesem Backend nicht unterstützt");
+                    page.show_toast(&gettext("Copying is not supported by this backend"));
                 }
                 Err(ECalServiceError::Backend(message)) => page.show_toast(&message),
             }
@@ -13432,7 +13417,7 @@ fn present_task_source_copy(page: &TasksPage, button: &gtk::Button) {
 
 fn present_task_source_delete_confirmation(page: &TasksPage, button: &gtk::Button) {
     let Some((source_uid, source)) = current_task_source_metadata(page) else {
-        show_toast_for_widget(button, "Zum Löschen eine Aufgabenliste auswählen");
+        show_toast_for_widget(button, &gettext("Select a task list to delete"));
         return;
     };
     let state = task_source_action_state(
@@ -13441,29 +13426,25 @@ fn present_task_source_delete_confirmation(page: &TasksPage, button: &gtk::Butto
         task_mutation_batch_running(page),
     );
     if !state.delete_enabled {
-        show_toast_for_widget(button, "Diese Aufgabenliste kann nicht gelöscht werden");
+        show_toast_for_widget(button, &gettext("This task list cannot be deleted"));
         return;
     }
     let remote = source.remote_deletable;
     let title = if remote {
-        "Remote-Aufgabenliste löschen?"
+        gettext("Delete Remote Task List?")
     } else {
-        "Aufgabenliste entfernen?"
+        gettext("Remove Task List?")
     };
     let description = if remote {
-        format!(
-            "„{}“ und ihre Aufgaben werden dauerhaft beim Anbieter gelöscht.",
-            source.display_name
-        )
+        gettext("“{name}” and its tasks will be permanently deleted from the provider.")
+            .replace("{name}", &source.display_name)
     } else {
-        format!(
-            "„{}“ wird aus Evolution entfernt. Diese Aktion kann nicht rückgängig gemacht werden.",
-            source.display_name
-        )
+        gettext("“{name}” will be removed from Evolution. This action cannot be undone.")
+            .replace("{name}", &source.display_name)
     };
-    let dialog = adw::AlertDialog::new(Some(title), Some(&description));
-    dialog.add_response("cancel", "Abbrechen");
-    dialog.add_response("delete", "Löschen");
+    let dialog = adw::AlertDialog::new(Some(&title), Some(&description));
+    dialog.add_response("cancel", &gettext("Cancel"));
+    dialog.add_response("delete", &gettext("Delete"));
     dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
     dialog.set_default_response(Some("cancel"));
     dialog.set_close_response("cancel");
@@ -13479,11 +13460,11 @@ fn present_task_source_delete_confirmation(page: &TasksPage, button: &gtk::Butto
         let Some(generation) = begin_task_source_management(&page) else {
             show_toast_for_widget(
                 &button_for_result,
-                "Eine andere Aufgabenänderung läuft bereits",
+                &gettext("Another task operation is already in progress"),
             );
             return;
         };
-        show_toast_for_widget(&button_for_result, "Aufgabenliste wird gelöscht …");
+        show_toast_for_widget(&button_for_result, &gettext("Deleting task list…"));
         let (sender, receiver) = async_channel::bounded(1);
         let source_uid_for_worker = source_uid.clone();
         std::thread::spawn(move || {
@@ -13532,7 +13513,7 @@ fn present_task_source_delete_confirmation(page: &TasksPage, button: &gtk::Butto
                         }
                         render_task_rows(&page, &task_list, &task_store, &empty_tasks);
                     }
-                    page.show_toast("Aufgabenliste wurde gelöscht");
+                    page.show_toast(&gettext("Task list was deleted"));
                     let current_filter = page.imp().task_source_filter.borrow().clone();
                     start_task_source_discovery(
                         &page,
@@ -13541,7 +13522,7 @@ fn present_task_source_delete_confirmation(page: &TasksPage, button: &gtk::Butto
                     );
                 }
                 Err(ECalServiceError::Unsupported) => {
-                    page.show_toast("Löschen wird von diesem Backend nicht unterstützt");
+                    page.show_toast(&gettext("Deleting is not supported by this backend"));
                     let current_filter = page.imp().task_source_filter.borrow().clone();
                     start_task_source_discovery(
                         &page,
@@ -13583,8 +13564,8 @@ fn task_source_capability_label(source: &ECalSourceCapability) -> String {
     };
     match task_source_capability_from_ecal(source) {
         TaskSourceCapability::Writable => display_name.to_string(),
-        TaskSourceCapability::ReadOnly => format!("{display_name} (schreibgeschützt)"),
-        TaskSourceCapability::Unavailable => format!("{display_name} (nicht verfügbar)"),
+        TaskSourceCapability::ReadOnly => format!("{display_name} ({})", gettext("read-only")),
+        TaskSourceCapability::Unavailable => format!("{display_name} ({})", gettext("unavailable")),
         TaskSourceCapability::Unknown => unreachable!("ECal discovery never projects Unknown"),
     }
 }
@@ -13924,12 +13905,12 @@ fn task_item_from_confirmed_component(
         .iter()
         .any(|line| line.eq_ignore_ascii_case("BEGIN:VTODO"))
     {
-        return Err("Die Komponente ist kein VTODO".to_string());
+        return Err(gettext("The component is not a VTODO"));
     }
     if let Some(component_uid) = ical_property(component, "UID")
         && component_uid != uid
     {
-        return Err("Die bestätigte Komponente enthält eine andere UID".to_string());
+        return Err(gettext("The confirmed component contains a different UID"));
     }
     let draft = task_editor_draft_from_component(component);
     let due = match draft.due.original_kind {
@@ -13960,15 +13941,15 @@ fn task_authoritative_component(
     component: Option<String>,
 ) -> Result<String, String> {
     if !returned_uid.trim().is_empty() && returned_uid != expected_uid {
-        return Err("Das bestätigte Aufgaben-Ergebnis gehört zu einer anderen UID".to_string());
+        return Err(gettext("The confirmed task result belongs to a different UID"));
     }
     let component = component
         .filter(|component| !component.trim().is_empty())
         .ok_or_else(|| {
-            "Backend bestätigte keine autoritative Aufgabe; bitte neu laden".to_string()
+            gettext("Backend did not confirm an authoritative task; please reload")
         })?;
     if ical_property(&component, "UID").is_some_and(|uid| uid != expected_uid) {
-        return Err("Die bestätigte Komponente enthält eine andere UID".to_string());
+        return Err(gettext("The confirmed component contains a different UID"));
     }
     Ok(component)
 }
@@ -13996,21 +13977,21 @@ fn connect_task_quick_editor(
         .width_request(320)
         .build();
     let heading = gtk::Label::builder()
-        .label("Aufgabe schnell bearbeiten")
+        .label(&crate::i18n::gettext("Quick Edit Task"))
         .halign(gtk::Align::Start)
         .css_classes(vec!["heading"])
         .build();
     content.append(&heading);
 
     let status_model = gtk::StringList::new(&[
-        "Nicht begonnen",
-        "In Bearbeitung",
-        "Erledigt",
-        "Abgebrochen",
+        &crate::i18n::gettext("Not Started"),
+        &crate::i18n::gettext("In Progress"),
+        &crate::i18n::gettext("Completed"),
+        &crate::i18n::gettext("Cancelled"),
     ]);
     let status_selector = gtk::DropDown::new(Some(status_model), None::<&gtk::Expression>);
     status_selector.set_selected(task_status_index(&task.component()));
-    let status_row = adw::ActionRow::builder().title("Status").build();
+    let status_row = adw::ActionRow::builder().title(&crate::i18n::gettext("Status")).build();
     status_row.add_suffix(&status_selector);
     content.append(&status_row);
 
@@ -14018,7 +13999,7 @@ fn connect_task_quick_editor(
     priority_spin.set_numeric(true);
     priority_spin.set_value(values.priority as f64);
     let priority_row = adw::ActionRow::builder()
-        .title("Priorität (0 = normal)")
+        .title(&gettext("Priority (0 = normal)"))
         .build();
     priority_row.add_suffix(&priority_spin);
     content.append(&priority_row);
@@ -14028,16 +14009,16 @@ fn connect_task_quick_editor(
         .placeholder_text("YYYY-MM-DD")
         .width_chars(10)
         .build();
-    let due_row = adw::ActionRow::builder().title("Fällig am").build();
+    let due_row = adw::ActionRow::builder().title(&gettext("Due")).build();
     due_row.add_suffix(&due_entry);
     content.append(&due_row);
 
     let categories_entry = gtk::Entry::builder()
         .text(&values.categories)
-        .placeholder_text("z. B. Arbeit, Privat")
+        .placeholder_text(&gettext("e.g. Work, Personal"))
         .width_chars(18)
         .build();
-    let categories_row = adw::ActionRow::builder().title("Kategorien").build();
+    let categories_row = adw::ActionRow::builder().title(&gettext("Categories")).build();
     categories_row.add_suffix(&categories_entry);
     content.append(&categories_row);
 
@@ -14047,9 +14028,9 @@ fn connect_task_quick_editor(
         .halign(gtk::Align::End)
         .margin_top(4)
         .build();
-    let cancel_button = gtk::Button::with_label("Abbrechen");
+    let cancel_button = gtk::Button::with_label(&gettext("Cancel"));
     cancel_button.add_css_class("flat");
-    let save_button = gtk::Button::with_label("Speichern");
+    let save_button = gtk::Button::with_label(&gettext("Save"));
     save_button.add_css_class("suggested-action");
     buttons.append(&cancel_button);
     buttons.append(&save_button);
@@ -14109,7 +14090,7 @@ fn connect_task_quick_editor(
         if !task_source_is_writable_on_page(&page, &source_uid) {
             show_toast_for_widget(
                 save_button,
-                "Diese Aufgabenliste ist nicht mehr als schreibfähig bestätigt",
+                &gettext("This task list is no longer confirmed as writable"),
             );
             return;
         }
@@ -14185,11 +14166,13 @@ fn connect_task_quick_editor(
                                 &task_store_for_result,
                                 &empty_tasks_for_result,
                             );
-                            page.show_toast(&format!("Aufgabe aktualisiert ({uid})"));
+                            page.show_toast(
+                                &gettext("Task updated ({uid})").replace("{uid}", &uid),
+                            );
                         }
                     } else if let Some(page) = page_weak_for_result.upgrade() {
                         page.show_toast(
-                            "Aufgabe wurde bestätigt, ist aber nicht mehr in dieser Liste geladen",
+                            &gettext("Task was confirmed, but is no longer loaded in this list"),
                         );
                     }
                     if let Some(popover) = popover_for_result.upgrade() {
@@ -14199,14 +14182,14 @@ fn connect_task_quick_editor(
                 Ok(Err(error)) => {
                     show_toast_for_widget(
                         &save_button_for_result,
-                        &format!("Aufgabe konnte nicht aktualisiert werden: {error}"),
+                        &gettext("Could not update task: {error}").replace("{error}", &error.to_string()),
                     );
                 }
                 Err(error) => {
                     tracing::debug!(%error, "Task quick edit channel closed");
                     show_toast_for_widget(
                         &save_button_for_result,
-                        "Aufgabenänderung konnte nicht abgeschlossen werden",
+                        &gettext("Task modification could not be completed"),
                     );
                 }
             }
@@ -14233,10 +14216,10 @@ fn build_task_component_with_dates(
 ) -> Result<String, String> {
     let title = title.trim();
     if title.is_empty() {
-        return Err("Eine Aufgabe benötigt einen Titel".to_string());
+        return Err(gettext("A task requires a title"));
     }
     if priority > 9 {
-        return Err("Die Priorität muss zwischen 0 und 9 liegen".to_string());
+        return Err(gettext("Priority must be between 0 and 9"));
     }
 
     let attachment_lines = parse_task_attachment_input(attachments)?;
@@ -14251,7 +14234,7 @@ fn build_task_component_with_dates(
         && let (Some(start), Some(due)) = (dtstart_date, due_date)
         && due <= start
     {
-        return Err("Das Fälligkeitsdatum muss nach dem Beginn liegen".to_string());
+        return Err(gettext("Due date must be after start date"));
     }
     validate_task_recurrence(
         "",
@@ -14311,7 +14294,7 @@ fn build_task_component_with_dates(
     }
     if lifecycle.completion_present {
         let Some(date) = lifecycle.completed else {
-            return Err("Erledigte Aufgaben benötigen ein gültiges Abschlussdatum".to_string());
+            return Err(gettext("Completed tasks require a valid completion date"));
         };
         component.push(format!("COMPLETED;VALUE=DATE:{}", date.format("%Y%m%d")));
     }
@@ -14413,10 +14396,10 @@ fn update_task_component_with_dates_and_lifecycle_edits(
 ) -> Result<String, String> {
     let title = title.trim();
     if title.is_empty() {
-        return Err("Eine Aufgabe benötigt einen Titel".to_string());
+        return Err(gettext("A task requires a title"));
     }
     if priority > 9 {
-        return Err("Die Priorität muss zwischen 0 und 9 liegen".to_string());
+        return Err(gettext("Priority must be between 0 and 9"));
     }
 
     let draft = task_editor_draft_from_component(existing);
@@ -14429,7 +14412,7 @@ fn update_task_component_with_dates_and_lifecycle_edits(
         && let (Some(start), Some(due)) = (dtstart_date, due_date)
         && due <= start
     {
-        return Err("Das Fälligkeitsdatum muss nach dem Beginn liegen".to_string());
+        return Err(gettext("Due date must be after start date"));
     }
     validate_task_recurrence(
         existing,
@@ -14764,7 +14747,7 @@ fn parse_task_attachment_input(value: &str) -> Result<Vec<TaskAttachmentLine>, S
                 .chars()
                 .any(|character| character == '\r' || character == '\n' || character.is_control())
             {
-                return Err("Anhänge enthalten ungültige Steuerzeichen".to_string());
+                return Err(gettext("Attachments contain invalid control characters"));
             }
             let (property, value) = line
                 .split_once(':')
@@ -14779,11 +14762,11 @@ fn parse_task_attachment_input(value: &str) -> Result<Vec<TaskAttachmentLine>, S
                 .chars()
                 .any(|character| character == '\r' || character == '\n' || character == ':')
             {
-                return Err("Die ATTACH-Eigenschaft ist ungültig".to_string());
+                return Err(gettext("ATTACH property is invalid"));
             }
             let safe_value = serialize_ical_attachment_value(value.trim());
             if safe_value.is_empty() {
-                return Err("Ein Anhang benötigt einen URI- oder BINARY-Wert".to_string());
+                return Err(gettext("An attachment requires a URI or BINARY value"));
             }
             Ok(TaskAttachmentLine {
                 raw: format!("{property}:{safe_value}"),
@@ -15864,7 +15847,7 @@ mod tests {
         };
         let named_prompt = task_delete_confirmation(&named);
         assert!(named_prompt.title.contains("&lt;unsafe &amp; task&gt;"));
-        assert!(named_prompt.description.contains("unwiderruflich"));
+        assert!(named_prompt.description.contains("irrevocably"));
         let many = TaskDeletePlan {
             mutations: vec![
                 TaskDeleteMutation {
@@ -15878,8 +15861,8 @@ mod tests {
             ],
         };
         let count_prompt = task_delete_confirmation(&many);
-        assert!(count_prompt.title.contains("2 Aufgaben"));
-        assert!(count_prompt.description.contains("2 Aufgaben"));
+        assert!(count_prompt.title.contains("2 tasks"));
+        assert!(count_prompt.description.contains("2 tasks"));
         assert!(!task_delete_can_dispatch(false));
         assert!(task_delete_can_dispatch(true));
         assert!(task_delete_plan_matches_selection(
@@ -16400,7 +16383,7 @@ mod tests {
         );
 
         assert!(task_query_matches(&task, "  quarterly   finance "));
-        assert!(task_query_matches(&task, "in bearbeitung"));
+        assert!(task_query_matches(&task, "in progress"));
         assert!(task_query_matches(&task, "accounting"));
         assert!(!task_query_matches(&task, "quarterly personal"));
         assert_eq!(normalize_task_query("  Work\tFinance  "), "work finance");
@@ -17855,19 +17838,19 @@ mod tests {
     fn task_list_print_and_preview_have_distinct_honest_preparation_states() {
         assert_eq!(
             TaskListPrintAction::Print.preparing_label(),
-            "Druckliste wird vorbereitet …"
+            crate::i18n::gettext("Preparing print list…")
         );
         assert_eq!(
             TaskListPrintAction::Preview.preparing_label(),
-            "Druckvorschau wird vorbereitet …"
+            crate::i18n::gettext("Preparing print preview…")
         );
         assert_eq!(
             TaskListPrintAction::Print.preparation_label(),
-            "Druckdokument vorbereitet"
+            crate::i18n::gettext("Print document prepared")
         );
         assert_eq!(
             TaskListPrintAction::Preview.preparation_label(),
-            "Druckvorschau vorbereitet"
+            crate::i18n::gettext("Print preview prepared")
         );
     }
 
@@ -17965,7 +17948,7 @@ mod tests {
         );
         assert_eq!(
             task_source_capability_label(&source),
-            "Team Tasks (schreibgeschützt)"
+            format!("Team Tasks ({})", crate::i18n::gettext("read-only"))
         );
 
         source.connected = false;
@@ -17976,7 +17959,7 @@ mod tests {
         );
         assert_eq!(
             task_source_capability_label(&source),
-            "Team Tasks (nicht verfügbar)"
+            format!("Team Tasks ({})", crate::i18n::gettext("unavailable"))
         );
     }
 
@@ -18206,17 +18189,17 @@ mod tests {
         }];
         let document = task_preview_document(std::slice::from_ref(&identity), &candidates).unwrap();
         assert_eq!(document.identity, identity);
-        assert!(document.text.contains("Zusammenfassung\nPlan, review"));
-        assert!(document.text.contains("Wiederholung\nFREQ=WEEKLY"));
+        assert!(document.text.contains(&format!("{}\nPlan, review", crate::i18n::gettext("Summary"))));
+        assert!(document.text.contains(&format!("{}\nFREQ=WEEKLY", crate::i18n::gettext("Recurrence"))));
         assert!(
             document
                 .text
-                .contains("Beschreibung\n<img src=remote> safe text")
+                .contains(&format!("{}\n<img src=remote> safe text", crate::i18n::gettext("Description")))
         );
         assert!(
             document
                 .text
-                .contains("URI (nicht geöffnet): https://example.test/attachment.pdf")
+                .contains(&format!("{}: https://example.test/attachment.pdf", crate::i18n::gettext("URI (not opened)")))
         );
 
         let stale = TaskSelectionIdentity {
@@ -18242,7 +18225,7 @@ mod tests {
             Some(0)
         );
         assert_eq!(
-            task_preview_find_state("Andere Aufgabe", "ärger", None).current,
+            task_preview_find_state("Another task", "ärger", None).current,
             None
         );
         assert!(task_preview_find_state(text, "", None).matches.is_empty());
@@ -18360,42 +18343,40 @@ mod tests {
         assert!(source.contains("\"unified-view-toolbar\""));
         assert!(source.contains("sidebar-show-symbolic"));
         assert!(source.contains("sidebar-show-right-symbolic"));
-        // Search toggle button and collapsible SearchBar
-        assert!(source.contains("search_toggle_btn"));
+        // Collapsible SearchBar synced via window headerbar and keyboard shortcuts
         assert!(source.contains("task_search_bar"));
         assert!(source.contains("search-mode-enabled"));
         assert!(source.contains("connect_stop_search"));
-        // Overflow menu with secondary actions
+        assert!(source.contains("search_bar_for_stop.set_search_mode(false)"));
+        // Triage actions in left toolbar section
+        assert!(source.contains("left_box.append(&triage_group)"));
+        assert!(source.contains("left_box.append(&more_button)"));
+        // Overflow menu with secondary and print actions
         assert!(source.contains("more_popover"));
         assert!(source.contains("view-more-symbolic"));
-        assert!(source.contains("Alle Aufgaben auswählen"));
-        assert!(source.contains("Erledigte Aufgaben bereinigen…"));
-        assert!(source.contains("Druckvorschau…"));
-        assert!(source.contains("Als iCalendar exportieren…"));
+        assert!(source.contains("Select All Tasks"));
+        assert!(source.contains("Purge Completed Tasks…"));
+        assert!(source.contains("Print Task List… (Ctrl+P)"));
+        assert!(source.contains("Print Preview…"));
+        assert!(source.contains("Export as iCalendar…"));
+        // Toolbar HIG button modes for triage buttons
+        assert!(source.contains("pub(crate) fn apply_toolbar_button_modes"));
+        assert!(source.contains("pub(crate) fn sync_toolbar_button_labels"));
     }
 
     #[test]
     fn test_tasks_toolbar_filter_switcher_and_quick_add() {
         let source = include_str!("tasks_page.rs");
-        // Center filter switcher
-        assert!(source.contains("all_btn"));
-        assert!(source.contains("today_btn"));
-        assert!(source.contains("next7_btn"));
-        assert!(source.contains("overdue_btn"));
-        assert!(source.contains("completed_btn"));
+        // Right-aligned toolbar section with sort and consolidated filter dropdown
         assert!(source.contains("filter_dropdown"));
-        // Layout switcher
-        assert!(source.contains("layout_vertical_btn"));
-        assert!(source.contains("layout_classic_btn"));
-        assert!(source.contains("layout_list_only_btn"));
-        assert!(source.contains("sidebar-show-right-symbolic"));
-        assert!(source.contains("pan-down-symbolic"));
-        assert!(source.contains("view-list-symbolic"));
+        assert!(source.contains("TASK_FILTER_OPTIONS"));
+        assert!(source.contains("right_box.append(&sort_group);"));
+        assert!(source.contains("right_box.append(&filter_dropdown);"));
         // Quick add box
         assert!(source.contains("task-quick-add-box"));
         assert!(source.contains("task-quick-add-entry"));
         // Task notebook icon
-        assert!(source.contains("evolution-tasks-symbolic"));
+        assert!(source.contains("view-list-bullet-symbolic"));
         assert!(source.contains("task-row-icon"));
     }
 
@@ -18433,7 +18414,7 @@ mod tests {
         assert_eq!(layout.rows.len(), 2);
         assert_eq!(layout.total_height, 64.0);
         assert_eq!(layout.rows[0].title, "Review pull requests");
-        assert_eq!(layout.rows[0].due_display, "Heute");
+        assert_eq!(layout.rows[0].due_display, crate::i18n::gettext("Today"));
         assert!(!layout.rows[0].completed);
         assert_eq!(layout.rows[1].title, "Submit report");
         assert!(layout.rows[1].completed);
