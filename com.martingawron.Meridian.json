@@ -1,12 +1,12 @@
 {
-  "id": "org.gnome.Evolution4",
+  "id": "com.martingawron.Meridian",
   "runtime": "org.gnome.Platform",
   "runtime-version": "48",
   "sdk": "org.gnome.Sdk",
   "sdk-extensions": [
     "org.freedesktop.Sdk.Extension.rust-stable"
   ],
-  "command": "evolution-gtk4",
+  "command": "meridian",
   "finish-args": [
     "--share=ipc",
     "--share=network",
@@ -21,7 +21,7 @@
     "--talk-name=org.freedesktop.Notifications",
     "--talk-name=org.freedesktop.secrets",
     "--filesystem=xdg-run/gvfsd",
-    "--metadata=X-DConf=migrate-path=/org/gnome/Evolution4/"
+    "--metadata=X-DConf=migrate-path=/com/martingawron/meridian/"
   ],
   "cleanup": [
     "/include",
@@ -57,21 +57,21 @@
       ]
     },
     {
-      "name": "evolution-gtk4",
+      "name": "meridian",
       "buildsystem": "simple",
       "build-options": {
         "append-path": "/usr/lib/sdk/rust-stable/bin",
         "env": {
-          "CARGO_HOME": "/run/build/evolution-gtk4/cargo",
+          "CARGO_HOME": "/run/build/meridian/cargo",
           "CARGO_NET_OFFLINE": "true"
         }
       },
       "build-commands": [
         "cargo --offline fetch --manifest-path Cargo.toml --verbose",
         "cargo --offline build --release --manifest-path Cargo.toml",
-        "install -Dm755 target/release/evolution-gtk4 /app/bin/evolution-gtk4",
-        "install -Dm644 data/org.gnome.Evolution4.desktop.in /app/share/applications/org.gnome.Evolution4.desktop",
-        "install -Dm644 data/org.gnome.Evolution4.metainfo.xml.in /app/share/metainfo/org.gnome.Evolution4.metainfo.xml"
+        "install -Dm755 target/release/meridian /app/bin/meridian",
+        "install -Dm644 data/com.martingawron.Meridian.desktop.in /app/share/applications/com.martingawron.Meridian.desktop",
+        "install -Dm644 data/com.martingawron.Meridian.metainfo.xml.in /app/share/metainfo/com.martingawron.Meridian.metainfo.xml"
       ],
       "sources": [
         {

@@ -8,10 +8,10 @@
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-manifest="$root/org.gnome.Evolution4.json"
+manifest="$root/com.martingawron.Meridian.json"
 
 jq -e '
-  .id == "org.gnome.Evolution4"
+  .id == "com.martingawron.Meridian"
   and (.modules | length >= 2)
   and ([.modules[].sources[]? | objects | select(.type == "git")] | length >= 1)
   and (all(.modules[].sources[]?; type != "object" or .type != "git" or (.commit | test("^[0-9a-f]{40}$"))))
