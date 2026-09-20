@@ -454,6 +454,14 @@
       <default>'compact'</default>
       <summary>Mail list density (compact, comfortable, or spacious)</summary>
     </key>
+    <key name="mail-show-status" type="b">
+      <default>true</default>
+      <summary>Show read/unread status indicator in the mail list</summary>
+    </key>
+    <key name="mail-show-flagged" type="b">
+      <default>true</default>
+      <summary>Show flagged/star indicator in the mail list</summary>
+    </key>
     <key name="mail-show-avatar" type="b">
       <default>false</default>
       <summary>Show sender avatars in the mail list</summary>

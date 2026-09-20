@@ -1032,6 +1032,8 @@ fn canonical_setting(
         "show-from" | "show-sender" if group.contains("mail") => "mail-show-sender",
         "show-to" | "show-recipient" if group.contains("mail") => "mail-show-recipient",
         "show-date" if group.contains("mail") => "mail-show-date",
+        "show-status" if group.contains("mail") => "mail-show-status",
+        "show-flagged" | "show-star" | "show-starred" if group.contains("mail") => "mail-show-flagged",
         "show-attachment" | "show-attachments" if group.contains("mail") => "mail-show-attachment",
         "show-labels" | "show-tags" if group.contains("mail") => "mail-show-labels",
         "show-preview-text" if group.contains("mail") => "mail-show-preview-text",
@@ -1232,6 +1234,8 @@ fn is_supported_migration_key(key: &str) -> bool {
             | "mail-show-sender"
             | "mail-show-recipient"
             | "mail-show-date"
+            | "mail-show-status"
+            | "mail-show-flagged"
             | "mail-show-attachment"
             | "mail-show-preview-text"
             | "mail-show-labels"

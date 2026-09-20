@@ -2292,6 +2292,22 @@ impl AppSettings {
         self.set_boolean("mail-show-deleted", value);
     }
 
+    pub fn mail_show_status(&self) -> bool {
+        self.settings.boolean("mail-show-status")
+    }
+
+    pub fn set_mail_show_status(&self, value: bool) {
+        self.set_boolean("mail-show-status", value);
+    }
+
+    pub fn mail_show_flagged(&self) -> bool {
+        self.settings.boolean("mail-show-flagged")
+    }
+
+    pub fn set_mail_show_flagged(&self, value: bool) {
+        self.set_boolean("mail-show-flagged", value);
+    }
+
     pub fn mail_show_avatar(&self) -> bool {
         self.settings.boolean("mail-show-avatar")
     }
@@ -3302,6 +3318,8 @@ impl AppSettings {
                 );
             }
             "mail-row-density" => self.set_mail_row_density(value),
+            "mail-show-status" => self.set_mail_show_status(parse_migrated_bool(key, value)?),
+            "mail-show-flagged" => self.set_mail_show_flagged(parse_migrated_bool(key, value)?),
             "mail-show-avatar" => self.set_mail_show_avatar(parse_migrated_bool(key, value)?),
             "mail-show-sender" => self.set_mail_show_sender(parse_migrated_bool(key, value)?),
             "mail-show-recipient" => {
@@ -3781,6 +3799,8 @@ impl AppSettings {
             "mail-show-sender",
             "mail-show-recipient",
             "mail-show-date",
+            "mail-show-status",
+            "mail-show-flagged",
             "mail-show-attachment",
             "mail-show-preview-text",
             "mail-show-labels",

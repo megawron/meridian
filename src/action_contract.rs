@@ -90,6 +90,7 @@ pub(crate) const ACTIONS: &[ActionSpec] = action_specs! {
         "win.new-folder", "win.redo", "win.refresh-mail", "win.undo",
         "win.search-advanced",
         "win.toggle-all-headers", "win.zoom-in", "win.zoom-out", "win.zoom-reset",
+        "win.toggle-mail-status", "win.toggle-mail-flagged",
         "win.toggle-mail-attachment", "win.toggle-mail-avatar", "win.toggle-mail-date",
         "win.toggle-mail-labels", "win.toggle-mail-preview-text",
         "win.toggle-mail-recipient", "win.toggle-mail-sender",
@@ -175,6 +176,8 @@ pub(crate) const PRIMARY_MENU_ACTIONS: &[MenuActionSpec] = menu_specs! {
         ("Show/Hide Statusbar", "win.toggle-statusbar"),
     ],
     ViewColumns => [
+        ("Show/Hide Status", "win.toggle-mail-status"),
+        ("Show/Hide Flag", "win.toggle-mail-flagged"),
         ("Show/Hide Avatars", "win.toggle-mail-avatar"),
         ("Show/Hide Senders", "win.toggle-mail-sender"),
         ("Show/Hide Recipients", "win.toggle-mail-recipient"),

@@ -1380,6 +1380,124 @@ pub(crate) struct PreparedMailTableRow {
     pub thread_size: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub(crate) struct ColumnRect {
+    pub x: f64,
+    pub width: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub(crate) struct TableColumnsGeometry {
+    pub status: ColumnRect,
+    pub attachment: ColumnRect,
+    pub flagged: ColumnRect,
+    pub sender: ColumnRect,
+    pub recipient: ColumnRect,
+    pub subject: ColumnRect,
+    pub date: ColumnRect,
+    pub size: ColumnRect,
+}
+
+pub(crate) fn compute_table_columns_geometry(
+    order: &[String],
+    total_width: f64,
+    show_status: bool,
+    show_attachment: bool,
+    show_flagged: bool,
+    show_sender: bool,
+    sender_width: f64,
+    show_recipient: bool,
+    recipient_width: f64,
+    show_date: bool,
+    date_width: f64,
+    show_size: bool,
+    size_width: f64,
+    sep_width: f64,
+) -> TableColumnsGeometry {
+    const FIXED_ICON_WIDTH: f64 = 28.0;
+
+    let w_status = if show_status { FIXED_ICON_WIDTH } else { 0.0 };
+    let w_attachment = if show_attachment { FIXED_ICON_WIDTH } else { 0.0 };
+    let w_flagged = if show_flagged { FIXED_ICON_WIDTH } else { 0.0 };
+    let w_sender = if show_sender { sender_width.max(60.0) + sep_width } else { 0.0 };
+    let w_recipient = if show_recipient { recipient_width.max(60.0) + sep_width } else { 0.0 };
+    let w_date = if show_date { date_width.max(60.0) + sep_width } else { 0.0 };
+    let w_size = if show_size { size_width.max(40.0) } else { 0.0 };
+
+    let total_non_subject = w_status + w_attachment + w_flagged + w_sender + w_recipient + w_date + w_size;
+    let w_subject = (total_width - total_non_subject).max(60.0);
+
+    let default_order = [
+        "status",
+        "attachment",
+        "flagged",
+        "sender",
+        "recipient",
+        "subject",
+        "date",
+        "size",
+    ];
+    let mut resolved_order: Vec<&str> = Vec::with_capacity(8);
+    for col in order {
+        let s = col.as_str();
+        if default_order.contains(&s) && !resolved_order.contains(&s) {
+            resolved_order.push(s);
+        }
+    }
+    for def in default_order {
+        if !resolved_order.contains(&def) {
+            resolved_order.push(def);
+        }
+    }
+
+    let mut geom = TableColumnsGeometry::default();
+    let mut cur_x = 0.0;
+
+    for col in resolved_order {
+        match col {
+            "status" => {
+                geom.status = ColumnRect { x: cur_x, width: w_status };
+                cur_x += w_status;
+            }
+            "attachment" => {
+                geom.attachment = ColumnRect { x: cur_x, width: w_attachment };
+                cur_x += w_attachment;
+            }
+            "flagged" => {
+                geom.flagged = ColumnRect { x: cur_x, width: w_flagged };
+                cur_x += w_flagged;
+            }
+            "sender" => {
+                let actual_w = if show_sender { sender_width.max(60.0) } else { 0.0 };
+                geom.sender = ColumnRect { x: cur_x, width: actual_w };
+                cur_x += w_sender;
+            }
+            "recipient" => {
+                let actual_w = if show_recipient { recipient_width.max(60.0) } else { 0.0 };
+                geom.recipient = ColumnRect { x: cur_x, width: actual_w };
+                cur_x += w_recipient;
+            }
+            "subject" => {
+                geom.subject = ColumnRect { x: cur_x, width: w_subject };
+                cur_x += w_subject;
+            }
+            "date" => {
+                let actual_w = if show_date { date_width.max(60.0) } else { 0.0 };
+                let x = if show_date && sep_width > 0.0 { cur_x + sep_width } else { cur_x };
+                geom.date = ColumnRect { x, width: actual_w };
+                cur_x += w_date;
+            }
+            "size" => {
+                geom.size = ColumnRect { x: cur_x, width: w_size };
+                cur_x += w_size;
+            }
+            _ => {}
+        }
+    }
+
+    geom
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PreparedMailTableLayout {
     pub rows: Vec<PreparedMailTableRow>,
@@ -1393,12 +1511,23 @@ pub(crate) struct PreparedMailTableLayout {
     pub sep_width: f64,
     pub font_size: f64,
     pub font_family: String,
+    pub show_status: bool,
+    pub show_attachment: bool,
+    pub show_flagged: bool,
     pub show_recipient: bool,
     pub show_date: bool,
     pub show_size: bool,
     pub show_preview_text: bool,
     pub date_align_left: bool,
     pub is_cards_mode: bool,
+    pub col_status: ColumnRect,
+    pub col_attachment: ColumnRect,
+    pub col_flagged: ColumnRect,
+    pub col_sender: ColumnRect,
+    pub col_recipient: ColumnRect,
+    pub col_subject: ColumnRect,
+    pub col_date: ColumnRect,
+    pub col_size: ColumnRect,
     pub primary_desc_normal: gtk::pango::FontDescription,
     pub primary_desc_bold: gtk::pango::FontDescription,
     pub secondary_desc: gtk::pango::FontDescription,
@@ -1450,31 +1579,43 @@ impl PreparedMailTableLayout {
         )
     }
     pub fn col_status_x(&self) -> f64 {
-        0.0
+        self.col_status.x
     }
     pub fn col_status_w(&self) -> f64 {
-        28.0
+        if self.show_status {
+            self.col_status.width
+        } else {
+            0.0
+        }
     }
 
     pub fn col_attach_x(&self) -> f64 {
-        28.0
+        self.col_attachment.x
     }
     pub fn col_attach_w(&self) -> f64 {
-        28.0
+        if self.show_attachment {
+            self.col_attachment.width
+        } else {
+            0.0
+        }
     }
 
     pub fn col_star_x(&self) -> f64 {
-        56.0
+        self.col_flagged.x
     }
     pub fn col_star_w(&self) -> f64 {
-        28.0
+        if self.show_flagged {
+            self.col_flagged.width
+        } else {
+            0.0
+        }
     }
 
     pub fn col_sender_x(&self) -> f64 {
-        84.0
+        self.col_sender.x
     }
     pub fn col_sender_w(&self) -> f64 {
-        self.sender_width
+        self.col_sender.width
     }
 
     pub fn col_sender_sep_x(&self) -> f64 {
@@ -1485,11 +1626,11 @@ impl PreparedMailTableLayout {
     }
 
     pub fn col_recipient_x(&self) -> f64 {
-        self.col_sender_sep_x() + self.col_sender_sep_w()
+        self.col_recipient.x
     }
     pub fn col_recipient_w(&self) -> f64 {
         if self.show_recipient {
-            self.recipient_width
+            self.col_recipient.width
         } else {
             0.0
         }
@@ -1507,7 +1648,7 @@ impl PreparedMailTableLayout {
     }
 
     pub fn col_subject_x(&self) -> f64 {
-        self.col_recipient_sep_x() + self.col_recipient_sep_w()
+        self.col_subject.x
     }
 
     pub fn right_reserved_w(&self) -> f64 {
@@ -1522,11 +1663,11 @@ impl PreparedMailTableLayout {
     }
 
     pub fn col_subject_w(&self) -> f64 {
-        (self.width - self.col_subject_x() - self.right_reserved_w()).max(60.0)
+        self.col_subject.width
     }
 
     pub fn col_date_sep_x(&self) -> f64 {
-        self.col_subject_x() + self.col_subject_w()
+        (self.col_date_x() - self.sep_width).max(self.col_subject_x() + self.col_subject_w())
     }
     pub fn col_date_sep_w(&self) -> f64 {
         if self.show_date {
@@ -1537,22 +1678,22 @@ impl PreparedMailTableLayout {
     }
 
     pub fn col_date_x(&self) -> f64 {
-        self.col_date_sep_x() + self.col_date_sep_w()
+        self.col_date.x
     }
     pub fn col_date_w(&self) -> f64 {
         if self.show_date {
-            self.date_width
+            self.col_date.width
         } else {
             0.0
         }
     }
 
     pub fn col_size_x(&self) -> f64 {
-        self.col_date_x() + self.col_date_w()
+        self.col_size.x
     }
     pub fn col_size_w(&self) -> f64 {
         if self.show_size {
-            self.size_width
+            self.col_size.width
         } else {
             0.0
         }
@@ -1596,6 +1737,38 @@ pub(crate) fn prepare_mail_table_layout_from_rows(
         secondary_text_offset,
     ) = PreparedMailTableLayout::compute_font_metrics(&font_family, font_size, row_height);
 
+    let show_status = true;
+    let show_attachment = true;
+    let show_flagged = true;
+    let show_sender = true;
+    let show_recipient = recipient_width > 0.0;
+    let show_date = date_width > 0.0;
+    let show_size = true;
+    let size_width = 70.0;
+    let sep_width = 0.0;
+
+    let default_order: Vec<String> = crate::services::settings_service::MAIL_LIST_COLUMN_IDS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+
+    let geom = compute_table_columns_geometry(
+        &default_order,
+        width.max(120.0),
+        show_status,
+        show_attachment,
+        show_flagged,
+        show_sender,
+        sender_width,
+        show_recipient,
+        recipient_width,
+        show_date,
+        date_width,
+        show_size,
+        size_width,
+        sep_width,
+    );
+
     PreparedMailTableLayout {
         rows,
         width: width.max(120.0),
@@ -1604,16 +1777,27 @@ pub(crate) fn prepare_mail_table_layout_from_rows(
         sender_width: sender_width.max(60.0),
         recipient_width: recipient_width.max(0.0),
         date_width: date_width.max(60.0),
-        size_width: 70.0,
-        sep_width: 0.0,
+        size_width,
+        sep_width,
         font_size,
         font_family,
-        show_recipient: recipient_width > 0.0,
-        show_date: date_width > 0.0,
-        show_size: true,
+        show_status,
+        show_attachment,
+        show_flagged,
+        show_recipient,
+        show_date,
+        show_size,
         show_preview_text: true,
         date_align_left: false,
         is_cards_mode: false,
+        col_status: geom.status,
+        col_attachment: geom.attachment,
+        col_flagged: geom.flagged,
+        col_sender: geom.sender,
+        col_recipient: geom.recipient,
+        col_subject: geom.subject,
+        col_date: geom.date,
+        col_size: geom.size,
         primary_desc_normal,
         primary_desc_bold,
         secondary_desc,
@@ -1713,20 +1897,28 @@ pub(crate) fn hit_test_mail_table(
     let row = layout.rows.get(row_idx)?;
 
     if layout.is_cards_mode {
-        if x <= 58.0 {
+        if layout.show_status && x <= 58.0 {
             return Some(MailTableHitAction::ToggleStatus(row_idx, row.model_index));
         }
         let rel_y = y % layout.row_height;
-        if x >= (layout.width - 40.0) && rel_y >= 22.0 && rel_y <= 52.0 {
+        if layout.show_flagged && x >= (layout.width - 40.0) && rel_y >= 22.0 && rel_y <= 52.0 {
             return Some(MailTableHitAction::ToggleStar(row_idx, row.model_index));
         }
         return Some(MailTableHitAction::SelectRow(row_idx, row.model_index));
     }
 
-    if x >= layout.col_status_x() && x < (layout.col_status_x() + layout.col_status_w()) {
+    if layout.show_status
+        && layout.col_status_w() > 0.0
+        && x >= layout.col_status_x()
+        && x < (layout.col_status_x() + layout.col_status_w())
+    {
         return Some(MailTableHitAction::ToggleStatus(row_idx, row.model_index));
     }
-    if x >= layout.col_star_x() && x < (layout.col_star_x() + layout.col_star_w()) {
+    if layout.show_flagged
+        && layout.col_star_w() > 0.0
+        && x >= layout.col_star_x()
+        && x < (layout.col_star_x() + layout.col_star_w())
+    {
         return Some(MailTableHitAction::ToggleStar(row_idx, row.model_index));
     }
 
@@ -2107,11 +2299,11 @@ pub(crate) fn draw_mail_table_canvas(
             let right_pad = 12.0;
 
             // 1. Unread indicator dot & flag
-            if row.is_unread {
+            if layout.show_status && row.is_unread {
                 cr.set_source_rgb(0.98, 0.58, 0.12); // Warm vibrant orange #fa951f
                 cr.arc(12.0, y + h / 2.0, 3.5, 0.0, std::f64::consts::TAU);
                 let _ = cr.fill();
-            } else if row.is_flagged {
+            } else if layout.show_flagged && row.is_flagged {
                 draw_cairo_flag(cr, 12.0, y + h / 2.0);
             }
 
@@ -2194,7 +2386,7 @@ pub(crate) fn draw_mail_table_canvas(
 
             // Line 2: Subject + right badges (Thread count, attachment, star)
             let mut line2_right_x = width - right_pad;
-            if row.is_flagged {
+            if layout.show_flagged && row.is_flagged {
                 draw_cairo_star(cr, line2_right_x - 7.0, y + 39.0, 7.0, true, is_dark, is_hovered);
                 line2_right_x -= 18.0;
             }
@@ -2277,14 +2469,14 @@ pub(crate) fn draw_mail_table_canvas(
         }
 
         // 1. Status Column (Adwaita blue unread dot, HIG 9px diameter)
-        if row.is_unread {
+        if layout.show_status && layout.col_status_w() > 0.0 && row.is_unread {
             cr.set_source_rgba(accent_rgb.0, accent_rgb.1, accent_rgb.2, 1.0);
             cr.arc(layout.col_status_x() + 14.0, y + h / 2.0, 4.5, 0.0, std::f64::consts::TAU);
             let _ = cr.fill();
         }
 
         // 2. Attachment Column (Vector paperclip)
-        if row.has_attachments {
+        if layout.show_attachment && layout.col_attach_w() > 0.0 && row.has_attachments {
             draw_cairo_paperclip(
                 cr,
                 layout.col_attach_x() + 14.0,
@@ -2297,15 +2489,17 @@ pub(crate) fn draw_mail_table_canvas(
         }
 
         // 3. Flagged / Star Column (Large GNOME symbolic star, 21.6px diameter)
-        draw_cairo_star(
-            cr,
-            layout.col_star_x() + 14.0,
-            y + h / 2.0,
-            10.8,
-            row.is_flagged,
-            is_dark,
-            is_hovered,
-        );
+        if layout.show_flagged && layout.col_star_w() > 0.0 {
+            draw_cairo_star(
+                cr,
+                layout.col_star_x() + 14.0,
+                y + h / 2.0,
+                10.8,
+                row.is_flagged,
+                is_dark,
+                is_hovered,
+            );
+        }
 
         // 4. Sender Column
         let sender_x = layout.col_sender_x();
@@ -6277,11 +6471,13 @@ impl MailPage {
                 }
             });
             for key in [
+                "mail-show-status",
+                "mail-show-attachment",
+                "mail-show-flagged",
                 "mail-show-avatar",
                 "mail-show-sender",
                 "mail-show-recipient",
                 "mail-show-date",
-                "mail-show-attachment",
                 "mail-show-preview-text",
                 "mail-show-labels",
                 "mail-show-size",
@@ -6291,7 +6487,9 @@ impl MailPage {
                 let page_weak_for_columns = self.downgrade();
                 settings.connect_changed(Some(key), move |_, _| {
                     if let Some(page) = page_weak_for_columns.upgrade() {
+                        page.imp().mail_table_layout.replace(None);
                         page.refresh_mail_column_header();
+                        page.update_mail_table_canvas_layout();
                         page.refresh_mail();
                     }
                 });
@@ -15764,11 +15962,13 @@ impl MailPage {
 
         let settings = AppSettings::try_new();
 
-        let column_toggles: [(&'static str, String); 10] = [
+        let column_toggles: [(&'static str, String); 12] = [
+            ("mail-show-status", gettext("Status")),
+            ("mail-show-attachment", gettext("Attachments")),
+            ("mail-show-flagged", gettext("Flag")),
             ("mail-show-sender", gettext("Sender")),
             ("mail-show-recipient", gettext("Recipient")),
             ("mail-show-date", gettext("Date")),
-            ("mail-show-attachment", gettext("Attachments")),
             ("mail-show-preview-text", gettext("Preview text")),
             ("mail-show-avatar", gettext("Avatar")),
             ("mail-show-labels", gettext("Labels")),
@@ -15781,6 +15981,8 @@ impl MailPage {
         for (key, label) in column_toggles {
             let active = if let Some(ref s) = settings {
                 match key {
+                    "mail-show-status" => s.mail_show_status(),
+                    "mail-show-flagged" => s.mail_show_flagged(),
                     "mail-show-sender" => s.mail_show_sender(),
                     "mail-show-recipient" => s.mail_show_recipient(),
                     "mail-show-date" => s.mail_show_date(),
@@ -15808,6 +16010,8 @@ impl MailPage {
                 if let Some(ref s) = settings_cloned {
                     s.set_mail_list_view_profile("custom");
                     match key_str {
+                        "mail-show-status" => s.set_mail_show_status(btn.is_active()),
+                        "mail-show-flagged" => s.set_mail_show_flagged(btn.is_active()),
                         "mail-show-sender" => s.set_mail_show_sender(btn.is_active()),
                         "mail-show-recipient" => s.set_mail_show_recipient(btn.is_active()),
                         "mail-show-date" => s.set_mail_show_date(btn.is_active()),
@@ -15822,7 +16026,9 @@ impl MailPage {
                     }
                 }
                 if let Some(page) = page_for_chk.upgrade() {
+                    page.imp().mail_table_layout.replace(None);
                     page.refresh_mail_column_header();
+                    page.update_mail_table_canvas_layout();
                 }
             });
             content.append(&check);
@@ -15951,6 +16157,10 @@ impl MailPage {
                     .collect()
             });
         let wide_messages = mail_list_uses_wide_messages(&profile, &order);
+        let show_status = settings
+            .as_ref()
+            .map(AppSettings::mail_show_status)
+            .unwrap_or(true);
         let show_sender = settings
             .as_ref()
             .map(AppSettings::mail_show_sender)
@@ -15966,6 +16176,10 @@ impl MailPage {
         let show_attachment = settings
             .as_ref()
             .map(AppSettings::mail_show_attachment)
+            .unwrap_or(true);
+        let show_flagged = settings
+            .as_ref()
+            .map(AppSettings::mail_show_flagged)
             .unwrap_or(true);
         let show_preview = settings
             .as_ref()
@@ -16007,11 +16221,9 @@ impl MailPage {
             }
         }
         if let Some(status) = Self::mail_column_child(&header, "status") {
-            status.set_visible(mail_list_profile_allows_column(
-                &profile,
-                wide_messages,
-                "status",
-            ));
+            status.set_visible(
+                mail_list_profile_allows_column(&profile, wide_messages, "status") && show_status,
+            );
             if let Some(lbl) = Self::cell_label(&status) {
                 lbl.set_label(&self.mail_header_sort_label("●", MailSortField::Unread));
             }
@@ -16027,11 +16239,9 @@ impl MailPage {
             }
         }
         if let Some(star) = Self::mail_column_child(&header, "flagged") {
-            star.set_visible(mail_list_profile_allows_column(
-                &profile,
-                wide_messages,
-                "flagged",
-            ));
+            star.set_visible(
+                mail_list_profile_allows_column(&profile, wide_messages, "flagged") && show_flagged,
+            );
             if let Some(lbl) = Self::cell_label(&star) {
                 lbl.set_label(&self.mail_header_sort_label("★", MailSortField::Flagged));
             }
@@ -16369,6 +16579,20 @@ impl MailPage {
             });
         let wide_messages = mail_list_uses_wide_messages(&profile, &order);
 
+        let show_status = mail_list_profile_allows_column(&profile, wide_messages, "status")
+            && settings.as_ref().map(|s| s.mail_show_status()).unwrap_or(true);
+
+        let show_attachment = mail_list_profile_allows_column(&profile, wide_messages, "attachment")
+            && settings.as_ref().map(|s| s.mail_show_attachment()).unwrap_or(true);
+
+        let show_flagged = mail_list_profile_allows_column(&profile, wide_messages, "flagged")
+            && settings.as_ref().map(|s| s.mail_show_flagged()).unwrap_or(true);
+
+        let show_sender = (mail_list_profile_allows_column(&profile, wide_messages, "sender")
+            || settings.as_ref().map(|s| s.mail_show_sender()).unwrap_or(true))
+            && settings.as_ref().map(|s| s.mail_show_sender()).unwrap_or(true)
+            && !wide_messages;
+
         let show_recipient = (mail_list_profile_allows_column(&profile, wide_messages, "recipient")
             || settings.as_ref().map(|s| s.mail_show_recipient()).unwrap_or(false))
             && settings.as_ref().map(|s| s.mail_show_recipient()).unwrap_or(false)
@@ -16491,6 +16715,26 @@ impl MailPage {
             secondary_text_offset,
         ) = PreparedMailTableLayout::compute_font_metrics(&font_family, font_size, row_height);
 
+        let sep_width = 6.0;
+        let size_width = 82.0;
+
+        let geom = compute_table_columns_geometry(
+            &order,
+            canvas_width.max(120.0),
+            show_status,
+            show_attachment,
+            show_flagged,
+            show_sender,
+            sender_width,
+            show_recipient,
+            recipient_width,
+            show_date,
+            date_width,
+            show_size,
+            size_width,
+            sep_width,
+        );
+
         PreparedMailTableLayout {
             rows,
             width: canvas_width.max(120.0),
@@ -16499,16 +16743,27 @@ impl MailPage {
             sender_width: sender_width.max(60.0),
             recipient_width: recipient_width.max(0.0),
             date_width: date_width.max(60.0),
-            size_width: 82.0,
-            sep_width: 6.0,
+            size_width,
+            sep_width,
             font_size,
             font_family,
+            show_status,
+            show_attachment,
+            show_flagged,
             show_recipient,
             show_date,
             show_size,
             show_preview_text,
             date_align_left,
             is_cards_mode,
+            col_status: geom.status,
+            col_attachment: geom.attachment,
+            col_flagged: geom.flagged,
+            col_sender: geom.sender,
+            col_recipient: geom.recipient,
+            col_subject: geom.subject,
+            col_date: geom.date,
+            col_size: geom.size,
             primary_desc_normal,
             primary_desc_bold,
             secondary_desc,
@@ -19492,12 +19747,14 @@ impl MailPage {
                 .build(),
         );
 
-        let column_settings: [(&'static str, String); 10] = [
+        let column_settings: [(&'static str, String); 12] = [
+            ("mail-show-status", gettext("Status")),
+            ("mail-show-attachment", gettext("Attachments")),
+            ("mail-show-flagged", gettext("Flag")),
             ("mail-show-avatar", gettext("Avatars")),
             ("mail-show-sender", gettext("Sender")),
             ("mail-show-recipient", gettext("Recipient")),
             ("mail-show-date", gettext("Date")),
-            ("mail-show-attachment", gettext("Attachments")),
             ("mail-show-preview-text", gettext("Preview text")),
             ("mail-show-labels", gettext("Labels")),
             ("mail-show-size", gettext("Size")),
@@ -19717,11 +19974,13 @@ impl MailPage {
 
             for (idx, (key, label)) in column_settings.iter().enumerate() {
                 let active = match *key {
+                    "mail-show-status" => settings.mail_show_status(),
+                    "mail-show-attachment" => settings.mail_show_attachment(),
+                    "mail-show-flagged" => settings.mail_show_flagged(),
                     "mail-show-avatar" => settings.mail_show_avatar(),
                     "mail-show-sender" => settings.mail_show_sender(),
                     "mail-show-recipient" => settings.mail_show_recipient(),
                     "mail-show-date" => settings.mail_show_date(),
-                    "mail-show-attachment" => settings.mail_show_attachment(),
                     "mail-show-preview-text" => settings.mail_show_preview_text(),
                     "mail-show-labels" => settings.mail_show_labels(),
                     "mail-show-size" => settings.mail_show_size(),
@@ -19738,6 +19997,15 @@ impl MailPage {
                 check.connect_toggled(move |check| {
                     settings_for_check.set_mail_list_view_profile("custom");
                     match key_str {
+                        "mail-show-status" => {
+                            settings_for_check.set_mail_show_status(check.is_active())
+                        }
+                        "mail-show-attachment" => {
+                            settings_for_check.set_mail_show_attachment(check.is_active())
+                        }
+                        "mail-show-flagged" => {
+                            settings_for_check.set_mail_show_flagged(check.is_active())
+                        }
                         "mail-show-avatar" => {
                             settings_for_check.set_mail_show_avatar(check.is_active())
                         }
@@ -19748,9 +20016,6 @@ impl MailPage {
                             settings_for_check.set_mail_show_recipient(check.is_active())
                         }
                         "mail-show-date" => settings_for_check.set_mail_show_date(check.is_active()),
-                        "mail-show-attachment" => {
-                            settings_for_check.set_mail_show_attachment(check.is_active())
-                        }
                         "mail-show-preview-text" => {
                             settings_for_check.set_mail_show_preview_text(check.is_active())
                         }
@@ -19777,8 +20042,8 @@ impl MailPage {
                         }
                     }
                 });
-                let col = (idx / 5) as i32;
-                let row = (idx % 5) as i32;
+                let col = (idx / 6) as i32;
+                let row = (idx % 6) as i32;
                 columns_grid.attach(&check, col, row, 1, 1);
             }
             columns_popover_box.append(&columns_grid);
@@ -27937,6 +28202,128 @@ mod tests {
         )
     }
 
+    fn test_create_layout(
+        rows: Vec<PreparedMailTableRow>,
+        width: f64,
+        height: f64,
+        row_height: f64,
+        sender_width: f64,
+        recipient_width: f64,
+        date_width: f64,
+        size_width: f64,
+        sep_width: f64,
+        font_size: f64,
+        font_family: &str,
+        show_recipient: bool,
+        show_date: bool,
+        show_size: bool,
+        show_preview_text: bool,
+        date_align_left: bool,
+        is_cards_mode: bool,
+    ) -> PreparedMailTableLayout {
+        test_create_layout_full(
+            rows,
+            width,
+            height,
+            row_height,
+            sender_width,
+            recipient_width,
+            date_width,
+            size_width,
+            sep_width,
+            font_size,
+            font_family,
+            true,
+            true,
+            show_recipient,
+            show_date,
+            show_size,
+            show_preview_text,
+            date_align_left,
+            is_cards_mode,
+        )
+    }
+
+    fn test_create_layout_full(
+        rows: Vec<PreparedMailTableRow>,
+        width: f64,
+        height: f64,
+        row_height: f64,
+        sender_width: f64,
+        recipient_width: f64,
+        date_width: f64,
+        size_width: f64,
+        sep_width: f64,
+        font_size: f64,
+        font_family: &str,
+        show_status: bool,
+        show_flagged: bool,
+        show_recipient: bool,
+        show_date: bool,
+        show_size: bool,
+        show_preview_text: bool,
+        date_align_left: bool,
+        is_cards_mode: bool,
+    ) -> PreparedMailTableLayout {
+        let (primary_desc_normal, primary_desc_bold, secondary_desc, primary_text_offset, secondary_text_offset) =
+            PreparedMailTableLayout::compute_font_metrics(font_family, font_size, row_height);
+        let default_order: Vec<String> = crate::services::settings_service::MAIL_LIST_COLUMN_IDS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let geom = compute_table_columns_geometry(
+            &default_order,
+            width,
+            show_status,
+            true,
+            show_flagged,
+            true,
+            sender_width,
+            show_recipient,
+            recipient_width,
+            show_date,
+            date_width,
+            show_size,
+            size_width,
+            sep_width,
+        );
+        PreparedMailTableLayout {
+            rows,
+            width,
+            height,
+            row_height,
+            sender_width,
+            recipient_width,
+            date_width,
+            size_width,
+            sep_width,
+            font_size,
+            font_family: font_family.to_string(),
+            show_status,
+            show_attachment: true,
+            show_flagged,
+            show_recipient,
+            show_date,
+            show_size,
+            show_preview_text,
+            date_align_left,
+            is_cards_mode,
+            col_status: geom.status,
+            col_attachment: geom.attachment,
+            col_flagged: geom.flagged,
+            col_sender: geom.sender,
+            col_recipient: geom.recipient,
+            col_subject: geom.subject,
+            col_date: geom.date,
+            col_size: geom.size,
+            primary_desc_normal,
+            primary_desc_bold,
+            secondary_desc,
+            primary_text_offset,
+            secondary_text_offset,
+        }
+    }
+
     fn scope_test_messages() -> Vec<MailMessageObject> {
         vec![
             scope_test_message("source-a-inbox", "source-a", "Inbox", true),
@@ -32732,38 +33119,25 @@ mod tests {
 
     #[test]
     fn test_mail_table_canvas_column_geometry_with_separators() {
-        let (
-            primary_desc_normal,
-            primary_desc_bold,
-            secondary_desc,
-            primary_text_offset,
-            secondary_text_offset,
-        ) = PreparedMailTableLayout::compute_font_metrics("Cantarell", 15.0, 36.0);
-
-        let layout = PreparedMailTableLayout {
-            rows: Vec::new(),
-            width: 1000.0,
-            height: 100.0,
-            row_height: 36.0,
-            sender_width: 200.0,
-            recipient_width: 150.0,
-            date_width: 120.0,
-            size_width: 82.0,
-            sep_width: 6.0,
-            font_size: 15.0,
-            font_family: "Cantarell".to_string(),
-            show_recipient: true,
-            show_date: true,
-            show_size: true,
-            show_preview_text: true,
-            date_align_left: false,
-            is_cards_mode: false,
-            primary_desc_normal,
-            primary_desc_bold,
-            secondary_desc,
-            primary_text_offset,
-            secondary_text_offset,
-        };
+        let layout = test_create_layout(
+            Vec::new(),
+            1000.0,
+            100.0,
+            36.0,
+            200.0,
+            150.0,
+            120.0,
+            82.0,
+            6.0,
+            15.0,
+            "Cantarell",
+            true,
+            true,
+            true,
+            true,
+            false,
+            false,
+        );
 
         // Status: 0..28
         assert_eq!(layout.col_status_x(), 0.0);
@@ -32815,11 +33189,134 @@ mod tests {
         assert_eq!(layout.col_size_w(), 82.0);
 
         // When recipient is hidden:
-        let mut layout_no_recip = layout.clone();
-        layout_no_recip.show_recipient = false;
+        let layout_no_recip = test_create_layout(
+            Vec::new(),
+            1000.0,
+            100.0,
+            36.0,
+            200.0,
+            150.0,
+            120.0,
+            82.0,
+            6.0,
+            15.0,
+            "Cantarell",
+            false,
+            true,
+            true,
+            true,
+            false,
+            false,
+        );
         assert_eq!(layout_no_recip.col_recipient_w(), 0.0);
         assert_eq!(layout_no_recip.col_recipient_sep_w(), 0.0);
         assert_eq!(layout_no_recip.col_subject_x(), 290.0);
+    }
+
+    #[test]
+    fn test_mail_table_canvas_column_geometry_hidden_status_and_flagged() {
+        let layout = test_create_layout_full(
+            Vec::new(),
+            1000.0,
+            100.0,
+            36.0,
+            200.0,
+            150.0,
+            120.0,
+            82.0,
+            6.0,
+            15.0,
+            "Cantarell",
+            false, // show_status = false
+            false, // show_flagged = false
+            true,  // show_recipient = true
+            true,  // show_date = true
+            true,  // show_size = true
+            true,
+            false,
+            false,
+        );
+
+        // Status is hidden (width 0.0)
+        assert_eq!(layout.col_status_w(), 0.0);
+
+        // Attachment is visible, now starts at x = 0.0
+        assert_eq!(layout.col_attach_x(), 0.0);
+        assert_eq!(layout.col_attach_w(), 28.0);
+
+        // Flagged is hidden (width 0.0)
+        assert_eq!(layout.col_star_w(), 0.0);
+
+        // Sender starts after attachment (x = 28.0)
+        assert_eq!(layout.col_sender_x(), 28.0);
+        assert_eq!(layout.col_sender_w(), 200.0);
+
+        // Extra 56px (28 for status + 28 for star) allocated to subject:
+        // Normally subject width was 346.0, now it should be 346.0 + 56.0 = 402.0
+        assert_eq!(layout.col_subject_w(), 402.0);
+    }
+
+    #[test]
+    fn test_mail_table_hit_test_hidden_status_and_flagged() {
+        let rows = vec![
+            PreparedMailTableRow {
+                model_index: 0,
+                id: "msg-1".to_string(),
+                thread_id: "thread-1".to_string(),
+                depth: 0,
+                is_expandable: false,
+                is_expanded: false,
+                is_unread: true,
+                is_flagged: false,
+                is_important: false,
+                is_replied: false,
+                is_forwarded: false,
+                has_attachments: false,
+                sender: "Sender".to_string(),
+                recipient: "Recipient".to_string(),
+                subject: "Test Subject".to_string(),
+                snippet: "Snippet".to_string(),
+                date: "12:30".to_string(),
+                size_str: "12 KB".to_string(),
+                selected: false,
+                y: 0.0,
+                height: 36.0,
+                markup_dark: String::new(),
+                markup_light: String::new(),
+                labels: Vec::new(),
+                thread_size: 1,
+            },
+        ];
+
+        let layout = test_create_layout_full(
+            rows,
+            800.0,
+            72.0,
+            36.0,
+            180.0,
+            140.0,
+            110.0,
+            82.0,
+            6.0,
+            14.0,
+            "Sans",
+            false, // show_status = false
+            false, // show_flagged = false
+            true,
+            true,
+            true,
+            true,
+            false,
+            false,
+        );
+
+        // When status is hidden, clicking in the status area (x = 10.0, y = 18.0) must select row, NOT ToggleStatus
+        let hit_status = hit_test_mail_table(&layout, 10.0, 18.0);
+        assert_eq!(hit_status, Some(MailTableHitAction::SelectRow(0, 0)));
+
+        // When star is hidden, clicking in star column area must select row, NOT ToggleStar
+        let hit_star = hit_test_mail_table(&layout, 65.0, 18.0);
+        assert_eq!(hit_star, Some(MailTableHitAction::SelectRow(0, 0)));
     }
 
     #[test]
@@ -32886,38 +33383,25 @@ mod tests {
             },
         ];
 
-        let (
-            primary_desc_normal,
-            primary_desc_bold,
-            secondary_desc,
-            primary_text_offset,
-            secondary_text_offset,
-        ) = PreparedMailTableLayout::compute_font_metrics("Sans", 14.0, 36.0);
-
-        let layout = PreparedMailTableLayout {
+        let layout = test_create_layout(
             rows,
-            width: 800.0,
-            height: 72.0,
-            row_height: 36.0,
-            sender_width: 180.0,
-            recipient_width: 140.0,
-            date_width: 110.0,
-            size_width: 82.0,
-            sep_width: 6.0,
-            font_size: 14.0,
-            font_family: "Sans".to_string(),
-            show_recipient: true,
-            show_date: true,
-            show_size: true,
-            show_preview_text: true,
-            date_align_left: false,
-            is_cards_mode: false,
-            primary_desc_normal,
-            primary_desc_bold,
-            secondary_desc,
-            primary_text_offset,
-            secondary_text_offset,
-        };
+            800.0,
+            72.0,
+            36.0,
+            180.0,
+            140.0,
+            110.0,
+            82.0,
+            6.0,
+            14.0,
+            "Sans",
+            true,
+            true,
+            true,
+            true,
+            false,
+            false,
+        );
 
         // Draw light mode
         draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, Some(0), &|_| false, false, 0.0);
@@ -32934,9 +33418,6 @@ mod tests {
 
     #[test]
     fn test_mail_table_single_selection_and_star_hit_test() {
-        let (primary_desc_normal, primary_desc_bold, secondary_desc, primary_text_offset, secondary_text_offset) =
-            PreparedMailTableLayout::compute_font_metrics("Sans", 14.0, 36.0);
-
         let rows = vec![
             PreparedMailTableRow {
                 model_index: 0,
@@ -32994,30 +33475,25 @@ mod tests {
             },
         ];
 
-        let layout = PreparedMailTableLayout {
+        let layout = test_create_layout(
             rows,
-            width: 800.0,
-            height: 72.0,
-            row_height: 36.0,
-            sender_width: 180.0,
-            recipient_width: 140.0,
-            date_width: 110.0,
-            size_width: 82.0,
-            sep_width: 6.0,
-            font_size: 14.0,
-            font_family: "Sans".to_string(),
-            show_recipient: true,
-            show_date: true,
-            show_size: true,
-            show_preview_text: true,
-            date_align_left: false,
-            is_cards_mode: false,
-            primary_desc_normal,
-            primary_desc_bold,
-            secondary_desc,
-            primary_text_offset,
-            secondary_text_offset,
-        };
+            800.0,
+            72.0,
+            36.0,
+            180.0,
+            140.0,
+            110.0,
+            82.0,
+            6.0,
+            14.0,
+            "Sans",
+            true,
+            true,
+            true,
+            true,
+            false,
+            false,
+        );
 
         // Hit testing for star column: col_star is at [56.0, 84.0)
         let star_action = hit_test_mail_table(&layout, 65.0, 18.0);
@@ -33038,9 +33514,6 @@ mod tests {
 
     #[test]
     fn test_mail_table_multi_selection_rendering() {
-        let (primary_desc_normal, primary_desc_bold, secondary_desc, primary_text_offset, secondary_text_offset) =
-            PreparedMailTableLayout::compute_font_metrics("Sans", 14.0, 36.0);
-
         let rows = vec![
             PreparedMailTableRow {
                 model_index: 0,
@@ -33098,30 +33571,25 @@ mod tests {
             },
         ];
 
-        let layout = PreparedMailTableLayout {
+        let layout = test_create_layout(
             rows,
-            width: 800.0,
-            height: 72.0,
-            row_height: 36.0,
-            sender_width: 180.0,
-            recipient_width: 140.0,
-            date_width: 110.0,
-            size_width: 82.0,
-            sep_width: 6.0,
-            font_size: 14.0,
-            font_family: "Sans".to_string(),
-            show_recipient: true,
-            show_date: true,
-            show_size: true,
-            show_preview_text: true,
-            date_align_left: false,
-            is_cards_mode: false,
-            primary_desc_normal,
-            primary_desc_bold,
-            secondary_desc,
-            primary_text_offset,
-            secondary_text_offset,
-        };
+            800.0,
+            72.0,
+            36.0,
+            180.0,
+            140.0,
+            110.0,
+            82.0,
+            6.0,
+            14.0,
+            "Sans",
+            true,
+            true,
+            true,
+            true,
+            false,
+            false,
+        );
 
         let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 800, 100).unwrap();
         let cr = gtk::cairo::Context::new(&surface).unwrap();
@@ -33142,9 +33610,6 @@ mod tests {
 
     #[test]
     fn test_mail_table_cards_mode_rendering_and_hit_test() {
-        let (primary_desc_normal, primary_desc_bold, secondary_desc, primary_text_offset, secondary_text_offset) =
-            PreparedMailTableLayout::compute_font_metrics("Sans", 13.0, 76.0);
-
         let rows = vec![
             PreparedMailTableRow {
                 model_index: 0,
@@ -33202,30 +33667,25 @@ mod tests {
             },
         ];
 
-        let layout = PreparedMailTableLayout {
+        let layout = test_create_layout(
             rows,
-            width: 420.0,
-            height: 152.0,
-            row_height: 76.0,
-            sender_width: 120.0,
-            recipient_width: 0.0,
-            date_width: 70.0,
-            size_width: 0.0,
-            sep_width: 0.0,
-            font_size: 13.0,
-            font_family: "Sans".to_string(),
-            show_recipient: false,
-            show_date: true,
-            show_size: false,
-            show_preview_text: true,
-            date_align_left: false,
-            is_cards_mode: true,
-            primary_desc_normal,
-            primary_desc_bold,
-            secondary_desc,
-            primary_text_offset,
-            secondary_text_offset,
-        };
+            420.0,
+            152.0,
+            76.0,
+            120.0,
+            0.0,
+            70.0,
+            0.0,
+            0.0,
+            13.0,
+            "Sans",
+            false,
+            true,
+            false,
+            true,
+            false,
+            true,
+        );
 
         // Hit testing avatar/status on row 0
         let hit_avatar_row0 = hit_test_mail_table(&layout, 38.0, 38.0);

@@ -3928,6 +3928,18 @@ impl EvolutionWindow {
             AppSettings::set_mail_show_date,
         );
         self.add_boolean_setting_action(
+            "toggle-mail-status",
+            "mail-show-status",
+            AppSettings::mail_show_status,
+            AppSettings::set_mail_show_status,
+        );
+        self.add_boolean_setting_action(
+            "toggle-mail-flagged",
+            "mail-show-flagged",
+            AppSettings::mail_show_flagged,
+            AppSettings::set_mail_show_flagged,
+        );
+        self.add_boolean_setting_action(
             "toggle-mail-attachment",
             "mail-show-attachment",
             AppSettings::mail_show_attachment,

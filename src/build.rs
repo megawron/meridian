@@ -2,7 +2,7 @@
 
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
@@ -249,7 +249,7 @@ fn main() {
 /// no way to find the repository's XML schema.  When GLib is available, keep a
 /// compiled copy in Cargo's OUT_DIR and let AppSettings use it as a fallback.
 /// Production installs still use the normal system schema search path.
-fn prepare_settings_schema(manifest_dir: &PathBuf, out_dir: &PathBuf) {
+fn prepare_settings_schema(manifest_dir: &Path, out_dir: &Path) {
     let schema_name = "com.martingawron.Meridian.gschema.xml";
     let source = if manifest_dir.join("data").join(schema_name).is_file() {
         manifest_dir.join("data").join(schema_name)
@@ -281,7 +281,7 @@ fn prepare_settings_schema(manifest_dir: &PathBuf, out_dir: &PathBuf) {
     println!("cargo:rerun-if-changed={}", source.display());
 }
 
-fn compile_locales(manifest_dir: &PathBuf, out_dir: &PathBuf) {
+fn compile_locales(manifest_dir: &Path, out_dir: &Path) {
     let po_dir = manifest_dir.join("../po");
     if !po_dir.is_dir() {
         return;
