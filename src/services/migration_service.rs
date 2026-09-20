@@ -712,6 +712,7 @@ fn eds_sources_from_keyfile(
                     backend_name,
                     enabled,
                     parent_name: None,
+                    color: None,
                 },
             )
         })

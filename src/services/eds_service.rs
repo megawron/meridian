@@ -45,6 +45,9 @@ pub struct EdsSource {
     /// Parent account or group name (e.g. "Auf diesem Computer", "Kontakte", "user@example.com")
     #[serde(default)]
     pub parent_name: Option<String>,
+    /// Color associated with this source (e.g. from Google Calendar / EDS [Calendar] Color)
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,7 +203,7 @@ fn extract_source(
         std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
     >,
     kind: EdsSourceKind,
-) -> Option<(String, String, String, bool, Option<String>)> {
+) -> Option<(String, String, String, bool, Option<String>, Option<String>)> {
     let uid = source_props
         .get("UID")
         .and_then(value_to_string)
@@ -227,6 +230,11 @@ fn extract_source(
         .and_then(value_to_string)
         .filter(|s| !s.trim().is_empty());
 
+    let property_color = source_props
+        .get("Color")
+        .and_then(value_to_string)
+        .filter(|s| !s.trim().is_empty());
+
     let Some(data) = source_props.get("Data").and_then(value_to_string) else {
         return kind.matches_interfaces(interfaces).then_some((
             uid,
@@ -234,6 +242,7 @@ fn extract_source(
             property_backend_name,
             property_enabled,
             property_parent,
+            property_color,
         ));
     };
 
@@ -245,8 +254,8 @@ fn extract_source(
         property_enabled,
         property_parent,
     )
-    .map(|(display_name, backend_name, enabled, parent)| {
-        (uid, display_name, backend_name, enabled, parent)
+    .map(|(display_name, backend_name, enabled, parent, color)| {
+        (uid, display_name, backend_name, enabled, parent, color.or(property_color))
     })
 }
 
@@ -257,7 +266,7 @@ fn parse_source_data(
     fallback_backend_name: String,
     fallback_enabled: bool,
     fallback_parent: Option<String>,
-) -> Option<(String, String, bool, Option<String>)> {
+) -> Option<(String, String, bool, Option<String>, Option<String>)> {
     let key_file = KeyFile::new();
     key_file.load_from_data(data, KeyFileFlags::NONE).ok()?;
 
@@ -292,7 +301,16 @@ fn parse_source_data(
         .filter(|value| !value.trim().is_empty())
         .or(fallback_parent);
 
-    Some((display_name, backend_name, enabled, parent))
+    let color = key_file
+        .string(section, "Color")
+        .ok()
+        .map(|value| value.to_string())
+        .or_else(|| key_file.string("Calendar", "Color").ok().map(|v| v.to_string()))
+        .or_else(|| key_file.string("Task List", "Color").ok().map(|v| v.to_string()))
+        .or_else(|| key_file.string("WebDAV Backend", "Color").ok().map(|v| v.to_string()))
+        .filter(|value| !value.trim().is_empty());
+
+    Some((display_name, backend_name, enabled, parent, color))
 }
 
 fn sort_sources(sources: &mut [EdsSource]) {
@@ -446,6 +464,43 @@ fn resolve_source_name_from_disk(uid: &str) -> Option<String> {
                 if let Ok(identity) = kf.string("Collection", "Identity") {
                     if !identity.trim().is_empty() {
                         return Some(identity.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+pub fn resolve_source_color_from_disk(uid: &str) -> Option<String> {
+    let mut candidate_paths = Vec::new();
+    candidate_paths.push(
+        glib::user_config_dir()
+            .join("evolution/sources")
+            .join(format!("{uid}.source")),
+    );
+    candidate_paths.push(
+        std::path::PathBuf::from("/usr/share/evolution-data-server/sources")
+            .join(format!("{uid}.source")),
+    );
+
+    for path in candidate_paths {
+        if path.exists() {
+            let kf = KeyFile::new();
+            if kf.load_from_file(&path, KeyFileFlags::NONE).is_ok() {
+                if let Ok(color) = kf.string("Calendar", "Color") {
+                    if !color.trim().is_empty() {
+                        return Some(color.to_string());
+                    }
+                }
+                if let Ok(color) = kf.string("Task List", "Color") {
+                    if !color.trim().is_empty() {
+                        return Some(color.to_string());
+                    }
+                }
+                if let Ok(color) = kf.string("WebDAV Backend", "Color") {
+                    if !color.trim().is_empty() {
+                        return Some(color.to_string());
                     }
                 }
             }
@@ -738,7 +793,7 @@ pub async fn list_sources(kind: EdsSourceKind) -> Result<Vec<EdsSource>, EdsServ
             continue;
         };
 
-        let Some((uid, display_name, backend_name, enabled, parent)) =
+        let Some((uid, display_name, backend_name, enabled, parent, color)) =
             extract_source(path, source_props, interfaces, kind)
         else {
             continue;
@@ -757,12 +812,14 @@ pub async fn list_sources(kind: EdsSourceKind) -> Result<Vec<EdsSource>, EdsServ
                     Some(p)
                 }
             });
+            let resolved_color = color.or_else(|| resolve_source_color_from_disk(&uid));
             sources.push(EdsSource {
                 uid,
                 display_name,
                 backend_name,
                 enabled,
                 parent_name,
+                color: resolved_color,
             });
         }
     }
@@ -822,6 +879,7 @@ async fn get_goa_mail_accounts() -> Result<Vec<EdsSource>, EdsServiceError> {
                     backend_name: provider_type,
                     enabled: true,
                     parent_name: Some(identity),
+                    color: None,
                 });
             }
         }
@@ -879,6 +937,7 @@ async fn get_goa_calendar_accounts() -> Result<Vec<EdsSource>, EdsServiceError> 
                     backend_name: provider_type,
                     enabled: true,
                     parent_name: Some(identity),
+                    color: None,
                 });
             }
         }
@@ -969,6 +1028,7 @@ async fn get_goa_contacts_accounts() -> Result<Vec<EdsSource>, EdsServiceError> 
                     backend_name: provider_type,
                     enabled: true,
                     parent_name: Some(identity),
+                    color: None,
                 });
             }
         }
@@ -1016,6 +1076,7 @@ pub async fn list_address_book_sources() -> Result<Vec<EdsSource>, EdsServiceErr
                 backend_name: collection.backend_name.clone(),
                 enabled: collection.enabled,
                 parent_name: Some(account_name),
+                color: None,
             });
         }
     }
@@ -1169,6 +1230,7 @@ fn macos_configured_mail_sources(
             backend_name: profile.protocol.as_str().to_string(),
             enabled: profile.enabled,
             parent_name: None,
+            color: None,
         })
         .collect();
     sort_sources(&mut sources);
@@ -1392,6 +1454,7 @@ mod tests {
                 backend_name: "eventkit".to_string(),
                 enabled: true,
                 parent_name: None,
+                color: None,
             }],
             origin: EdsSourceOrigin::Live,
             error: Some("Kontakte: Zugriff verweigert".to_string()),
@@ -1408,6 +1471,7 @@ mod tests {
             backend_name: "imapx".to_string(),
             enabled: true,
             parent_name: None,
+            color: None,
         };
         assert_eq!(source.uid, "test-uid-123");
         assert!(source.enabled);
@@ -1428,6 +1492,7 @@ mod tests {
                 backend_name: "imapx".to_string(),
                 enabled: true,
                 parent_name: None,
+                color: None,
             },
             EdsSource {
                 uid: "b".to_string(),
@@ -1435,6 +1500,7 @@ mod tests {
                 backend_name: "local".to_string(),
                 enabled: true,
                 parent_name: None,
+                color: None,
             },
             EdsSource {
                 uid: "a".to_string(),
@@ -1442,6 +1508,7 @@ mod tests {
                 backend_name: "local".to_string(),
                 enabled: false,
                 parent_name: None,
+                color: None,
             },
         ];
 
@@ -1473,6 +1540,7 @@ mod tests {
                 "Domain Account".to_string(),
                 "imapx".to_string(),
                 true,
+                None,
                 None
             ))
         );

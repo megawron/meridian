@@ -42,6 +42,7 @@ impl MacosSystemSource {
             uid: self.source_uid(), display_name: self.name.clone(),
             backend_name: self.backend.clone(), enabled: true,
             parent_name: Some(self.account_name.clone()),
+            color: None,
         }
     }
 }
