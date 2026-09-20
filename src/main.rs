@@ -72,6 +72,9 @@ fn setup_platform_environment() {}
 fn main() -> ExitCode {
     setup_platform_environment();
 
+    glib::set_prgname(Some(APP_ID));
+    glib::set_application_name("Meridian");
+
     // Initialize GNU gettext internationalization
     i18n::init_i18n();
 

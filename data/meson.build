@@ -48,3 +48,12 @@ if appstreamcli.found()
     args: ['validate', '--no-net', metainfo_file],
   )
 endif
+
+# Application icons
+icon_sizes = ['16x16', '22x22', '24x24', '32x32', '48x48', '64x64', '128x128', '256x256', '512x512', '1024x1024']
+foreach size : icon_sizes
+  install_data(
+    'icons' / 'hicolor' / size / 'apps' / '@0@.png'.format(application_id),
+    install_dir: datadir / 'icons' / 'hicolor' / size / 'apps',
+  )
+endforeach

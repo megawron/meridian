@@ -168,6 +168,7 @@ mod imp {
 
             // Load custom icons & CSS
             app.setup_icons();
+            app.setup_desktop_integration();
             app.setup_css();
             app.apply_style_settings();
 
@@ -305,14 +306,142 @@ impl EvolutionApplication {
             let _ = std::fs::write(scalable_dir.join(filename), content);
         }
 
+        // Install embedded application PNG icons across standard hicolor resolutions
+        let app_icon_sizes: &[(&str, &[u8])] = &[
+            (
+                "16x16",
+                include_bytes!("../data/icons/hicolor/16x16/apps/com.martingawron.Meridian.png"),
+            ),
+            (
+                "22x22",
+                include_bytes!("../data/icons/hicolor/22x22/apps/com.martingawron.Meridian.png"),
+            ),
+            (
+                "24x24",
+                include_bytes!("../data/icons/hicolor/24x24/apps/com.martingawron.Meridian.png"),
+            ),
+            (
+                "32x32",
+                include_bytes!("../data/icons/hicolor/32x32/apps/com.martingawron.Meridian.png"),
+            ),
+            (
+                "48x48",
+                include_bytes!("../data/icons/hicolor/48x48/apps/com.martingawron.Meridian.png"),
+            ),
+            (
+                "64x64",
+                include_bytes!("../data/icons/hicolor/64x64/apps/com.martingawron.Meridian.png"),
+            ),
+            (
+                "128x128",
+                include_bytes!("../data/icons/hicolor/128x128/apps/com.martingawron.Meridian.png"),
+            ),
+            (
+                "256x256",
+                include_bytes!("../data/icons/hicolor/256x256/apps/com.martingawron.Meridian.png"),
+            ),
+            (
+                "512x512",
+                include_bytes!("../data/icons/hicolor/512x512/apps/com.martingawron.Meridian.png"),
+            ),
+            (
+                "1024x1024",
+                include_bytes!("../data/icons/hicolor/1024x1024/apps/com.martingawron.Meridian.png"),
+            ),
+        ];
+
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let user_hicolor_dir = glib::user_data_dir().join("icons/hicolor");
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let mut user_icons_updated = false;
+
+        for (size, bytes) in app_icon_sizes {
+            let dir = app_icons_dir.join(format!("hicolor/{size}/apps"));
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(dir.join(format!("{APP_ID}.png")), bytes);
+
+            #[cfg(all(unix, not(target_os = "macos")))]
+            if std::env::var("FLATPAK_ID").is_err() {
+                let user_dir = user_hicolor_dir.join(format!("{size}/apps"));
+                let user_file = user_dir.join(format!("{APP_ID}.png"));
+                let needs_write = match std::fs::read(&user_file) {
+                    Ok(existing) => existing != *bytes,
+                    Err(_) => true,
+                };
+                if needs_write {
+                    let _ = std::fs::create_dir_all(&user_dir);
+                    let _ = std::fs::write(&user_file, bytes);
+                    user_icons_updated = true;
+                }
+            }
+        }
+
+        #[cfg(all(unix, not(target_os = "macos")))]
+        if user_icons_updated {
+            let _ = std::process::Command::new("gtk-update-icon-cache")
+                .args(["-f", "-t"])
+                .arg(&user_hicolor_dir)
+                .output();
+        }
+
         icon_theme.add_search_path(&app_icons_dir);
         let local_data = std::path::Path::new("data/icons");
         if local_data.exists() {
             icon_theme.add_search_path(local_data);
         }
 
+        #[cfg(target_os = "macos")]
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(bundle_icons) = exe.parent().and_then(|p| p.parent()).map(|p| p.join("Resources/icons")) {
+                if bundle_icons.is_dir() {
+                    icon_theme.add_search_path(&bundle_icons);
+                }
+            }
+        }
+
         tracing::debug!("Application icons registered");
     }
+
+    /// Ensure desktop launcher and executable symlink exist for GNOME Shell integration.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn setup_desktop_integration(&self) {
+        if std::env::var("FLATPAK_ID").is_err() {
+            let data_dir = glib::user_data_dir();
+            let applications_dir = data_dir.join("applications");
+            let desktop_path = applications_dir.join(format!("{APP_ID}.desktop"));
+            let desktop_content = include_str!("../data/com.martingawron.Meridian.desktop.in");
+
+            let needs_write = match std::fs::read_to_string(&desktop_path) {
+                Ok(existing) => existing != desktop_content,
+                Err(_) => true,
+            };
+
+            if needs_write {
+                let _ = std::fs::create_dir_all(&applications_dir);
+                let _ = std::fs::write(&desktop_path, desktop_content);
+                let _ = std::process::Command::new("update-desktop-database")
+                    .arg(&applications_dir)
+                    .output();
+            }
+
+            if let Ok(exe) = std::env::current_exe() {
+                let local_bin = glib::home_dir().join(".local/bin");
+                let symlink_path = local_bin.join("meridian");
+                let should_link = match std::fs::read_link(&symlink_path) {
+                    Ok(target) => target != exe,
+                    Err(_) => !symlink_path.exists(),
+                };
+                if should_link {
+                    let _ = std::fs::create_dir_all(&local_bin);
+                    let _ = std::fs::remove_file(&symlink_path);
+                    let _ = std::os::unix::fs::symlink(&exe, &symlink_path);
+                }
+            }
+        }
+    }
+
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    fn setup_desktop_integration(&self) {}
 
     /// Load the application-wide CSS stylesheet.
     fn setup_css(&self) {
@@ -874,5 +1003,57 @@ mod tests {
         assert_eq!(accelerators_for("win.undelete"), &["<Ctrl><Shift>D"]);
         assert_eq!(accelerators_for("win.mark-all-read"), &["<Ctrl><Shift>M"]);
         assert_eq!(accelerators_for("win.purge-calendar"), &["<Ctrl>E"]);
+    }
+
+    #[test]
+    fn test_embedded_application_icons_integrity() {
+        let app_icon_sizes: &[(&str, &[u8])] = &[
+            (
+                "16x16",
+                include_bytes!("../data/icons/hicolor/16x16/apps/com.martingawron.Meridian.png"),
+            ),
+            (
+                "22x22",
+                include_bytes!("../data/icons/hicolor/22x22/apps/com.martingawron.Meridian.png"),
+            ),
+            (
+                "24x24",
+                include_bytes!("../data/icons/hicolor/24x24/apps/com.martingawron.Meridian.png"),
+            ),
+            (
+                "32x32",
+                include_bytes!("../data/icons/hicolor/32x32/apps/com.martingawron.Meridian.png"),
+            ),
+            (
+                "48x48",
+                include_bytes!("../data/icons/hicolor/48x48/apps/com.martingawron.Meridian.png"),
+            ),
+            (
+                "64x64",
+                include_bytes!("../data/icons/hicolor/64x64/apps/com.martingawron.Meridian.png"),
+            ),
+            (
+                "128x128",
+                include_bytes!("../data/icons/hicolor/128x128/apps/com.martingawron.Meridian.png"),
+            ),
+            (
+                "256x256",
+                include_bytes!("../data/icons/hicolor/256x256/apps/com.martingawron.Meridian.png"),
+            ),
+            (
+                "512x512",
+                include_bytes!("../data/icons/hicolor/512x512/apps/com.martingawron.Meridian.png"),
+            ),
+        ];
+
+        let png_magic = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        for (size, bytes) in app_icon_sizes {
+            assert!(bytes.len() > 100, "Icon {size} should have reasonable payload");
+            assert_eq!(
+                &bytes[..8],
+                png_magic,
+                "Icon {size} must start with standard PNG magic header"
+            );
+        }
     }
 }

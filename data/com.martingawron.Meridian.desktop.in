@@ -12,5 +12,5 @@ Categories=GNOME;GTK;Office;Email;Calendar;ContactManagement;
 Keywords=mail;email;calendar;contacts;groupware;exchange;ews;imap;
 MimeType=x-scheme-handler/mailto;message/rfc822;application/x-xpixmap;
 StartupNotify=true
-StartupWMClass=meridian
+StartupWMClass=com.martingawron.Meridian
 X-GNOME-UsesNotifications=true

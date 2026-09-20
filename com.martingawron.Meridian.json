@@ -71,7 +71,8 @@
         "cargo --offline build --release --manifest-path Cargo.toml",
         "install -Dm755 target/release/meridian /app/bin/meridian",
         "install -Dm644 data/com.martingawron.Meridian.desktop.in /app/share/applications/com.martingawron.Meridian.desktop",
-        "install -Dm644 data/com.martingawron.Meridian.metainfo.xml.in /app/share/metainfo/com.martingawron.Meridian.metainfo.xml"
+        "install -Dm644 data/com.martingawron.Meridian.metainfo.xml.in /app/share/metainfo/com.martingawron.Meridian.metainfo.xml",
+        "for size in 16 22 24 32 48 64 128 256 512 1024; do install -Dm644 data/icons/hicolor/${size}x${size}/apps/com.martingawron.Meridian.png /app/share/icons/hicolor/${size}x${size}/apps/com.martingawron.Meridian.png; done"
       ],
       "sources": [
         {

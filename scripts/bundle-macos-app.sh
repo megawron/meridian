@@ -37,6 +37,9 @@ cp data/com.martingawron.Meridian.gschema.xml "${SCHEMAS_DIR}/"
 if [ -d data/icons ]; then
     cp -R data/icons "${RESOURCES_DIR}/"
 fi
+if [ -f data/icons/Meridian.icns ]; then
+    cp data/icons/Meridian.icns "${RESOURCES_DIR}/Meridian.icns"
+fi
 
 echo "==> Code-signing Meridian.app (ad-hoc)..."
 codesign --force --deep -s - "${APP_DIR}"
@@ -46,13 +49,13 @@ codesign -dvv "${APP_DIR}"
 
 echo ""
 echo "======================================================================"
-echo " Evolution.app successfully created at:"
+echo " Meridian.app successfully created at:"
 echo "   ${APP_DIR}"
 echo "======================================================================"
 echo " You can launch it with:"
 echo "   open ${APP_DIR}"
 echo " or directly in terminal:"
-echo "   ${MACOS_DIR}/evolution-gtk4"
+echo "   ${MACOS_DIR}/meridian"
 echo "======================================================================"
 
 if [[ "${1:-}" == "--run" ]]; then
