@@ -1,0 +1,8108 @@
+msgid ""
+msgstr ""
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-20 02:40+0200\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+
+#: src/action_contract.rs:134
+#, fuzzy
+msgid "New Email"
+msgstr "Neue E-Mail"
+
+#: src/action_contract.rs:134 src/views/contacts_page.rs:2505
+#: src/window.rs:2400 and 1 more
+msgid "New Contact"
+msgstr "Neuer Kontakt"
+
+#: src/action_contract.rs:135 src/window.rs:2394 src/window.rs:7422
+msgid "New Event"
+msgstr "Neuer Termin"
+
+#: src/action_contract.rs:135 src/views/tasks_page.rs:4690
+#: src/views/tasks_page.rs:7131 and 2 more
+msgid "New Task"
+msgstr "Neue Aufgabe"
+
+#: src/action_contract.rs:136 src/views/memos_page.rs:2372 src/window.rs:2412
+#: and 1 more
+msgid "New Memo"
+msgstr "Neue Notiz"
+
+#: src/action_contract.rs:136 src/action_contract.rs:246
+msgid "New Folder..."
+msgstr ""
+
+#: src/action_contract.rs:139
+msgid "Local Drafts"
+msgstr ""
+
+#: src/action_contract.rs:140 src/action_contract.rs:271 src/window.rs:3670
+msgid "Send & Receive"
+msgstr ""
+
+#: src/action_contract.rs:141
+msgid "Work Offline"
+msgstr ""
+
+#: src/action_contract.rs:141
+#, fuzzy
+msgid "Work Online"
+msgstr "Arbeitswoche"
+
+#: src/action_contract.rs:142
+#, fuzzy
+msgid "Import Data…"
+msgstr "Wichtig"
+
+#: src/action_contract.rs:143
+msgid "Export Selected Email"
+msgstr ""
+
+#: src/action_contract.rs:144
+#, fuzzy
+msgid "Export Calendar…"
+msgstr "Als EML exportieren …"
+
+#: src/action_contract.rs:145
+msgid "Print Selected Email…"
+msgstr ""
+
+#: src/action_contract.rs:146
+msgid "Print Preview of Selected Email…"
+msgstr ""
+
+#: src/action_contract.rs:149 src/action_contract.rs:326
+#: src/views/html_editor_fallback.rs:258 and 1 more
+msgid "Undo"
+msgstr "Rückgängig"
+
+#: src/action_contract.rs:149 src/action_contract.rs:331
+#: src/views/html_editor_fallback.rs:259
+msgid "Redo"
+msgstr "Wiederherstellen"
+
+#: src/action_contract.rs:150 src/action_contract.rs:243
+#, fuzzy
+msgid "Undelete"
+msgstr "Löschen"
+
+#: src/action_contract.rs:150
+msgid "Search Email"
+msgstr ""
+
+#: src/action_contract.rs:151 src/views/contacts_page.rs:1132
+msgid "Advanced Search…"
+msgstr ""
+
+#: src/action_contract.rs:152
+msgid "Find in Message…"
+msgstr ""
+
+#: src/action_contract.rs:153 src/action_contract.rs:321
+msgid "Global Search"
+msgstr ""
+
+#: src/action_contract.rs:154
+msgid "Purge Old Events…"
+msgstr ""
+
+#: src/action_contract.rs:155 src/action_contract.rs:260
+msgid "Edit Filter Rules..."
+msgstr ""
+
+#: src/action_contract.rs:156 src/action_contract.rs:261
+msgid "Manage Search Folders..."
+msgstr ""
+
+#: src/action_contract.rs:157
+msgid "Preferences"
+msgstr ""
+
+#: src/action_contract.rs:160 src/action_contract.rs:441 src/views/mod.rs:83
+#: and 1 more
+#, fuzzy
+msgid "Mail"
+msgstr "Neue E-Mail"
+
+#: src/action_contract.rs:160 src/action_contract.rs:446
+#: src/views/calendar_page.rs:2973 and 14 more
+msgid "Calendar"
+msgstr "Kalender"
+
+#: src/action_contract.rs:161 src/action_contract.rs:451
+#: src/views/contacts_page.rs:1263 and 7 more
+#, fuzzy
+msgid "Contacts"
+msgstr "Neuer Kontakt"
+
+#: src/action_contract.rs:161 src/action_contract.rs:456
+#: src/views/calendar_page.rs:5159 and 14 more
+#, fuzzy
+msgid "Tasks"
+msgstr "Neue Aufgabe"
+
+#: src/action_contract.rs:162 src/action_contract.rs:461
+#: src/views/calendar_page.rs:5388 and 8 more
+#, fuzzy
+msgid "Memos"
+msgstr "Neue Notiz"
+
+#: src/action_contract.rs:165
+msgid "Show/Hide Folder Sidebar"
+msgstr ""
+
+#: src/action_contract.rs:166
+msgid "Show/Hide Preview Window"
+msgstr ""
+
+#: src/action_contract.rs:169
+msgid "Vertical Mail Layout (3 Columns)"
+msgstr ""
+
+#: src/action_contract.rs:170
+msgid "Horizontal Mail Layout (Preview Below)"
+msgstr ""
+
+#: src/action_contract.rs:171
+msgid "Classic Mail Layout"
+msgstr ""
+
+#: src/action_contract.rs:172
+msgid "Show/Hide To Do Bar for Today"
+msgstr ""
+
+#: src/action_contract.rs:173
+msgid "Show/Hide Toolbar"
+msgstr ""
+
+#: src/action_contract.rs:174
+msgid "Module Buttons in Headerbar"
+msgstr ""
+
+#: src/action_contract.rs:175
+msgid "Show/Hide Statusbar"
+msgstr ""
+
+#: src/action_contract.rs:178
+msgid "Show/Hide Avatars"
+msgstr ""
+
+#: src/action_contract.rs:179
+msgid "Show/Hide Senders"
+msgstr ""
+
+#: src/action_contract.rs:180
+msgid "Show/Hide Recipients"
+msgstr ""
+
+#: src/action_contract.rs:181
+msgid "Show/Hide Dates"
+msgstr ""
+
+#: src/action_contract.rs:182
+msgid "Show/Hide Attachment Icons"
+msgstr ""
+
+#: src/action_contract.rs:183
+msgid "Show/Hide Preview Text"
+msgstr ""
+
+#: src/action_contract.rs:184
+msgid "Show/Hide Labels"
+msgstr ""
+
+#: src/action_contract.rs:187
+msgid "Group/Ungroup Conversations"
+msgstr ""
+
+#: src/action_contract.rs:188
+msgid "Expand All Conversations"
+msgstr ""
+
+#: src/action_contract.rs:189
+msgid "Collapse All Conversations"
+msgstr ""
+
+#: src/action_contract.rs:192
+#, fuzzy
+msgid "Compact"
+msgstr "Erledigt"
+
+#: src/action_contract.rs:193 src/views/mail_page.rs:19181
+msgid "Standard"
+msgstr "Standard"
+
+#: src/action_contract.rs:194
+msgid "Spacious"
+msgstr ""
+
+#: src/action_contract.rs:197
+msgid "Zoom In"
+msgstr ""
+
+#: src/action_contract.rs:198
+msgid "Zoom Out"
+msgstr ""
+
+#: src/action_contract.rs:199
+msgid "Normal Size"
+msgstr ""
+
+#: src/action_contract.rs:202
+msgid "Show All Headers"
+msgstr ""
+
+#: src/action_contract.rs:203
+#, fuzzy
+msgid "Show Message Source"
+msgstr "Nachrichtenquelle anzeigen"
+
+#: src/action_contract.rs:204
+#, fuzzy
+msgid "Show Deleted Messages"
+msgstr "Nachricht löschen (Entf)"
+
+#: src/action_contract.rs:205
+msgid "Show/Hide Developer Console"
+msgstr ""
+
+#: src/action_contract.rs:208 src/action_contract.rs:401
+#, fuzzy
+msgid "Next Message"
+msgstr "Nachricht verschieben"
+
+#: src/action_contract.rs:209 src/action_contract.rs:411
+msgid "Next Unread Message"
+msgstr ""
+
+#: src/action_contract.rs:210 src/action_contract.rs:406
+msgid "Previous Message"
+msgstr ""
+
+#: src/action_contract.rs:211 src/action_contract.rs:416
+msgid "Previous Unread Message"
+msgstr ""
+
+#: src/action_contract.rs:212
+msgid "Containing Folder"
+msgstr ""
+
+#: src/action_contract.rs:215 src/action_contract.rs:351
+#: src/views/mail_page.rs:21247 and 2 more
+msgid "Forward"
+msgstr "Weiterleiten"
+
+#: src/action_contract.rs:215
+#, fuzzy
+msgid "Forward Inline"
+msgstr "Weiterleiten"
+
+#: src/action_contract.rs:216
+#, fuzzy
+msgid "Forward Quoted"
+msgstr "Weiterleiten"
+
+#: src/action_contract.rs:217
+#, fuzzy
+msgid "Forward as Attachment"
+msgstr "Nachricht weiterleiten"
+
+#: src/action_contract.rs:220 src/action_contract.rs:341
+#: src/views/mail_page.rs:6982 and 1 more
+msgid "Reply"
+msgstr "Antworten"
+
+#: src/action_contract.rs:220 src/action_contract.rs:346
+#: src/views/mail_page.rs:21239
+msgid "Reply All"
+msgstr "Allen antworten"
+
+#: src/action_contract.rs:221
+#, fuzzy
+msgid "Reply to List"
+msgstr "Absender antworten"
+
+#: src/action_contract.rs:222
+msgid "Reply Alternative…"
+msgstr ""
+
+#: src/action_contract.rs:225
+msgid "Save as EML..."
+msgstr ""
+
+#: src/action_contract.rs:225 src/views/contacts_page.rs:3708
+#, fuzzy
+msgid "Print…"
+msgstr "Drucken"
+
+#: src/action_contract.rs:226 src/views/tasks_page.rs:5038
+#, fuzzy
+msgid "Print Preview…"
+msgstr "Kalenderansicht drucken"
+
+#: src/action_contract.rs:227
+#, fuzzy
+msgid "Copy Message Link"
+msgstr "Nachricht kopieren"
+
+#: src/action_contract.rs:228
+msgid "Add Sender to Address Book"
+msgstr ""
+
+#: src/action_contract.rs:229
+msgid "Edit as New Message…"
+msgstr ""
+
+#: src/action_contract.rs:230 src/action_contract.rs:361
+msgid "Select All Messages"
+msgstr ""
+
+#: src/action_contract.rs:231 src/action_contract.rs:371
+#: src/views/mail_page.rs:15106
+msgid "Mark as Read"
+msgstr "Als gelesen markieren"
+
+#: src/action_contract.rs:232 src/action_contract.rs:376
+#: src/views/mail_page.rs:15107
+msgid "Mark as Unread"
+msgstr "Als ungelesen markieren"
+
+#: src/action_contract.rs:233
+msgid "Mark Conversation as Read"
+msgstr ""
+
+#: src/action_contract.rs:234
+msgid "Delete Conversation"
+msgstr ""
+
+#: src/action_contract.rs:235
+msgid "Toggle Flag"
+msgstr ""
+
+#: src/action_contract.rs:236 src/action_contract.rs:366
+#, fuzzy
+msgid "Toggle Important"
+msgstr "Wichtig"
+
+#: src/action_contract.rs:237
+msgid "Mark for Follow Up…"
+msgstr ""
+
+#: src/action_contract.rs:238
+msgid "Edit Labels..."
+msgstr ""
+
+#: src/action_contract.rs:239
+msgid "Move to Folder..."
+msgstr ""
+
+#: src/action_contract.rs:240
+msgid "Copy to Folder..."
+msgstr ""
+
+#: src/action_contract.rs:240 src/views/mail_page.rs:305
+#: src/views/mail_page.rs:3235 and 6 more
+msgid "Archive"
+msgstr "Archiv"
+
+#: src/action_contract.rs:241 src/views/mail_page.rs:15120
+msgid "Mark as Junk"
+msgstr "Als Spam markieren"
+
+#: src/action_contract.rs:242 src/views/mail_page.rs:15121
+msgid "Mark as Not Junk"
+msgstr "Als Nicht-Spam markieren"
+
+#: src/action_contract.rs:242 src/views/calendar_page.rs:10091
+#: src/views/calendar_page.rs:14439 and 20 more
+msgid "Delete"
+msgstr "Löschen"
+
+#: src/action_contract.rs:246
+msgid "Rename Folder..."
+msgstr ""
+
+#: src/action_contract.rs:247
+msgid "Delete Folder..."
+msgstr ""
+
+#: src/action_contract.rs:248 src/views/mail_page.rs:8698
+msgid "Refresh Folder"
+msgstr ""
+
+#: src/action_contract.rs:249 src/views/mail_page.rs:8699
+#, fuzzy
+msgid "Mark All as Read"
+msgstr "Als gelesen markieren"
+
+#: src/action_contract.rs:250
+msgid "Next Unread Folder"
+msgstr ""
+
+#: src/action_contract.rs:251 src/action_contract.rs:296
+#, fuzzy
+msgid "Refresh Mail"
+msgstr "Neue E-Mail"
+
+#: src/action_contract.rs:251
+msgid "Empty Trash"
+msgstr "Papierkorb leeren"
+
+#: src/action_contract.rs:252
+#, fuzzy
+msgid "Empty Junk"
+msgstr "Kein Spam"
+
+#: src/action_contract.rs:253
+msgid "Expunge"
+msgstr ""
+
+#: src/action_contract.rs:254
+msgid "Manage Subscriptions..."
+msgstr ""
+
+#: src/action_contract.rs:255
+msgid "Edit Sort Order..."
+msgstr ""
+
+#: src/action_contract.rs:256
+msgid "Folder Properties..."
+msgstr ""
+
+#: src/action_contract.rs:259
+msgid "Out of Office (OOF)..."
+msgstr ""
+
+#: src/action_contract.rs:262
+msgid "Account Settings..."
+msgstr ""
+
+#: src/action_contract.rs:263
+msgid "Sync with macOS…"
+msgstr ""
+
+#: src/action_contract.rs:266
+msgid "Developer Console"
+msgstr ""
+
+#: src/action_contract.rs:267
+msgid "Keyboard Shortcuts"
+msgstr ""
+
+#: src/action_contract.rs:268
+msgid "About Evolution"
+msgstr ""
+
+#: src/action_contract.rs:272
+msgid "Receive All Accounts"
+msgstr ""
+
+#: src/action_contract.rs:273
+msgid "Send Pending Messages"
+msgstr ""
+
+#: src/action_contract.rs:274 src/views/calendar_page.rs:10036
+#: src/views/calendar_page.rs:14371 and 19 more
+msgid "Cancel"
+msgstr "Abbrechen"
+
+#: src/action_contract.rs:281
+msgid "Open Preferences"
+msgstr ""
+
+#: src/action_contract.rs:286
+msgid "Show Keyboard Shortcuts"
+msgstr ""
+
+#: src/action_contract.rs:291
+msgid "Quit"
+msgstr "Beenden"
+
+#: src/action_contract.rs:301
+msgid "Toggle Sidebar"
+msgstr ""
+
+#: src/action_contract.rs:306
+msgid "Toggle Statusbar"
+msgstr ""
+
+#: src/action_contract.rs:311
+msgid "Toggle Developer Console"
+msgstr ""
+
+#: src/action_contract.rs:316
+msgid "Focus Search"
+msgstr ""
+
+#: src/action_contract.rs:336
+#, fuzzy
+msgid "Compose New Message"
+msgstr "Nachricht kopieren"
+
+#: src/action_contract.rs:356
+#, fuzzy
+msgid "Delete Message"
+msgstr "Nachricht löschen (Entf)"
+
+#: src/action_contract.rs:381 src/views/mail_page.rs:10911
+msgid "Move Message"
+msgstr "Nachricht verschieben"
+
+#: src/action_contract.rs:386 src/views/mail_page.rs:10909
+msgid "Copy Message"
+msgstr "Nachricht kopieren"
+
+#: src/action_contract.rs:391 src/views/mail_page.rs:15127
+#: src/views/mail_page.rs:21083 and 1 more
+msgid "View Message Source"
+msgstr "Nachrichtenquelle anzeigen"
+
+#: src/action_contract.rs:396
+msgid "Apply Filters"
+msgstr ""
+
+#: src/action_contract.rs:421
+msgid "Toggle Preview Window"
+msgstr ""
+
+#: src/action_contract.rs:426
+msgid "Group by Thread"
+msgstr ""
+
+#: src/action_contract.rs:431
+#, fuzzy
+msgid "Find in Message"
+msgstr "Nachricht weiterleiten"
+
+#: src/action_contract.rs:436
+#, fuzzy
+msgid "Print Message"
+msgstr "Nachricht drucken (Strg+P)"
+
+#: src/action_contract.rs:466
+msgid "Purge Old Events"
+msgstr ""
+
+#: src/application.rs:280
+msgid "../data/icons/hicolor/scalable/actions/mail-inbox-symbolic.svg"
+msgstr ""
+
+#: src/application.rs:284
+msgid "../data/icons/hicolor/scalable/actions/mail-outbox-symbolic.svg"
+msgstr ""
+
+#: src/application.rs:288
+msgid "../data/icons/hicolor/scalable/actions/mail-drafts-symbolic.svg"
+msgstr ""
+
+#: src/application.rs:292
+msgid "../data/icons/hicolor/scalable/actions/mail-sync-symbolic.svg"
+msgstr ""
+
+#: src/application.rs:296
+msgid "../data/icons/hicolor/scalable/actions/evolution-tasks-symbolic.svg"
+msgstr ""
+
+#: src/application.rs:300
+msgid "../data/icons/hicolor/scalable/actions/tasks-symbolic.svg"
+msgstr ""
+
+#: src/application.rs:320
+msgid "style.css"
+msgstr ""
+
+#: src/application.rs:743
+msgid "Calendar event is due"
+msgstr ""
+
+#: src/application.rs:744
+#, fuzzy
+msgid "Task is due"
+msgstr "Neue Aufgabe"
+
+#: src/application.rs:745
+#, fuzzy
+msgid "Memo is due"
+msgstr "Neue Notiz"
+
+#: src/application.rs:746
+msgid "Birthday or anniversary"
+msgstr ""
+
+#: src/application.rs:750 src/views/calendar_page.rs:13862
+#: src/views/memos_page.rs:2213
+msgid "Open"
+msgstr "Öffnen"
+
+#: src/application.rs:751
+msgid "Snooze 10 minutes"
+msgstr ""
+
+#: src/application.rs:752
+msgid "Snooze 1 hour"
+msgstr ""
+
+#: src/application.rs:753
+msgid "Dismiss"
+msgstr ""
+
+#: src/dialogs/account_setup_dialog.rs:2485
+#: src/dialogs/account_setup_dialog.rs:2533
+#: src/dialogs/account_setup_dialog.rs:2572 and 1 more
+msgid "account_setup_dialog.rs"
+msgstr ""
+
+#: src/dialogs/event_dialog.rs:3601 src/dialogs/event_dialog.rs:3626
+#: src/dialogs/event_dialog.rs:3678 and 1 more
+msgid "event_dialog.rs"
+msgstr ""
+
+#: src/dialogs/folder_properties_dialog.rs:440
+msgid "folder_properties_dialog.rs"
+msgstr ""
+
+#: src/dialogs/folder_subscriptions_dialog.rs:572
+msgid "folder_subscriptions_dialog.rs"
+msgstr ""
+
+#: src/dialogs/global_search_dialog.rs:408
+#: src/dialogs/global_search_dialog.rs:442
+msgid "global_search_dialog.rs"
+msgstr ""
+
+#: src/dialogs/manage_groups_dialog.rs:328
+msgid "manage_groups_dialog.rs"
+msgstr ""
+
+#: src/dialogs/preferences_dialog.rs:8219
+#: src/dialogs/preferences_dialog.rs:8233
+#: src/dialogs/preferences_dialog.rs:8466 and 5 more
+msgid "preferences_dialog.rs"
+msgstr ""
+
+#: src/dialogs/shortcuts_dialog.rs:22
+msgid "General & Navigation"
+msgstr ""
+
+#: src/dialogs/shortcuts_dialog.rs:23
+#, fuzzy
+msgid "Mail Actions"
+msgstr "Weitere Aktionen"
+
+#: src/dialogs/shortcuts_dialog.rs:24
+msgid "Switch Modules"
+msgstr ""
+
+#: src/dialogs/source_properties_dialog.rs:312
+msgid "source_properties_dialog.rs"
+msgstr ""
+
+#: src/views/calendar_page.rs:1516
+msgid "Free/Busy"
+msgstr "Freie Zeiten"
+
+#: src/views/calendar_page.rs:1768 src/views/calendar_page.rs:5732
+msgid ""
+"Connect Apple Calendar: Would you like to view your macOS calendars and "
+"appointments in Evolution?"
+msgstr ""
+
+#: src/views/calendar_page.rs:1769 src/views/calendar_page.rs:5733
+msgid "Connect Apple Calendar"
+msgstr ""
+
+#: src/views/calendar_page.rs:1773
+msgid ""
+"Access to Apple Calendar not allowed. Enable it in macOS System Settings."
+msgstr ""
+
+#: src/views/calendar_page.rs:1774 src/views/contacts_page.rs:781
+msgid "Open System Settings"
+msgstr ""
+
+#: src/views/calendar_page.rs:1815
+msgid "No events available to print"
+msgstr ""
+
+#: src/views/calendar_page.rs:1819
+msgid "Day View"
+msgstr ""
+
+#: src/views/calendar_page.rs:1820
+#, fuzzy
+msgid "Week View"
+msgstr "Woche"
+
+#: src/views/calendar_page.rs:1821
+#, fuzzy
+msgid "Work Week View"
+msgstr "Arbeitswoche"
+
+#: src/views/calendar_page.rs:1822
+#, fuzzy
+msgid "Month View"
+msgstr "Monat"
+
+#: src/views/calendar_page.rs:1823 src/views/calendar_page.rs:3095
+#: src/views/calendar_page.rs:4041
+msgid "Agenda"
+msgstr "Agenda"
+
+#: src/views/calendar_page.rs:1824
+msgid "Year Overview"
+msgstr ""
+
+#: src/views/calendar_page.rs:1825
+msgid "Event List"
+msgstr ""
+
+#: src/views/calendar_page.rs:1833 src/views/tasks_page.rs:822
+#: src/views/tasks_page.rs:17849
+msgid "Print document prepared"
+msgstr ""
+
+#: src/views/calendar_page.rs:1841 src/views/calendar_page.rs:12563
+#: src/views/calendar_page.rs:16880
+msgid "Printing failed: {error}"
+msgstr ""
+
+#: src/views/calendar_page.rs:1850
+msgid "No appointments available to export"
+msgstr ""
+
+#: src/views/calendar_page.rs:1858 src/views/calendar_page.rs:16908
+msgid "iCalendar (*.ics)"
+msgstr ""
+
+#: src/views/calendar_page.rs:1862
+msgid "Comma-Separated Values (*.csv)"
+msgstr ""
+
+#: src/views/calendar_page.rs:1866 src/views/calendar_page.rs:16918
+msgid "RDF / RSS 1.0 (*.rdf)"
+msgstr ""
+
+#: src/views/calendar_page.rs:1875
+#, fuzzy
+msgid "Export Calendar"
+msgstr "Als EML exportieren …"
+
+#: src/views/calendar_page.rs:1928
+msgid "Export error: {error}"
+msgstr ""
+
+#: src/views/calendar_page.rs:1944
+msgid "Update in progress…"
+msgstr ""
+
+#: src/views/calendar_page.rs:1947 src/views/calendar_page.rs:2288
+#: src/views/calendar_page.rs:7156
+msgid "Loading calendars…"
+msgstr ""
+
+#: src/views/calendar_page.rs:2009
+msgid "The calendar worker failed unexpectedly"
+msgstr ""
+
+#: src/views/calendar_page.rs:2045 src/views/calendar_page.rs:2046
+#: src/views/calendar_page.rs:2292
+msgid "Calendars could not be loaded"
+msgstr ""
+
+#: src/views/calendar_page.rs:2063
+msgid "Calendar loading cancelled"
+msgstr ""
+
+#: src/views/calendar_page.rs:2085
+msgid "Calendars could not be loaded: {error}"
+msgstr ""
+
+#: src/views/calendar_page.rs:2097
+msgid "Calendar view not available"
+msgstr ""
+
+#: src/views/calendar_page.rs:2106
+msgid "Calendar data not available"
+msgstr ""
+
+#: src/views/calendar_page.rs:2115
+msgid "Task data not available"
+msgstr ""
+
+#: src/views/calendar_page.rs:2124
+msgid "Memo data not available"
+msgstr ""
+
+#: src/views/calendar_page.rs:2155
+msgid "Cached calendar state is displayed · update in progress…"
+msgstr ""
+
+#: src/views/calendar_page.rs:2165 src/views/calendar_page.rs:2166
+#, fuzzy
+msgid "connected calendars"
+msgstr "Kalenderansicht drucken"
+
+#: src/views/calendar_page.rs:2167
+#, fuzzy
+msgid "local calendar"
+msgstr "Kalenderansicht drucken"
+
+#: src/views/calendar_page.rs:2177
+msgid "No appointments found from {origin}"
+msgstr ""
+
+#: src/views/calendar_page.rs:2188
+msgid "{status} · update incomplete: {warning}"
+msgstr ""
+
+#: src/views/calendar_page.rs:2285
+msgid "The last confirmed calendar state is not available."
+msgstr ""
+
+#: src/views/calendar_page.rs:2289
+msgid "This view will be updated after the confirmed snapshot."
+msgstr ""
+
+#: src/views/calendar_page.rs:2301
+#, fuzzy
+msgid "Calendar View"
+msgstr "Kalenderansicht drucken"
+
+#: src/views/calendar_page.rs:2302
+msgid "No confirmed calendar data available yet."
+msgstr ""
+
+#: src/views/calendar_page.rs:2414
+msgid "Calendar synchronization failed: {error}"
+msgstr ""
+
+#: src/views/calendar_page.rs:2480
+msgid "There is no projection worker for this view"
+msgstr ""
+
+#: src/views/calendar_page.rs:2483
+#, fuzzy
+msgid "Could not prepare calendar view"
+msgstr "Kalenderansicht drucken"
+
+#: src/views/calendar_page.rs:2521
+msgid "The projection worker/channel was closed: {error}"
+msgstr ""
+
+#: src/views/calendar_page.rs:2618
+msgid "Calendar view could not be constructed: {error}"
+msgstr ""
+
+#: src/views/calendar_page.rs:2623 src/views/calendar_page.rs:9295
+msgid "Year view not available"
+msgstr ""
+
+#: src/views/calendar_page.rs:2629
+msgid "List view not available"
+msgstr ""
+
+#: src/views/calendar_page.rs:2638 src/views/mail_page.rs:23693
+#: src/window.rs:5470
+msgid "January"
+msgstr "Januar"
+
+#: src/views/calendar_page.rs:2639 src/views/mail_page.rs:23694
+#: src/window.rs:5471
+msgid "February"
+msgstr "Februar"
+
+#: src/views/calendar_page.rs:2640 src/views/mail_page.rs:23695
+#: src/window.rs:5472
+msgid "March"
+msgstr "März"
+
+#: src/views/calendar_page.rs:2641 src/views/mail_page.rs:23696
+#: src/window.rs:5473
+msgid "April"
+msgstr "April"
+
+#: src/views/calendar_page.rs:2642 src/views/mail_page.rs:891
+#: src/views/mail_page.rs:23697 and 2 more
+#, fuzzy
+msgid "May"
+msgstr "Tag"
+
+#: src/views/calendar_page.rs:2643 src/views/mail_page.rs:23698
+#: src/window.rs:5475
+msgid "June"
+msgstr "Juni"
+
+#: src/views/calendar_page.rs:2644 src/views/mail_page.rs:23699
+#: src/window.rs:5476
+msgid "July"
+msgstr "Juli"
+
+#: src/views/calendar_page.rs:2645 src/views/calendar_page.rs:2650
+#: src/views/mail_page.rs:23700 and 1 more
+msgid "August"
+msgstr "August"
+
+#: src/views/calendar_page.rs:2646 src/views/mail_page.rs:23701
+#: src/window.rs:5478
+msgid "September"
+msgstr "September"
+
+#: src/views/calendar_page.rs:2647 src/views/mail_page.rs:23702
+#: src/window.rs:5479
+msgid "October"
+msgstr "Oktober"
+
+#: src/views/calendar_page.rs:2648 src/views/mail_page.rs:23703
+#: src/window.rs:5480
+msgid "November"
+msgstr "November"
+
+#: src/views/calendar_page.rs:2649 src/views/mail_page.rs:23704
+#: src/window.rs:5481
+msgid "December"
+msgstr "Dezember"
+
+#: src/views/calendar_page.rs:2778
+msgid "Calendars will be shown after synchronization"
+msgstr ""
+
+#: src/views/calendar_page.rs:2792
+msgid "No local .ics data loaded"
+msgstr ""
+
+#: src/views/calendar_page.rs:2822 src/views/calendar_page.rs:7138
+#: src/views/contacts_page.rs:1167 and 4 more
+msgid "All Categories"
+msgstr ""
+
+#: src/views/calendar_page.rs:2825
+msgid "Select event category"
+msgstr ""
+
+#: src/views/calendar_page.rs:2834
+msgid "Search events…"
+msgstr ""
+
+#: src/views/calendar_page.rs:3004
+msgid "Previous period"
+msgstr ""
+
+#: src/views/calendar_page.rs:3007
+msgid "Show previous period"
+msgstr ""
+
+#: src/views/calendar_page.rs:3010 src/views/calendar_page.rs:8335
+#: src/views/calendar_page.rs:10418 and 5 more
+msgid "Today"
+msgstr "Heute"
+
+#: src/views/calendar_page.rs:3011 src/views/calendar_page.rs:3014
+msgid "Switch to today"
+msgstr ""
+
+#: src/views/calendar_page.rs:3018
+msgid "Next period"
+msgstr ""
+
+#: src/views/calendar_page.rs:3021
+msgid "Show next period"
+msgstr ""
+
+#: src/views/calendar_page.rs:3051
+msgid "Show free/busy availability"
+msgstr "Freie Zeiten anzeigen (Verfügbarkeit)"
+
+#: src/views/calendar_page.rs:3055
+msgid "Show free/busy"
+msgstr "Freie Zeiten anzeigen"
+
+#: src/views/calendar_page.rs:3091 src/views/calendar_page.rs:3932
+msgid "Day"
+msgstr "Tag"
+
+#: src/views/calendar_page.rs:3092 src/views/calendar_page.rs:3946
+#: src/views/calendar_page.rs:7224
+msgid "Week"
+msgstr "Woche"
+
+#: src/views/calendar_page.rs:3093 src/views/calendar_page.rs:3962
+#: src/views/calendar_page.rs:7241
+msgid "Work Week"
+msgstr "Arbeitswoche"
+
+#: src/views/calendar_page.rs:3094 src/views/calendar_page.rs:3918
+msgid "Month"
+msgstr "Monat"
+
+#: src/views/calendar_page.rs:3096 src/views/calendar_page.rs:4650
+#: src/views/calendar_page.rs:7247
+msgid "Year"
+msgstr "Jahr"
+
+#: src/views/calendar_page.rs:3097 src/views/calendar_page.rs:4919
+msgid "List"
+msgstr "Liste"
+
+#: src/views/calendar_page.rs:3155
+#, fuzzy
+msgid "Select calendar view"
+msgstr "Kalenderansicht drucken"
+
+#: src/views/calendar_page.rs:3187
+msgid "Toggle task and memo pane (Ctrl+M)"
+msgstr ""
+
+#: src/views/calendar_page.rs:3192
+msgid "Show or hide task and memo pane"
+msgstr ""
+
+#: src/views/calendar_page.rs:3203 src/views/contacts_page.rs:3827
+#: src/views/mail_page.rs:15144 and 1 more
+msgid "Toggle sidebar (F9)"
+msgstr ""
+
+#: src/views/calendar_page.rs:3208 src/views/mail_page.rs:15145
+msgid "Show or hide sidebar"
+msgstr ""
+
+#: src/views/calendar_page.rs:3244
+msgid "Print calendar view (Ctrl+P)"
+msgstr "Kalenderansicht drucken (Strg+P)"
+
+#: src/views/calendar_page.rs:3248 src/views/calendar_page.rs:3253
+msgid "Print calendar view"
+msgstr "Kalenderansicht drucken"
+
+#: src/views/calendar_page.rs:3276 src/views/calendar_page.rs:3280
+#: src/views/mail_page.rs:15131
+msgid "More actions"
+msgstr "Weitere Aktionen"
+
+#: src/views/calendar_page.rs:3710 src/views/calendar_page.rs:7403
+#: src/views/calendar_page.rs:8861 and 7 more
+msgid "All Day"
+msgstr ""
+
+#: src/views/calendar_page.rs:3716 src/views/mail_page.rs:15466
+#: src/views/mail_page.rs:15585 and 4 more
+msgid "Location"
+msgstr "Ort"
+
+#: src/views/calendar_page.rs:3720
+msgid "Time"
+msgstr "Uhrzeit"
+
+#: src/views/calendar_page.rs:3725
+msgid "Show all events in day view for"
+msgstr ""
+
+#: src/views/calendar_page.rs:3973
+msgid "Upcoming Events"
+msgstr ""
+
+#: src/views/calendar_page.rs:4620
+msgid "Go to month view for"
+msgstr ""
+
+#: src/views/calendar_page.rs:4629
+#, fuzzy
+msgid "event"
+msgstr "Neuer Termin"
+
+#: src/views/calendar_page.rs:4631
+#, fuzzy
+msgid "events"
+msgstr "Neuer Termin"
+
+#: src/views/calendar_page.rs:4661
+msgid "0 filtered events"
+msgstr ""
+
+#: src/views/calendar_page.rs:5173
+#, fuzzy
+msgid "Create new task"
+msgstr "Neue Aufgabe erstellen (Strg+N)"
+
+#: src/views/calendar_page.rs:5402
+#, fuzzy
+msgid "Create new memo"
+msgstr "Neue E-Mail erstellen (Strg+N)"
+
+#: src/views/calendar_page.rs:5762 src/views/calendar_page.rs:5820
+msgid "Apple Calendar connected successfully!"
+msgstr ""
+
+#: src/views/calendar_page.rs:6161
+#, fuzzy
+msgid "Show or hide calendar in views"
+msgstr "Kalenderansicht drucken"
+
+#: src/views/calendar_page.rs:6222
+msgid "Synchronized calendar"
+msgstr ""
+
+#: src/views/calendar_page.rs:6271 src/views/calendar_page.rs:6391
+msgid "No calendar sources available"
+msgstr ""
+
+#: src/views/calendar_page.rs:6290 src/views/calendar_page.rs:6341
+#: src/views/contacts_page.rs:1283 and 5 more
+msgid "On This Computer"
+msgstr "Auf diesem Rechner"
+
+#: src/views/calendar_page.rs:6331 src/views/calendar_page.rs:6335
+#: src/views/calendar_page.rs:15596
+msgid "Local Calendar"
+msgstr ""
+
+#: src/views/calendar_page.rs:6390
+msgid "Calendars are unreachable: {error}"
+msgstr ""
+
+#: src/views/calendar_page.rs:6612
+msgid "Tasks are being loaded together with the calendar snapshot…"
+msgstr ""
+
+#: src/views/calendar_page.rs:6620 src/views/calendar_page.rs:6700
+msgid "Tasks could not be loaded"
+msgstr ""
+
+#: src/views/calendar_page.rs:6661 src/views/calendar_page.rs:6757
+#: src/views/tasks_page.rs:9020
+msgid "No tasks loaded"
+msgstr ""
+
+#: src/views/calendar_page.rs:6663
+msgid "No visible tasks"
+msgstr ""
+
+#: src/views/calendar_page.rs:6689 src/views/tasks_page.rs:5162
+#, fuzzy
+msgid "Loading tasks…"
+msgstr "Nachricht weiterleiten"
+
+#: src/views/calendar_page.rs:6759
+msgid "No tasks match the filter"
+msgstr ""
+
+#: src/views/calendar_page.rs:6778
+#, fuzzy
+msgid "Loading memos…"
+msgstr "Nachricht weiterleiten"
+
+#: src/views/calendar_page.rs:6789
+msgid "Memos could not be loaded"
+msgstr ""
+
+#: src/views/calendar_page.rs:6841
+msgid "No memos loaded"
+msgstr ""
+
+#: src/views/calendar_page.rs:6843
+msgid "No memos match the filter"
+msgstr ""
+
+#: src/views/calendar_page.rs:7159
+msgid "Failed to load calendars"
+msgstr ""
+
+#: src/views/calendar_page.rs:7246
+#, fuzzy
+msgid "Agenda from"
+msgstr "Agenda"
+
+#: src/views/calendar_page.rs:7252 src/views/calendar_page.rs:7253
+#, fuzzy
+msgid "All Events"
+msgstr "Neuer Termin"
+
+#: src/views/calendar_page.rs:7821 src/views/calendar_page.rs:8503
+#: src/views/calendar_page.rs:8845 and 9 more
+msgid "(Untitled)"
+msgstr ""
+
+#: src/views/calendar_page.rs:8062 src/views/calendar_page.rs:12850
+msgid "The dragged appointment is no longer loaded"
+msgstr ""
+
+#: src/views/calendar_page.rs:8066 src/views/calendar_page.rs:12854
+msgid "The appointment has no valid start date"
+msgstr ""
+
+#: src/views/calendar_page.rs:8169
+msgid "Upcoming appointments · {start} to {end} · Working hours: {hours}"
+msgstr ""
+
+#: src/views/calendar_page.rs:8217
+msgid "No upcoming appointments"
+msgstr ""
+
+#: src/views/calendar_page.rs:8218
+msgid "No VEVENTs loaded for the next 90 days."
+msgstr ""
+
+#: src/views/calendar_page.rs:8290
+msgid "Previous year"
+msgstr "Vorheriges Jahr"
+
+#: src/views/calendar_page.rs:8308
+msgid "Show year {y}"
+msgstr ""
+
+#: src/views/calendar_page.rs:8322
+#, fuzzy
+msgid "Next year"
+msgstr "Nachricht verschieben"
+
+#: src/views/calendar_page.rs:8338
+msgid "Return to current year"
+msgstr ""
+
+#: src/views/calendar_page.rs:8622
+msgid "Show as list"
+msgstr "Listenansicht"
+
+#: src/views/calendar_page.rs:8643
+msgid "Show as schedule"
+msgstr ""
+
+#: src/views/calendar_page.rs:8666 src/views/calendar_page.rs:21003
+#: src/views/calendar_page.rs:21009
+msgid "Show preview at bottom"
+msgstr ""
+
+#: src/views/calendar_page.rs:8667 src/views/calendar_page.rs:21004
+#: src/views/calendar_page.rs:21010
+msgid "Show preview on right"
+msgstr ""
+
+#: src/views/calendar_page.rs:8690 src/views/calendar_page.rs:12766
+msgid "Open in Day View"
+msgstr ""
+
+#: src/views/calendar_page.rs:8766
+msgid "No appointments"
+msgstr ""
+
+#: src/views/calendar_page.rs:8771
+msgid "No appointments scheduled for {date}."
+msgstr ""
+
+#: src/views/calendar_page.rs:8918
+msgid "(Click to edit)"
+msgstr ""
+
+#: src/views/calendar_page.rs:9296
+msgid "The selected calendar year is outside the supported date range."
+msgstr ""
+
+#: src/views/calendar_page.rs:9415
+msgid "No matching appointments"
+msgstr ""
+
+#: src/views/calendar_page.rs:9441
+msgid "No appointments loaded"
+msgstr ""
+
+#: src/views/calendar_page.rs:9443
+msgid "No appointments match the filter"
+msgstr ""
+
+#: src/views/calendar_page.rs:9447
+msgid "The list view is independent of the current date anchor."
+msgstr ""
+
+#: src/views/calendar_page.rs:9832
+msgid "The calendar state has changed; the event move was discarded"
+msgstr ""
+
+#: src/views/calendar_page.rs:9843
+msgid "Failed to confirm event move"
+msgstr ""
+
+#: src/views/calendar_page.rs:9885
+msgid "Event moved"
+msgstr ""
+
+#: src/views/calendar_page.rs:9891
+msgid "Could not move event"
+msgstr ""
+
+#: src/views/calendar_page.rs:9918
+msgid "The appointment has no unique identity and was not transferred"
+msgstr ""
+
+#: src/views/calendar_page.rs:9959
+msgid "The calendar state has changed; refreshing transfer status"
+msgstr ""
+
+#: src/views/calendar_page.rs:9970
+msgid "Appointment copied to local ({id})"
+msgstr ""
+
+#: src/views/calendar_page.rs:9978
+msgid "Appointment moved to local ({old} → {new})"
+msgstr ""
+
+#: src/views/calendar_page.rs:9987
+msgid "Copy created locally ({id}), source was kept due to error: {error}"
+msgstr ""
+
+#: src/views/calendar_page.rs:9996
+msgid "Appointment could not be transferred to local: {error}"
+msgstr ""
+
+#: src/views/calendar_page.rs:10005
+msgid "Appointment transfer channel closed: {error}"
+msgstr ""
+
+#: src/views/calendar_page.rs:10026
+msgid "The appointment has no unique identity"
+msgstr ""
+
+#: src/views/calendar_page.rs:10032 src/views/calendar_page.rs:14368
+#: src/views/calendar_page.rs:17039
+msgid "Delete recurring appointment"
+msgstr ""
+
+#: src/views/calendar_page.rs:10033 src/views/calendar_page.rs:14369
+#: src/views/calendar_page.rs:17040
+msgid ""
+"Choose the deletion scope. Single occurrences and future occurrences are "
+"offered once the backend adapter can confirm them without data loss as "
+"exception or split."
+msgstr ""
+
+#: src/views/calendar_page.rs:10037 src/views/calendar_page.rs:14372
+#: src/views/calendar_page.rs:17043
+msgid "Only this appointment"
+msgstr ""
+
+#: src/views/calendar_page.rs:10038 src/views/calendar_page.rs:14373
+#: src/views/calendar_page.rs:17044
+msgid "This and future"
+msgstr ""
+
+#: src/views/calendar_page.rs:10039 src/views/calendar_page.rs:14374
+#: src/views/calendar_page.rs:17045
+msgid "Delete entire series"
+msgstr ""
+
+#: src/views/calendar_page.rs:10063 src/views/calendar_page.rs:14405
+#: src/views/calendar_page.rs:17074
+msgid ""
+"The current backend adapter cannot yet delete this single occurrence without "
+"data loss; the series remains unchanged."
+msgstr ""
+
+#: src/views/calendar_page.rs:10064 src/views/calendar_page.rs:14406
+#: src/views/calendar_page.rs:17075
+msgid ""
+"A split starting at this occurrence cannot yet be performed by the current "
+"backend adapter without data loss; the series remains unchanged."
+msgstr ""
+
+#: src/views/calendar_page.rs:10077 src/views/calendar_page.rs:14427
+#: src/views/calendar_page.rs:17087
+msgid "The appointment will be permanently removed from the local calendar."
+msgstr ""
+
+#: src/views/calendar_page.rs:10079 src/views/calendar_page.rs:14429
+#: src/views/calendar_page.rs:17089
+msgid ""
+"The appointment will be permanently removed from the synchronized calendar."
+msgstr ""
+
+#: src/views/calendar_page.rs:10089 src/views/calendar_page.rs:14437
+#: src/views/calendar_page.rs:17098
+#, fuzzy
+msgid "Delete appointment?"
+msgstr "Neuer Kontakt"
+
+#: src/views/calendar_page.rs:10131 src/views/calendar_page.rs:14492
+#: src/views/calendar_page.rs:17156
+msgid "The calendar state has changed; the deletion result was discarded"
+msgstr ""
+
+#: src/views/calendar_page.rs:10152 src/views/calendar_page.rs:14517
+#: src/views/calendar_page.rs:17182
+msgid "Appointment deleted ({id})"
+msgstr ""
+
+#: src/views/calendar_page.rs:10162 src/views/calendar_page.rs:14530
+#: src/views/calendar_page.rs:17196
+msgid "ECal confirmed a different appointment UID ({id}); nothing was removed"
+msgstr ""
+
+#: src/views/calendar_page.rs:10171 src/views/calendar_page.rs:14538
+#: src/views/calendar_page.rs:17205
+msgid "Appointment could not be deleted: {error}"
+msgstr ""
+
+#: src/views/calendar_page.rs:10180 src/views/calendar_page.rs:17214
+msgid "Appointment deletion channel closed: {error}"
+msgstr ""
+
+#: src/views/calendar_page.rs:10409 src/views/calendar_page.rs:14036
+#: src/views/mail_page.rs:1939 and 4 more
+msgid "(No Subject)"
+msgstr "(Kein Betreff)"
+
+#: src/views/calendar_page.rs:10420 src/views/mail_page.rs:23714
+#: src/views/tasks_page.rs:8315 and 1 more
+msgid "Tomorrow"
+msgstr "Morgen"
+
+#: src/views/calendar_page.rs:10422 src/views/mail_page.rs:980
+#: src/views/mail_page.rs:1033 and 1 more
+msgid "Yesterday"
+msgstr "Gestern"
+
+#: src/views/calendar_page.rs:10774 src/views/tasks_page.rs:7129
+msgid "Edit Task"
+msgstr ""
+
+#: src/views/calendar_page.rs:10791 src/views/tasks_page.rs:5026
+#, fuzzy
+msgid "Mark as Incomplete"
+msgstr "Als kein Spam markieren"
+
+#: src/views/calendar_page.rs:10793 src/views/mail_page.rs:10464
+msgid "Mark as Completed"
+msgstr "Als erledigt markieren"
+
+#: src/views/calendar_page.rs:10835
+#, fuzzy
+msgid "Open Memo"
+msgstr "Neue Notiz"
+
+#: src/views/calendar_page.rs:11997 src/views/calendar_page.rs:20385
+#, fuzzy
+msgid "Wk"
+msgstr "Woche"
+
+#: src/views/calendar_page.rs:12519 src/views/calendar_page.rs:14847
+#: src/views/calendar_page.rs:15204 and 3 more
+#, fuzzy
+msgid "Edit Appointment"
+msgstr "Neuer Kontakt"
+
+#: src/views/calendar_page.rs:12536 src/views/calendar_page.rs:16776
+#: src/views/calendar_page.rs:16780 and 1 more
+msgid "Print Appointment"
+msgstr ""
+
+#: src/views/calendar_page.rs:12545 src/views/calendar_page.rs:16866
+msgid "Appointment"
+msgstr "Termin"
+
+#: src/views/calendar_page.rs:12555
+msgid ""
+"Print view for “{summary}” prepared ({count} characters); Print portal is "
+"Linux handoff"
+msgstr ""
+
+#: src/views/calendar_page.rs:12571 src/views/calendar_page.rs:12611
+#: src/views/calendar_page.rs:16788 and 2 more
+#, fuzzy
+msgid "Export Appointment"
+msgstr "Neuer Kontakt"
+
+#: src/views/calendar_page.rs:12587 src/views/calendar_page.rs:16913
+msgid "Comma-separated values (*.csv)"
+msgstr ""
+
+#: src/views/calendar_page.rs:12650 src/views/calendar_page.rs:16987
+msgid "Appointment exported as {format}"
+msgstr ""
+
+#: src/views/calendar_page.rs:12655 src/views/calendar_page.rs:16991
+msgid "Appointment could not be saved: {error}"
+msgstr ""
+
+#: src/views/calendar_page.rs:12666 src/views/calendar_page.rs:16792
+#: src/views/calendar_page.rs:16797 and 1 more
+msgid "Copy to Local Calendar"
+msgstr ""
+
+#: src/views/calendar_page.rs:12683 src/views/calendar_page.rs:16800
+#: src/views/calendar_page.rs:16805 and 1 more
+msgid "Move to Local Calendar"
+msgstr ""
+
+#: src/views/calendar_page.rs:12700 src/views/calendar_page.rs:14866
+#: src/views/calendar_page.rs:16763 and 2 more
+#, fuzzy
+msgid "Delete Appointment"
+msgstr "Löschen"
+
+#: src/views/calendar_page.rs:12744
+msgid "New Appointment…"
+msgstr ""
+
+#: src/views/calendar_page.rs:12905
+msgid "The appointment contains no iCalendar data"
+msgstr ""
+
+#: src/views/calendar_page.rs:12909
+msgid ""
+"Recurring exceptions with RECURRENCE-ID cannot be moved by dragging; the "
+"calendar service cannot address the exception unambiguously"
+msgstr ""
+
+#: src/views/calendar_page.rs:12922 src/views/calendar_page.rs:12971
+msgid "{property} could not be evaluated while moving"
+msgstr ""
+
+#: src/views/calendar_page.rs:13011
+msgid "The recurrence rule is invalid and was not moved"
+msgstr ""
+
+#: src/views/calendar_page.rs:13021 src/views/calendar_page.rs:18691
+msgid ""
+"This recurrence cannot be moved safely by dragging; please edit the "
+"appointment"
+msgstr ""
+
+#: src/views/calendar_page.rs:13034
+msgid "RRULE-UNTIL could not be evaluated while moving"
+msgstr ""
+
+#: src/views/calendar_page.rs:13044
+msgid "RRULE-BYDAY could not be evaluated while moving"
+msgstr ""
+
+#: src/views/calendar_page.rs:13057
+msgid ""
+"This recurrence contains filters that cannot be moved safely by dragging"
+msgstr ""
+
+#: src/views/calendar_page.rs:13632 src/views/calendar_page.rs:13648
+#: src/views/calendar_page.rs:13749 and 4 more
+msgid "Sunday"
+msgstr "Sonntag"
+
+#: src/views/calendar_page.rs:13633 src/views/calendar_page.rs:13642
+#: src/views/calendar_page.rs:13743 and 3 more
+msgid "Monday"
+msgstr "Montag"
+
+#: src/views/calendar_page.rs:13634 src/views/calendar_page.rs:13643
+#: src/views/calendar_page.rs:13744 and 2 more
+msgid "Tuesday"
+msgstr "Dienstag"
+
+#: src/views/calendar_page.rs:13635 src/views/calendar_page.rs:13644
+#: src/views/calendar_page.rs:13745 and 2 more
+msgid "Wednesday"
+msgstr "Mittwoch"
+
+#: src/views/calendar_page.rs:13636 src/views/calendar_page.rs:13645
+#: src/views/calendar_page.rs:13746 and 2 more
+msgid "Thursday"
+msgstr "Donnerstag"
+
+#: src/views/calendar_page.rs:13637 src/views/calendar_page.rs:13646
+#: src/views/calendar_page.rs:13747 and 2 more
+msgid "Friday"
+msgstr "Freitag"
+
+#: src/views/calendar_page.rs:13638 src/views/calendar_page.rs:13647
+#: src/views/calendar_page.rs:13748 and 3 more
+msgid "Saturday"
+msgstr "Samstag"
+
+#: src/views/calendar_page.rs:13656 src/views/calendar_page.rs:13672
+#: src/views/calendar_page.rs:19295 and 7 more
+msgid "Sun"
+msgstr ""
+
+#: src/views/calendar_page.rs:13657 src/views/calendar_page.rs:13666
+#: src/views/calendar_page.rs:19297 and 7 more
+#, fuzzy
+msgid "Mon"
+msgstr "Monat"
+
+#: src/views/calendar_page.rs:13658 src/views/calendar_page.rs:13667
+#: src/views/calendar_page.rs:19314 and 2 more
+msgid "Tue"
+msgstr ""
+
+#: src/views/calendar_page.rs:13659 src/views/calendar_page.rs:13668
+#: src/views/calendar_page.rs:19315 and 2 more
+msgid "Wed"
+msgstr ""
+
+#: src/views/calendar_page.rs:13660 src/views/calendar_page.rs:13669
+#: src/views/calendar_page.rs:19316 and 2 more
+msgid "Thu"
+msgstr ""
+
+#: src/views/calendar_page.rs:13661 src/views/calendar_page.rs:13670
+#: src/views/calendar_page.rs:19317 and 2 more
+msgid "Fri"
+msgstr ""
+
+#: src/views/calendar_page.rs:13662 src/views/calendar_page.rs:13671
+#: src/views/calendar_page.rs:19318 and 3 more
+msgid "Sat"
+msgstr ""
+
+#: src/views/calendar_page.rs:13848
+msgid "Due: {date}"
+msgstr ""
+
+#: src/views/calendar_page.rs:13853
+msgid "high"
+msgstr ""
+
+#: src/views/calendar_page.rs:13854
+msgid "normal"
+msgstr ""
+
+#: src/views/calendar_page.rs:13855
+msgid "low"
+msgstr ""
+
+#: src/views/calendar_page.rs:13857 src/views/tasks_page.rs:630
+#: src/views/tasks_page.rs:859 and 3 more
+msgid "Priority"
+msgstr "Priorität"
+
+#: src/views/calendar_page.rs:13860 src/views/tasks_page.rs:953
+#: src/views/tasks_page.rs:1787 and 5 more
+msgid "Completed"
+msgstr "Erledigt"
+
+#: src/views/calendar_page.rs:13931
+msgid "The calendar state has changed; the task modification was discarded"
+msgstr ""
+
+#: src/views/calendar_page.rs:13946
+msgid "Task modification could not be confirmed: {error}"
+msgstr ""
+
+#: src/views/calendar_page.rs:13962
+msgid "Task data is no longer available"
+msgstr ""
+
+#: src/views/calendar_page.rs:13978
+msgid "The confirmed task is no longer loaded; refreshing view"
+msgstr ""
+
+#: src/views/calendar_page.rs:13999
+#, fuzzy
+msgid "Task completed"
+msgstr "Erledigt"
+
+#: src/views/calendar_page.rs:14001
+msgid "Task reopened"
+msgstr ""
+
+#: src/views/calendar_page.rs:14013
+msgid "Task could not be modified: {error}"
+msgstr ""
+
+#: src/views/calendar_page.rs:14051
+msgid "Imported tasks are read-only"
+msgstr ""
+
+#: src/views/calendar_page.rs:14053
+#, fuzzy
+msgid "Mark task as completed"
+msgstr "Als kein Spam markieren"
+
+#: src/views/calendar_page.rs:14208 src/views/calendar_page.rs:19722
+#: src/views/calendar_page.rs:19724 and 1 more
+msgid "hr"
+msgstr ""
+
+#: src/views/calendar_page.rs:14209 src/views/calendar_page.rs:19722
+#: src/views/calendar_page.rs:19728
+msgid "min"
+msgstr ""
+
+#: src/views/calendar_page.rs:14223 src/views/calendar_page.rs:19737
+msgid "Daily recurrence"
+msgstr ""
+
+#: src/views/calendar_page.rs:14225 src/views/calendar_page.rs:19733
+msgid "Weekly recurrence"
+msgstr ""
+
+#: src/views/calendar_page.rs:14227
+msgid "Monthly recurrence"
+msgstr ""
+
+#: src/views/calendar_page.rs:14229
+msgid "Yearly recurrence"
+msgstr ""
+
+#: src/views/calendar_page.rs:14231
+msgid "Recurring event"
+msgstr ""
+
+#: src/views/calendar_page.rs:14342 src/views/calendar_page.rs:19716
+msgid "until"
+msgstr ""
+
+#: src/views/calendar_page.rs:14345 src/views/calendar_page.rs:19710
+#: src/views/mail_page.rs:23998
+msgid "from"
+msgstr ""
+
+#: src/views/calendar_page.rs:14447 src/views/calendar_page.rs:17108
+msgid "The appointment has no unique identity and was not deleted"
+msgstr ""
+
+#: src/views/calendar_page.rs:14454 src/views/calendar_page.rs:17115
+msgid "The appointment is not uniquely loaded and was not deleted"
+msgstr ""
+
+#: src/views/calendar_page.rs:14546
+msgid "Delete operation failed: {error}"
+msgstr ""
+
+#: src/views/calendar_page.rs:14602
+msgid "Attendee"
+msgstr "Teilnehmer"
+
+#: src/views/calendar_page.rs:14685
+msgid "At start time"
+msgstr ""
+
+#: src/views/calendar_page.rs:14693
+msgid "1 hour before"
+msgstr ""
+
+#: src/views/calendar_page.rs:14701
+msgid "1 day before"
+msgstr ""
+
+#: src/views/calendar_page.rs:14711
+msgid "Reminder set"
+msgstr ""
+
+#: src/views/calendar_page.rs:14721 src/views/calendar_page.rs:19763
+#: src/views/itip_banner.rs:281 and 2 more
+msgid "Tentative"
+msgstr "Vorbehalt"
+
+#: src/views/calendar_page.rs:14722 src/views/tasks_page.rs:7251
+#: src/views/tasks_page.rs:11196 and 2 more
+msgid "Cancelled"
+msgstr "Abgebrochen"
+
+#: src/views/calendar_page.rs:14728 src/views/calendar_page.rs:19764
+#, fuzzy
+msgid "Free"
+msgstr "Freie Zeiten"
+
+#: src/views/calendar_page.rs:14733
+msgid "Private"
+msgstr "Privat"
+
+#: src/views/calendar_page.rs:14734 src/views/calendar_page.rs:19765
+msgid "Confidential"
+msgstr "Vertraulich"
+
+#: src/views/calendar_page.rs:14885 src/views/mail_page.rs:10692
+#: src/views/mail_page.rs:23911
+msgid "Close"
+msgstr "Schließen"
+
+#: src/views/calendar_page.rs:15014
+msgid "Join meeting"
+msgstr ""
+
+#: src/views/calendar_page.rs:15049
+msgid "Organizer: {name}"
+msgstr ""
+
+#: src/views/calendar_page.rs:15107
+msgid "Reminder: {summary}"
+msgstr ""
+
+#: src/views/calendar_page.rs:15381
+msgid "Open appointment: {title}"
+msgstr ""
+
+#: src/views/calendar_page.rs:15569
+msgid "Holidays"
+msgstr ""
+
+#: src/views/calendar_page.rs:15570
+msgid "Holiday"
+msgstr ""
+
+#: src/views/calendar_page.rs:15571
+msgid "Birthdays"
+msgstr ""
+
+#: src/views/calendar_page.rs:15572
+msgid "Birthday"
+msgstr "Geburtstag"
+
+#: src/views/calendar_page.rs:16004
+msgid "The destination is not confirmed as writable"
+msgstr ""
+
+#: src/views/calendar_page.rs:16008
+msgid "Missing calendar identity for destination"
+msgstr ""
+
+#: src/views/calendar_page.rs:16011
+msgid "Source and destination are the same calendar"
+msgstr ""
+
+#: src/views/calendar_page.rs:16014 src/views/calendar_page.rs:16589
+#: src/views/calendar_page.rs:16896
+msgid "No calendar data available for this appointment"
+msgstr ""
+
+#: src/views/calendar_page.rs:16033
+msgid "The appointment has no unique source and UID"
+msgstr ""
+
+#: src/views/calendar_page.rs:16579
+msgid ""
+"Recurring exceptions with RECURRENCE-ID cannot be safely modified via the "
+"available calendar API"
+msgstr ""
+
+#: src/views/calendar_page.rs:16583
+msgid "This appointment originates from a read-only imported source"
+msgstr ""
+
+#: src/views/calendar_page.rs:16586
+msgid "This appointment does not have a stable UID and cannot be modified"
+msgstr ""
+
+#: src/views/calendar_page.rs:16593
+msgid "The appointment UID and the iCalendar UID do not match"
+msgstr ""
+
+#: src/views/calendar_page.rs:16594
+msgid "The iCalendar component does not possess a stable UID"
+msgstr ""
+
+#: src/views/calendar_page.rs:16604
+msgid ""
+"The calendar service returned a different appointment UID; the view was not "
+"modified"
+msgstr ""
+
+#: src/views/calendar_page.rs:16612
+msgid ""
+"The calendar service confirmed the change without an iCalendar component; "
+"the view was not modified"
+msgstr ""
+
+#: src/views/calendar_page.rs:16616
+msgid ""
+"The calendar service returned an iCalendar component with a different UID; "
+"the view was not modified"
+msgstr ""
+
+#: src/views/calendar_page.rs:16624
+msgid ""
+"The calendar service returned a different recurring exception; the view was "
+"not modified"
+msgstr ""
+
+#: src/views/calendar_page.rs:16784
+msgid "Export Appointment (iCalendar, CSV, RDF)"
+msgstr ""
+
+#: src/views/calendar_page.rs:16826
+msgid "The appointment has no unique identity and was not opened"
+msgstr ""
+
+#: src/views/calendar_page.rs:16833
+msgid "The appointment is not uniquely loaded and was not opened"
+msgstr ""
+
+#: src/views/calendar_page.rs:16874
+msgid ""
+"Print preview for “{title}” prepared ({count} characters); print portal is "
+"Linux handoff"
+msgstr ""
+
+#: src/views/calendar_page.rs:20654 src/views/calendar_page.rs:20668
+#: src/views/calendar_page.rs:20856 and 1 more
+msgid "calendar_page.rs"
+msgstr ""
+
+#: src/views/contacts_page.rs:270 src/views/contacts_page.rs:1118
+#: src/views/tasks_page.rs:12720 and 1 more
+msgid "Name"
+msgstr "Name"
+
+#: src/views/contacts_page.rs:271
+msgid "Organization"
+msgstr "Organisation"
+
+#: src/views/contacts_page.rs:272
+msgid "Job Title"
+msgstr "Tätigkeit"
+
+#: src/views/contacts_page.rs:273 src/views/contacts_page.rs:867
+#: src/views/contacts_page.rs:1119 and 6 more
+msgid "Email"
+msgstr "E-Mail"
+
+#: src/views/contacts_page.rs:274 src/views/contacts_page.rs:1120
+#: src/views/contacts_page.rs:7142 and 1 more
+msgid "Phone"
+msgstr "Telefon"
+
+#: src/views/contacts_page.rs:275 src/views/memos_page.rs:406
+#: src/views/tasks_page.rs:629 and 4 more
+msgid "Categories"
+msgstr "Kategorien"
+
+#: src/views/contacts_page.rs:775 src/views/contacts_page.rs:4581
+msgid ""
+"Connect Apple Contacts: Would you like to view your macOS contacts in "
+"Evolution?"
+msgstr ""
+
+#: src/views/contacts_page.rs:776 src/views/contacts_page.rs:4582
+#, fuzzy
+msgid "Connect Apple Contacts"
+msgstr "Neuer Kontakt"
+
+#: src/views/contacts_page.rs:780
+msgid "Access to Apple Contacts not allowed. Enable in macOS System Settings."
+msgstr ""
+
+#: src/views/contacts_page.rs:866 src/views/contacts_page.rs:9201
+#: src/views/contacts_page.rs:9227 and 1 more
+msgid "Edit"
+msgstr ""
+
+#: src/views/contacts_page.rs:869 src/views/contacts_page.rs:9204
+#: src/views/mail_page.rs:5361 and 2 more
+msgid "Print"
+msgstr "Drucken"
+
+#: src/views/contacts_page.rs:870 src/views/contacts_page.rs:9205
+#, fuzzy
+msgid "Print List"
+msgstr "Drucken"
+
+#: src/views/contacts_page.rs:871 src/views/contacts_page.rs:9206
+msgid "Export"
+msgstr "Exportieren"
+
+#: src/views/contacts_page.rs:872 src/views/contacts_page.rs:2965
+#: src/views/contacts_page.rs:9207
+msgid "Merge"
+msgstr ""
+
+#: src/views/contacts_page.rs:873 src/views/contacts_page.rs:9208
+#, fuzzy
+msgid "Copy…"
+msgstr "Kopieren"
+
+#: src/views/contacts_page.rs:874 src/views/contacts_page.rs:9209
+#, fuzzy
+msgid "Move…"
+msgstr "Verschieben"
+
+#: src/views/contacts_page.rs:1112
+msgid "Search contacts…"
+msgstr ""
+
+#: src/views/contacts_page.rs:1117 src/views/memos_page.rs:1674
+#: src/views/tasks_page.rs:4584
+msgid "All Fields"
+msgstr ""
+
+#: src/views/contacts_page.rs:1121
+msgid "Category"
+msgstr "Kategorie"
+
+#: src/views/contacts_page.rs:1128 src/views/mail_page.rs:18949
+msgid "Select quick search field"
+msgstr ""
+
+#: src/views/contacts_page.rs:1137 src/views/contacts_page.rs:1294
+#: src/views/contacts_page.rs:1375
+#, fuzzy
+msgid "All Contacts"
+msgstr "Neuer Kontakt"
+
+#: src/views/contacts_page.rs:1171
+msgid "Select contact category"
+msgstr ""
+
+#: src/views/contacts_page.rs:1181
+msgid "Duplicates only"
+msgstr ""
+
+#: src/views/contacts_page.rs:1182
+msgid "Show same email, phone number, or name without contact path"
+msgstr ""
+
+#: src/views/contacts_page.rs:1188
+msgid "Uncategorized only"
+msgstr ""
+
+#: src/views/contacts_page.rs:1189
+msgid "Show contacts without any category"
+msgstr ""
+
+#: src/views/contacts_page.rs:1195
+msgid "No synchronized address book loaded yet"
+msgstr ""
+
+#: src/views/contacts_page.rs:1303 src/views/memos_page.rs:5039
+msgid "Unavailable source"
+msgstr ""
+
+#: src/views/contacts_page.rs:1307 src/views/contacts_page.rs:4878
+#: src/views/contacts_page.rs:5221 and 1 more
+msgid "Local Address Book"
+msgstr ""
+
+#: src/views/contacts_page.rs:1435
+msgid "Expand group"
+msgstr ""
+
+#: src/views/contacts_page.rs:1437
+msgid "Collapse group"
+msgstr ""
+
+#: src/views/contacts_page.rs:1520 src/views/contacts_page.rs:1558
+#: src/views/contacts_page.rs:1615 and 2 more
+msgid "Address Book"
+msgstr "Adressbuch"
+
+#: src/views/contacts_page.rs:1667
+msgid "{status}; loading contacts."
+msgstr ""
+
+#: src/views/contacts_page.rs:2500 src/window.rs:2401
+msgid "Create new contact (Ctrl+N)"
+msgstr "Neuen Kontakt erstellen (Strg+N)"
+
+#: src/views/contacts_page.rs:2560
+#, fuzzy
+msgid "New Contact List"
+msgstr "Neuer Kontakt"
+
+#: src/views/contacts_page.rs:2565 src/views/contacts_page.rs:2613
+#, fuzzy
+msgid "Create new contact list"
+msgstr "Neuen Kontakt erstellen (Strg+N)"
+
+#: src/views/contacts_page.rs:2619 src/views/contacts_page.rs:2623
+msgid "Print visible contacts"
+msgstr ""
+
+#: src/views/contacts_page.rs:2733 src/views/contacts_page.rs:2764
+#: src/views/contacts_page.rs:2833 and 16 more
+msgid "No contact selected"
+msgstr ""
+
+#: src/views/contacts_page.rs:2738 src/views/contacts_page.rs:3558
+#: src/views/contacts_page.rs:4330 and 1 more
+msgid "Address book data will be displayed after synchronization"
+msgstr ""
+
+#: src/views/contacts_page.rs:2744 src/views/contacts_page.rs:3561
+#: src/views/contacts_page.rs:4333 and 3 more
+msgid "No further contact details"
+msgstr ""
+
+#: src/views/contacts_page.rs:2763 src/views/contacts_page.rs:4334
+#: src/views/contacts_page.rs:6260 and 1 more
+msgid "No email address"
+msgstr ""
+
+#: src/views/contacts_page.rs:2768 src/views/contacts_page.rs:3675
+msgid "Send email"
+msgstr ""
+
+#: src/views/contacts_page.rs:2772
+msgid "Send email to contact"
+msgstr ""
+
+#: src/views/contacts_page.rs:2796
+msgid "The selected contacts have no email address"
+msgstr ""
+
+#: src/views/contacts_page.rs:2808
+#, fuzzy
+msgid "Edit contact (Ctrl+E)"
+msgstr "Neuen Kontakt erstellen (Strg+N)"
+
+#: src/views/contacts_page.rs:2812 src/views/contacts_page.rs:3686
+#: src/views/contacts_page.rs:5901
+#, fuzzy
+msgid "Edit contact"
+msgstr "Neuer Kontakt"
+
+#: src/views/contacts_page.rs:2838 src/views/contacts_page.rs:2910
+msgid "This contact is from a read-only imported source"
+msgstr ""
+
+#: src/views/contacts_page.rs:2877
+msgid "Merge duplicates from same source"
+msgstr ""
+
+#: src/views/contacts_page.rs:2882
+msgid "Merge duplicates of contact"
+msgstr ""
+
+#: src/views/contacts_page.rs:2922
+msgid "No duplicates found for this contact"
+msgstr ""
+
+#: src/views/contacts_page.rs:2931
+msgid "1 duplicate will be merged into"
+msgstr ""
+
+#: src/views/contacts_page.rs:2933 src/views/contacts_page.rs:2941
+msgid "The primary contact will be kept"
+msgstr ""
+
+#: src/views/contacts_page.rs:2934
+msgid "The duplicate will then be permanently removed from this address book."
+msgstr ""
+
+#: src/views/contacts_page.rs:2939
+msgid "duplicates will be merged into"
+msgstr ""
+
+#: src/views/contacts_page.rs:2942
+msgid "The duplicates will then be permanently removed from this address book."
+msgstr ""
+
+#: src/views/contacts_page.rs:2963
+msgid "Merge duplicates?"
+msgstr ""
+
+#: src/views/contacts_page.rs:2985
+msgid "Merge without confirmed vCard from backend"
+msgstr ""
+
+#: src/views/contacts_page.rs:2994
+msgid "Could not read merged vCard"
+msgstr ""
+
+#: src/views/contacts_page.rs:3091
+msgid "{} duplicate(s) merged into “{}”"
+msgstr ""
+
+#: src/views/contacts_page.rs:3099
+msgid "Could not merge duplicates"
+msgstr ""
+
+#: src/views/contacts_page.rs:3110
+#, fuzzy
+msgid "Delete contact (Delete)"
+msgstr "Nachricht löschen (Entf)"
+
+#: src/views/contacts_page.rs:3114 src/views/contacts_page.rs:3752
+#: src/views/contacts_page.rs:5919
+#, fuzzy
+msgid "Delete contact"
+msgstr "Neuer Kontakt"
+
+#: src/views/contacts_page.rs:3120
+msgid "Export selected contacts (vCard, CSV, LDIF)"
+msgstr ""
+
+#: src/views/contacts_page.rs:3124
+msgid "Export selected contacts"
+msgstr ""
+
+#: src/views/contacts_page.rs:3146
+msgid "No contacts selected for export"
+msgstr ""
+
+#: src/views/contacts_page.rs:3150
+msgid "No window available for export"
+msgstr ""
+
+#: src/views/contacts_page.rs:3189
+#, fuzzy
+msgid "Export Contacts"
+msgstr "Neuer Kontakt"
+
+#: src/views/contacts_page.rs:3224
+#, fuzzy
+msgid "Print selected contacts (Ctrl+P)"
+msgstr "Neuen Kontakt erstellen (Strg+N)"
+
+#: src/views/contacts_page.rs:3228 src/views/contacts_page.rs:5872
+msgid "Print selected contacts"
+msgstr "Die gewählten Kontakte drucken"
+
+#: src/views/contacts_page.rs:3267 src/views/contacts_page.rs:3719
+msgid "Copy to address book…"
+msgstr ""
+
+#: src/views/contacts_page.rs:3271
+msgid "Copy to Address Book"
+msgstr ""
+
+#: src/views/contacts_page.rs:3277 src/views/contacts_page.rs:3730
+msgid "Move to address book…"
+msgstr ""
+
+#: src/views/contacts_page.rs:3281
+msgid "Move to Address Book"
+msgstr ""
+
+#: src/views/contacts_page.rs:3470
+msgid ""
+"The address book source is no longer writable immediately before deletion"
+msgstr ""
+
+#: src/views/contacts_page.rs:3482 src/views/contacts_page.rs:5427
+msgid "The backend confirmed deletion of a different contact"
+msgstr ""
+
+#: src/views/contacts_page.rs:3573
+msgid "No contacts loaded in address book"
+msgstr ""
+
+#: src/views/contacts_page.rs:3606
+msgid "{removed_count} contact(s) deleted; error deleting {failed_id}: {error}"
+msgstr ""
+
+#: src/views/contacts_page.rs:3611
+#, fuzzy
+msgid "Could not delete contact"
+msgstr "Neuer Kontakt"
+
+#: src/views/contacts_page.rs:3617
+#, fuzzy
+msgid "Contact deleted"
+msgstr "Nachricht löschen (Entf)"
+
+#: src/views/contacts_page.rs:3621
+#, fuzzy
+msgid "contacts deleted"
+msgstr "Nachricht löschen (Entf)"
+
+#: src/views/contacts_page.rs:3697
+msgid "Export (vCard, CSV, LDIF)…"
+msgstr ""
+
+#: src/views/contacts_page.rs:3741
+msgid "Merge duplicates"
+msgstr ""
+
+#: src/views/contacts_page.rs:3802 src/window.rs:1032
+msgid "Toggle contact preview (Ctrl+M)"
+msgstr ""
+
+#: src/views/contacts_page.rs:3807
+msgid "Toggle contact preview"
+msgstr ""
+
+#: src/views/contacts_page.rs:3832 src/views/memos_page.rs:2342
+msgid "Toggle sidebar"
+msgstr ""
+
+#: src/views/contacts_page.rs:4023
+msgid "Card View"
+msgstr ""
+
+#: src/views/contacts_page.rs:4030
+msgid "List View"
+msgstr "Listenansicht"
+
+#: src/views/contacts_page.rs:4113 src/views/contacts_page.rs:5275
+#: src/views/mail_page.rs:5408 and 3 more
+msgid "Copy"
+msgstr "Kopieren"
+
+#: src/views/contacts_page.rs:4115
+#, fuzzy
+msgid "Copy email address"
+msgstr "Nachricht kopieren"
+
+#: src/views/contacts_page.rs:4139
+msgid "No email address to copy"
+msgstr ""
+
+#: src/views/contacts_page.rs:4143
+msgid "Email address copied"
+msgstr ""
+
+#: src/views/contacts_page.rs:4610 src/views/contacts_page.rs:4666
+msgid "Apple Contacts connected successfully!"
+msgstr ""
+
+#: src/views/contacts_page.rs:4739
+#, fuzzy
+msgid "Loading contacts…"
+msgstr "Nachricht weiterleiten"
+
+#: src/views/contacts_page.rs:4854
+msgid "Could not load contacts: {error}"
+msgstr ""
+
+#: src/views/contacts_page.rs:4894
+msgid "synchronized address book"
+msgstr ""
+
+#: src/views/contacts_page.rs:4895
+msgid "external address book"
+msgstr ""
+
+#: src/views/contacts_page.rs:4896
+#, fuzzy
+msgid "local address book"
+msgstr "Nachricht kopieren"
+
+#: src/views/contacts_page.rs:4907
+msgid "No synchronized contacts loaded"
+msgstr ""
+
+#: src/views/contacts_page.rs:4909
+msgid "No contacts loaded from external address book"
+msgstr ""
+
+#: src/views/contacts_page.rs:4912
+msgid "No contacts loaded from local address book"
+msgstr ""
+
+#: src/views/contacts_page.rs:4925 src/views/contacts_page.rs:8188
+#: src/views/mail_page.rs:4710
+msgid "Note"
+msgstr "Hinweis"
+
+#: src/views/contacts_page.rs:5117 src/views/contacts_page.rs:5594
+#: src/views/contacts_page.rs:5620 and 5 more
+#, fuzzy
+msgid "No contacts selected"
+msgstr "Nachrichtenquelle anzeigen"
+
+#: src/views/contacts_page.rs:5121 src/views/contacts_page.rs:8432
+msgid "The target address book is not writable"
+msgstr ""
+
+#: src/views/contacts_page.rs:5125 src/views/contacts_page.rs:8444
+msgid "Source and destination are the same address book"
+msgstr ""
+
+#: src/views/contacts_page.rs:5134 src/views/contacts_page.rs:5629
+#: src/views/contacts_page.rs:8338 and 1 more
+msgid "A selected contact was resolved multiple times"
+msgstr ""
+
+#: src/views/contacts_page.rs:5138 src/views/contacts_page.rs:5633
+#: src/views/contacts_page.rs:8326 and 1 more
+msgid "At least one selected contact belongs to a read-only source"
+msgstr ""
+
+#: src/views/contacts_page.rs:5142 src/views/contacts_page.rs:5637
+#, fuzzy
+msgid "Unnamed Contact"
+msgstr "Neuer Kontakt"
+
+#: src/views/contacts_page.rs:5151
+msgid "Contact “{name}” contains no valid vCard data for transfer"
+msgstr ""
+
+#: src/views/contacts_page.rs:5252
+msgid "No other writable destination address book available"
+msgstr ""
+
+#: src/views/contacts_page.rs:5263
+#, fuzzy
+msgid "Copy Contact"
+msgstr "Neuer Kontakt"
+
+#: src/views/contacts_page.rs:5265
+#, fuzzy
+msgid "Copy Contacts"
+msgstr "Neuer Kontakt"
+
+#: src/views/contacts_page.rs:5268
+msgid "Select the destination address book to copy the contact to:"
+msgstr ""
+
+#: src/views/contacts_page.rs:5270
+msgid "Select the destination address book to copy the contacts to:"
+msgstr ""
+
+#: src/views/contacts_page.rs:5281
+#, fuzzy
+msgid "Move Contact"
+msgstr "Neuer Kontakt"
+
+#: src/views/contacts_page.rs:5283
+#, fuzzy
+msgid "Move Contacts"
+msgstr "Neuer Kontakt"
+
+#: src/views/contacts_page.rs:5286
+msgid ""
+"The contact will be created in the destination address book and then removed "
+"from the current address book."
+msgstr ""
+
+#: src/views/contacts_page.rs:5288
+msgid ""
+"The selected contacts will be created in the destination address book and "
+"then removed from their current address books."
+msgstr ""
+
+#: src/views/contacts_page.rs:5293 src/views/mail_page.rs:5407
+#: src/views/mail_page.rs:20104
+msgid "Move"
+msgstr "Verschieben"
+
+#: src/views/contacts_page.rs:5328
+msgid "Invalid address book selection"
+msgstr ""
+
+#: src/views/contacts_page.rs:5377
+msgid "The target address book is no longer writable"
+msgstr ""
+
+#: src/views/contacts_page.rs:5387
+msgid "The source address book is no longer writable immediately before moving"
+msgstr ""
+
+#: src/views/contacts_page.rs:5410
+msgid "Failed to create in target address book: {error}"
+msgstr ""
+
+#: src/views/contacts_page.rs:5435
+msgid "Failed to remove from source address book: {error}"
+msgstr ""
+
+#: src/views/contacts_page.rs:5491
+msgid "Address book data will be shown after synchronization"
+msgstr ""
+
+#: src/views/contacts_page.rs:5516
+msgid "{created_count} contact(s) transferred; error with {failed_id}: {error}"
+msgstr ""
+
+#: src/views/contacts_page.rs:5521
+msgid "Transfer failed"
+msgstr ""
+
+#: src/views/contacts_page.rs:5596
+msgid "vCard export not started: “{contact_name}” contains no complete vCard"
+msgstr ""
+
+#: src/views/contacts_page.rs:5653 src/views/contacts_page.rs:8297
+#, fuzzy
+msgid "Delete contact?"
+msgstr "Neuer Kontakt"
+
+#: src/views/contacts_page.rs:5662 src/views/contacts_page.rs:8310
+#, fuzzy
+msgid "Delete contacts?"
+msgstr "Neuer Kontakt"
+
+#: src/views/contacts_page.rs:5854
+#, fuzzy
+msgid "Send email to selected contacts"
+msgstr "Neuen Kontakt erstellen (Strg+N)"
+
+#: src/views/contacts_page.rs:5856
+msgid "Selection contains no email address"
+msgstr ""
+
+#: src/views/contacts_page.rs:5861
+#, fuzzy
+msgid "Export selected contacts together as vCard"
+msgstr "Neuen Kontakt erstellen (Strg+N)"
+
+#: src/views/contacts_page.rs:5865
+msgid "Selection contains no fully exportable vCard"
+msgstr ""
+
+#: src/views/contacts_page.rs:5874
+#, fuzzy
+msgid "Print selected contact"
+msgstr "Neuen Kontakt erstellen (Strg+N)"
+
+#: src/views/contacts_page.rs:5881
+msgid "Copy selected contacts to another address book"
+msgstr "Gewählte Kontakte in ein anderes Adressbuch kopieren"
+
+#: src/views/contacts_page.rs:5883
+msgid "Copy contact to another address book"
+msgstr ""
+
+#: src/views/contacts_page.rs:5890 src/views/contacts_page.rs:5915
+msgid "Selection contains contacts from a read-only source"
+msgstr ""
+
+#: src/views/contacts_page.rs:5892
+msgid "Move selected contacts to another address book"
+msgstr "Gewählte Kontakte in ein anderes Adressbuch verschieben"
+
+#: src/views/contacts_page.rs:5894
+msgid "Move contact to another address book"
+msgstr ""
+
+#: src/views/contacts_page.rs:5899
+msgid "Edit is only available for a single contact"
+msgstr ""
+
+#: src/views/contacts_page.rs:5906
+msgid "Merge is only available for a single contact"
+msgstr ""
+
+#: src/views/contacts_page.rs:5908
+msgid "Merge duplicates from the same source"
+msgstr ""
+
+#: src/views/contacts_page.rs:5917
+#, fuzzy
+msgid "Delete selected contacts"
+msgstr "Neuer Kontakt"
+
+#: src/views/contacts_page.rs:6062
+msgid "Contact selection is no longer current; please reselect"
+msgstr ""
+
+#: src/views/contacts_page.rs:6098
+msgid "A visible contact is no longer uniquely available"
+msgstr ""
+
+#: src/views/contacts_page.rs:6109
+msgid "No visible contacts available to print"
+msgstr ""
+
+#: src/views/contacts_page.rs:6241
+msgid "Export could not be saved: {error}"
+msgstr ""
+
+#: src/views/contacts_page.rs:6372
+msgid "1 contact selected"
+msgstr ""
+
+#: src/views/contacts_page.rs:6374
+msgid "contacts selected"
+msgstr ""
+
+#: src/views/contacts_page.rs:6381
+msgid "Email addresses can be used together"
+msgstr ""
+
+#: src/views/contacts_page.rs:6383
+msgid "No email addresses in selection"
+msgstr ""
+
+#: src/views/contacts_page.rs:6387
+msgid ""
+"Multiple selection: Selected contacts can be printed, exported, or deleted "
+"together."
+msgstr ""
+
+#: src/views/contacts_page.rs:6389
+msgid ""
+"Multiple selection: Print and Export write verified vCards. Deletion is "
+"disabled for read-only sources."
+msgstr ""
+
+#: src/views/contacts_page.rs:6644 src/views/contacts_page.rs:6707
+msgid "Search not applied: {error}"
+msgstr ""
+
+#: src/views/contacts_page.rs:6667
+msgid "Searching contacts…"
+msgstr ""
+
+#: src/views/contacts_page.rs:6740
+msgid "No contacts match the search"
+msgstr ""
+
+#: src/views/contacts_page.rs:6993
+msgid "No phone number"
+msgstr ""
+
+#: src/views/contacts_page.rs:7079
+#, fuzzy
+msgid "No contact details"
+msgstr "Neuer Kontakt"
+
+#: src/views/contacts_page.rs:7134 src/views/contacts_page.rs:7170
+#: src/views/contacts_page.rs:8835 and 1 more
+msgid "Mobile"
+msgstr ""
+
+#: src/views/contacts_page.rs:7136 src/views/contacts_page.rs:7171
+#: src/views/contacts_page.rs:8864
+msgid "Business"
+msgstr ""
+
+#: src/views/contacts_page.rs:7138 src/views/contacts_page.rs:7172
+#: src/views/contacts_page.rs:8867
+msgid "Home"
+msgstr "Privat"
+
+#: src/views/contacts_page.rs:7140
+msgid "Fax"
+msgstr "Fax"
+
+#: src/views/contacts_page.rs:7692
+msgid "Members: {members}"
+msgstr ""
+
+#: src/views/contacts_page.rs:7696 src/views/contacts_page.rs:8250
+msgid "Member addresses: hidden"
+msgstr ""
+
+#: src/views/contacts_page.rs:7706 src/views/contacts_page.rs:8586
+#: src/views/contacts_page.rs:8607
+msgid "Address: {address}"
+msgstr ""
+
+#: src/views/contacts_page.rs:7713 src/views/contacts_page.rs:8587
+#: src/views/contacts_page.rs:8591 and 1 more
+msgid "Map: active ({service})"
+msgstr ""
+
+#: src/views/contacts_page.rs:7717
+msgid "Categories: {categories}"
+msgstr ""
+
+#: src/views/contacts_page.rs:7720
+msgid "Websites: {websites}"
+msgstr ""
+
+#: src/views/contacts_page.rs:7723
+msgid "Nickname: {nickname}"
+msgstr ""
+
+#: src/views/contacts_page.rs:7726
+msgid "Birthday: {birthday}"
+msgstr ""
+
+#: src/views/contacts_page.rs:7729
+msgid "Anniversary: {anniversary}"
+msgstr ""
+
+#: src/views/contacts_page.rs:7732
+msgid "Role: {role}"
+msgstr ""
+
+#: src/views/contacts_page.rs:7735
+msgid "Gender: {gender}"
+msgstr ""
+
+#: src/views/contacts_page.rs:7738
+msgid "Timezone: {timezone}"
+msgstr ""
+
+#: src/views/contacts_page.rs:7741
+msgid "Position: {position}"
+msgstr ""
+
+#: src/views/contacts_page.rs:7744
+msgid "Chat/IMPP: {impp}"
+msgstr ""
+
+#: src/views/contacts_page.rs:7747
+msgid "Related: {related}"
+msgstr ""
+
+#: src/views/contacts_page.rs:7750
+#, fuzzy
+msgid "Note: {note}"
+msgstr "Neuer Kontakt"
+
+#: src/views/contacts_page.rs:8244 src/views/contacts_page.rs:8276
+msgid "addresses hidden"
+msgstr ""
+
+#: src/views/contacts_page.rs:9147
+msgid "contacts_page.rs"
+msgstr ""
+
+#: src/views/html_editor.rs:340
+msgid "Bold (Ctrl+B)"
+msgstr ""
+
+#: src/views/html_editor.rs:346
+#, fuzzy
+msgid "Italic (Ctrl+I)"
+msgstr "Nachricht drucken (Strg+P)"
+
+#: src/views/html_editor.rs:352
+#, fuzzy
+msgid "Underline (Ctrl+U)"
+msgstr "Nachricht drucken (Strg+P)"
+
+#: src/views/html_editor.rs:358
+msgid "Strikethrough"
+msgstr "Durchgestrichen"
+
+#: src/views/html_editor.rs:364
+msgid "Clear formatting"
+msgstr ""
+
+#: src/views/html_editor.rs:379 src/views/html_editor_fallback.rs:255
+msgid "Bullet list"
+msgstr ""
+
+#: src/views/html_editor.rs:385 src/views/html_editor_fallback.rs:256
+msgid "Numbered list"
+msgstr ""
+
+#: src/views/html_editor.rs:391 src/views/html_editor_fallback.rs:257
+msgid "Block quote"
+msgstr ""
+
+#: src/views/html_editor.rs:406 src/views/html_editor.rs:428
+msgid "Insert hyperlink"
+msgstr ""
+
+#: src/views/html_editor.rs:415
+msgid "Link text (optional)"
+msgstr ""
+
+#: src/views/html_editor.rs:418
+msgid "Insert"
+msgstr ""
+
+#: src/views/html_editor.rs:435
+msgid "Insert horizontal rule"
+msgstr ""
+
+#: src/views/html_editor.rs:441
+msgid "Insert image"
+msgstr ""
+
+#: src/views/html_editor.rs:447
+msgid "Undo (Ctrl+Z)"
+msgstr ""
+
+#: src/views/html_editor.rs:453
+msgid "Redo (Ctrl+Shift+Z)"
+msgstr ""
+
+#: src/views/html_editor.rs:768
+msgid "Select image to insert"
+msgstr ""
+
+#: src/views/html_editor.rs:772
+msgid "Images (*.png, *.jpg, *.jpeg, *.gif, *.svg, *.webp)"
+msgstr ""
+
+#: src/views/html_editor_fallback.rs:202
+msgid "Rich text formatting is not available in macOS development fallback"
+msgstr ""
+
+#: src/views/html_editor_fallback.rs:252
+msgid "Bold"
+msgstr "Fett"
+
+#: src/views/html_editor_fallback.rs:253
+msgid "Italic"
+msgstr "Kursiv"
+
+#: src/views/html_editor_fallback.rs:254
+#, fuzzy
+msgid "Underline"
+msgstr "Löschen"
+
+#: src/views/itip_banner.rs:108 src/views/itip_banner.rs:485
+msgid "Meeting Invitation"
+msgstr ""
+
+#: src/views/itip_banner.rs:115
+#, fuzzy
+msgid "Event"
+msgstr "Neuer Termin"
+
+#: src/views/itip_banner.rs:124 src/views/itip_banner.rs:611
+msgid "Response Pending"
+msgstr ""
+
+#: src/views/itip_banner.rs:254
+msgid "Calendar:"
+msgstr "Kalender:"
+
+#: src/views/itip_banner.rs:276 src/views/mail_page.rs:27248
+msgid "Accept"
+msgstr "Zusagen"
+
+#: src/views/itip_banner.rs:278
+msgid "Accept event, add to calendar and send response"
+msgstr ""
+
+#: src/views/itip_banner.rs:282
+msgid "Tentatively accept and add to calendar"
+msgstr ""
+
+#: src/views/itip_banner.rs:285 src/views/mail_page.rs:27250
+msgid "Decline"
+msgstr "Ablehnen"
+
+#: src/views/itip_banner.rs:287
+msgid "Decline invitation and send response"
+msgstr ""
+
+#: src/views/itip_banner.rs:304
+msgid "Remove from Calendar"
+msgstr ""
+
+#: src/views/itip_banner.rs:306
+msgid "Remove cancelled event from your calendar"
+msgstr ""
+
+#: src/views/itip_banner.rs:320
+#, fuzzy
+msgid "Update Calendar"
+msgstr "Als EML exportieren …"
+
+#: src/views/itip_banner.rs:322
+msgid "Update attendee status in existing calendar event"
+msgstr ""
+
+#: src/views/itip_banner.rs:336
+#, fuzzy
+msgid "Add to Calendar"
+msgstr "Als EML exportieren …"
+
+#: src/views/itip_banner.rs:338
+msgid "Add published event to calendar"
+msgstr ""
+
+#: src/views/itip_banner.rs:345
+msgid "Open in Calendar"
+msgstr ""
+
+#: src/views/itip_banner.rs:348
+msgid "Switch to calendar and show date"
+msgstr ""
+
+#: src/views/itip_banner.rs:416 src/views/itip_banner.rs:433
+#, fuzzy
+msgid "Personal Calendar"
+msgstr "Kalenderansicht drucken"
+
+#: src/views/itip_banner.rs:472
+msgid "Event without summary"
+msgstr ""
+
+#: src/views/itip_banner.rs:493
+msgid "Meeting has been cancelled"
+msgstr ""
+
+#: src/views/itip_banner.rs:502
+msgid "Response to Meeting Invitation"
+msgstr ""
+
+#: src/views/itip_banner.rs:510
+msgid "Published Event"
+msgstr ""
+
+#: src/views/itip_banner.rs:518
+msgid "Calendar Entry"
+msgstr ""
+
+#: src/views/itip_banner.rs:528
+msgid "All day"
+msgstr ""
+
+#: src/views/itip_banner.rs:555 src/views/mail_page.rs:27178
+#: src/views/tasks_page.rs:632 and 1 more
+msgid "Organizer"
+msgstr "Organisator: {}"
+
+#: src/views/itip_banner.rs:565
+msgid "1 attendee"
+msgstr ""
+
+#: src/views/itip_banner.rs:567
+msgid "{} attendees"
+msgstr ""
+
+#: src/views/itip_banner.rs:598
+msgid "Accepted ✓"
+msgstr ""
+
+#: src/views/itip_banner.rs:607
+msgid "Declined"
+msgstr "Abgelehnt"
+
+#: src/views/itip_banner.rs:706
+msgid "Event updated and calendar refreshed"
+msgstr ""
+
+#: src/views/itip_banner.rs:717
+msgid "Error while updating"
+msgstr ""
+
+#: src/views/itip_banner.rs:745
+msgid "Removed from calendar"
+msgstr ""
+
+#: src/views/itip_banner.rs:747
+msgid "Event removed from calendar"
+msgstr ""
+
+#: src/views/itip_banner.rs:753
+msgid "Could not remove event"
+msgstr ""
+
+#: src/views/itip_banner.rs:782 src/views/memos_page.rs:405
+msgid "Updated"
+msgstr ""
+
+#: src/views/itip_banner.rs:784
+msgid "Calendar event updated successfully"
+msgstr ""
+
+#: src/views/itip_banner.rs:790
+msgid "Failed to update event"
+msgstr ""
+
+#: src/views/itip_banner.rs:818
+msgid "Added ✓"
+msgstr ""
+
+#: src/views/itip_banner.rs:820
+msgid "Event added to calendar"
+msgstr ""
+
+#: src/views/itip_banner.rs:826
+msgid "Error while adding"
+msgstr ""
+
+#: src/views/mail_page.rs:300 src/views/mail_page.rs:12334
+msgid "All Messages"
+msgstr "Alle Nachrichten"
+
+#: src/views/mail_page.rs:301 src/views/mail_page.rs:308
+#: src/views/mail_page.rs:3231 and 15 more
+msgid "Inbox"
+msgstr "Posteingang"
+
+#: src/views/mail_page.rs:302 src/views/mail_page.rs:3232
+#: src/views/mail_page.rs:12336 and 3 more
+msgid "Sent"
+msgstr "Gesendet"
+
+#: src/views/mail_page.rs:303 src/views/mail_page.rs:3233
+#: src/views/mail_page.rs:12337 and 3 more
+msgid "Drafts"
+msgstr "Entwürfe"
+
+#: src/views/mail_page.rs:304 src/views/mail_page.rs:3234
+#: src/views/mail_page.rs:12338 and 3 more
+msgid "Trash"
+msgstr "Papierkorb"
+
+#: src/views/mail_page.rs:306 src/views/mail_page.rs:3236
+#: src/views/mail_page.rs:3298 and 7 more
+msgid "Junk"
+msgstr "Spam"
+
+#: src/views/mail_page.rs:307 src/views/mail_page.rs:13675
+#: src/views/mail_page.rs:31014
+msgid "Outbox"
+msgstr "Ausgang"
+
+#: src/views/mail_page.rs:350
+msgid "Creating folder…"
+msgstr ""
+
+#: src/views/mail_page.rs:351
+msgid "Renaming folder…"
+msgstr ""
+
+#: src/views/mail_page.rs:352
+msgid "Deleting folder…"
+msgstr ""
+
+#: src/views/mail_page.rs:353
+msgid "Refreshing folder…"
+msgstr ""
+
+#: src/views/mail_page.rs:355
+msgid "Checking folder transfer…"
+msgstr ""
+
+#: src/views/mail_page.rs:362
+msgid "The provider does not allow subfolders here."
+msgstr ""
+
+#: src/views/mail_page.rs:363
+msgid "The provider does not allow renaming this folder."
+msgstr ""
+
+#: src/views/mail_page.rs:365
+msgid "The provider does not allow safe deletion of this folder."
+msgstr ""
+
+#: src/views/mail_page.rs:368
+msgid "The provider does not allow refreshing this folder."
+msgstr ""
+
+#: src/views/mail_page.rs:371
+msgid "The Camel provider does not offer atomic folder transfer."
+msgstr ""
+
+#: src/views/mail_page.rs:379
+msgid "Subfolder created in “{display_name}”"
+msgstr ""
+
+#: src/views/mail_page.rs:382
+msgid "Folder “{display_name}” renamed"
+msgstr ""
+
+#: src/views/mail_page.rs:385
+msgid "Folder “{display_name}” deleted"
+msgstr ""
+
+#: src/views/mail_page.rs:388
+msgid "Folder “{display_name}” refreshed"
+msgstr ""
+
+#: src/views/mail_page.rs:391
+msgid "Folder “{display_name}” transferred"
+msgstr ""
+
+#: src/views/mail_page.rs:675
+msgid "Search query is empty or invalid"
+msgstr ""
+
+#: src/views/mail_page.rs:678
+msgid "AST search fixture is invalid: {error}"
+msgstr ""
+
+#: src/views/mail_page.rs:684
+msgid "Search query could not be canonically encoded: {error}"
+msgstr ""
+
+#: src/views/mail_page.rs:686
+msgid "AST search fixture could not be canonically encoded: {error}"
+msgstr ""
+
+#: src/views/mail_page.rs:689
+msgid "AST search fixture and search query do not match"
+msgstr ""
+
+#: src/views/mail_page.rs:725
+msgid "Cross-account search contains an unexpected destination identity"
+msgstr ""
+
+#: src/views/mail_page.rs:732
+msgid "Account search contains an unexpected folder identity"
+msgstr ""
+
+#: src/views/mail_page.rs:735
+msgid "Source ID of saved account is unavailable"
+msgstr ""
+
+#: src/views/mail_page.rs:746
+msgid "Mail account “{source_uid}” is unavailable"
+msgstr ""
+
+#: src/views/mail_page.rs:756
+msgid "Saved folder search contains no folder ID"
+msgstr ""
+
+#: src/views/mail_page.rs:761
+msgid "Local folder “{folder_id}” is unavailable"
+msgstr ""
+
+#: src/views/mail_page.rs:774
+msgid "Remote folder ID does not match exact destination"
+msgstr ""
+
+#: src/views/mail_page.rs:783
+msgid "Remote folder “{source_uid}/{folder_name}” is unavailable"
+msgstr ""
+
+#: src/views/mail_page.rs:794
+msgid "Saved folder search contains no complete target identity"
+msgstr ""
+
+#: src/views/mail_page.rs:887 src/views/mail_page.rs:31699
+msgid "Jan"
+msgstr ""
+
+#: src/views/mail_page.rs:888 src/views/mail_page.rs:31700
+msgid "Feb"
+msgstr ""
+
+#: src/views/mail_page.rs:889 src/views/mail_page.rs:31701
+msgid "Mar"
+msgstr ""
+
+#: src/views/mail_page.rs:890 src/views/mail_page.rs:31702
+msgid "Apr"
+msgstr ""
+
+#: src/views/mail_page.rs:892 src/views/mail_page.rs:31704
+#, fuzzy
+msgid "Jun"
+msgstr "Spam"
+
+#: src/views/mail_page.rs:893 src/views/mail_page.rs:31705
+msgid "Jul"
+msgstr ""
+
+#: src/views/mail_page.rs:894 src/views/mail_page.rs:31706
+msgid "Aug"
+msgstr ""
+
+#: src/views/mail_page.rs:895 src/views/mail_page.rs:31707
+msgid "Sep"
+msgstr ""
+
+#: src/views/mail_page.rs:896 src/views/mail_page.rs:31708
+msgid "Oct"
+msgstr ""
+
+#: src/views/mail_page.rs:897 src/views/mail_page.rs:31709
+msgid "Nov"
+msgstr ""
+
+#: src/views/mail_page.rs:898 src/views/mail_page.rs:31710
+msgid "Dec"
+msgstr ""
+
+#: src/views/mail_page.rs:1141 src/views/mail_page.rs:30162
+msgid "Replied and forwarded"
+msgstr "Beantwortet und weitergeleitet"
+
+#: src/views/mail_page.rs:1143 src/views/mail_page.rs:30154
+msgid "Replied"
+msgstr "Beantwortet"
+
+#: src/views/mail_page.rs:1145 src/views/mail_page.rs:30158
+msgid "Forwarded"
+msgstr "Weitergeleitet"
+
+#: src/views/mail_page.rs:1147 src/views/mail_page.rs:5366
+#: src/views/mail_page.rs:18846 and 2 more
+msgid "Unread"
+msgstr "Ungelesen"
+
+#: src/views/mail_page.rs:1149 src/views/mail_page.rs:5365
+#: src/views/mail_page.rs:19932 and 1 more
+msgid "Read"
+msgstr "Gelesen"
+
+#: src/views/mail_page.rs:1163 src/views/mail_page.rs:30179
+msgid "Calendar invitation (.ics)"
+msgstr "Termineinladung (.ics)"
+
+#: src/views/mail_page.rs:1166 src/views/mail_page.rs:30191
+msgid "Contact card (.vcf)"
+msgstr "Kontaktkarte (.vcf)"
+
+#: src/views/mail_page.rs:1169 src/views/mail_page.rs:15454
+#: src/views/mail_page.rs:30203 and 1 more
+msgid "Attachment"
+msgstr "Anhang"
+
+#: src/views/mail_page.rs:2982 src/views/mail_page.rs:15866
+msgid "From"
+msgstr "Von"
+
+#: src/views/mail_page.rs:2983
+msgid "Reply-To"
+msgstr "Antwort an"
+
+#: src/views/mail_page.rs:2984 src/views/mail_page.rs:15878
+msgid "To"
+msgstr "An"
+
+#: src/views/mail_page.rs:2985
+msgid "Cc"
+msgstr "Cc"
+
+#: src/views/mail_page.rs:2986
+msgid "Bcc"
+msgstr "Bcc"
+
+#: src/views/mail_page.rs:2987 src/views/mail_page.rs:3107
+#: src/views/mail_page.rs:15458 and 5 more
+msgid "Subject"
+msgstr "Betreff"
+
+#: src/views/mail_page.rs:2988 src/views/mail_page.rs:15459
+#: src/views/mail_page.rs:15578 and 3 more
+msgid "Date"
+msgstr "Datum"
+
+#: src/views/mail_page.rs:2989
+msgid "Newsgroups"
+msgstr "Newsgroups"
+
+#: src/views/mail_page.rs:2990
+msgid "Face"
+msgstr "Face"
+
+#: src/views/mail_page.rs:2991 src/views/mail_page.rs:28968
+msgid "Mailer"
+msgstr "Mailer"
+
+#: src/views/mail_page.rs:3098
+msgid "Sender picture could not be displayed"
+msgstr "Absenderbild konnte nicht angezeigt werden"
+
+#: src/views/mail_page.rs:3172
+msgid "No message displayed"
+msgstr "Keine Nachricht angezeigt"
+
+#: src/views/mail_page.rs:3173
+msgid "Searching…"
+msgstr "Suchen…"
+
+#: src/views/mail_page.rs:3175 src/views/mail_page.rs:29002
+#: src/views/mail_page.rs:29014
+msgid "Matches"
+msgstr "Treffer"
+
+#: src/views/mail_page.rs:3249 src/views/mail_page.rs:3301
+#: src/views/mail_page.rs:8268 and 3 more
+msgid "Local Folders"
+msgstr "Lokale Ordner"
+
+#: src/views/mail_page.rs:4635
+msgid "No active mail accounts; local Evolution storage"
+msgstr "Keine aktiven Mailkonten; lokaler Evolution-Speicher"
+
+#: src/views/mail_page.rs:4663
+msgid ""
+"Mail account synchronization unavailable ({error}); local Evolution storage"
+msgstr ""
+
+#: src/views/mail_page.rs:4676
+msgid "Graph Search"
+msgstr ""
+
+#: src/views/mail_page.rs:4680 src/views/mail_page.rs:8215
+#: src/views/mail_page.rs:13688
+msgid "Mail Account"
+msgstr "Mailkonto"
+
+#: src/views/mail_page.rs:4690
+msgid "{}/{} accounts synchronized, {} with errors"
+msgstr ""
+
+#: src/views/mail_page.rs:4715 src/views/mail_page.rs:28385
+msgid "No readable mail folders found"
+msgstr "Keine lesbaren E-Mail-Ordner gefunden"
+
+#: src/views/mail_page.rs:5367
+msgid "Star"
+msgstr "Markieren"
+
+#: src/views/mail_page.rs:5368 src/views/mail_page.rs:18848
+#: src/views/mail_page.rs:19980
+msgid "Important"
+msgstr "Wichtig"
+
+#: src/views/mail_page.rs:6101
+msgid "The message source contains no headers"
+msgstr "Die Nachrichtenquelle enthält keine Kopfzeilen"
+
+#: src/views/mail_page.rs:6141
+msgid "Original headers not available: {error}"
+msgstr "Originale Kopfzeilen nicht verfügbar: {error}"
+
+#: src/views/mail_page.rs:6749
+msgid "No window available for advanced search"
+msgstr "Kein Fenster für die erweiterte Suche verfügbar"
+
+#: src/views/mail_page.rs:6903
+msgid "This message contains no List-Post header"
+msgstr "Diese Nachricht enthält keine List-Post-Adresse"
+
+#: src/views/mail_page.rs:6942 src/views/mail_page.rs:15456
+#: src/views/mail_page.rs:15576 and 3 more
+msgid "Sender"
+msgstr "Absender"
+
+#: src/views/mail_page.rs:6943
+msgid "Mailing List"
+msgstr ""
+
+#: src/views/mail_page.rs:6944 src/views/mail_page.rs:18845
+msgid "All"
+msgstr "Alle"
+
+#: src/views/mail_page.rs:6949 src/views/mail_page.rs:18942
+#: src/views/mail_page.rs:19057
+#, fuzzy
+msgid "Recipients"
+msgstr "Allen Empfängern antworten"
+
+#: src/views/mail_page.rs:6954
+#, fuzzy
+msgid "Reply Style"
+msgstr "Allen antworten"
+
+#: src/views/mail_page.rs:6956
+msgid "Default"
+msgstr "Vorgabe"
+
+#: src/views/mail_page.rs:6957
+msgid "Inline with original headers"
+msgstr ""
+
+#: src/views/mail_page.rs:6958
+msgid "Quoted with >"
+msgstr ""
+
+#: src/views/mail_page.rs:6959
+msgid "Do not quote original"
+msgstr ""
+
+#: src/views/mail_page.rs:6960
+msgid "Original as attachment"
+msgstr ""
+
+#: src/views/mail_page.rs:6972
+#, fuzzy
+msgid "Reply Alternative"
+msgstr "Absender antworten"
+
+#: src/views/mail_page.rs:6973
+msgid "Recipient and style apply only to this reply."
+msgstr ""
+
+#: src/views/mail_page.rs:6997
+msgid "Reply recipient is no longer available"
+msgstr "Antwortempfänger ist nicht mehr verfügbar"
+
+#: src/views/mail_page.rs:7018
+msgid "List-Post address is missing"
+msgstr "List-Post-Adresse fehlt"
+
+#: src/views/mail_page.rs:7064
+msgid "The List-Post address is no longer available"
+msgstr "Die List-Post-Adresse ist nicht mehr verfügbar"
+
+#: src/views/mail_page.rs:7329
+msgid "Message cannot be fully edited: {error}"
+msgstr ""
+
+#: src/views/mail_page.rs:7351
+msgid "Loading original message for attachment…"
+msgstr "Originalnachricht wird für den Anhang geladen …"
+
+#: src/views/mail_page.rs:7380
+msgid "Original message could not be attached: {error}"
+msgstr ""
+
+#: src/views/mail_page.rs:7411
+msgid "A print operation is already in progress"
+msgstr "Ein Druckvorgang läuft bereits"
+
+#: src/views/mail_page.rs:7417
+msgid "Printing not possible: no message selected"
+msgstr "Drucken nicht möglich: keine Nachricht ausgewählt"
+
+#: src/views/mail_page.rs:7428 src/views/tasks_page.rs:816
+#: src/views/tasks_page.rs:17845
+#, fuzzy
+msgid "Preparing print preview…"
+msgstr "Kalenderansicht drucken"
+
+#: src/views/mail_page.rs:7429 src/views/mail_viewer_window.rs:1475
+#, fuzzy
+msgid "Preparing print…"
+msgstr "Drucken"
+
+#: src/views/mail_page.rs:7454
+msgid "Could not start print preparation: {error}"
+msgstr "Druckvorbereitung konnte nicht gestartet werden: {error}"
+
+#: src/views/mail_page.rs:7474
+msgid "Opening print preview…"
+msgstr "Druckvorschau wird geöffnet …"
+
+#: src/views/mail_page.rs:7482
+msgid "Print preview opened"
+msgstr "Druckvorschau geöffnet"
+
+#: src/views/mail_page.rs:7492
+msgid "Print preparation cancelled"
+msgstr "Druckvorbereitung abgebrochen"
+
+#: src/views/mail_page.rs:7511
+msgid "Print operation cancelled"
+msgstr "Druckvorgang abgebrochen"
+
+#: src/views/mail_page.rs:7568
+msgid "Printing not possible: {error}"
+msgstr ""
+
+#: src/views/mail_page.rs:7583
+msgid "No window available for print preview"
+msgstr "Kein Fenster für die Druckvorschau verfügbar"
+
+#: src/views/mail_page.rs:7590
+#, fuzzy
+msgid "Print Preview"
+msgstr "Kalenderansicht drucken"
+
+#: src/views/mail_page.rs:7598
+#, fuzzy
+msgid "Close Print Preview"
+msgstr "Kalenderansicht drucken"
+
+#: src/views/mail_page.rs:7647
+msgid "Opening print dialog…"
+msgstr "Druckdialog wird geöffnet …"
+
+#: src/views/mail_page.rs:7652
+msgid "No window available for print dialog"
+msgstr "Kein Fenster für den Druckdialog verfügbar"
+
+#: src/views/mail_page.rs:7668 src/views/mail_viewer_window.rs:1513
+msgid "Print job sent to system"
+msgstr "Druckauftrag wurde an das System übergeben"
+
+#: src/views/mail_page.rs:7715
+msgid "Save Email as EML"
+msgstr "E-Mail als EML speichern"
+
+#: src/views/mail_page.rs:7716 src/views/mail_page.rs:8145
+#: src/views/mail_page.rs:9615 and 9 more
+msgid "Save"
+msgstr "Speichern"
+
+#: src/views/mail_page.rs:7724
+msgid "EML files (*.eml)"
+msgstr "EML-Dateien (*.eml)"
+
+#: src/views/mail_page.rs:7750
+msgid "Save dialog error: {error}"
+msgstr "Speicherdialog-Fehler: {error}"
+
+#: src/views/mail_page.rs:7821
+msgid "No window available for message source"
+msgstr "Kein Fenster für die Nachrichtenquelle verfügbar"
+
+#: src/views/mail_page.rs:7869
+msgid "Fetch cancelled"
+msgstr "Abruf abgebrochen"
+
+#: src/views/mail_page.rs:7877
+msgid ""
+"The message store has no retrievable original raw source. A low-loss RFC822 "
+"reconstruction of the loaded message is shown."
+msgstr ""
+"Der Nachrichtenspeicher besitzt keine abrufbare originale Rohquelle. "
+"Angezeigt wird eine verlustarme RFC822-Rekonstruktion der geladenen "
+"Nachricht."
+
+#: src/views/mail_page.rs:7886
+msgid ""
+"The original message source could not be loaded. A low-loss RFC822 "
+"reconstruction is shown."
+msgstr ""
+"Die originale Nachrichtenquelle konnte nicht geladen werden. Angezeigt wird "
+"eine verlustarme RFC822-Rekonstruktion."
+
+#: src/views/mail_page.rs:7956
+#, fuzzy
+msgid "Message Source"
+msgstr "Nachrichtenquelle anzeigen"
+
+#: src/views/mail_page.rs:7966
+#, fuzzy
+msgid "Copy entire message source"
+msgstr "Nachrichtenquelle anzeigen"
+
+#: src/views/mail_page.rs:8020
+#, fuzzy
+msgid "Loading message source…"
+msgstr "Nachrichtenquelle anzeigen"
+
+#: src/views/mail_page.rs:8021
+msgid "Retrieving original RFC822 message."
+msgstr ""
+
+#: src/views/mail_page.rs:8025
+#, fuzzy
+msgid "Failed to load message source"
+msgstr "Nachrichtenquelle anzeigen"
+
+#: src/views/mail_page.rs:8096
+msgid "No window available for local folders"
+msgstr "Kein Fenster für die lokalen Ordner verfügbar"
+
+#: src/views/mail_page.rs:8113
+msgid "e.g. Projects/2026"
+msgstr ""
+
+#: src/views/mail_page.rs:8123
+msgid ""
+"Subfolders can be separated with /. Imported mail files remain unchanged."
+msgstr ""
+
+#: src/views/mail_page.rs:8132
+msgid "Rename Local Folder"
+msgstr ""
+
+#: src/views/mail_page.rs:8134
+msgid "Create Local Folder"
+msgstr ""
+
+#: src/views/mail_page.rs:8136
+msgid "The folder is created exclusively in the app's local mail storage."
+msgstr ""
+
+#: src/views/mail_page.rs:8170
+msgid "Local folder could not be saved: {error}"
+msgstr ""
+
+#: src/views/mail_page.rs:8232 src/views/mail_page.rs:8270
+msgid "Order in “{parent_label}”"
+msgstr "Reihenfolge in „{parent_label}“"
+
+#: src/views/mail_page.rs:8282
+msgid "There is no sortable level for this folder"
+msgstr "Für diesen Ordner gibt es keine sortierbare Ebene"
+
+#: src/views/mail_page.rs:8286
+msgid "This level contains fewer than two folders"
+msgstr "Diese Ebene enthält weniger als zwei Ordner"
+
+#: src/views/mail_page.rs:8290
+msgid "No window available for folder sorting"
+msgstr "Kein Fenster für die Ordnersortierung verfügbar"
+
+#: src/views/mail_page.rs:8332 src/views/mail_page.rs:8533
+msgid "Folder sort order could not be saved"
+msgstr "Ordnersortierung konnte nicht gespeichert werden"
+
+#: src/views/mail_page.rs:8541
+msgid "Folder “{name}” reordered"
+msgstr "Ordner „{}“ neu angeordnet"
+
+#: src/views/mail_page.rs:8695
+msgid "New Subfolder…"
+msgstr ""
+
+#: src/views/mail_page.rs:8696
+msgid "Rename Folder…"
+msgstr ""
+
+#: src/views/mail_page.rs:8697
+#, fuzzy
+msgid "Delete Folder…"
+msgstr "Löschen"
+
+#: src/views/mail_page.rs:8700
+msgid "Properties…"
+msgstr ""
+
+#: src/views/mail_page.rs:9431
+msgid "Delete conversation"
+msgstr "Konversation löschen"
+
+#: src/views/mail_page.rs:9444
+msgid "Creating Camel folders is not available for this source."
+msgstr "Für diese Quelle ist das Erstellen von Camel-Ordnern nicht verfügbar."
+
+#: src/views/mail_page.rs:9460
+msgid "This synchronized folder cannot be renamed."
+msgstr "Dieser synchronisierte Ordner kann nicht umbenannt werden."
+
+#: src/views/mail_page.rs:9463
+msgid "Default folders such as Inbox or Trash cannot be renamed."
+msgstr ""
+"Standard-Ordner wie Posteingang oder Papierkorb können nicht umbenannt "
+"werden."
+
+#: src/views/mail_page.rs:9480
+msgid "Delete folder “{folder_name}”?"
+msgstr ""
+
+#: src/views/mail_page.rs:9481
+msgid ""
+"The local folder and its assignment will be removed. The folder must be "
+"empty."
+msgstr ""
+
+#: src/views/mail_page.rs:9495
+msgid "Folder “{folder_name}” deleted"
+msgstr ""
+
+#: src/views/mail_page.rs:9499
+msgid "Folder could not be deleted: {error}"
+msgstr ""
+
+#: src/views/mail_page.rs:9511
+msgid "Delete folder “{display_name}”?"
+msgstr ""
+
+#: src/views/mail_page.rs:9512
+msgid ""
+"The folder will be deleted from the mail provider. This action cannot be "
+"undone."
+msgstr ""
+
+#: src/views/mail_page.rs:9530
+msgid "This synchronized folder cannot be deleted."
+msgstr "Dieser synchronisierte Ordner kann nicht gelöscht werden."
+
+#: src/views/mail_page.rs:9532
+msgid "Default folders cannot be deleted."
+msgstr "Standard-Ordner können nicht gelöscht werden."
+
+#: src/views/mail_page.rs:9541
+msgid "This synchronized folder cannot be refreshed."
+msgstr "Dieser synchronisierte Ordner kann nicht aktualisiert werden."
+
+#: src/views/mail_page.rs:9597
+msgid "Folder Name"
+msgstr ""
+
+#: src/views/mail_page.rs:9602
+msgid "Rename Synchronized Folder"
+msgstr ""
+
+#: src/views/mail_page.rs:9604
+msgid "Create Subfolder"
+msgstr ""
+
+#: src/views/mail_page.rs:9606
+msgid ""
+"The change will be executed by the mail provider and displayed once "
+"confirmed."
+msgstr ""
+
+#: src/views/mail_page.rs:9625
+msgid "The folder name must be a single, non-empty name."
+msgstr "Der Ordnername muss ein einzelner, nicht leerer Name sein."
+
+#: src/views/mail_page.rs:9644
+msgid "A folder operation is already running."
+msgstr "Eine Ordneraktion läuft bereits."
+
+#: src/views/mail_page.rs:9651
+msgid "The exact Camel folder is no longer available."
+msgstr "Der genaue Camel-Ordner ist nicht mehr verfügbar."
+
+#: src/views/mail_page.rs:9921
+msgid ""
+"Folder subscriptions are only available for a loaded native mail account"
+msgstr ""
+"Ordner-Abonnements sind nur für ein geladenes natives Mailkonto verfügbar"
+
+#: src/views/mail_page.rs:9944
+msgid "Folder properties are only available for loaded, real folders"
+msgstr "Ordner-Eigenschaften sind nur für geladene, echte Ordner verfügbar"
+
+#: src/views/mail_page.rs:9988 src/views/mail_page.rs:10079
+msgid ""
+"This account folder requires the Linux expunge path for permanent emptying; "
+"local storage was not changed."
+msgstr ""
+"Dieser Kontoordner benötigt zum endgültigen Leeren den Linux-Expunge-Pfad; "
+"der lokale Bestand wurde nicht verändert."
+
+#: src/views/mail_page.rs:10009
+msgid "Trash operation was cancelled"
+msgstr "Papierkorb-Vorgang wurde abgebrochen"
+
+#: src/views/mail_page.rs:10039
+msgid "Trash is already empty"
+msgstr ""
+
+#: src/views/mail_page.rs:10043
+msgid "Trash could not be emptied: {error}"
+msgstr ""
+
+#: src/views/mail_page.rs:10100
+msgid "Junk operation was cancelled"
+msgstr "Spam-Vorgang wurde abgebrochen"
+
+#: src/views/mail_page.rs:10130
+msgid "Junk folder is already empty"
+msgstr ""
+
+#: src/views/mail_page.rs:10134
+msgid "Junk folder could not be emptied: {error}"
+msgstr ""
+
+#: src/views/mail_page.rs:10400 src/views/mail_page.rs:10430
+#: src/views/mail_page.rs:15460 and 1 more
+msgid "Follow-up"
+msgstr "Folgenachricht"
+
+#: src/views/mail_page.rs:10432 src/views/mail_page.rs:15455
+#: src/views/mail_page.rs:19964
+msgid "Flag"
+msgstr "Markierung"
+
+#: src/views/mail_page.rs:10434
+msgid "Due (YYYY-MM-DD HH:MM, optional)"
+msgstr ""
+
+#: src/views/mail_page.rs:10450
+msgid "Microsoft Graph does not support follow-up due dates."
+msgstr "Microsoft Graph unterstützt keine Follow-up-Fälligkeit."
+
+#: src/views/mail_page.rs:10463
+msgid "Clear"
+msgstr "Entfernen"
+
+#: src/views/mail_page.rs:10492 src/views/mail_page.rs:10505
+#: src/views/mail_page.rs:10522 and 1 more
+msgid "Follow-up not possible: {error}"
+msgstr "Nachverfolgung nicht möglich: {error}"
+
+#: src/views/mail_page.rs:10648
+msgid "Change labels"
+msgstr "Labels ändern"
+
+#: src/views/mail_page.rs:10656 src/views/mail_page.rs:10891
+#: src/views/mail_page.rs:10958 and 12 more
+msgid "No message selected"
+msgstr "Keine Nachricht ausgewählt"
+
+#: src/views/mail_page.rs:10677
+msgid "Labels for Selection"
+msgstr "Labels für Auswahl"
+
+#: src/views/mail_page.rs:10679
+msgid "Message Labels"
+msgstr "Labels der Nachricht"
+
+#: src/views/mail_page.rs:10708
+msgid "Standard and Custom Labels"
+msgstr "Standard- und benutzerdefinierte Labels"
+
+#: src/views/mail_page.rs:10757
+msgid "Label added"
+msgstr ""
+
+#: src/views/mail_page.rs:10759 src/views/mail_page.rs:10858
+msgid "Label removed"
+msgstr ""
+
+#: src/views/mail_page.rs:10766
+msgid "Label could not be updated: {error}"
+msgstr ""
+
+#: src/views/mail_page.rs:10775
+msgid "Custom Label"
+msgstr "Freies Label"
+
+#: src/views/mail_page.rs:10776
+msgid "Specify custom tag or label name"
+msgstr "Eigenen Tag oder Labelnamen angeben"
+
+#: src/views/mail_page.rs:10780
+msgid "Custom label"
+msgstr "Freitext-Label"
+
+#: src/views/mail_page.rs:10792
+msgid "Set Label"
+msgstr "Label setzen"
+
+#: src/views/mail_page.rs:10796
+msgid "Remove Label"
+msgstr "Label entfernen"
+
+#: src/views/mail_page.rs:10812 src/views/mail_page.rs:10844
+msgid "Please enter a label name"
+msgstr ""
+
+#: src/views/mail_page.rs:10826
+msgid "Label set"
+msgstr ""
+
+#: src/views/mail_page.rs:10831
+msgid "Label could not be set: {error}"
+msgstr ""
+
+#: src/views/mail_page.rs:10863
+msgid "Label could not be removed: {error}"
+msgstr ""
+
+#: src/views/mail_page.rs:10900
+msgid "No destination folders available"
+msgstr "Keine verfügbaren Zielordner"
+
+#: src/views/mail_page.rs:10950
+msgid "Copying message"
+msgstr "Nachricht wird kopiert"
+
+#: src/views/mail_page.rs:10952
+msgid "Moving message"
+msgstr "Nachricht wird verschoben"
+
+#: src/views/mail_page.rs:10959
+msgid "{title} not possible: {error}"
+msgstr "{title} nicht möglich: {error}"
+
+#: src/views/mail_page.rs:11061
+msgid "No matching messages for active filter rules"
+msgstr "Keine passenden Nachrichten für aktive Filterregeln"
+
+#: src/views/mail_page.rs:11063
+msgid "Filters applied: {matched} matches · {moved} moved · {deleted} deleted"
+msgstr ""
+
+#: src/views/mail_page.rs:11209
+msgid "Message moved to “{target}”"
+msgstr "Nachricht nach „{}“ verschoben"
+
+#: src/views/mail_page.rs:11232
+msgid "Message copied to “{target}”"
+msgstr "Nachricht nach „{}“ kopiert"
+
+#: src/views/mail_page.rs:11335
+msgid "Operation has already completed on the server"
+msgstr "Vorgang wurde bereits serverseitig abgeschlossen"
+
+#: src/views/mail_page.rs:11337 src/views/mail_page.rs:11572
+msgid "{description} completed"
+msgstr "{description} abgeschlossen"
+
+#: src/views/mail_page.rs:11346 src/views/mail_page.rs:11367
+#: src/views/mail_page.rs:11464 and 1 more
+msgid "{description} not possible: {error}"
+msgstr "{description} nicht möglich: {error}"
+
+#: src/views/mail_page.rs:11457
+msgid "{description}: {count} completed"
+msgstr "{description}: {applied} abgeschlossen"
+
+#: src/views/mail_page.rs:11580
+msgid "Nothing to {description}"
+msgstr "Nichts zum {description}"
+
+#: src/views/mail_page.rs:11787
+msgid "Change flag"
+msgstr "Markierung ändern"
+
+#: src/views/mail_page.rs:11833
+msgid "Change importance"
+msgstr "Wichtigkeit ändern"
+
+#: src/views/mail_page.rs:11888
+msgid "Remove junk status"
+msgstr "Spam-Markierung entfernen"
+
+#: src/views/mail_page.rs:11904
+msgid "Delete messages"
+msgstr "Nachrichten löschen"
+
+#: src/views/mail_page.rs:11954
+msgid "Local Inbox"
+msgstr ""
+
+#: src/views/mail_page.rs:11955
+msgid "Local · Sent"
+msgstr ""
+
+#: src/views/mail_page.rs:11956
+msgid "Local · Drafts"
+msgstr ""
+
+#: src/views/mail_page.rs:11957
+msgid "Local Trash"
+msgstr ""
+
+#: src/views/mail_page.rs:11958
+#, fuzzy
+msgid "Local Archive"
+msgstr "Archivieren"
+
+#: src/views/mail_page.rs:11959
+#, fuzzy
+msgid "Local Junk"
+msgstr "Kein Spam"
+
+#: src/views/mail_page.rs:12039 src/views/mail_page.rs:12074
+#: src/views/mail_page.rs:12087
+msgid "Move not possible"
+msgstr "Verschieben nicht möglich"
+
+#: src/views/mail_page.rs:12083
+msgid "Move messages"
+msgstr "Nachrichten verschieben"
+
+#: src/views/mail_page.rs:12102 src/views/mail_page.rs:12114
+#: src/views/mail_page.rs:12128 and 3 more
+msgid "Copy not possible"
+msgstr "Kopieren nicht möglich"
+
+#: src/views/mail_page.rs:12187
+msgid "No new copy needed"
+msgstr "Keine neue Kopie erforderlich"
+
+#: src/views/mail_page.rs:12192
+msgid "Copy messages"
+msgstr "Nachrichten kopieren"
+
+#: src/views/mail_page.rs:12261
+msgid "active"
+msgstr "aktiv"
+
+#: src/views/mail_page.rs:12263
+msgid "Account not available"
+msgstr "Konto nicht verfügbar"
+
+#: src/views/mail_page.rs:12648
+msgid "Messages cannot be placed in this folder"
+msgstr "In diesen Ordner können keine Nachrichten abgelegt werden"
+
+#: src/views/mail_page.rs:12673
+msgid "Action not possible: {error}"
+msgstr "Aktion nicht möglich: {err}"
+
+#: src/views/mail_page.rs:13028
+msgid "Create local folder"
+msgstr "Lokalen Ordner erstellen"
+
+#: src/views/mail_page.rs:13077
+msgid "Loading accounts…"
+msgstr "Konten werden geladen …"
+
+#: src/views/mail_page.rs:13231
+msgid "Edit saved search folder"
+msgstr "Gespeicherten Suchordner bearbeiten"
+
+#: src/views/mail_page.rs:13237
+msgid "Delete saved search folder"
+msgstr "Gespeicherten Suchordner löschen"
+
+#: src/views/mail_page.rs:13268
+msgid "Delete saved search folder?"
+msgstr ""
+
+#: src/views/mail_page.rs:13269
+msgid "The local search definition will be permanently removed."
+msgstr ""
+
+#: src/views/mail_page.rs:13617
+msgid "Rename local folder"
+msgstr "Lokalen Ordner umbenennen"
+
+#: src/views/mail_page.rs:13623
+msgid "Delete empty local folder"
+msgstr "Leeren lokalen Ordner löschen"
+
+#: src/views/mail_page.rs:13643
+msgid "Delete local folder?"
+msgstr ""
+
+#: src/views/mail_page.rs:13644
+msgid ""
+"Only empty app-owned folders can be deleted. Imported mail files remain "
+"unchanged."
+msgstr ""
+
+#: src/views/mail_page.rs:13692
+msgid "Search Folders"
+msgstr "Suchordner"
+
+#: src/views/mail_page.rs:13693
+msgid "News & Blogs"
+msgstr ""
+
+#: src/views/mail_page.rs:14523 src/views/mail_page.rs:31186
+msgid "No emails"
+msgstr ""
+
+#: src/views/mail_page.rs:14573 src/views/mail_page.rs:31181
+#, fuzzy
+msgid "1 email"
+msgstr "Neue E-Mail"
+
+#: src/views/mail_page.rs:14834
+msgid "Print message (Ctrl+P)"
+msgstr "Nachricht drucken (Strg+P)"
+
+#: src/views/mail_page.rs:14841 src/views/mail_viewer_window.rs:339
+msgid "Delete message (Del)"
+msgstr "Nachricht löschen (Entf)"
+
+#: src/views/mail_page.rs:14846
+msgid "Archive message"
+msgstr "Nachricht archivieren"
+
+#: src/views/mail_page.rs:14916
+msgid "Move message"
+msgstr "Nachricht verschieben"
+
+#: src/views/mail_page.rs:14991
+msgid "Copy message"
+msgstr "Nachricht kopieren"
+
+#: src/views/mail_page.rs:15014 src/views/mail_viewer_window.rs:335
+msgid "Mark as junk"
+msgstr "Als Spam markieren"
+
+#: src/views/mail_page.rs:15019
+msgid "Mark as read"
+msgstr "Als gelesen markieren"
+
+#: src/views/mail_page.rs:15024
+msgid "Mark as unread"
+msgstr "Als ungelesen markieren"
+
+#: src/views/mail_page.rs:15029
+msgid "Mark with star"
+msgstr "Mit Stern markieren"
+
+#: src/views/mail_page.rs:15034 src/views/mail_page.rs:17663
+msgid "Mark as important"
+msgstr "Als wichtig markieren"
+
+#: src/views/mail_page.rs:15073
+#, fuzzy
+msgid "Previous message (k)"
+msgstr "Nachricht drucken (Strg+P)"
+
+#: src/views/mail_page.rs:15079
+#, fuzzy
+msgid "Next message (j)"
+msgstr "Nachricht verschieben"
+
+#: src/views/mail_page.rs:15095
+msgid "Undo last action"
+msgstr "Letzte Aktion rückgängig machen"
+
+#: src/views/mail_page.rs:15113
+msgid "Toggle Flag (Star)"
+msgstr "Markierung umschalten (Stern)"
+
+#: src/views/mail_page.rs:15114
+msgid "Toggle Importance"
+msgstr "Wichtigkeitsmarkierung umschalten"
+
+#: src/views/mail_page.rs:15186
+msgid "Toggle To Do bar"
+msgstr ""
+
+#: src/views/mail_page.rs:15187
+msgid "Show or hide To Do bar"
+msgstr ""
+
+#: src/views/mail_page.rs:15384
+msgid "Customize Column Order"
+msgstr "Spaltenreihenfolge anpassen"
+
+#: src/views/mail_page.rs:15415
+msgid "Adjust the order of columns. Changes take effect immediately."
+msgstr ""
+"Passen Sie die Reihenfolge der Spalten an. Änderungen werden sofort wirksam."
+
+#: src/views/mail_page.rs:15453 src/views/memos_page.rs:4740
+#: src/views/tasks_page.rs:628 and 6 more
+msgid "Status"
+msgstr "Status"
+
+#: src/views/mail_page.rs:15457 src/views/mail_page.rs:15577
+#: src/views/mail_page.rs:19242
+msgid "Recipient"
+msgstr "Empfänger"
+
+#: src/views/mail_page.rs:15461 src/views/mail_page.rs:19061
+#, fuzzy
+msgid "Importance"
+msgstr "Wichtig"
+
+#: src/views/mail_page.rs:15462 src/views/mail_page.rs:15581
+msgid "Avatar"
+msgstr ""
+
+#: src/views/mail_page.rs:15463 src/views/memos_page.rs:2244
+msgid "Preview"
+msgstr "Vorschau"
+
+#: src/views/mail_page.rs:15464 src/views/mail_page.rs:15583
+#: src/views/mail_page.rs:15932 and 2 more
+msgid "Size"
+msgstr "Größe"
+
+#: src/views/mail_page.rs:15465 src/views/mail_page.rs:15584
+#: src/views/mail_page.rs:15942 and 1 more
+msgid "Due by"
+msgstr "Fällig am"
+
+#: src/views/mail_page.rs:15467 src/views/mail_page.rs:15898
+#: src/views/mail_page.rs:16776 and 2 more
+msgid "Messages"
+msgstr "Nachrichten"
+
+#: src/views/mail_page.rs:15476
+msgid "Move column up / left"
+msgstr "Spalte nach oben / links verschieben"
+
+#: src/views/mail_page.rs:15482
+msgid "Move column down / right"
+msgstr "Spalte nach unten / rechts verschieben"
+
+#: src/views/mail_page.rs:15518
+msgid "Restore Default Order"
+msgstr "Standard-Reihenfolge wiederherstellen"
+
+#: src/views/mail_page.rs:15567
+msgid "Columns"
+msgstr "Spalten"
+
+#: src/views/mail_page.rs:15579 src/views/mail_page.rs:17875
+#: src/views/mail_page.rs:19062 and 3 more
+msgid "Attachments"
+msgstr "Anhänge"
+
+#: src/views/mail_page.rs:15580 src/views/mail_page.rs:19245
+msgid "Preview text"
+msgstr "Vorschautext"
+
+#: src/views/mail_page.rs:15582 src/views/mail_page.rs:19246
+msgid "Labels"
+msgstr "Beschriftungen"
+
+#: src/views/mail_page.rs:15667
+msgid "Reverse sort order"
+msgstr "Sortierreihenfolge umkehren"
+
+#: src/views/mail_page.rs:15680 src/views/mail_page.rs:19547
+msgid "Customize column order…"
+msgstr "Spaltenreihenfolge anpassen …"
+
+#: src/views/mail_page.rs:15691
+msgid "Restore default columns"
+msgstr "Standardspalten wiederherstellen"
+
+#: src/views/mail_page.rs:16909
+msgid "Sort by sender (drag to reorder)"
+msgstr "Nach Absender sortieren (Ziehen zum Verschieben)"
+
+#: src/views/mail_page.rs:16989
+msgid "Sort by recipient (drag to reorder)"
+msgstr "Nach Empfänger sortieren (Ziehen zum Verschieben)"
+
+#: src/views/mail_page.rs:17068
+msgid "Sort by read status (drag to reorder)"
+msgstr "Nach Lesestatus sortieren (Ziehen zum Verschieben)"
+
+#: src/views/mail_page.rs:17147
+msgid "Sort by date (drag to reorder)"
+msgstr "Nach Datum sortieren (Ziehen zum Verschieben)"
+
+#: src/views/mail_page.rs:17159
+msgid "Sort by attachments (drag to reorder)"
+msgstr "Nach Anhängen sortieren (Ziehen zum Verschieben)"
+
+#: src/views/mail_page.rs:17171
+msgid "Sort by flag (drag to reorder)"
+msgstr "Nach Markierung sortieren (Ziehen zum Verschieben)"
+
+#: src/views/mail_page.rs:17183
+msgid "Sort by follow-up (drag to reorder)"
+msgstr "Nach Nachverfolgung sortieren (Ziehen zum Verschieben)"
+
+#: src/views/mail_page.rs:17195
+msgid "Sort by importance (drag to reorder)"
+msgstr "Nach Wichtigkeit sortieren (Ziehen zum Verschieben)"
+
+#: src/views/mail_page.rs:17207
+msgid "Sort by subject (drag to reorder)"
+msgstr "Nach Betreff sortieren (Ziehen zum Verschieben)"
+
+#: src/views/mail_page.rs:17215
+msgid "Sort by size (drag to reorder)"
+msgstr "Nach Größe sortieren (Ziehen zum Verschieben)"
+
+#: src/views/mail_page.rs:17221
+msgid "Sort by due date (drag to reorder)"
+msgstr "Nach Fälligkeit sortieren (Ziehen zum Verschieben)"
+
+#: src/views/mail_page.rs:17227
+msgid "Sort by location (drag to reorder)"
+msgstr "Nach Ort sortieren (Ziehen zum Verschieben)"
+
+#: src/views/mail_page.rs:17238
+msgid "Avatar column (drag to reorder)"
+msgstr ""
+
+#: src/views/mail_page.rs:17239
+msgid "Preview column (drag to reorder)"
+msgstr ""
+
+#: src/views/mail_page.rs:17240
+msgid "Messages column (drag to reorder)"
+msgstr ""
+
+#: src/views/mail_page.rs:17607 src/views/mail_page.rs:17710
+#: src/views/mail_page.rs:18551
+msgid "Star / mark message"
+msgstr "Markieren / Sternchen setzen"
+
+#: src/views/mail_page.rs:17615 src/views/mail_page.rs:17711
+#: src/views/mail_page.rs:18571 and 1 more
+msgid "Star message"
+msgstr "Nachricht markieren"
+
+#: src/views/mail_page.rs:17624 src/views/mail_page.rs:17785
+#: src/views/mail_page.rs:18503
+msgid "Set follow-up (right-click for options)"
+msgstr "Nachverfolgung setzen (Rechtsklick für Optionen)"
+
+#: src/views/mail_page.rs:17632 src/views/mail_page.rs:17786
+#: src/views/mail_page.rs:18505
+msgid "Set follow-up"
+msgstr "Nachverfolgung setzen"
+
+#: src/views/mail_page.rs:17670
+msgid "Mark message as important"
+msgstr "Nachricht als wichtig markieren"
+
+#: src/views/mail_page.rs:17700 src/views/mail_page.rs:17701
+#: src/views/mail_page.rs:18562
+msgid "Remove flag"
+msgstr "Markierung entfernen"
+
+#: src/views/mail_page.rs:17729
+msgid "Mail view is no longer available"
+msgstr "Mailansicht ist nicht mehr verfügbar"
+
+#: src/views/mail_page.rs:17796 src/views/mail_page.rs:18515
+msgid "Mark as completed (right-click for options)"
+msgstr "Als erledigt markieren (Rechtsklick für Optionen)"
+
+#: src/views/mail_page.rs:17797 src/views/mail_page.rs:18517
+msgid "Mark follow-up as completed"
+msgstr "Nachverfolgung als erledigt markieren"
+
+#: src/views/mail_page.rs:17807 src/views/mail_page.rs:18527
+msgid "Remove follow-up (right-click for options)"
+msgstr "Nachverfolgung entfernen (Rechtsklick für Optionen)"
+
+#: src/views/mail_page.rs:17808 src/views/mail_page.rs:18529
+msgid "Remove follow-up"
+msgstr "Nachverfolgung entfernen"
+
+#: src/views/mail_page.rs:17864
+msgid "Importance flag not possible: {error}"
+msgstr "Wichtig-Markierung nicht möglich: {error}"
+
+#: src/views/mail_page.rs:17899
+msgid "Expand or collapse conversation"
+msgstr "Konversation auf- oder zuklappen"
+
+#: src/views/mail_page.rs:18238
+#, fuzzy
+msgid "Single message"
+msgstr "Nachricht verschieben"
+
+#: src/views/mail_page.rs:18240
+msgid "“{subject}” from {sender} · {date} · {thread}"
+msgstr ""
+
+#: src/views/mail_page.rs:18248
+#, fuzzy
+msgid "Unread. "
+msgstr "Ungelesen"
+
+#: src/views/mail_page.rs:18250
+#, fuzzy
+msgid "Read. "
+msgstr "Gelesen"
+
+#: src/views/mail_page.rs:18252
+msgid "Flagged. "
+msgstr ""
+
+#: src/views/mail_page.rs:18254
+#, fuzzy
+msgid "No attachments."
+msgstr "Nachricht weiterleiten"
+
+#: src/views/mail_page.rs:18256
+msgid "Attachments present."
+msgstr ""
+
+#: src/views/mail_page.rs:18548
+msgid "This account uses the separate follow-up column"
+msgstr ""
+
+#: src/views/mail_page.rs:18576
+msgid "Star not available; use follow-up column"
+msgstr "Sternmarkierung nicht verfügbar; Nachverfolgungsspalte verwenden"
+
+#: src/views/mail_page.rs:18840
+msgid "Search mail (from:, in:sent, on:2026-08-11, is:unread)…"
+msgstr ""
+
+#: src/views/mail_page.rs:18847 src/views/mail_page.rs:19059
+msgid "Flagged"
+msgstr "Markiert"
+
+#: src/views/mail_page.rs:18849
+msgid "With Attachment"
+msgstr ""
+
+#: src/views/mail_page.rs:18852 src/views/mail_page.rs:18853
+msgid "Message filter"
+msgstr ""
+
+#: src/views/mail_page.rs:18887 src/views/mail_page.rs:18892
+msgid "Save current search as search folder"
+msgstr ""
+
+#: src/views/mail_page.rs:18902
+msgid "Cannot save an empty search"
+msgstr ""
+
+#: src/views/mail_page.rs:18939
+msgid "Subject or Addresses"
+msgstr ""
+
+#: src/views/mail_page.rs:18943 src/window.rs:1119 src/window.rs:1158 and 1
+#: more
+#, fuzzy
+msgid "Message"
+msgstr "Nachricht verschieben"
+
+#: src/views/mail_page.rs:18944
+msgid "Message Body"
+msgstr "Nachrichtenrumpf"
+
+#: src/views/mail_page.rs:18945
+msgid "Free Expression"
+msgstr ""
+
+#: src/views/mail_page.rs:18950
+msgid "Search option"
+msgstr ""
+
+#: src/views/mail_page.rs:18957
+msgid "Current Folder"
+msgstr "Aktueller Ordner"
+
+#: src/views/mail_page.rs:18958
+msgid "Current Folder and Subfolders"
+msgstr "Derzeitiger Ordner und Unterordner"
+
+#: src/views/mail_page.rs:18959
+msgid "Current Account"
+msgstr "Aktuelles Konto"
+
+#: src/views/mail_page.rs:18960
+msgid "All Accounts"
+msgstr "Alle Konten"
+
+#: src/views/mail_page.rs:18964 src/views/mail_page.rs:18965
+msgid "Search scope"
+msgstr ""
+
+#: src/views/mail_page.rs:19058
+#, fuzzy
+msgid "Unread Status"
+msgstr "Ungelesen"
+
+#: src/views/mail_page.rs:19064
+msgid "Due By"
+msgstr "Fällig am"
+
+#: src/views/mail_page.rs:19068
+msgid "Sort mail"
+msgstr ""
+
+#: src/views/mail_page.rs:19069
+#, fuzzy
+msgid "Sort messages"
+msgstr "Nachricht verschieben"
+
+#: src/views/mail_page.rs:19086
+msgid "Sort descending; toggle sort direction"
+msgstr ""
+
+#: src/views/mail_page.rs:19088
+msgid "Sort ascending; toggle sort direction"
+msgstr ""
+
+#: src/views/mail_page.rs:19140
+msgid "Preview Pane"
+msgstr "Vorschaufenster"
+
+#: src/views/mail_page.rs:19152
+msgid "Bottom"
+msgstr "Unten"
+
+#: src/views/mail_page.rs:19153
+msgid "Classic view: preview below message list"
+msgstr "Klassische Ansicht: Vorschau unter der Nachrichtenliste"
+
+#: src/views/mail_page.rs:19156
+msgid "Right"
+msgstr "Rechts"
+
+#: src/views/mail_page.rs:19157
+msgid "Modern view: preview to the right of message list"
+msgstr "Moderne Ansicht: Vorschau rechts neben der Nachrichtenliste"
+
+#: src/views/mail_page.rs:19169
+msgid "Layout Profile"
+msgstr "Darstellungsprofil"
+
+#: src/views/mail_page.rs:19182
+msgid "Compact, multi-line email list"
+msgstr "Kompakte, mehrzeilige E-Mail-Liste"
+
+#: src/views/mail_page.rs:19185
+msgid "Wide"
+msgstr "Breit"
+
+#: src/views/mail_page.rs:19186
+msgid "Tabular list with columns"
+msgstr "Tabellarische Liste mit Spalten"
+
+#: src/views/mail_page.rs:19189
+msgid "Cards"
+msgstr "Karten"
+
+#: src/views/mail_page.rs:19190
+msgid "Spacious card view (Gmail / Outlook style)"
+msgstr "Großzügige Kartenansicht (Gmail- / Outlook-Stil)"
+
+#: src/views/mail_page.rs:19204
+msgid "Header Style"
+msgstr "Kopfzeilen-Stil"
+
+#: src/views/mail_page.rs:19216
+msgid "Modern"
+msgstr "Modern"
+
+#: src/views/mail_page.rs:19217
+msgid "Webmail style with avatar, prominent sender, and collapsible details"
+msgstr ""
+"Webmail-Stil mit Avatar, hervorgehobenem Absender und einklappbaren Details"
+
+#: src/views/mail_page.rs:19220 src/views/memos_page.rs:2171
+msgid "Classic"
+msgstr "Klassisch"
+
+#: src/views/mail_page.rs:19221
+msgid "Traditional tabular headers (GNOME Evolution)"
+msgstr "Klassische tabellarische Kopfzeilen (GNOME Evolution)"
+
+#: src/views/mail_page.rs:19233
+msgid "Grouping & Display"
+msgstr "Gruppierung & Anzeige"
+
+#: src/views/mail_page.rs:19240
+msgid "Avatars"
+msgstr "Avatare"
+
+#: src/views/mail_page.rs:19397
+msgid "Group by conversations"
+msgstr "Nach Unterhaltungen gruppieren"
+
+#: src/views/mail_page.rs:19398
+msgid "Group related emails into discussion threads"
+msgstr "Zusammenhängende E-Mails in Diskussionsfäden gruppieren"
+
+#: src/views/mail_page.rs:19422
+msgid "Show deleted messages"
+msgstr "Gelöschte Nachrichten anzeigen"
+
+#: src/views/mail_page.rs:19423
+msgid "Leave emails marked for deletion struck through in the list"
+msgstr "Als gelöscht markierte E-Mails durchgestrichen in der Liste belassen"
+
+#: src/views/mail_page.rs:19451 src/window.rs:3630
+msgid "Visible Columns"
+msgstr "Sichtbare Spalten"
+
+#: src/views/mail_page.rs:19566
+msgid "Show status actions in toolbar"
+msgstr "Status-Aktionen in Werkzeugleiste anzeigen"
+
+#: src/views/mail_page.rs:19589
+msgid "Show tasks in agenda"
+msgstr "Aufgaben in der Agenda anzeigen"
+
+#: src/views/mail_page.rs:19610
+msgid "Settings are not available in this development mode."
+msgstr "Einstellungen sind in diesem Entwicklungsmodus nicht verfügbar."
+
+#: src/views/mail_page.rs:19617
+msgid "View options"
+msgstr "Ansichtsoptionen"
+
+#: src/views/mail_page.rs:19643
+msgid "Search Options & Filters"
+msgstr "Suchoptionen und Filter"
+
+#: src/views/mail_page.rs:19655
+msgid "Search field:"
+msgstr "Suchfeld:"
+
+#: src/views/mail_page.rs:19664
+msgid "Search scope:"
+msgstr "Suchbereich:"
+
+#: src/views/mail_page.rs:19673
+msgid "Filter:"
+msgstr "Filter:"
+
+#: src/views/mail_page.rs:19685
+msgid "Search Syntax Operators"
+msgstr "Suchsyntax-Operatoren"
+
+#: src/views/mail_page.rs:19692
+msgid "Sender (e.g. from:alice)"
+msgstr "Absender (z.B. from:alice)"
+
+#: src/views/mail_page.rs:19693
+msgid "Recipient (e.g. to:bob)"
+msgstr "Empfänger (z.B. to:bob)"
+
+#: src/views/mail_page.rs:19694
+msgid "Subject line"
+msgstr "Betreffzeile"
+
+#: src/views/mail_page.rs:19695
+msgid "Message body"
+msgstr "Nachrichtentext"
+
+#: src/views/mail_page.rs:19696
+msgid "Unread emails"
+msgstr "Ungelesene E-Mails"
+
+#: src/views/mail_page.rs:19697
+msgid "Flagged emails"
+msgstr "Markierte E-Mails"
+
+#: src/views/mail_page.rs:19698
+msgid "Emails with attachment"
+msgstr "E-Mails mit Anhang"
+
+#: src/views/mail_page.rs:19699
+msgid "Folder (e.g. in:sent, in:drafts)"
+msgstr "Ordner (z.B. in:sent, in:drafts)"
+
+#: src/views/mail_page.rs:19700
+msgid "Date (e.g. on:2026-08-11)"
+msgstr "Datum (z.B. on:2026-08-11)"
+
+#: src/views/mail_page.rs:19701
+msgid "After date (after:2026-01-01)"
+msgstr "Nach Datum (after:2026-01-01)"
+
+#: src/views/mail_page.rs:19702
+msgid "Before date (before:2026-12-31)"
+msgstr "Vor Datum (before:2026-12-31)"
+
+#: src/views/mail_page.rs:19703
+msgid "Exclude term"
+msgstr "Begriff ausschließen"
+
+#: src/views/mail_page.rs:19872
+msgid "Refresh messages (F5)"
+msgstr "Nachrichten aktualisieren (F5)"
+
+#: src/views/mail_page.rs:19873
+msgid "Refresh messages"
+msgstr "Nachrichten aktualisieren"
+
+#: src/views/mail_page.rs:19887
+msgid "Load More"
+msgstr "Mehr laden"
+
+#: src/views/mail_page.rs:19888
+msgid "Load more messages"
+msgstr "Weitere Nachrichten laden"
+
+#: src/views/mail_page.rs:19933
+msgid "Mark selected messages as read"
+msgstr "Ausgewählte Nachrichten als gelesen markieren"
+
+#: src/views/mail_page.rs:19940
+msgid "Mark as read not possible"
+msgstr "Gelesen-Markierung nicht möglich"
+
+#: src/views/mail_page.rs:19949
+msgid "Mark selected messages as unread"
+msgstr "Ausgewählte Nachrichten als ungelesen markieren"
+
+#: src/views/mail_page.rs:19956
+msgid "Mark as unread not possible"
+msgstr "Ungelesen-Markierung nicht möglich"
+
+#: src/views/mail_page.rs:19965
+msgid "Toggle flag on selected messages"
+msgstr "Markierung für ausgewählte Nachrichten umschalten"
+
+#: src/views/mail_page.rs:19972
+msgid "Flagging not possible"
+msgstr "Markierung nicht möglich"
+
+#: src/views/mail_page.rs:19981
+msgid "Toggle importance on selected messages"
+msgstr "Wichtigkeit für ausgewählte Nachrichten umschalten"
+
+#: src/views/mail_page.rs:19988
+msgid "Importance not possible"
+msgstr "Wichtig-Markierung nicht möglich"
+
+#: src/views/mail_page.rs:19996
+msgid "Label"
+msgstr "Label"
+
+#: src/views/mail_page.rs:19997
+msgid "Set or remove label on selected messages"
+msgstr "Label der ausgewählten Nachrichten setzen oder entfernen"
+
+#: src/views/mail_page.rs:20010
+msgid "Archive selected messages"
+msgstr "Ausgewählte Nachrichten archivieren"
+
+#: src/views/mail_page.rs:20017
+msgid "Archive not possible"
+msgstr "Archivieren nicht möglich"
+
+#: src/views/mail_page.rs:20026
+msgid "Mark selected messages as junk"
+msgstr "Ausgewählte Nachrichten als unerwünscht markieren"
+
+#: src/views/mail_page.rs:20033
+msgid "Junk marking not possible"
+msgstr "Spam-Markierung nicht möglich"
+
+#: src/views/mail_page.rs:20041 src/views/mail_viewer.rs:208
+msgid "Not Junk"
+msgstr "Nicht Spam"
+
+#: src/views/mail_page.rs:20042
+msgid "Remove junk status from selected messages"
+msgstr "Unerwünscht-Status von ausgewählten Nachrichten entfernen"
+
+#: src/views/mail_page.rs:20049
+msgid "Not-junk marking not possible"
+msgstr "Nicht-Spam-Markierung nicht möglich"
+
+#: src/views/mail_page.rs:20105
+msgid "Move selected messages to an account or local folder"
+msgstr ""
+"Ausgewählte Nachrichten in ein Konto oder einen lokalen Ordner verschieben"
+
+#: src/views/mail_page.rs:20160
+msgid "Copy selected messages to another folder"
+msgstr "Ausgewählte Nachrichten in einen weiteren Ordner kopieren"
+
+#: src/views/mail_page.rs:20168
+msgid "Delete selected messages"
+msgstr "Ausgewählte Nachrichten löschen"
+
+#: src/views/mail_page.rs:20175
+#, fuzzy
+msgid "Delete messages?"
+msgstr "Nachricht löschen (Entf)"
+
+#: src/views/mail_page.rs:20176
+msgid "The selected messages will be permanently deleted or moved to trash."
+msgstr ""
+
+#: src/views/mail_page.rs:20185
+msgid "Delete not possible"
+msgstr "Löschen nicht möglich"
+
+#: src/views/mail_page.rs:20994
+msgid "Details ▾"
+msgstr "Details ▾"
+
+#: src/views/mail_page.rs:20995
+msgid "Show detailed headers"
+msgstr "Ausführliche Kopfzeilen anzeigen"
+
+#: src/views/mail_page.rs:21074
+#, fuzzy
+msgid "Reply (Ctrl+R)"
+msgstr "Nachricht drucken (Strg+P)"
+
+#: src/views/mail_page.rs:21075
+msgid "Reply All (Ctrl+Shift+R)"
+msgstr ""
+
+#: src/views/mail_page.rs:21076
+#, fuzzy
+msgid "Forward (Ctrl+L)"
+msgstr "Weiterleiten"
+
+#: src/views/mail_page.rs:21082 src/views/mail_page.rs:21262
+#: src/views/mail_viewer_window.rs:301
+msgid "Save as EML…"
+msgstr "Als EML exportieren …"
+
+#: src/views/mail_page.rs:21084 src/views/mail_page.rs:21264
+msgid "Light theme for this email"
+msgstr "Helles Design für diese E-Mail"
+
+#: src/views/mail_page.rs:21089 src/views/mail_page.rs:21269
+msgid "More actions for this message"
+msgstr "Weitere Aktionen für diese Nachricht"
+
+#: src/views/mail_page.rs:21232
+msgid "Reply to sender"
+msgstr "Absender antworten"
+
+#: src/views/mail_page.rs:21240
+msgid "Reply to all recipients"
+msgstr "Allen Empfängern antworten"
+
+#: src/views/mail_page.rs:21248
+msgid "Forward message"
+msgstr "Nachricht weiterleiten"
+
+#: src/views/mail_page.rs:21421 src/views/mail_viewer_window.rs:540
+msgid "Cancel print preparation"
+msgstr ""
+
+#: src/views/mail_page.rs:21426
+msgid "Cancel print job"
+msgstr ""
+
+#: src/views/mail_page.rs:21449 src/views/mail_viewer_window.rs:448
+#, fuzzy
+msgid "Find in message"
+msgstr "Nachricht weiterleiten"
+
+#: src/views/mail_page.rs:21459 src/views/mail_page.rs:21472
+#: src/views/mail_viewer_window.rs:458 and 1 more
+msgid "Previous match"
+msgstr ""
+
+#: src/views/mail_page.rs:21464 src/views/mail_page.rs:21473
+#: src/views/mail_viewer_window.rs:464 and 1 more
+msgid "Next match"
+msgstr ""
+
+#: src/views/mail_page.rs:21469
+msgid "Close find"
+msgstr ""
+
+#: src/views/mail_page.rs:21474
+#, fuzzy
+msgid "Close find in message"
+msgstr "Nachricht verschieben"
+
+#: src/views/mail_page.rs:22850
+#, fuzzy
+msgid "No events"
+msgstr "Neuer Termin"
+
+#: src/views/mail_page.rs:23985
+msgid " o'clock_suffix"
+msgstr ""
+
+#: src/views/mail_page.rs:25528
+msgid "Mail loading was cancelled."
+msgstr "Mail-Ladevorgang wurde abgebrochen."
+
+#: src/views/mail_page.rs:26174 src/views/mail_page.rs:26182
+msgid "Account synchronization not possible: {error}"
+msgstr "Kontosynchronisation nicht möglich: {error}"
+
+#: src/views/mail_page.rs:26449
+msgid "Local Storage"
+msgstr ""
+
+#: src/views/mail_page.rs:26480
+msgid "Mail Backend"
+msgstr ""
+
+#: src/views/mail_page.rs:27169 src/views/mail_page.rs:27355
+msgid "Calendar Invitation"
+msgstr "Kalendereinladung"
+
+#: src/views/mail_page.rs:27191
+msgid "Import Locally"
+msgstr "Lokal übernehmen"
+
+#: src/views/mail_page.rs:27192
+msgid "Import this invitation into the app-owned calendar"
+msgstr "Diese Einladung in den app-eigenen Kalender übernehmen"
+
+#: src/views/mail_page.rs:27220
+msgid "Imported"
+msgstr "Übernommen"
+
+#: src/views/mail_page.rs:27224
+msgid "Event imported locally ({id})"
+msgstr "Termin lokal übernommen ({})"
+
+#: src/views/mail_page.rs:27233
+msgid "Invitation could not be imported: {error}"
+msgstr "Einladung konnte nicht übernommen werden: {error}"
+
+#: src/views/mail_page.rs:27254
+msgid "iTIP Response"
+msgstr "iTIP-Antwort: {}"
+
+#: src/views/mail_page.rs:27268
+msgid "Account synchronization required"
+msgstr "Kontosynchronisation erforderlich"
+
+#: src/views/mail_page.rs:27301
+msgid "Draft saved"
+msgstr "Entwurf gespeichert"
+
+#: src/views/mail_page.rs:27305
+msgid "iTIP response saved as draft ({draft_id})"
+msgstr "iTIP-Antwort als Entwurf gespeichert ({draft_id})"
+
+#: src/views/mail_page.rs:27314
+msgid "iTIP response could not be saved: {error}"
+msgstr "iTIP-Antwort konnte nicht gespeichert werden: {error}"
+
+#: src/views/mail_page.rs:27345
+msgid "No enabled local account profile available for reply"
+msgstr "Kein aktiviertes lokales Kontoprofil für die Antwort vorhanden"
+
+#: src/views/mail_page.rs:27348
+msgid "The selected account profile does not have a valid email address"
+msgstr "Das ausgewählte Kontoprofil besitzt keine gültige E-Mail-Adresse"
+
+#: src/views/mail_page.rs:27768 src/views/mail_page.rs:27901
+#: src/views/mail_page.rs:27989 and 37 more
+msgid "mail_page.rs"
+msgstr ""
+
+#: src/views/mail_page.rs:27956
+msgid "../services/mail_store_service.rs"
+msgstr ""
+
+#: src/views/mail_page.rs:28365
+msgid "{} account not synchronized"
+msgstr "1 Konto nicht synchronisiert"
+
+#: src/views/mail_page.rs:28384
+msgid "{} account synchronized"
+msgstr "1 Konto synchronisiert"
+
+#: src/views/mail_page.rs:28727
+msgid "../window.rs"
+msgstr ""
+
+#: src/views/mail_page.rs:31944 src/views/mail_page.rs:32025
+msgid "../style.css"
+msgstr ""
+
+#: src/views/mail_viewer.rs:178
+msgid "Remote images blocked – embedded images remain visible"
+msgstr ""
+
+#: src/views/mail_viewer.rs:179
+msgid "Load Images"
+msgstr ""
+
+#: src/views/mail_viewer.rs:198
+msgid "This message is in the Trash."
+msgstr ""
+
+#: src/views/mail_viewer.rs:199
+msgid "Restore"
+msgstr ""
+
+#: src/views/mail_viewer.rs:207
+msgid "This message was marked as junk (spam)."
+msgstr ""
+
+#: src/views/mail_viewer.rs:231
+#, fuzzy
+msgid "No message selected."
+msgstr "Nachrichtenquelle anzeigen"
+
+#: src/views/mail_viewer.rs:255
+msgid "The secure message viewer will load when opened."
+msgstr ""
+
+#: src/views/mail_viewer.rs:261
+#, fuzzy
+msgid "Loading message…"
+msgstr "Nachricht weiterleiten"
+
+#: src/views/mail_viewer.rs:262
+msgid "Preparing secure view."
+msgstr ""
+
+#: src/views/mail_viewer.rs:268
+msgid "HTML rendering failed. A safe plain text view is displayed."
+msgstr ""
+
+#: src/views/mail_viewer.rs:2595
+msgid "(The message has no displayable content.)"
+msgstr ""
+
+#: src/views/mail_viewer_window.rs:289
+#, fuzzy
+msgid "Show message source"
+msgstr "Nachrichtenquelle anzeigen"
+
+#: src/views/mail_viewer_window.rs:290
+msgid "Show all headers"
+msgstr ""
+
+#: src/views/mail_viewer_window.rs:291
+msgid "Light style for this email"
+msgstr "Helles Design für diese E-Mail"
+
+#: src/views/mail_viewer_window.rs:294
+msgid "Zoom in"
+msgstr ""
+
+#: src/views/mail_viewer_window.rs:295
+msgid "Zoom out"
+msgstr ""
+
+#: src/views/mail_viewer_window.rs:296
+msgid "Normal size"
+msgstr ""
+
+#: src/views/mail_viewer_window.rs:297 src/window.rs:3648
+msgid "View"
+msgstr ""
+
+#: src/views/mail_viewer_window.rs:300
+#, fuzzy
+msgid "Find in message…"
+msgstr "Nachricht weiterleiten"
+
+#: src/views/mail_viewer_window.rs:306 src/views/mail_viewer_window.rs:310
+msgid "Main menu"
+msgstr ""
+
+#: src/views/mail_viewer_window.rs:314
+#, fuzzy
+msgid "Print (Ctrl+P)"
+msgstr "Nachricht drucken (Strg+P)"
+
+#: src/views/mail_viewer_window.rs:322
+#, fuzzy
+msgid "Mark as read/unread"
+msgstr "Als ungelesen markieren"
+
+#: src/views/mail_viewer_window.rs:326
+#, fuzzy
+msgid "Mark as read or unread"
+msgstr "Als ungelesen markieren"
+
+#: src/views/mail_viewer_window.rs:331
+#, fuzzy
+msgid "Mark as junk (Ctrl+J)"
+msgstr "Als Spam markieren"
+
+#: src/views/mail_viewer_window.rs:343
+#, fuzzy
+msgid "Delete message"
+msgstr "Nachricht löschen (Entf)"
+
+#: src/views/mail_viewer_window.rs:386
+msgid "Security:"
+msgstr "Sicherheit:"
+
+#: src/views/mail_viewer_window.rs:402 src/views/mail_viewer_window.rs:1149
+msgid "No OpenPGP/S/MIME protection detected"
+msgstr ""
+
+#: src/views/mail_viewer_window.rs:470
+msgid "Close search (Esc)"
+msgstr ""
+
+#: src/views/mail_viewer_window.rs:980
+msgid "Save all…"
+msgstr ""
+
+#: src/views/mail_viewer_window.rs:990
+msgid "Select folder for all attachments"
+msgstr ""
+
+#: src/views/mail_viewer_window.rs:1006
+msgid "{} attachments saved"
+msgstr ""
+
+#: src/views/mail_viewer_window.rs:1045
+#, fuzzy
+msgid "Open attachment"
+msgstr "Nachricht weiterleiten"
+
+#: src/views/mail_viewer_window.rs:1063
+msgid "Save attachment as…"
+msgstr ""
+
+#: src/views/mail_viewer_window.rs:1073
+#, fuzzy
+msgid "Save attachment"
+msgstr "Nachricht weiterleiten"
+
+#: src/views/mail_viewer_window.rs:1085
+msgid "{filename} saved"
+msgstr ""
+
+#: src/views/mail_viewer_window.rs:1147
+msgid "Cryptography: Verification in progress…"
+msgstr ""
+
+#: src/views/mail_viewer_window.rs:1207
+msgid "Cryptography error"
+msgstr ""
+
+#: src/views/mail_viewer_window.rs:1261
+#, fuzzy
+msgid "Mark as read (Ctrl+K)"
+msgstr "Als gelesen markieren"
+
+#: src/views/mail_viewer_window.rs:1264
+#, fuzzy
+msgid "Mark as unread (Ctrl+Shift+K)"
+msgstr "Als ungelesen markieren"
+
+#: src/views/mail_viewer_window.rs:1285 src/window.rs:4487
+#, fuzzy
+msgid "Message marked as unread"
+msgstr "Als ungelesen markieren"
+
+#: src/views/mail_viewer_window.rs:1287 src/window.rs:4510
+#, fuzzy
+msgid "Message marked as read"
+msgstr "Als gelesen markieren"
+
+#: src/views/mail_viewer_window.rs:1372 src/window.rs:4438
+#, fuzzy
+msgid "Delete message?"
+msgstr "Nachricht löschen (Entf)"
+
+#: src/views/mail_viewer_window.rs:1373
+msgid "The message will be deleted or moved to trash."
+msgstr ""
+
+#: src/views/mail_viewer_window.rs:1385
+#, fuzzy
+msgid "Delete failed"
+msgstr "Nachricht löschen (Entf)"
+
+#: src/views/mail_viewer_window.rs:1400
+#, fuzzy
+msgid "Marked as junk"
+msgstr "Als Spam markieren"
+
+#: src/views/mail_viewer_window.rs:1403 src/views/mail_viewer_window.rs:1421
+#, fuzzy
+msgid "Failed to mark as junk"
+msgstr "Als Spam markieren"
+
+#: src/views/mail_viewer_window.rs:1419
+#, fuzzy
+msgid "Not marked as junk"
+msgstr "Als Spam markieren"
+
+#: src/views/mail_viewer_window.rs:1439
+msgid "Save email as EML"
+msgstr ""
+
+#: src/views/mail_viewer_window.rs:1456
+msgid "Message exported successfully"
+msgstr ""
+
+#: src/views/mail_viewer_window.rs:1516
+msgid "Printing cancelled"
+msgstr ""
+
+#: src/views/mail_viewer_window.rs:1518
+#, fuzzy
+msgid "Print error"
+msgstr "Drucken"
+
+#: src/views/mail_viewer_window.rs:1531
+msgid "Print preparation cancelled or failed"
+msgstr ""
+
+#: src/views/mail_viewer_window.rs:1547
+msgid "Print job cancelled"
+msgstr ""
+
+#: src/views/memos_page.rs:403 src/views/memos_page.rs:1691
+#: src/views/tasks_page.rs:4607 and 1 more
+msgid "Title"
+msgstr "Anrede"
+
+#: src/views/memos_page.rs:404 src/views/memos_page.rs:1085
+#: src/views/memos_page.rs:1130 and 1 more
+msgid "Notebook"
+msgstr ""
+
+#: src/views/memos_page.rs:638 src/views/memos_page.rs:6785
+msgid "Unreachable"
+msgstr ""
+
+#: src/views/memos_page.rs:640
+msgid "Unavailable"
+msgstr ""
+
+#: src/views/memos_page.rs:642 src/views/memos_page.rs:6792
+#, fuzzy
+msgid "Read-Only"
+msgstr "Gelesen"
+
+#: src/views/memos_page.rs:1338
+msgid "Show/hide memo list in views"
+msgstr ""
+
+#: src/views/memos_page.rs:1380
+msgid "Synchronized memo list"
+msgstr ""
+
+#: src/views/memos_page.rs:1493 src/views/memos_page.rs:5044
+#: src/views/memos_page.rs:5258
+msgid "Local Memo List"
+msgstr ""
+
+#: src/views/memos_page.rs:1671
+msgid "Search memos…"
+msgstr ""
+
+#: src/views/memos_page.rs:1675 src/views/memos_page.rs:4730
+#: src/views/tasks_page.rs:618 and 4 more
+msgid "Summary"
+msgstr "Zusammenfassung"
+
+#: src/views/memos_page.rs:1676 src/views/memos_page.rs:4766
+#: src/views/tasks_page.rs:638 and 4 more
+msgid "Description"
+msgstr "Beschreibung"
+
+#: src/views/memos_page.rs:1677 src/views/tasks_page.rs:4587
+msgid "Advanced"
+msgstr ""
+
+#: src/views/memos_page.rs:1690
+msgid "Last Modified"
+msgstr ""
+
+#: src/views/memos_page.rs:1692 src/views/tasks_page.rs:958
+msgid "Source"
+msgstr "Quelle"
+
+#: src/views/memos_page.rs:1695
+msgid "Sort memos"
+msgstr ""
+
+#: src/views/memos_page.rs:1713 src/views/memos_page.rs:1936
+#: src/views/tasks_page.rs:4629 and 1 more
+msgid "Sorted descending"
+msgstr ""
+
+#: src/views/memos_page.rs:1715 src/views/memos_page.rs:1938
+#: src/views/tasks_page.rs:4631 and 1 more
+msgid "Sorted ascending"
+msgstr ""
+
+#: src/views/memos_page.rs:1719 src/views/memos_page.rs:1942
+#: src/views/tasks_page.rs:4636 and 1 more
+msgid "Change sort to ascending"
+msgstr ""
+
+#: src/views/memos_page.rs:1721 src/views/memos_page.rs:1944
+#: src/views/tasks_page.rs:4638 and 1 more
+msgid "Change sort to descending"
+msgstr ""
+
+#: src/views/memos_page.rs:1729
+msgid "All Memo Lists"
+msgstr ""
+
+#: src/views/memos_page.rs:1734
+msgid "Select memo list"
+msgstr ""
+
+#: src/views/memos_page.rs:1737 src/views/memos_page.rs:5471
+msgid "Uncategorized"
+msgstr ""
+
+#: src/views/memos_page.rs:1741
+msgid "Select memo category"
+msgstr ""
+
+#: src/views/memos_page.rs:1809 src/views/memos_page.rs:5681
+msgid "No synchronized memos loaded"
+msgstr ""
+
+#: src/views/memos_page.rs:2085 src/views/memos_page.rs:2703
+#: src/views/memos_page.rs:2866 and 3 more
+msgid "No memo selected"
+msgstr ""
+
+#: src/views/memos_page.rs:2090
+msgid "Memos will be loaded after synchronization"
+msgstr ""
+
+#: src/views/memos_page.rs:2102 src/views/memos_page.rs:4519
+msgid "No memo data available yet."
+msgstr ""
+
+#: src/views/memos_page.rs:2115
+#, fuzzy
+msgid "Save memo (Ctrl+S)"
+msgstr "Neue Notiz erstellen (Strg+N)"
+
+#: src/views/memos_page.rs:2119
+#, fuzzy
+msgid "Save memo"
+msgstr "Speichern"
+
+#: src/views/memos_page.rs:2122
+#, fuzzy
+msgid "Delete memo (Delete)"
+msgstr "Nachricht löschen (Entf)"
+
+#: src/views/memos_page.rs:2126
+#, fuzzy
+msgid "Delete memo"
+msgstr "Löschen"
+
+#: src/views/memos_page.rs:2129 src/views/memos_page.rs:2133
+msgid "Export memo"
+msgstr ""
+
+#: src/views/memos_page.rs:2137
+msgid "Open memo"
+msgstr ""
+
+#: src/views/memos_page.rs:2141
+#, fuzzy
+msgid "Forward memo"
+msgstr "Nachricht weiterleiten"
+
+#: src/views/memos_page.rs:2145
+msgid "Open memo URL"
+msgstr ""
+
+#: src/views/memos_page.rs:2149
+#, fuzzy
+msgid "Print memo"
+msgstr "Drucken"
+
+#: src/views/memos_page.rs:2153
+msgid "Save memo as"
+msgstr ""
+
+#: src/views/memos_page.rs:2157
+#, fuzzy
+msgid "Copy memo"
+msgstr "Nachricht kopieren"
+
+#: src/views/memos_page.rs:2161
+msgid "Cut memo"
+msgstr ""
+
+#: src/views/memos_page.rs:2165
+msgid "Paste memo"
+msgstr ""
+
+#: src/views/memos_page.rs:2169
+msgid "Select all memos"
+msgstr ""
+
+#: src/views/memos_page.rs:2172
+msgid "Vertical"
+msgstr ""
+
+#: src/views/memos_page.rs:2180
+msgid "Memo preview orientation"
+msgstr ""
+
+#: src/views/memos_page.rs:2215
+msgid "Open URL"
+msgstr ""
+
+#: src/views/memos_page.rs:2216
+#, fuzzy
+msgid "Export…"
+msgstr "Als EML exportieren …"
+
+#: src/views/memos_page.rs:2217
+msgid "Save As…"
+msgstr ""
+
+#: src/views/memos_page.rs:2218
+#, fuzzy
+msgid "Print Note… (Ctrl+P)"
+msgstr "Nachricht drucken (Strg+P)"
+
+#: src/views/memos_page.rs:2219
+msgid "Cut"
+msgstr ""
+
+#: src/views/memos_page.rs:2221
+msgid "Paste"
+msgstr ""
+
+#: src/views/memos_page.rs:2222
+msgid "Select All"
+msgstr "Alle auswählen"
+
+#: src/views/memos_page.rs:2257 src/views/memos_page.rs:2261
+#: src/views/tasks_page.rs:5057 and 1 more
+#, fuzzy
+msgid "More Actions"
+msgstr "Weitere Aktionen"
+
+#: src/views/memos_page.rs:2323 src/window.rs:1040
+msgid "Toggle memo preview (Ctrl+M)"
+msgstr ""
+
+#: src/views/memos_page.rs:2328
+msgid "Toggle memo preview"
+msgstr ""
+
+#: src/views/memos_page.rs:2367 src/window.rs:2413
+msgid "Create new note (Ctrl+N)"
+msgstr "Neue Notiz erstellen (Strg+N)"
+
+#: src/views/memos_page.rs:2463 src/views/memos_page.rs:5925
+#: src/views/memos_page.rs:5931
+msgid "No unique memo selection"
+msgstr ""
+
+#: src/views/memos_page.rs:2481
+msgid "Categories (comma separated)"
+msgstr ""
+
+#: src/views/memos_page.rs:2483 src/views/memos_page.rs:4748
+#: src/views/tasks_page.rs:14018
+msgid "e.g. Work, Personal"
+msgstr ""
+
+#: src/views/memos_page.rs:2515
+msgid "Add new note… (press Enter)"
+msgstr ""
+
+#: src/views/memos_page.rs:2519
+msgid "Quickly add new note"
+msgstr ""
+
+#: src/views/memos_page.rs:2538
+msgid "Memo Table Header"
+msgstr ""
+
+#: src/views/memos_page.rs:2548
+msgid "Memo List Canvas"
+msgstr ""
+
+#: src/views/memos_page.rs:2667
+msgid "Memo »{}« added"
+msgstr ""
+
+#: src/views/memos_page.rs:2674
+msgid "Error creating memo: {}"
+msgstr ""
+
+#: src/views/memos_page.rs:2704
+msgid "Select a memo from the list or create a new one."
+msgstr ""
+
+#: src/views/memos_page.rs:2856
+msgid "Saving is only available for exactly one memo"
+msgstr ""
+
+#: src/views/memos_page.rs:2872
+msgid "This memo is from a read-only imported source"
+msgstr ""
+
+#: src/views/memos_page.rs:2952
+#, fuzzy
+msgid "Memo saved"
+msgstr "Neue Notiz"
+
+#: src/views/memos_page.rs:2957
+msgid "Error saving: {}"
+msgstr ""
+
+#: src/views/memos_page.rs:2993 src/views/memos_page.rs:3172
+#, fuzzy
+msgid "Save memo as iCalendar"
+msgstr "Als EML exportieren …"
+
+#: src/views/memos_page.rs:3006
+#, fuzzy
+msgid "Memo(s) exported as iCalendar"
+msgstr "Als EML exportieren …"
+
+#: src/views/memos_page.rs:3025
+msgid "Opening is only available for exactly one memo"
+msgstr ""
+
+#: src/views/memos_page.rs:3055
+msgid "Forwarding is only available for exactly one memo"
+msgstr ""
+
+#: src/views/memos_page.rs:3067
+msgid "METHOD:PUBLISH provided; real iTIP forwarding is Linux handoff"
+msgstr ""
+
+#: src/views/memos_page.rs:3086
+msgid "Open URL is only available for exactly one memo"
+msgstr ""
+
+#: src/views/memos_page.rs:3101 src/views/tasks_page.rs:5686
+msgid "URL opened"
+msgstr ""
+
+#: src/views/memos_page.rs:3104
+msgid "Could not open URL: {}"
+msgstr ""
+
+#: src/views/memos_page.rs:3125
+msgid "Printing is only available for exactly one memo"
+msgstr ""
+
+#: src/views/memos_page.rs:3132
+msgid ""
+"Portable print document prepared ({} characters); Print portal is Linux "
+"handoff"
+msgstr ""
+
+#: src/views/memos_page.rs:3153
+msgid "Save as is only available for exactly one memo"
+msgstr ""
+
+#: src/views/memos_page.rs:3185
+msgid "Memo(s) saved"
+msgstr ""
+
+#: src/views/memos_page.rs:3205
+msgid "Memo(s) copied to clipboard"
+msgstr ""
+
+#: src/views/memos_page.rs:3219 src/views/tasks_page.rs:5389
+msgid "Cut is not available for this selection"
+msgstr ""
+
+#: src/views/memos_page.rs:3281
+msgid "No writable destination source selected"
+msgstr ""
+
+#: src/views/memos_page.rs:3298 src/views/tasks_page.rs:10162
+msgid "The clipboard contains no text"
+msgstr ""
+
+#: src/views/memos_page.rs:3305
+msgid "Clipboard not readable: {}"
+msgstr ""
+
+#: src/views/memos_page.rs:3324
+msgid "The target source has changed or is no longer writable"
+msgstr ""
+
+#: src/views/memos_page.rs:3368
+msgid "Memo(s) pasted"
+msgstr ""
+
+#: src/views/memos_page.rs:3423
+msgid "The selected memo will be permanently deleted."
+msgstr ""
+
+#: src/views/memos_page.rs:3425
+msgid "The selected memos will be permanently deleted."
+msgstr ""
+
+#: src/views/memos_page.rs:3439
+#, fuzzy
+msgid "Delete memos?"
+msgstr "Löschen"
+
+#: src/views/memos_page.rs:3446
+msgid "The memo selection is now obsolete"
+msgstr ""
+
+#: src/views/memos_page.rs:3456
+msgid "Memo data has been updated in the meantime"
+msgstr ""
+
+#: src/views/memos_page.rs:3501
+msgid "Memo(s) deleted"
+msgstr ""
+
+#: src/views/memos_page.rs:3549 src/views/memos_page.rs:4002
+#, fuzzy
+msgid "Save Note"
+msgstr "Speichern"
+
+#: src/views/memos_page.rs:3560 src/views/memos_page.rs:4013
+#: src/views/tasks_page.rs:11758
+msgid "Export as iCalendar"
+msgstr ""
+
+#: src/views/memos_page.rs:3571 src/views/memos_page.rs:4024
+#, fuzzy
+msgid "Delete Note"
+msgstr "Löschen"
+
+#: src/views/memos_page.rs:4431 src/views/memos_page.rs:6227
+msgid "No synchronized memos found"
+msgstr ""
+
+#: src/views/memos_page.rs:4433
+msgid "No VJOURNAL data found from Microsoft Graph"
+msgstr ""
+
+#: src/views/memos_page.rs:4435
+msgid "No local VJOURNAL data found"
+msgstr ""
+
+#: src/views/memos_page.rs:4441
+msgid "synchronized memo store"
+msgstr ""
+
+#: src/views/memos_page.rs:4443
+#, fuzzy
+msgid "local iCalendar"
+msgstr "Als EML exportieren …"
+
+#: src/views/memos_page.rs:4649 src/views/memos_page.rs:4668
+#, fuzzy
+msgid "New Note"
+msgstr "Neuer Kontakt"
+
+#: src/views/memos_page.rs:4667
+msgid "Edit Note"
+msgstr ""
+
+#: src/views/memos_page.rs:4705
+msgid "Loading memo lists…"
+msgstr ""
+
+#: src/views/memos_page.rs:4709
+msgid "Memo List"
+msgstr "Notizliste"
+
+#: src/views/memos_page.rs:4728 src/views/tasks_page.rs:7194
+msgid "Details"
+msgstr "Details"
+
+#: src/views/memos_page.rs:4733
+msgid "DTSTART (iCalendar value)"
+msgstr ""
+
+#: src/views/memos_page.rs:4735
+msgid "e.g. 20260822 or 20260822T120000Z"
+msgstr ""
+
+#: src/views/memos_page.rs:4737
+msgid "Class"
+msgstr ""
+
+#: src/views/memos_page.rs:4738
+msgid "e.g. PUBLIC, PRIVATE, or CONFIDENTIAL"
+msgstr ""
+
+#: src/views/memos_page.rs:4741
+msgid "RFC5545 STATUS, e.g. DRAFT or FINAL"
+msgstr ""
+
+#: src/views/memos_page.rs:4743
+msgid "URL"
+msgstr "Adresse"
+
+#: src/views/memos_page.rs:4746
+msgid "Categories (comma-separated)"
+msgstr ""
+
+#: src/views/memos_page.rs:4798
+msgid "Add URI/File"
+msgstr ""
+
+#: src/views/memos_page.rs:4807
+msgid "URI:… or INLINE:… (one line per attachment)"
+msgstr ""
+
+#: src/views/memos_page.rs:4856
+msgid "Select memo attachments"
+msgstr ""
+
+#: src/views/memos_page.rs:4908
+msgid "Save in progress; please wait"
+msgstr ""
+
+#: src/views/memos_page.rs:4915
+msgid "Unsaved Memo Changes"
+msgstr ""
+
+#: src/views/memos_page.rs:4916
+msgid "The memo has changed since the last confirmed save."
+msgstr ""
+
+#: src/views/memos_page.rs:4923 src/views/tasks_page.rs:8143
+msgid "Discard"
+msgstr ""
+
+#: src/views/memos_page.rs:5051
+msgid "Memo lists are unreachable"
+msgstr ""
+
+#: src/views/memos_page.rs:5053
+msgid "No active memo list available"
+msgstr ""
+
+#: src/views/memos_page.rs:5113
+msgid "No active memo list is selected"
+msgstr ""
+
+#: src/views/memos_page.rs:5117
+msgid "The selected memo list is invalid"
+msgstr ""
+
+#: src/views/memos_page.rs:5126
+msgid "The selected memo list is not writable or not available"
+msgstr ""
+
+#: src/views/memos_page.rs:5236
+msgid "Confirmed memo component is missing or invalid: {}"
+msgstr ""
+
+#: src/views/memos_page.rs:5250
+msgid "Confirmed memo identity is invalid"
+msgstr ""
+
+#: src/views/memos_page.rs:5260
+msgid "Synchronized memo store"
+msgstr ""
+
+#: src/views/memos_page.rs:5288
+msgid "Note updated"
+msgstr ""
+
+#: src/views/memos_page.rs:5290
+msgid "Note saved"
+msgstr ""
+
+#: src/views/memos_page.rs:5299
+msgid "Could not save note"
+msgstr ""
+
+#: src/views/memos_page.rs:5303
+msgid "Note save result missing"
+msgstr ""
+
+#: src/views/memos_page.rs:5408
+msgid "Memo category"
+msgstr ""
+
+#: src/views/memos_page.rs:5668
+msgid "Invalid advanced search: {}"
+msgstr ""
+
+#: src/views/memos_page.rs:5683
+msgid "No matching memos"
+msgstr ""
+
+#: src/views/memos_page.rs:5820
+msgid "The memo data does not contain a unique identity {source} / {uid}"
+msgstr ""
+
+#: src/views/memos_page.rs:5827
+msgid "The memo selection is no longer up to date; please select again"
+msgstr ""
+
+#: src/views/memos_page.rs:5934
+msgid "Memo preview unavailable"
+msgstr ""
+
+#: src/views/memos_page.rs:6029
+msgid "Confirmed VJOURNAL component has no UID"
+msgstr ""
+
+#: src/views/memos_page.rs:6032
+msgid "Confirmed VJOURNAL component does not have the requested UID"
+msgstr ""
+
+#: src/views/memos_page.rs:6070 src/views/memos_page.rs:6150
+msgid "Backend UID does not match"
+msgstr ""
+
+#: src/views/memos_page.rs:6079
+msgid "Backend returned no confirmed VJOURNAL component"
+msgstr ""
+
+#: src/views/memos_page.rs:6108
+msgid "Paste aborted atomically: {}"
+msgstr ""
+
+#: src/views/memos_page.rs:6110
+msgid "Paste failed; rollback incomplete: {failure}; {errors}"
+msgstr ""
+
+#: src/views/memos_page.rs:6183
+msgid "Delete aborted atomically: {}"
+msgstr ""
+
+#: src/views/memos_page.rs:6185
+msgid "Delete failed; rollback incomplete: {failure}; {errors}"
+msgstr ""
+
+#: src/views/memos_page.rs:6375
+msgid "Could not save iCalendar: {}"
+msgstr ""
+
+#: src/views/memos_page.rs:6414
+msgid "ECal returned no complete component"
+msgstr ""
+
+#: src/views/memos_page.rs:6426
+msgid "Component UID does not match the request"
+msgstr ""
+
+#: src/views/memos_page.rs:6431
+msgid "ECal result and confirmed component have different UIDs"
+msgstr ""
+
+#: src/views/memos_page.rs:6440
+msgid "The confirmed memo component has no UID"
+msgstr ""
+
+#: src/views/memos_page.rs:6449
+msgid "Attachments are still loading; please wait"
+msgstr ""
+
+#: src/views/memos_page.rs:6550
+msgid "The attachment list contains invalid line breaks"
+msgstr ""
+
+#: src/views/memos_page.rs:6575
+msgid "A URI attachment cannot be empty"
+msgstr ""
+
+#: src/views/memos_page.rs:6598
+msgid "A memo requires a title"
+msgstr ""
+
+#: src/views/memos_page.rs:6948
+msgid "memos_page.rs"
+msgstr ""
+
+#: src/views/tasks_page.rs:550
+msgid "This action is only available for exactly one task"
+msgstr ""
+
+#: src/views/tasks_page.rs:557 src/views/tasks_page.rs:2340
+msgid "The selected task is no longer available"
+msgstr ""
+
+#: src/views/tasks_page.rs:591
+msgid "A selected task does not contain a valid VTODO component"
+msgstr ""
+
+#: src/views/tasks_page.rs:619 src/views/tasks_page.rs:926
+msgid "Untitled"
+msgstr "Namenlos"
+
+#: src/views/tasks_page.rs:623
+msgid "Comment"
+msgstr ""
+
+#: src/views/tasks_page.rs:624 src/views/tasks_page.rs:1784
+#, fuzzy
+msgid "Start"
+msgstr "Markieren"
+
+#: src/views/tasks_page.rs:625 src/views/tasks_page.rs:18193
+msgid "Recurrence"
+msgstr "Wiederholung"
+
+#: src/views/tasks_page.rs:626 src/views/tasks_page.rs:858
+#: src/views/tasks_page.rs:956 and 2 more
+msgid "Due"
+msgstr "Fällig"
+
+#: src/views/tasks_page.rs:627 src/views/tasks_page.rs:1800
+msgid "Estimated Duration"
+msgstr ""
+
+#: src/views/tasks_page.rs:631 src/views/tasks_page.rs:1797
+msgid "Classification"
+msgstr "Einstufung"
+
+#: src/views/tasks_page.rs:635
+msgid "Attendees"
+msgstr "Teilnehmer"
+
+#: src/views/tasks_page.rs:639
+msgid "Alternative Description"
+msgstr ""
+
+#: src/views/tasks_page.rs:643 src/views/tasks_page.rs:18202
+msgid "URI (not opened)"
+msgstr ""
+
+#: src/views/tasks_page.rs:644
+#, fuzzy
+msgid "Binary attachment"
+msgstr "Nachricht weiterleiten"
+
+#: src/views/tasks_page.rs:653
+msgid "The selected task contains no displayable fields"
+msgstr ""
+
+#: src/views/tasks_page.rs:736
+msgid "The selected task contains an invalid alarm"
+msgstr ""
+
+#: src/views/tasks_page.rs:746
+msgid "The selected task contains an incomplete alarm"
+msgstr ""
+
+#: src/views/tasks_page.rs:768
+msgid "Task URL requires http or https"
+msgstr ""
+
+#: src/views/tasks_page.rs:771
+msgid "Only http and https task URLs are supported"
+msgstr ""
+
+#: src/views/tasks_page.rs:776
+msgid "Task URL is invalid"
+msgstr ""
+
+#: src/views/tasks_page.rs:789
+msgid "The selected task has no URL"
+msgstr ""
+
+#: src/views/tasks_page.rs:815 src/views/tasks_page.rs:17841
+msgid "Preparing print list…"
+msgstr ""
+
+#: src/views/tasks_page.rs:823 src/views/tasks_page.rs:17853
+#, fuzzy
+msgid "Print preview prepared"
+msgstr "Kalenderansicht drucken"
+
+#: src/views/tasks_page.rs:902
+msgid "No visible tasks available to print"
+msgstr ""
+
+#: src/views/tasks_page.rs:909
+msgid "The visible task list contains a duplicate identity"
+msgstr ""
+
+#: src/views/tasks_page.rs:916
+msgid "A visible task is no longer uniquely available"
+msgstr ""
+
+#: src/views/tasks_page.rs:961
+#, fuzzy
+msgid "Print Tasks"
+msgstr "Nachricht drucken (Strg+P)"
+
+#: src/views/tasks_page.rs:996 src/views/tasks_page.rs:1017
+msgid "Could not prepare print list: {error}"
+msgstr ""
+
+#: src/views/tasks_page.rs:1011
+msgid "{action} ({count_chars}); GTK print dialog / portal is Linux handoff"
+msgstr ""
+
+#: src/views/tasks_page.rs:1036
+#, fuzzy
+msgid "Marking tasks as completed…"
+msgstr "Als kein Spam markieren"
+
+#: src/views/tasks_page.rs:1037
+#, fuzzy
+msgid "Marking tasks as incomplete…"
+msgstr "Als kein Spam markieren"
+
+#: src/views/tasks_page.rs:1114 src/views/tasks_page.rs:2113
+#: src/views/tasks_page.rs:2330
+#, fuzzy
+msgid "No tasks selected"
+msgstr "Nachrichtenquelle anzeigen"
+
+#: src/views/tasks_page.rs:1120 src/views/tasks_page.rs:2119
+msgid "A selected task was resolved multiple times"
+msgstr ""
+
+#: src/views/tasks_page.rs:1127 src/views/tasks_page.rs:2126
+msgid "The selected task is no longer uniquely available"
+msgstr ""
+
+#: src/views/tasks_page.rs:1134 src/views/tasks_page.rs:2133
+msgid "At least one selected task list is read-only or unavailable"
+msgstr ""
+
+#: src/views/tasks_page.rs:1175
+msgid "The completion timestamp is invalid"
+msgstr ""
+
+#: src/views/tasks_page.rs:1215
+msgid "There are no matching tasks for this batch action"
+msgstr ""
+
+#: src/views/tasks_page.rs:1281
+msgid "The backend returned no result for this task"
+msgstr ""
+
+#: src/views/tasks_page.rs:1285
+msgid "The backend returned ambiguous results for this task"
+msgstr ""
+
+#: src/views/tasks_page.rs:1351
+msgid "ESTIMATED-DURATION must be an ISO 8601 duration such as PT1H"
+msgstr ""
+
+#: src/views/tasks_page.rs:1413
+msgid ""
+"Timezone batch editing requires native VTIMEZONE support (Linux handoff)"
+msgstr ""
+
+#: src/views/tasks_page.rs:1435 src/views/tasks_page.rs:14237
+#: src/views/tasks_page.rs:14415
+msgid "Due date must be after start date"
+msgstr ""
+
+#: src/views/tasks_page.rs:1588 src/views/tasks_page.rs:1852
+msgid "No field selected for batch editing"
+msgstr ""
+
+#: src/views/tasks_page.rs:1655
+msgid "The backend returned an outdated or ambiguous batch result"
+msgstr ""
+
+#: src/views/tasks_page.rs:1778
+msgid ""
+"Only enabled fields will be modified. Empty date, priority, classification, "
+"or duration values remove the corresponding property."
+msgstr ""
+
+#: src/views/tasks_page.rs:1785 src/views/tasks_page.rs:4606
+#: src/views/tasks_page.rs:8496 and 1 more
+msgid "Due Date"
+msgstr ""
+
+#: src/views/tasks_page.rs:1793
+msgid "0 to 9"
+msgstr ""
+
+#: src/views/tasks_page.rs:1794
+msgid "Progress"
+msgstr ""
+
+#: src/views/tasks_page.rs:1794
+msgid "0 to 100"
+msgstr ""
+
+#: src/views/tasks_page.rs:1802
+msgid "Add Categories"
+msgstr ""
+
+#: src/views/tasks_page.rs:1802 src/views/tasks_page.rs:1804
+msgid "Comma-separated"
+msgstr ""
+
+#: src/views/tasks_page.rs:1804
+msgid "Remove Categories"
+msgstr ""
+
+#: src/views/tasks_page.rs:1806
+msgid "Timezone (native VTIMEZONE support required)"
+msgstr ""
+
+#: src/views/tasks_page.rs:1810
+msgid "Batch Edit Tasks"
+msgstr ""
+
+#: src/views/tasks_page.rs:1811
+msgid "The changes will be applied sequentially to the selected tasks."
+msgstr ""
+
+#: src/views/tasks_page.rs:1815
+msgid "Apply"
+msgstr ""
+
+#: src/views/tasks_page.rs:1920
+msgid "A task list is no longer writable"
+msgstr ""
+
+#: src/views/tasks_page.rs:2009
+msgid "Batch edit result was lost; authoritative data will be reloaded"
+msgstr ""
+
+#: src/views/tasks_page.rs:2078
+msgid "No tasks modified"
+msgstr ""
+
+#: src/views/tasks_page.rs:2160
+msgid ""
+"Recurring tasks with RECURRENCE-ID cannot be safely deleted without MOD_THIS "
+"support"
+msgstr ""
+
+#: src/views/tasks_page.rs:2172
+msgid "This assigned task requires an iTIP cancellation notice (Linux handoff)"
+msgstr ""
+
+#: src/views/tasks_page.rs:2200
+msgid "A completed task is no longer uniquely available"
+msgstr ""
+
+#: src/views/tasks_page.rs:2205
+msgid ""
+"A completed recurring instance requires native MOD_THIS support (Linux "
+"handoff)"
+msgstr ""
+
+#: src/views/tasks_page.rs:2214
+msgid "No completed tasks in writable task lists"
+msgstr ""
+
+#: src/views/tasks_page.rs:2226
+msgid "Delete task “{summary}”?"
+msgstr ""
+
+#: src/views/tasks_page.rs:2227
+msgid "All information about this task will be irrevocably deleted."
+msgstr ""
+
+#: src/views/tasks_page.rs:2309
+msgid "The backend returned an outdated or ambiguous delete result"
+msgstr ""
+
+#: src/views/tasks_page.rs:2399
+msgid "No writable default task list available for paste"
+msgstr ""
+
+#: src/views/tasks_page.rs:2403
+msgid "The destination task list is not uniquely available"
+msgstr ""
+
+#: src/views/tasks_page.rs:2409
+msgid "The destination task list is read-only or unavailable"
+msgstr ""
+
+#: src/views/tasks_page.rs:2447
+msgid "Clipboard does not contain a valid VCALENDAR task selection"
+msgstr ""
+
+#: src/views/tasks_page.rs:2463
+msgid "Clipboard does not contain exclusively portable VTODO components"
+msgstr ""
+
+#: src/views/tasks_page.rs:2482
+msgid "Clipboard contains an invalid nested task"
+msgstr ""
+
+#: src/views/tasks_page.rs:2491
+msgid "Clipboard does not contain a complete VTODO task"
+msgstr ""
+
+#: src/views/tasks_page.rs:2515
+msgid "The destination task list is invalid"
+msgstr ""
+
+#: src/views/tasks_page.rs:2519
+msgid "Paste planning does not contain unique new task UIDs"
+msgstr ""
+
+#: src/views/tasks_page.rs:2525
+msgid ""
+"Tasks with TZID require VTIMEZONE support and will not be pasted insecurely"
+msgstr ""
+
+#: src/views/tasks_page.rs:2529
+msgid "A clipboard task does not have a unique UID"
+msgstr ""
+
+#: src/views/tasks_page.rs:2532
+msgid "Clipboard tasks are not unique"
+msgstr ""
+
+#: src/views/tasks_page.rs:2539
+msgid "A new task UID already collides in the destination source"
+msgstr ""
+
+#: src/views/tasks_page.rs:3110 src/views/tasks_page.rs:3114
+#: src/views/tasks_page.rs:3123
+msgid "The iCalendar value is not a valid date"
+msgstr ""
+
+#: src/views/tasks_page.rs:3118
+msgid "The iCalendar value is not a valid timestamp"
+msgstr ""
+
+#: src/views/tasks_page.rs:3119
+msgid "The iCalendar value has an unsupported type"
+msgstr ""
+
+#: src/views/tasks_page.rs:3128
+msgid "The iCalendar value is not a valid date or timestamp"
+msgstr ""
+
+#: src/views/tasks_page.rs:3146
+msgid "{field} cannot be empty"
+msgstr ""
+
+#: src/views/tasks_page.rs:3149
+msgid "{field} contains invalid control characters"
+msgstr ""
+
+#: src/views/tasks_page.rs:3155
+msgid "{field} must match YYYY-MM-DD"
+msgstr ""
+
+#: src/views/tasks_page.rs:3158
+msgid "{field} must contain a valid date"
+msgstr ""
+
+#: src/views/tasks_page.rs:3197
+msgid "Completion date cannot be in the future"
+msgstr ""
+
+#: src/views/tasks_page.rs:3223
+msgid "Completed tasks require a completion date"
+msgstr ""
+
+#: src/views/tasks_page.rs:3282
+msgid "Recurring tasks require a DTSTART"
+msgstr ""
+
+#: src/views/tasks_page.rs:3288
+msgid "The recurrence rule contains invalid characters"
+msgstr ""
+
+#: src/views/tasks_page.rs:3297 src/views/tasks_page.rs:3300
+msgid "Recurrence rule has invalid syntax"
+msgstr ""
+
+#: src/views/tasks_page.rs:3307
+msgid "Recurrence rule requires FREQ"
+msgstr ""
+
+#: src/views/tasks_page.rs:3314
+msgid "Recurrence rule is invalid"
+msgstr ""
+
+#: src/views/tasks_page.rs:4039
+msgid "Show/hide task list in views"
+msgstr ""
+
+#: src/views/tasks_page.rs:4083
+msgid "Synchronized task list"
+msgstr ""
+
+#: src/views/tasks_page.rs:4237 src/views/tasks_page.rs:4316
+#: src/views/tasks_page.rs:7168
+#, fuzzy
+msgid "Task List"
+msgstr "Neue Aufgabe"
+
+#: src/views/tasks_page.rs:4373 src/views/tasks_page.rs:5909
+#: src/views/tasks_page.rs:8743 and 2 more
+msgid "This task list is not confirmed as writable"
+msgstr ""
+
+#: src/views/tasks_page.rs:4485 src/views/tasks_page.rs:4488
+#: src/views/tasks_page.rs:9404
+#, fuzzy
+msgid "New local task list"
+msgstr "Neuer Kontakt"
+
+#: src/views/tasks_page.rs:4491 src/views/tasks_page.rs:4495
+#: src/views/tasks_page.rs:9415
+#, fuzzy
+msgid "Copy selected task list"
+msgstr "Neue Aufgabe erstellen (Strg+N)"
+
+#: src/views/tasks_page.rs:4498 src/views/tasks_page.rs:4502
+#: src/views/tasks_page.rs:9426
+#, fuzzy
+msgid "Rename selected task list"
+msgstr "Nachricht löschen (Entf)"
+
+#: src/views/tasks_page.rs:4505 src/views/tasks_page.rs:4509
+msgid "Selected task list properties"
+msgstr ""
+
+#: src/views/tasks_page.rs:4512 src/views/tasks_page.rs:4516
+#: src/views/tasks_page.rs:9448
+#, fuzzy
+msgid "Delete selected task list"
+msgstr "Nachricht löschen (Entf)"
+
+#: src/views/tasks_page.rs:4597
+msgid "Search tasks…"
+msgstr ""
+
+#: src/views/tasks_page.rs:4611
+msgid "Sort tasks"
+msgstr ""
+
+#: src/views/tasks_page.rs:4644 src/views/tasks_page.rs:12024
+msgid "All Task Lists"
+msgstr ""
+
+#: src/views/tasks_page.rs:4647
+msgid "Select task list"
+msgstr ""
+
+#: src/views/tasks_page.rs:4675
+msgid "Select task category"
+msgstr ""
+
+#: src/views/tasks_page.rs:4685 src/window.rs:2407
+msgid "Create new task (Ctrl+N)"
+msgstr "Neue Aufgabe erstellen (Strg+N)"
+
+#: src/views/tasks_page.rs:4696 src/views/tasks_page.rs:9453
+msgid "No selection"
+msgstr ""
+
+#: src/views/tasks_page.rs:4706 src/views/tasks_page.rs:4713
+msgid "Forward selected task as iCalendar"
+msgstr ""
+
+#: src/views/tasks_page.rs:4717 src/views/tasks_page.rs:4722
+#: src/views/tasks_page.rs:9303
+msgid "Assign selected task"
+msgstr ""
+
+#: src/views/tasks_page.rs:4725 src/views/tasks_page.rs:4732
+msgid "Open URL of selected task"
+msgstr ""
+
+#: src/views/tasks_page.rs:4736 src/views/tasks_page.rs:4741
+msgid "Print selected task"
+msgstr ""
+
+#: src/views/tasks_page.rs:4744
+#, fuzzy
+msgid "Print visible task list (Ctrl+P)"
+msgstr "Kalenderansicht drucken (Strg+P)"
+
+#: src/views/tasks_page.rs:4748
+msgid "Print visible task list"
+msgstr ""
+
+#: src/views/tasks_page.rs:4751 src/views/tasks_page.rs:4757
+msgid "Prepare print preview of visible task list"
+msgstr ""
+
+#: src/views/tasks_page.rs:4761
+msgid "Refresh selected task list from provider (F5)"
+msgstr ""
+
+#: src/views/tasks_page.rs:4768
+msgid "Refresh selected task list"
+msgstr ""
+
+#: src/views/tasks_page.rs:4772
+msgid "Copy selected tasks to clipboard (Ctrl+C)"
+msgstr ""
+
+#: src/views/tasks_page.rs:4779
+msgid "Copy selected tasks to clipboard"
+msgstr ""
+
+#: src/views/tasks_page.rs:4783
+#, fuzzy
+msgid "Cut selected tasks (Ctrl+X)"
+msgstr "Neue Aufgabe erstellen (Strg+N)"
+
+#: src/views/tasks_page.rs:4788
+msgid "Cut selected tasks"
+msgstr ""
+
+#: src/views/tasks_page.rs:4791
+msgid "Paste tasks from clipboard (Ctrl+V)"
+msgstr ""
+
+#: src/views/tasks_page.rs:4798
+msgid "Paste tasks from clipboard"
+msgstr ""
+
+#: src/views/tasks_page.rs:4802
+msgid "Select all visible tasks (Ctrl+A)"
+msgstr ""
+
+#: src/views/tasks_page.rs:4808
+msgid "Select all visible tasks"
+msgstr "Alle sichtbaren Aufgaben wählen"
+
+#: src/views/tasks_page.rs:4812 src/views/tasks_page.rs:4819
+msgid "Edit selected tasks together"
+msgstr ""
+
+#: src/views/tasks_page.rs:4823 src/views/tasks_page.rs:4830
+msgid "Mark selected tasks as completed"
+msgstr ""
+
+#: src/views/tasks_page.rs:4834 src/views/tasks_page.rs:4841
+msgid "Mark selected tasks as incomplete"
+msgstr "Die gewählten Aufgaben als unvollständig markieren"
+
+#: src/views/tasks_page.rs:4845
+#, fuzzy
+msgid "Delete selected tasks (Delete)"
+msgstr "Nachricht löschen (Entf)"
+
+#: src/views/tasks_page.rs:4850 src/views/tasks_page.rs:9365
+msgid "Delete selected tasks"
+msgstr "Die gewählten Aufgaben löschen"
+
+#: src/views/tasks_page.rs:4853
+msgid "Permanently purge all completed tasks (Ctrl+E)"
+msgstr ""
+
+#: src/views/tasks_page.rs:4858
+msgid "Permanently purge all completed tasks"
+msgstr ""
+
+#: src/views/tasks_page.rs:4861 src/views/tasks_page.rs:4868
+msgid "Export selected tasks as iCalendar"
+msgstr ""
+
+#: src/views/tasks_page.rs:4875 src/window.rs:1036
+msgid "Toggle task preview (Ctrl+M)"
+msgstr ""
+
+#: src/views/tasks_page.rs:4880
+msgid "Toggle task preview"
+msgstr ""
+
+#: src/views/tasks_page.rs:4918
+msgid "Preview Below"
+msgstr ""
+
+#: src/views/tasks_page.rs:4918
+msgid "Preview Beside"
+msgstr ""
+
+#: src/views/tasks_page.rs:4927
+msgid "Task preview layout"
+msgstr ""
+
+#: src/views/tasks_page.rs:4971
+msgid "Select task filter"
+msgstr ""
+
+#: src/views/tasks_page.rs:4972
+msgid "Task filter"
+msgstr ""
+
+#: src/views/tasks_page.rs:5025
+#, fuzzy
+msgid "Select All Tasks (Ctrl+A)"
+msgstr "Neue Aufgabe erstellen (Strg+N)"
+
+#: src/views/tasks_page.rs:5027
+msgid "Cut (Ctrl+X)"
+msgstr ""
+
+#: src/views/tasks_page.rs:5028
+msgid "Copy (Ctrl+C)"
+msgstr ""
+
+#: src/views/tasks_page.rs:5029
+#, fuzzy
+msgid "Paste (Ctrl+V)"
+msgstr "Nachricht drucken (Strg+P)"
+
+#: src/views/tasks_page.rs:5030
+msgid "Edit Multiple Tasks…"
+msgstr ""
+
+#: src/views/tasks_page.rs:5031
+msgid "Purge Completed Tasks… (Ctrl+E)"
+msgstr ""
+
+#: src/views/tasks_page.rs:5033
+msgid "Assign Task…"
+msgstr ""
+
+#: src/views/tasks_page.rs:5034
+msgid "Forward as iCalendar…"
+msgstr ""
+
+#: src/views/tasks_page.rs:5035
+msgid "Open Task URL"
+msgstr ""
+
+#: src/views/tasks_page.rs:5036
+#, fuzzy
+msgid "Export as iCalendar…"
+msgstr "Als EML exportieren …"
+
+#: src/views/tasks_page.rs:5037
+#, fuzzy
+msgid "Print Task List… (Ctrl+P)"
+msgstr "Nachricht drucken (Strg+P)"
+
+#: src/views/tasks_page.rs:5040
+msgid "Refresh Task List (F5)"
+msgstr ""
+
+#: src/views/tasks_page.rs:5049
+msgid "Preview:"
+msgstr ""
+
+#: src/views/tasks_page.rs:5182
+#, fuzzy
+msgid "Search in preview"
+msgstr "Kalenderansicht drucken"
+
+#: src/views/tasks_page.rs:5197
+msgid "Close preview search"
+msgstr ""
+
+#: src/views/tasks_page.rs:5220
+#, fuzzy
+msgid "No task selected"
+msgstr "Nachrichtenquelle anzeigen"
+
+#: src/views/tasks_page.rs:5221
+msgid "Select a task from the list to view details and notes."
+msgstr ""
+
+#: src/views/tasks_page.rs:5363
+msgid "Tasks copied to clipboard"
+msgstr ""
+
+#: src/views/tasks_page.rs:5590
+msgid "Save Task Selection as iCalendar"
+msgstr ""
+
+#: src/views/tasks_page.rs:5611
+#, fuzzy
+msgid "Task selection exported as iCalendar"
+msgstr "Als EML exportieren …"
+
+#: src/views/tasks_page.rs:5614 src/views/tasks_page.rs:11642
+msgid "Could not save iCalendar: {error}"
+msgstr ""
+
+#: src/views/tasks_page.rs:5639
+msgid "METHOD:PUBLISH prepared; true iTIP forward is Linux handoff"
+msgstr ""
+
+#: src/views/tasks_page.rs:5688
+msgid "Could not open URL: {error}"
+msgstr ""
+
+#: src/views/tasks_page.rs:5704
+msgid "Preparing print document…"
+msgstr ""
+
+#: src/views/tasks_page.rs:5712
+msgid ""
+"Print document prepared ({chars} characters); GTK print dialog / portal is "
+"Linux handoff"
+msgstr ""
+
+#: src/views/tasks_page.rs:5720
+msgid "Could not prepare print document: {error}"
+msgstr ""
+
+#: src/views/tasks_page.rs:6395
+msgid "No synchronized tasks loaded"
+msgstr ""
+
+#: src/views/tasks_page.rs:6397
+msgid "No tasks loaded from Microsoft Graph"
+msgstr ""
+
+#: src/views/tasks_page.rs:6399
+msgid "No local tasks loaded"
+msgstr ""
+
+#: src/views/tasks_page.rs:6422
+msgid "Could not load tasks"
+msgstr ""
+
+#: src/views/tasks_page.rs:6500
+msgid "Add new task… (Press Enter)"
+msgstr ""
+
+#: src/views/tasks_page.rs:6504
+msgid "Quickly add new task"
+msgstr ""
+
+#: src/views/tasks_page.rs:6593
+msgid "Task “{summary}” added"
+msgstr ""
+
+#: src/views/tasks_page.rs:6601
+msgid "Could not create task: {error}"
+msgstr ""
+
+#: src/views/tasks_page.rs:6631
+msgid "Task table header"
+msgstr ""
+
+#: src/views/tasks_page.rs:6641
+msgid "Task list canvas"
+msgstr ""
+
+#: src/views/tasks_page.rs:7004 src/views/tasks_page.rs:9047
+#, fuzzy
+msgid "No Tasks"
+msgstr "Neue Aufgabe"
+
+#: src/views/tasks_page.rs:7005 src/views/tasks_page.rs:9048
+msgid "Select a task list or create a new task."
+msgstr ""
+
+#: src/views/tasks_page.rs:7165
+#, fuzzy
+msgid "Loading task lists…"
+msgstr "Nachricht weiterleiten"
+
+#: src/views/tasks_page.rs:7200
+msgid "Start (YYYY-MM-DD, optional)"
+msgstr ""
+
+#: src/views/tasks_page.rs:7207
+msgid "Due (YYYY-MM-DD, optional)"
+msgstr ""
+
+#: src/views/tasks_page.rs:7214
+msgid "Completed (YYYY-MM-DD, optional)"
+msgstr ""
+
+#: src/views/tasks_page.rs:7221
+msgid "Recurrence (RRULE, optional)"
+msgstr ""
+
+#: src/views/tasks_page.rs:7223
+msgid "e.g. FREQ=WEEKLY;BYDAY=MO;COUNT=10"
+msgstr ""
+
+#: src/views/tasks_page.rs:7226
+msgid "Additional Due Dates (RDATE, comma-separated)"
+msgstr ""
+
+#: src/views/tasks_page.rs:7228
+msgid "e.g. 20260812,20260819"
+msgstr ""
+
+#: src/views/tasks_page.rs:7231
+msgid "Exceptions (EXDATE, comma-separated)"
+msgstr ""
+
+#: src/views/tasks_page.rs:7233
+msgid "e.g. 20260815,20260822"
+msgstr ""
+
+#: src/views/tasks_page.rs:7237
+msgid "Priority (1 = high, 0 = normal)"
+msgstr ""
+
+#: src/views/tasks_page.rs:7248 src/views/tasks_page.rs:11197
+#: src/views/tasks_page.rs:13987
+msgid "Not Started"
+msgstr "Nicht begonnen"
+
+#: src/views/tasks_page.rs:7249 src/views/tasks_page.rs:11194
+#: src/views/tasks_page.rs:11348 and 1 more
+msgid "In Progress"
+msgstr "In Bearbeitung"
+
+#: src/views/tasks_page.rs:7256
+msgid "Progress (Percent)"
+msgstr ""
+
+#: src/views/tasks_page.rs:7262
+msgid "Categories (Comma-separated)"
+msgstr ""
+
+#: src/views/tasks_page.rs:7283 src/views/tasks_page.rs:7287
+msgid "Select files as task attachments"
+msgstr ""
+
+#: src/views/tasks_page.rs:7296
+msgid "Attachments (one URI or full ATTACH line per line)"
+msgstr ""
+
+#: src/views/tasks_page.rs:7329
+#, fuzzy
+msgid "Select Task Attachments"
+msgstr "Nachricht weiterleiten"
+
+#: src/views/tasks_page.rs:7418
+msgid "Imported values are preserved unchanged until edited: {values}"
+msgstr ""
+
+#: src/views/tasks_page.rs:7671 src/views/tasks_page.rs:7680
+#: src/views/tasks_page.rs:12054
+msgid "Unavailable Source · {source}"
+msgstr ""
+
+#: src/views/tasks_page.rs:7676 src/views/tasks_page.rs:11892
+#: src/views/tasks_page.rs:12062 and 1 more
+msgid "Local Task List"
+msgstr ""
+
+#: src/views/tasks_page.rs:7689
+msgid "Task lists are unreachable"
+msgstr ""
+
+#: src/views/tasks_page.rs:7691
+msgid "No active task list available"
+msgstr ""
+
+#: src/views/tasks_page.rs:7741
+#, fuzzy
+msgid "No active task list is selected"
+msgstr "Nachrichtenquelle anzeigen"
+
+#: src/views/tasks_page.rs:7749
+msgid "The selected task list is read-only or unavailable"
+msgstr ""
+
+#: src/views/tasks_page.rs:7823
+msgid "The task list is no longer writable or unavailable"
+msgstr ""
+
+#: src/views/tasks_page.rs:7852
+msgid "The task list is no longer writable immediately prior to save"
+msgstr ""
+
+#: src/views/tasks_page.rs:7903
+msgid "Backend did not confirm an authoritative VTODO component; please reload"
+msgstr ""
+
+#: src/views/tasks_page.rs:7978
+msgid "Could not save task: {error}"
+msgstr ""
+
+#: src/views/tasks_page.rs:8001 src/views/tasks_page.rs:13944
+msgid "The confirmed task result belongs to a different UID"
+msgstr ""
+
+#: src/views/tasks_page.rs:8015
+msgid "ECal returned no valid task UID"
+msgstr ""
+
+#: src/views/tasks_page.rs:8028 src/views/tasks_page.rs:13949
+msgid "Backend did not confirm an authoritative task; please reload"
+msgstr ""
+
+#: src/views/tasks_page.rs:8043
+msgid "Confirmed task is invalid: {error}"
+msgstr ""
+
+#: src/views/tasks_page.rs:8084 src/views/tasks_page.rs:14170
+msgid "Task updated ({uid})"
+msgstr ""
+
+#: src/views/tasks_page.rs:8086
+msgid "Task saved ({uid})"
+msgstr ""
+
+#: src/views/tasks_page.rs:8119
+msgid "Save is still in progress; please wait a moment"
+msgstr ""
+
+#: src/views/tasks_page.rs:8128
+msgid "Save is currently committing; close is not available"
+msgstr ""
+
+#: src/views/tasks_page.rs:8137
+msgid "Unsaved Task Changes"
+msgstr ""
+
+#: src/views/tasks_page.rs:8138
+msgid "The task was modified since the last confirmed save."
+msgstr ""
+
+#: src/views/tasks_page.rs:8141
+msgid "Keep Editing"
+msgstr ""
+
+#: src/views/tasks_page.rs:8200 src/views/tasks_page.rs:8211
+msgid "Save is currently committing; cancel is not available"
+msgstr ""
+
+#: src/views/tasks_page.rs:8793 src/views/tasks_page.rs:11480
+msgid "Could not update task status"
+msgstr ""
+
+#: src/views/tasks_page.rs:8824 src/views/tasks_page.rs:11515
+#: src/views/tasks_page.rs:14185
+msgid "Could not update task: {error}"
+msgstr ""
+
+#: src/views/tasks_page.rs:8853 src/views/tasks_page.rs:11556
+#: src/views/tasks_page.rs:11730
+#, fuzzy
+msgid "Edit task"
+msgstr "Neuer Kontakt"
+
+#: src/views/tasks_page.rs:8876 src/views/tasks_page.rs:11742
+#, fuzzy
+msgid "Mark as incomplete"
+msgstr "Als kein Spam markieren"
+
+#: src/views/tasks_page.rs:8878 src/views/tasks_page.rs:11744
+#, fuzzy
+msgid "Mark as completed"
+msgstr "Als kein Spam markieren"
+
+#: src/views/tasks_page.rs:8896 src/views/tasks_page.rs:11648
+#: src/views/tasks_page.rs:11769
+#, fuzzy
+msgid "Delete task"
+msgstr "Löschen"
+
+#: src/views/tasks_page.rs:9021
+msgid "No task due today"
+msgstr ""
+
+#: src/views/tasks_page.rs:9022
+msgid "No task due in next 7 days"
+msgstr ""
+
+#: src/views/tasks_page.rs:9023
+msgid "No task due in next 30 days"
+msgstr ""
+
+#: src/views/tasks_page.rs:9024
+msgid "No active task due in next 365 days"
+msgstr ""
+
+#: src/views/tasks_page.rs:9025
+msgid "No important tasks"
+msgstr ""
+
+#: src/views/tasks_page.rs:9026
+msgid "No overdue task"
+msgstr ""
+
+#: src/views/tasks_page.rs:9027
+msgid "No task with due date"
+msgstr ""
+
+#: src/views/tasks_page.rs:9028
+msgid "No task without due date"
+msgstr ""
+
+#: src/views/tasks_page.rs:9029
+#, fuzzy
+msgid "No task with attachments"
+msgstr "Nachricht weiterleiten"
+
+#: src/views/tasks_page.rs:9030
+#, fuzzy
+msgid "No started task"
+msgstr "Wichtig"
+
+#: src/views/tasks_page.rs:9031
+msgid "No task without category"
+msgstr ""
+
+#: src/views/tasks_page.rs:9032
+msgid "No open task"
+msgstr ""
+
+#: src/views/tasks_page.rs:9033
+msgid "No task in progress"
+msgstr ""
+
+#: src/views/tasks_page.rs:9034
+msgid "No cancelled task"
+msgstr ""
+
+#: src/views/tasks_page.rs:9035
+msgid "No completed tasks"
+msgstr ""
+
+#: src/views/tasks_page.rs:9038 src/views/tasks_page.rs:9113
+msgid "No matching tasks"
+msgstr ""
+
+#: src/views/tasks_page.rs:9051
+msgid "No Tasks Today"
+msgstr ""
+
+#: src/views/tasks_page.rs:9052
+msgid "No tasks scheduled or due today."
+msgstr ""
+
+#: src/views/tasks_page.rs:9055
+msgid "No Tasks in 7 Days"
+msgstr ""
+
+#: src/views/tasks_page.rs:9056
+msgid "No tasks due in the next 7 days."
+msgstr ""
+
+#: src/views/tasks_page.rs:9059
+msgid "No Tasks This Month"
+msgstr ""
+
+#: src/views/tasks_page.rs:9060
+msgid "No tasks due in the next 30 days."
+msgstr ""
+
+#: src/views/tasks_page.rs:9063
+msgid "No Tasks This Year"
+msgstr ""
+
+#: src/views/tasks_page.rs:9064
+msgid "No active tasks scheduled in the next year."
+msgstr ""
+
+#: src/views/tasks_page.rs:9067
+#, fuzzy
+msgid "No Important Tasks"
+msgstr "Wichtig"
+
+#: src/views/tasks_page.rs:9068
+msgid "There are no high priority tasks."
+msgstr ""
+
+#: src/views/tasks_page.rs:9071
+#, fuzzy
+msgid "No Overdue Tasks"
+msgstr "Überfällig"
+
+#: src/views/tasks_page.rs:9072
+msgid "Great! No due tasks are overdue."
+msgstr ""
+
+#: src/views/tasks_page.rs:9075
+msgid "No Scheduled Tasks"
+msgstr ""
+
+#: src/views/tasks_page.rs:9076
+msgid "No tasks with a due date found."
+msgstr ""
+
+#: src/views/tasks_page.rs:9079
+msgid "No Tasks Without Due Date"
+msgstr ""
+
+#: src/views/tasks_page.rs:9080
+msgid "All tasks have an assigned due date."
+msgstr ""
+
+#: src/views/tasks_page.rs:9083
+#, fuzzy
+msgid "No Tasks With Attachments"
+msgstr "Nachricht weiterleiten"
+
+#: src/views/tasks_page.rs:9084
+msgid "No tasks with file attachments were found."
+msgstr ""
+
+#: src/views/tasks_page.rs:9087
+msgid "No Started Tasks"
+msgstr ""
+
+#: src/views/tasks_page.rs:9088
+msgid "There are no tasks with status 'Started'."
+msgstr ""
+
+#: src/views/tasks_page.rs:9091
+msgid "No Tasks Without Category"
+msgstr ""
+
+#: src/views/tasks_page.rs:9092
+msgid "All tasks are assigned to at least one category."
+msgstr ""
+
+#: src/views/tasks_page.rs:9095
+#, fuzzy
+msgid "No Open Tasks"
+msgstr "Neue Aufgabe"
+
+#: src/views/tasks_page.rs:9096
+msgid "All tasks in this list are already completed!"
+msgstr ""
+
+#: src/views/tasks_page.rs:9099
+msgid "No Tasks In Progress"
+msgstr ""
+
+#: src/views/tasks_page.rs:9100
+msgid "No tasks are currently being actively worked on."
+msgstr ""
+
+#: src/views/tasks_page.rs:9103
+msgid "No Cancelled Tasks"
+msgstr ""
+
+#: src/views/tasks_page.rs:9104
+msgid "There are no discarded or cancelled tasks."
+msgstr ""
+
+#: src/views/tasks_page.rs:9107
+#, fuzzy
+msgid "No Completed Tasks"
+msgstr "Erledigt"
+
+#: src/views/tasks_page.rs:9108
+msgid "No tasks have been marked as completed yet."
+msgstr ""
+
+#: src/views/tasks_page.rs:9114
+msgid "Check your search term or filter settings."
+msgstr ""
+
+#: src/views/tasks_page.rs:9153
+msgid "A visible task row is invalid"
+msgstr ""
+
+#: src/views/tasks_page.rs:9157
+msgid "A visible task row is no longer available"
+msgstr ""
+
+#: src/views/tasks_page.rs:9165
+msgid "A visible task does not have a valid source"
+msgstr ""
+
+#: src/views/tasks_page.rs:9168
+msgid "A visible task does not have a valid identifier"
+msgstr ""
+
+#: src/views/tasks_page.rs:9301
+msgid "Assigning task…"
+msgstr ""
+
+#: src/views/tasks_page.rs:9305
+msgid "Assigning requires exactly one writable task and backend support"
+msgstr ""
+
+#: src/views/tasks_page.rs:9324
+msgid "Paste tasks from clipboard into default task list"
+msgstr ""
+
+#: src/views/tasks_page.rs:9326
+msgid "No writable default task list available"
+msgstr ""
+
+#: src/views/tasks_page.rs:9374
+#, fuzzy
+msgid "Permanently delete all completed tasks (Ctrl+E)"
+msgstr "Neue Aufgabe erstellen (Strg+N)"
+
+#: src/views/tasks_page.rs:9382 src/views/tasks_page.rs:9569
+msgid "Refreshing task list…"
+msgstr ""
+
+#: src/views/tasks_page.rs:9384
+msgid "Select a single task list to refresh"
+msgstr ""
+
+#: src/views/tasks_page.rs:9386 src/views/tasks_page.rs:9553
+#: src/views/tasks_page.rs:9642
+msgid "This task list does not support provider refresh"
+msgstr ""
+
+#: src/views/tasks_page.rs:9388
+msgid "The selected task list is not available"
+msgstr ""
+
+#: src/views/tasks_page.rs:9390
+msgid "Refresh selected task list with provider"
+msgstr ""
+
+#: src/views/tasks_page.rs:9402 src/views/tasks_page.rs:12697
+#: src/views/tasks_page.rs:12762 and 4 more
+msgid "Another task operation is already in progress"
+msgstr ""
+
+#: src/views/tasks_page.rs:9411
+msgid "Select a single task list to copy"
+msgstr ""
+
+#: src/views/tasks_page.rs:9413
+msgid "The selected task list is not available as an EDS source"
+msgstr ""
+
+#: src/views/tasks_page.rs:9422
+msgid "Select a single task list to rename"
+msgstr ""
+
+#: src/views/tasks_page.rs:9424
+msgid "Only writable task lists outside of a collection can be renamed"
+msgstr ""
+
+#: src/views/tasks_page.rs:9433
+msgid "Select a single task list to edit"
+msgstr ""
+
+#: src/views/tasks_page.rs:9435 src/views/tasks_page.rs:12845
+msgid "The properties of this task list are not writable"
+msgstr ""
+
+#: src/views/tasks_page.rs:9437
+#, fuzzy
+msgid "Properties of the selected task list"
+msgstr "Nachricht löschen (Entf)"
+
+#: src/views/tasks_page.rs:9444
+#, fuzzy
+msgid "Select a single task list to delete"
+msgstr "Nachricht löschen (Entf)"
+
+#: src/views/tasks_page.rs:9446
+msgid "This task list cannot be removed"
+msgstr ""
+
+#: src/views/tasks_page.rs:9524
+msgid "Select a task list to refresh"
+msgstr ""
+
+#: src/views/tasks_page.rs:9541
+msgid "The selected task list is no longer available"
+msgstr ""
+
+#: src/views/tasks_page.rs:9582
+msgid "The refreshed task list could not be reloaded authoritatively"
+msgstr ""
+
+#: src/views/tasks_page.rs:9633
+msgid "Local task list was reloaded"
+msgstr ""
+
+#: src/views/tasks_page.rs:9634
+msgid "Task list was refreshed"
+msgstr ""
+
+#: src/views/tasks_page.rs:9744
+msgid "Preview not available: {error}"
+msgstr ""
+
+#: src/views/tasks_page.rs:9804
+msgid "The confirmed task is no longer uniquely loaded; please reload"
+msgstr ""
+
+#: src/views/tasks_page.rs:9875
+msgid ""
+"The task list is no longer writable immediately prior to the batch action"
+msgstr ""
+
+#: src/views/tasks_page.rs:9954
+msgid "The batch action was not confirmed; tasks were not modified locally"
+msgstr ""
+
+#: src/views/tasks_page.rs:9986
+msgid "Failed tasks remained unchanged"
+msgstr ""
+
+#: src/views/tasks_page.rs:10039
+msgid "The backend returned an outdated or ambiguous paste result"
+msgstr ""
+
+#: src/views/tasks_page.rs:10168
+msgid "Clipboard could not be read: {error}"
+msgstr ""
+
+#: src/views/tasks_page.rs:10190
+msgid "The default task list has changed or is no longer writable"
+msgstr ""
+
+#: src/views/tasks_page.rs:10228
+msgid "Pasting tasks…"
+msgstr ""
+
+#: src/views/tasks_page.rs:10244
+msgid "The target task list is no longer writable immediately prior to pasting"
+msgstr ""
+
+#: src/views/tasks_page.rs:10329
+msgid "Paste result was lost; reloading authoritative tasks"
+msgstr ""
+
+#: src/views/tasks_page.rs:10346
+msgid "A confirmed new task conflicts with the current selection"
+msgstr ""
+
+#: src/views/tasks_page.rs:10388
+msgid "No tasks pasted; an error occurred. {unattempted}"
+msgstr ""
+
+#: src/views/tasks_page.rs:10401
+msgid "{created}; an error occurred. {unattempted}"
+msgstr ""
+
+#: src/views/tasks_page.rs:10403
+msgid "Pasting did not return a confirmed result"
+msgstr ""
+
+#: src/views/tasks_page.rs:10434 src/views/tasks_page.rs:10496
+#, fuzzy
+msgid "Do Not Delete"
+msgstr "Löschen"
+
+#: src/views/tasks_page.rs:10493
+msgid "Permanently Delete Completed Tasks?"
+msgstr ""
+
+#: src/views/tasks_page.rs:10496
+msgid "Permanently Delete"
+msgstr ""
+
+#: src/views/tasks_page.rs:10637
+msgid "The set of completed tasks changed prior to deletion"
+msgstr ""
+
+#: src/views/tasks_page.rs:10639
+msgid "The task selection changed prior to deletion"
+msgstr ""
+
+#: src/views/tasks_page.rs:10658
+msgid "Deleting tasks…"
+msgstr ""
+
+#: src/views/tasks_page.rs:10676
+msgid "The task list is no longer writable immediately prior to deletion"
+msgstr ""
+
+#: src/views/tasks_page.rs:10691
+msgid "The backend confirmed the deletion of a different task"
+msgstr ""
+
+#: src/views/tasks_page.rs:10735
+msgid "Deletion result was lost; reloading authoritative tasks"
+msgstr ""
+
+#: src/views/tasks_page.rs:10755
+msgid "No tasks deleted; an error occurred"
+msgstr ""
+
+#: src/views/tasks_page.rs:10769
+msgid "an error occurred"
+msgstr ""
+
+#: src/views/tasks_page.rs:10778
+msgid "Deletion did not return a confirmed result"
+msgstr ""
+
+#: src/views/tasks_page.rs:11137
+msgid "{field} contains invalid line breaks"
+msgstr ""
+
+#: src/views/tasks_page.rs:11148
+msgid "{field} must contain valid YYYY-MM-DD or YYYYMMDD values"
+msgstr ""
+
+#: src/views/tasks_page.rs:11191
+#, fuzzy
+msgid "Imported Status"
+msgstr "Wichtig"
+
+#: src/views/tasks_page.rs:11222
+msgid "The task status is invalid"
+msgstr ""
+
+#: src/views/tasks_page.rs:11319
+msgid "Overdue"
+msgstr "Überfällig"
+
+#: src/views/tasks_page.rs:11321
+#, fuzzy
+msgid "Due Today"
+msgstr "Heute"
+
+#: src/views/tasks_page.rs:11330
+msgid "Next"
+msgstr "Weiter"
+
+#: src/views/tasks_page.rs:11340
+msgid "High Priority"
+msgstr ""
+
+#: src/views/tasks_page.rs:11342
+msgid "Low Priority"
+msgstr ""
+
+#: src/views/tasks_page.rs:11368
+msgid "No due date"
+msgstr ""
+
+#: src/views/tasks_page.rs:11399
+#, fuzzy
+msgid "Mark task as incomplete: {title}"
+msgstr "Als kein Spam markieren"
+
+#: src/views/tasks_page.rs:11401
+#, fuzzy
+msgid "Mark task as completed: {title}"
+msgstr "Als kein Spam markieren"
+
+#: src/views/tasks_page.rs:11533
+msgid "Task category"
+msgstr ""
+
+#: src/views/tasks_page.rs:11537
+msgid "Quickly edit status, priority, due date, and categories"
+msgstr ""
+
+#: src/views/tasks_page.rs:11591
+#, fuzzy
+msgid "Export task as iCalendar"
+msgstr "Als EML exportieren …"
+
+#: src/views/tasks_page.rs:11605
+msgid "No iCalendar data available for this task"
+msgstr ""
+
+#: src/views/tasks_page.rs:11616
+msgid "Save Task as iCalendar"
+msgstr ""
+
+#: src/views/tasks_page.rs:11637
+#, fuzzy
+msgid "Task exported as iCalendar"
+msgstr "Als EML exportieren …"
+
+#: src/views/tasks_page.rs:11671 src/views/tasks_page.rs:12572
+msgid "The task is no longer available"
+msgstr ""
+
+#: src/views/tasks_page.rs:12226
+msgid "Could not reload task lists: {error}"
+msgstr ""
+
+#: src/views/tasks_page.rs:12329
+msgid "{property} cannot be empty"
+msgstr ""
+
+#: src/views/tasks_page.rs:12337
+msgid "Invalid {property} property"
+msgstr ""
+
+#: src/views/tasks_page.rs:12347 src/views/tasks_page.rs:12355
+msgid "{property} requires a valid email address"
+msgstr ""
+
+#: src/views/tasks_page.rs:12386
+msgid "At least one attendee is required"
+msgstr ""
+
+#: src/views/tasks_page.rs:12482
+msgid "This task or its provider does not support assignment"
+msgstr ""
+
+#: src/views/tasks_page.rs:12490
+msgid "The selected task is no longer valid"
+msgstr ""
+
+#: src/views/tasks_page.rs:12498
+msgid "organizer@example.org or full ORGANIZER line"
+msgstr ""
+
+#: src/views/tasks_page.rs:12525
+msgid "Attendees (one email or full ATTENDEE line per line)"
+msgstr ""
+
+#: src/views/tasks_page.rs:12533
+msgid ""
+"Assignment data will be saved. Sending iTIP notifications requires the "
+"native Linux/EDS runtime."
+msgstr ""
+
+#: src/views/tasks_page.rs:12539
+msgid "Assign Task"
+msgstr ""
+
+#: src/views/tasks_page.rs:12542
+msgid "Assign"
+msgstr ""
+
+#: src/views/tasks_page.rs:12565
+msgid "The task or provider capability has changed"
+msgstr ""
+
+#: src/views/tasks_page.rs:12576
+msgid "The task is no longer valid"
+msgstr ""
+
+#: src/views/tasks_page.rs:12580
+msgid "The task was modified in the meantime; please reopen assignment"
+msgstr ""
+
+#: src/views/tasks_page.rs:12618
+msgid "The assignment was saved, but could not be reloaded authoritatively"
+msgstr ""
+
+#: src/views/tasks_page.rs:12655
+msgid ""
+"Task was assigned and METHOD:REQUEST prepared; actual iTIP sending requires "
+"Linux/EDS handoff"
+msgstr ""
+
+#: src/views/tasks_page.rs:12701 src/views/tasks_page.rs:12903
+msgid "Task list name"
+msgstr ""
+
+#: src/views/tasks_page.rs:12706 src/views/tasks_page.rs:12908
+msgid "Task List Color"
+msgstr ""
+
+#: src/views/tasks_page.rs:12712
+msgid "Select task list color"
+msgstr ""
+
+#: src/views/tasks_page.rs:12713 src/views/tasks_page.rs:12921
+msgid "Use as default task list"
+msgstr ""
+
+#: src/views/tasks_page.rs:12727 src/views/tasks_page.rs:12966
+msgid "Color"
+msgstr "Farbe"
+
+#: src/views/tasks_page.rs:12734
+#, fuzzy
+msgid "New Local Task List"
+msgstr "Neuer Kontakt"
+
+#: src/views/tasks_page.rs:12735
+msgid "The task list will be created in the local EDS calendar service."
+msgstr ""
+
+#: src/views/tasks_page.rs:12739
+msgid "Create"
+msgstr ""
+
+#: src/views/tasks_page.rs:12754 src/views/tasks_page.rs:13184
+msgid "Name cannot be empty"
+msgstr "Name darf nicht leer sein"
+
+#: src/views/tasks_page.rs:12766
+#, fuzzy
+msgid "Creating task list…"
+msgstr "Neuen Kontakt erstellen (Strg+N)"
+
+#: src/views/tasks_page.rs:12799
+msgid "Local task list was created"
+msgstr ""
+
+#: src/views/tasks_page.rs:12811
+msgid "Local EDS task lists are not supported by this backend"
+msgstr ""
+
+#: src/views/tasks_page.rs:12824
+#, fuzzy
+msgid "No iCalendar file selected"
+msgstr "Nachrichtenquelle anzeigen"
+
+#: src/views/tasks_page.rs:12834
+msgid "Select a task list to edit"
+msgstr ""
+
+#: src/views/tasks_page.rs:12853
+#, fuzzy
+msgid "Loading task list properties…"
+msgstr "Nachrichtenquelle anzeigen"
+
+#: src/views/tasks_page.rs:12882 src/views/tasks_page.rs:13121
+msgid "Provider-specific properties are not yet available for this task list"
+msgstr ""
+
+#: src/views/tasks_page.rs:12916
+msgid "Email address (optional)"
+msgstr ""
+
+#: src/views/tasks_page.rs:12925
+msgid "Use existing iCalendar file"
+msgstr ""
+
+#: src/views/tasks_page.rs:12937
+msgid "Choose File…"
+msgstr ""
+
+#: src/views/tasks_page.rs:12948
+msgid "Evolution may update the iCalendar file"
+msgstr ""
+
+#: src/views/tasks_page.rs:12953
+msgid "The built-in task list cannot use an external iCalendar file."
+msgstr ""
+
+#: src/views/tasks_page.rs:12984
+msgid "Task List Properties"
+msgstr "Aufgabenlisteneigenschaften"
+
+#: src/views/tasks_page.rs:12985
+msgid "Edit local EDS properties"
+msgstr ""
+
+#: src/views/tasks_page.rs:13033
+#, fuzzy
+msgid "Select iCalendar File"
+msgstr "Kalenderansicht drucken"
+
+#: src/views/tasks_page.rs:13110
+msgid "Task list properties were saved"
+msgstr ""
+
+#: src/views/tasks_page.rs:13133
+msgid "Select a task list to rename"
+msgstr ""
+
+#: src/views/tasks_page.rs:13142
+msgid "This task list cannot be renamed"
+msgstr ""
+
+#: src/views/tasks_page.rs:13158
+#, fuzzy
+msgid "New Name"
+msgstr "Neuer Kontakt"
+
+#: src/views/tasks_page.rs:13164
+msgid "Rename Task List"
+msgstr ""
+
+#: src/views/tasks_page.rs:13165
+msgid "The new name will be saved directly in the selected EDS source."
+msgstr ""
+
+#: src/views/tasks_page.rs:13169
+msgid "Rename"
+msgstr ""
+
+#: src/views/tasks_page.rs:13197
+msgid "Renaming task list…"
+msgstr ""
+
+#: src/views/tasks_page.rs:13225
+#, fuzzy
+msgid "Task list was renamed"
+msgstr "Als gelesen markieren"
+
+#: src/views/tasks_page.rs:13229
+msgid "Renaming is not supported by this backend"
+msgstr ""
+
+#: src/views/tasks_page.rs:13245
+msgid "Select a task list to copy"
+msgstr ""
+
+#: src/views/tasks_page.rs:13254
+msgid "This task list cannot be copied"
+msgstr ""
+
+#: src/views/tasks_page.rs:13272
+msgid "No other EDS task list is available"
+msgstr ""
+
+#: src/views/tasks_page.rs:13291
+msgid "Select target task list"
+msgstr ""
+
+#: src/views/tasks_page.rs:13298
+msgid "Target Task List"
+msgstr ""
+
+#: src/views/tasks_page.rs:13304
+msgid "Copy Task List"
+msgstr ""
+
+#: src/views/tasks_page.rs:13305
+msgid ""
+"All tasks from “{name}” will be copied to the selected list. Duplicate UIDs "
+"will be updated."
+msgstr ""
+
+#: src/views/tasks_page.rs:13327
+msgid "Invalid target task list"
+msgstr ""
+
+#: src/views/tasks_page.rs:13337
+msgid "Copying task list…"
+msgstr ""
+
+#: src/views/tasks_page.rs:13383
+msgid "The copy was confirmed, but could not be reloaded authoritatively"
+msgstr ""
+
+#: src/views/tasks_page.rs:13408
+msgid "Copying is not supported by this backend"
+msgstr ""
+
+#: src/views/tasks_page.rs:13420
+msgid "Select a task list to delete"
+msgstr ""
+
+#: src/views/tasks_page.rs:13429
+msgid "This task list cannot be deleted"
+msgstr ""
+
+#: src/views/tasks_page.rs:13434
+#, fuzzy
+msgid "Delete Remote Task List?"
+msgstr "Löschen"
+
+#: src/views/tasks_page.rs:13436
+msgid "Remove Task List?"
+msgstr ""
+
+#: src/views/tasks_page.rs:13439
+msgid "“{name}” and its tasks will be permanently deleted from the provider."
+msgstr ""
+
+#: src/views/tasks_page.rs:13442
+msgid "“{name}” will be removed from Evolution. This action cannot be undone."
+msgstr ""
+
+#: src/views/tasks_page.rs:13467
+msgid "Deleting task list…"
+msgstr ""
+
+#: src/views/tasks_page.rs:13516
+msgid "Task list was deleted"
+msgstr ""
+
+#: src/views/tasks_page.rs:13525
+msgid "Deleting is not supported by this backend"
+msgstr ""
+
+#: src/views/tasks_page.rs:13567 src/views/tasks_page.rs:17951
+msgid "read-only"
+msgstr ""
+
+#: src/views/tasks_page.rs:13568 src/views/tasks_page.rs:17962
+msgid "unavailable"
+msgstr ""
+
+#: src/views/tasks_page.rs:13908
+msgid "The component is not a VTODO"
+msgstr ""
+
+#: src/views/tasks_page.rs:13913 src/views/tasks_page.rs:13952
+msgid "The confirmed component contains a different UID"
+msgstr ""
+
+#: src/views/tasks_page.rs:13980
+msgid "Quick Edit Task"
+msgstr ""
+
+#: src/views/tasks_page.rs:14002
+msgid "Priority (0 = normal)"
+msgstr ""
+
+#: src/views/tasks_page.rs:14093
+msgid "This task list is no longer confirmed as writable"
+msgstr ""
+
+#: src/views/tasks_page.rs:14175
+msgid "Task was confirmed, but is no longer loaded in this list"
+msgstr ""
+
+#: src/views/tasks_page.rs:14192
+msgid "Task modification could not be completed"
+msgstr ""
+
+#: src/views/tasks_page.rs:14219 src/views/tasks_page.rs:14399
+msgid "A task requires a title"
+msgstr ""
+
+#: src/views/tasks_page.rs:14222 src/views/tasks_page.rs:14402
+msgid "Priority must be between 0 and 9"
+msgstr ""
+
+#: src/views/tasks_page.rs:14297
+msgid "Completed tasks require a valid completion date"
+msgstr ""
+
+#: src/views/tasks_page.rs:14750
+msgid "Attachments contain invalid control characters"
+msgstr ""
+
+#: src/views/tasks_page.rs:14765
+msgid "ATTACH property is invalid"
+msgstr ""
+
+#: src/views/tasks_page.rs:14769
+msgid "An attachment requires a URI or BINARY value"
+msgstr ""
+
+#: src/views/tasks_page.rs:18321 src/views/tasks_page.rs:18341
+#: src/views/tasks_page.rs:18369
+msgid "tasks_page.rs"
+msgstr ""
+
+#: src/window.rs:274 src/window.rs:5957
+msgid "Global search match has no target"
+msgstr ""
+
+#: src/window.rs:275
+msgid "Global mail match contains no local ID"
+msgstr ""
+
+#: src/window.rs:277
+msgid "Global calendar/task/memo match contains no component UID"
+msgstr ""
+
+#: src/window.rs:279
+msgid "Global contact match contains no contact UID"
+msgstr ""
+
+#: src/window.rs:490
+msgid "Open replaced by a newer reminder action"
+msgstr ""
+
+#: src/window.rs:587
+msgid "Could not check reminder source: {error}"
+msgstr ""
+
+#: src/window.rs:603
+msgid "Reminder source is unavailable or was removed"
+msgstr ""
+
+#: src/window.rs:606
+msgid "Reminder component is unavailable or was modified"
+msgstr ""
+
+#: src/window.rs:609
+msgid "Component could not be opened after loading"
+msgstr ""
+
+#: src/window.rs:1024 src/window.rs:3239
+msgid "Toggle To Do bar for today"
+msgstr ""
+
+#: src/window.rs:1025 src/window.rs:3242
+msgid "To Do bar for today"
+msgstr ""
+
+#: src/window.rs:1028
+msgid "Toggle tasks and memos bar (Ctrl+M)"
+msgstr ""
+
+#: src/window.rs:1029
+msgid "Tasks and memos bar"
+msgstr ""
+
+#: src/window.rs:1033
+msgid "Contact preview"
+msgstr ""
+
+#: src/window.rs:1037
+msgid "Task preview"
+msgstr ""
+
+#: src/window.rs:1041
+msgid "Memo preview"
+msgstr ""
+
+#: src/window.rs:1044
+msgid "Toggle right side panel"
+msgstr ""
+
+#: src/window.rs:1045
+msgid "Right side panel"
+msgstr ""
+
+#: src/window.rs:1104
+msgid "Folders"
+msgstr ""
+
+#: src/window.rs:1868
+msgid "A mail transfer is already in progress"
+msgstr ""
+
+#: src/window.rs:1871
+msgid "Offline mode: message remains in the local outgoing queue"
+msgstr ""
+
+#: src/window.rs:1874
+#, fuzzy
+msgid "No pending messages"
+msgstr "Nachricht weiterleiten"
+
+#: src/window.rs:2045
+msgid "Search match could not be opened after waiting"
+msgstr ""
+
+#: src/window.rs:2057
+msgid "Mail view opened"
+msgstr ""
+
+#: src/window.rs:2058
+msgid "Calendar view opened; searching for match"
+msgstr ""
+
+#: src/window.rs:2059
+msgid "Tasks view opened; searching for match"
+msgstr ""
+
+#: src/window.rs:2060
+msgid "Memos view opened; searching for match"
+msgstr ""
+
+#: src/window.rs:2061
+msgid "Contacts view opened; searching for match"
+msgstr ""
+
+#: src/window.rs:2395
+msgid "Create new event (Ctrl+N)"
+msgstr "Neuen Termin erstellen (Strg+N)"
+
+#: src/window.rs:2418 src/window.rs:7415
+msgid "New Mail"
+msgstr "Neue E-Mail"
+
+#: src/window.rs:2419
+msgid "Create new email (Ctrl+N)"
+msgstr "Neue E-Mail erstellen (Strg+N)"
+
+#: src/window.rs:3052
+msgid "Collapse Sidebar (F9)"
+msgstr ""
+
+#: src/window.rs:3055
+msgid "Collapse Sidebar"
+msgstr ""
+
+#: src/window.rs:3074
+msgid "Show Sidebar (F9)"
+msgstr ""
+
+#: src/window.rs:3078
+msgid "Show Sidebar"
+msgstr ""
+
+#: src/window.rs:3101
+msgid "Search (Ctrl+F)"
+msgstr ""
+
+#: src/window.rs:3104
+msgid "Search"
+msgstr "Suchen"
+
+#: src/window.rs:3149 src/window.rs:3153
+msgid "Back"
+msgstr "Zurück"
+
+#: src/window.rs:3233
+msgid "Main Menu"
+msgstr ""
+
+#: src/window.rs:3304
+msgid "Online status (Toggle online/offline)"
+msgstr ""
+
+#: src/window.rs:3309
+#, fuzzy
+msgid "Ready"
+msgstr "Gelesen"
+
+#: src/window.rs:3366
+msgid "Show / Hide Developer Log Console (Ctrl+F12)"
+msgstr ""
+
+#: src/window.rs:3589
+msgid "This section will be loaded when opened for the first time."
+msgstr ""
+
+#: src/window.rs:3608
+msgid "New"
+msgstr ""
+
+#: src/window.rs:3610
+msgid "File"
+msgstr ""
+
+#: src/window.rs:3621
+msgid "Switch Module"
+msgstr ""
+
+#: src/window.rs:3626
+msgid "Layout"
+msgstr "Anordnung"
+
+#: src/window.rs:3634
+#, fuzzy
+msgid "Conversations"
+msgstr "Weitere Aktionen"
+
+#: src/window.rs:3638
+msgid "Message Density"
+msgstr ""
+
+#: src/window.rs:3642
+msgid "Text Size"
+msgstr ""
+
+#: src/window.rs:3646
+msgid "Other Views"
+msgstr ""
+
+#: src/window.rs:3654
+msgid "Go to"
+msgstr ""
+
+#: src/window.rs:3665
+msgid "Folder"
+msgstr "Ordner"
+
+#: src/window.rs:3672
+msgid "Tools"
+msgstr ""
+
+#: src/window.rs:3677
+msgid "Help"
+msgstr "Hilfe"
+
+#: src/window.rs:3723
+msgid "No cancelable mail transfer is running"
+msgstr ""
+
+#: src/window.rs:4045
+#, fuzzy
+msgid "Undid last mail action"
+msgstr "Letzte Aktion rückgängig machen"
+
+#: src/window.rs:4046
+msgid "No mail action to undo"
+msgstr ""
+
+#: src/window.rs:4049
+msgid "Undo not possible: {error}"
+msgstr ""
+
+#: src/window.rs:4051 src/window.rs:4071 src/window.rs:4103 and 21 more
+msgid "Mail view is unavailable"
+msgstr ""
+
+#: src/window.rs:4065
+#, fuzzy
+msgid "Restoring deleted message"
+msgstr "Nachricht löschen (Entf)"
+
+#: src/window.rs:4066
+msgid "No deletion to undo"
+msgstr ""
+
+#: src/window.rs:4069
+msgid "Undelete not possible: {error}"
+msgstr ""
+
+#: src/window.rs:4097
+#, fuzzy
+msgid "Redid last mail action"
+msgstr "Letzte Aktion rückgängig machen"
+
+#: src/window.rs:4098
+msgid "No mail action to redo"
+msgstr ""
+
+#: src/window.rs:4101
+msgid "Redo not possible: {error}"
+msgstr ""
+
+#: src/window.rs:4257
+msgid "Selected message does not have a valid Message-ID"
+msgstr ""
+
+#: src/window.rs:4273
+msgid "Original folder of this message is unavailable"
+msgstr ""
+
+#: src/window.rs:4289
+msgid "Selected message does not have a valid sender address"
+msgstr ""
+
+#: src/window.rs:4320
+#, fuzzy
+msgid "No email selected to export"
+msgstr "Nachrichtenquelle anzeigen"
+
+#: src/window.rs:4453
+#, fuzzy
+msgid "Message deleted"
+msgstr "Nachrichtenquelle anzeigen"
+
+#: src/window.rs:4457
+msgid "Delete not possible: {error}"
+msgstr ""
+
+#: src/window.rs:4491
+msgid "Marking not possible: {error}"
+msgstr ""
+
+#: src/window.rs:4514
+msgid "Marking as read not possible: {error}"
+msgstr ""
+
+#: src/window.rs:4553
+msgid "Flag changed"
+msgstr ""
+
+#: src/window.rs:4557
+msgid "Flagging not possible: {error}"
+msgstr ""
+
+#: src/window.rs:4576
+#, fuzzy
+msgid "Importance flag changed"
+msgstr "Wichtig"
+
+#: src/window.rs:4580
+msgid "Setting importance not possible: {error}"
+msgstr ""
+
+#: src/window.rs:4647
+#, fuzzy
+msgid "Message archived"
+msgstr "Nachrichtenquelle anzeigen"
+
+#: src/window.rs:4651
+msgid "Archiving not possible: {error}"
+msgstr ""
+
+#: src/window.rs:4670
+msgid "Message marked as spam"
+msgstr ""
+
+#: src/window.rs:4674
+msgid "Marking as spam not possible: {error}"
+msgstr ""
+
+#: src/window.rs:4693
+msgid "Spam mark removed"
+msgstr ""
+
+#: src/window.rs:4697
+msgid "Removing spam mark not possible: {error}"
+msgstr ""
+
+#: src/window.rs:4820
+msgid "Invalid reminder link"
+msgstr ""
+
+#: src/window.rs:4825
+msgid "Reminder link does not match requested component"
+msgstr ""
+
+#: src/window.rs:4912
+msgid "No unread messages in folder"
+msgstr ""
+
+#: src/window.rs:4917
+msgid "Error marking messages: {error}"
+msgstr ""
+
+#: src/window.rs:4937
+msgid "No more unread folders available"
+msgstr ""
+
+#: src/window.rs:5127 src/window.rs:5143
+msgid "Calendar view is unavailable"
+msgstr ""
+
+#: src/window.rs:5228
+msgid "No unread messages in conversation"
+msgstr ""
+
+#: src/window.rs:5233
+msgid "Error marking conversation: {error}"
+msgstr ""
+
+#: src/window.rs:5262
+msgid "Error deleting conversation: {error}"
+msgstr ""
+
+#: src/window.rs:5275
+msgid "Empty Trash?"
+msgstr ""
+
+#: src/window.rs:5279
+msgid "Trash emptied"
+msgstr ""
+
+#: src/window.rs:5283
+#, fuzzy
+msgid "Empty Junk?"
+msgstr "Kein Spam"
+
+#: src/window.rs:5287
+msgid "Junk folder emptied"
+msgstr ""
+
+#: src/window.rs:5291
+msgid "Permanently empty Trash?"
+msgstr ""
+
+#: src/window.rs:5295
+msgid "Trash permanently emptied"
+msgstr ""
+
+#: src/window.rs:5299
+#, fuzzy
+msgid "Empty"
+msgstr "Kein Spam"
+
+#: src/window.rs:5399
+msgid "There are no unread messages in this folder"
+msgstr ""
+
+#: src/window.rs:5506
+msgid "Log Console"
+msgstr ""
+
+#: src/window.rs:5513
+msgid "Filter logs…"
+msgstr ""
+
+#: src/window.rs:5521
+msgid "Pause live updates"
+msgstr ""
+
+#: src/window.rs:5528
+msgid "Copy log to clipboard"
+msgstr ""
+
+#: src/window.rs:5535
+msgid "Clear log"
+msgstr ""
+
+#: src/window.rs:5542
+msgid "Collapse log console"
+msgstr ""
+
+#: src/window.rs:5549
+msgid "Close log console"
+msgstr ""
+
+#: src/window.rs:6244 src/window.rs:6258 src/window.rs:6275 and 2 more
+msgid "window.rs"
+msgstr ""
+
+#~ msgid "With Attachments"
+#~ msgstr "Mit Anhängen"
+
+#~ msgid "Last 7 Days"
+#~ msgstr "Letzte 7 Tage"
+
+#~ msgid "Last 30 Days"
+#~ msgstr "Letzte 30 Tage"
+
+#~ msgid "Copy selected messages to an account or local folder"
+#~ msgstr ""
+#~ "Ausgewählte Nachrichten in ein Konto oder einen lokalen Ordner kopieren"
+
+#~ msgid "Select None"
+#~ msgstr "Keine auswählen"
+
+#~ msgid "Print cancelled"
+#~ msgstr "Druck abgebrochen"
+
+#~ msgid "The invitation does not have a valid organizer"
+#~ msgstr "Die Einladung besitzt keinen gültigen Organisator"
+
+#~ msgid "Unstar"
+#~ msgstr "Stern entfernen"
+
+#~ msgid "Next 7 Days"
+#~ msgstr "Nächste 7 Tage"
