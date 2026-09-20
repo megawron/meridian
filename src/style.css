@@ -1637,15 +1637,16 @@ searchbar {
 }
 
 .calendar-month-cell.calendar-slot-selected {
-  background-color: alpha(@accent_color, 0.18);
-  box-shadow: inset 0 0 0 1.5px @accent_color;
+  background-color: alpha(@accent_color, 0.22);
+  box-shadow: none;
+  border: none;
   border-radius: 6px;
 }
 
-/* Event chip in time grid - GNOME Libadwaita & Amie borderless solid style with right gap */
+/* Event chip in time grid - GNOME Calendar borderless style with saturated left edge */
 .calendar-grid-event {
   margin: 1px 0;
-  padding: 3px 6px;
+  padding: 3px 6px 3px 8px;
   border-radius: 6px;
   border: none;
   outline: none;
@@ -1669,8 +1670,8 @@ searchbar {
 .calendar-grid-event.all-day-chip,
 button.calendar-grid-event.all-day-chip {
   margin: 1px 2px;
-  padding: 2px 6px;
-  border-radius: 4px;
+  padding: 2px 6px 2px 8px;
+  border-radius: 6px;
   border: none;
   outline: none;
   font-size: 0.92rem;
@@ -1687,8 +1688,8 @@ button.calendar-grid-event.all-day-chip:hover {
 .calendar-grid-event.month-bar-chip,
 button.calendar-grid-event.month-bar-chip {
   margin: 1px 2px;
-  padding: 2px 6px;
-  border-radius: 4px;
+  padding: 2px 6px 2px 8px;
+  border-radius: 6px;
   border: none;
   outline: none;
   font-size: 0.92rem;
@@ -1699,6 +1700,8 @@ button.calendar-grid-event.month-bar-chip {
 .calendar-grid-event.month-bar-chip:hover,
 button.calendar-grid-event.month-bar-chip:hover {
   filter: brightness(0.96);
+  border: none;
+  outline: none;
 }
 
 /* Multi-day all-day continuous bar spanning in month view */

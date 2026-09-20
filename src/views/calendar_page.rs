@@ -349,6 +349,7 @@ impl CalendarViewport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SelectedTimeSlot {
     pub date: NaiveDate,
+    pub end_date: NaiveDate,
     pub start_minute: u32,
     pub end_minute: u32,
 }
@@ -1000,8 +1001,8 @@ fn calendar_view_name(view: CalendarView) -> &'static str {
 fn calendar_view_to_index(view: CalendarView) -> u32 {
     match view {
         CalendarView::Day => 0,
-        CalendarView::Week => 1,
-        CalendarView::WorkWeek => 2,
+        CalendarView::WorkWeek => 1,
+        CalendarView::Week => 2,
         CalendarView::Month => 3,
         CalendarView::Agenda => 4,
         CalendarView::Year => 5,
@@ -1012,8 +1013,8 @@ fn calendar_view_to_index(view: CalendarView) -> u32 {
 fn calendar_view_from_index(index: u32) -> CalendarView {
     match index {
         0 => CalendarView::Day,
-        1 => CalendarView::Week,
-        2 => CalendarView::WorkWeek,
+        1 => CalendarView::WorkWeek,
+        2 => CalendarView::Week,
         3 => CalendarView::Month,
         4 => CalendarView::Agenda,
         5 => CalendarView::Year,
@@ -1466,24 +1467,23 @@ impl CalendarPage {
     /// header action, and the calendar page share one refresh workflow.
     pub fn present_new_event(&self) {
         let dialog = if let Some(slot) = *self.imp().selected_time_slot.borrow() {
-            let start_time = slot
-                .date
+            let (d_start, d_end, t_start, t_end) = if (slot.date, slot.start_minute) <= (slot.end_date, slot.end_minute) {
+                (slot.date, slot.end_date, slot.start_minute, slot.end_minute)
+            } else {
+                (slot.end_date, slot.date, slot.end_minute, slot.start_minute)
+            };
+            let start_time = d_start
                 .and_hms_opt(0, 0, 0)
                 .unwrap()
-                + chrono::Duration::minutes(slot.start_minute as i64);
-            let end_time = slot
-                .date
+                + chrono::Duration::minutes(t_start as i64);
+            let end_time = d_end
                 .and_hms_opt(0, 0, 0)
                 .unwrap()
-                + chrono::Duration::minutes(slot.end_minute as i64);
+                + chrono::Duration::minutes(t_end as i64);
             crate::dialogs::EventDialog::new_for_time_range(start_time, end_time)
         } else {
             crate::dialogs::EventDialog::new_for_date(*self.imp().current_date.borrow())
         };
-        let root = self.root();
-        if let Some(win) = root.and_then(|r| r.downcast::<gtk::Window>().ok()) {
-            dialog.set_transient_for(Some(&win));
-        }
         let page_for_refresh = self.downgrade();
         dialog.connect_close_request(move |_| {
             if let Some(page) = page_for_refresh.upgrade() {
@@ -1542,11 +1542,15 @@ impl CalendarPage {
         if let Some(tag_vpaned) = imp.tag_vpaned.borrow().as_ref() {
             if is_mobile || is_tablet {
                 tag_vpaned.set_visible(false);
+                tag_vpaned.set_size_request(0, -1);
             } else {
                 let show_tag = AppSettings::try_new()
                     .map(|s| s.calendar_show_tag_vpane())
                     .unwrap_or(true);
                 tag_vpaned.set_visible(show_tag);
+                if !show_tag {
+                    tag_vpaned.set_size_request(0, -1);
+                }
             }
         }
         if let Some(outer_paned) = imp.outer_paned.borrow().as_ref() {
@@ -3132,8 +3136,8 @@ impl CalendarPage {
             .build();
 
         view_toggle.append(&day_btn);
-        view_toggle.append(&week_btn);
         view_toggle.append(&workweek_btn);
+        view_toggle.append(&week_btn);
         view_toggle.append(&month_btn);
         view_toggle.append(&agenda_btn);
         view_toggle.append(&year_btn);
@@ -3141,8 +3145,8 @@ impl CalendarPage {
 
         let view_names = [
             str_day.as_str(),
-            str_week.as_str(),
             str_workweek.as_str(),
+            str_week.as_str(),
             str_month.as_str(),
             str_agenda.as_str(),
             str_year.as_str(),
@@ -3320,7 +3324,8 @@ impl CalendarPage {
         let view_toolbar_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Never)
-            .propagate_natural_width(true)
+            .propagate_natural_width(false)
+            .min_content_width(0)
             .propagate_natural_height(true)
             .child(&view_toolbar)
             .build();
@@ -3472,11 +3477,6 @@ impl CalendarPage {
 
                     if direct_create || n_press == 2 {
                         let dialog = crate::dialogs::EventDialog::new_for_date(date);
-                        if let Some(root) = drawing_area.root() {
-                            if let Ok(win) = root.downcast::<gtk::Window>() {
-                                dialog.set_transient_for(Some(&win));
-                            }
-                        }
                         let page_for_refresh = page.downgrade();
                         dialog.connect_close_request(move |_| {
                             if let Some(page) = page_for_refresh.upgrade() {
@@ -3488,6 +3488,7 @@ impl CalendarPage {
                     } else if n_press == 1 {
                         page.set_selected_time_slot(Some(SelectedTimeSlot {
                             date,
+                            end_date: date,
                             start_minute: 540,
                             end_minute: 600,
                         }));
@@ -3533,6 +3534,7 @@ impl CalendarPage {
                 MonthCanvasHit::DayCell { date } => {
                     page.set_selected_time_slot(Some(SelectedTimeSlot {
                         date,
+                        end_date: date,
                         start_minute: 540,
                         end_minute: 600,
                     }));
@@ -3613,11 +3615,6 @@ impl CalendarPage {
                     let start_dt = s.and_hms_opt(0, 0, 0).unwrap();
                     let end_dt = (e + Duration::days(1)).and_hms_opt(0, 0, 0).unwrap();
                     let dialog = crate::dialogs::EventDialog::new_for_time_range(start_dt, end_dt);
-                    if let Some(root) = drawing_area.root() {
-                        if let Ok(win) = root.downcast::<gtk::Window>() {
-                            dialog.set_transient_for(Some(&win));
-                        }
-                    }
                     let page_for_refresh = page.downgrade();
                     dialog.connect_close_request(move |_| {
                         if let Some(page) = page_for_refresh.upgrade() {
@@ -3753,13 +3750,6 @@ impl CalendarPage {
                 gdk::Key::Home => Some(Local::now().date_naive()),
                 gdk::Key::Return | gdk::Key::KP_Enter => {
                     let dialog = crate::dialogs::EventDialog::new_for_date(curr_date);
-                    if let Some(canvas) = page.imp().month_canvas.borrow().as_ref() {
-                        if let Some(root) = canvas.root() {
-                            if let Ok(win) = root.downcast::<gtk::Window>() {
-                                dialog.set_transient_for(Some(&win));
-                            }
-                        }
-                    }
                     dialog.present();
                     None
                 }
@@ -3769,6 +3759,7 @@ impl CalendarPage {
             if let Some(d) = new_date {
                 page.set_selected_time_slot(Some(SelectedTimeSlot {
                     date: d,
+                    end_date: d,
                     start_minute: 540,
                     end_minute: 600,
                 }));
@@ -4932,8 +4923,8 @@ impl CalendarPage {
             .replace(Some(calendar_stack.clone()));
         self.imp().calendar_view_buttons.replace(Some(vec![
             day_btn.clone(),
-            week_btn.clone(),
             workweek_btn.clone(),
+            week_btn.clone(),
             month_btn.clone(),
             agenda_btn.clone(),
             year_btn.clone(),
@@ -5367,7 +5358,7 @@ impl CalendarPage {
 
         tag_vpaned.set_start_child(Some(&taskpad_box));
         tag_vpaned.set_resize_start_child(true);
-        tag_vpaned.set_shrink_start_child(false);
+        tag_vpaned.set_shrink_start_child(true);
 
         // 2. Memopad (End child of tag_vpaned)
         let memopad_box = gtk::Box::builder()
@@ -5582,7 +5573,7 @@ impl CalendarPage {
 
         tag_vpaned.set_end_child(Some(&memopad_box));
         tag_vpaned.set_resize_end_child(true);
-        tag_vpaned.set_shrink_end_child(false);
+        tag_vpaned.set_shrink_end_child(true);
 
         // Connect toggle button to tag_vpaned visibility
         if let Some(btn) = self.imp().tag_vpane_toggle_btn.borrow().as_ref() {
@@ -5609,7 +5600,7 @@ impl CalendarPage {
         content_hpaned.set_resize_end_child(false);
         content_hpaned.set_shrink_start_child(true);
         content_hpaned.set_shrink_end_child(true);
-        tag_vpaned.set_width_request(260);
+        tag_vpaned.set_width_request(-1);
 
         self.imp()
             .content_hpaned
@@ -5645,6 +5636,9 @@ impl CalendarPage {
                 let clamped = position.clamp(crate::window::MIN_SIDEBAR_WIDTH, crate::window::MAX_SIDEBAR_WIDTH);
                 if position != clamped {
                     paned.set_position(clamped);
+                }
+                if let Some(win) = crate::window::find_evolution_window(paned) {
+                    win.set_sidebar_position_sync(clamped);
                 }
                 if settings.mail_sidebar_position() != clamped {
                     settings.set_mail_sidebar_position(clamped);
@@ -5700,16 +5694,11 @@ impl CalendarPage {
                             .and_hms_opt(0, 0, 0)
                             .unwrap()
                             + Duration::minutes(slot.start_minute as i64);
-                        let end_time = slot.date
+                        let end_time = slot.end_date
                             .and_hms_opt(0, 0, 0)
                             .unwrap()
                             + Duration::minutes(slot.end_minute as i64);
                         let dialog = crate::dialogs::EventDialog::new_for_time_range(start_time, end_time);
-                        if let Some(root) = page.root() {
-                            if let Ok(win) = root.downcast::<gtk::Window>() {
-                                dialog.set_transient_for(Some(&win));
-                            }
-                        }
                         let page_for_refresh = page.downgrade();
                         dialog.connect_close_request(move |_| {
                             if let Some(page) = page_for_refresh.upgrade() {
@@ -5880,8 +5869,8 @@ impl CalendarPage {
         if let Some(buttons) = self.imp().calendar_view_buttons.borrow().as_ref() {
             for (button, candidate) in buttons.iter().zip([
                 CalendarView::Day,
-                CalendarView::Week,
                 CalendarView::WorkWeek,
+                CalendarView::Week,
                 CalendarView::Month,
                 CalendarView::Agenda,
                 CalendarView::Year,
@@ -5934,8 +5923,8 @@ impl CalendarPage {
         if let Some(buttons) = self.imp().calendar_view_buttons.borrow().as_ref() {
             for (button, candidate) in buttons.iter().zip([
                 CalendarView::Day,
-                CalendarView::Week,
                 CalendarView::WorkWeek,
+                CalendarView::Week,
                 CalendarView::Month,
                 CalendarView::Agenda,
                 CalendarView::Year,
@@ -6283,7 +6272,11 @@ impl CalendarPage {
 
         let mut items = Vec::new();
         for source in sources {
-            let color = calendar_source_color(&source.uid, &source.display_name);
+            let color = source
+                .color
+                .clone()
+                .unwrap_or_else(|| calendar_source_color(&source.uid, &source.display_name));
+            register_calendar_source_color(&source.uid, &source.display_name, &color);
             let group = source
                 .parent_name
                 .clone()
@@ -6313,6 +6306,8 @@ impl CalendarPage {
             if !already_represented {
                 let cal_uid = format!("account-calendar-{}", collection.uid);
                 let color = calendar_source_color(&collection.uid, &account_name);
+                register_calendar_source_color(&cal_uid, &account_name, &color);
+                register_calendar_source_color(&collection.uid, &account_name, &color);
                 items.push(
                     crate::models::source_selector::SourceSelectorItem::new(
                         &cal_uid,
@@ -6329,6 +6324,7 @@ impl CalendarPage {
 
         if CalendarStoreService::new().is_writable() && !items.iter().any(|i| i.uid == "local-calendar") {
             let color = calendar_source_color("local-calendar", &crate::i18n::gettext("Local Calendar"));
+            register_calendar_source_color("local-calendar", &crate::i18n::gettext("Local Calendar"), &color);
             items.push(
                 crate::models::source_selector::SourceSelectorItem::new(
                     "local-calendar",
@@ -7632,6 +7628,7 @@ impl CalendarPage {
         }
 
         let total_grid_height = (slot_count as i32 * slot_height).max(1);
+        let days_vec = days.to_vec();
 
         for (day_index, day) in days.iter().enumerate() {
             let target_date = *day;
@@ -7644,7 +7641,7 @@ impl CalendarPage {
             );
             let placed_chips_rc = Rc::new(RefCell::new(placed_chips));
             let hovered_chip_idx_rc = Rc::new(Cell::new(None));
-            let drag_sel_rc = Rc::new(Cell::new(None));
+            let drag_start_x = Rc::new(Cell::new(0.0f64));
             let drag_start_y = Rc::new(Cell::new(0.0f64));
             let drag_start_slot = Rc::new(Cell::new(0usize));
             let last_click_rc: Rc<Cell<Option<(usize, std::time::Instant)>>> = Rc::new(Cell::new(None));
@@ -7663,7 +7660,6 @@ impl CalendarPage {
             let page_weak_draw = self.downgrade();
             let placed_chips_draw = placed_chips_rc.clone();
             let hovered_chip_draw = hovered_chip_idx_rc.clone();
-            let drag_sel_draw = drag_sel_rc.clone();
             let is_workday = workdays.contains(&target_date.weekday());
 
             drawing_area.set_draw_func(move |_area, cr, width_i32, height_i32| {
@@ -7728,29 +7724,44 @@ impl CalendarPage {
                 let _ = cr.stroke();
 
                 // 3. Selection highlight
-                let mut sel_range = drag_sel_draw.get();
-                if sel_range.is_none() {
-                    if let Some(page) = page_weak_draw.upgrade() {
-                        if let Some(sel) = *page.imp().selected_time_slot.borrow() {
-                            if sel.date == target_date {
-                                let s1 = (sel.start_minute / interval_minutes as u32) as usize;
-                                let s2 = ((sel.end_minute.saturating_sub(1)) / interval_minutes as u32) as usize;
-                                sel_range = Some((s1, s2));
+                let mut sel_range = None;
+                if let Some(page) = page_weak_draw.upgrade() {
+                    if let Some(sel) = *page.imp().selected_time_slot.borrow() {
+                            let (d_start, d_end, t_start, t_end) = if sel.date <= sel.end_date {
+                                (sel.date, sel.end_date, sel.start_minute, sel.end_minute)
+                            } else {
+                                (sel.end_date, sel.date, sel.end_minute, sel.start_minute)
+                            };
+
+                            if target_date >= d_start && target_date <= d_end {
+                                if d_start == d_end {
+                                    let s1 = (t_start / interval_minutes as u32) as usize;
+                                    let s2 = ((t_end.saturating_sub(1)) / interval_minutes as u32) as usize;
+                                    sel_range = Some((s1, s2));
+                                } else if target_date == d_start {
+                                    let s1 = (t_start / interval_minutes as u32) as usize;
+                                    let s2 = slot_count.saturating_sub(1);
+                                    sel_range = Some((s1, s2));
+                                } else if target_date == d_end {
+                                    let s1 = 0;
+                                    let s2 = ((t_end.saturating_sub(1)) / interval_minutes as u32) as usize;
+                                    sel_range = Some((s1, s2));
+                                } else {
+                                    let s1 = 0;
+                                    let s2 = slot_count.saturating_sub(1);
+                                    sel_range = Some((s1, s2));
+                                }
                             }
                         }
                     }
-                }
 
                 if let Some((min_s, max_s)) = sel_range {
                     let sy1 = min_s as f64 * slot_height as f64;
                     let sy2 = (max_s + 1) as f64 * slot_height as f64;
                     let sh = (sy2 - sy1).max(2.0);
                     draw_cairo_rounded_rect(cr, 2.0, sy1 + 1.0, (width - 5.0).max(10.0), sh - 2.0, 6.0);
-                    cr.set_source_rgba(0.21, 0.52, 0.89, 0.18);
-                    let _ = cr.fill_preserve();
-                    cr.set_source_rgba(0.21, 0.52, 0.89, 0.85);
-                    cr.set_line_width(1.5);
-                    let _ = cr.stroke();
+                    cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 0.25);
+                    let _ = cr.fill();
                 }
 
                 // 4. Event chips
@@ -7890,18 +7901,46 @@ impl CalendarPage {
                     };
                     last_click_click.set(Some((slot, now)));
 
+                    let is_shift = gesture.current_event_state().contains(gtk::gdk::ModifierType::SHIFT_MASK);
                     let prev_sel = *page.imp().selected_time_slot.borrow();
                     let is_already_selected = prev_sel == Some(SelectedTimeSlot {
                         date: target_date,
+                        end_date: target_date,
                         start_minute: start_min,
                         end_minute: end_min,
                     });
 
-                    page.imp().selected_time_slot.replace(Some(SelectedTimeSlot {
-                        date: target_date,
-                        start_minute: start_min,
-                        end_minute: end_min,
-                    }));
+                    let new_slot = if is_shift {
+                        if let Some(prev) = prev_sel {
+                            let (d_start, d_end, t_start, t_end) = if (prev.date, prev.start_minute) <= (target_date, start_min) {
+                                (prev.date, target_date, prev.start_minute, end_min)
+                            } else {
+                                (target_date, prev.end_date, start_min, prev.end_minute)
+                            };
+                            SelectedTimeSlot {
+                                date: d_start,
+                                end_date: d_end,
+                                start_minute: t_start,
+                                end_minute: t_end,
+                            }
+                        } else {
+                            SelectedTimeSlot {
+                                date: target_date,
+                                end_date: target_date,
+                                start_minute: start_min,
+                                end_minute: end_min,
+                            }
+                        }
+                    } else {
+                        SelectedTimeSlot {
+                            date: target_date,
+                            end_date: target_date,
+                            start_minute: start_min,
+                            end_minute: end_min,
+                        }
+                    };
+
+                    page.imp().selected_time_slot.replace(Some(new_slot));
                     if let Some(parent) = area.parent() {
                         parent.queue_draw();
                     } else {
@@ -7910,14 +7949,15 @@ impl CalendarPage {
 
                     if is_double_click || (direct_create && is_already_selected) {
                         gesture.set_state(gtk::EventSequenceState::Claimed);
-                        let start_time = target_date.and_hms_opt(0, 0, 0).unwrap() + Duration::minutes(start_min as i64);
-                        let end_time = target_date.and_hms_opt(0, 0, 0).unwrap() + Duration::minutes(end_min as i64);
+                        let slot_for_create = page.imp().selected_time_slot.borrow().unwrap_or(new_slot);
+                        let (s_date, e_date, s_min, e_min) = if slot_for_create.date <= slot_for_create.end_date {
+                            (slot_for_create.date, slot_for_create.end_date, slot_for_create.start_minute, slot_for_create.end_minute)
+                        } else {
+                            (slot_for_create.end_date, slot_for_create.date, slot_for_create.end_minute, slot_for_create.start_minute)
+                        };
+                        let start_time = s_date.and_hms_opt(0, 0, 0).unwrap() + Duration::minutes(s_min as i64);
+                        let end_time = e_date.and_hms_opt(0, 0, 0).unwrap() + Duration::minutes(e_min as i64);
                         let dialog = crate::dialogs::EventDialog::new_for_time_range(start_time, end_time);
-                        if let Some(root) = area.root() {
-                            if let Ok(win) = root.downcast::<gtk::Window>() {
-                                dialog.set_transient_for(Some(&win));
-                            }
-                        }
                         let page_for_refresh = page.downgrade();
                         dialog.connect_close_request(move |_| {
                             if let Some(page) = page_for_refresh.upgrade() {
@@ -7934,9 +7974,9 @@ impl CalendarPage {
             // Drag gesture for selecting continuous time ranges
             let drag_gesture = gtk::GestureDrag::new();
             drag_gesture.set_button(1);
-            let page_weak_drag = self.downgrade();
+            let page_weak_drag_begin = self.downgrade();
             let placed_chips_for_drag = placed_chips_rc.clone();
-            let drag_sel_for_drag = drag_sel_rc.clone();
+            let drag_start_x_begin = drag_start_x.clone();
             let drag_start_y_begin = drag_start_y.clone();
             let drag_start_slot_begin = drag_start_slot.clone();
 
@@ -7947,43 +7987,16 @@ impl CalendarPage {
                 if on_chip {
                     return;
                 }
+                drag_start_x_begin.set(start_x);
                 drag_start_y_begin.set(start_y);
                 let s = ((start_y.max(0.0) / slot_height as f64).floor() as usize).min(slot_count.saturating_sub(1));
                 drag_start_slot_begin.set(s);
-                drag_sel_for_drag.set(Some((s, s)));
-                area.queue_draw();
-            });
-
-            let drag_sel_for_update = drag_sel_rc.clone();
-            let drag_start_y_update = drag_start_y.clone();
-            let drag_start_slot_update = drag_start_slot.clone();
-            drag_gesture.connect_drag_update(move |gesture, _offset_x, offset_y| {
-                if drag_sel_for_update.get().is_none() {
-                    return;
-                }
-                if offset_y.abs() > 4.0 {
-                    gesture.set_state(gtk::EventSequenceState::Claimed);
-                    let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
-                    let cur_y = (drag_start_y_update.get() + offset_y).max(0.0);
-                    let cur_slot = ((cur_y / slot_height as f64).floor() as usize).min(slot_count.saturating_sub(1));
-                    let start_s = drag_start_slot_update.get();
-                    let min_s = start_s.min(cur_slot);
-                    let max_s = start_s.max(cur_slot);
-                    drag_sel_for_update.set(Some((min_s, max_s)));
-                    area.queue_draw();
-                }
-            });
-
-            let drag_sel_for_end = drag_sel_rc.clone();
-            drag_gesture.connect_drag_end(move |gesture, _offset_x, _offset_y| {
-                let Some(page) = page_weak_drag.upgrade() else { return };
-                let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
-                if let Some((min_s, max_s)) = drag_sel_for_end.take() {
-                    let start_min = (min_s * interval_minutes as usize) as u32;
-                    let end_min = ((max_s + 1) * interval_minutes as usize) as u32;
-
+                let start_min = (s * interval_minutes as usize) as u32;
+                let end_min = ((s + 1) * interval_minutes as usize) as u32;
+                if let Some(page) = page_weak_drag_begin.upgrade() {
                     page.imp().selected_time_slot.replace(Some(SelectedTimeSlot {
                         date: target_date,
+                        end_date: target_date,
                         start_minute: start_min,
                         end_minute: end_min,
                     }));
@@ -7992,17 +8005,77 @@ impl CalendarPage {
                     } else {
                         area.queue_draw();
                     }
+                }
+            });
 
-                    if min_s != max_s {
+            let page_weak_drag_update = self.downgrade();
+            let drag_start_x_update = drag_start_x.clone();
+            let drag_start_y_update = drag_start_y.clone();
+            let drag_start_slot_update = drag_start_slot.clone();
+            let days_for_update = days_vec.clone();
+            drag_gesture.connect_drag_update(move |gesture, offset_x, offset_y| {
+                if offset_x.abs() > 4.0 || offset_y.abs() > 4.0 {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    let Some(page) = page_weak_drag_update.upgrade() else { return };
+                    let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
+                    let w = area.width() as f64;
+                    if w <= 0.0 { return; }
+
+                    let day_offset = ((drag_start_x_update.get() + offset_x) / w).floor() as i32;
+                    let cur_day_idx = (day_index as i32 + day_offset).clamp(0, days_for_update.len() as i32 - 1) as usize;
+                    let cur_date = days_for_update[cur_day_idx];
+
+                    let cur_y = (drag_start_y_update.get() + offset_y).max(0.0);
+                    let cur_slot = ((cur_y / slot_height as f64).floor() as usize).min(slot_count.saturating_sub(1));
+                    let start_s = drag_start_slot_update.get();
+
+                    let (start_d, end_d, start_m, end_m) = if cur_date == target_date {
+                        let min_s = start_s.min(cur_slot);
+                        let max_s = start_s.max(cur_slot);
+                        let start_min = (min_s * interval_minutes as usize) as u32;
+                        let end_min = ((max_s + 1) * interval_minutes as usize) as u32;
+                        (target_date, target_date, start_min, end_min)
+                    } else if target_date < cur_date {
+                        let start_min = (start_s * interval_minutes as usize) as u32;
+                        let end_min = ((cur_slot + 1) * interval_minutes as usize) as u32;
+                        (target_date, cur_date, start_min, end_min)
+                    } else {
+                        let start_min = (cur_slot * interval_minutes as usize) as u32;
+                        let end_min = ((start_s + 1) * interval_minutes as usize) as u32;
+                        (cur_date, target_date, start_min, end_min)
+                    };
+
+                    page.imp().selected_time_slot.replace(Some(SelectedTimeSlot {
+                        date: start_d,
+                        end_date: end_d,
+                        start_minute: start_m,
+                        end_minute: end_m,
+                    }));
+                    if let Some(parent) = area.parent() {
+                        parent.queue_draw();
+                    } else {
+                        area.queue_draw();
+                    }
+                }
+            });
+
+            let page_weak_drag_end = self.downgrade();
+            drag_gesture.connect_drag_end(move |gesture, _offset_x, _offset_y| {
+                let Some(page) = page_weak_drag_end.upgrade() else { return };
+                let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
+                if let Some(sel) = *page.imp().selected_time_slot.borrow() {
+                    let has_multi_slot = sel.date != sel.end_date
+                        || sel.end_minute.saturating_sub(sel.start_minute) > interval_minutes as u32;
+                    if has_multi_slot {
                         gesture.set_state(gtk::EventSequenceState::Claimed);
-                        let start_time = target_date.and_hms_opt(0, 0, 0).unwrap() + Duration::minutes(start_min as i64);
-                        let end_time = target_date.and_hms_opt(0, 0, 0).unwrap() + Duration::minutes(end_min as i64);
+                        let (d_start, d_end, t_start, t_end) = if (sel.date, sel.start_minute) <= (sel.end_date, sel.end_minute) {
+                            (sel.date, sel.end_date, sel.start_minute, sel.end_minute)
+                        } else {
+                            (sel.end_date, sel.date, sel.end_minute, sel.start_minute)
+                        };
+                        let start_time = d_start.and_hms_opt(0, 0, 0).unwrap() + Duration::minutes(t_start as i64);
+                        let end_time = d_end.and_hms_opt(0, 0, 0).unwrap() + Duration::minutes(t_end as i64);
                         let dialog = crate::dialogs::EventDialog::new_for_time_range(start_time, end_time);
-                        if let Some(root) = area.root() {
-                            if let Ok(win) = root.downcast::<gtk::Window>() {
-                                dialog.set_transient_for(Some(&win));
-                            }
-                        }
                         let page_for_refresh = page.downgrade();
                         dialog.connect_close_request(move |_| {
                             if let Some(page) = page_for_refresh.upgrade() {
@@ -8012,6 +8085,11 @@ impl CalendarPage {
                         });
                         dialog.present();
                     }
+                }
+                if let Some(parent) = area.parent() {
+                    parent.queue_draw();
+                } else {
+                    area.queue_draw();
                 }
             });
             drawing_area.add_controller(drag_gesture);
@@ -8120,18 +8198,32 @@ impl CalendarPage {
             .child(&timed_grid)
             .build();
 
+        let workday_slot = (workday_start / interval_minutes as u32) as usize;
         let target_slot = if days.contains(&today) {
             let now = Local::now().time();
             let now_min = (now.hour() * 60 + now.minute()) as u32;
             let now_slot = (now_min / interval_minutes as u32) as usize;
-            now_slot.saturating_sub(2)
+            now_slot.saturating_sub(2).max(workday_slot)
         } else {
-            (workday_start / interval_minutes as u32) as usize
+            workday_slot
         };
         let target_y = (target_slot * slot_height as usize) as f64;
         let vadj = timed_scroll.vadjustment();
+        let scrolled_flag = Rc::new(Cell::new(false));
+        let scrolled_notify = scrolled_flag.clone();
+        vadj.connect_upper_notify(move |adj| {
+            if !scrolled_notify.get() && adj.upper() > 100.0 {
+                scrolled_notify.set(true);
+                adj.set_value(target_y);
+            }
+        });
+        let vadj_idle = vadj.clone();
+        let scrolled_idle = scrolled_flag.clone();
         glib::idle_add_local_once(move || {
-            vadj.set_value(target_y);
+            if !scrolled_idle.get() && vadj_idle.upper() > 0.0 {
+                scrolled_idle.set(true);
+                vadj_idle.set_value(target_y);
+            }
         });
 
         view.append(&timed_scroll);
@@ -8498,7 +8590,7 @@ impl CalendarPage {
 
                 let color = event_color_for_record(item.event);
                 let (bg, hover, active, fg) = pastel_colors_for_hex(&color, is_dark);
-                let chip_class = ensure_event_chip_css_class(&bg, &hover, &active, &fg);
+                let chip_class = ensure_event_chip_css_class(&color, &bg, &hover, &active, &fg);
 
                 let untitled = gettext("(Untitled)");
                 let title = if item.event.summary.trim().is_empty() {
@@ -8563,18 +8655,34 @@ impl CalendarPage {
             .child(&timeline_overlay)
             .build();
 
+        let workday_start_hour = AppSettings::try_new()
+            .map(|s| s.calendar_workday_start_minutes() as f64 / 60.0)
+            .unwrap_or(8.0);
         let target_hour = if is_today {
-            (Local::now().hour() as f64 - 1.0).max(0.0)
+            (Local::now().hour() as f64 - 1.0).max(workday_start_hour)
         } else if let Some(first_ev) = events.iter().filter(|e| !e.all_day).next() {
             let (start_min, _, _) = event_occurrence_times_for_date(first_ev, date, 30);
-            ((start_min / 60) as f64 - 1.0).max(0.0)
+            ((start_min / 60) as f64 - 1.0).clamp(workday_start_hour, 23.0)
         } else {
-            8.0
+            workday_start_hour
         };
         let target_y = target_hour * HOUR_HEIGHT;
         let vadj = scrolled.vadjustment();
+        let scrolled_flag = Rc::new(Cell::new(false));
+        let scrolled_notify = scrolled_flag.clone();
+        vadj.connect_upper_notify(move |adj| {
+            if !scrolled_notify.get() && adj.upper() > 100.0 {
+                scrolled_notify.set(true);
+                adj.set_value(target_y);
+            }
+        });
+        let vadj_idle = vadj.clone();
+        let scrolled_idle = scrolled_flag.clone();
         glib::idle_add_local_once(move || {
-            vadj.set_value(target_y);
+            if !scrolled_idle.get() && vadj_idle.upper() > 0.0 {
+                scrolled_idle.set(true);
+                vadj_idle.set_value(target_y);
+            }
         });
 
         content_box.append(&scrolled);
@@ -11051,7 +11159,7 @@ pub(crate) fn hit_test_month_canvas(
     let grid_h = (height - header_h).max(1.0);
     let col_w = grid_w / 7.0;
     let row_h = grid_h / 6.0;
-    let day_header_h = 24.0;
+    let day_header_h = 28.0;
     let chip_h = 20.0;
     let chip_step = 22.0;
     let usable_h = (row_h - day_header_h - 4.0).max(0.0);
@@ -11146,6 +11254,24 @@ pub(crate) fn draw_month_event_bar(
     cr.close_path();
 }
 
+pub(crate) fn draw_month_event_left_edge(
+    cr: &gtk::cairo::Context,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    radius: f64,
+) {
+    let r = radius.min(h / 2.0).min(w);
+    let degrees = std::f64::consts::PI / 180.0;
+    cr.new_sub_path();
+    cr.line_to(x + w, y);
+    cr.line_to(x + w, y + h);
+    cr.arc(x + r, y + h - r, r, 90.0 * degrees, 180.0 * degrees);
+    cr.arc(x + r, y + r, r, 180.0 * degrees, 270.0 * degrees);
+    cr.close_path();
+}
+
 pub(crate) fn draw_month_canvas(
     cr: &gtk::cairo::Context,
     width: f64,
@@ -11162,7 +11288,7 @@ pub(crate) fn draw_month_canvas(
     let grid_h = (height - header_h).max(1.0);
     let col_w = grid_w / 7.0;
     let row_h = grid_h / 6.0;
-    let day_header_h = 24.0;
+    let day_header_h = 28.0;
     let chip_h = 20.0;
     let chip_step = 22.0;
     let usable_h = (row_h - day_header_h - 4.0).max(0.0);
@@ -11463,26 +11589,43 @@ pub(crate) fn draw_month_canvas(
                     bg_b as f64 / 255.0,
                     0.95,
                 );
-                let _ = cr.fill_preserve();
+                let _ = cr.fill();
 
                 let (col_r, col_g, col_b) =
                     parse_hex_color(&bar.color_hex).unwrap_or((53, 132, 228));
-                cr.set_source_rgba(
-                    col_r as f64 / 255.0,
-                    col_g as f64 / 255.0,
-                    col_b as f64 / 255.0,
-                    0.70,
-                );
-                cr.set_line_width(1.0);
-                let _ = cr.stroke();
+
+                if !bar.continues_left {
+                    cr.set_source_rgba(
+                        col_r as f64 / 255.0,
+                        col_g as f64 / 255.0,
+                        col_b as f64 / 255.0,
+                        1.0,
+                    );
+                    draw_month_event_left_edge(cr, bar_x, bar_y, 4.5, chip_h, 4.0);
+                    let _ = cr.fill();
+                }
 
                 if bar.continues_left {
+                    cr.set_source_rgba(
+                        col_r as f64 / 255.0,
+                        col_g as f64 / 255.0,
+                        col_b as f64 / 255.0,
+                        0.80,
+                    );
+                    cr.set_line_width(1.2);
                     cr.move_to(bar_x + 5.0, bar_y + 5.0);
                     cr.line_to(bar_x + 1.5, bar_y + chip_h / 2.0);
                     cr.line_to(bar_x + 5.0, bar_y + chip_h - 5.0);
                     let _ = cr.stroke();
                 }
                 if bar.continues_right {
+                    cr.set_source_rgba(
+                        col_r as f64 / 255.0,
+                        col_g as f64 / 255.0,
+                        col_b as f64 / 255.0,
+                        0.80,
+                    );
+                    cr.set_line_width(1.2);
                     cr.move_to(bar_x + bar_w - 5.0, bar_y + 5.0);
                     cr.line_to(bar_x + bar_w - 1.5, bar_y + chip_h / 2.0);
                     cr.line_to(bar_x + bar_w - 5.0, bar_y + chip_h - 5.0);
@@ -11490,7 +11633,7 @@ pub(crate) fn draw_month_canvas(
                 }
 
                 let _ = cr.save();
-                let text_x = bar_x + if bar.continues_left { 9.0 } else { 6.0 };
+                let text_x = bar_x + if bar.continues_left { 9.0 } else { 8.0 };
                 let max_text_w = (bar_w
                     - if bar.continues_left { 9.0 } else { 6.0 }
                     - if bar.continues_right { 9.0 } else { 6.0 })
@@ -11878,7 +12021,7 @@ fn draw_time_grid_chip(
     let (bg_r, bg_g, bg_b) = parse_hex_color(active_bg_hex).unwrap_or((53, 132, 228));
     let (fg_r, fg_g, fg_b) = parse_hex_color(&fg_hex).unwrap_or((20, 20, 20));
 
-    // Rounded background card
+    // Rounded background card (GNOME Calendar borderless style)
     draw_cairo_rounded_rect(cr, x, y, w, h, 6.0);
     cr.set_source_rgba(
         bg_r as f64 / 255.0,
@@ -11886,27 +12029,17 @@ fn draw_time_grid_chip(
         bg_b as f64 / 255.0,
         0.95,
     );
-    let _ = cr.fill_preserve();
+    let _ = cr.fill();
 
-    // Subtle border
-    cr.set_source_rgba(
-        fg_r as f64 / 255.0,
-        fg_g as f64 / 255.0,
-        fg_b as f64 / 255.0,
-        if is_hovered { 0.35 } else { 0.15 },
-    );
-    cr.set_line_width(if is_hovered { 1.5 } else { 1.0 });
-    let _ = cr.stroke();
-
-    // Left vertical color accent strip
+    // Left vertical color accent strip (GNOME Calendar widget.edge style)
     let (accent_r, accent_g, accent_b) =
         parse_hex_color(&color_hex).unwrap_or((bg_r, bg_g, bg_b));
-    draw_cairo_rounded_rect(cr, x + 1.0, y + 1.0, 3.0, h - 2.0, 2.0);
+    draw_cairo_rounded_rect(cr, x + 1.0, y + 1.0, 4.5, h - 2.0, 3.0);
     cr.set_source_rgba(
         accent_r as f64 / 255.0,
         accent_g as f64 / 255.0,
         accent_b as f64 / 255.0,
-        0.9,
+        1.0,
     );
     let _ = cr.fill();
 
@@ -11917,8 +12050,8 @@ fn draw_time_grid_chip(
         chip.event.summary.as_str()
     };
 
-    let text_x = x + 7.0;
-    let max_text_w = (w - 10.0).max(10.0);
+    let text_x = x + 9.0;
+    let max_text_w = (w - 12.0).max(10.0);
 
     let _ = cr.save();
     // Clip to chip interior to ensure zero overflow
@@ -12750,13 +12883,6 @@ fn show_calendar_day_context_menu(
         popover_for_new.popdown();
         if let Some(page) = page_weak_new.upgrade() {
             let dialog = crate::dialogs::EventDialog::new_for_date(date);
-            if let Some(canvas) = page.imp().month_canvas.borrow().as_ref() {
-                if let Some(root) = canvas.root() {
-                    if let Ok(win) = root.downcast::<gtk::Window>() {
-                        dialog.set_transient_for(Some(&win));
-                    }
-                }
-            }
             dialog.present();
         }
     });
@@ -13204,16 +13330,23 @@ fn add_months(year: i32, month: u32, offset: usize) -> (i32, u32) {
 }
 
 fn ensure_event_chip_css_class(
+    base_hex: &str,
     bg: &str,
     hover: &str,
     active: &str,
     fg: &str,
 ) -> String {
     thread_local! {
-        static CLASS_CACHE: std::cell::RefCell<HashMap<(String, String, String, String), String>> =
+        static CLASS_CACHE: std::cell::RefCell<HashMap<(String, String, String, String, String), String>> =
             std::cell::RefCell::new(HashMap::new());
     }
-    let key = (bg.to_string(), hover.to_string(), active.to_string(), fg.to_string());
+    let key = (
+        base_hex.to_string(),
+        bg.to_string(),
+        hover.to_string(),
+        active.to_string(),
+        fg.to_string(),
+    );
     CLASS_CACHE.with(|cache| {
         let mut map = cache.borrow_mut();
         if let Some(class_name) = map.get(&key) {
@@ -13222,9 +13355,9 @@ fn ensure_event_chip_css_class(
             let class_name = format!("cal-chip-{}", map.len());
             let provider = gtk::CssProvider::new();
             provider.load_from_string(&format!(
-                "button.{class_name} {{ border: none; outline: none; background-color: {bg}; color: {fg}; }} \
-                 button.{class_name}:hover {{ border: none; outline: none; background-color: {hover}; color: {fg}; }} \
-                 button.{class_name}:active {{ border: none; outline: none; background-color: {active}; color: {fg}; }}"
+                "button.{class_name} {{ border: none; outline: none; border-radius: 6px; box-shadow: inset 5px 0 0 0 {base_hex}; background-color: {bg}; color: {fg}; }} \
+                 button.{class_name}:hover {{ border: none; outline: none; border-radius: 6px; box-shadow: inset 5px 0 0 0 {base_hex}; background-color: {hover}; color: {fg}; }} \
+                 button.{class_name}:active {{ border: none; outline: none; border-radius: 6px; box-shadow: inset 5px 0 0 0 {base_hex}; background-color: {active}; color: {fg}; }}"
             ));
             if let Some(display) = gtk::gdk::Display::default() {
                 gtk::style_context_add_provider_for_display(
@@ -15240,65 +15373,49 @@ fn parse_hex_color(hex: &str) -> Option<(u8, u8, u8)> {
     }
 }
 
-/// Computes solid (opaque), non-transparent pastel background, hover, active, and text colors
-/// inspired by Amie / Google Calendar / Evolution UX.
+/// Computes event background tint (25% mix matching GNOME Calendar events.css), hover, active, and text colors.
 pub(crate) fn pastel_colors_for_hex(hex: &str, is_dark: bool) -> (String, String, String, String) {
     let (r, g, b) = parse_hex_color(hex).unwrap_or((53, 132, 228)); // default GNOME accent blue
 
     if is_dark {
-        // Dark theme: rich dark pastel card background with vibrant high-contrast foreground
-        let bg_r = (r as f32 * 0.35 + 36.0 * 0.65).round().clamp(0.0, 255.0) as u8;
-        let bg_g = (g as f32 * 0.35 + 36.0 * 0.65).round().clamp(0.0, 255.0) as u8;
-        let bg_b = (b as f32 * 0.35 + 36.0 * 0.65).round().clamp(0.0, 255.0) as u8;
+        // Dark theme: 25% event color mixed with dark view bg (#242424), matching GNOME Calendar events.css
+        let bg_r = (r as f32 * 0.25 + 36.0 * 0.75).round().clamp(0.0, 255.0) as u8;
+        let bg_g = (g as f32 * 0.25 + 36.0 * 0.75).round().clamp(0.0, 255.0) as u8;
+        let bg_b = (b as f32 * 0.25 + 36.0 * 0.75).round().clamp(0.0, 255.0) as u8;
 
-        let hov_r = (r as f32 * 0.48 + 36.0 * 0.52).round().clamp(0.0, 255.0) as u8;
-        let hov_g = (g as f32 * 0.48 + 36.0 * 0.52).round().clamp(0.0, 255.0) as u8;
-        let hov_b = (b as f32 * 0.48 + 36.0 * 0.52).round().clamp(0.0, 255.0) as u8;
+        let hov_r = (r as f32 * 0.35 + 36.0 * 0.65).round().clamp(0.0, 255.0) as u8;
+        let hov_g = (g as f32 * 0.35 + 36.0 * 0.65).round().clamp(0.0, 255.0) as u8;
+        let hov_b = (b as f32 * 0.35 + 36.0 * 0.65).round().clamp(0.0, 255.0) as u8;
 
-        let act_r = (r as f32 * 0.60 + 36.0 * 0.40).round().clamp(0.0, 255.0) as u8;
-        let act_g = (g as f32 * 0.60 + 36.0 * 0.40).round().clamp(0.0, 255.0) as u8;
-        let act_b = (b as f32 * 0.60 + 36.0 * 0.40).round().clamp(0.0, 255.0) as u8;
-
-        let fg_r = (r as f32 * 0.50 + 255.0 * 0.50).round().clamp(0.0, 255.0) as u8;
-        let fg_g = (g as f32 * 0.50 + 255.0 * 0.50).round().clamp(0.0, 255.0) as u8;
-        let fg_b = (b as f32 * 0.50 + 255.0 * 0.50).round().clamp(0.0, 255.0) as u8;
+        let act_r = (r as f32 * 0.45 + 36.0 * 0.55).round().clamp(0.0, 255.0) as u8;
+        let act_g = (g as f32 * 0.45 + 36.0 * 0.55).round().clamp(0.0, 255.0) as u8;
+        let act_b = (b as f32 * 0.45 + 36.0 * 0.55).round().clamp(0.0, 255.0) as u8;
 
         (
             format!("#{bg_r:02x}{bg_g:02x}{bg_b:02x}"),
             format!("#{hov_r:02x}{hov_g:02x}{hov_b:02x}"),
             format!("#{act_r:02x}{act_g:02x}{act_b:02x}"),
-            format!("#{fg_r:02x}{fg_g:02x}{fg_b:02x}"),
+            "#ffffff".to_string(),
         )
     } else {
-        // Light theme: soft cheerful solid pastel background with deep, saturated high-contrast foreground (Amie style)
-        let bg_r = (r as f32 * 0.30 + 255.0 * 0.70).round().clamp(0.0, 255.0) as u8;
-        let bg_g = (g as f32 * 0.30 + 255.0 * 0.70).round().clamp(0.0, 255.0) as u8;
-        let bg_b = (b as f32 * 0.30 + 255.0 * 0.70).round().clamp(0.0, 255.0) as u8;
+        // Light theme: 25% event color mixed with white view bg (#ffffff), matching GNOME Calendar events.css
+        let bg_r = (r as f32 * 0.25 + 255.0 * 0.75).round().clamp(0.0, 255.0) as u8;
+        let bg_g = (g as f32 * 0.25 + 255.0 * 0.75).round().clamp(0.0, 255.0) as u8;
+        let bg_b = (b as f32 * 0.25 + 255.0 * 0.75).round().clamp(0.0, 255.0) as u8;
 
-        let hov_r = (r as f32 * 0.42 + 255.0 * 0.58).round().clamp(0.0, 255.0) as u8;
-        let hov_g = (g as f32 * 0.42 + 255.0 * 0.58).round().clamp(0.0, 255.0) as u8;
-        let hov_b = (b as f32 * 0.42 + 255.0 * 0.58).round().clamp(0.0, 255.0) as u8;
+        let hov_r = (r as f32 * 0.35 + 255.0 * 0.65).round().clamp(0.0, 255.0) as u8;
+        let hov_g = (g as f32 * 0.35 + 255.0 * 0.65).round().clamp(0.0, 255.0) as u8;
+        let hov_b = (b as f32 * 0.35 + 255.0 * 0.65).round().clamp(0.0, 255.0) as u8;
 
-        let act_r = (r as f32 * 0.55 + 255.0 * 0.45).round().clamp(0.0, 255.0) as u8;
-        let act_g = (g as f32 * 0.55 + 255.0 * 0.45).round().clamp(0.0, 255.0) as u8;
-        let act_b = (b as f32 * 0.55 + 255.0 * 0.45).round().clamp(0.0, 255.0) as u8;
-
-        // Dark text for strong contrast on pastel
-        let mut fg_r = (r as f32 * 0.45).round() as u8;
-        let mut fg_g = (g as f32 * 0.45).round() as u8;
-        let mut fg_b = (b as f32 * 0.45).round() as u8;
-        let lum = 0.299 * (fg_r as f32) + 0.587 * (fg_g as f32) + 0.114 * (fg_b as f32);
-        if lum > 115.0 {
-            fg_r = (fg_r as f32 * 0.65).round() as u8;
-            fg_g = (fg_g as f32 * 0.65).round() as u8;
-            fg_b = (fg_b as f32 * 0.65).round() as u8;
-        }
+        let act_r = (r as f32 * 0.45 + 255.0 * 0.55).round().clamp(0.0, 255.0) as u8;
+        let act_g = (g as f32 * 0.45 + 255.0 * 0.55).round().clamp(0.0, 255.0) as u8;
+        let act_b = (b as f32 * 0.45 + 255.0 * 0.55).round().clamp(0.0, 255.0) as u8;
 
         (
             format!("#{bg_r:02x}{bg_g:02x}{bg_b:02x}"),
             format!("#{hov_r:02x}{hov_g:02x}{hov_b:02x}"),
             format!("#{act_r:02x}{act_g:02x}{act_b:02x}"),
-            format!("#{fg_r:02x}{fg_g:02x}{fg_b:02x}"),
+            "#1c1c1c".to_string(),
         )
     }
 }
@@ -15342,10 +15459,10 @@ fn calendar_grid_event_chip(
         })
         .build();
 
-    // Solid, opaque pastel card styling (Amie & Libadwaita borderless)
+    // Borderless card styling with saturated left edge indicator (GNOME Calendar)
     let is_dark = adw::StyleManager::default().is_dark();
     let (bg, hover, active, fg) = pastel_colors_for_hex(&color, is_dark);
-    let chip_class = ensure_event_chip_css_class(&bg, &hover, &active, &fg);
+    let chip_class = ensure_event_chip_css_class(&color, &bg, &hover, &active, &fg);
     chip_button.add_css_class(&chip_class);
 
     let text = if is_all_day {
@@ -15483,9 +15600,6 @@ fn open_event_editor_for_widget<W: IsA<gtk::Widget>>(widget: &W, event: &Calenda
             .clone()
             .downcast::<crate::window::EvolutionWindow>()
             .ok();
-        if let Ok(window) = root.downcast::<gtk::Window>() {
-            dialog.set_transient_for(Some(&window));
-        }
         if let Some(window) = evolution_window {
             let window = window.downgrade();
             dialog.connect_close_request(move |_| {
@@ -15544,8 +15658,51 @@ fn event_time_text_with_12h(event: &CalendarEventRecord, use_12h: bool) -> Strin
     }
 }
 
+static SOURCE_COLOR_REGISTRY: once_cell::sync::Lazy<std::sync::RwLock<HashMap<String, String>>> =
+    once_cell::sync::Lazy::new(|| std::sync::RwLock::new(HashMap::new()));
+
+pub(crate) fn register_calendar_source_color(source_uid: &str, source_display_name: &str, color: &str) {
+    let col = color.trim();
+    if col.is_empty() {
+        return;
+    }
+    if let Ok(mut reg) = SOURCE_COLOR_REGISTRY.write() {
+        if !source_uid.trim().is_empty() {
+            reg.insert(source_uid.trim().to_string(), col.to_string());
+        }
+        if !source_display_name.trim().is_empty() {
+            reg.insert(source_display_name.trim().to_lowercase(), col.to_string());
+        }
+    }
+}
+
 pub(crate) fn calendar_source_color(source_uid: &str, source_display_name: &str) -> String {
-    // Official GNOME Human Interface Guidelines (HIG) Color Palette
+    let uid = source_uid.trim();
+    let name = source_display_name.trim();
+
+    // 1. Check in-memory registered colors (by UID or by lowercase display name)
+    if let Ok(reg) = SOURCE_COLOR_REGISTRY.read() {
+        if !uid.is_empty() {
+            if let Some(c) = reg.get(uid) {
+                return c.clone();
+            }
+        }
+        if !name.is_empty() {
+            if let Some(c) = reg.get(&name.to_lowercase()) {
+                return c.clone();
+            }
+        }
+    }
+
+    // 2. Check on-disk .source keyfile if available
+    if !uid.is_empty() {
+        if let Some(c) = crate::services::eds_service::resolve_source_color_from_disk(uid) {
+            register_calendar_source_color(uid, name, &c);
+            return c;
+        }
+    }
+
+    // 3. Official GNOME Human Interface Guidelines (HIG) Color Palette
     const CALENDAR_PALETTE: &[&str] = &[
         "#3584e4", // GNOME Blue 3 (Default Accent)
         "#2ec27e", // GNOME Green 4
@@ -15560,10 +15717,10 @@ pub(crate) fn calendar_source_color(source_uid: &str, source_display_name: &str)
         "#c01c28", // GNOME Red 4
         "#813d9c", // GNOME Purple 4
     ];
-    let key = if !source_display_name.trim().is_empty() {
-        source_display_name.trim()
+    let key = if !name.is_empty() {
+        name
     } else {
-        source_uid.trim()
+        uid
     };
     let lower_key = key.to_lowercase();
     let holidays_str = gettext("Holidays").to_lowercase();
@@ -15593,14 +15750,14 @@ pub(crate) fn event_color_for_record(event: &CalendarEventRecord) -> String {
     if let Some(color) = category_color_for_component(&event.component) {
         return color;
     }
-    if event.source_display_name != "Local Calendar" && event.source_display_name != crate::i18n::gettext("Local Calendar") && !event.source_display_name.is_empty() {
-        return calendar_source_color(&event.source_uid, &event.source_display_name);
-    }
     if let Some(color) = ical_property(&event.component, "COLOR")
         .or_else(|| ical_property(&event.component, "X-APPLE-CALENDAR-COLOR"))
         .filter(|c| !c.trim().is_empty())
     {
         return color;
+    }
+    if event.source_display_name != "Local Calendar" && event.source_display_name != crate::i18n::gettext("Local Calendar") && !event.source_display_name.is_empty() {
+        return calendar_source_color(&event.source_uid, &event.source_display_name);
     }
     calendar_source_color(&event.source_uid, &event.source_display_name)
 }
@@ -16844,9 +17001,6 @@ fn append_event_row(
                 .clone()
                 .downcast::<crate::window::EvolutionWindow>()
                 .ok();
-            if let Ok(window) = root.downcast::<gtk::Window>() {
-                dialog.set_transient_for(Some(&window));
-            }
             if let Some(window) = evolution_window {
                 let window = window.downgrade();
                 dialog.connect_close_request(move |_| {
@@ -19782,24 +19936,63 @@ mod tests {
         let date = NaiveDate::from_ymd_opt(2026, 9, 9).unwrap();
         let slot = SelectedTimeSlot {
             date,
+            end_date: date,
             start_minute: 600,
             end_minute: 630,
         };
         assert_eq!(slot.date, date);
+        assert_eq!(slot.end_date, date);
         assert_eq!(slot.start_minute, 600);
         assert_eq!(slot.end_minute, 630);
         let same_slot = SelectedTimeSlot {
             date,
+            end_date: date,
             start_minute: 600,
             end_minute: 630,
         };
         assert_eq!(slot, same_slot);
         let diff_slot = SelectedTimeSlot {
             date,
+            end_date: date,
             start_minute: 630,
             end_minute: 660,
         };
         assert_ne!(slot, diff_slot);
+        let multi_day_slot = SelectedTimeSlot {
+            date,
+            end_date: NaiveDate::from_ymd_opt(2026, 9, 11).unwrap(),
+            start_minute: 600,
+            end_minute: 630,
+        };
+        assert_ne!(slot, multi_day_slot);
+    }
+
+    #[test]
+    fn test_selected_time_slot_normalization_and_range() {
+        let d1 = NaiveDate::from_ymd_opt(2026, 9, 9).unwrap();
+        let d2 = NaiveDate::from_ymd_opt(2026, 9, 12).unwrap();
+
+        // Forward range
+        let (start_d, end_d, start_m, end_m) = if (d1, 600) <= (d2, 720) {
+            (d1, d2, 600, 720)
+        } else {
+            (d2, d1, 720, 600)
+        };
+        assert_eq!(start_d, d1);
+        assert_eq!(end_d, d2);
+        assert_eq!(start_m, 600);
+        assert_eq!(end_m, 720);
+
+        // Reverse range normalized
+        let (start_d, end_d, start_m, end_m) = if (d2, 720) <= (d1, 600) {
+            (d2, d1, 720, 600)
+        } else {
+            (d1, d2, 600, 720)
+        };
+        assert_eq!(start_d, d1);
+        assert_eq!(end_d, d2);
+        assert_eq!(start_m, 600);
+        assert_eq!(end_m, 720);
     }
 
     #[test]
@@ -20257,7 +20450,7 @@ mod tests {
 
         // 4. Event Bar hit test (x in col 0, y at track 0 event chip)
         // col_w = (736 - 36) / 7 = 100.0. row_h = (628 - 28) / 6 = 100.0.
-        // cell_y = 28 + 0 * 100 = 28. day_header_h = 24. chip_y = 28 + 24 = 52.
+        // cell_y = 28 + 0 * 100 = 28. day_header_h = 28. chip_y = 28 + 28 = 56.
         // bar_x = 36 + 0 * 100 + 3 = 39. bar_w = 94.
         let hit_ev = hit_test_month_canvas(50.0, 60.0, width, height, &layout);
         match hit_ev {
@@ -20834,14 +21027,14 @@ mod tests {
 
     #[test]
     fn test_calendar_gnome_color_palette_and_unified_selection() {
-        // Verify GNOME HIG color palette compliance
-        let holiday_col = calendar_source_color("holidays", "Holidays");
+        // Verify GNOME HIG color palette compliance for fallbacks
+        let holiday_col = calendar_source_color("test-holidays", "Holidays");
         assert_eq!(holiday_col, "#2ec27e", "Holidays should use GNOME Green 4");
 
-        let birthday_col = calendar_source_color("birthdays", "Birthdays");
+        let birthday_col = calendar_source_color("test-birthdays", "Birthdays");
         assert_eq!(birthday_col, "#9141ac", "Birthdays should use GNOME Purple 3");
 
-        let default_source_col = calendar_source_color("local-calendar", "Personal");
+        let default_source_col = calendar_source_color("test-local-calendar", "Personal");
         let valid_gnome_colors = [
             "#3584e4", "#2ec27e", "#e66100", "#e01b24",
             "#9141ac", "#2aa198", "#e5a50a", "#986a44",
@@ -20851,6 +21044,10 @@ mod tests {
             valid_gnome_colors.contains(&default_source_col.as_str()),
             "Calendar source color must be from GNOME HIG palette"
         );
+
+        // Verify dynamic source registration (matching EDS/Google Calendar source colors)
+        register_calendar_source_color("test-gmail-cal", "My Gmail", "#f83a22");
+        assert_eq!(calendar_source_color("test-gmail-cal", "My Gmail"), "#f83a22");
 
         // Verify unified selection CSS classes in source
         let src = include_str!("calendar_page.rs");
