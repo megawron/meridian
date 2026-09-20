@@ -509,7 +509,7 @@ impl AppSettings {
                 .or_else(|| {
                     let candidates = [
                         std::env::var("GSETTINGS_SCHEMA_DIR").ok(),
-                        option_env!("EVOLUTION_GTK4_SCHEMA_DIR").map(|s| s.to_string()),
+                        option_env!("MERIDIAN_SCHEMA_DIR").or(option_env!("EVOLUTION_GTK4_SCHEMA_DIR")).map(|s| s.to_string()),
                         Some("data".to_string()),
                         Some("../data".to_string()),
                     ];
@@ -541,7 +541,7 @@ impl AppSettings {
             .or_else(|| {
                 let candidates = [
                     std::env::var("GSETTINGS_SCHEMA_DIR").ok(),
-                    option_env!("EVOLUTION_GTK4_SCHEMA_DIR").map(|s| s.to_string()),
+                    option_env!("MERIDIAN_SCHEMA_DIR").or(option_env!("EVOLUTION_GTK4_SCHEMA_DIR")).map(|s| s.to_string()),
                     Some("data".to_string()),
                     Some("../data".to_string()),
                 ];
@@ -4167,7 +4167,7 @@ mod tests {
             .as_ref()
             .and_then(|source| source.lookup(crate::APP_ID, true))
             .or_else(|| {
-                let directory = option_env!("EVOLUTION_GTK4_SCHEMA_DIR")?;
+                let directory = option_env!("MERIDIAN_SCHEMA_DIR").or(option_env!("EVOLUTION_GTK4_SCHEMA_DIR"))?;
                 let source = gio::SettingsSchemaSource::from_directory(
                     directory,
                     installed_source.as_ref(),
@@ -5566,7 +5566,7 @@ mod tests {
     fn reset_to_defaults_keys_have_perfect_schema_parity() {
         let schema = settings_schema();
 
-        // 1. None of the 12 legacy keys may exist in org.gnome.Evolution4 schema
+        // 1. None of the 12 legacy keys may exist in com.martingawron.Meridian schema
         const LEGACY_KEYS: &[&str] = &[
             "sidebar-width",
             "show-menubar",

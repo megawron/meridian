@@ -529,10 +529,11 @@ impl MacosIntegrationService {
         { Err("macOS-Internetaccounts sind auf diesem System nicht verfügbar".into()) }
     }
 
-    pub const KEYCHAIN_SERVICE_EVOLUTION: &str = "org.gnome.Evolution4";
+    pub const KEYCHAIN_SERVICE_MERIDIAN: &str = "com.martingawron.Meridian";
+    pub const KEYCHAIN_SERVICE_EVOLUTION: &str = "com.martingawron.Meridian";
 
     pub fn keychain_set_password(&self, account: &str, password: &str) -> Result<(), String> {
-        self.keychain_set_password_for_service(Self::KEYCHAIN_SERVICE_EVOLUTION, account, password)
+        self.keychain_set_password_for_service(Self::KEYCHAIN_SERVICE_MERIDIAN, account, password)
     }
 
     pub fn keychain_set_password_for_service(
@@ -695,7 +696,7 @@ mod tests {
 
     #[test]
     fn keychain_service_identifier_is_org_gnome_evolution4() {
-        assert_eq!(MacosIntegrationService::KEYCHAIN_SERVICE_EVOLUTION, "org.gnome.Evolution4");
+        assert_eq!(MacosIntegrationService::KEYCHAIN_SERVICE_EVOLUTION, "com.martingawron.Meridian");
     }
 
     #[test]

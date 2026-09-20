@@ -1026,7 +1026,7 @@ fn read_calendar_file(path: &Path) -> io::Result<String> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(concat!(
             "BEGIN:VCALENDAR\r\n",
             "VERSION:2.0\r\n",
-            "PRODID:-//Evolution GTK4//EN\r\n",
+            "PRODID:-//Meridian//EN\r\n",
             "END:VCALENDAR\r\n"
         )
         .to_string()),
@@ -2723,7 +2723,7 @@ pub(crate) fn export_ical_component(raw: &str) -> String {
     }
 
     let mut result =
-        String::from("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Evolution GTK4//EN\r\n");
+        String::from("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Meridian//EN\r\n");
     result.push_str(&lines.join("\r\n"));
     result.push_str("\r\nEND:VCALENDAR\r\n");
     result

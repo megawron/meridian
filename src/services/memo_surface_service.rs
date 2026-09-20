@@ -11,7 +11,7 @@
 use super::calendar_store_service::{MemoEditorDraft, MemoRecord};
 use std::collections::{HashMap, HashSet};
 
-const VCALENDAR_HEADER: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Evolution GTK4//EN\r\n";
+const VCALENDAR_HEADER: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Meridian//EN\r\n";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MemoIdentity {

@@ -910,7 +910,7 @@ void macos_free_string(char *ptr) {
     }
 }
 
-static NSString * const kEvolutionDefaultKeychainService = @"org.gnome.Evolution4";
+static NSString * const kEvolutionDefaultKeychainService = @"com.martingawron.Meridian";
 
 int
 macos_keychain_set_password(const char *service, const char *account, const char *password)

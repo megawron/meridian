@@ -107,7 +107,7 @@ impl VFreeBusyDocument {
         let mut out = String::with_capacity(1024);
         out.push_str("BEGIN:VCALENDAR\r\n");
         out.push_str("VERSION:2.0\r\n");
-        out.push_str("PRODID:-//Evolution GTK4//FreeBusy Service//DE\r\n");
+        out.push_str("PRODID:-//Meridian//FreeBusy Service//EN\r\n");
         out.push_str("METHOD:PUBLISH\r\n");
         out.push_str("BEGIN:VFREEBUSY\r\n");
         out.push_str(&format!("UID:{}\r\n", self.uid));

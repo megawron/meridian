@@ -96,7 +96,7 @@ pub fn build_reply_component(
     let mut lines = vec![
         "BEGIN:VCALENDAR".to_string(),
         "VERSION:2.0".to_string(),
-        "PRODID:-//Evolution GTK4//iTIP Reply//EN".to_string(),
+        "PRODID:-//Meridian//iTIP Reply//EN".to_string(),
         "METHOD:REPLY".to_string(),
         "BEGIN:VEVENT".to_string(),
         format!("UID:{uid}"),

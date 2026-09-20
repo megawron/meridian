@@ -301,7 +301,7 @@ fn export_to_icalendar(events: &[CalendarEventRecord]) -> Result<String, String>
     }
 
     let mut output =
-        String::from("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//GNOME//Evolution GTK4//EN\r\n");
+        String::from("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Meridian//EN\r\n");
     for comp in components {
         output.push_str(&comp);
         if !comp.ends_with("\r\n") {

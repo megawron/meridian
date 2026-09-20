@@ -94,6 +94,9 @@ fn home_dir() -> std::path::PathBuf {
 /// the platform defaults mirror GLib's user-data locations on the supported
 /// desktop platforms.
 pub(crate) fn app_data_dir() -> std::path::PathBuf {
+    if let Some(path) = non_empty_env_path("MERIDIAN_DATA_DIR") {
+        return path;
+    }
     if let Some(path) = non_empty_env_path("EVOLUTION_GTK4_DATA_DIR") {
         return path;
     }
@@ -107,12 +110,15 @@ pub(crate) fn app_data_dir() -> std::path::PathBuf {
     let base =
         non_empty_env_path("XDG_DATA_HOME").unwrap_or_else(|| home_dir().join(".local/share"));
 
-    base.join("evolution-gtk4")
+    base.join("meridian")
 }
 
 /// Application cache root with the same worker-safe platform policy as
 /// [`app_data_dir`].
 pub(crate) fn app_cache_dir() -> std::path::PathBuf {
+    if let Some(path) = non_empty_env_path("MERIDIAN_CACHE_DIR") {
+        return path;
+    }
     if let Some(path) = non_empty_env_path("EVOLUTION_GTK4_CACHE_DIR") {
         return path;
     }
@@ -125,7 +131,7 @@ pub(crate) fn app_cache_dir() -> std::path::PathBuf {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let base = non_empty_env_path("XDG_CACHE_HOME").unwrap_or_else(|| home_dir().join(".cache"));
 
-    base.join("evolution-gtk4")
+    base.join("meridian")
 }
 
 /// Return whether a configured local store is inside the application's own

@@ -364,7 +364,7 @@ pub fn wrap_in_vcalendar_envelope(component: &str) -> String {
         return format!("{trimmed}\r\n");
     }
     format!(
-        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Evolution GTK4 Importer//EN\r\n{trimmed}\r\nEND:VCALENDAR\r\n"
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Meridian Importer//EN\r\n{trimmed}\r\nEND:VCALENDAR\r\n"
     )
 }
 

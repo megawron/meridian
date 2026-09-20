@@ -4,7 +4,7 @@
 // Routes to macOS Keychain via Security.framework on macOS,
 // and Freedesktop Secret Service / EDS on Linux.
 
-pub const KEYCHAIN_SERVICE_ID: &str = "org.gnome.Evolution4";
+pub const KEYCHAIN_SERVICE_ID: &str = "com.martingawron.Meridian";
 
 #[derive(Debug, Clone, Default)]
 pub struct CredentialService;
@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn credential_service_identifier_matches_spec() {
-        assert_eq!(KEYCHAIN_SERVICE_ID, "org.gnome.Evolution4");
+        assert_eq!(KEYCHAIN_SERVICE_ID, "com.martingawron.Meridian");
     }
 
     #[test]

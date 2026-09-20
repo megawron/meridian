@@ -758,7 +758,7 @@ fn build_task_forward_payload(
         .expect("selected_task_candidate validated one identity");
     let component = strip_task_valarms(&validated_task_vtodo_component(candidate, identity)?)?;
     Ok(format!(
-        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Evolution GTK4//EN\r\nMETHOD:PUBLISH\r\n{component}\r\nEND:VCALENDAR\r\n"
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Meridian//EN\r\nMETHOD:PUBLISH\r\n{component}\r\nEND:VCALENDAR\r\n"
     ))
 }
 
@@ -2343,7 +2343,7 @@ fn build_selected_task_export(
     }
 
     Ok(format!(
-        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Evolution GTK4//EN\r\n{}\r\nEND:VCALENDAR\r\n",
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Meridian//EN\r\n{}\r\nEND:VCALENDAR\r\n",
         components.join("\r\n")
     ))
 }
@@ -12457,7 +12457,7 @@ fn replace_task_assignment_properties(component: &str, update: &TaskAssignmentUp
 
 fn build_task_assignment_request(component: &str) -> String {
     format!(
-        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Evolution GTK4//Task Assignment//EN\r\nMETHOD:REQUEST\r\n{}\r\nEND:VCALENDAR\r\n",
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Meridian//Task Assignment//EN\r\nMETHOD:REQUEST\r\n{}\r\nEND:VCALENDAR\r\n",
         component.trim()
     )
 }
