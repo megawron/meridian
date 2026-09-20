@@ -18,8 +18,9 @@ mod memos_page;
 mod tasks_page;
 
 pub use calendar_page::CalendarPage;
+pub(crate) use calendar_page::CalendarView;
 pub use contacts_page::ContactsPage;
-#[allow(unused_imports)]
+pub(crate) use contacts_page::ContactTableColumn;
 pub use html_editor::EditorContent;
 pub use html_editor::HtmlEditor;
 pub use itip_banner::ItipBanner;

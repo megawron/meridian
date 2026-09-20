@@ -3745,6 +3745,30 @@ impl TasksPage {
         self.apply_toolbar_button_modes(is_compact);
     }
 
+    pub(crate) fn is_detail_shown(&self) -> bool {
+        self.imp().is_detail_shown.get()
+    }
+
+    pub(crate) fn selected_task_title(&self) -> Option<String> {
+        let imp = self.imp();
+        let selection = imp.task_selection.borrow();
+        let first_sel = selection.first()?;
+        let store = imp.task_store.borrow().as_ref()?.clone();
+        for idx in 0..store.n_items() {
+            if let Some(task) = store.item(idx).and_downcast::<TaskItemObject>() {
+                if task.id() == first_sel.task_uid && task.source_uid() == first_sel.source_uid {
+                    let title = task.title().trim().to_string();
+                    return if title.is_empty() {
+                        Some(crate::i18n::gettext("Task"))
+                    } else {
+                        Some(title)
+                    };
+                }
+            }
+        }
+        None
+    }
+
     pub(crate) fn can_navigate_back(&self) -> bool {
         let imp = self.imp();
         imp.is_mobile.get() && imp.is_detail_shown.get()
@@ -3755,8 +3779,8 @@ impl TasksPage {
         if imp.is_mobile.get() && imp.is_detail_shown.get() {
             imp.is_detail_shown.set(false);
             self.sync_tasks_layout_visibility();
-            if let Some(root) = self.root().and_downcast::<crate::window::EvolutionWindow>() {
-                root.sync_back_button();
+            if let Some(win) = crate::window::find_evolution_window(self) {
+                win.sync_back_button();
             }
             true
         } else {
@@ -5339,8 +5363,8 @@ impl TasksPage {
             if page.imp().is_mobile.get() && has_selection {
                 page.imp().is_detail_shown.set(true);
                 page.sync_tasks_layout_visibility();
-                if let Some(root) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
-                    root.sync_back_button();
+                if let Some(win) = crate::window::find_evolution_window(&page) {
+                    win.sync_back_button();
                 }
             }
         });
@@ -6825,8 +6849,8 @@ impl TasksPage {
                     if page.imp().is_mobile.get() {
                         page.imp().is_detail_shown.set(true);
                         page.sync_tasks_layout_visibility();
-                        if let Some(root) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
-                            root.sync_back_button();
+                        if let Some(win) = crate::window::find_evolution_window(&page) {
+                            win.sync_back_button();
                         }
                     }
                 }

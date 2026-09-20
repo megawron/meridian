@@ -1189,6 +1189,7 @@ mod imp {
         pub mini_calendar: RefCell<Option<gtk::Calendar>>,
         pub is_mobile: Cell<bool>,
         pub is_tablet: Cell<bool>,
+        pub(crate) drill_down_previous_view: Cell<Option<CalendarView>>,
         pub mini_calendar_2: RefCell<Option<gtk::Calendar>>,
         pub mini_calendar_3: RefCell<Option<gtk::Calendar>>,
         pub mini_calendar_4: RefCell<Option<gtk::Calendar>>,
@@ -1324,6 +1325,7 @@ mod imp {
                 mini_calendar: RefCell::new(None),
                 is_mobile: Cell::new(false),
                 is_tablet: Cell::new(false),
+                drill_down_previous_view: Cell::new(None),
                 mini_calendar_2: RefCell::new(None),
                 mini_calendar_3: RefCell::new(None),
                 mini_calendar_4: RefCell::new(None),
@@ -1506,10 +1508,22 @@ impl CalendarPage {
 
     pub(crate) fn set_screen_mode(&self, is_mobile: bool, is_tablet: bool) {
         let imp = self.imp();
+        let was_mobile = imp.is_mobile.get();
         imp.is_mobile.set(is_mobile);
         imp.is_tablet.set(is_tablet);
+        if !is_mobile && was_mobile {
+            imp.drill_down_previous_view.set(None);
+        } else if is_mobile && !was_mobile {
+            let current = *imp.current_view.borrow();
+            if current == CalendarView::Week || current == CalendarView::WorkWeek {
+                self.select_calendar_view(CalendarView::Day);
+            }
+        }
         self.sync_calendar_layout_visibility();
         self.sync_toolbar_button_labels();
+        if let Some(win) = crate::window::find_evolution_window(self) {
+            win.sync_back_button();
+        }
     }
 
     pub(crate) fn apply_toolbar_button_modes(&self, is_compact: bool) {
@@ -1525,6 +1539,17 @@ impl CalendarPage {
                 btn.set_child(Some(&label));
             }
         }
+        if let Some(today_btn) = imp.calendar_today_button.borrow().as_ref() {
+            if is_compact {
+                today_btn.set_child(Some(&gtk::Image::from_icon_name("calendar-today-symbolic")));
+            } else {
+                let label = gtk::Label::builder()
+                    .label(&crate::i18n::gettext("Today"))
+                    .valign(gtk::Align::Center)
+                    .build();
+                today_btn.set_child(Some(&label));
+            }
+        }
     }
 
     pub(crate) fn sync_toolbar_button_labels(&self) {
@@ -1533,11 +1558,75 @@ impl CalendarPage {
     }
 
     pub(crate) fn can_navigate_back(&self) -> bool {
-        false
+        self.imp().is_mobile.get() && self.imp().drill_down_previous_view.get().is_some()
     }
 
     pub(crate) fn navigate_back(&self) -> bool {
+        let imp = self.imp();
+        if imp.is_mobile.get() {
+            if let Some(prev) = imp.drill_down_previous_view.get() {
+                imp.drill_down_previous_view.set(None);
+                self.select_calendar_view(prev);
+                if let Some(win) = crate::window::find_evolution_window(self) {
+                    win.sync_back_button();
+                }
+                return true;
+            }
+        }
         false
+    }
+
+    pub(crate) fn period_label_text(&self) -> String {
+        let viewport = self.current_calendar_viewport();
+        let date = viewport.anchor_date;
+        match viewport.view {
+            CalendarView::Day => format_date(date),
+            CalendarView::Week => {
+                format!(
+                    "{} {}",
+                    crate::i18n::gettext("Week"),
+                    format_calendar_range(
+                        viewport.visible_range.start,
+                        viewport.visible_range.last_inclusive(),
+                    )
+                )
+            }
+            CalendarView::WorkWeek => {
+                let days = workweek_display_dates(viewport.visible_range, &configured_workdays());
+                let start = days
+                    .first()
+                    .copied()
+                    .unwrap_or(viewport.visible_range.start);
+                let end = days
+                    .last()
+                    .copied()
+                    .unwrap_or(viewport.visible_range.last_inclusive());
+                format!("{} {}", crate::i18n::gettext("Work Week"), format_calendar_range(start, end))
+            }
+            CalendarView::Month => {
+                format!("{} {}", Self::month_name(date.month()), date.year())
+            }
+            CalendarView::Agenda => format!("{} {}", crate::i18n::gettext("Agenda from"), format_date(date)),
+            CalendarView::Year => format!("{} {}", crate::i18n::gettext("Year"), date.year()),
+            CalendarView::List => self
+                .imp()
+                .calendar_list_projection_count
+                .get()
+                .map(|count| format!("{} ({count})", crate::i18n::gettext("All Events")))
+                .unwrap_or_else(|| crate::i18n::gettext("All Events")),
+        }
+    }
+
+    pub(crate) fn current_view_title(&self) -> String {
+        match *self.imp().current_view.borrow() {
+            CalendarView::Day => crate::i18n::gettext("Day"),
+            CalendarView::Week => crate::i18n::gettext("Week"),
+            CalendarView::WorkWeek => crate::i18n::gettext("Work Week"),
+            CalendarView::Month => crate::i18n::gettext("Month"),
+            CalendarView::Agenda => crate::i18n::gettext("Agenda"),
+            CalendarView::Year => crate::i18n::gettext("Year"),
+            CalendarView::List => crate::i18n::gettext("List"),
+        }
     }
 
     pub(crate) fn sync_calendar_layout_visibility(&self) {
@@ -1566,8 +1655,27 @@ impl CalendarPage {
                 }
             }
         }
+        // The calendar toolbar contains the vital date navigation (Prev, Today, Next)
+        // and calendar view controls; it must remain visible on mobile, adapting its controls.
         if let Some(toolbar) = imp.toolbar.borrow().as_ref() {
-            toolbar.set_visible(!is_mobile);
+            toolbar.set_visible(true);
+        }
+        if let Some(buttons) = imp.calendar_view_buttons.borrow().as_ref() {
+            if let Some(parent) = buttons.first().and_then(|b| b.parent()) {
+                parent.set_visible(!is_mobile);
+            }
+        }
+        if let Some(dropdown) = imp.calendar_view_dropdown.borrow().as_ref() {
+            dropdown.set_visible(is_mobile);
+        }
+        if let Some(btn_avail) = imp.btn_availability.borrow().as_ref() {
+            btn_avail.set_visible(!is_mobile);
+        }
+        if let Some(label) = imp.month_date_label.borrow().as_ref() {
+            label.set_visible(!is_mobile);
+        }
+        if let Some(sidebar_toggle) = imp.calendar_sidebar_toggle.borrow().as_ref() {
+            sidebar_toggle.set_visible(!is_mobile);
         }
     }
 
@@ -3324,7 +3432,7 @@ impl CalendarPage {
             .margin_top(4)
             .margin_bottom(4)
             .hexpand(true)
-            .css_classes(vec!["unified-view-toolbar", "toolbar"])
+            .css_classes(vec!["unified-view-toolbar", "toolbar", "calendar-toolbar"])
             .build();
 
         let view_toolbar_scroll = gtk::ScrolledWindow::builder()
@@ -3454,7 +3562,7 @@ impl CalendarPage {
 
             match hit {
                 MonthCanvasHit::Event { event, .. } => {
-                    if n_press == 2 {
+                    if n_press == 2 || page.imp().is_mobile.get() {
                         if let Some(identity) = CalendarEventIdentity::from_event(&event) {
                             page.open_event_editor_for_identity(drawing_area, &identity);
                         }
@@ -3467,14 +3575,32 @@ impl CalendarPage {
                         .borrow_mut()
                         .set_anchor(date, configured_first_weekday());
                     page.imp().view_state.borrow_mut().select_civil_day(date);
+                    if page.imp().is_mobile.get() {
+                        page.imp().drill_down_previous_view.set(Some(CalendarView::Month));
+                    }
                     page.select_calendar_view(CalendarView::Day);
+                    if let Some(win) = crate::window::find_evolution_window(&page) {
+                        win.sync_back_button();
+                    }
                 }
                 MonthCanvasHit::DayCell { date } => {
                     let direct_create = AppSettings::try_new()
                         .map(|s| s.calendar_click_action() == "create")
                         .unwrap_or(false);
 
-                    if direct_create || n_press == 2 {
+                    if page.imp().is_mobile.get() {
+                        *page.imp().current_date.borrow_mut() = date;
+                        page.imp()
+                            .view_state
+                            .borrow_mut()
+                            .set_anchor(date, configured_first_weekday());
+                        page.imp().view_state.borrow_mut().select_civil_day(date);
+                        page.imp().drill_down_previous_view.set(Some(CalendarView::Month));
+                        page.select_calendar_view(CalendarView::Day);
+                        if let Some(win) = crate::window::find_evolution_window(&page) {
+                            win.sync_back_button();
+                        }
+                    } else if direct_create || n_press == 2 {
                         let dialog = crate::dialogs::EventDialog::new_for_date(date);
                         let page_for_refresh = page.downgrade();
                         dialog.connect_close_request(move |_| {
@@ -6106,6 +6232,17 @@ impl CalendarPage {
         if self.imp().syncing_calendar_view.get() {
             return;
         }
+        let imp = self.imp();
+        if imp.is_mobile.get() {
+            let current = *imp.current_view.borrow();
+            if (current == CalendarView::Month || current == CalendarView::Week || current == CalendarView::WorkWeek)
+                && (view == CalendarView::Day || view == CalendarView::Agenda)
+            {
+                imp.drill_down_previous_view.set(Some(current));
+            } else if view == CalendarView::Month || view == CalendarView::Week || view == CalendarView::WorkWeek {
+                imp.drill_down_previous_view.set(None);
+            }
+        }
         self.imp().syncing_calendar_view.set(true);
         *self.imp().current_view.borrow_mut() = view;
         self.imp()
@@ -6142,6 +6279,9 @@ impl CalendarPage {
         self.update_calendar_navigation_controls();
         self.refresh_calendar_views();
         self.imp().syncing_calendar_view.set(false);
+        if let Some(win) = crate::window::find_evolution_window(self) {
+            win.sync_back_button();
+        }
     }
 
     fn sync_calendar_view_from_settings(&self) {
@@ -7481,49 +7621,15 @@ impl CalendarPage {
     }
 
     fn refresh_period_label(&self) {
-        let Some(label) = self.imp().month_date_label.borrow().as_ref().cloned() else {
-            return;
-        };
-        let viewport = self.current_calendar_viewport();
-        let date = viewport.anchor_date;
-        let view = viewport.view;
-        let text = match view {
-            CalendarView::Day => format_date(date),
-            CalendarView::Week => {
-                format!(
-                    "{} {}",
-                    crate::i18n::gettext("Week"),
-                    format_calendar_range(
-                        viewport.visible_range.start,
-                        viewport.visible_range.last_inclusive(),
-                    )
-                )
+        let text = self.period_label_text();
+        if let Some(label) = self.imp().month_date_label.borrow().as_ref().cloned() {
+            label.set_label(&text);
+        }
+        if self.imp().is_mobile.get() {
+            if let Some(win) = crate::window::find_evolution_window(self) {
+                win.sync_back_button();
             }
-            CalendarView::WorkWeek => {
-                let days = workweek_display_dates(viewport.visible_range, &configured_workdays());
-                let start = days
-                    .first()
-                    .copied()
-                    .unwrap_or(viewport.visible_range.start);
-                let end = days
-                    .last()
-                    .copied()
-                    .unwrap_or(viewport.visible_range.last_inclusive());
-                format!("{} {}", crate::i18n::gettext("Work Week"), format_calendar_range(start, end))
-            }
-            CalendarView::Month => {
-                format!("{} {}", Self::month_name(date.month()), date.year())
-            }
-            CalendarView::Agenda => format!("{} {}", crate::i18n::gettext("Agenda from"), format_date(date)),
-            CalendarView::Year => format!("{} {}", crate::i18n::gettext("Year"), date.year()),
-            CalendarView::List => self
-                .imp()
-                .calendar_list_projection_count
-                .get()
-                .map(|count| format!("{} ({count})", crate::i18n::gettext("All Events")))
-                .unwrap_or_else(|| crate::i18n::gettext("All Events")),
-        };
-        label.set_label(&text);
+        }
     }
 
     fn refresh_day_view(&self) {

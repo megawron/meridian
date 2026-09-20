@@ -285,7 +285,7 @@ pub(crate) const PRIMARY_MENU_ACTIONS: &[MenuActionSpec] = menu_specs! {
     Help => [
         ("Developer Console", "win.toggle-debug-console"),
         ("Keyboard Shortcuts", "win.show-help-overlay"),
-        ("About Evolution", "app.about"),
+        ("About Meridian", "app.about"),
     ],
     Transport => [
         ("Send & Receive", "win.mail-send-receive"),

@@ -89,6 +89,7 @@ mod imp {
         pub window_title: RefCell<Option<adw::WindowTitle>>,
         pub is_mobile: Cell<bool>,
         pub is_tablet: Cell<bool>,
+        pub is_compact: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -1082,9 +1083,8 @@ impl EvolutionWindow {
         self.imp().view_switcher_bar.borrow().clone()
     }
 
-    pub(crate) fn sync_back_button(&self) {
-        let is_mobile = self.imp().is_mobile.get();
-        let can_back = if let Some(view_stack) = self.imp().view_stack.borrow().as_ref() {
+    pub(crate) fn can_navigate_back(&self) -> bool {
+        if let Some(view_stack) = self.imp().view_stack.borrow().as_ref() {
             match view_stack.visible_child_name().as_deref() {
                 Some("mail") => self.mail_page().map(|p| p.can_navigate_back()).unwrap_or(false),
                 Some("calendar") => self.calendar_page().map(|p| p.can_navigate_back()).unwrap_or(false),
@@ -1095,7 +1095,12 @@ impl EvolutionWindow {
             }
         } else {
             false
-        };
+        }
+    }
+
+    pub(crate) fn sync_back_button(&self) {
+        let is_mobile = self.imp().is_mobile.get();
+        let can_back = self.can_navigate_back();
 
         if let Some(back_btn) = self.imp().back_button.borrow().as_ref() {
             back_btn.set_visible(can_back);
@@ -1106,6 +1111,14 @@ impl EvolutionWindow {
                 search_btn.set_visible(!can_back);
             } else {
                 search_btn.set_visible(true);
+            }
+        }
+
+        if let Some(compose_btn) = self.imp().compose_button.borrow().as_ref() {
+            if is_mobile {
+                compose_btn.set_visible(!can_back);
+            } else {
+                compose_btn.set_visible(true);
             }
         }
 
@@ -1140,20 +1153,66 @@ impl EvolutionWindow {
                         }
                     }
                     Some("calendar") => {
-                        window_title.set_title(&crate::i18n::gettext("Calendar"));
-                        window_title.set_subtitle("");
+                        if let Some(cal) = self.calendar_page() {
+                            let period = cal.period_label_text();
+                            let view_name = cal.current_view_title();
+                            window_title.set_title(&period);
+                            window_title.set_subtitle(&view_name);
+                        } else {
+                            window_title.set_title(&crate::i18n::gettext("Calendar"));
+                            window_title.set_subtitle("");
+                        }
                     }
                     Some("contacts") => {
-                        window_title.set_title(&crate::i18n::gettext("Contacts"));
-                        window_title.set_subtitle("");
+                        if let Some(contacts) = self.contacts_page() {
+                            if contacts.is_detail_shown() {
+                                let name = contacts
+                                    .selected_contact_display_name()
+                                    .unwrap_or_else(|| crate::i18n::gettext("Contact"));
+                                window_title.set_title(&name);
+                                window_title.set_subtitle(&crate::i18n::gettext("Contacts"));
+                            } else {
+                                window_title.set_title(&crate::i18n::gettext("Contacts"));
+                                window_title.set_subtitle("");
+                            }
+                        } else {
+                            window_title.set_title(&crate::i18n::gettext("Contacts"));
+                            window_title.set_subtitle("");
+                        }
                     }
                     Some("tasks") => {
-                        window_title.set_title(&crate::i18n::gettext("Tasks"));
-                        window_title.set_subtitle("");
+                        if let Some(tasks) = self.tasks_page() {
+                            if tasks.is_detail_shown() {
+                                let title = tasks
+                                    .selected_task_title()
+                                    .unwrap_or_else(|| crate::i18n::gettext("Task"));
+                                window_title.set_title(&title);
+                                window_title.set_subtitle(&crate::i18n::gettext("Tasks"));
+                            } else {
+                                window_title.set_title(&crate::i18n::gettext("Tasks"));
+                                window_title.set_subtitle("");
+                            }
+                        } else {
+                            window_title.set_title(&crate::i18n::gettext("Tasks"));
+                            window_title.set_subtitle("");
+                        }
                     }
                     Some("memos") => {
-                        window_title.set_title(&crate::i18n::gettext("Memos"));
-                        window_title.set_subtitle("");
+                        if let Some(memos) = self.memos_page() {
+                            if memos.is_detail_shown() {
+                                let title = memos
+                                    .selected_memo_title()
+                                    .unwrap_or_else(|| crate::i18n::gettext("Memo"));
+                                window_title.set_title(&title);
+                                window_title.set_subtitle(&crate::i18n::gettext("Memos"));
+                            } else {
+                                window_title.set_title(&crate::i18n::gettext("Memos"));
+                                window_title.set_subtitle("");
+                            }
+                        } else {
+                            window_title.set_title(&crate::i18n::gettext("Memos"));
+                            window_title.set_subtitle("");
+                        }
                     }
                     _ => {
                         window_title.set_title("");
@@ -1210,9 +1269,52 @@ impl EvolutionWindow {
         handled
     }
 
+    pub fn is_mobile(&self) -> bool {
+        self.imp().is_mobile.get()
+    }
+
+    pub fn is_tablet(&self) -> bool {
+        self.imp().is_tablet.get()
+    }
+
+    pub fn is_compact(&self) -> bool {
+        self.imp().is_compact.get()
+    }
+
+    pub(crate) fn set_compact_screen(&self, is_compact: bool) {
+        self.imp().is_compact.set(is_compact);
+        if is_compact {
+            self.add_css_class("compact-screen");
+        } else {
+            self.remove_css_class("compact-screen");
+        }
+        if let Some(cal) = self.calendar_page() {
+            cal.apply_toolbar_button_modes(is_compact);
+        }
+        if let Some(contacts) = self.contacts_page() {
+            contacts.apply_toolbar_button_modes(is_compact);
+        }
+        if let Some(tasks) = self.tasks_page() {
+            tasks.apply_toolbar_button_modes(is_compact);
+        }
+        if let Some(memos) = self.memos_page() {
+            memos.apply_toolbar_button_modes(is_compact);
+        }
+        if let Some(mail) = self.mail_page() {
+            mail.apply_toolbar_button_modes(is_compact);
+        }
+    }
+
     pub(crate) fn set_screen_mode(&self, is_mobile: bool, is_tablet: bool) {
         self.imp().is_mobile.set(is_mobile);
         self.imp().is_tablet.set(is_tablet);
+
+        if is_mobile {
+            self.add_css_class("mobile-screen");
+        } else {
+            self.remove_css_class("mobile-screen");
+            self.set_compact_screen(false);
+        }
 
         if let Some(mail) = self.mail_page() {
             mail.set_screen_mode(is_mobile, is_tablet);
@@ -1828,11 +1930,12 @@ impl EvolutionWindow {
             } else {
                 "network-idle-symbolic"
             });
-            toggle.set_tooltip_text(Some(if offline {
-                "Offline-Modus aktiv; auf Online umschalten"
+            let tooltip = if offline {
+                crate::i18n::gettext("Offline mode active; click to switch online")
             } else {
-                "Online-Modus aktiv; auf Offline umschalten"
-            }));
+                crate::i18n::gettext("Online mode active; click to switch offline")
+            };
+            toggle.set_tooltip_text(Some(&tooltip));
         }
 
         if let Some(label) = self.imp().status_label.borrow().as_ref() {
@@ -3520,67 +3623,93 @@ impl EvolutionWindow {
         toast_overlay.set_vexpand(true);
         toast_overlay.set_child(Some(&toolbar_view));
 
-        // Responsive Breakpoints: 3-Tier Model
-        // 1. Desktop (> 1000sp): 3 columns
-        // 2. Tablet (720sp - 1000sp): 2 columns
-        // 3. Mobile (< 750sp): 1 column drill-down
+        // Responsive Breakpoints: 4-Tier Model (matching GNOME Calendar & Convey)
+        // 1. Desktop (> 1000sp): 3 columns (Folders | Messages | Viewer)
+        // 2. Tablet (750sp - 1000sp): 2 columns
+        // 3. Mobile (450sp - 750sp): 1 column drilldown with bottom view switcher bar
+        // 4. Compact Mobile (<= 450sp): 1 column drilldown with compact controls (e.g. PinePhone 360px)
         let bp_tablet =
             adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 1000sp").unwrap());
         let bp_mobile =
             adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 750sp").unwrap());
+        let bp_compact =
+            adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 450sp").unwrap());
 
-        let tablet_applied = Rc::new(Cell::new(false));
-        let mobile_applied = Rc::new(Cell::new(false));
-
-        let tab_app = Rc::clone(&tablet_applied);
-        let mob_app = Rc::clone(&mobile_applied);
         let win_weak_tab_apply = self.downgrade();
         bp_tablet.connect_apply(move |_| {
-            tab_app.set(true);
-            if !mob_app.get() {
-                if let Some(win) = win_weak_tab_apply.upgrade() {
-                    win.set_screen_mode(false, true);
-                }
+            if let Some(win) = win_weak_tab_apply.upgrade() {
+                win.set_screen_mode(false, true);
+                win.set_compact_screen(false);
             }
         });
 
-        let tab_unapp = Rc::clone(&tablet_applied);
-        let mob_unapp = Rc::clone(&mobile_applied);
-        let win_weak_tab_unapply = self.downgrade();
-        bp_tablet.connect_unapply(move |_| {
-            tab_unapp.set(false);
-            if !mob_unapp.get() {
-                if let Some(win) = win_weak_tab_unapply.upgrade() {
-                    win.set_screen_mode(false, false);
-                }
-            }
-        });
-
-        let mob_app_m = Rc::clone(&mobile_applied);
         let win_weak_mob_apply = self.downgrade();
         bp_mobile.connect_apply(move |_| {
-            mob_app_m.set(true);
             if let Some(win) = win_weak_mob_apply.upgrade() {
                 win.set_screen_mode(true, false);
+                win.set_compact_screen(false);
             }
         });
 
-        let tab_unapp_m = Rc::clone(&tablet_applied);
-        let mob_unapp_m = Rc::clone(&mobile_applied);
-        let win_weak_mob_unapply = self.downgrade();
-        bp_mobile.connect_unapply(move |_| {
-            mob_unapp_m.set(false);
-            if let Some(win) = win_weak_mob_unapply.upgrade() {
-                if tab_unapp_m.get() {
-                    win.set_screen_mode(false, true);
-                } else {
-                    win.set_screen_mode(false, false);
+        let win_weak_compact_apply = self.downgrade();
+        bp_compact.connect_apply(move |_| {
+            if let Some(win) = win_weak_compact_apply.upgrade() {
+                win.set_screen_mode(true, false);
+                win.set_compact_screen(true);
+            }
+        });
+
+        self.add_breakpoint(bp_compact.clone());
+        self.add_breakpoint(bp_mobile.clone());
+        self.add_breakpoint(bp_tablet.clone());
+
+        // Connect notify::current-breakpoint as the central source of truth (as in GNOME Calendar)
+        let bp_tab_clone = bp_tablet.clone();
+        let bp_mob_clone = bp_mobile.clone();
+        let bp_comp_clone = bp_compact.clone();
+        self.connect_current_breakpoint_notify(move |win| {
+            let current = win.current_breakpoint();
+            if current.as_ref() == Some(&bp_comp_clone) {
+                win.set_screen_mode(true, false);
+                win.set_compact_screen(true);
+            } else if current.as_ref() == Some(&bp_mob_clone) {
+                win.set_screen_mode(true, false);
+                win.set_compact_screen(false);
+            } else if current.as_ref() == Some(&bp_tab_clone) {
+                win.set_screen_mode(false, true);
+                win.set_compact_screen(false);
+            } else {
+                win.set_screen_mode(false, false);
+                win.set_compact_screen(false);
+            }
+        });
+
+        // Hardware mouse back button (button 8 / XButton1)
+        let mouse_back = gtk::GestureClick::new();
+        mouse_back.set_button(8);
+        let win_weak_mouse = self.downgrade();
+        mouse_back.connect_pressed(move |gesture, _n_press, _x, _y| {
+            if let Some(win) = win_weak_mouse.upgrade() {
+                if win.handle_navigate_back() {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
                 }
             }
         });
+        self.add_controller(mouse_back);
 
-        self.add_breakpoint(bp_tablet);
-        self.add_breakpoint(bp_mobile);
+        // Touch swipe-to-back gesture (swipe right)
+        let swipe = gtk::GestureSwipe::new();
+        let win_weak_swipe = self.downgrade();
+        swipe.connect_swipe(move |gesture, velocity_x, velocity_y| {
+            if velocity_x > 200.0 && velocity_x.abs() > velocity_y.abs() * 1.5 {
+                if let Some(win) = win_weak_swipe.upgrade() {
+                    if win.handle_navigate_back() {
+                        gesture.set_state(gtk::EventSequenceState::Claimed);
+                    }
+                }
+            }
+        });
+        self.add_controller(swipe);
 
         let key_controller = gtk::EventControllerKey::new();
         let win_weak_for_key = self.downgrade();
@@ -5039,13 +5168,24 @@ impl EvolutionWindow {
                             if let Some(win) = win_weak.upgrade() {
                                 if summary.errors.is_empty() {
                                     win.add_toast(&adw::Toast::new(&format!(
-                                        "macOS Synchronisation: {} Termine, {} Aufgaben, {} Kontakte synchronisiert",
-                                        summary.calendar_events, summary.tasks_reminders, summary.contacts
+                                        "{}: {} {}, {} {}, {} {}",
+                                        crate::i18n::gettext("macOS Synchronization"),
+                                        summary.calendar_events,
+                                        crate::i18n::gettext("events"),
+                                        summary.tasks_reminders,
+                                        crate::i18n::gettext("tasks"),
+                                        summary.contacts,
+                                        crate::i18n::gettext("contacts synchronized")
                                     )));
                                 } else {
                                     win.add_toast(&adw::Toast::new(&format!(
-                                        "macOS Synchronisation ({} Termine, {} Kontakte). {}",
-                                        summary.calendar_events, summary.contacts, summary.errors.join("; ")
+                                        "{} ({} {}, {} {}). {}",
+                                        crate::i18n::gettext("macOS Synchronization"),
+                                        summary.calendar_events,
+                                        crate::i18n::gettext("events"),
+                                        summary.contacts,
+                                        crate::i18n::gettext("contacts"),
+                                        summary.errors.join("; ")
                                     )));
                                 }
                                 if let Some(cal_page) = win.calendar_page() {
@@ -7452,6 +7592,261 @@ mod tests {
         EvolutionWindow::configure_primary_action(&button, "mail", true);
         let child = button.child().expect("Button child");
         assert!(child.downcast::<gtk::Image>().is_ok());
+    }
+
+    #[test]
+    fn test_responsive_calendar_drilldown_and_navigation() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+
+        let calendar = crate::views::CalendarPage::new();
+        calendar.set_screen_mode(true, false);
+        assert!(!calendar.can_navigate_back());
+
+        // Select Day view from Month view in mobile mode -> should set drilldown
+        calendar.imp().drill_down_previous_view.set(Some(crate::views::CalendarView::Month));
+        assert!(calendar.can_navigate_back());
+
+        // Navigate back should return to Month and clear drill down
+        assert!(calendar.navigate_back());
+        assert!(!calendar.can_navigate_back());
+        assert!(!calendar.navigate_back());
+
+        // Test period_label_text and current_view_title formatting
+        let title = calendar.current_view_title();
+        assert!(!title.is_empty());
+        let period = calendar.period_label_text();
+        assert!(!period.is_empty());
+    }
+
+    #[test]
+    fn test_window_swipe_and_hardware_back_navigation() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+        window.set_screen_mode(true, false);
+
+        // At default top-level, can_navigate_back is false
+        assert!(!window.can_navigate_back());
+        assert!(!window.handle_navigate_back());
+
+        // Mail page drilldown
+        if let Some(mail) = window.mail_page() {
+            mail.imp().drill_down_level.set(crate::views::MailDrillDownLevel::Viewer);
+            window.sync_back_button();
+            assert!(window.can_navigate_back());
+
+            // Handle back should transition Viewer -> Messages
+            assert!(window.handle_navigate_back());
+            assert_eq!(mail.drill_down_level(), crate::views::MailDrillDownLevel::Messages);
+
+            // Handle back should transition Messages -> Folders
+            assert!(window.handle_navigate_back());
+            assert_eq!(mail.drill_down_level(), crate::views::MailDrillDownLevel::Folders);
+
+            // Already at top level
+            assert!(!window.can_navigate_back());
+            assert!(!window.handle_navigate_back());
+        }
+
+        // Calendar drilldown back navigation
+        if let Some(view_stack) = window.imp().view_stack.borrow().as_ref() {
+            view_stack.set_visible_child_name("calendar");
+            if let Some(cal) = window.calendar_page() {
+                cal.imp().drill_down_previous_view.set(Some(crate::views::CalendarView::Month));
+                window.sync_back_button();
+                assert!(window.can_navigate_back());
+                assert!(window.handle_navigate_back());
+                assert!(!window.can_navigate_back());
+            }
+
+            // Contacts detail drilldown back navigation
+            view_stack.set_visible_child_name("contacts");
+            if let Some(contacts) = window.contacts_page() {
+                contacts.imp().is_detail_shown.set(true);
+                window.sync_back_button();
+                assert!(window.can_navigate_back());
+                assert!(window.handle_navigate_back());
+                assert!(!contacts.is_detail_shown());
+                assert!(!window.can_navigate_back());
+            }
+
+            // Tasks detail drilldown back navigation
+            view_stack.set_visible_child_name("tasks");
+            if let Some(tasks) = window.tasks_page() {
+                tasks.imp().is_detail_shown.set(true);
+                window.sync_back_button();
+                assert!(window.can_navigate_back());
+                assert!(window.handle_navigate_back());
+                assert!(!tasks.is_detail_shown());
+                assert!(!window.can_navigate_back());
+            }
+
+            // Memos detail drilldown back navigation
+            view_stack.set_visible_child_name("memos");
+            if let Some(memos) = window.memos_page() {
+                memos.imp().is_detail_shown.set(true);
+                window.sync_back_button();
+                assert!(window.can_navigate_back());
+                assert!(window.handle_navigate_back());
+                assert!(!memos.is_detail_shown());
+                assert!(!window.can_navigate_back());
+            }
+        }
+    }
+
+    #[test]
+    fn test_mobile_headerbar_adaptation() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+
+        // Desktop mode: no mobile-screen CSS class
+        window.set_screen_mode(false, false);
+        assert!(!window.has_css_class("mobile-screen"));
+
+        // Mobile mode: adds mobile-screen CSS class
+        window.set_screen_mode(true, false);
+        assert!(window.has_css_class("mobile-screen"));
+
+        // When can_navigate_back is false on mobile, compose_button visible property is true
+        if let Some(compose_btn) = window.imp().compose_button.borrow().as_ref() {
+            assert!(compose_btn.property::<bool>("visible"));
+        }
+
+        // When can_navigate_back is true on mobile, compose_button is hidden to maximize title room
+        if let Some(view_stack) = window.imp().view_stack.borrow().as_ref() {
+            view_stack.set_visible_child_name("mail");
+        }
+        if let Some(mail) = window.mail_page() {
+            mail.imp().drill_down_level.set(crate::views::MailDrillDownLevel::Viewer);
+            window.sync_back_button();
+            assert!(window.can_navigate_back());
+            if let Some(compose_btn) = window.imp().compose_button.borrow().as_ref() {
+                assert!(!compose_btn.property::<bool>("visible"));
+            }
+
+            // Window title should show email subject in viewer level
+            if let Some(title) = window.imp().window_title.borrow().as_ref() {
+                assert_eq!(title.subtitle().as_str(), crate::i18n::gettext("Message"));
+            }
+        }
+
+        // Switching back to desktop mode removes mobile-screen class
+        window.set_screen_mode(false, false);
+        assert!(!window.has_css_class("mobile-screen"));
+        if let Some(compose_btn) = window.imp().compose_button.borrow().as_ref() {
+            assert!(compose_btn.property::<bool>("visible"));
+        }
+    }
+
+    #[test]
+    fn test_compact_and_mobile_screen_mode_transitions() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+
+        // Verify initial state is desktop
+        assert!(!window.is_mobile());
+        assert!(!window.is_tablet());
+        assert!(!window.is_compact());
+        assert!(!window.has_css_class("mobile-screen"));
+        assert!(!window.has_css_class("compact-screen"));
+
+        // Transition to mobile
+        window.set_screen_mode(true, false);
+        assert!(window.is_mobile());
+        assert!(!window.is_tablet());
+        assert!(window.has_css_class("mobile-screen"));
+
+        // Transition to compact mobile
+        window.set_compact_screen(true);
+        assert!(window.is_mobile());
+        assert!(window.is_compact());
+        assert!(window.has_css_class("compact-screen"));
+
+        // Transition back to desktop should clear both classes
+        window.set_screen_mode(false, false);
+        assert!(!window.is_mobile());
+        assert!(!window.is_compact());
+        assert!(!window.has_css_class("mobile-screen"));
+        assert!(!window.has_css_class("compact-screen"));
+
+        // Breakpoints must be registered in ascending max-width order
+        let source = include_str!("window.rs");
+        let idx_compact = source.find("self.add_breakpoint(bp_compact.clone());").expect("compact bp");
+        let idx_mobile = source.find("self.add_breakpoint(bp_mobile.clone());").expect("mobile bp");
+        let idx_tablet = source.find("self.add_breakpoint(bp_tablet.clone());").expect("tablet bp");
+        assert!(idx_compact < idx_mobile && idx_mobile < idx_tablet, "Breakpoints must be registered in increasing max-width order");
+    }
+
+    #[test]
+    fn test_calendar_toolbar_remains_visible_and_adapts_on_mobile() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+
+        let calendar = crate::views::CalendarPage::new();
+
+        // Initially in desktop mode
+        calendar.set_screen_mode(false, false);
+        let toolbar = calendar.imp().toolbar.borrow().as_ref().cloned().expect("toolbar");
+        assert!(toolbar.is_visible(), "Toolbar must be visible in desktop mode");
+
+        let dropdown = calendar.imp().calendar_view_dropdown.borrow().as_ref().cloned().expect("dropdown");
+        assert!(!dropdown.is_visible(), "Dropdown should be hidden in desktop mode");
+
+        let buttons = calendar.imp().calendar_view_buttons.borrow().as_ref().cloned().expect("buttons");
+        let toggle_parent = buttons.first().and_then(|b| b.parent()).expect("view_toggle");
+        assert!(toggle_parent.is_visible(), "Button bar should be visible in desktop mode");
+
+        // Switch to mobile mode
+        calendar.set_screen_mode(true, false);
+        assert!(toolbar.is_visible(), "Toolbar MUST remain visible on mobile for date navigation");
+        assert!(dropdown.is_visible(), "Dropdown must be visible on mobile");
+        assert!(!toggle_parent.is_visible(), "Button bar must be hidden on mobile to prevent overflow");
+
+        if let Some(date_label) = calendar.imp().month_date_label.borrow().as_ref() {
+            assert!(!date_label.is_visible(), "Date label is hidden in toolbar on mobile as headerbar shows it");
+        }
+
+        // Test compact mode adaptation on Today button
+        calendar.apply_toolbar_button_modes(true);
+        if let Some(today_btn) = calendar.imp().calendar_today_button.borrow().as_ref() {
+            let child = today_btn.child().expect("child");
+            assert!(child.downcast::<gtk::Image>().is_ok(), "Today button should use icon in compact mode");
+        }
+
+        calendar.apply_toolbar_button_modes(false);
+        if let Some(today_btn) = calendar.imp().calendar_today_button.borrow().as_ref() {
+            let child = today_btn.child().expect("child");
+            assert!(child.downcast::<gtk::Label>().is_ok(), "Today button should use text in non-compact mode");
+        }
     }
 }
 

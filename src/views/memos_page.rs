@@ -791,6 +791,29 @@ impl MemosPage {
         self.apply_toolbar_button_modes(is_compact);
     }
 
+    pub(crate) fn is_detail_shown(&self) -> bool {
+        self.imp().is_detail_shown.get()
+    }
+
+    pub(crate) fn selected_memo_title(&self) -> Option<String> {
+        let imp = self.imp();
+        let selection = imp.memo_selection.borrow();
+        let first_sel = selection.selected().first()?;
+        let records = imp.memo_records.borrow().as_ref()?.clone();
+        let list = records.borrow();
+        for memo in list.iter() {
+            if memo.uid == first_sel.uid && memo.source_uid == first_sel.source_uid {
+                let summary = memo.summary.trim().to_string();
+                return if summary.is_empty() {
+                    Some(crate::i18n::gettext("Memo"))
+                } else {
+                    Some(summary)
+                };
+            }
+        }
+        None
+    }
+
     pub(crate) fn can_navigate_back(&self) -> bool {
         let imp = self.imp();
         imp.is_mobile.get() && imp.is_detail_shown.get()
@@ -801,8 +824,8 @@ impl MemosPage {
         if imp.is_mobile.get() && imp.is_detail_shown.get() {
             imp.is_detail_shown.set(false);
             self.sync_memos_layout_visibility();
-            if let Some(root) = self.root().and_downcast::<crate::window::EvolutionWindow>() {
-                root.sync_back_button();
+            if let Some(win) = crate::window::find_evolution_window(self) {
+                win.sync_back_button();
             }
             true
         } else {
@@ -4373,8 +4396,8 @@ impl MemosPage {
                 if page.imp().is_mobile.get() {
                     page.imp().is_detail_shown.set(true);
                     page.sync_memos_layout_visibility();
-                    if let Some(root) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
-                        root.sync_back_button();
+                    if let Some(win) = crate::window::find_evolution_window(&page) {
+                        win.sync_back_button();
                     }
                 }
             }
@@ -4387,8 +4410,8 @@ impl MemosPage {
                 if page.imp().is_mobile.get() {
                     page.imp().is_detail_shown.set(true);
                     page.sync_memos_layout_visibility();
-                    if let Some(root) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
-                        root.sync_back_button();
+                    if let Some(win) = crate::window::find_evolution_window(&page) {
+                        win.sync_back_button();
                     }
                 }
             }

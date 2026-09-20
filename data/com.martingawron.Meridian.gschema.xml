@@ -404,16 +404,16 @@
     </key>
     <key name="mail-show-todo-bar" type="b">
       <default>false</default>
-      <summary>Aufgabenleiste für heute in der Mail-Ansicht anzeigen</summary>
+      <summary>Show today's to-do bar in mail view</summary>
     </key>
     <key name="agenda-show-tasks" type="b">
       <default>true</default>
-      <summary>Aufgaben in der Agenda-Seitenleiste anzeigen</summary>
+      <summary>Show tasks in agenda sidebar</summary>
     </key>
     <key name="mail-todo-bar-position" type="i">
       <default>260</default>
       <range min="160" max="1200"/>
-      <summary>Breite der Aufgabenleiste für heute in der Mail-Ansicht</summary>
+      <summary>Width of today's to-do bar in mail view</summary>
     </key>
     <key name="mail-show-toolbar" type="b">
       <default>true</default>
@@ -421,7 +421,7 @@
     </key>
     <key name="mail-show-mark-read-actions" type="b">
       <default>false</default>
-      <summary>Gelesen/Ungelesen-Aktionen in der Mail-Werkzeugleiste anzeigen</summary>
+      <summary>Show mark read/unread actions in mail toolbar</summary>
     </key>
     <key name="mail-show-statusbar" type="b">
       <default>true</default>
@@ -429,7 +429,7 @@
     </key>
     <key name="debug-console-enabled" type="b">
       <default>false</default>
-      <summary>Entwickler-Protokollkonsole in der Statusleiste aktivieren</summary>
+      <summary>Enable developer log console in status bar</summary>
     </key>
     <key name="mail-show-sidebar" type="b">
       <default>true</default>

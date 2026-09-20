@@ -2852,5 +2852,43 @@ scrollbar.mail-table-overlay-scrollbar slider:active {
   margin-start: 4px;
 }
 
+/* Mobile & Compact Screen Responsive Styles (gnome-calendar & convey inspired) */
+.mobile-screen headerbar button {
+  min-height: 34px;
+  min-width: 34px;
+  padding: 4px 8px;
+}
 
+.mobile-screen .view-switcher-bar {
+  border-top: 1px solid alpha(@borders, 0.4);
+  background-color: @headerbar_bg_color;
+}
+
+.mobile-screen listview row,
+.mobile-screen listbox row {
+  min-height: 44px;
+}
+
+.compact-screen headerbar {
+  padding-start: 4px;
+  padding-end: 4px;
+}
+
+.compact-screen headerbar button {
+  padding: 3px 6px;
+  margin-start: 1px;
+  margin-end: 1px;
+  min-width: 32px;
+}
+
+.compact-screen .calendar-toolbar,
+.compact-screen .unified-view-toolbar {
+  padding: 2px 4px;
+}
+
+.compact-screen .calendar-toolbar button,
+.compact-screen .unified-view-toolbar button {
+  padding: 3px 6px;
+  min-width: 32px;
+}
 

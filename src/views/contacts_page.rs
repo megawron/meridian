@@ -904,6 +904,30 @@ impl ContactsPage {
         self.apply_toolbar_button_modes(is_compact);
     }
 
+    pub(crate) fn is_detail_shown(&self) -> bool {
+        self.imp().is_detail_shown.get()
+    }
+
+    pub(crate) fn selected_contact_display_name(&self) -> Option<String> {
+        let imp = self.imp();
+        let identity = imp.selected_identity.borrow().clone()?;
+        let stored_contacts = imp.stored_contacts.borrow().as_ref().cloned()?;
+        let records = stored_contacts.borrow();
+        let record = records
+            .iter()
+            .find(|r| r.source_uid == identity.source_uid && r.uid == identity.uid)?;
+        let name = record.contact.fn_name.trim();
+        if name.is_empty() {
+            if !record.contact.email.trim().is_empty() {
+                Some(record.contact.email.trim().to_string())
+            } else {
+                Some(crate::i18n::gettext("Contact"))
+            }
+        } else {
+            Some(name.to_string())
+        }
+    }
+
     pub(crate) fn can_navigate_back(&self) -> bool {
         let imp = self.imp();
         imp.is_mobile.get() && imp.is_detail_shown.get()
@@ -914,8 +938,8 @@ impl ContactsPage {
         if imp.is_mobile.get() && imp.is_detail_shown.get() {
             imp.is_detail_shown.set(false);
             self.sync_contacts_layout_visibility();
-            if let Some(root) = self.root().and_downcast::<crate::window::EvolutionWindow>() {
-                root.sync_back_button();
+            if let Some(win) = crate::window::find_evolution_window(self) {
+                win.sync_back_button();
             }
             true
         } else {
@@ -2187,8 +2211,8 @@ impl ContactsPage {
                 if page.imp().is_mobile.get() {
                     page.imp().is_detail_shown.set(true);
                     page.sync_contacts_layout_visibility();
-                    if let Some(root) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
-                        root.sync_back_button();
+                    if let Some(win) = crate::window::find_evolution_window(&page) {
+                        win.sync_back_button();
                     }
                 }
             });
@@ -4206,8 +4230,8 @@ impl ContactsPage {
             if page.imp().is_mobile.get() && !list.selected_rows().is_empty() {
                 page.imp().is_detail_shown.set(true);
                 page.sync_contacts_layout_visibility();
-                if let Some(root) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
-                    root.sync_back_button();
+                if let Some(win) = crate::window::find_evolution_window(&page) {
+                    win.sync_back_button();
                 }
             }
         });
@@ -4245,8 +4269,8 @@ impl ContactsPage {
                 if page.imp().is_mobile.get() && page.imp().selected_identity.borrow().is_some() {
                     page.imp().is_detail_shown.set(true);
                     page.sync_contacts_layout_visibility();
-                    if let Some(root) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
-                        root.sync_back_button();
+                    if let Some(win) = crate::window::find_evolution_window(&page) {
+                        win.sync_back_button();
                     }
                 }
             }
