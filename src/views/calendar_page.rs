@@ -10917,6 +10917,12 @@ fn show_taskpad_context_menu(
 
     popover.set_parent(anchor_widget);
     popover.set_child(Some(&menu_box));
+    popover.connect_closed(|p| {
+        let p = p.clone();
+        glib::idle_add_local_once(move || {
+            p.unparent();
+        });
+    });
     popover.popup();
 }
 
@@ -10957,6 +10963,12 @@ fn show_memopad_context_menu(
 
     popover.set_parent(anchor_widget);
     popover.set_child(Some(&menu_box));
+    popover.connect_closed(|p| {
+        let p = p.clone();
+        glib::idle_add_local_once(move || {
+            p.unparent();
+        });
+    });
     popover.popup();
 }
 
@@ -12849,6 +12861,12 @@ fn show_calendar_event_context_menu(
 
     popover.set_parent(anchor_widget);
     popover.set_child(Some(&menu_box));
+    popover.connect_closed(|p| {
+        let p = p.clone();
+        glib::idle_add_local_once(move || {
+            p.unparent();
+        });
+    });
     popover.popup();
 }
 
@@ -12910,6 +12928,12 @@ fn show_calendar_day_context_menu(
 
     popover.set_parent(&canvas);
     popover.set_child(Some(&menu_box));
+    popover.connect_closed(|p| {
+        let p = p.clone();
+        glib::idle_add_local_once(move || {
+            p.unparent();
+        });
+    });
     popover.popup();
 }
 

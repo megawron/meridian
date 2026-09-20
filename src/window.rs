@@ -3642,53 +3642,27 @@ impl EvolutionWindow {
     fn build_primary_menu() -> gio::Menu {
         let menu = gio::Menu::new();
 
-        // ─── 1. Datei (File) ───────────────────────────────────────────────
-        let file_menu = gio::Menu::new();
-        let new_menu = gio::Menu::new();
-        Self::append_contract_menu(&new_menu, MenuPath::FileNew);
-        file_menu.append_submenu(Some(&crate::i18n::gettext("New")), &new_menu);
-        Self::append_contract_menu(&file_menu, MenuPath::File);
-        menu.append_submenu(Some(&crate::i18n::gettext("File")), &file_menu);
+        // 1. Zoom controls (GNOME HIG display section)
+        let zoom_section = gio::Menu::new();
+        Self::append_contract_menu(&zoom_section, MenuPath::PrimaryZoom);
+        menu.append_section(None, &zoom_section);
 
-        // ─── 2. Edit ───────────────────────────────────────────────────────
-        let edit_menu = gio::Menu::new();
-        Self::append_contract_menu(&edit_menu, MenuPath::Edit);
-        menu.append_submenu(Some(&crate::i18n::gettext("Edit")), &edit_menu);
+        // 2. Main data actions (Sync & Rules)
+        let actions_section = gio::Menu::new();
+        Self::append_contract_menu(&actions_section, MenuPath::PrimaryActions);
+        menu.append_section(None, &actions_section);
 
-        // ─── 3. View ───────────────────────────────────────────────────────
-        let view_menu = gio::Menu::new();
-        let switch_menu = gio::Menu::new();
-        Self::append_contract_menu(&switch_menu, MenuPath::ViewSwitch);
-        view_menu.append_submenu(Some(&crate::i18n::gettext("Switch Module")), &switch_menu);
-        Self::append_contract_menu(&view_menu, MenuPath::View);
+        // 3. Application & Help (Preferences, Shortcuts, About)
+        let app_section = gio::Menu::new();
+        Self::append_contract_menu(&app_section, MenuPath::PrimaryApp);
+        menu.append_section(None, &app_section);
 
-        let layout_menu = gio::Menu::new();
-        Self::append_contract_menu(&layout_menu, MenuPath::ViewLayout);
-        view_menu.append_submenu(Some(&crate::i18n::gettext("Layout")), &layout_menu);
+        menu
+    }
 
-        let columns_menu = gio::Menu::new();
-        Self::append_contract_menu(&columns_menu, MenuPath::ViewColumns);
-        view_menu.append_submenu(Some(&crate::i18n::gettext("Visible Columns")), &columns_menu);
-
-        let threads_menu = gio::Menu::new();
-        Self::append_contract_menu(&threads_menu, MenuPath::ViewThreads);
-        view_menu.append_submenu(Some(&crate::i18n::gettext("Conversations")), &threads_menu);
-
-        let density_menu = gio::Menu::new();
-        Self::append_contract_menu(&density_menu, MenuPath::ViewDensity);
-        view_menu.append_submenu(Some(&crate::i18n::gettext("Message Density")), &density_menu);
-
-        let zoom_menu = gio::Menu::new();
-        Self::append_contract_menu(&zoom_menu, MenuPath::ViewZoom);
-        view_menu.append_submenu(Some(&crate::i18n::gettext("Text Size")), &zoom_menu);
-
-        let details_menu = gio::Menu::new();
-        Self::append_contract_menu(&details_menu, MenuPath::ViewDetails);
-        view_menu.append_submenu(Some(&crate::i18n::gettext("Other Views")), &details_menu);
-
-        menu.append_submenu(Some(&crate::i18n::gettext("View")), &view_menu);
-
-        // ─── 4. Message ────────────────────────────────────────────────────
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    fn build_classic_message_menu() -> gio::Menu {
         let message_menu = gio::Menu::new();
         let goto_menu = gio::Menu::new();
         Self::append_contract_menu(&goto_menu, MenuPath::MessageGoto);
@@ -3698,28 +3672,10 @@ impl EvolutionWindow {
         Self::append_contract_menu(&forward_menu, MenuPath::MessageForward);
         message_menu.append_submenu(Some(&crate::i18n::gettext("Forward")), &forward_menu);
         Self::append_contract_menu(&message_menu, MenuPath::MessageAfterForward);
-        menu.append_submenu(Some(&crate::i18n::gettext("Message")), &message_menu);
-
-        // ─── 5. Folder ─────────────────────────────────────────────────────
-        let folder_menu = gio::Menu::new();
-        Self::append_contract_menu(&folder_menu, MenuPath::Folder);
-        menu.append_submenu(Some(&crate::i18n::gettext("Folder")), &folder_menu);
-
-        // ─── 6. Tools ──────────────────────────────────────────────────────
-        let tools_menu = gio::Menu::new();
-        let transport_menu = Self::build_transport_menu();
-        tools_menu.append_submenu(Some(&crate::i18n::gettext("Send & Receive")), &transport_menu);
-        Self::append_contract_menu(&tools_menu, MenuPath::Tools);
-        menu.append_submenu(Some(&crate::i18n::gettext("Tools")), &tools_menu);
-
-        // ─── 7. Help ───────────────────────────────────────────────────────
-        let help_menu = gio::Menu::new();
-        Self::append_contract_menu(&help_menu, MenuPath::Help);
-        menu.append_submenu(Some(&crate::i18n::gettext("Help")), &help_menu);
-
-        menu
+        message_menu
     }
 
+    #[allow(dead_code)]
     fn build_transport_menu() -> gio::Menu {
         let menu = gio::Menu::new();
         Self::append_contract_menu(&menu, MenuPath::Transport);

@@ -17,6 +17,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use crate::i18n::gettext;
 use crate::services::AppSettings;
 use crate::services::account_config_service::{
     AccountConfigStore, AccountProfile, AccountProtocol, reconciled_local_default_account,
@@ -6265,25 +6266,99 @@ impl PreferencesDialog {
         calendar_detail_box.append(&calendar_sub_switcher);
         calendar_detail_box.append(&calendar_sub_stack);
 
-        // Sidebar Category List (Left Column)
+        // ── Construct Modern Libadwaita 4-Category Layout ───────────────────
+
+        // 1. Accounts & Identities detail box (Mail Accounts, Contacts)
+        let accounts_sub_stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::SlideLeftRight)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        let accounts_sub_switcher = gtk::StackSwitcher::builder()
+            .stack(&accounts_sub_stack)
+            .halign(gtk::Align::Center)
+            .margin_top(4)
+            .margin_bottom(8)
+            .build();
+        accounts_sub_stack.add_titled(&page_accounts, Some("mail_accounts"), &gettext("E-Mail-Konten"));
+        accounts_sub_stack.add_titled(&page_contacts, Some("contacts"), &gettext("Adressbücher"));
+
+        let accounts_detail_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        accounts_detail_box.append(&accounts_sub_switcher);
+        accounts_detail_box.append(&accounts_sub_stack);
+
+        // 2. Appearance detail box (Theme & General, Mail Views, Composer)
+        let appearance_sub_stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::SlideLeftRight)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        let appearance_sub_switcher = gtk::StackSwitcher::builder()
+            .stack(&appearance_sub_stack)
+            .halign(gtk::Align::Center)
+            .margin_top(4)
+            .margin_bottom(8)
+            .build();
+        appearance_sub_stack.add_titled(&page_appearance, Some("appearance_general"), &gettext("Allgemein"));
+        appearance_sub_stack.add_titled(&mail_detail_box, Some("mail"), &gettext("E-Mail-Ansicht"));
+        appearance_sub_stack.add_titled(&composer_detail_box, Some("composer"), &gettext("Verfassen"));
+
+        let appearance_detail_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        appearance_detail_box.append(&appearance_sub_switcher);
+        appearance_detail_box.append(&appearance_sub_stack);
+
+        // 3. Calendar & Tasks is already in calendar_detail_box
+
+        // 4. Security & Maintenance detail box (Certificates, Network & Sync, Backup)
+        let security_sub_stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::SlideLeftRight)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        let security_sub_switcher = gtk::StackSwitcher::builder()
+            .stack(&security_sub_stack)
+            .halign(gtk::Align::Center)
+            .margin_top(4)
+            .margin_bottom(8)
+            .build();
+        security_sub_stack.add_titled(&page_certificates, Some("certificates"), &gettext("Zertifikate & PGP"));
+        security_sub_stack.add_titled(&page_network, Some("network"), &gettext("Netzwerk & Proxy"));
+        security_sub_stack.add_titled(&page_backup, Some("backup"), &gettext("Datensicherung & Import"));
+
+        let security_detail_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        security_detail_box.append(&security_sub_switcher);
+        security_detail_box.append(&security_sub_stack);
+
+        // Sidebar Category List (Left Column) - 4 Canonical GNOME HIG Categories
         let sidebar_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
             .css_classes(vec!["navigation-sidebar"])
             .build();
 
         for (title, icon_name) in [
-            ("Mail Accounts", "avatar-default-symbolic"),
-            ("Contacts", "x-office-address-book-symbolic"),
-            ("Mail Preferences", "mail-unread-symbolic"),
-            ("Composer Preferences", "document-edit-symbolic"),
-            ("Network Preferences", "network-wired-symbolic"),
-            ("Calendar and Tasks", "x-office-calendar-symbolic"),
-            ("Certificates", "security-high-symbolic"),
+            ("Accounts & Identities", "avatar-default-symbolic"),
             ("Appearance", "display-brightness-symbolic"),
-            ("Import und Backup", "drive-harddisk-symbolic"),
+            ("Calendar and Tasks", "x-office-calendar-symbolic"),
+            ("Security & Maintenance", "security-high-symbolic"),
         ] {
             let row = adw::ActionRow::builder()
                 .title(title)
+                .use_markup(false)
                 .activatable(true)
                 .build();
             let icon = gtk::Image::from_icon_name(icon_name);
@@ -6309,19 +6384,10 @@ impl PreferencesDialog {
             .margin_bottom(8)
             .build();
 
-        detail_stack.add_titled(&page_accounts, Some("accounts"), "Mail Accounts");
-        detail_stack.add_titled(&page_contacts, Some("contacts"), "Contacts");
-        detail_stack.add_titled(&mail_detail_box, Some("mail"), "Mail Preferences");
-        detail_stack.add_titled(
-            &composer_detail_box,
-            Some("composer"),
-            "Composer Preferences",
-        );
-        detail_stack.add_titled(&page_network, Some("network"), "Network Preferences");
+        detail_stack.add_titled(&accounts_detail_box, Some("accounts"), "Accounts & Identities");
+        detail_stack.add_titled(&appearance_detail_box, Some("appearance"), "Appearance");
         detail_stack.add_titled(&calendar_detail_box, Some("calendar"), "Calendar and Tasks");
-        detail_stack.add_titled(&page_certificates, Some("certificates"), "Certificates");
-        detail_stack.add_titled(&page_appearance, Some("appearance"), "Appearance");
-        detail_stack.add_titled(&page_backup, Some("backup"), "Import & Backup");
+        detail_stack.add_titled(&security_detail_box, Some("security"), "Security & Maintenance");
 
         let detail_stack_weak = detail_stack.downgrade();
         sidebar_list.connect_row_selected(move |_, row| {
@@ -6331,35 +6397,54 @@ impl PreferencesDialog {
             };
             let name = match row.index() {
                 0 => "accounts",
-                1 => "contacts",
-                2 => "mail",
-                3 => "composer",
-                4 => "network",
-                5 => "calendar",
-                6 => "certificates",
-                7 => "appearance",
-                8 => "backup",
+                1 => "appearance",
+                2 => "calendar",
+                3 => "security",
                 _ => "accounts",
             };
             stack.set_visible_child_name(name);
         });
 
-        // Select default preferences page (Mail Preferences by default, or overridden via env)
+        // Select default preferences page (Appearance / Mail by default, or overridden via env)
         let default_idx = if let Ok(page_name) = std::env::var("EVOLUTION_PREF_PAGE") {
             match page_name.as_str() {
-                "accounts" => 0,
-                "contacts" => 1,
-                "mail" => 2,
-                "composer" => 3,
-                "network" => 4,
-                "calendar" => 5,
-                "certificates" => 6,
-                "appearance" => 7,
-                "backup" => 8,
-                _ => 2,
+                "accounts" => {
+                    accounts_sub_stack.set_visible_child_name("mail_accounts");
+                    0
+                }
+                "contacts" => {
+                    accounts_sub_stack.set_visible_child_name("contacts");
+                    0
+                }
+                "appearance" => {
+                    appearance_sub_stack.set_visible_child_name("appearance_general");
+                    1
+                }
+                "mail" => {
+                    appearance_sub_stack.set_visible_child_name("mail");
+                    1
+                }
+                "composer" => {
+                    appearance_sub_stack.set_visible_child_name("composer");
+                    1
+                }
+                "calendar" => 2,
+                "certificates" => {
+                    security_sub_stack.set_visible_child_name("certificates");
+                    3
+                }
+                "network" => {
+                    security_sub_stack.set_visible_child_name("network");
+                    3
+                }
+                "backup" | "security" => {
+                    security_sub_stack.set_visible_child_name("backup");
+                    3
+                }
+                _ => 1,
             }
         } else {
-            2
+            1
         };
         if let Some(row) = sidebar_list.row_at_index(default_idx) {
             sidebar_list.select_row(Some(&row));
@@ -6375,7 +6460,7 @@ impl PreferencesDialog {
         main_split.append(&detail_stack);
 
         let header_bar = adw::HeaderBar::builder()
-            .title_widget(&adw::WindowTitle::new("Evolution Preferences", ""))
+            .title_widget(&adw::WindowTitle::new(&gettext("Preferences"), ""))
             .build();
 
         let content_box = gtk::Box::builder()

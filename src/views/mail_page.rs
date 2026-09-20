@@ -8954,32 +8954,42 @@ impl MailPage {
     }
 
     fn folder_context_menu() -> gio::Menu {
-        let folder_menu = gio::Menu::new();
-        let folder_section = gio::Menu::new();
-        let str_new_folder = gettext("New Subfolder…");
-        let str_rename = gettext("Rename Folder…");
-        let str_delete = gettext("Delete Folder…");
-        let str_refresh = gettext("Refresh Folder");
-        let str_mark_read = gettext("Mark All as Read");
-        let str_props = gettext("Properties…");
+        thread_local! {
+            static CACHED_FOLDER_CONTEXT_MENU: RefCell<Option<gio::Menu>> = const { RefCell::new(None) };
+        }
+        CACHED_FOLDER_CONTEXT_MENU.with(|cached| {
+            if let Some(ref menu) = *cached.borrow() {
+                return menu.clone();
+            }
+            let folder_menu = gio::Menu::new();
+            let folder_section = gio::Menu::new();
+            let str_new_folder = gettext("New Subfolder…");
+            let str_rename = gettext("Rename Folder…");
+            let str_delete = gettext("Delete Folder…");
+            let str_refresh = gettext("Refresh Folder");
+            let str_mark_read = gettext("Mark All as Read");
+            let str_props = gettext("Properties…");
 
-        folder_section.append(Some(&str_new_folder), Some("win.new-folder"));
-        folder_section.append(Some(&str_rename), Some("win.rename-folder"));
-        folder_section.append(Some(&str_delete), Some("win.delete-folder"));
-        folder_section.append(Some(&str_refresh), Some("win.refresh-folder"));
-        folder_menu.append_section(None, &folder_section);
+            folder_section.append(Some(&str_new_folder), Some("win.new-folder"));
+            folder_section.append(Some(&str_rename), Some("win.rename-folder"));
+            folder_section.append(Some(&str_delete), Some("win.delete-folder"));
+            folder_section.append(Some(&str_refresh), Some("win.refresh-folder"));
+            folder_menu.append_section(None, &folder_section);
 
-        let action_section = gio::Menu::new();
-        action_section.append(
-            Some(&str_mark_read),
-            Some("win.mark-all-read"),
-        );
-        folder_menu.append_section(None, &action_section);
+            let action_section = gio::Menu::new();
+            action_section.append(
+                Some(&str_mark_read),
+                Some("win.mark-all-read"),
+            );
+            folder_menu.append_section(None, &action_section);
 
-        let props_section = gio::Menu::new();
-        props_section.append(Some(&str_props), Some("win.folder-properties"));
-        folder_menu.append_section(None, &props_section);
-        folder_menu
+            let props_section = gio::Menu::new();
+            props_section.append(Some(&str_props), Some("win.folder-properties"));
+            folder_menu.append_section(None, &props_section);
+
+            *cached.borrow_mut() = Some(folder_menu.clone());
+            folder_menu
+        })
     }
 
     fn present_folder_context_menu(
@@ -15667,12 +15677,78 @@ impl MailPage {
     }
 
     fn message_context_menu() -> gio::Menu {
-        let menu = gio::Menu::new();
-        for (label, action) in MESSAGE_CONTEXT_ACTIONS {
-            let localized = gettext(*label);
-            menu.append(Some(&localized), Some(action));
+        thread_local! {
+            static CACHED_MESSAGE_CONTEXT_MENU: RefCell<Option<gio::Menu>> = const { RefCell::new(None) };
         }
-        menu
+        CACHED_MESSAGE_CONTEXT_MENU.with(|cached| {
+            if let Some(ref menu) = *cached.borrow() {
+                return menu.clone();
+            }
+            let menu = gio::Menu::new();
+
+            // Section 1: Respond
+            let respond_section = gio::Menu::new();
+            for &(label, action) in &[
+                ("Reply", "win.reply"),
+                ("Reply to All", "win.reply-all"),
+                ("Reply to List", "win.reply-list"),
+                ("Reply Alternative…", "win.reply-alternative"),
+                ("Forward", "win.forward"),
+                ("Forward Inline", "win.forward-inline"),
+                ("Forward Quoted", "win.forward-quoted"),
+                ("Forward as Attachment", "win.forward-attached"),
+            ] {
+                respond_section.append(Some(&gettext(label)), Some(action));
+            }
+            menu.append_section(None, &respond_section);
+
+            // Section 2: Organize / Triage
+            let triage_section = gio::Menu::new();
+            for &(label, action) in &[
+                ("Archive", "win.archive"),
+                ("Move to Folder…", "win.move-message"),
+                ("Copy to Folder…", "win.copy-message"),
+                ("Delete", "win.delete"),
+                ("Undelete", "win.undelete"),
+            ] {
+                triage_section.append(Some(&gettext(label)), Some(action));
+            }
+            menu.append_section(None, &triage_section);
+
+            // Section 3: Mark & State
+            let mark_section = gio::Menu::new();
+            for &(label, action) in &[
+                ("Mark as Read", "win.mark-read"),
+                ("Mark as Unread", "win.mark-unread"),
+                ("Toggle Flag", "win.toggle-flag"),
+                ("Toggle Important", "win.toggle-important"),
+                ("Edit Labels…", "win.edit-labels"),
+                ("Mark as Junk", "win.mark-junk"),
+                ("Mark as Not Junk", "win.mark-not-junk"),
+            ] {
+                mark_section.append(Some(&gettext(label)), Some(action));
+            }
+            menu.append_section(None, &mark_section);
+
+            // Section 4: Details & Tools
+            let tools_section = gio::Menu::new();
+            for &(label, action) in &[
+                ("Save as EML…", "win.export"),
+                ("Print…", "win.mail-print"),
+                ("Print Preview…", "win.mail-print-preview"),
+                ("View Message Source", "win.view-message-source"),
+                ("Copy Message Link", "win.copy-message-link"),
+                ("Go to Containing Folder", "win.goto-containing-folder"),
+                ("Add Sender to Address Book", "win.add-sender-contact"),
+                ("Edit as New Message", "win.edit-as-new"),
+            ] {
+                tools_section.append(Some(&gettext(label)), Some(action));
+            }
+            menu.append_section(None, &tools_section);
+
+            *cached.borrow_mut() = Some(menu.clone());
+            menu
+        })
     }
 
     // ── Private: Build Message List with GListStore & Search Filter ───────

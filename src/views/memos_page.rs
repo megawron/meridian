@@ -1165,6 +1165,12 @@ impl MemosPage {
         );
         popover.set_parent(parent);
         popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        popover.connect_closed(|p| {
+            let p = p.clone();
+            glib::idle_add_local_once(move || {
+                p.unparent();
+            });
+        });
         popover.present();
     }
 

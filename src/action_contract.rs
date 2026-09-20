@@ -20,6 +20,9 @@ pub(crate) struct ActionSpec {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum MenuPath {
+    PrimaryZoom,
+    PrimaryActions,
+    PrimaryApp,
     FileNew,
     File,
     Edit,
@@ -131,6 +134,20 @@ macro_rules! menu_specs {
 }
 
 pub(crate) const PRIMARY_MENU_ACTIONS: &[MenuActionSpec] = menu_specs! {
+    PrimaryZoom => [
+        ("Zoom In", "win.zoom-in"),
+        ("Normal Size", "win.zoom-reset"),
+        ("Zoom Out", "win.zoom-out"),
+    ],
+    PrimaryActions => [
+        ("Send & Receive", "win.mail-send-receive"),
+        ("Edit Filter Rules…", "win.filter-editor"),
+    ],
+    PrimaryApp => [
+        ("Preferences", "app.preferences"),
+        ("Keyboard Shortcuts", "win.show-help-overlay"),
+        ("About Meridian", "app.about"),
+    ],
     FileNew => [
         ("New Email", "app.compose"), ("New Contact", "win.new-contact"),
         ("New Event", "win.new-event"), ("New Task", "win.new-task"),
