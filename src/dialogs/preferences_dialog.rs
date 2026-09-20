@@ -224,6 +224,7 @@ mod imp {
             self.parent_constructed();
             self.obj().set_content_width(980);
             self.obj().set_content_height(720);
+            self.obj().set_visible(false);
             self.obj().build_ui();
             self.obj().connect_closed(|dialog| {
                 if let Some(window) = crate::window::find_evolution_window(dialog) {
@@ -4407,14 +4408,14 @@ impl PreferencesDialog {
         group_mail_window_layout.add(&row_mail_density);
 
         let row_dark_mail = adw::SwitchRow::builder()
-            .title("Dark-Mode für E-Mails erzwingen")
-            .subtitle("Passt den Inhalt von HTML-Mails an das dunkle System-Design an")
-            .active(false)
+            .title("E-Mails an dunkles Design anpassen")
+            .subtitle("Zeigt E-Mails im Dark Mode an, wenn das dunkle System-Design aktiv ist")
+            .active(true)
             .build();
         if let Some(settings) = settings.clone() {
-            row_dark_mail.set_active(settings.force_dark_mode());
+            row_dark_mail.set_active(settings.mail_dark_mode());
             row_dark_mail.connect_active_notify(move |row| {
-                settings.set_force_dark_mode(row.is_active());
+                settings.set_mail_dark_mode(row.is_active());
             });
         }
         group_mail_html.add(&row_dark_mail);
@@ -8615,10 +8616,29 @@ mod tests {
     }
 
     fn find_combo_by_title(root: &gtk::Widget, target: &str) -> Option<adw::ComboRow> {
-        use gtk::prelude::Cast;
+        use gtk::prelude::*;
+        use gio::prelude::ListModelExt;
         if let Ok(combo) = root.clone().downcast::<adw::ComboRow>() {
             if combo.title() == target {
                 return Some(combo);
+            }
+        }
+        if let Ok(dialog) = root.clone().downcast::<adw::Dialog>() {
+            if let Some(child) = dialog.child() {
+                if let Some(found) = find_combo_by_title(&child, target) {
+                    return Some(found);
+                }
+            }
+        }
+        if let Ok(stack) = root.clone().downcast::<gtk::Stack>() {
+            let pages = stack.pages();
+            for i in 0..pages.n_items() {
+                if let Some(page) = pages.item(i).and_then(|o| o.downcast::<gtk::StackPage>().ok()) {
+                    let child = page.child();
+                    if let Some(found) = find_combo_by_title(&child, target) {
+                        return Some(found);
+                    }
+                }
             }
         }
         let mut child = root.first_child();
@@ -8633,9 +8653,28 @@ mod tests {
 
     fn find_spin_by_title(root: &gtk::Widget, target: &str) -> Option<adw::SpinRow> {
         use gtk::prelude::Cast;
+        use gio::prelude::ListModelExt;
         if let Ok(spin) = root.clone().downcast::<adw::SpinRow>() {
             if spin.title() == target {
                 return Some(spin);
+            }
+        }
+        if let Ok(dialog) = root.clone().downcast::<adw::Dialog>() {
+            if let Some(child) = dialog.child() {
+                if let Some(found) = find_spin_by_title(&child, target) {
+                    return Some(found);
+                }
+            }
+        }
+        if let Ok(stack) = root.clone().downcast::<gtk::Stack>() {
+            let pages = stack.pages();
+            for i in 0..pages.n_items() {
+                if let Some(page) = pages.item(i).and_then(|o| o.downcast::<gtk::StackPage>().ok()) {
+                    let child = page.child();
+                    if let Some(found) = find_spin_by_title(&child, target) {
+                        return Some(found);
+                    }
+                }
             }
         }
         let mut child = root.first_child();
@@ -8650,9 +8689,28 @@ mod tests {
 
     fn find_switch_by_title(root: &gtk::Widget, target: &str) -> Option<adw::SwitchRow> {
         use gtk::prelude::Cast;
+        use gio::prelude::ListModelExt;
         if let Ok(sw) = root.clone().downcast::<adw::SwitchRow>() {
             if sw.title() == target {
                 return Some(sw);
+            }
+        }
+        if let Ok(dialog) = root.clone().downcast::<adw::Dialog>() {
+            if let Some(child) = dialog.child() {
+                if let Some(found) = find_switch_by_title(&child, target) {
+                    return Some(found);
+                }
+            }
+        }
+        if let Ok(stack) = root.clone().downcast::<gtk::Stack>() {
+            let pages = stack.pages();
+            for i in 0..pages.n_items() {
+                if let Some(page) = pages.item(i).and_then(|o| o.downcast::<gtk::StackPage>().ok()) {
+                    let child = page.child();
+                    if let Some(found) = find_switch_by_title(&child, target) {
+                        return Some(found);
+                    }
+                }
             }
         }
         let mut child = root.first_child();

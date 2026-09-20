@@ -240,6 +240,10 @@
       <default>false</default>
       <summary>Force dark colors in HTML email rendering</summary>
     </key>
+    <key name="mail-dark-mode" type="b">
+      <default>true</default>
+      <summary>Adapt HTML email display to dark system theme</summary>
+    </key>
     <key name="render-html" type="b">
       <default>true</default>
       <summary>Render HTML mail bodies</summary>

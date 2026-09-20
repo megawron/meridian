@@ -2010,6 +2010,14 @@ impl AppSettings {
         self.set_boolean("force-dark-mode", value);
     }
 
+    pub fn mail_dark_mode(&self) -> bool {
+        self.settings.boolean("mail-dark-mode")
+    }
+
+    pub fn set_mail_dark_mode(&self, value: bool) {
+        self.set_boolean("mail-dark-mode", value);
+    }
+
     pub fn sign_new_messages(&self) -> bool {
         self.settings.boolean("sign-new-messages")
     }
@@ -3230,6 +3238,7 @@ impl AppSettings {
             }
             "offline-mode" => self.set_offline_mode(parse_migrated_bool(key, value)?),
             "force-dark-mode" => self.set_force_dark_mode(parse_migrated_bool(key, value)?),
+            "mail-dark-mode" => self.set_mail_dark_mode(parse_migrated_bool(key, value)?),
             "render-html" => self.set_render_html(parse_migrated_bool(key, value)?),
             "composer-html" => self.set_composer_html(parse_migrated_bool(key, value)?),
             "composer-charset" => {
@@ -3742,6 +3751,7 @@ impl AppSettings {
             "auto-load-remote-images",
             "offline-mode",
             "force-dark-mode",
+            "mail-dark-mode",
             "render-html",
             "composer-html",
             "composer-charset",

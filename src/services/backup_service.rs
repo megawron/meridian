@@ -148,6 +148,8 @@ struct BackupSettings {
     offline_mode: bool,
     #[serde(default = "default_force_dark_mode")]
     force_dark_mode: bool,
+    #[serde(default = "default_mail_dark_mode")]
+    mail_dark_mode: bool,
     #[serde(default = "default_render_html")]
     render_html: bool,
     #[serde(default = "default_composer_html")]
@@ -656,6 +658,10 @@ fn default_force_dark_mode() -> bool {
     false
 }
 
+fn default_mail_dark_mode() -> bool {
+    true
+}
+
 fn default_render_html() -> bool {
     true
 }
@@ -961,6 +967,7 @@ impl BackupSettings {
             auto_load_remote_images: settings.auto_load_remote_images(),
             offline_mode: settings.offline_mode(),
             force_dark_mode: settings.force_dark_mode(),
+            mail_dark_mode: settings.mail_dark_mode(),
             render_html: settings.render_html(),
             composer_html: settings.composer_html(),
             composer_charset: settings.composer_charset(),
@@ -1156,6 +1163,7 @@ impl BackupSettings {
         settings.set_auto_load_remote_images(self.auto_load_remote_images);
         settings.set_offline_mode(self.offline_mode);
         settings.set_force_dark_mode(self.force_dark_mode);
+        settings.set_mail_dark_mode(self.mail_dark_mode);
         settings.set_render_html(self.render_html);
         settings.set_composer_html(self.composer_html);
         settings.set_composer_charset(&self.composer_charset);
@@ -2051,6 +2059,7 @@ const BACKUP_SETTINGS_FIELDS: &[&str] = &[
     "auto_load_remote_images",
     "offline_mode",
     "force_dark_mode",
+    "mail_dark_mode",
     "render_html",
     "composer_html",
     "composer_charset",
@@ -3826,6 +3835,7 @@ mod tests {
         assert_eq!(settings.active_view, "mail");
         assert!(!settings.auto_load_remote_images);
         assert!(!settings.force_dark_mode);
+        assert!(settings.mail_dark_mode);
         assert!(settings.render_html);
         assert!(settings.composer_html);
         assert_eq!(settings.composer_charset, "UTF-8");
