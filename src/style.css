@@ -507,6 +507,12 @@ textview {
 }
 
 /* ── Folder Sidebar ────────────────────────────────────────────────────── */
+.navigation-sidebar,
+listview.navigation-sidebar {
+  border: none;
+  background-color: transparent;
+}
+
 .navigation-sidebar row {
   border-radius: 6px;
   margin: 0 2px;
@@ -1023,7 +1029,7 @@ paned.horizontal > separator:dir(rtl),
 paned.horizontal > separator.wide,
 paned.vertical > separator,
 paned.vertical > separator.wide {
-  background-color: alpha(@borders, 0.6);
+  background-color: color-mix(in srgb, currentColor 15%, transparent);
   background-clip: content-box;
   border: none;
   box-shadow: none;
@@ -1079,13 +1085,12 @@ splitview > .sidebar {
 .evolution-sidebar-drawer {
   background-color: @sidebar_bg_color;
   color: @sidebar_fg_color;
-  border-right: 1px solid @borders;
+  border: none;
   box-shadow: none;
 }
 
 .evolution-sidebar-drawer:dir(rtl) {
-  border-right: none;
-  border-left: 1px solid @borders;
+  border: none;
 }
 
 /* ── Calendar Sidebar Mini-Calendar ────────────────────────────────────── */
@@ -1389,7 +1394,7 @@ splitview > .sidebar {
 }
 
 .evolution-module-switcher {
-  border-top: 1px solid alpha(@borders, 0.45);
+  border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
   background-color: transparent;
   padding: 4px;
 }
@@ -2546,13 +2551,11 @@ button.month-bar-chip.span-end {
 .todo-sidebar {
   background-color: @sidebar_bg_color;
   color: @sidebar_fg_color;
-  border-left: 1px solid @borders;
-  border-right: none;
+  border: none;
 }
 
 .todo-sidebar:dir(rtl) {
-  border-left: none;
-  border-right: 1px solid @borders;
+  border: none;
 }
 
 .agenda-sidebar-canvas {
@@ -2708,7 +2711,7 @@ headerbar.sidebar-header {
   background-color: @sidebar_bg_color;
   background-image: none;
   border-bottom: none;
-  border-right: 1px solid @borders;
+  border-right: 1px solid color-mix(in srgb, currentColor 15%, transparent);
   box-shadow: none;
   min-width: 0;
   overflow: hidden;
@@ -2716,7 +2719,7 @@ headerbar.sidebar-header {
 
 headerbar.sidebar-header:dir(rtl) {
   border-right: none;
-  border-left: 1px solid @borders;
+  border-left: 1px solid color-mix(in srgb, currentColor 15%, transparent);
 }
 
 .window-header-box {
