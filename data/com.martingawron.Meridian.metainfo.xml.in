@@ -1,27 +1,25 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>org.gnome.Evolution4</id>
+  <id>com.martingawron.Meridian</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
-  <name>Evolution GTK4</name>
+  <name>Meridian</name>
   <summary>Modern, fast Mail, Calendar and Groupware Client</summary>
 
   <description>
     <p>
-      Evolution GTK4 is an early technical preview of a GTK4 / libadwaita
-      frontend for the Evolution Data Server (EDS). The long-term goal is a
-      production-ready replacement for GNOME Evolution; the current preview
-      does not yet provide full feature parity or live account synchronization.
+      Meridian is a modern, fast GTK4 / libadwaita groupware client for
+      email, calendar, contacts, tasks, and notes, powered by Evolution Data Server (EDS).
     </p>
     <ul>
       <li>Fast sandboxed WebKitGTK 6.0 HTML mail viewing</li>
-      <li>Initial OpenPGP/S-MIME and privacy UI groundwork</li>
-      <li>Initial account, calendar, task, memo and address-book UI</li>
-      <li>Read-only local EML, Maildir and mbox ingestion</li>
+      <li>Privacy-first remote image blocking and OpenPGP/S-MIME groundwork</li>
+      <li>Integrated account, calendar, task, memo and address-book interfaces</li>
+      <li>Offline and local EML, Maildir and mbox ingestion</li>
     </ul>
   </description>
 
-  <launchable type="desktop-id">org.gnome.Evolution4.desktop</launchable>
+  <launchable type="desktop-id">com.martingawron.Meridian.desktop</launchable>
   <url type="homepage">https://gitlab.gnome.org/GNOME/evolution-gtk4</url>
   <url type="bugtracker">https://gitlab.gnome.org/GNOME/evolution-gtk4/-/issues</url>
   <developer_name>megawron &amp; GNOME Community</developer_name>

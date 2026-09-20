@@ -1,16 +1,16 @@
 [Desktop Entry]
-Name=Evolution
+Name=Meridian
 Comment=Mail, Calendar and Contacts
 Comment[de]=E-Mail, Kalender und Kontakte
 GenericName=Groupware Client
 GenericName[de]=Groupware-Client
-Exec=evolution-gtk4 %U
-Icon=org.gnome.Evolution4
+Exec=meridian %U
+Icon=com.martingawron.Meridian
 Terminal=false
 Type=Application
 Categories=GNOME;GTK;Office;Email;Calendar;ContactManagement;
 Keywords=mail;email;calendar;contacts;groupware;exchange;ews;imap;
 MimeType=x-scheme-handler/mailto;message/rfc822;application/x-xpixmap;
 StartupNotify=true
-StartupWMClass=evolution-gtk4
+StartupWMClass=meridian
 X-GNOME-UsesNotifications=true

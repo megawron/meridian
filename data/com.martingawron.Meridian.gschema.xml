@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <schemalist>
-  <schema id="org.gnome.Evolution4" path="/org/gnome/evolution4/">
+  <schema id="com.martingawron.Meridian" path="/com/martingawron/meridian/">
     <key name="window-width" type="i">
       <default>1100</default>
       <summary>Default window width</summary>
