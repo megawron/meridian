@@ -43,6 +43,7 @@ impl MacosSystemSource {
             backend_name: self.backend.clone(), enabled: true,
             parent_name: Some(self.account_name.clone()),
             color: None,
+            foreign_mail: None,
         }
     }
 }

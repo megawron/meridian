@@ -48,6 +48,9 @@ pub struct EdsSource {
     /// Color associated with this source (e.g. from Google Calendar / EDS [Calendar] Color)
     #[serde(default)]
     pub color: Option<String>,
+    /// Associated foreign mailbox email (e.g. from EWS [Exchange Web Services Folder] ForeignMail)
+    #[serde(default)]
+    pub foreign_mail: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,7 +206,7 @@ fn extract_source(
         std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
     >,
     kind: EdsSourceKind,
-) -> Option<(String, String, String, bool, Option<String>, Option<String>)> {
+) -> Option<(String, String, String, bool, Option<String>, Option<String>, Option<String>)> {
     let uid = source_props
         .get("UID")
         .and_then(value_to_string)
@@ -243,6 +246,7 @@ fn extract_source(
             property_enabled,
             property_parent,
             property_color,
+            None,
         ));
     };
 
@@ -254,8 +258,8 @@ fn extract_source(
         property_enabled,
         property_parent,
     )
-    .map(|(display_name, backend_name, enabled, parent, color)| {
-        (uid, display_name, backend_name, enabled, parent, color.or(property_color))
+    .map(|(display_name, backend_name, enabled, parent, color, foreign_mail)| {
+        (uid, display_name, backend_name, enabled, parent, color.or(property_color), foreign_mail)
     })
 }
 
@@ -266,7 +270,7 @@ fn parse_source_data(
     fallback_backend_name: String,
     fallback_enabled: bool,
     fallback_parent: Option<String>,
-) -> Option<(String, String, bool, Option<String>, Option<String>)> {
+) -> Option<(String, String, bool, Option<String>, Option<String>, Option<String>)> {
     let key_file = KeyFile::new();
     key_file.load_from_data(data, KeyFileFlags::NONE).ok()?;
 
@@ -310,7 +314,13 @@ fn parse_source_data(
         .or_else(|| key_file.string("WebDAV Backend", "Color").ok().map(|v| v.to_string()))
         .filter(|value| !value.trim().is_empty());
 
-    Some((display_name, backend_name, enabled, parent, color))
+    let foreign_mail = key_file
+        .string("Exchange Web Services Folder", "ForeignMail")
+        .ok()
+        .map(|value| value.to_string())
+        .filter(|value| !value.trim().is_empty());
+
+    Some((display_name, backend_name, enabled, parent, color, foreign_mail))
 }
 
 fn sort_sources(sources: &mut [EdsSource]) {
@@ -696,13 +706,29 @@ fn resolve_source_parent_name_uncached(uid: &str) -> String {
         if path.exists() {
             let kf = KeyFile::new();
             if kf.load_from_file(&path, KeyFileFlags::NONE).is_ok() {
+                if let Ok(foreign_mail) = kf.string("Exchange Web Services Folder", "ForeignMail") {
+                    let fm = foreign_mail.trim();
+                    if !fm.is_empty() {
+                        let profiles = crate::services::account_config_service::AccountConfigStore::default().load();
+                        if let Some(matching) = profiles.iter().find(|p| {
+                            p.email.eq_ignore_ascii_case(fm) || p.foreign_mailbox.eq_ignore_ascii_case(fm)
+                        }) {
+                            return if !matching.display_name.trim().is_empty() {
+                                matching.display_name.clone()
+                            } else {
+                                matching.email.clone()
+                            };
+                        }
+                        return fm.to_string();
+                    }
+                }
                 if let Ok(parent) = kf.string("Data Source", "Parent") {
                     let parent = parent.trim();
                     if !parent.is_empty() {
                         if parent == "local-stub" || parent == "local" {
-                            return "Auf diesem Computer".to_string();
+                            return crate::i18n::gettext("On This Computer");
                         } else if parent == "contacts-stub" {
-                            return "Kontakte".to_string();
+                            return crate::i18n::gettext("Contacts");
                         } else if let Some(dn) = resolve_source_name_from_disk(parent) {
                             return dn;
                         } else {
@@ -793,25 +819,40 @@ pub async fn list_sources(kind: EdsSourceKind) -> Result<Vec<EdsSource>, EdsServ
             continue;
         };
 
-        let Some((uid, display_name, backend_name, enabled, parent, color)) =
+        let Some((uid, display_name, backend_name, enabled, parent, color, foreign_mail)) =
             extract_source(path, source_props, interfaces, kind)
         else {
             continue;
         };
         if !display_name.trim().is_empty() {
-            let parent_name = parent.and_then(|p| {
-                if p == "local-stub" {
-                    Some("Auf diesem Computer".to_string())
-                } else if p == "contacts-stub" {
-                    Some("Kontakte".to_string())
-                } else if let Some(dn) = display_name_by_uid.get(&p) {
-                    Some(dn.clone())
-                } else if let Some(dn) = resolve_source_name_from_disk(&p) {
-                    Some(dn)
+            let parent_name = if let Some(fm) = foreign_mail.as_deref() {
+                let profiles = crate::services::account_config_service::AccountConfigStore::default().load();
+                if let Some(matching) = profiles.iter().find(|p| {
+                    p.email.eq_ignore_ascii_case(fm) || p.foreign_mailbox.eq_ignore_ascii_case(fm)
+                }) {
+                    Some(if !matching.display_name.trim().is_empty() {
+                        matching.display_name.clone()
+                    } else {
+                        matching.email.clone()
+                    })
                 } else {
-                    Some(p)
+                    Some(fm.to_string())
                 }
-            });
+            } else {
+                parent.and_then(|p| {
+                    if p == "local-stub" {
+                        Some(crate::i18n::gettext("On This Computer"))
+                    } else if p == "contacts-stub" {
+                        Some(crate::i18n::gettext("Contacts"))
+                    } else if let Some(dn) = display_name_by_uid.get(&p) {
+                        Some(dn.clone())
+                    } else if let Some(dn) = resolve_source_name_from_disk(&p) {
+                        Some(dn)
+                    } else {
+                        Some(p)
+                    }
+                })
+            };
             let resolved_color = color.or_else(|| resolve_source_color_from_disk(&uid));
             sources.push(EdsSource {
                 uid,
@@ -820,6 +861,7 @@ pub async fn list_sources(kind: EdsSourceKind) -> Result<Vec<EdsSource>, EdsServ
                 enabled,
                 parent_name,
                 color: resolved_color,
+                foreign_mail,
             });
         }
     }
@@ -880,6 +922,7 @@ async fn get_goa_mail_accounts() -> Result<Vec<EdsSource>, EdsServiceError> {
                     enabled: true,
                     parent_name: Some(identity),
                     color: None,
+                    foreign_mail: None,
                 });
             }
         }
@@ -919,12 +962,12 @@ async fn get_goa_calendar_accounts() -> Result<Vec<EdsSource>, EdsServiceError> 
                     .get("PresentationIdentity")
                     .and_then(value_to_string)
                     .or_else(|| account_props.get("Identity").and_then(value_to_string))
-                    .unwrap_or_else(|| "Kalenderkonto".to_string());
+                    .unwrap_or_else(|| "Calendar Account".to_string());
 
                 let provider_name = account_props
                     .get("ProviderName")
                     .and_then(value_to_string)
-                    .unwrap_or_else(|| "Online-Kalender".to_string());
+                    .unwrap_or_else(|| "Online Calendar".to_string());
 
                 let provider_type = account_props
                     .get("ProviderType")
@@ -938,6 +981,7 @@ async fn get_goa_calendar_accounts() -> Result<Vec<EdsSource>, EdsServiceError> 
                     enabled: true,
                     parent_name: Some(identity),
                     color: None,
+                    foreign_mail: None,
                 });
             }
         }
@@ -1010,12 +1054,12 @@ async fn get_goa_contacts_accounts() -> Result<Vec<EdsSource>, EdsServiceError> 
                     .get("PresentationIdentity")
                     .and_then(value_to_string)
                     .or_else(|| account_props.get("Identity").and_then(value_to_string))
-                    .unwrap_or_else(|| "Onlinekonto".to_string());
+                    .unwrap_or_else(|| "Online Account".to_string());
 
                 let provider_name = account_props
                     .get("ProviderName")
                     .and_then(value_to_string)
-                    .unwrap_or_else(|| "Online-Adressbuch".to_string());
+                    .unwrap_or_else(|| "Online Address Book".to_string());
 
                 let provider_type = account_props
                     .get("ProviderType")
@@ -1029,6 +1073,7 @@ async fn get_goa_contacts_accounts() -> Result<Vec<EdsSource>, EdsServiceError> 
                     enabled: true,
                     parent_name: Some(identity),
                     color: None,
+                    foreign_mail: None,
                 });
             }
         }
@@ -1072,11 +1117,12 @@ pub async fn list_address_book_sources() -> Result<Vec<EdsSource>, EdsServiceErr
         if !already_represented {
             sources.push(EdsSource {
                 uid: format!("account-contacts-{}", collection.uid),
-                display_name: "Kontakte".to_string(),
+                display_name: crate::i18n::gettext("Contacts"),
                 backend_name: collection.backend_name.clone(),
                 enabled: collection.enabled,
                 parent_name: Some(account_name),
                 color: None,
+                foreign_mail: None,
             });
         }
     }
@@ -1231,13 +1277,14 @@ fn macos_configured_mail_sources(
             enabled: profile.enabled,
             parent_name: None,
             color: None,
+            foreign_mail: None,
         })
         .collect();
     sort_sources(&mut sources);
     EdsSourceDiscovery {
         sources,
         origin: EdsSourceOrigin::Live,
-        error: Some("Mailkonten werden in Evolution eingerichtet; macOS stellt Mail-Zugangsdaten aus Internetaccounts nicht für andere Apps bereit".to_string()),
+        error: Some("Mail accounts are configured in Evolution; macOS does not share mail credentials from Internet Accounts with other apps".to_string()),
     }
 }
 
@@ -1441,7 +1488,7 @@ mod tests {
         assert_eq!(discovery.sources[1].uid, "profile-exchange-123");
         assert!(discovery.sources[1].enabled);
         assert_eq!(discovery.sources[1].backend_name, "exchange");
-        assert!(discovery.status_text().contains("Mail-Zugangsdaten"));
+        assert!(discovery.status_text().contains("mail credentials"));
         assert!(macos_configured_mail_sources(&[]).sources.is_empty());
     }
 
@@ -1455,6 +1502,7 @@ mod tests {
                 enabled: true,
                 parent_name: None,
                 color: None,
+                foreign_mail: None,
             }],
             origin: EdsSourceOrigin::Live,
             error: Some("Kontakte: Zugriff verweigert".to_string()),
@@ -1472,6 +1520,7 @@ mod tests {
             enabled: true,
             parent_name: None,
             color: None,
+            foreign_mail: None,
         };
         assert_eq!(source.uid, "test-uid-123");
         assert!(source.enabled);
@@ -1493,6 +1542,7 @@ mod tests {
                 enabled: true,
                 parent_name: None,
                 color: None,
+                foreign_mail: None,
             },
             EdsSource {
                 uid: "b".to_string(),
@@ -1501,6 +1551,7 @@ mod tests {
                 enabled: true,
                 parent_name: None,
                 color: None,
+                foreign_mail: None,
             },
             EdsSource {
                 uid: "a".to_string(),
@@ -1509,6 +1560,7 @@ mod tests {
                 enabled: false,
                 parent_name: None,
                 color: None,
+                foreign_mail: None,
             },
         ];
 
@@ -1541,7 +1593,8 @@ mod tests {
                 "imapx".to_string(),
                 true,
                 None,
-                None
+                None,
+                None,
             ))
         );
         assert_eq!(
@@ -1554,6 +1607,30 @@ mod tests {
                 None,
             ),
             None
+        );
+    }
+
+    #[test]
+    fn test_parse_source_data_with_foreign_mail() {
+        let data = "[Data Source]\nDisplayName=Kalender (EDV)\nEnabled=true\nParent=primary-account\n[Exchange Web Services Folder]\nForeignMail=edv@acme-corp.example\n[Calendar]\nBackendName=ews\nColor=#e66100\n";
+        let parsed = parse_source_data(
+            data,
+            EdsSourceKind::Calendar,
+            "fallback".to_string(),
+            "unknown".to_string(),
+            false,
+            None,
+        );
+        assert_eq!(
+            parsed,
+            Some((
+                "Kalender (EDV)".to_string(),
+                "ews".to_string(),
+                true,
+                Some("primary-account".to_string()),
+                Some("#e66100".to_string()),
+                Some("edv@acme-corp.example".to_string()),
+            ))
         );
     }
 

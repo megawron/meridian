@@ -359,6 +359,7 @@ mod tests {
             enabled: true,
             parent_name: None,
             color: None,
+            foreign_mail: None,
         };
         let calendar = EdsSource {
             uid: "calendar-1".to_string(),
@@ -367,6 +368,7 @@ mod tests {
             enabled: true,
             parent_name: None,
             color: None,
+            foreign_mail: None,
         };
 
         cache
@@ -418,6 +420,7 @@ mod tests {
                     enabled: true,
                     parent_name: None,
                     color: None,
+                    foreign_mail: None,
                 }],
             )
             .expect("sources should save");

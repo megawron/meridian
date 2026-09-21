@@ -1289,6 +1289,7 @@ impl ContactsPage {
                                 enabled: collection.enabled,
                                 parent_name: Some(account_name),
                                 color: None,
+                                foreign_mail: None,
                             });
                         }
                     }

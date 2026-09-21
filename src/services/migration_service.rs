@@ -713,6 +713,7 @@ fn eds_sources_from_keyfile(
                     enabled,
                     parent_name: None,
                     color: None,
+                    foreign_mail: None,
                 },
             )
         })
