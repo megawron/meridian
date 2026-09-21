@@ -4068,6 +4068,12 @@ impl EvolutionWindow {
             AppSettings::set_mail_show_flagged,
         );
         self.add_boolean_setting_action(
+            "toggle-mail-follow-up",
+            "mail-show-follow-up",
+            AppSettings::mail_show_follow_up,
+            AppSettings::set_mail_show_follow_up,
+        );
+        self.add_boolean_setting_action(
             "toggle-mail-attachment",
             "mail-show-attachment",
             AppSettings::mail_show_attachment,

@@ -35,11 +35,11 @@ pub(crate) const MAIL_LIST_COLUMN_IDS: [&str; 15] = [
     "status",
     "attachment",
     "flagged",
+    "follow-up",
     "sender",
     "recipient",
     "subject",
     "date",
-    "follow-up",
     "important",
     "avatar",
     "preview",
@@ -52,10 +52,10 @@ pub(crate) const MAIL_LIST_COLUMN_IDS: [&str; 15] = [
 const MAIL_LIST_WIDE_COLUMN_IDS: [&str; 15] = [
     "status",
     "flagged",
+    "follow-up",
     "messages",
     "attachment",
     "date",
-    "follow-up",
     "important",
     "avatar",
     "preview",
@@ -2308,6 +2308,14 @@ impl AppSettings {
         self.set_boolean("mail-show-flagged", value);
     }
 
+    pub fn mail_show_follow_up(&self) -> bool {
+        self.settings.boolean("mail-show-follow-up")
+    }
+
+    pub fn set_mail_show_follow_up(&self, value: bool) {
+        self.set_boolean("mail-show-follow-up", value);
+    }
+
     pub fn mail_show_avatar(&self) -> bool {
         self.settings.boolean("mail-show-avatar")
     }
@@ -3320,6 +3328,7 @@ impl AppSettings {
             "mail-row-density" => self.set_mail_row_density(value),
             "mail-show-status" => self.set_mail_show_status(parse_migrated_bool(key, value)?),
             "mail-show-flagged" => self.set_mail_show_flagged(parse_migrated_bool(key, value)?),
+            "mail-show-follow-up" => self.set_mail_show_follow_up(parse_migrated_bool(key, value)?),
             "mail-show-avatar" => self.set_mail_show_avatar(parse_migrated_bool(key, value)?),
             "mail-show-sender" => self.set_mail_show_sender(parse_migrated_bool(key, value)?),
             "mail-show-recipient" => {
@@ -3801,6 +3810,7 @@ impl AppSettings {
             "mail-show-date",
             "mail-show-status",
             "mail-show-flagged",
+            "mail-show-follow-up",
             "mail-show-attachment",
             "mail-show-preview-text",
             "mail-show-labels",

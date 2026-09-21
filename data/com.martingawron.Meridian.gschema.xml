@@ -462,6 +462,10 @@
       <default>true</default>
       <summary>Show flagged/star indicator in the mail list</summary>
     </key>
+    <key name="mail-show-follow-up" type="b">
+      <default>true</default>
+      <summary>Show follow-up flag/completed indicator in the mail list</summary>
+    </key>
     <key name="mail-show-avatar" type="b">
       <default>true</default>
       <summary>Show sender avatars in the mail list</summary>

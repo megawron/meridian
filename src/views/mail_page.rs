@@ -877,15 +877,13 @@ fn message_date(message: &MailMessageObject) -> Option<NaiveDate> {
 }
 
 fn parse_message_date(value: &str) -> Option<NaiveDate> {
-    chrono::DateTime::parse_from_rfc2822(&value)
-        .ok()
-        .map(|date| date.date_naive())
-        .or_else(|| {
-            chrono::DateTime::parse_from_rfc3339(&value)
-                .ok()
-                .map(|date| date.date_naive())
-        })
-        .or_else(|| NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d").ok())
+    parse_flexible_datetime(value).map(|dt| dt.with_timezone(&chrono::Local).date_naive())
+}
+
+fn parse_message_timestamp(value: &str) -> i64 {
+    parse_flexible_datetime(value)
+        .map(|dt| dt.timestamp())
+        .unwrap_or(0)
 }
 
 // format_month_short handles localized month abbreviations via gettext
@@ -908,45 +906,276 @@ fn format_month_short(month: u32) -> String {
     }
 }
 
-fn parse_flexible_datetime(value: &str) -> Option<chrono::DateTime<chrono::Local>> {
+fn strip_date_comments(raw: &str) -> String {
+    let mut without_comments = String::with_capacity(raw.len());
+    let mut depth_paren = 0;
+    let mut depth_bracket = 0;
+    for ch in raw.chars() {
+        match ch {
+            '(' => depth_paren += 1,
+            ')' => {
+                if depth_paren > 0 {
+                    depth_paren -= 1;
+                }
+            }
+            '[' => depth_bracket += 1,
+            ']' => {
+                if depth_bracket > 0 {
+                    depth_bracket -= 1;
+                }
+            }
+            _ => {
+                if depth_paren == 0 && depth_bracket == 0 {
+                    without_comments.push(ch);
+                }
+            }
+        }
+    }
+    without_comments
+}
+
+fn normalize_weekday_token(s: &str) -> Option<&'static str> {
+    let clean = s.trim_matches(|c: char| !c.is_alphabetic()).to_lowercase();
+    match clean.as_str() {
+        "mo" | "mon" | "montag" | "monday" => Some("Mon,"),
+        "di" | "die" | "tue" | "tues" | "dienstag" | "tuesday" => Some("Tue,"),
+        "mi" | "mit" | "wed" | "mittwoch" | "wednesday" => Some("Wed,"),
+        "do" | "don" | "thu" | "thur" | "thurs" | "donnerstag" | "thursday" => Some("Thu,"),
+        "fr" | "fri" | "freitag" | "friday" => Some("Fri,"),
+        "sa" | "sam" | "sat" | "samstag" | "sonnabend" | "saturday" => Some("Sat,"),
+        "so" | "son" | "sun" | "sonntag" | "sunday" => Some("Sun,"),
+        _ => None,
+    }
+}
+
+fn normalize_month_token(s: &str) -> Option<&'static str> {
+    let clean = s.trim_matches(|c: char| !c.is_alphabetic()).to_lowercase();
+    match clean.as_str() {
+        "jan" | "januar" | "january" => Some("Jan"),
+        "feb" | "februar" | "february" => Some("Feb"),
+        "mar" | "mär" | "märz" | "mrz" | "maerz" | "mae" | "march" => Some("Mar"),
+        "apr" | "april" => Some("Apr"),
+        "mai" | "may" => Some("May"),
+        "jun" | "juni" | "june" => Some("Jun"),
+        "jul" | "juli" | "july" => Some("Jul"),
+        "aug" | "august" => Some("Aug"),
+        "sep" | "sept" | "september" => Some("Sep"),
+        "okt" | "oct" | "oktober" | "october" => Some("Oct"),
+        "nov" | "november" => Some("Nov"),
+        "dez" | "dec" | "dezember" | "december" => Some("Dec"),
+        _ => None,
+    }
+}
+
+fn normalize_timezone_token(s: &str) -> Option<String> {
+    let clean = s.trim_matches(|c: char| c == '(' || c == ')' || c == '[' || c == ']' || c == ',');
+    if (clean.starts_with('+') || clean.starts_with('-')) && clean.contains(':') {
+        let stripped: String = clean.chars().filter(|&c| c != ':').collect();
+        if stripped.len() == 5 && stripped[1..].chars().all(|c| c.is_ascii_digit()) {
+            return Some(stripped);
+        }
+    }
+    if (clean.starts_with('+') || clean.starts_with('-'))
+        && clean.len() == 5
+        && clean[1..].chars().all(|c| c.is_ascii_digit())
+    {
+        return Some(clean.to_string());
+    }
+    let tz_upper = clean.to_ascii_uppercase();
+    match tz_upper.as_str() {
+        "UTC" | "GMT" | "Z" | "WET" => Some("+0000".to_string()),
+        "CET" | "MEZ" | "WEST" | "BST" => Some("+0100".to_string()),
+        "CEST" | "MESZ" | "EET" => Some("+0200".to_string()),
+        "EEST" | "MSK" => Some("+0300".to_string()),
+        "EST" | "CDT" => Some("-0500".to_string()),
+        "EDT" => Some("-0400".to_string()),
+        "CST" | "MDT" => Some("-0600".to_string()),
+        "MST" | "PDT" => Some("-0700".to_string()),
+        "PST" => Some("-0800".to_string()),
+        "AKST" => Some("-0900".to_string()),
+        "AKDT" => Some("-0800".to_string()),
+        "HST" => Some("-1000".to_string()),
+        "AEST" => Some("+1000".to_string()),
+        "AEDT" => Some("+1100".to_string()),
+        "JST" => Some("+0900".to_string()),
+        _ => None,
+    }
+}
+
+fn naive_to_fixed_offset(ndt: chrono::NaiveDateTime) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    use chrono::TimeZone;
+    if let Some(local) = chrono::Local.from_local_datetime(&ndt).single() {
+        Some(local.fixed_offset())
+    } else if let Some(local) = chrono::Local.from_local_datetime(&ndt).earliest() {
+        Some(local.fixed_offset())
+    } else {
+        let offset = *chrono::Local::now().offset();
+        Some(chrono::DateTime::from_naive_utc_and_offset(ndt - offset, offset))
+    }
+}
+
+fn normalize_date_tokens(cleaned: &str) -> String {
+    let tokens: Vec<&str> = cleaned.split_whitespace().collect();
+    if tokens.is_empty() {
+        return String::new();
+    }
+    let mut normalized_tokens = Vec::with_capacity(tokens.len());
+    let mut has_weekday = false;
+
+    for (i, token) in tokens.iter().enumerate() {
+        // Weekday as first token
+        if i == 0 {
+            if let Some(wd) = normalize_weekday_token(token) {
+                normalized_tokens.push(wd.to_string());
+                has_weekday = true;
+                continue;
+            }
+        }
+
+        // Day of month or year (e.g. "21." -> "21", "2026." -> "2026")
+        let trimmed_num = token.trim_end_matches(['.', ',']);
+        if let Ok(num) = trimmed_num.parse::<u32>() {
+            if (1..=31).contains(&num) && ((has_weekday && i == 1) || (!has_weekday && i == 0)) {
+                normalized_tokens.push(num.to_string());
+                continue;
+            }
+            if (1900..=2200).contains(&num) {
+                normalized_tokens.push(num.to_string());
+                continue;
+            }
+        }
+
+        // Month (e.g. "Sep." -> "Sep", "Okt." -> "Oct")
+        if let Some(m) = normalize_month_token(token) {
+            normalized_tokens.push(m.to_string());
+            continue;
+        }
+
+        // Time with missing seconds (e.g. "14:30" -> "14:30:00")
+        if token.contains(':') && token.matches(':').count() == 1 {
+            let parts: Vec<&str> = token.split(':').collect();
+            if parts.len() == 2 && parts[0].chars().all(|c| c.is_ascii_digit()) && parts[1].chars().all(|c| c.is_ascii_digit()) {
+                normalized_tokens.push(format!("{}:00", token));
+                continue;
+            }
+        }
+
+        // Timezone (e.g. "+02:00" -> "+0200", "CEST" -> "+0200")
+        if let Some(tz) = normalize_timezone_token(token) {
+            normalized_tokens.push(tz);
+            continue;
+        }
+
+        // Keep raw token (e.g. year "2026", time "10:24:16")
+        normalized_tokens.push((*token).to_string());
+    }
+
+    normalized_tokens.join(" ")
+}
+
+pub(crate) fn parse_flexible_datetime(value: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return None;
     }
-    let cleaned = if let Some(idx) = trimmed.find('(') {
-        trimmed[..idx].trim()
-    } else {
-        trimmed
-    };
 
+    let cleaned_comments = strip_date_comments(trimmed);
+    let cleaned = cleaned_comments.trim();
+    if cleaned.is_empty() {
+        return None;
+    }
+
+    // 1. Direct standard parse attempts
     if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(cleaned) {
-        return Some(dt.with_timezone(&chrono::Local));
+        return Some(dt);
+    }
+    if let Some(idx) = cleaned.find(',') {
+        let without_weekday = cleaned[idx + 1..].trim();
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(without_weekday) {
+            return Some(dt);
+        }
     }
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(cleaned) {
-        return Some(dt.with_timezone(&chrono::Local));
+        return Some(dt);
     }
-    for fmt in [
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%d %H:%M",
-        "%d.%m.%Y %H:%M:%S",
-        "%d.%m.%Y %H:%M",
-        "%a, %d %b %Y %H:%M:%S",
-    ] {
-        if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(cleaned, fmt) {
-            use chrono::TimeZone;
-            if let Some(local) = chrono::Local.from_local_datetime(&ndt).single() {
-                return Some(local);
+
+    // 2. ISO 8601 with space instead of 'T' (e.g. "2026-09-21 10:24:16+02:00")
+    if cleaned.contains(' ') && (cleaned.contains('+') || cleaned.contains('-') || cleaned.ends_with('Z')) {
+        let with_t = cleaned.replacen(' ', "T", 1);
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&with_t) {
+            return Some(dt);
+        }
+    }
+
+    // 3. Token-normalized RFC 2822 parse attempt (handles German locales, dots, colons in TZ, named TZ)
+    let normalized = normalize_date_tokens(cleaned);
+    if !normalized.is_empty() && normalized != cleaned {
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(&normalized) {
+            return Some(dt);
+        }
+        if let Some(idx) = normalized.find(',') {
+            let without_weekday = normalized[idx + 1..].trim();
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(without_weekday) {
+                return Some(dt);
+            }
+        }
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&normalized) {
+            return Some(dt);
+        }
+    }
+
+    // 4. Naive formats on cleaned and normalized strings
+    let mut candidate_strings = vec![normalized.clone(), cleaned.to_string()];
+    if let Some(idx) = normalized.find(',') {
+        candidate_strings.push(normalized[idx + 1..].trim().to_string());
+    }
+    if let Some(idx) = cleaned.find(',') {
+        candidate_strings.push(cleaned[idx + 1..].trim().to_string());
+    }
+
+    for candidate in &candidate_strings {
+        if candidate.is_empty() {
+            continue;
+        }
+        for fmt in [
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M",
+            "%d.%m.%Y %H:%M:%S",
+            "%d.%m.%Y %H:%M",
+            "%a, %d %b %Y %H:%M:%S",
+            "%d %b %Y %H:%M:%S",
+            "%a, %d %b %Y %H:%M",
+            "%d %b %Y %H:%M",
+            "%b %d, %Y %H:%M:%S",
+            "%B %d, %Y %H:%M:%S",
+            "%b %d %Y %H:%M:%S",
+        ] {
+            if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(candidate, fmt) {
+                if let Some(dt) = naive_to_fixed_offset(ndt) {
+                    return Some(dt);
+                }
+            }
+        }
+        for fmt in [
+            "%Y-%m-%d",
+            "%d.%m.%Y",
+            "%d %b %Y",
+            "%a, %d %b %Y",
+            "%b %d, %Y",
+            "%B %d, %Y",
+        ] {
+            if let Ok(nd) = chrono::NaiveDate::parse_from_str(candidate, fmt) {
+                if let Some(ndt) = nd.and_hms_opt(12, 0, 0) {
+                    if let Some(dt) = naive_to_fixed_offset(ndt) {
+                        return Some(dt);
+                    }
+                }
             }
         }
     }
-    if let Ok(nd) = chrono::NaiveDate::parse_from_str(cleaned, "%Y-%m-%d") {
-        use chrono::TimeZone;
-        if let Some(ndt) = nd.and_hms_opt(12, 0, 0) {
-            if let Some(local) = chrono::Local.from_local_datetime(&ndt).single() {
-                return Some(local);
-            }
-        }
-    }
+
     None
 }
 
@@ -965,15 +1194,15 @@ pub(crate) fn format_mail_table_date(
     )
 }
 
-fn format_weekday_name(date: chrono::NaiveDate) -> String {
+fn format_weekday_short(date: chrono::NaiveDate) -> String {
     match date.weekday() {
-        chrono::Weekday::Mon => crate::i18n::gettext("Monday"),
-        chrono::Weekday::Tue => crate::i18n::gettext("Tuesday"),
-        chrono::Weekday::Wed => crate::i18n::gettext("Wednesday"),
-        chrono::Weekday::Thu => crate::i18n::gettext("Thursday"),
-        chrono::Weekday::Fri => crate::i18n::gettext("Friday"),
-        chrono::Weekday::Sat => crate::i18n::gettext("Saturday"),
-        chrono::Weekday::Sun => crate::i18n::gettext("Sunday"),
+        chrono::Weekday::Mon => crate::i18n::gettext("Mon"),
+        chrono::Weekday::Tue => crate::i18n::gettext("Tue"),
+        chrono::Weekday::Wed => crate::i18n::gettext("Wed"),
+        chrono::Weekday::Thu => crate::i18n::gettext("Thu"),
+        chrono::Weekday::Fri => crate::i18n::gettext("Fri"),
+        chrono::Weekday::Sat => crate::i18n::gettext("Sat"),
+        chrono::Weekday::Sun => crate::i18n::gettext("Sun"),
     }
 }
 
@@ -984,10 +1213,11 @@ pub(crate) fn format_mail_table_date_with_now(
     time_format: &str,
     now_date: chrono::NaiveDate,
 ) -> String {
-    let Some(local_dt) = parse_flexible_datetime(value) else {
+    let Some(parsed) = parse_flexible_datetime(value) else {
         return value.to_string();
     };
 
+    let local_dt = parsed.with_timezone(&chrono::Local);
     let msg_date = local_dt.date_naive();
     let days_diff = (now_date - msg_date).num_days();
     let time_pattern = if time_format == "12h" { "%I:%M %p" } else { "%H:%M" };
@@ -1005,12 +1235,10 @@ pub(crate) fn format_mail_table_date_with_now(
                     return formatted;
                 }
             }
-            if days_diff <= 0 {
+            if msg_date == now_date {
                 local_dt.format(time_pattern).to_string()
-            } else if days_diff == 1 {
-                crate::i18n::gettext("Yesterday")
-            } else if days_diff < 7 {
-                format_weekday_name(msg_date)
+            } else if days_diff >= 1 && days_diff < 7 {
+                format_weekday_short(msg_date)
             } else if now_date.year() == msg_date.year() {
                 let month_name = format_month_short(msg_date.month());
                 format!("{}. {}", msg_date.day(), month_name)
@@ -1019,18 +1247,15 @@ pub(crate) fn format_mail_table_date_with_now(
             }
         }
         _ => {
-            // "standard" and "smart" styles:
+            // Gmail-style relative date formatting:
             // 1. Same day: time only (e.g. "14:30")
-            // 2. Yesterday: "Yesterday" / "Gestern"
-            // 3. Within last 7 days: weekday name (e.g. "Wednesday" / "Mittwoch")
-            // 4. Older within current year: "10. Sep"
-            // 5. Older year: "10.09.25"
-            if days_diff <= 0 {
+            // 2. Last 6-7 days: short weekday name (e.g. "Mon" / "Mo")
+            // 3. Older within current year: "10. Sep"
+            // 4. Older year: "10.09.25"
+            if msg_date == now_date {
                 local_dt.format(time_pattern).to_string()
-            } else if days_diff == 1 {
-                crate::i18n::gettext("Yesterday")
-            } else if days_diff < 7 {
-                format_weekday_name(msg_date)
+            } else if days_diff >= 1 && days_diff < 7 {
+                format_weekday_short(msg_date)
             } else if now_date.year() == msg_date.year() {
                 let month_name = format_month_short(msg_date.month());
                 format!("{}. {}", msg_date.day(), month_name)
@@ -1041,23 +1266,20 @@ pub(crate) fn format_mail_table_date_with_now(
     }
 }
 
-fn format_smart_date(
-    parsed: &chrono::DateTime<chrono::FixedOffset>,
+fn format_smart_date<Tz: chrono::TimeZone>(
+    parsed: &chrono::DateTime<Tz>,
     time_pattern: &str,
     date_format: &str,
 ) -> String {
-    let local_now = chrono::Local::now();
-    let message_local = parsed.with_timezone(&chrono::Local);
-    let now_date = local_now.date_naive();
-    let msg_date = message_local.date_naive();
+    let now_date = chrono::Local::now().date_naive();
+    let local_dt = parsed.with_timezone(&chrono::Local);
+    let msg_date = local_dt.date_naive();
     let days_diff = (now_date - msg_date).num_days();
 
-    if days_diff <= 0 {
-        message_local.format(time_pattern).to_string()
-    } else if days_diff == 1 {
-        crate::i18n::gettext("Yesterday")
-    } else if days_diff < 7 {
-        format_weekday_name(msg_date)
+    if msg_date == now_date {
+        local_dt.format(time_pattern).to_string()
+    } else if days_diff >= 1 && days_diff < 7 {
+        format_weekday_short(msg_date)
     } else if now_date.year() == msg_date.year() {
         let month_name = format_month_short(msg_date.month());
         format!("{}. {}", msg_date.day(), month_name)
@@ -1071,10 +1293,7 @@ fn format_smart_date(
 }
 
 fn format_message_date(value: &str) -> String {
-    let parsed = chrono::DateTime::parse_from_rfc2822(value)
-        .ok()
-        .or_else(|| chrono::DateTime::parse_from_rfc3339(value).ok());
-    let Some(parsed) = parsed else {
+    let Some(parsed) = parse_flexible_datetime(value) else {
         return value.to_string();
     };
     let settings = AppSettings::try_new();
@@ -1084,7 +1303,7 @@ fn format_message_date(value: &str) -> String {
         .unwrap_or(true);
     let date_format = settings
         .as_ref()
-        .map(|settings| settings.date_format())
+        .map(|settings| settings.resolved_date_format())
         .unwrap_or_else(|| "german".to_string());
     let time_format = settings
         .as_ref()
@@ -1112,43 +1331,20 @@ fn format_message_date(value: &str) -> String {
 }
 
 fn format_mail_list_date(value: &str) -> String {
-    let parsed = chrono::DateTime::parse_from_rfc2822(value)
-        .ok()
-        .or_else(|| chrono::DateTime::parse_from_rfc3339(value).ok());
-    let Some(parsed) = parsed else {
-        return value.to_string();
-    };
     let settings = AppSettings::try_new();
-    let show_real_date = settings
-        .as_ref()
-        .map(|s| s.mail_show_real_date())
-        .unwrap_or(false);
     let date_format = settings
         .as_ref()
-        .map(|settings| settings.date_format())
-        .unwrap_or_else(|| "german".to_string());
+        .map(|s| s.mail_date_format())
+        .unwrap_or_else(|| "standard".to_string());
+    let custom_format = settings
+        .as_ref()
+        .map(|s| s.mail_date_custom_format())
+        .unwrap_or_default();
     let time_format = settings
         .as_ref()
-        .map(|settings| settings.time_format())
+        .map(|s| s.time_format())
         .unwrap_or_else(|| "24h".to_string());
-    let time_pattern = match time_format.as_str() {
-        "12h" => "%I:%M %p",
-        _ => "%H:%M",
-    };
-
-    if !show_real_date {
-        format_smart_date(&parsed, time_pattern, &date_format)
-    } else {
-        let pattern = match (date_format.as_str(), time_format.as_str()) {
-            ("iso", "12h") => "%Y-%m-%d %I:%M %p",
-            ("iso", _) => "%Y-%m-%d %H:%M",
-            ("us", "12h") => "%m/%d/%Y %I:%M %p",
-            ("us", _) => "%m/%d/%Y %H:%M",
-            ("german", "12h") => "%d.%m.%Y %I:%M %p",
-            _ => "%d.%m.%Y %H:%M",
-        };
-        parsed.format(pattern).to_string()
-    }
+    format_mail_table_date(value, &date_format, &custom_format, &time_format)
 }
 
 fn mail_row_density_metrics(value: &str) -> (i32, i32) {
@@ -1295,10 +1491,10 @@ fn mail_list_profile_allows_column(profile: &str, wide_messages: bool, column: &
     match profile {
         "messages" => matches!(
             column,
-            "avatar" | "status" | "attachment" | "flagged" | "sender" | "subject" | "date"
+            "avatar" | "status" | "attachment" | "flagged" | "follow-up" | "sender" | "subject" | "date"
         ),
-        "wide" => matches!(column, "status" | "flagged" | "messages"),
-        "cards" => matches!(column, "avatar" | "status" | "flagged" | "labels" | "preview"),
+        "wide" => matches!(column, "status" | "flagged" | "follow-up" | "messages"),
+        "cards" => matches!(column, "avatar" | "status" | "flagged" | "follow-up" | "labels" | "preview"),
         _ => match column {
             "messages" => wide_messages,
             "sender" | "subject" => !wide_messages,
@@ -1344,6 +1540,7 @@ pub(crate) enum MailTableColumn {
     Status,
     Attachment,
     Flagged,
+    FollowUp,
     Sender,
     Recipient,
     Subject,
@@ -1361,6 +1558,7 @@ pub(crate) struct PreparedMailTableRow {
     pub is_expanded: bool,
     pub is_unread: bool,
     pub is_flagged: bool,
+    pub follow_up_state: MailFollowUpState,
     pub is_important: bool,
     pub is_replied: bool,
     pub is_forwarded: bool,
@@ -1380,6 +1578,39 @@ pub(crate) struct PreparedMailTableRow {
     pub thread_size: usize,
 }
 
+impl Default for PreparedMailTableRow {
+    fn default() -> Self {
+        Self {
+            model_index: 0,
+            id: String::new(),
+            thread_id: String::new(),
+            depth: 0,
+            is_expandable: false,
+            is_expanded: false,
+            is_unread: false,
+            is_flagged: false,
+            follow_up_state: MailFollowUpState::None,
+            is_important: false,
+            is_replied: false,
+            is_forwarded: false,
+            has_attachments: false,
+            sender: String::new(),
+            recipient: String::new(),
+            subject: String::new(),
+            snippet: String::new(),
+            date: String::new(),
+            size_str: String::new(),
+            selected: false,
+            y: 0.0,
+            height: 28.0,
+            markup_dark: String::new(),
+            markup_light: String::new(),
+            labels: Vec::new(),
+            thread_size: 1,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub(crate) struct ColumnRect {
     pub x: f64,
@@ -1391,6 +1622,7 @@ pub(crate) struct TableColumnsGeometry {
     pub status: ColumnRect,
     pub attachment: ColumnRect,
     pub flagged: ColumnRect,
+    pub follow_up: ColumnRect,
     pub sender: ColumnRect,
     pub recipient: ColumnRect,
     pub subject: ColumnRect,
@@ -1404,6 +1636,7 @@ pub(crate) fn compute_table_columns_geometry(
     show_status: bool,
     show_attachment: bool,
     show_flagged: bool,
+    show_follow_up: bool,
     show_sender: bool,
     sender_width: f64,
     show_recipient: bool,
@@ -1419,25 +1652,27 @@ pub(crate) fn compute_table_columns_geometry(
     let w_status = if show_status { FIXED_ICON_WIDTH } else { 0.0 };
     let w_attachment = if show_attachment { FIXED_ICON_WIDTH } else { 0.0 };
     let w_flagged = if show_flagged { FIXED_ICON_WIDTH } else { 0.0 };
+    let w_follow_up = if show_follow_up { FIXED_ICON_WIDTH } else { 0.0 };
     let w_sender = if show_sender { sender_width.max(60.0) + sep_width } else { 0.0 };
     let w_recipient = if show_recipient { recipient_width.max(60.0) + sep_width } else { 0.0 };
     let w_date = if show_date { date_width.max(60.0) + sep_width } else { 0.0 };
     let w_size = if show_size { size_width.max(40.0) } else { 0.0 };
 
-    let total_non_subject = w_status + w_attachment + w_flagged + w_sender + w_recipient + w_date + w_size;
+    let total_non_subject = w_status + w_attachment + w_flagged + w_follow_up + w_sender + w_recipient + w_date + w_size;
     let w_subject = (total_width - total_non_subject).max(60.0);
 
     let default_order = [
         "status",
         "attachment",
         "flagged",
+        "follow-up",
         "sender",
         "recipient",
         "subject",
         "date",
         "size",
     ];
-    let mut resolved_order: Vec<&str> = Vec::with_capacity(8);
+    let mut resolved_order: Vec<&str> = Vec::with_capacity(9);
     for col in order {
         let s = col.as_str();
         if default_order.contains(&s) && !resolved_order.contains(&s) {
@@ -1466,6 +1701,10 @@ pub(crate) fn compute_table_columns_geometry(
             "flagged" => {
                 geom.flagged = ColumnRect { x: cur_x, width: w_flagged };
                 cur_x += w_flagged;
+            }
+            "follow-up" => {
+                geom.follow_up = ColumnRect { x: cur_x, width: w_follow_up };
+                cur_x += w_follow_up;
             }
             "sender" => {
                 let actual_w = if show_sender { sender_width.max(60.0) } else { 0.0 };
@@ -1514,6 +1753,7 @@ pub(crate) struct PreparedMailTableLayout {
     pub show_status: bool,
     pub show_attachment: bool,
     pub show_flagged: bool,
+    pub show_follow_up: bool,
     pub show_recipient: bool,
     pub show_date: bool,
     pub show_size: bool,
@@ -1525,6 +1765,7 @@ pub(crate) struct PreparedMailTableLayout {
     pub col_status: ColumnRect,
     pub col_attachment: ColumnRect,
     pub col_flagged: ColumnRect,
+    pub col_follow_up: ColumnRect,
     pub col_sender: ColumnRect,
     pub col_recipient: ColumnRect,
     pub col_subject: ColumnRect,
@@ -1608,6 +1849,17 @@ impl PreparedMailTableLayout {
     pub fn col_star_w(&self) -> f64 {
         if self.show_flagged {
             self.col_flagged.width
+        } else {
+            0.0
+        }
+    }
+
+    pub fn col_follow_up_x(&self) -> f64 {
+        self.col_follow_up.x
+    }
+    pub fn col_follow_up_w(&self) -> f64 {
+        if self.show_follow_up {
+            self.col_follow_up.width
         } else {
             0.0
         }
@@ -1700,6 +1952,45 @@ impl PreparedMailTableLayout {
             0.0
         }
     }
+
+    pub fn update_column_widths(
+        &mut self,
+        order: &[String],
+        sender_width: f64,
+        recipient_width: f64,
+        date_width: f64,
+    ) {
+        self.sender_width = sender_width.max(60.0);
+        self.recipient_width = recipient_width.max(0.0);
+        self.date_width = date_width.max(60.0);
+        let show_sender = self.show_avatar || self.sender_width > 0.0;
+        let geom = compute_table_columns_geometry(
+            order,
+            self.width,
+            self.show_status,
+            self.show_attachment,
+            self.show_flagged,
+            self.show_follow_up,
+            show_sender,
+            self.sender_width,
+            self.show_recipient,
+            self.recipient_width,
+            self.show_date,
+            self.date_width,
+            self.show_size,
+            self.size_width,
+            self.sep_width,
+        );
+        self.col_status = geom.status;
+        self.col_attachment = geom.attachment;
+        self.col_flagged = geom.flagged;
+        self.col_follow_up = geom.follow_up;
+        self.col_sender = geom.sender;
+        self.col_recipient = geom.recipient;
+        self.col_subject = geom.subject;
+        self.col_date = geom.date;
+        self.col_size = geom.size;
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1707,6 +1998,7 @@ pub(crate) enum MailTableHitAction {
     ToggleExpander(usize, usize),
     ToggleStatus(usize, usize),
     ToggleStar(usize, usize),
+    ToggleFollowUp(usize, usize),
     SelectRow(usize, usize),
 }
 
@@ -1742,6 +2034,7 @@ pub(crate) fn prepare_mail_table_layout_from_rows(
     let show_status = true;
     let show_attachment = true;
     let show_flagged = true;
+    let show_follow_up = true;
     let show_sender = true;
     let show_recipient = recipient_width > 0.0;
     let show_date = date_width > 0.0;
@@ -1760,6 +2053,7 @@ pub(crate) fn prepare_mail_table_layout_from_rows(
         show_status,
         show_attachment,
         show_flagged,
+        show_follow_up,
         show_sender,
         sender_width,
         show_recipient,
@@ -1786,6 +2080,7 @@ pub(crate) fn prepare_mail_table_layout_from_rows(
         show_status,
         show_attachment,
         show_flagged,
+        show_follow_up,
         show_recipient,
         show_date,
         show_size,
@@ -1797,6 +2092,7 @@ pub(crate) fn prepare_mail_table_layout_from_rows(
         col_status: geom.status,
         col_attachment: geom.attachment,
         col_flagged: geom.flagged,
+        col_follow_up: geom.follow_up,
         col_sender: geom.sender,
         col_recipient: geom.recipient,
         col_subject: geom.subject,
@@ -1866,6 +2162,7 @@ pub(crate) fn prepare_mail_table_layout(
             is_expanded,
             is_unread,
             is_flagged: msg.is_flagged(),
+            follow_up_state: msg.follow_up_state(),
             is_important: msg.is_important(),
             is_replied: msg.is_replied(),
             is_forwarded: msg.is_forwarded(),
@@ -1925,6 +2222,13 @@ pub(crate) fn hit_test_mail_table(
         && x < (layout.col_star_x() + layout.col_star_w())
     {
         return Some(MailTableHitAction::ToggleStar(row_idx, row.model_index));
+    }
+    if layout.show_follow_up
+        && layout.col_follow_up_w() > 0.0
+        && x >= layout.col_follow_up_x()
+        && x < (layout.col_follow_up_x() + layout.col_follow_up_w())
+    {
+        return Some(MailTableHitAction::ToggleFollowUp(row_idx, row.model_index));
     }
 
     let subject_x_start = layout.col_subject_x();
@@ -2098,6 +2402,94 @@ pub(crate) fn draw_cairo_flag(cr: &gtk::cairo::Context, cx: f64, cy: f64) {
     cr.line_to(cx - 3.5, cy + 0.5);
     cr.close_path();
     let _ = cr.fill();
+    let _ = cr.restore();
+}
+
+pub(crate) fn draw_cairo_follow_up(
+    cr: &gtk::cairo::Context,
+    cx: f64,
+    cy: f64,
+    state: MailFollowUpState,
+    is_dark: bool,
+    is_hovered: bool,
+) {
+    let _ = cr.save();
+    match state {
+        MailFollowUpState::FollowUp => {
+            // Evolution ribbon: vibrant purple/indigo bookmark ribbon with notch
+            let w = 8.0;
+            let x0 = (cx - w / 2.0).round();
+            let x1 = x0 + w;
+            let top_y = (cy - 7.5).round();
+            let bot_y = (cy + 7.5).round();
+            let notch_y = (cy + 3.5).round();
+            let mid_x = cx.round();
+
+            cr.move_to(x0, top_y);
+            cr.line_to(x1, top_y);
+            cr.line_to(x1, bot_y);
+            cr.line_to(mid_x, notch_y);
+            cr.line_to(x0, bot_y);
+            cr.close_path();
+
+            if is_dark {
+                cr.set_source_rgb(0.58, 0.42, 0.88); // Soft vibrant purple
+            } else {
+                cr.set_source_rgb(0.40, 0.22, 0.58); // Royal purple #663894 (matches Evolution)
+            }
+            let _ = cr.fill_preserve();
+
+            if is_dark {
+                cr.set_source_rgba(0.25, 0.15, 0.45, 0.8);
+            } else {
+                cr.set_source_rgba(0.20, 0.10, 0.35, 0.9);
+            }
+            cr.set_line_width(0.9);
+            let _ = cr.stroke();
+        }
+        MailFollowUpState::Completed => {
+            // Completed state: crisp bold green checkmark
+            let check_color = if is_dark {
+                (0.22, 0.82, 0.48) // #38d17a
+            } else {
+                (0.15, 0.65, 0.32) // #26a252
+            };
+            cr.set_source_rgb(check_color.0, check_color.1, check_color.2);
+            cr.set_line_width(2.2);
+            cr.set_line_cap(gtk::cairo::LineCap::Round);
+            cr.set_line_join(gtk::cairo::LineJoin::Round);
+            cr.move_to(cx - 5.0, cy - 0.5);
+            cr.line_to(cx - 1.5, cy + 3.5);
+            cr.line_to(cx + 5.0, cy - 4.0);
+            let _ = cr.stroke();
+        }
+        MailFollowUpState::None => {
+            if is_hovered {
+                let w = 8.0;
+                let x0 = (cx - w / 2.0).round();
+                let x1 = x0 + w;
+                let top_y = (cy - 7.5).round();
+                let bot_y = (cy + 7.5).round();
+                let notch_y = (cy + 3.5).round();
+                let mid_x = cx.round();
+
+                cr.move_to(x0, top_y);
+                cr.line_to(x1, top_y);
+                cr.line_to(x1, bot_y);
+                cr.line_to(mid_x, notch_y);
+                cr.line_to(x0, bot_y);
+                cr.close_path();
+
+                if is_dark {
+                    cr.set_source_rgba(1.0, 1.0, 1.0, 0.25);
+                } else {
+                    cr.set_source_rgba(0.0, 0.0, 0.0, 0.20);
+                }
+                cr.set_line_width(1.0);
+                let _ = cr.stroke();
+            }
+        }
+    }
     let _ = cr.restore();
 }
 
@@ -2391,10 +2783,14 @@ pub(crate) fn draw_mail_table_canvas(
             pangocairo_ffi::update_layout(cr, &pango_layout);
             pangocairo_ffi::show_layout(cr, &pango_layout);
 
-            // Line 2: Subject + right badges (Thread count, attachment, star)
+            // Line 2: Subject + right badges (Thread count, attachment, star, follow-up)
             let mut line2_right_x = width - right_pad;
             if layout.show_flagged && row.is_flagged {
                 draw_cairo_star(cr, line2_right_x - 7.0, y + 39.0, 7.0, true, is_dark, is_hovered);
+                line2_right_x -= 18.0;
+            }
+            if layout.show_follow_up && row.follow_up_state != MailFollowUpState::None {
+                draw_cairo_follow_up(cr, line2_right_x - 7.0, y + 39.0, row.follow_up_state, is_dark, is_hovered);
                 line2_right_x -= 18.0;
             }
             if row.has_attachments {
@@ -4288,7 +4684,7 @@ enum PendingThreadModelStage {
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum MailSortKey {
-    Date(Option<NaiveDate>, String),
+    Date(i64, String),
     Text(String, String),
     Sender(String, String, String),
     State(bool),
@@ -4395,7 +4791,8 @@ fn mail_root_sort_record(
     let key = match field {
         MailSortField::Date => {
             let raw = message.date_str();
-            MailSortKey::Date(parse_message_date(&raw), raw)
+            let timestamp = parse_message_timestamp(&raw);
+            MailSortKey::Date(timestamp, raw)
         }
         MailSortField::Subject => {
             let value = message.subject();
@@ -5152,6 +5549,8 @@ mod imp {
         pub preview_reply_group: RefCell<Option<gtk::Box>>,
         pub preview_reply_labels: RefCell<Vec<gtk::Label>>,
         pub load_remote_images_btn: RefCell<Option<adw::SplitButton>>,
+        pub modern_load_remote_images_btn: RefCell<Option<gtk::Button>>,
+        pub header_separator: RefCell<Option<gtk::Separator>>,
         pub all_headers_generation: Cell<u64>,
         pub all_headers_cancellation: RefCell<Option<Arc<AtomicBool>>>,
         pub(super) message_source_windows: RefCell<HashMap<String, MessageSourceWindowState>>,
@@ -5535,6 +5934,12 @@ glib::wrapper! {
 impl MailPage {
     pub fn new() -> Self {
         glib::Object::builder().build()
+    }
+
+    pub(crate) fn is_modern_header_style(&self) -> bool {
+        AppSettings::try_new()
+            .map(|settings| settings.mail_header_style() == "modern")
+            .unwrap_or(true)
     }
 
     pub(crate) fn user_account_emails(&self) -> Vec<String> {
@@ -6120,14 +6525,23 @@ impl MailPage {
         if let Some(group) = self.imp().preview_reply_group.borrow().as_ref() {
             group.set_visible(show_top_group);
         }
+
+        let remote_blocked = self
+            .imp()
+            .mail_viewer
+            .borrow()
+            .as_ref()
+            .map(|v| v.is_remote_images_blocked())
+            .unwrap_or(false);
+
+        if let Some(btn) = self.imp().modern_load_remote_images_btn.borrow().as_ref() {
+            btn.set_visible(is_modern && !is_mobile && remote_blocked);
+        }
+        if let Some(btn) = self.imp().load_remote_images_btn.borrow().as_ref() {
+            btn.set_visible((!is_modern || is_mobile) && remote_blocked);
+        }
         if let Some(row) = self.imp().preview_actions_row.borrow().as_ref() {
-            let remote_images_visible = self
-                .imp()
-                .load_remote_images_btn
-                .borrow()
-                .as_ref()
-                .map(|b| b.is_visible())
-                .unwrap_or(false);
+            let remote_images_visible = (!is_modern || is_mobile) && remote_blocked;
             row.set_visible(show_top_group || remote_images_visible);
         }
         self.sync_preview_actions_labels();
@@ -6300,7 +6714,7 @@ impl MailPage {
             if !recipient_cc.trim().is_empty() {
                 details.push(("Kopie:", recipient_cc));
             }
-            details.push(("Datum:", date_str));
+            details.push(("Datum:", format_message_date(&date_str)));
 
             for (row, (label, val)) in details.into_iter().enumerate() {
                 let l = gtk::Label::builder()
@@ -6522,6 +6936,7 @@ impl MailPage {
                 "mail-show-status",
                 "mail-show-attachment",
                 "mail-show-flagged",
+                "mail-show-follow-up",
                 "mail-show-avatar",
                 "mail-show-sender",
                 "mail-show-recipient",
@@ -10804,6 +11219,33 @@ impl MailPage {
         );
         self.execute_mail_command(command)
     }
+
+    pub fn cycle_message_follow_up(
+        &self,
+        message: &MailMessageObject,
+    ) -> Result<MailFollowUpState, MailOperationError> {
+        let current_state = message.follow_up_state();
+        let next_metadata = match current_state {
+            MailFollowUpState::None => {
+                MailFollowUpMetadata::pending(Some(DEFAULT_FOLLOW_UP_TEXT.to_string()), None)
+            }
+            MailFollowUpState::FollowUp => {
+                MailFollowUpMetadata::completed_from(
+                    &message.follow_up(),
+                    chrono::Utc::now().to_rfc2822(),
+                )
+            }
+            MailFollowUpState::Completed => {
+                MailFollowUpMetadata::none()
+            }
+        };
+        let next_state = next_metadata.state;
+        message.set_follow_up(next_metadata.clone());
+        let res = self.set_message_follow_up(message, next_metadata);
+        self.queue_mail_table_draw();
+        res.map(|_| next_state)
+    }
+
 
     /// Present Evolution's explicit follow-up editor for the selected
     /// message. The ordinary star remains a separate action and column.
@@ -16604,6 +17046,22 @@ impl MailPage {
         }
     }
 
+    pub(crate) fn is_mail_table_layout_cached_valid(
+        &self,
+        l: &PreparedMailTableLayout,
+        canvas_width: f64,
+        n_items: usize,
+    ) -> bool {
+        let sender_w = self.imp().mail_sender_width.get() as f64;
+        let recipient_w = self.imp().mail_recipient_width.get() as f64;
+        let date_w = self.imp().mail_date_width.get() as f64;
+        (l.width - canvas_width).abs() < 2.0
+            && l.rows.len() == n_items
+            && (l.sender_width - sender_w).abs() < 0.5
+            && (l.recipient_width - recipient_w).abs() < 0.5
+            && (l.date_width - date_w).abs() < 0.5
+    }
+
     pub(crate) fn apply_mail_column_widths(
         &self,
         sender_width: i32,
@@ -16638,6 +17096,28 @@ impl MailPage {
                 );
                 child = next;
             }
+        }
+
+        let cached_layout = self.imp().mail_table_layout.borrow().clone();
+        if let Some(layout_rc) = cached_layout {
+            let mut updated = (*layout_rc).clone();
+            let order = AppSettings::try_new()
+                .map(|s| s.mail_list_column_order())
+                .unwrap_or_else(|| {
+                    crate::services::settings_service::MAIL_LIST_COLUMN_IDS
+                        .iter()
+                        .map(|c| (*c).to_string())
+                        .collect()
+                });
+            updated.update_column_widths(
+                &order,
+                sender_width as f64,
+                recipient_width as f64,
+                date_width as f64,
+            );
+            self.imp().mail_table_layout.replace(Some(Rc::new(updated)));
+        } else {
+            self.imp().mail_table_layout.replace(None);
         }
 
         if let Some(canvas) = self.imp().mail_table_canvas.borrow().as_ref() {
@@ -16771,6 +17251,9 @@ impl MailPage {
         let show_flagged = mail_list_profile_allows_column(&profile, wide_messages, "flagged")
             && settings.as_ref().map(|s| s.mail_show_flagged()).unwrap_or(true);
 
+        let show_follow_up = mail_list_profile_allows_column(&profile, wide_messages, "follow-up")
+            && settings.as_ref().map(|s| s.mail_show_follow_up()).unwrap_or(true);
+
         let show_sender = (mail_list_profile_allows_column(&profile, wide_messages, "sender")
             || settings.as_ref().map(|s| s.mail_show_sender()).unwrap_or(true))
             && settings.as_ref().map(|s| s.mail_show_sender()).unwrap_or(true)
@@ -16879,6 +17362,7 @@ impl MailPage {
                 is_expanded,
                 is_unread,
                 is_flagged: msg.is_flagged(),
+                follow_up_state: msg.follow_up_state(),
                 is_important: msg.is_important(),
                 is_replied: msg.is_replied(),
                 is_forwarded: msg.is_forwarded(),
@@ -16917,6 +17401,7 @@ impl MailPage {
             show_status,
             show_attachment,
             show_flagged,
+            show_follow_up,
             show_sender,
             sender_width,
             show_recipient,
@@ -16943,6 +17428,7 @@ impl MailPage {
             show_status,
             show_attachment,
             show_flagged,
+            show_follow_up,
             show_recipient,
             show_date,
             show_size,
@@ -16954,6 +17440,7 @@ impl MailPage {
             col_status: geom.status,
             col_attachment: geom.attachment,
             col_flagged: geom.flagged,
+            col_follow_up: geom.follow_up,
             col_sender: geom.sender,
             col_recipient: geom.recipient,
             col_subject: geom.subject,
@@ -21157,7 +21644,7 @@ impl MailPage {
             let layout = {
                 let cached = page.imp().mail_table_layout.borrow();
                 if let Some(ref l) = *cached {
-                    if (l.width - width as f64).abs() < 2.0 && l.rows.len() == n_items {
+                    if page.is_mail_table_layout_cached_valid(l, width as f64, n_items) {
                         Some(Rc::clone(l))
                     } else {
                         None
@@ -21217,7 +21704,7 @@ impl MailPage {
             let layout = {
                 let cached = page.imp().mail_table_layout.borrow();
                 if let Some(ref l) = *cached {
-                    if (l.width - w).abs() < 2.0 && l.rows.len() == n_items {
+                    if page.is_mail_table_layout_cached_valid(l, w, n_items) {
                         Some(Rc::clone(l))
                     } else {
                         None
@@ -21270,6 +21757,19 @@ impl MailPage {
                         };
                         if let Some(msg) = msg {
                             let _ = page.toggle_message_flagged(&msg);
+                        }
+                    }
+                }
+                MailTableHitAction::ToggleFollowUp(_, model_index) => {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    if let Some(item) = thread_sel_for_click.item(model_index as u32) {
+                        let msg = if let Some(tree_row) = item.downcast_ref::<gtk::TreeListRow>() {
+                            tree_row.item().and_downcast::<MailMessageObject>()
+                        } else {
+                            item.downcast::<MailMessageObject>().ok()
+                        };
+                        if let Some(msg) = msg {
+                            let _ = page.cycle_message_follow_up(&msg);
                         }
                     }
                 }
@@ -21369,7 +21869,7 @@ impl MailPage {
             let layout = {
                 let cached = page.imp().mail_table_layout.borrow();
                 if let Some(ref l) = *cached {
-                    if (l.width - w).abs() < 2.0 && l.rows.len() == n_items {
+                    if page.is_mail_table_layout_cached_valid(l, w, n_items) {
                         Some(Rc::clone(l))
                     } else {
                         None
@@ -21392,6 +21892,7 @@ impl MailPage {
                     MailTableHitAction::ToggleExpander(_, m)
                     | MailTableHitAction::ToggleStatus(_, m)
                     | MailTableHitAction::ToggleStar(_, m)
+                    | MailTableHitAction::ToggleFollowUp(_, m)
                     | MailTableHitAction::SelectRow(_, m) => m,
                 };
                 let idx = model_index as u32;
@@ -21427,8 +21928,20 @@ impl MailPage {
         canvas_long_press.connect_pressed(move |gesture, x, y| {
             let Some(page) = page_for_canvas_lp.upgrade() else { return; };
             let w = canvas_for_lp.width().max(120) as f64;
-            let layout_cell = page.imp().mail_table_layout.borrow().clone();
-            let layout = match layout_cell {
+            let n_items = thread_sel_for_canvas_lp.n_items() as usize;
+            let layout = {
+                let cached = page.imp().mail_table_layout.borrow();
+                if let Some(ref l) = *cached {
+                    if page.is_mail_table_layout_cached_valid(l, w, n_items) {
+                        Some(Rc::clone(l))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+            let layout = match layout {
                 Some(l) => l,
                 None => {
                     let l = Rc::new(page.current_mail_table_layout(&thread_sel_for_canvas_lp, w));
@@ -21442,6 +21955,7 @@ impl MailPage {
                     MailTableHitAction::ToggleExpander(_, m)
                     | MailTableHitAction::ToggleStatus(_, m)
                     | MailTableHitAction::ToggleStar(_, m)
+                    | MailTableHitAction::ToggleFollowUp(_, m)
                     | MailTableHitAction::SelectRow(_, m) => m,
                 };
                 let idx = model_index as u32;
@@ -21484,7 +21998,7 @@ impl MailPage {
             let layout = {
                 let cached = page.imp().mail_table_layout.borrow();
                 if let Some(ref l) = *cached {
-                    if (l.width - w).abs() < 2.0 && l.rows.len() == n_items {
+                    if page.is_mail_table_layout_cached_valid(l, w, n_items) {
                         Some(Rc::clone(l))
                     } else {
                         None
@@ -21978,11 +22492,11 @@ impl MailPage {
         let header_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .css_classes(vec!["mail-detail-header"])
-            .spacing(2)
-            .margin_start(8)
-            .margin_end(8)
+            .spacing(0)
+            .margin_start(12)
+            .margin_end(12)
             .margin_top(4)
-            .margin_bottom(3)
+            .margin_bottom(0)
             .build();
 
         let meta_grid = gtk::Grid::builder()
@@ -22046,10 +22560,10 @@ impl MailPage {
         let modern_header_card = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(4)
-            .margin_start(4)
-            .margin_end(4)
-            .margin_top(2)
-            .margin_bottom(2)
+            .margin_start(0)
+            .margin_end(0)
+            .margin_top(0)
+            .margin_bottom(0)
             .css_classes(vec!["mail-modern-header-card"])
             .visible(false)
             .build();
@@ -22284,6 +22798,21 @@ impl MailPage {
         modern_actions_sep.set_margin_start(4);
         modern_actions_sep.set_margin_end(2);
 
+        let str_load_remote = gettext("Load images");
+        let modern_load_remote_images_btn = gtk::Button::builder()
+            .icon_name("image-x-generic-symbolic")
+            .label(&str_load_remote)
+            .tooltip_text(&str_load_remote)
+            .css_classes(vec!["flat", "mail-header-load-images-btn"])
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        set_accessible_label(&modern_load_remote_images_btn, &str_load_remote);
+        self.imp()
+            .modern_load_remote_images_btn
+            .replace(Some(modern_load_remote_images_btn.clone()));
+
+        modern_meta_box.append(&modern_load_remote_images_btn);
         modern_meta_box.append(&modern_date_label);
         modern_meta_box.append(&modern_star_button);
         modern_meta_box.append(&modern_actions_sep);
@@ -22548,6 +23077,9 @@ impl MailPage {
         header_box.append(&all_headers_revealer);
 
         let header_separator = gtk::Separator::new(gtk::Orientation::Horizontal);
+        self.imp()
+            .header_separator
+            .replace(Some(header_separator.clone()));
 
         let thread_bar_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -22574,38 +23106,108 @@ impl MailPage {
             .build();
 
         let mail_viewer = MailViewer::new();
+        let modern_remote_btn = self.imp().modern_load_remote_images_btn.borrow().clone();
+
         let viewer_for_remote = mail_viewer.clone();
         let btn_for_remote = load_remote_images_btn.clone();
+        let modern_btn_for_remote = modern_remote_btn.clone();
+        let actions_row_for_remote = preview_actions_row.clone();
+        let page_for_remote = self.downgrade();
         load_remote_images_btn.connect_clicked(move |_| {
             viewer_for_remote.allow_remote_images();
             btn_for_remote.set_visible(false);
+            if let Some(m_btn) = modern_btn_for_remote.as_ref() {
+                m_btn.set_visible(false);
+            }
+            let show_reply_group = if let Some(page) = page_for_remote.upgrade() {
+                !page.is_modern_header_style() || page.imp().is_mobile.get()
+            } else {
+                false
+            };
+            actions_row_for_remote.set_visible(show_reply_group);
         });
+
+        if let Some(m_btn) = modern_remote_btn.as_ref() {
+            let viewer_for_m_btn = mail_viewer.clone();
+            let m_btn_clicked = m_btn.clone();
+            let btn_for_m_btn = load_remote_images_btn.clone();
+            m_btn.connect_clicked(move |_| {
+                viewer_for_m_btn.allow_remote_images();
+                m_btn_clicked.set_visible(false);
+                btn_for_m_btn.set_visible(false);
+            });
+        }
 
         let viewer_for_sender = mail_viewer.clone();
         let btn_for_sender = load_remote_images_btn.clone();
+        let modern_btn_for_sender = modern_remote_btn.clone();
         let popover_for_sender = remote_images_popover.clone();
+        let actions_row_for_sender = preview_actions_row.clone();
+        let page_for_sender = self.downgrade();
         allow_sender_btn.connect_clicked(move |_| {
             popover_for_sender.popdown();
             viewer_for_sender.allow_remote_images_for_sender();
             btn_for_sender.set_visible(false);
+            if let Some(m_btn) = modern_btn_for_sender.as_ref() {
+                m_btn.set_visible(false);
+            }
+            let show_reply_group = if let Some(page) = page_for_sender.upgrade() {
+                !page.is_modern_header_style() || page.imp().is_mobile.get()
+            } else {
+                false
+            };
+            actions_row_for_sender.set_visible(show_reply_group);
         });
 
+        let page_for_blocked = self.downgrade();
         let btn_for_blocked = load_remote_images_btn.clone();
+        let modern_btn_for_blocked = modern_remote_btn.clone();
         let viewer_for_blocked = mail_viewer.clone();
         let allow_btn_for_blocked = allow_sender_btn.clone();
+        let preview_actions_row_for_blocked = preview_actions_row.clone();
+        let header_separator_for_blocked = header_separator.clone();
         mail_viewer.connect_remote_images_blocked(move |blocked| {
-            btn_for_blocked.set_visible(blocked);
+            header_separator_for_blocked.set_visible(!blocked);
+            let (is_modern, is_mobile) = if let Some(page) = page_for_blocked.upgrade() {
+                (page.is_modern_header_style(), page.imp().is_mobile.get())
+            } else {
+                (true, false)
+            };
+            if is_modern && !is_mobile {
+                if let Some(m_btn) = modern_btn_for_blocked.as_ref() {
+                    m_btn.set_visible(false);
+                }
+                btn_for_blocked.set_visible(false);
+                let show_reply_group = if let Some(page) = page_for_blocked.upgrade() {
+                    !page.is_modern_header_style() || page.imp().is_mobile.get()
+                } else {
+                    false
+                };
+                preview_actions_row_for_blocked.set_visible(show_reply_group);
+            } else {
+                if let Some(m_btn) = modern_btn_for_blocked.as_ref() {
+                    m_btn.set_visible(false);
+                }
+                btn_for_blocked.set_visible(blocked);
+                let show_reply_group = if let Some(page) = page_for_blocked.upgrade() {
+                    !page.is_modern_header_style() || page.imp().is_mobile.get()
+                } else {
+                    false
+                };
+                preview_actions_row_for_blocked.set_visible(show_reply_group || blocked);
+            }
             if blocked {
-                if let Some(sender) = viewer_for_blocked.current_sender() {
+                let label_text = if let Some(sender) = viewer_for_blocked.current_sender() {
                     let email = extract_email_address(&sender);
                     if !email.is_empty() {
-                        allow_btn_for_blocked.set_label(&format!("{} \"{}\"", gettext("Always load images from"), email));
+                        format!("{} \"{}\"", gettext("Always load images from"), email)
                     } else {
-                        allow_btn_for_blocked.set_label(&gettext("Always load images from this sender"));
+                        gettext("Always load images from this sender")
                     }
                 } else {
-                    allow_btn_for_blocked.set_label(&gettext("Always load images from this sender"));
-                }
+                    gettext("Always load images from this sender")
+                };
+                allow_btn_for_blocked.set_label(&label_text);
             }
         });
 
@@ -23172,13 +23774,24 @@ impl MailPage {
                         .upgrade()
                         .map(|p| p.user_account_emails())
                         .unwrap_or_default();
-                    Self::render_message_content(
-                        &msg,
-                        &mail_viewer,
-                        &attachment_bar,
-                        Some(&itip_banner_clone),
-                        &user_emails,
-                    );
+                    if !msg.is_preview_only() {
+                        Self::render_message_content(
+                            &msg,
+                            &mail_viewer,
+                            &attachment_bar,
+                            Some(&itip_banner_clone),
+                            &user_emails,
+                        );
+                    } else {
+                        while let Some(child) = attachment_bar.first_child() {
+                            attachment_bar.remove(&child);
+                        }
+                        attachment_bar.set_visible(false);
+                        itip_banner_clone.set_invitation(None, &[]);
+                        let sender = sender_header(&msg);
+                        mail_viewer.set_current_sender(Some(&sender));
+                        mail_viewer.prepare_for_loading(Some(&msg.id()));
+                    }
 
                     if msg.is_preview_only() {
                         if let Some(location) = msg.backend_location() {
@@ -23257,7 +23870,8 @@ impl MailPage {
                                         );
                                     }
                                     Err(err) => {
-                                        tracing::debug!(%err, "Background raw message load completed with notice");
+                                        tracing::warn!(%err, "Background raw message load failed");
+                                        viewer_for_body.show_renderer_error();
                                     }
                                 }
                             });
@@ -23280,12 +23894,12 @@ impl MailPage {
                         attachment_bar.remove(&child);
                     }
                     attachment_bar.set_visible(false);
-                    mail_viewer.set_current_sender(None);
-                    mail_viewer.set_trash_banner_visible(false);
-                    mail_viewer.set_junk_banner_visible(false);
-                    mail_viewer.load_html_for_message(None, "", None);
+                    mail_viewer.clear();
                     if let Some(page) = page_for_read.upgrade() {
                         if let Some(btn) = page.imp().load_remote_images_btn.borrow().as_ref() {
+                            btn.set_visible(false);
+                        }
+                        if let Some(btn) = page.imp().modern_load_remote_images_btn.borrow().as_ref() {
                             btn.set_visible(false);
                         }
                         page.set_crypto_status_routine(true);
@@ -23371,12 +23985,6 @@ impl MailPage {
             })
             .collect::<Vec<_>>();
         let html_body = message.html_body();
-        let preview = message.preview_snippet();
-        let fallback_for_viewer = if !preview.trim().is_empty() {
-            Some(preview.as_str())
-        } else {
-            None
-        };
         let sender = sender_header(message);
         mail_viewer.set_current_sender(Some(&sender));
         mail_viewer.load_message_content_with_fallback(
@@ -23384,7 +23992,7 @@ impl MailPage {
             &html_body,
             &inline_images,
             None,
-            fallback_for_viewer,
+            None,
         );
         let is_trash = message_is_trash(message);
         let is_junk = message_is_junk(message);
@@ -26937,11 +27545,12 @@ impl MailPage {
             if !worker_input.offline_mode {
                 let hint = worker_input.request.source_uid.as_deref();
                 if let Some(cache) = crate::services::evolution_summary_cache::find_evolution_account_cache(hint) {
+                    let effective_source = hint.unwrap_or(&cache.source_uid);
                     let folder_to_load = worker_input
                         .request
                         .folder_name
                         .as_deref()
-                        .unwrap_or("INBOX");
+                        .unwrap_or("");
                     let sqlite_folders = crate::services::evolution_summary_cache::load_folders_from_sqlite(
                         &cache.folders_db,
                         &cache.source_uid,
@@ -26950,7 +27559,7 @@ impl MailPage {
                     .unwrap_or_default();
                     let sqlite_msgs = crate::services::evolution_summary_cache::load_folder_messages_from_sqlite(
                         &cache.folders_db,
-                        &cache.source_uid,
+                        effective_source,
                         folder_to_load,
                         None,
                     )
@@ -29060,6 +29669,7 @@ mod tests {
             true,
             show_flagged,
             true,
+            true,
             sender_width,
             show_recipient,
             recipient_width,
@@ -29084,6 +29694,7 @@ mod tests {
             show_status,
             show_attachment: true,
             show_flagged,
+            show_follow_up: true,
             show_recipient,
             show_date,
             show_size,
@@ -29095,6 +29706,7 @@ mod tests {
             col_status: geom.status,
             col_attachment: geom.attachment,
             col_flagged: geom.flagged,
+            col_follow_up: geom.follow_up,
             col_sender: geom.sender,
             col_recipient: geom.recipient,
             col_subject: geom.subject,
@@ -33377,17 +33989,18 @@ mod tests {
         let expected_today = chrono::Local::now().format("%H:%M").to_string();
         assert_eq!(formatted_today, expected_today);
 
-        // Yesterday
-        let yesterday_str = (chrono::Local::now() - chrono::Duration::days(1)).to_rfc3339();
-        let fixed_yesterday = chrono::DateTime::parse_from_rfc3339(&yesterday_str).unwrap();
+        // Yesterday (1 day ago) -> weekday short name (Gmail style)
+        let yesterday_dt = chrono::Local::now() - chrono::Duration::days(1);
+        let fixed_yesterday = chrono::DateTime::parse_from_rfc3339(&yesterday_dt.to_rfc3339()).unwrap();
         let formatted_yesterday = format_smart_date(&fixed_yesterday, "%H:%M", "german");
-        assert!(formatted_yesterday == "Yesterday" || formatted_yesterday == "Gestern");
+        let expected_yesterday_weekday = format_weekday_short(yesterday_dt.date_naive());
+        assert_eq!(formatted_yesterday, expected_yesterday_weekday);
 
-        // Within last 7 days (e.g. 3 days ago) -> weekday name
-        let three_days_str = (chrono::Local::now() - chrono::Duration::days(3)).to_rfc3339();
-        let fixed_three_days = chrono::DateTime::parse_from_rfc3339(&three_days_str).unwrap();
+        // Within last 7 days (e.g. 3 days ago) -> weekday short name
+        let three_days_dt = chrono::Local::now() - chrono::Duration::days(3);
+        let fixed_three_days = chrono::DateTime::parse_from_rfc3339(&three_days_dt.to_rfc3339()).unwrap();
         let formatted_three_days = format_smart_date(&fixed_three_days, "%H:%M", "german");
-        let expected_weekday = format_weekday_name(fixed_three_days.date_naive());
+        let expected_weekday = format_weekday_short(three_days_dt.date_naive());
         assert_eq!(formatted_three_days, expected_weekday);
 
         // Older date in a fixed previous year (e.g., 2020-05-15)
@@ -33860,6 +34473,7 @@ mod tests {
                 is_expanded: true,
                 is_unread: true,
                 is_flagged: false,
+                follow_up_state: MailFollowUpState::None,
                 is_important: false,
                 is_replied: false,
                 is_forwarded: false,
@@ -33887,6 +34501,7 @@ mod tests {
                 is_expanded: false,
                 is_unread: false,
                 is_flagged: true,
+                follow_up_state: MailFollowUpState::None,
                 is_important: false,
                 is_replied: true,
                 is_forwarded: false,
@@ -33924,14 +34539,18 @@ mod tests {
         let hit_star = hit_test_mail_table(&layout, 65.0, 35.0);
         assert_eq!(hit_star, Some(MailTableHitAction::ToggleStar(1, 1)));
 
+        // Hit testing follow-up column on row 0 (follow-up column is 84..112)
+        let hit_follow_up = hit_test_mail_table(&layout, 95.0, 14.0);
+        assert_eq!(hit_follow_up, Some(MailTableHitAction::ToggleFollowUp(0, 0)));
+
         // Hit testing expander on row 0
-        // recipient_x_end = 28 + 28 + 28 + 180 + 180 = 444.0
-        // subject_x_start = 444.0, depth 0 indent = 0.0 -> expander is 444..462
-        let hit_exp = hit_test_mail_table(&layout, 447.0, 14.0);
+        // recipient_x_end = 28 + 28 + 28 + 28 + 180 + 180 = 472.0
+        // subject_x_start = 472.0, depth 0 indent = 0.0 -> expander is 472..490
+        let hit_exp = hit_test_mail_table(&layout, 475.0, 14.0);
         assert_eq!(hit_exp, Some(MailTableHitAction::ToggleExpander(0, 0)));
 
         // Hit testing row 0 subject / selection
-        let hit_sel = hit_test_mail_table(&layout, 500.0, 14.0);
+        let hit_sel = hit_test_mail_table(&layout, 520.0, 14.0);
         assert_eq!(hit_sel, Some(MailTableHitAction::SelectRow(0, 0)));
 
         // Out of bounds
@@ -34079,6 +34698,58 @@ mod tests {
     }
 
     #[test]
+    fn test_mail_table_layout_update_column_widths_realtime() {
+        let rows = vec![
+            PreparedMailTableRow {
+                model_index: 0,
+                id: "msg-1".to_string(),
+                thread_id: "thread-1".to_string(),
+                depth: 0,
+                is_expandable: false,
+                is_expanded: false,
+                is_unread: true,
+                is_flagged: false,
+                follow_up_state: MailFollowUpState::None,
+                is_important: false,
+                is_replied: false,
+                is_forwarded: false,
+                has_attachments: false,
+                sender: "Sender".to_string(),
+                recipient: "Recipient".to_string(),
+                subject: "Test Subject".to_string(),
+                snippet: "Snippet".to_string(),
+                date: "12:30".to_string(),
+                size_str: "12 KB".to_string(),
+                selected: false,
+                y: 0.0,
+                height: 28.0,
+                markup_dark: String::new(),
+                markup_light: String::new(),
+                labels: Vec::new(),
+                thread_size: 1,
+            },
+        ];
+
+        let mut layout = prepare_mail_table_layout_from_rows(rows, 800.0, 180.0, 180.0, 120.0);
+        assert_eq!(layout.col_sender_w(), 180.0);
+        assert_eq!(layout.col_date_w(), 120.0);
+
+        let order: Vec<String> = crate::services::settings_service::MAIL_LIST_COLUMN_IDS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+
+        // Drag sender wider to 260px, recipient to 140px, date to 100px:
+        layout.update_column_widths(&order, 260.0, 140.0, 100.0);
+        assert_eq!(layout.sender_width, 260.0);
+        assert_eq!(layout.col_sender_w(), 260.0);
+        assert_eq!(layout.recipient_width, 140.0);
+        assert_eq!(layout.col_recipient_w(), 140.0);
+        assert_eq!(layout.date_width, 100.0);
+        assert_eq!(layout.col_date_w(), 100.0);
+    }
+
+    #[test]
     fn test_mail_table_hit_test_hidden_status_and_flagged() {
         let rows = vec![
             PreparedMailTableRow {
@@ -34090,6 +34761,7 @@ mod tests {
                 is_expanded: false,
                 is_unread: true,
                 is_flagged: false,
+                follow_up_state: MailFollowUpState::None,
                 is_important: false,
                 is_replied: false,
                 is_forwarded: false,
@@ -34158,6 +34830,7 @@ mod tests {
                 is_expanded: false,
                 is_unread: true,
                 is_flagged: true,
+                follow_up_state: MailFollowUpState::None,
                 is_important: true,
                 is_replied: false,
                 is_forwarded: false,
@@ -34185,6 +34858,7 @@ mod tests {
                 is_expanded: false,
                 is_unread: false,
                 is_flagged: false,
+                follow_up_state: MailFollowUpState::None,
                 is_important: false,
                 is_replied: true,
                 is_forwarded: true,
@@ -34250,6 +34924,7 @@ mod tests {
                 is_expanded: false,
                 is_unread: true,
                 is_flagged: false,
+                follow_up_state: MailFollowUpState::None,
                 is_important: false,
                 is_replied: false,
                 is_forwarded: false,
@@ -34277,6 +34952,7 @@ mod tests {
                 is_expanded: false,
                 is_unread: false,
                 is_flagged: true,
+                follow_up_state: MailFollowUpState::None,
                 is_important: false,
                 is_replied: false,
                 is_forwarded: false,
@@ -34346,6 +35022,7 @@ mod tests {
                 is_expanded: false,
                 is_unread: true,
                 is_flagged: false,
+                follow_up_state: MailFollowUpState::None,
                 is_important: false,
                 is_replied: false,
                 is_forwarded: false,
@@ -34373,6 +35050,7 @@ mod tests {
                 is_expanded: false,
                 is_unread: false,
                 is_flagged: true,
+                follow_up_state: MailFollowUpState::None,
                 is_important: false,
                 is_replied: false,
                 is_forwarded: false,
@@ -34442,6 +35120,7 @@ mod tests {
                 is_expanded: false,
                 is_unread: true,
                 is_flagged: false,
+                follow_up_state: MailFollowUpState::None,
                 is_important: false,
                 is_replied: true,
                 is_forwarded: false,
@@ -34469,6 +35148,7 @@ mod tests {
                 is_expanded: false,
                 is_unread: false,
                 is_flagged: true,
+                follow_up_state: MailFollowUpState::None,
                 is_important: false,
                 is_replied: false,
                 is_forwarded: false,
@@ -34580,6 +35260,92 @@ mod tests {
             parsed_rfc == "10. Sep" || parsed_rfc == "10. Sept.",
             "Unexpected parsed RFC date: {parsed_rfc}"
         );
+
+        // Handles German localized dates generated by EDS/glib (e.g. "Mo., 10. Sep. 2026 14:30:00 +0000")
+        let german_localized = format!("Mo., 10. Sep. {} 14:30:00 +0000", current_year);
+        let parsed_german = format_mail_table_date(&german_localized, "standard", "", "24h");
+        assert!(
+            parsed_german == "10. Sep" || parsed_german == "10. Sept.",
+            "German localized date unexpectedly fell back to raw value: {parsed_german}"
+        );
+
+        // Handles timezone with colon offset (e.g. "+02:00")
+        let colon_tz = format!("Mon, 10 Sep {} 14:30:00 +02:00", current_year);
+        let parsed_colon_tz = format_mail_table_date(&colon_tz, "standard", "", "24h");
+        assert!(
+            parsed_colon_tz == "10. Sep" || parsed_colon_tz == "10. Sept.",
+            "Colon timezone date unexpectedly fell back to raw value: {parsed_colon_tz}"
+        );
+
+        // Handles named timezone like "CEST"
+        let named_tz = format!("Mon, 10 Sep {} 14:30:00 CEST", current_year);
+        let parsed_named_tz = format_mail_table_date(&named_tz, "standard", "", "24h");
+        assert!(
+            parsed_named_tz == "10. Sep" || parsed_named_tz == "10. Sept.",
+            "Named timezone date unexpectedly fell back to raw value: {parsed_named_tz}"
+        );
+
+        // Handles format_mail_list_date with German localized string
+        let list_formatted = format_mail_list_date(&german_localized);
+        assert!(
+            list_formatted == "10. Sep" || list_formatted == "10. Sept.",
+            "format_mail_list_date unexpectedly fell back: {list_formatted}"
+        );
+
+        // Handles format_message_date with German localized string
+        let msg_date_formatted = format_message_date(&german_localized);
+        assert!(
+            msg_date_formatted.starts_with("10.09.") || msg_date_formatted.contains("10. Sep"),
+            "format_message_date unexpectedly fell back: {msg_date_formatted}"
+        );
+    }
+
+    #[test]
+    fn test_mail_date_sort_order() {
+        let msg_morning = "2026-09-21 09:00:00";
+        let msg_noon = "Mon, 21 Sep 2026 12:00:00 +0200";
+        let msg_evening = "2026-09-21T18:00:00+02:00";
+        let msg_older = "2026-09-20 22:00:00";
+
+        let ts_morning = parse_message_timestamp(msg_morning);
+        let ts_noon = parse_message_timestamp(msg_noon);
+        let ts_evening = parse_message_timestamp(msg_evening);
+        let ts_older = parse_message_timestamp(msg_older);
+
+        assert!(ts_morning > 0);
+        assert!(ts_noon > 0);
+        assert!(ts_evening > 0);
+        assert!(ts_older > 0);
+
+        assert!(ts_older < ts_morning);
+        assert!(ts_morning < ts_noon);
+        assert!(ts_noon < ts_evening);
+
+        let records = vec![
+            MailRootSortRecord {
+                key: MailSortKey::Date(ts_morning, msg_morning.to_string()),
+                id: "morning".to_string(),
+                index: 0,
+            },
+            MailRootSortRecord {
+                key: MailSortKey::Date(ts_evening, msg_evening.to_string()),
+                id: "evening".to_string(),
+                index: 1,
+            },
+            MailRootSortRecord {
+                key: MailSortKey::Date(ts_older, msg_older.to_string()),
+                id: "older".to_string(),
+                index: 2,
+            },
+            MailRootSortRecord {
+                key: MailSortKey::Date(ts_noon, msg_noon.to_string()),
+                id: "noon".to_string(),
+                index: 3,
+            },
+        ];
+
+        let sorted_indices = sorted_record_indices(records, true);
+        assert_eq!(sorted_indices, vec![1, 3, 0, 2]);
     }
 
     #[test]
@@ -35448,6 +36214,79 @@ mod tests {
         settings.set_mail_header_style("modern");
         page.set_drill_down_level(MailDrillDownLevel::Messages);
         page.set_screen_mode(false, false);
+    }
+
+    #[test]
+    fn test_load_remote_images_button_and_actions_row() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let page = MailPage::new();
+        let settings = AppSettings::try_new().expect("app settings");
+        settings.set_mail_header_style("modern");
+        page.set_screen_mode(false, false);
+
+        let msg = MailMessageObject::new(
+            "msg-remote-test",
+            "inbox",
+            "Alice Schmidt",
+            "remote@example.com",
+            "me@example.com",
+            "",
+            "",
+            "",
+            "Test remote images",
+            None,
+            vec![],
+            vec![],
+            "thread-remote",
+            1,
+            0,
+            "10:00",
+            512,
+            "Snippet",
+            "Body",
+            false,
+            false,
+            false,
+            MailFollowUpState::None,
+            MailFollowUpMetadata::default(),
+            vec![],
+            None,
+            vec![],
+        );
+        page.refresh_normal_headers_for_message(Some(&msg));
+
+        let classic_btn = page.imp().load_remote_images_btn.borrow().clone().expect("load_remote_images_btn");
+        let modern_btn = page.imp().modern_load_remote_images_btn.borrow().clone().expect("modern_load_remote_images_btn");
+        let actions_row = page.imp().preview_actions_row.borrow().clone().expect("preview_actions_row");
+
+        // Initially both are hidden
+        assert!(!classic_btn.is_visible());
+        assert!(!modern_btn.is_visible());
+        assert!(!actions_row.is_visible());
+
+        let viewer = page.imp().mail_viewer.borrow().clone().expect("mail_viewer");
+
+        // Simulate remote images blocked in modern header mode
+        viewer.notify_remote_images_blocked(true);
+        assert!(!actions_row.is_visible(), "Actions row must stay hidden in modern mode on desktop even with images blocked");
+        assert!(modern_btn.is_visible(), "Modern button must be visible in modern header mode");
+        assert!(!classic_btn.is_visible(), "Classic button must stay hidden in modern header mode");
+
+        // Simulate switching to classic header mode
+        settings.set_mail_header_style("classic");
+        page.refresh_normal_headers_for_message(Some(&msg));
+        viewer.notify_remote_images_blocked(true);
+        assert!(actions_row.is_visible(), "Actions row must be visible in classic mode when remote images are blocked");
+        assert!(classic_btn.is_visible(), "Classic button must be visible in classic mode");
+        assert!(!modern_btn.is_visible(), "Modern button must be hidden in classic mode");
+
+        // Reset
+        settings.set_mail_header_style("modern");
     }
 
     #[test]
