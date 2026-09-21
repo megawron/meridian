@@ -1999,11 +1999,8 @@ button.month-bar-chip.span-end {
 }
 
 .contacts-alphabet-btn {
-  width: 25px;
   min-width: 25px;
-  max-width: 25px;
   min-height: 20px;
-  max-height: 22px;
   padding: 1px 3px;
   margin: 0;
   margin-right: 0;
@@ -2040,7 +2037,6 @@ button.month-bar-chip.span-end {
 .mail-sidebar .sidebar-child-row,
 .sidebar-child-row {
   min-height: 24px;
-  max-height: 24px;
   padding-top: 0;
   padding-bottom: 0;
   margin: 0;
@@ -2049,7 +2045,6 @@ button.month-bar-chip.span-end {
 .mail-sidebar .sidebar-child-row > box,
 .sidebar-child-row > box {
   min-height: 22px;
-  max-height: 24px;
   padding: 0;
   margin: 0;
 }
@@ -2058,8 +2053,6 @@ button.month-bar-chip.span-end {
 .sidebar-child-row menubutton {
   min-width: 18px;
   min-height: 18px;
-  max-width: 18px;
-  max-height: 18px;
   padding: 0;
   margin: 0;
   opacity: 0;
@@ -2083,8 +2076,6 @@ button.month-bar-chip.span-end {
 .sidebar-child-row menubutton > button.flat {
   min-width: 18px;
   min-height: 18px;
-  max-width: 18px;
-  max-height: 18px;
   padding: 0;
   margin: 0;
   border-radius: 9999px;
@@ -2125,10 +2116,7 @@ button.month-bar-chip.span-end {
   box-shadow: 0 1px 3px alpha(black, 0.05), 0 1px 2px alpha(black, 0.03);
   transition: box-shadow 160ms ease, border-color 160ms ease, transform 160ms ease;
   min-width: 200px;
-  height: 124px;
   min-height: 124px;
-  max-height: 124px;
-  overflow: hidden;
 }
 
 .contact-card-child:hover .contact-card-box {
@@ -2183,14 +2171,14 @@ button.month-bar-chip.span-end {
 .appointment-field-label {
   font-weight: 500;
   color: alpha(@window_fg_color, 0.85);
-  margin-end: 6px;
+  margin-right: 6px;
 }
 
 .appointment-color-badge {
   min-width: 14px;
   min-height: 14px;
   border-radius: 9999px;
-  margin-end: 6px;
+  margin-right: 6px;
   border: 1px solid alpha(black, 0.15);
 }
 
@@ -2198,13 +2186,10 @@ button.month-bar-chip.span-end {
   background-color: @view_bg_color;
   border-left: 1px solid alpha(@window_fg_color, 0.15);
   min-width: 260px;
-  max-width: 260px;
-  width: 260px;
 }
 
 .appointment-timeline-hour-row {
   min-height: 34px;
-  height: 34px;
 }
 
 /* ── Calendar Year View (GNOME Evolution & HIG parity) ───────────────── */
@@ -2244,10 +2229,10 @@ button.month-bar-chip.span-end {
 }
 
 .calendar-year-today {
-  background-color: @accent_bg_color !important;
-  color: @accent_fg_color !important;
-  font-weight: 700 !important;
-  border-radius: 9999px !important;
+  background-color: @accent_bg_color;
+  color: @accent_fg_color;
+  font-weight: 700;
+  border-radius: 9999px;
 }
 
 .calendar-year-selected {
@@ -2497,7 +2482,7 @@ button.month-bar-chip.span-end {
 
 .task-row-icon {
   opacity: 0.8;
-  margin-end: 2px;
+  margin-right: 2px;
 }
 
 /* ── Account Setup Dialog & Type Dropdown ──────────────────────────────── */
@@ -2611,13 +2596,13 @@ button.month-bar-chip.span-end {
 }
 
 .agenda-event-row.selected {
-  background-color: @accent_bg_color !important;
-  color: @accent_fg_color !important;
+  background-color: @accent_bg_color;
+  color: @accent_fg_color;
 }
 
 .agenda-event-row.selected label,
 .agenda-event-row.selected image {
-  color: @accent_fg_color !important;
+  color: @accent_fg_color;
 }
 
 .agenda-event-time {
@@ -2646,12 +2631,12 @@ button.month-bar-chip.span-end {
 }
 
 .agenda-task-row.selected {
-  background-color: @accent_bg_color !important;
-  color: @accent_fg_color !important;
+  background-color: @accent_bg_color;
+  color: @accent_fg_color;
 }
 
 .agenda-task-row.selected label {
-  color: @accent_fg_color !important;
+  color: @accent_fg_color;
 }
 
 .agenda-task-row checkbutton {
@@ -2673,41 +2658,35 @@ viewswitcherbar {
   background-color: @window_bg_color;
   padding: 0;
   margin: 0;
-  min-width: 0 !important;
+  min-width: 0;
 }
 
 viewswitcherbar viewswitcher {
-  margin: 0 auto;
-  width: 100%;
-}
-
-viewswitcherbar viewswitcher > box {
-  width: 100%;
+  margin: 0;
 }
 
 viewswitcherbar viewswitcher button {
-  flex: 1 1 0 !important;
-  min-width: 0 !important;
-  min-height: 48px !important;
-  padding: 4px 2px !important;
-  margin: 2px 2px !important;
-  border-radius: 8px !important;
+  min-width: 0;
+  min-height: 48px;
+  padding: 4px 2px;
+  margin: 2px 2px;
+  border-radius: 8px;
   transition: background-color 150ms ease-in-out;
 }
 
 viewswitcherbar viewswitcher button:checked {
-  background-color: alpha(@accent_bg_color, 0.15) !important;
-  color: @accent_fg_color !important;
+  background-color: alpha(@accent_bg_color, 0.15);
+  color: @accent_fg_color;
 }
 
 viewswitcherbar viewswitcher button label {
-  font-size: 0.72rem !important;
-  font-weight: 600 !important;
-  margin-top: 1px !important;
+  font-size: 0.72rem;
+  font-weight: 600;
+  margin-top: 1px;
 }
 
 viewswitcherbar viewswitcher button image {
-  -gtk-icon-size: 18px !important;
+  -gtk-icon-size: 18px;
 }
 
 headerbar.sidebar-header {
@@ -2717,7 +2696,6 @@ headerbar.sidebar-header {
   border-right: 1px solid color-mix(in srgb, currentColor 15%, transparent);
   box-shadow: none;
   min-width: 0;
-  overflow: hidden;
 }
 
 headerbar.sidebar-header:dir(rtl) {
@@ -2737,8 +2715,7 @@ scrollbar.vertical.mail-table-overlay-scrollbar {
   box-shadow: none;
   padding: 0;
   margin: 0 3px 0 0;
-  min-width: 0;
-  width: 7px;
+  min-width: 7px;
 }
 
 scrollbar.mail-table-overlay-scrollbar trough,
@@ -2749,13 +2726,11 @@ scrollbar.vertical.mail-table-overlay-scrollbar trough {
   padding: 0;
   margin: 0;
   min-width: 7px;
-  width: 7px;
 }
 
 scrollbar.mail-table-overlay-scrollbar slider,
 scrollbar.vertical.mail-table-overlay-scrollbar slider {
   min-width: 7px;
-  width: 7px;
   border-radius: 9999px;
   background-color: alpha(currentColor, 0.4);
   margin: 0;
@@ -2769,15 +2744,14 @@ scrollbar.mail-table-overlay-scrollbar slider:hover,
 scrollbar.mail-table-overlay-scrollbar:active slider,
 scrollbar.mail-table-overlay-scrollbar slider:active {
   min-width: 10px;
-  width: 10px;
   background-color: alpha(currentColor, 0.75);
 }
 
 /* ── Modern Webmail Header & Conversation Bar ────────────────────────── */
 .mail-modern-header-card {
-  padding: 4px 6px;
-  border-radius: 8px;
-  background-color: alpha(@window_fg_color, 0.025);
+  padding: 4px 0 6px 0;
+  border-radius: 0;
+  background-color: transparent;
 }
 
 .mail-modern-sender-name {
@@ -2789,6 +2763,52 @@ scrollbar.mail-table-overlay-scrollbar slider:active {
   font-size: 0.78rem;
   padding: 1px 6px;
   border-radius: 4px;
+}
+
+.mail-header-load-images-btn {
+  font-size: 0.85rem;
+  padding: 0 2px;
+  min-height: 26px;
+  border-radius: 6px;
+}
+
+.mail-header-load-images-btn button {
+  min-height: 26px;
+  padding: 2px 6px;
+  font-size: 0.85rem;
+}
+
+.mail-header-load-images-btn label {
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+banner.mail-status-banner,
+.mail-status-banner {
+  min-height: 28px;
+}
+
+banner.mail-status-banner > revealer > widget,
+.mail-status-banner > revealer > widget {
+  padding: 2px 12px;
+  min-height: 28px;
+  border-bottom: 1px solid alpha(currentColor, 0.12);
+}
+
+banner.mail-status-banner label,
+.mail-status-banner label {
+  font-size: 0.86rem;
+  margin-top: 1px;
+  margin-bottom: 1px;
+}
+
+banner.mail-status-banner button,
+.mail-status-banner button {
+  min-height: 24px;
+  padding: 1px 10px;
+  font-size: 0.82rem;
+  margin-top: 1px;
+  margin-bottom: 1px;
 }
 
 .mail-conversation-bar {
@@ -2849,7 +2869,7 @@ scrollbar.mail-table-overlay-scrollbar slider:active {
 }
 
 .mail-header-actions-group {
-  margin-start: 4px;
+  margin-left: 4px;
 }
 
 /* Mobile & Compact Screen Responsive Styles (gnome-calendar & convey inspired) */
@@ -2870,14 +2890,14 @@ scrollbar.mail-table-overlay-scrollbar slider:active {
 }
 
 .compact-screen headerbar {
-  padding-start: 4px;
-  padding-end: 4px;
+  padding-left: 4px;
+  padding-right: 4px;
 }
 
 .compact-screen headerbar button {
   padding: 3px 6px;
-  margin-start: 1px;
-  margin-end: 1px;
+  margin-left: 1px;
+  margin-right: 1px;
   min-width: 32px;
 }
 
