@@ -416,7 +416,7 @@
       <summary>Width of today's to-do bar in mail view</summary>
     </key>
     <key name="mail-show-toolbar" type="b">
-      <default>true</default>
+      <default>false</default>
       <summary>Show the mail toolbar</summary>
     </key>
     <key name="mail-show-mark-read-actions" type="b">
@@ -760,7 +760,7 @@
       <summary>Show the memo preview</summary>
     </key>
     <key name="memo-show-toolbar" type="b">
-      <default>true</default>
+      <default>false</default>
       <summary>Show the memos toolbar</summary>
     </key>
     <key name="memo-preview-orientation" type="s">
@@ -786,7 +786,7 @@
       <summary>Show the task preview</summary>
     </key>
     <key name="task-show-toolbar" type="b">
-      <default>true</default>
+      <default>false</default>
       <summary>Show the tasks toolbar</summary>
     </key>
     <key name="task-preview-orientation" type="s">
@@ -867,7 +867,7 @@
       <description>Whether to show the contact preview pane.</description>
     </key>
     <key name="contact-show-toolbar" type="b">
-      <default>true</default>
+      <default>false</default>
       <summary>Show the contacts toolbar</summary>
     </key>
     <key name="contact-hpane-position" type="i">

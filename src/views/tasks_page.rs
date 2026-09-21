@@ -3846,7 +3846,7 @@ impl TasksPage {
             } else {
                 let show_tb = AppSettings::try_new()
                     .map(|s| s.task_show_toolbar())
-                    .unwrap_or(true);
+                    .unwrap_or(false);
                 toolbar.set_visible(show_tb);
             }
         }
@@ -3858,7 +3858,7 @@ impl TasksPage {
             .borrow()
             .as_ref()
             .map(|t| t.is_visible())
-            .unwrap_or(true)
+            .unwrap_or(false)
     }
 
     pub fn set_toolbar_visible(&self, visible: bool) {
@@ -5122,7 +5122,7 @@ impl TasksPage {
         toolbar_scroll.set_visible(
             AppSettings::try_new()
                 .map(|settings| settings.task_show_toolbar())
-                .unwrap_or(true),
+                .unwrap_or(false),
         );
         self.imp()
             .toolbar

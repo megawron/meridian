@@ -845,7 +845,7 @@ fn default_mail_layout() -> String {
 }
 
 fn default_mail_show_toolbar() -> bool {
-    true
+    false
 }
 
 fn default_mail_show_sidebar() -> bool {
@@ -929,15 +929,15 @@ fn default_contact_preview_visible() -> bool {
 }
 
 fn default_contact_show_toolbar() -> bool {
-    true
+    false
 }
 
 fn default_task_show_toolbar() -> bool {
-    true
+    false
 }
 
 fn default_memo_show_toolbar() -> bool {
-    true
+    false
 }
 
 fn default_contact_hpane_position() -> i32 {
@@ -3683,7 +3683,7 @@ mod tests {
         assert!(settings.spellcheck_languages.is_empty());
         assert_eq!(settings.mail_font_size, 16);
         assert_eq!(settings.mail_layout, "classic");
-        assert!(settings.mail_show_toolbar);
+        assert!(!settings.mail_show_toolbar);
         assert!(settings.mail_show_sidebar);
         assert_eq!(settings.calendar_time_zone, "system");
         assert_eq!(settings.calendar_time_divisions, 30);

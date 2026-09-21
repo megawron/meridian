@@ -5829,7 +5829,7 @@ impl MailPage {
             if let Some(tb) = imp.classic_toolbar.borrow().as_ref() {
                 let tb_vis = AppSettings::try_new()
                     .map(|s| s.mail_show_toolbar())
-                    .unwrap_or(true);
+                    .unwrap_or(false);
                 tb.set_visible(tb_vis);
             }
             if let Some(tp) = todo_paned.as_ref() {
@@ -5880,7 +5880,7 @@ impl MailPage {
             if let Some(tb) = imp.classic_toolbar.borrow().as_ref() {
                 let tb_vis = AppSettings::try_new()
                     .map(|s| s.mail_show_toolbar())
-                    .unwrap_or(true);
+                    .unwrap_or(false);
                 tb.set_visible(tb_vis);
             }
             if let Some(msg) = message_container.as_ref() {
@@ -5943,7 +5943,7 @@ impl MailPage {
             .unwrap_or_else(|| {
                 AppSettings::try_new()
                     .map(|s| s.mail_show_toolbar())
-                    .unwrap_or(true)
+                    .unwrap_or(false)
             })
     }
 
@@ -20605,7 +20605,7 @@ impl MailPage {
         unified_toolbar_scroll.set_visible(
             AppSettings::try_new()
                 .map(|settings| settings.mail_show_toolbar())
-                .unwrap_or(true),
+                .unwrap_or(false),
         );
         self.imp()
             .classic_toolbar

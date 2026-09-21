@@ -951,7 +951,7 @@ impl EvolutionWindow {
                 .unwrap_or_else(|| {
                     AppSettings::try_new()
                         .map(|s| s.mail_show_toolbar())
-                        .unwrap_or(true)
+                        .unwrap_or(false)
                 }),
             "contacts" => self
                 .contacts_page()
@@ -959,7 +959,7 @@ impl EvolutionWindow {
                 .unwrap_or_else(|| {
                     AppSettings::try_new()
                         .map(|s| s.contact_show_toolbar())
-                        .unwrap_or(true)
+                        .unwrap_or(false)
                 }),
             "tasks" => self
                 .tasks_page()
@@ -967,7 +967,7 @@ impl EvolutionWindow {
                 .unwrap_or_else(|| {
                     AppSettings::try_new()
                         .map(|s| s.task_show_toolbar())
-                        .unwrap_or(true)
+                        .unwrap_or(false)
                 }),
             "memos" => self
                 .memos_page()
@@ -975,10 +975,10 @@ impl EvolutionWindow {
                 .unwrap_or_else(|| {
                     AppSettings::try_new()
                         .map(|s| s.memo_show_toolbar())
-                        .unwrap_or(true)
+                        .unwrap_or(false)
                 }),
             "calendar" => true,
-            _ => true,
+            _ => false,
         }
     }
 
@@ -1014,6 +1014,28 @@ impl EvolutionWindow {
             }
             "calendar" => {}
             _ => {}
+        }
+        self.sync_toolbar_state_for_current_view();
+    }
+
+    pub fn set_all_views_toolbar_visible(&self, visible: bool) {
+        if let Some(p) = self.mail_page() {
+            p.set_toolbar_visible(visible);
+        }
+        if let Some(p) = self.contacts_page() {
+            p.set_toolbar_visible(visible);
+        }
+        if let Some(p) = self.tasks_page() {
+            p.set_toolbar_visible(visible);
+        }
+        if let Some(p) = self.memos_page() {
+            p.set_toolbar_visible(visible);
+        }
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_mail_show_toolbar(visible);
+            settings.set_contact_show_toolbar(visible);
+            settings.set_task_show_toolbar(visible);
+            settings.set_memo_show_toolbar(visible);
         }
         self.sync_toolbar_state_for_current_view();
     }
@@ -4109,18 +4131,18 @@ impl EvolutionWindow {
                 if let Some(vis) = target_state.get::<bool>() {
                     action.set_state(&vis.to_variant());
                     if let Some(win) = win_weak_tb_state.upgrade() {
-                        win.set_active_view_toolbar_visible(vis);
+                        win.set_all_views_toolbar_visible(vis);
                     }
                 }
             }
         });
         let win_weak_tb_act = self.downgrade();
         action_toolbar.connect_activate(move |action, _| {
-            let current = action.state().and_then(|v| v.get::<bool>()).unwrap_or(true);
+            let current = action.state().and_then(|v| v.get::<bool>()).unwrap_or(false);
             let next = !current;
             action.set_state(&next.to_variant());
             if let Some(win) = win_weak_tb_act.upgrade() {
-                win.set_active_view_toolbar_visible(next);
+                win.set_all_views_toolbar_visible(next);
             }
         });
         self.add_action(&action_toolbar);
@@ -6760,6 +6782,7 @@ mod tests {
         };
         let app = EvolutionApplication::new();
         let window = EvolutionWindow::new(&app);
+        window.set_visible(true);
 
         let action = window
             .lookup_action("toggle-toolbar")
@@ -6805,37 +6828,51 @@ mod tests {
             .cloned()
             .expect("view stack present");
 
-        let mail_bin = stack.child_by_name("mail").and_downcast::<adw::Bin>().unwrap();
-        let mail_page = mail_bin.child().and_downcast::<MailPage>().unwrap();
+        let mail_page = stack
+            .child_by_name("mail")
+            .and_downcast::<MailPage>()
+            .expect("mail page");
         assert!(mail_page.imp().classic_toolbar.borrow().is_some());
 
+        window.set_active_view("contacts");
         let contacts_bin = stack.child_by_name("contacts").and_downcast::<adw::Bin>().unwrap();
         let contacts_page = contacts_bin.child().and_downcast::<ContactsPage>().unwrap();
         assert!(contacts_page.imp().toolbar.borrow().is_some());
 
+        window.set_active_view("calendar");
         let calendar_bin = stack.child_by_name("calendar").and_downcast::<adw::Bin>().unwrap();
         let calendar_page = calendar_bin.child().and_downcast::<CalendarPage>().unwrap();
         assert!(calendar_page.imp().toolbar.borrow().is_some());
 
+        window.set_active_view("tasks");
         let tasks_bin = stack.child_by_name("tasks").and_downcast::<adw::Bin>().unwrap();
         let tasks_page = tasks_bin.child().and_downcast::<TasksPage>().unwrap();
         assert!(tasks_page.imp().toolbar.borrow().is_some());
 
+        window.set_active_view("memos");
         let memos_bin = stack.child_by_name("memos").and_downcast::<adw::Bin>().unwrap();
         let memos_page = memos_bin.child().and_downcast::<MemosPage>().unwrap();
         assert!(memos_page.imp().toolbar.borrow().is_some());
 
-        // Verify per-module independence and active-view toggle
-        if let Some(settings) = AppSettings::try_new() {
-            // Toggling mail toolbar hides mail toolbar, but preserves other modules
-            settings.set_mail_show_toolbar(false);
-            assert_eq!(mail_page.imp().classic_toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(false));
-            assert_eq!(contacts_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
-            assert_eq!(calendar_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
-            assert_eq!(tasks_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
-            assert_eq!(memos_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
+        window.set_active_view("mail");
 
-            // Toggling contacts toolbar only affects contacts
+        // Verify all 5 views have toolbars and reflect default visibility (non-calendar hidden, calendar visible)
+        assert_eq!(mail_page.imp().classic_toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(false));
+        assert_eq!(contacts_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(false));
+        assert_eq!(calendar_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
+        assert_eq!(tasks_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(false));
+        assert_eq!(memos_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(false));
+
+        // Verify centralized toggle activates all non-calendar views simultaneously while preserving calendar
+        window.set_all_views_toolbar_visible(true);
+        assert_eq!(mail_page.imp().classic_toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
+        assert_eq!(contacts_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
+        assert_eq!(calendar_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
+        assert_eq!(tasks_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
+        assert_eq!(memos_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
+
+        if let Some(settings) = AppSettings::try_new() {
+            // Toggling contacts toolbar individually only affects contacts
             settings.set_contact_show_toolbar(false);
             assert_eq!(contacts_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(false));
             assert_eq!(tasks_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
@@ -6849,16 +6886,13 @@ mod tests {
             settings.set_memo_show_toolbar(false);
             assert_eq!(memos_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(false));
 
-            // Restore all
-            settings.set_mail_show_toolbar(true);
-            settings.set_contact_show_toolbar(true);
-            settings.set_task_show_toolbar(true);
-            settings.set_memo_show_toolbar(true);
-            assert_eq!(mail_page.imp().classic_toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
-            assert_eq!(contacts_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
+            // Restore all to hidden (default)
+            window.set_all_views_toolbar_visible(false);
+            assert_eq!(mail_page.imp().classic_toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(false));
+            assert_eq!(contacts_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(false));
             assert_eq!(calendar_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
-            assert_eq!(tasks_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
-            assert_eq!(memos_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(true));
+            assert_eq!(tasks_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(false));
+            assert_eq!(memos_page.imp().toolbar.borrow().as_ref().map(|w| w.is_visible()), Some(false));
         }
     }
 
@@ -7258,6 +7292,7 @@ mod tests {
 
         // Test memos page drilldown and toolbar
         let memos = crate::views::MemosPage::new();
+        memos.set_toolbar_visible(true);
         assert!(memos.imp().toolbar.borrow().as_ref().unwrap().is_visible());
         memos.set_screen_mode(true, false);
         assert!(!memos.imp().toolbar.borrow().as_ref().unwrap().is_visible());
@@ -7267,9 +7302,11 @@ mod tests {
         assert!(memos.navigate_back());
         assert!(!memos.can_navigate_back());
         assert!(!memos.navigate_back());
+        memos.set_toolbar_visible(false);
 
         // Test tasks page drilldown and toolbar
         let tasks = crate::views::TasksPage::new();
+        tasks.set_toolbar_visible(true);
         assert!(tasks.imp().toolbar.borrow().as_ref().unwrap().is_visible());
         tasks.set_screen_mode(true, false);
         assert!(!tasks.imp().toolbar.borrow().as_ref().unwrap().is_visible());
@@ -7279,9 +7316,11 @@ mod tests {
         assert!(tasks.navigate_back());
         assert!(!tasks.can_navigate_back());
         assert!(!tasks.navigate_back());
+        tasks.set_toolbar_visible(false);
 
         // Test contacts page drilldown and toolbar
         let contacts = crate::views::ContactsPage::new();
+        contacts.set_toolbar_visible(true);
         assert!(contacts.imp().toolbar.borrow().as_ref().unwrap().is_visible());
         contacts.set_screen_mode(true, false);
         assert!(!contacts.imp().toolbar.borrow().as_ref().unwrap().is_visible());
@@ -7291,12 +7330,14 @@ mod tests {
         assert!(contacts.navigate_back());
         assert!(!contacts.can_navigate_back());
         assert!(!contacts.navigate_back());
+        contacts.set_toolbar_visible(false);
 
         // Test calendar page responsive mode and toolbar
         let calendar = crate::views::CalendarPage::new();
         assert!(calendar.imp().toolbar.borrow().as_ref().unwrap().is_visible());
         calendar.set_screen_mode(true, false);
-        assert!(!calendar.imp().toolbar.borrow().as_ref().unwrap().is_visible());
+        // Calendar date navigation toolbar remains visible on mobile
+        assert!(calendar.imp().toolbar.borrow().as_ref().unwrap().is_visible());
         assert!(!calendar.can_navigate_back());
     }
 
