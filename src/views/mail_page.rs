@@ -5735,7 +5735,7 @@ impl MailPage {
 
     pub(crate) fn can_navigate_back(&self) -> bool {
         let imp = self.imp();
-        (imp.is_mobile.get() && imp.drill_down_level.get() != MailDrillDownLevel::Folders)
+        (imp.is_mobile.get() && (imp.drill_down_level.get() == MailDrillDownLevel::Viewer || imp.drill_down_level.get() == MailDrillDownLevel::Folders))
             || (imp.is_tablet.get() && !imp.is_mobile.get() && imp.drill_down_level.get() == MailDrillDownLevel::Viewer)
     }
 
@@ -5756,11 +5756,11 @@ impl MailPage {
                 self.set_drill_down_level(MailDrillDownLevel::Messages);
                 true
             }
-            MailDrillDownLevel::Messages => {
-                self.set_drill_down_level(MailDrillDownLevel::Folders);
+            MailDrillDownLevel::Folders => {
+                self.set_drill_down_level(MailDrillDownLevel::Messages);
                 true
             }
-            MailDrillDownLevel::Folders => false,
+            MailDrillDownLevel::Messages => false,
         }
     }
 

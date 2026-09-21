@@ -1145,6 +1145,12 @@ impl EvolutionWindow {
         }
 
         if is_mobile {
+            if let Some(res_btn) = self.imp().restore_sidebar_button.borrow().as_ref() {
+                let show_mobile_sidebar_toggle = self.active_view_name() == "mail"
+                    && self.mail_page().map(|p| p.drill_down_level() == crate::views::MailDrillDownLevel::Messages).unwrap_or(false);
+                res_btn.set_visible(show_mobile_sidebar_toggle);
+            }
+
             if let (Some(view_stack), Some(window_title)) = (
                 self.imp().view_stack.borrow().as_ref(),
                 self.imp().window_title.borrow().as_ref(),
@@ -1154,7 +1160,7 @@ impl EvolutionWindow {
                         if let Some(mail) = self.mail_page() {
                             match mail.drill_down_level() {
                                 crate::views::MailDrillDownLevel::Folders => {
-                                    window_title.set_title(&crate::i18n::gettext("Folders"));
+                                    window_title.set_title(&crate::i18n::gettext("Folders & Accounts"));
                                     window_title.set_subtitle(&crate::i18n::gettext("Mail"));
                                 }
                                 crate::views::MailDrillDownLevel::Messages => {
@@ -1406,7 +1412,9 @@ impl EvolutionWindow {
                 sb_h.set_visible(false);
                 sb_h.set_size_request(0, -1);
                 if let Some(res_btn) = self.imp().restore_sidebar_button.borrow().as_ref() {
-                    res_btn.set_visible(false);
+                    let show_mobile_sidebar_toggle = self.active_view_name() == "mail"
+                        && self.mail_page().map(|p| p.drill_down_level() == crate::views::MailDrillDownLevel::Messages).unwrap_or(false);
+                    res_btn.set_visible(show_mobile_sidebar_toggle);
                 }
                 if let Some(hb) = self.imp().header_bar.borrow().as_ref() {
                     hb.set_show_start_title_buttons(true);
@@ -3245,7 +3253,20 @@ impl EvolutionWindow {
         let win_weak_restore = self.downgrade();
         restore_sidebar_btn.connect_clicked(move |_| {
             if let Some(win) = win_weak_restore.upgrade() {
-                win.toggle_sidebar_animated(true);
+                if win.imp().is_mobile.get() && win.active_view_name() == "mail" {
+                    if let Some(mail) = win.mail_page() {
+                        match mail.drill_down_level() {
+                            crate::views::MailDrillDownLevel::Folders => {
+                                mail.set_drill_down_level(crate::views::MailDrillDownLevel::Messages);
+                            }
+                            _ => {
+                                mail.set_drill_down_level(crate::views::MailDrillDownLevel::Folders);
+                            }
+                        }
+                    }
+                } else {
+                    win.toggle_sidebar_animated(true);
+                }
             }
         });
         self.imp().restore_sidebar_button.replace(Some(restore_sidebar_btn.clone()));
@@ -3307,9 +3328,6 @@ impl EvolutionWindow {
             }
         });
 
-        header_bar.pack_start(&restore_sidebar_btn);
-        header_bar.pack_start(&search_button);
-
         let back_button = gtk::Button::builder()
             .icon_name("go-previous-symbolic")
             .tooltip_text(&crate::i18n::gettext("Back"))
@@ -3324,7 +3342,10 @@ impl EvolutionWindow {
             }
         });
         self.imp().back_button.replace(Some(back_button.clone()));
+
         header_bar.pack_start(&back_button);
+        header_bar.pack_start(&restore_sidebar_btn);
+        header_bar.pack_start(&search_button);
 
         let compose_button = gtk::Button::builder()
             .action_name("app.compose")
@@ -7202,6 +7223,7 @@ mod tests {
         window.set_visible(true);
 
         let back_btn = window.back_button().expect("back_button should exist");
+        let restore_btn = window.imp().restore_sidebar_button.borrow().clone().expect("restore button");
         let mail_page = window.mail_page().expect("mail_page should exist");
 
         // Ensure active view is mail for this test
@@ -7212,29 +7234,37 @@ mod tests {
         // Activate mobile mode
         window.set_screen_mode(true, false);
 
-        // Initially at Folders level
+        // Initially at Messages level (primary main view)
+        assert_eq!(mail_page.drill_down_level(), crate::views::MailDrillDownLevel::Messages);
         assert!(!mail_page.can_navigate_back());
         assert!(!back_btn.is_visible());
+        assert!(restore_btn.is_visible());
 
-        // Drill down to Messages
-        mail_page.set_drill_down_level(crate::views::MailDrillDownLevel::Messages);
+        // Toggle to Folders/Accounts
+        mail_page.set_drill_down_level(crate::views::MailDrillDownLevel::Folders);
         assert!(mail_page.can_navigate_back());
         assert!(back_btn.is_visible());
+        assert!(!restore_btn.is_visible());
+
+        // Press back: Folders -> Messages
+        assert!(window.handle_navigate_back());
+        assert_eq!(mail_page.drill_down_level(), crate::views::MailDrillDownLevel::Messages);
+        assert!(!mail_page.can_navigate_back());
+        assert!(!back_btn.is_visible());
+        assert!(restore_btn.is_visible());
 
         // Drill down to Viewer
         mail_page.set_drill_down_level(crate::views::MailDrillDownLevel::Viewer);
         assert!(mail_page.can_navigate_back());
         assert!(back_btn.is_visible());
+        assert!(!restore_btn.is_visible());
 
         // Press back: Viewer -> Messages
         assert!(window.handle_navigate_back());
-        assert!(mail_page.can_navigate_back());
-        assert!(back_btn.is_visible());
-
-        // Press back again: Messages -> Folders
-        assert!(window.handle_navigate_back());
+        assert_eq!(mail_page.drill_down_level(), crate::views::MailDrillDownLevel::Messages);
         assert!(!mail_page.can_navigate_back());
         assert!(!back_btn.is_visible());
+        assert!(restore_btn.is_visible());
 
         // Press back at root: does nothing
         assert!(!window.handle_navigate_back());
@@ -7691,9 +7721,16 @@ mod tests {
             assert!(window.handle_navigate_back());
             assert_eq!(mail.drill_down_level(), crate::views::MailDrillDownLevel::Messages);
 
-            // Handle back should transition Messages -> Folders
+            // Handle back at Messages (root) returns false
+            assert!(!window.handle_navigate_back());
+            assert_eq!(mail.drill_down_level(), crate::views::MailDrillDownLevel::Messages);
+
+            // Toggling sidebar button opens Folders
+            mail.imp().drill_down_level.set(crate::views::MailDrillDownLevel::Folders);
+            window.sync_back_button();
+            assert!(window.can_navigate_back());
             assert!(window.handle_navigate_back());
-            assert_eq!(mail.drill_down_level(), crate::views::MailDrillDownLevel::Folders);
+            assert_eq!(mail.drill_down_level(), crate::views::MailDrillDownLevel::Messages);
 
             // Already at top level
             assert!(!window.can_navigate_back());
