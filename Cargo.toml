@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 authors = ["megawron"]
-repository = "https://github.com/mgawron/evolution-gtk4"
+repository = "https://github.com/megawron/meridian"
 description = "A modern GTK4/libadwaita mail and groupware client powered by Evolution Data Server"
 
 [workspace.dependencies]
