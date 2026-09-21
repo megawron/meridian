@@ -463,7 +463,7 @@
       <summary>Show flagged/star indicator in the mail list</summary>
     </key>
     <key name="mail-show-avatar" type="b">
-      <default>false</default>
+      <default>true</default>
       <summary>Show sender avatars in the mail list</summary>
     </key>
     <key name="mail-show-sender" type="b">

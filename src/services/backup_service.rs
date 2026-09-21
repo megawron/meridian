@@ -781,7 +781,7 @@ fn default_mail_row_density() -> String {
 }
 
 fn default_mail_show_avatar() -> bool {
-    false
+    true
 }
 
 fn default_mail_show_sender() -> bool {
@@ -3695,7 +3695,7 @@ mod tests {
         assert_eq!(settings.mail_modern_preview_position, 420);
         assert_eq!(settings.mail_classic_preview_position, 360);
         assert_eq!(settings.mail_row_density, "compact");
-        assert!(!settings.mail_show_avatar);
+        assert!(settings.mail_show_avatar);
         assert!(settings.mail_show_sender);
         assert!(!settings.mail_show_recipient);
         assert!(settings.mail_show_date);

@@ -1295,10 +1295,10 @@ fn mail_list_profile_allows_column(profile: &str, wide_messages: bool, column: &
     match profile {
         "messages" => matches!(
             column,
-            "status" | "attachment" | "flagged" | "sender" | "subject" | "date"
+            "avatar" | "status" | "attachment" | "flagged" | "sender" | "subject" | "date"
         ),
         "wide" => matches!(column, "status" | "flagged" | "messages"),
-        "cards" => false,
+        "cards" => matches!(column, "avatar" | "status" | "flagged" | "labels" | "preview"),
         _ => match column {
             "messages" => wide_messages,
             "sender" | "subject" => !wide_messages,
@@ -1517,6 +1517,8 @@ pub(crate) struct PreparedMailTableLayout {
     pub show_recipient: bool,
     pub show_date: bool,
     pub show_size: bool,
+    pub show_avatar: bool,
+    pub show_labels: bool,
     pub show_preview_text: bool,
     pub date_align_left: bool,
     pub is_cards_mode: bool,
@@ -1787,6 +1789,8 @@ pub(crate) fn prepare_mail_table_layout_from_rows(
         show_recipient,
         show_date,
         show_size,
+        show_avatar: true,
+        show_labels: true,
         show_preview_text: true,
         date_align_left: false,
         is_cards_mode: false,
@@ -1897,7 +1901,8 @@ pub(crate) fn hit_test_mail_table(
     let row = layout.rows.get(row_idx)?;
 
     if layout.is_cards_mode {
-        if layout.show_status && x <= 58.0 {
+        let status_max_x = if layout.show_avatar { 58.0 } else { 22.0 };
+        if layout.show_status && x <= status_max_x {
             return Some(MailTableHitAction::ToggleStatus(row_idx, row.model_index));
         }
         let rel_y = y % layout.row_height;
@@ -2312,48 +2317,50 @@ pub(crate) fn draw_mail_table_canvas(
             let avatar_cy = y + h / 2.0;
             let avatar_r = 18.0;
 
-            if is_row_selected {
-                // Convey-style selection indicator: vibrant blue circle with white checkmark
-                cr.set_source_rgb(accent_rgb.0, accent_rgb.1, accent_rgb.2);
-                cr.arc(avatar_cx, avatar_cy, avatar_r, 0.0, std::f64::consts::TAU);
-                let _ = cr.fill();
+            if layout.show_avatar {
+                if is_row_selected {
+                    // Convey-style selection indicator: vibrant blue circle with white checkmark
+                    cr.set_source_rgb(accent_rgb.0, accent_rgb.1, accent_rgb.2);
+                    cr.arc(avatar_cx, avatar_cy, avatar_r, 0.0, std::f64::consts::TAU);
+                    let _ = cr.fill();
 
-                cr.set_source_rgb(1.0, 1.0, 1.0);
-                cr.set_line_width(2.2);
-                cr.set_line_cap(gtk::cairo::LineCap::Round);
-                cr.set_line_join(gtk::cairo::LineJoin::Round);
-                cr.move_to(avatar_cx - 5.5, avatar_cy);
-                cr.line_to(avatar_cx - 1.5, avatar_cy + 4.0);
-                cr.line_to(avatar_cx + 5.5, avatar_cy - 4.5);
-                let _ = cr.stroke();
-            } else {
-                let (av_r, av_g, av_b) = avatar_color_for_name(&row.sender);
-                cr.set_source_rgb(av_r, av_g, av_b);
-                cr.arc(avatar_cx, avatar_cy, avatar_r, 0.0, std::f64::consts::TAU);
-                let _ = cr.fill();
-
-                let initials = extract_initials(&row.sender);
-                cr.set_source_rgb(1.0, 1.0, 1.0);
-                cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
-                cr.set_font_size(12.0);
-                if let Ok(te) = cr.text_extents(&initials) {
-                    cr.move_to(
-                        avatar_cx - te.width() / 2.0 - te.x_bearing(),
-                        avatar_cy - te.height() / 2.0 - te.y_bearing(),
-                    );
+                    cr.set_source_rgb(1.0, 1.0, 1.0);
+                    cr.set_line_width(2.2);
+                    cr.set_line_cap(gtk::cairo::LineCap::Round);
+                    cr.set_line_join(gtk::cairo::LineJoin::Round);
+                    cr.move_to(avatar_cx - 5.5, avatar_cy);
+                    cr.line_to(avatar_cx - 1.5, avatar_cy + 4.0);
+                    cr.line_to(avatar_cx + 5.5, avatar_cy - 4.5);
+                    let _ = cr.stroke();
                 } else {
-                    cr.move_to(avatar_cx - 5.0, avatar_cy + 4.0);
-                }
-                let _ = cr.show_text(&initials);
-            }
+                    let (av_r, av_g, av_b) = avatar_color_for_name(&row.sender);
+                    cr.set_source_rgb(av_r, av_g, av_b);
+                    cr.arc(avatar_cx, avatar_cy, avatar_r, 0.0, std::f64::consts::TAU);
+                    let _ = cr.fill();
 
-            // Reply badge overlay
-            if row.is_replied {
-                draw_cairo_reply_badge(cr, avatar_cx + 10.0, avatar_cy + 10.0, is_dark);
+                    let initials = extract_initials(&row.sender);
+                    cr.set_source_rgb(1.0, 1.0, 1.0);
+                    cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+                    cr.set_font_size(12.0);
+                    if let Ok(te) = cr.text_extents(&initials) {
+                        cr.move_to(
+                            avatar_cx - te.width() / 2.0 - te.x_bearing(),
+                            avatar_cy - te.height() / 2.0 - te.y_bearing(),
+                        );
+                    } else {
+                        cr.move_to(avatar_cx - 5.0, avatar_cy + 4.0);
+                    }
+                    let _ = cr.show_text(&initials);
+                }
+
+                // Reply badge overlay
+                if row.is_replied {
+                    draw_cairo_reply_badge(cr, avatar_cx + 10.0, avatar_cy + 10.0, is_dark);
+                }
             }
 
             // 3. Text Block
-            let content_x = 66.0;
+            let content_x = if layout.show_avatar { 66.0 } else { 26.0 };
             let content_w = (width - content_x - right_pad).max(40.0);
 
             // Line 1: Date (right) + Sender (left)
@@ -2431,27 +2438,29 @@ pub(crate) fn draw_mail_table_canvas(
 
             // Line 3: Category Pill (if present) + Snippet
             let mut line3_x = content_x;
-            if let Some(label) = row.labels.first() {
-                let trimmed = label.trim();
-                if !trimmed.is_empty() {
-                    let (pr, pg, pb) = avatar_color_for_name(trimmed);
-                    cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
-                    cr.set_font_size(9.5);
-                    let text_w = cr.text_extents(trimmed).map(|e| e.width()).unwrap_or(30.0);
-                    let pill_w = (text_w + 12.0).min(90.0);
-                    let pill_h = 16.0;
-                    cr.set_source_rgb(pr, pg, pb);
-                    draw_cairo_rounded_rect(cr, line3_x, y + 51.0, pill_w, pill_h, 4.0);
-                    let _ = cr.fill();
-                    cr.set_source_rgb(1.0, 1.0, 1.0);
-                    cr.move_to(line3_x + 6.0, y + 62.5);
-                    let _ = cr.show_text(trimmed);
-                    line3_x += pill_w + 6.0;
+            if layout.show_labels {
+                if let Some(label) = row.labels.first() {
+                    let trimmed = label.trim();
+                    if !trimmed.is_empty() {
+                        let (pr, pg, pb) = avatar_color_for_name(trimmed);
+                        cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+                        cr.set_font_size(9.5);
+                        let text_w = cr.text_extents(trimmed).map(|e| e.width()).unwrap_or(30.0);
+                        let pill_w = (text_w + 12.0).min(90.0);
+                        let pill_h = 16.0;
+                        cr.set_source_rgb(pr, pg, pb);
+                        draw_cairo_rounded_rect(cr, line3_x, y + 51.0, pill_w, pill_h, 4.0);
+                        let _ = cr.fill();
+                        cr.set_source_rgb(1.0, 1.0, 1.0);
+                        cr.move_to(line3_x + 6.0, y + 62.5);
+                        let _ = cr.show_text(trimmed);
+                        line3_x += pill_w + 6.0;
+                    }
                 }
             }
 
             let snippet_avail_w = (width - right_pad - line3_x).max(20.0);
-            if !row.snippet.trim().is_empty() {
+            if layout.show_preview_text && !row.snippet.trim().is_empty() {
                 pango_layout.set_font_description(Some(secondary_desc));
                 pango_layout.set_text(&row.snippet);
                 pango_layout.set_single_paragraph_mode(true);
@@ -2504,8 +2513,29 @@ pub(crate) fn draw_mail_table_canvas(
         // 4. Sender Column
         let sender_x = layout.col_sender_x();
         let sender_w = layout.col_sender_w();
-        let text_start = sender_x + 6.0;
-        let avail_sender_w = (sender_w - 12.0).max(10.0);
+        let (text_start, avail_sender_w) = if layout.show_avatar && sender_w > 50.0 {
+            let av_r = (h / 2.0 - 5.0).clamp(7.0, 11.0);
+            let av_cx = sender_x + av_r + 4.0;
+            let av_cy = y + h / 2.0;
+            let (cr_r, cr_g, cr_b) = avatar_color_for_name(&row.sender);
+            cr.set_source_rgb(cr_r, cr_g, cr_b);
+            cr.arc(av_cx, av_cy, av_r, 0.0, std::f64::consts::TAU);
+            let _ = cr.fill();
+            let initials = extract_initials(&row.sender);
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+            cr.set_font_size((av_r * 1.05).max(7.0));
+            if let Ok(te) = cr.text_extents(&initials) {
+                cr.move_to(
+                    av_cx - te.width() / 2.0 - te.x_bearing(),
+                    av_cy - te.height() / 2.0 - te.y_bearing(),
+                );
+                let _ = cr.show_text(&initials);
+            }
+            (sender_x + av_r * 2.0 + 10.0, (sender_w - av_r * 2.0 - 16.0).max(10.0))
+        } else {
+            (sender_x + 6.0, (sender_w - 12.0).max(10.0))
+        };
         cr.set_source_rgb(r, g, b);
         let desc = if row.is_unread { &primary_desc_bold } else { &primary_desc_normal };
         pango_layout.set_alignment(gtk::pango::Alignment::Left);
@@ -15771,65 +15801,57 @@ impl MailPage {
             }
             let menu = gio::Menu::new();
 
-            // Section 1: Respond
+            // Section 1: Primary Respond Actions
             let respond_section = gio::Menu::new();
-            for &(label, action) in &[
-                ("Reply", "win.reply"),
-                ("Reply to All", "win.reply-all"),
-                ("Reply to List", "win.reply-list"),
-                ("Reply Alternative…", "win.reply-alternative"),
-                ("Forward", "win.forward"),
-                ("Forward Inline", "win.forward-inline"),
-                ("Forward Quoted", "win.forward-quoted"),
-                ("Forward as Attachment", "win.forward-attached"),
-            ] {
-                respond_section.append(Some(&gettext(label)), Some(action));
-            }
+            respond_section.append(Some(&gettext("Reply")), Some("win.reply"));
+            respond_section.append(Some(&gettext("Reply to All")), Some("win.reply-all"));
+            respond_section.append(Some(&gettext("Forward")), Some("win.forward"));
+
+            let forward_submenu = gio::Menu::new();
+            forward_submenu.append(Some(&gettext("Forward Inline")), Some("win.forward-inline"));
+            forward_submenu.append(Some(&gettext("Forward Quoted")), Some("win.forward-quoted"));
+            forward_submenu.append(Some(&gettext("Forward as Attachment")), Some("win.forward-attached"));
+            forward_submenu.append(Some(&gettext("Reply to List")), Some("win.reply-list"));
+            forward_submenu.append(Some(&gettext("Reply Alternative…")), Some("win.reply-alternative"));
+            respond_section.append_submenu(Some(&gettext("Forward As…")), &forward_submenu);
             menu.append_section(None, &respond_section);
 
             // Section 2: Organize / Triage
             let triage_section = gio::Menu::new();
-            for &(label, action) in &[
-                ("Archive", "win.archive"),
-                ("Move to Folder…", "win.move-message"),
-                ("Copy to Folder…", "win.copy-message"),
-                ("Delete", "win.delete"),
-                ("Undelete", "win.undelete"),
-            ] {
-                triage_section.append(Some(&gettext(label)), Some(action));
-            }
+            triage_section.append(Some(&gettext("Mark as Read")), Some("win.mark-read"));
+            triage_section.append(Some(&gettext("Mark as Unread")), Some("win.mark-unread"));
+            triage_section.append(Some(&gettext("Toggle Flag")), Some("win.toggle-flag"));
+            triage_section.append(Some(&gettext("Archive")), Some("win.archive"));
+            triage_section.append(Some(&gettext("Move to Folder…")), Some("win.move-message"));
+            triage_section.append(Some(&gettext("Delete")), Some("win.delete"));
             menu.append_section(None, &triage_section);
 
-            // Section 3: Mark & State
-            let mark_section = gio::Menu::new();
-            for &(label, action) in &[
-                ("Mark as Read", "win.mark-read"),
-                ("Mark as Unread", "win.mark-unread"),
-                ("Toggle Flag", "win.toggle-flag"),
-                ("Toggle Important", "win.toggle-important"),
-                ("Edit Labels…", "win.edit-labels"),
-                ("Mark as Junk", "win.mark-junk"),
-                ("Mark as Not Junk", "win.mark-not-junk"),
-            ] {
-                mark_section.append(Some(&gettext(label)), Some(action));
-            }
-            menu.append_section(None, &mark_section);
+            // Section 3: More Actions (Progressive Disclosure)
+            let more_section = gio::Menu::new();
+            let more_submenu = gio::Menu::new();
 
-            // Section 4: Details & Tools
+            let labels_junk_section = gio::Menu::new();
+            labels_junk_section.append(Some(&gettext("Toggle Important")), Some("win.toggle-important"));
+            labels_junk_section.append(Some(&gettext("Edit Labels…")), Some("win.edit-labels"));
+            labels_junk_section.append(Some(&gettext("Copy to Folder…")), Some("win.copy-message"));
+            labels_junk_section.append(Some(&gettext("Mark as Junk")), Some("win.mark-junk"));
+            labels_junk_section.append(Some(&gettext("Mark as Not Junk")), Some("win.mark-not-junk"));
+            labels_junk_section.append(Some(&gettext("Undelete")), Some("win.undelete"));
+            more_submenu.append_section(None, &labels_junk_section);
+
             let tools_section = gio::Menu::new();
-            for &(label, action) in &[
-                ("Save as EML…", "win.export"),
-                ("Print…", "win.mail-print"),
-                ("Print Preview…", "win.mail-print-preview"),
-                ("View Message Source", "win.view-message-source"),
-                ("Copy Message Link", "win.copy-message-link"),
-                ("Go to Containing Folder", "win.goto-containing-folder"),
-                ("Add Sender to Address Book", "win.add-sender-contact"),
-                ("Edit as New Message", "win.edit-as-new"),
-            ] {
-                tools_section.append(Some(&gettext(label)), Some(action));
-            }
-            menu.append_section(None, &tools_section);
+            tools_section.append(Some(&gettext("Add Sender to Address Book")), Some("win.add-sender-contact"));
+            tools_section.append(Some(&gettext("Edit as New Message")), Some("win.edit-as-new"));
+            tools_section.append(Some(&gettext("View Message Source")), Some("win.view-message-source"));
+            tools_section.append(Some(&gettext("Save as EML…")), Some("win.export"));
+            tools_section.append(Some(&gettext("Copy Message Link")), Some("win.copy-message-link"));
+            tools_section.append(Some(&gettext("Go to Containing Folder")), Some("win.goto-containing-folder"));
+            tools_section.append(Some(&gettext("Print…")), Some("win.mail-print"));
+            tools_section.append(Some(&gettext("Print Preview…")), Some("win.mail-print-preview"));
+            more_submenu.append_section(None, &tools_section);
+
+            more_section.append_submenu(Some(&gettext("More Actions…")), &more_submenu);
+            menu.append_section(None, &more_section);
 
             *cached.borrow_mut() = Some(menu.clone());
             menu
@@ -16765,6 +16787,16 @@ impl MailPage {
         let show_size = mail_list_profile_allows_column(&profile, wide_messages, "size")
             && settings.as_ref().map(|s| s.mail_show_size()).unwrap_or(false);
 
+        let show_avatar = settings
+            .as_ref()
+            .map(|s| s.mail_show_avatar())
+            .unwrap_or(true);
+
+        let show_labels = settings
+            .as_ref()
+            .map(|s| s.mail_show_labels())
+            .unwrap_or(true);
+
         let show_preview_text = settings
             .as_ref()
             .map(|s| s.mail_show_preview_text())
@@ -16914,6 +16946,8 @@ impl MailPage {
             show_recipient,
             show_date,
             show_size,
+            show_avatar,
+            show_labels,
             show_preview_text,
             date_align_left,
             is_cards_mode,
@@ -20220,8 +20254,13 @@ impl MailPage {
 
             columns_popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
-            // 4. Visible Columns
-            columns_popover_box.append(
+            // 4. Visible Columns (Table View)
+            let table_options_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(6)
+                .build();
+
+            table_options_box.append(
                 &gtk::Label::builder()
                     .label(&gettext("Visible Columns"))
                     .halign(gtk::Align::Start)
@@ -20308,7 +20347,7 @@ impl MailPage {
                 let row = (idx % 6) as i32;
                 columns_grid.attach(&check, col, row, 1, 1);
             }
-            columns_popover_box.append(&columns_grid);
+            table_options_box.append(&columns_grid);
 
             let reorder_icon_name = themed_icon_name(&columns_popover_box, "view-column-symbolic", "view-list-symbolic");
             let reorder_button = gtk::Button::builder()
@@ -20340,7 +20379,108 @@ impl MailPage {
                     page.open_mail_column_order_dialog();
                 }
             });
-            columns_popover_box.append(&reorder_button);
+            table_options_box.append(&reorder_button);
+            columns_popover_box.append(&table_options_box);
+
+            // 4b. Card Options (Simple / Cards View)
+            let card_options_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(6)
+                .build();
+
+            card_options_box.append(
+                &gtk::Label::builder()
+                    .label(&gettext("Display Options"))
+                    .halign(gtk::Align::Start)
+                    .css_classes(vec!["heading", "view-options-heading"])
+                    .build(),
+            );
+
+            let card_column_settings: [(&'static str, String); 6] = [
+                ("mail-show-avatar", gettext("Avatars")),
+                ("mail-show-preview-text", gettext("Preview text")),
+                ("mail-show-labels", gettext("Labels")),
+                ("mail-show-status", gettext("Status")),
+                ("mail-show-flagged", gettext("Flag")),
+                ("mail-show-date", gettext("Date")),
+            ];
+
+            let card_grid = gtk::Grid::builder()
+                .column_spacing(12)
+                .row_spacing(2)
+                .build();
+
+            for (idx, (key, label)) in card_column_settings.iter().enumerate() {
+                let active = match *key {
+                    "mail-show-avatar" => settings.mail_show_avatar(),
+                    "mail-show-preview-text" => settings.mail_show_preview_text(),
+                    "mail-show-labels" => settings.mail_show_labels(),
+                    "mail-show-status" => settings.mail_show_status(),
+                    "mail-show-flagged" => settings.mail_show_flagged(),
+                    "mail-show-date" => settings.mail_show_date(),
+                    _ => false,
+                };
+                let check = gtk::CheckButton::builder()
+                    .label(label)
+                    .active(active)
+                    .build();
+                let settings_for_check = settings.clone();
+                let key_str = *key;
+                check.connect_toggled(move |check| {
+                    match key_str {
+                        "mail-show-avatar" => {
+                            settings_for_check.set_mail_show_avatar(check.is_active())
+                        }
+                        "mail-show-preview-text" => {
+                            settings_for_check.set_mail_show_preview_text(check.is_active())
+                        }
+                        "mail-show-labels" => {
+                            settings_for_check.set_mail_show_labels(check.is_active())
+                        }
+                        "mail-show-status" => {
+                            settings_for_check.set_mail_show_status(check.is_active())
+                        }
+                        "mail-show-flagged" => {
+                            settings_for_check.set_mail_show_flagged(check.is_active())
+                        }
+                        "mail-show-date" => {
+                            settings_for_check.set_mail_show_date(check.is_active())
+                        }
+                        _ => {}
+                    }
+                });
+                let check_weak = check.downgrade();
+                let key_for_changed = *key;
+                settings.connect_changed(Some(key_for_changed), move |settings, _| {
+                    if let Some(check) = check_weak.upgrade() {
+                        let active = settings.boolean(key_for_changed);
+                        if check.is_active() != active {
+                            check.set_active(active);
+                        }
+                    }
+                });
+                let col = (idx / 3) as i32;
+                let row = (idx % 3) as i32;
+                card_grid.attach(&check, col, row, 1, 1);
+            }
+            card_options_box.append(&card_grid);
+            columns_popover_box.append(&card_options_box);
+
+            let is_table = settings.mail_list_view_profile() == "wide";
+            table_options_box.set_visible(is_table);
+            card_options_box.set_visible(!is_table);
+
+            let table_box_weak = table_options_box.downgrade();
+            let card_box_weak = card_options_box.downgrade();
+            settings.connect_changed(Some("mail-list-view-profile"), move |settings, _| {
+                let is_table = settings.string("mail-list-view-profile").as_str() == "wide";
+                if let Some(tb) = table_box_weak.upgrade() {
+                    tb.set_visible(is_table);
+                }
+                if let Some(cb) = card_box_weak.upgrade() {
+                    cb.set_visible(!is_table);
+                }
+            });
 
             columns_popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
@@ -28947,6 +29087,8 @@ mod tests {
             show_recipient,
             show_date,
             show_size,
+            show_avatar: true,
+            show_labels: true,
             show_preview_text,
             date_align_left,
             is_cards_mode,
@@ -32469,12 +32611,16 @@ mod tests {
                 mail_list_profile_allows_column("messages", false, column),
                 matches!(
                     column,
-                    "status" | "attachment" | "flagged" | "sender" | "subject" | "date"
+                    "avatar" | "status" | "attachment" | "flagged" | "sender" | "subject" | "date"
                 )
             );
             assert_eq!(
                 mail_list_profile_allows_column("wide", true, column),
                 matches!(column, "status" | "flagged" | "messages")
+            );
+            assert_eq!(
+                mail_list_profile_allows_column("cards", false, column),
+                matches!(column, "avatar" | "status" | "flagged" | "labels" | "preview")
             );
         }
 
