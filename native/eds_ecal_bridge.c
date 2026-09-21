@@ -166,8 +166,12 @@ load_source (ECalLoadContext *context,
 
         ecal_stop_cancellation_timer (timer);
         g_object_unref (cancellable);
-        if (client)
+        if (client) {
             client = ecal_cache_snapshot_client (source, source_type, client);
+            if (e_client_check_refresh_supported (E_CLIENT (client))) {
+                e_client_refresh_sync (E_CLIENT (client), NULL, NULL);
+            }
+        }
     }
 
     if (!client) {

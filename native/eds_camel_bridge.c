@@ -386,17 +386,83 @@ eds_camel_session_init (EdsCamelSession *session)
     (void) session;
 }
 
+static gchar *
+bridge_get_accounts_json_path (void)
+{
+    const gchar *env_data = g_getenv ("MERIDIAN_DATA_DIR");
+    if (env_data && *env_data) {
+        gchar *path = g_build_filename (env_data, "accounts.json", NULL);
+        if (g_file_test (path, G_FILE_TEST_EXISTS))
+            return path;
+        g_free (path);
+    }
+    const gchar *env_evo = g_getenv ("EVOLUTION_GTK4_DATA_DIR");
+    if (env_evo && *env_evo) {
+        gchar *path = g_build_filename (env_evo, "accounts.json", NULL);
+        if (g_file_test (path, G_FILE_TEST_EXISTS))
+            return path;
+        g_free (path);
+    }
+
+    gchar *meridian_path = g_build_filename (g_get_user_data_dir (), "meridian", "accounts.json", NULL);
+    if (g_file_test (meridian_path, G_FILE_TEST_EXISTS))
+        return meridian_path;
+
+    gchar *legacy_path = g_build_filename (g_get_user_data_dir (), "evolution-gtk4", "accounts.json", NULL);
+    if (g_file_test (legacy_path, G_FILE_TEST_EXISTS)) {
+        g_free (meridian_path);
+        return legacy_path;
+    }
+    g_free (legacy_path);
+    return meridian_path;
+}
+
+static gchar *
+bridge_get_camel_data_dir (void)
+{
+    const gchar *env_data = g_getenv ("MERIDIAN_DATA_DIR");
+    if (env_data && *env_data)
+        return g_build_filename (env_data, "camel", NULL);
+    const gchar *env_evo = g_getenv ("EVOLUTION_GTK4_DATA_DIR");
+    if (env_evo && *env_evo)
+        return g_build_filename (env_evo, "camel", NULL);
+
+    gchar *meridian_dir = g_build_filename (g_get_user_data_dir (), "meridian", "camel", NULL);
+    gchar *legacy_dir = g_build_filename (g_get_user_data_dir (), "evolution-gtk4", "camel", NULL);
+    if (!g_file_test (meridian_dir, G_FILE_TEST_IS_DIR) && g_file_test (legacy_dir, G_FILE_TEST_IS_DIR)) {
+        g_free (meridian_dir);
+        return legacy_dir;
+    }
+    g_free (legacy_dir);
+    return meridian_dir;
+}
+
+static gchar *
+bridge_get_camel_cache_dir (void)
+{
+    const gchar *env_cache = g_getenv ("MERIDIAN_CACHE_DIR");
+    if (env_cache && *env_cache)
+        return g_build_filename (env_cache, "camel", NULL);
+    const gchar *env_evo = g_getenv ("EVOLUTION_GTK4_CACHE_DIR");
+    if (env_evo && *env_evo)
+        return g_build_filename (env_evo, "camel", NULL);
+
+    gchar *meridian_dir = g_build_filename (g_get_user_cache_dir (), "meridian", "camel", NULL);
+    gchar *legacy_dir = g_build_filename (g_get_user_cache_dir (), "evolution-gtk4", "camel", NULL);
+    if (!g_file_test (meridian_dir, G_FILE_TEST_IS_DIR) && g_file_test (legacy_dir, G_FILE_TEST_IS_DIR)) {
+        g_free (meridian_dir);
+        return legacy_dir;
+    }
+    g_free (legacy_dir);
+    return meridian_dir;
+}
+
 static EdsCamelSession *
 eds_camel_session_new (ESourceRegistry *registry)
 {
     EdsCamelSession *session;
-    gchar *data_dir;
-    gchar *cache_dir;
-
-    data_dir = g_build_filename (
-        g_get_user_data_dir (), "evolution-gtk4", "camel", NULL);
-    cache_dir = g_build_filename (
-        g_get_user_cache_dir (), "evolution-gtk4", "camel", NULL);
+    gchar *data_dir = bridge_get_camel_data_dir ();
+    gchar *cache_dir = bridge_get_camel_cache_dir ();
 
     session = g_object_new (
         EDS_TYPE_CAMEL_SESSION,
@@ -942,10 +1008,24 @@ append_message_from_info (LoadContext *context,
         g_string_append_printf (rfc822, "Subject: %s\r\n", subject);
 
     if (date_sent > 0) {
-        dt = g_date_time_new_from_unix_utc (date_sent);
-        if (dt) {
-            date_str = g_date_time_format (dt, "%a, %d %b %Y %H:%M:%S +0000");
-            g_date_time_unref (dt);
+        date_str = camel_header_format_date (date_sent, 0);
+        if (!date_str) {
+            static const char *const days[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+            static const char *const months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+            dt = g_date_time_new_from_unix_utc (date_sent);
+            if (dt) {
+                int d = g_date_time_get_day_of_week (dt);
+                int m = g_date_time_get_month (dt);
+                date_str = g_strdup_printf ("%s, %02d %s %04d %02d:%02d:%02d +0000",
+                    days[d % 7],
+                    g_date_time_get_day_of_month (dt),
+                    months[(m - 1) % 12],
+                    g_date_time_get_year (dt),
+                    g_date_time_get_hour (dt),
+                    g_date_time_get_minute (dt),
+                    g_date_time_get_second (dt));
+                g_date_time_unref (dt);
+            }
         }
     }
     if (date_str) {
@@ -1064,6 +1144,16 @@ load_folder (LoadContext *context,
                 CamelFolderSummary *summary = camel_folder_get_folder_summary (folder);
                 if (summary) {
                     camel_folder_summary_prepare_fetch_all (summary, NULL);
+                }
+
+                /* Synchronize folder info from server to pull unread and new messages */
+                GError *refresh_err = NULL;
+                camel_folder_refresh_info_sync (folder, cancellable, &refresh_err);
+                if (refresh_err) {
+                    g_printerr ("[EDS] Folder refresh info warning on '%s': %s\n",
+                                current->full_name ? current->full_name : "",
+                                refresh_err->message);
+                    g_clear_error (&refresh_err);
                 }
 
                 #if EDS_BRIDGE_HAS_DUP_UIDS
@@ -1435,7 +1525,7 @@ is_source_foreign_or_shared (ESource *source)
     }
 
     /* 2. Check accounts.json for is_shared_mailbox */
-    gchar *accounts_path = g_build_filename (g_get_user_data_dir (), "evolution-gtk4", "accounts.json", NULL);
+    gchar *accounts_path = bridge_get_accounts_json_path ();
     if (g_file_test (accounts_path, G_FILE_TEST_EXISTS)) {
         gchar *json = NULL;
         if (g_file_get_contents (accounts_path, &json, NULL, NULL) && json) {
@@ -1645,6 +1735,7 @@ typedef struct {
 
 static void
 ensure_foreign_folders_for_ews_store (CamelStore *store,
+                                      ESourceRegistry *registry,
                                       GCancellable *cancellable)
 {
     if (!store || !CAMEL_IS_STORE (store))
@@ -1694,7 +1785,7 @@ ensure_foreign_folders_for_ews_store (CamelStore *store,
 
     fn_ensure_virtual_folders (store);
 
-    gchar *accounts_path = g_build_filename (g_get_user_data_dir (), "evolution-gtk4", "accounts.json", NULL);
+    gchar *accounts_path = bridge_get_accounts_json_path ();
     if (!g_file_test (accounts_path, G_FILE_TEST_EXISTS)) {
         g_free (accounts_path);
         return;
@@ -1780,6 +1871,55 @@ ensure_foreign_folders_for_ews_store (CamelStore *store,
                     }
                 }
 
+                /* Also resolve the shared calendar folder ID if a foreign calendar source exists */
+                if (registry) {
+                    BridgeEwsFolderId cal_fid;
+                    cal_fid.id = (gchar *) "calendar";
+                    cal_fid.change_key = NULL;
+                    cal_fid.is_distinguished_id = TRUE;
+
+                    void *cal_folder = NULL;
+                    GError *cal_err = NULL;
+                    if (fn_get_folder_info (cnc, G_PRIORITY_DEFAULT, email, &cal_fid, &cal_folder, cancellable, &cal_err) && cal_folder) {
+                        const BridgeEwsFolderId *res_cal_fid = fn_get_id (cal_folder);
+                        if (res_cal_fid && res_cal_fid->id) {
+                            GList *cal_sources = e_source_registry_list_sources (registry, "Calendar");
+                            for (GList *l = cal_sources; l != NULL; l = l->next) {
+                                ESource *cal_source = E_SOURCE (l->data);
+                                if (e_source_has_extension (cal_source, "Exchange Web Services Folder")) {
+                                    ESourceExtension *ews_ext = e_source_get_extension (cal_source, "Exchange Web Services Folder");
+                                    gboolean is_foreign = FALSE;
+                                    gchar *f_mail = NULL;
+                                    gchar *cur_id = NULL;
+                                    g_object_get (ews_ext, "foreign", &is_foreign, "foreign-mail", &f_mail, "id", &cur_id, NULL);
+                                    if (is_foreign && f_mail && g_ascii_strcasecmp (f_mail, email) == 0) {
+                                        if (!cur_id || g_strcmp0 (cur_id, res_cal_fid->id) != 0 || g_ascii_strcasecmp (cur_id, "calendar") == 0) {
+                                            g_object_set (ews_ext,
+                                                          "id", res_cal_fid->id,
+                                                          "change-key", res_cal_fid->change_key ? res_cal_fid->change_key : "",
+                                                          NULL);
+                                            GError *commit_err = NULL;
+                                            if (e_source_registry_commit_source_sync (registry, cal_source, cancellable, &commit_err)) {
+                                                g_printerr ("[EDS] Successfully committed resolved EWS calendar FolderId for %s\n", email);
+                                            } else {
+                                                g_printerr ("[EDS] Failed to commit calendar FolderId for %s: %s\n",
+                                                            email, commit_err ? commit_err->message : "unknown");
+                                                g_clear_error (&commit_err);
+                                            }
+                                        }
+                                    }
+                                    g_free (f_mail);
+                                    g_free (cur_id);
+                                }
+                            }
+                            g_list_free_full (cal_sources, g_object_unref);
+                        }
+                        g_object_unref (cal_folder);
+                    } else {
+                        g_clear_error (&cal_err);
+                    }
+                }
+
                 if (any_added) {
                     fn_ensure_virtual_folders (store);
                     if (fn_summary_save)
@@ -1862,7 +2002,7 @@ load_source (LoadContext *context,
         return FALSE;
     }
 
-    ensure_foreign_folders_for_ews_store (store, cancellable);
+    ensure_foreign_folders_for_ews_store (store, session ? session->registry : NULL, cancellable);
 
     folder_info = camel_store_get_folder_info_sync (
         store, NULL,

@@ -181,6 +181,12 @@ settings persistence.
 - Worker-prepared searchable body text and crypto results must carry the same
   source/folder/message identity used by the visible record; a body replacement
   invalidates derived search text before filters are reevaluated.
+- EWS shared mailboxes operate via delegate folder access under the parent account
+  (`Foreign Folders/Postfach — <email>/...`). Distinguished folder IDs (`calendar`,
+  `inbox`, etc.) must be resolved to real server `FolderId`s (`AAMk...`) via
+  `e_ews_connection_get_folder_info_sync` before querying EWS backends (`SyncFolderItems`).
+  Fast-path Evolution summary cache readers (`folders.db`) map shared mailbox foreign
+  subfolders to the shared profile UID and query both Meridian and Evolution cache paths.
 
 ## Verification
 
