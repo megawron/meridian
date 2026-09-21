@@ -28,7 +28,8 @@ use webkit6::prelude::*;
 
 use crate::services::AppSettings;
 use crate::services::html_sanitizer::{
-    block_remote_images, html_to_plain_text, sanitize_html, sanitized_html_to_plain_text,
+    block_remote_images, html_to_plain_text, is_remote_srcset,
+    sanitize_html_with_options, sanitized_html_to_plain_text,
 };
 use crate::services::inline_content_service::{InlineImage, resolve_cid_images};
 use crate::services::mail_metadata_service::RemoteContentStore;
@@ -65,6 +66,7 @@ mod imp {
         pub(super) message_search: RefCell<Option<ActiveMessageSearch>>,
         pub(super) search_generation: Cell<u64>,
         pub remote_images_allowed_for_current: Cell<bool>,
+        pub remote_images_blocked_for_current: Cell<bool>,
         pub current_message_force_light: Cell<bool>,
         pub source_generation: Cell<u64>,
         pub render_generation: Cell<u64>,
@@ -179,6 +181,7 @@ impl MailViewer {
             .button_label(&crate::i18n::gettext("Load Images"))
             .revealed(false)
             .visible(false)
+            .css_classes(vec!["mail-status-banner"])
             .build();
 
         banner.connect_button_clicked(glib::clone!(
@@ -199,6 +202,7 @@ impl MailViewer {
             .button_label(&crate::i18n::gettext("Restore"))
             .revealed(false)
             .visible(false)
+            .css_classes(vec!["mail-status-banner"])
             .build();
         box_container.append(&trash_banner);
 
@@ -208,6 +212,7 @@ impl MailViewer {
             .button_label(&crate::i18n::gettext("Not Junk"))
             .revealed(false)
             .visible(false)
+            .css_classes(vec!["mail-status-banner"])
             .build();
         box_container.append(&junk_banner);
 
@@ -411,6 +416,88 @@ impl MailViewer {
         );
     }
 
+    /// Reset the viewer to the empty/placeholder state without flashing
+    /// error fallbacks or unformatted plain text.
+    pub fn clear(&self) {
+        self.invalidate_message_search_context();
+        self.imp().remote_images_allowed_for_current.set(false);
+        self.imp().remote_images_blocked_for_current.set(false);
+        self.imp().current_message_force_light.set(false);
+        self.imp().banner.set_revealed(false);
+        self.imp().banner.set_visible(false);
+        self.notify_remote_images_blocked(false);
+        self.imp().current_message_id.take();
+        self.imp().current_html.take();
+        self.imp().current_inline_images.borrow_mut().clear();
+        self.imp().current_base_uri.take();
+        self.imp().current_fallback_text.take();
+        self.imp().last_render_key.take();
+        self.imp().render_cache.take();
+        self.imp().displayed_plaintext.take();
+        self.set_current_sender(None);
+        self.set_trash_banner_visible(false);
+        self.set_junk_banner_visible(false);
+
+        #[cfg(target_os = "linux")]
+        {
+            self.imp().webview_ready.set(false);
+            if let Some(webview) = self.imp().webview.borrow().as_ref() {
+                webview.set_opacity(0.0);
+            }
+            if let Some(stack) = self.imp().renderer_stack.borrow().as_ref() {
+                stack.set_visible_child_name("placeholder");
+            }
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            if let Some(view) = self.imp().fallback_view.borrow().as_ref() {
+                view.buffer().set_text("");
+            }
+        }
+    }
+
+    /// Prepare the viewer for asynchronous message body loading.
+    /// Clears any previous message state and fades out the previous document so
+    /// stale content, preliminary snippets, or empty-state warnings do not flash
+    /// before the actual email body arrives.
+    pub(crate) fn prepare_for_loading(&self, message_id: Option<&str>) {
+        self.invalidate_message_search_context();
+        self.imp().remote_images_allowed_for_current.set(false);
+        self.imp().remote_images_blocked_for_current.set(false);
+        self.imp().current_message_force_light.set(false);
+        self.imp().banner.set_revealed(false);
+        self.imp().banner.set_visible(false);
+        self.notify_remote_images_blocked(false);
+        self.imp()
+            .current_message_id
+            .replace(message_id.map(str::to_string));
+        self.imp().current_html.take();
+        self.imp().current_inline_images.borrow_mut().clear();
+        self.imp().current_base_uri.take();
+        self.imp().current_fallback_text.take();
+        self.imp().last_render_key.take();
+        self.imp().render_cache.take();
+        self.imp().displayed_plaintext.take();
+        self.set_trash_banner_visible(false);
+        self.set_junk_banner_visible(false);
+
+        #[cfg(target_os = "linux")]
+        {
+            self.imp().webview_ready.set(false);
+            if let Some(webview) = self.imp().webview.borrow().as_ref() {
+                webview.set_opacity(0.0);
+            }
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            if let Some(view) = self.imp().fallback_view.borrow().as_ref() {
+                view.buffer().set_text("");
+            }
+        }
+    }
+
     /// Scroll the visible mail viewer viewport up or down by one page.
     /// Returns true if scrolling occurred, or false if already at the boundary.
     pub fn scroll_page(&self, down: bool) -> bool {
@@ -462,7 +549,10 @@ impl MailViewer {
         };
         if message_changed {
             self.imp().remote_images_allowed_for_current.set(false);
+            self.imp().remote_images_blocked_for_current.set(false);
             self.imp().current_message_force_light.set(false);
+            self.imp().banner.set_revealed(false);
+            self.imp().banner.set_visible(false);
             self.notify_remote_images_blocked(false);
         }
         if source_changed {
@@ -703,7 +793,9 @@ impl MailViewer {
             document.clone(),
         ));
         let remote_blocked = render_plan.has_remote_images && !key.remote_images_allowed;
-        self.imp().banner.set_revealed(false);
+        self.imp().remote_images_blocked_for_current.set(remote_blocked);
+        self.imp().banner.set_visible(remote_blocked);
+        self.imp().banner.set_revealed(remote_blocked);
         self.notify_remote_images_blocked(remote_blocked);
         self.set_fallback_text(&render_plan.visible_text);
         self.imp()
@@ -747,6 +839,8 @@ impl MailViewer {
             self.imp()
                 .active_webview_uri
                 .replace(Some(content_uri.clone()));
+            self.imp().webview_ready.set(false);
+            webview.set_opacity(0.0);
             webview.load_alternate_html(&document, &content_uri, effective_base_uri);
 
             // Timeout backstop (matching Lookout's HTML_REVEAL_TIMEOUT_MS):
@@ -1026,6 +1120,25 @@ impl MailViewer {
         self.imp().junk_banner.set_revealed(visible);
     }
 
+    pub fn set_remote_images_banner_visible(&self, visible: bool) {
+        self.imp().banner.set_visible(visible);
+        self.imp().banner.set_revealed(visible);
+    }
+
+    pub fn is_remote_images_banner_revealed(&self) -> bool {
+        self.imp().banner.is_revealed()
+    }
+
+    pub fn is_remote_images_blocked(&self) -> bool {
+        self.imp().remote_images_blocked_for_current.get()
+    }
+
+    pub fn has_visible_banner(&self) -> bool {
+        self.imp().banner.is_revealed()
+            || self.imp().trash_banner.is_revealed()
+            || self.imp().junk_banner.is_revealed()
+    }
+
     pub fn connect_trash_restore<F: Fn() + 'static>(&self, callback: F) {
         self.imp().trash_banner.connect_button_clicked(move |_| {
             callback();
@@ -1044,7 +1157,7 @@ impl MailViewer {
             .replace(Some(Box::new(callback)));
     }
 
-    fn notify_remote_images_blocked(&self, blocked: bool) {
+    pub(crate) fn notify_remote_images_blocked(&self, blocked: bool) {
         if let Some(cb) = self.imp().on_remote_images_blocked.borrow().as_ref() {
             cb(blocked);
         }
@@ -1073,7 +1186,9 @@ impl MailViewer {
             }
         }
         self.imp().remote_images_allowed_for_current.set(true);
+        self.imp().remote_images_blocked_for_current.set(false);
         self.imp().banner.set_revealed(false);
+        self.imp().banner.set_visible(false);
         self.notify_remote_images_blocked(false);
         // Re-run the rendering path from the retained original HTML.  A
         // WebKit reload alone cannot restore remote <img> tags that were
@@ -1706,7 +1821,7 @@ impl MailViewer {
     }
 
     #[cfg(target_os = "linux")]
-    fn show_renderer_error(&self) {
+    pub(crate) fn show_renderer_error(&self) {
         self.imp().webview_ready.set(false);
         self.imp().last_render_key.take();
         if let Some(webview) = self.imp().webview.borrow().as_ref() {
@@ -1717,6 +1832,13 @@ impl MailViewer {
         }
         if let Some(stack) = self.imp().renderer_stack.borrow().as_ref() {
             stack.set_visible_child_name("error");
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(crate) fn show_renderer_error(&self) {
+        if let Some(view) = self.imp().fallback_view.borrow().as_ref() {
+            view.buffer().set_text(&crate::i18n::gettext("Failed to load message."));
         }
     }
 }
@@ -2096,14 +2218,15 @@ fn prepare_mail_body(
         };
     }
 
-    let sanitized = sanitize_html(html_content);
-    let blocked = block_remote_images(&sanitized);
-    let has_remote_images = blocked != sanitized
-        || any_image_tag(&sanitized, |tag| {
+    let sanitized_full = sanitize_html_with_options(html_content, true);
+    let blocked = block_remote_images(&sanitize_html_with_options(html_content, false));
+    let has_remote_images = blocked != sanitized_full
+        || any_image_tag(&sanitized_full, |tag| {
             image_attribute_value(tag, "xlink:href").is_some_and(is_remote_uri_reference)
+                || image_attribute_value(tag, "srcset").is_some_and(is_remote_srcset)
         });
     let sanitized = if remote_images_allowed {
-        sanitized
+        sanitized_full
     } else {
         blocked
     };
@@ -2299,7 +2422,7 @@ html, body {
   min-width: 0 !important;
   min-height: 100% !important;
   margin: 0 !important;
-  padding: 12px !important;
+  padding: 0 !important;
   box-sizing: border-box !important;
   overflow-x: auto !important;
   -webkit-text-size-adjust: 100%;
@@ -2491,7 +2614,7 @@ fn compose_sanitized_mail_document(
     let remote_images_css = if remote_images_allowed {
         ""
     } else {
-        " img[src^=\"http://\"], img[src^=\"https://\"], img[src^=\"//\"], img[xlink\\:href^=\"http://\"], img[xlink\\:href^=\"https://\"], img[xlink\\:href^=\"//\"] { display: none !important; }"
+        " img[src^=\"http://\"], img[src^=\"https://\"], img[src^=\"//\"], img[srcset], source[srcset], img[xlink\\:href^=\"http://\"], img[xlink\\:href^=\"https://\"], img[xlink\\:href^=\"//\"] { display: none !important; }"
     };
     let baseline_style_tag = format!("<style>{body_css}</style>");
     let override_style_tag = format!(
@@ -2605,7 +2728,7 @@ fn readable_fallback_text(value: Option<&str>) -> String {
 /// intentionally do not trigger the privacy banner.
 #[cfg(test)]
 fn contains_remote_image_reference(value: &str) -> bool {
-    let sanitized = sanitize_html(value);
+    let sanitized = crate::services::html_sanitizer::sanitize_html(value);
     block_remote_images(&sanitized) != sanitized
         || any_image_tag(&sanitized, |tag| {
             image_attribute_value(tag, "xlink:href").is_some_and(is_remote_uri_reference)
@@ -2818,6 +2941,7 @@ mod tests {
         webview_load_is_current, extract_email_address,
     };
     use crate::services::inline_content_service::InlineImage;
+    use glib::subclass::prelude::ObjectSubclassIsExt;
     use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
 
@@ -2979,6 +3103,23 @@ mod tests {
         assert!(!plan.body.contains("cdn.example"));
         assert!(plan.body.contains("cid:logo@example.org"));
         assert!(plan.body.contains("data:image/png;base64,AAAA"));
+    }
+
+    #[test]
+    fn render_plan_allows_remote_images_when_approved() {
+        let plan = prepare_mail_body(
+            r#"<p>Hallo</p><img src="//cdn.example/remote.png" srcset="//cdn.example/remote-2x.png 2x"><table background="//cdn.example/bg.png"><tr><td style="background-image: url('//cdn.example/table.png')">Text</td></tr></table>"#,
+            Some("Vorschau"),
+            true,
+            true,
+        );
+
+        assert!(!plan.used_fallback);
+        assert!(plan.has_remote_images);
+        assert!(plan.body.contains("https://cdn.example/remote.png"));
+        assert!(plan.body.contains("srcset=\"https://cdn.example/remote-2x.png 2x\""));
+        assert!(plan.body.contains("background=\"https://cdn.example/bg.png\""));
+        assert!(plan.body.contains("background-image: url('https://cdn.example/table.png')"));
     }
 
     #[test]
@@ -3456,6 +3597,66 @@ mod tests {
             !viewer.is_light_mode_override(),
             "Switching message must reset light mode override"
         );
+    }
+
+    #[test]
+    fn test_user_mail_override_css_has_zero_padding() {
+        assert!(
+            super::USER_MAIL_OVERRIDE_CSS.contains("padding: 0 !important;"),
+            "html, body must have 0 padding to match evolution/convey flush preview behavior"
+        );
+        assert!(
+            !super::USER_MAIL_OVERRIDE_CSS.contains("padding: 12px !important;"),
+            "12px body padding must not be present"
+        );
+    }
+
+    #[test]
+    fn test_mail_viewer_clear_resets_state_to_placeholder() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let viewer = super::MailViewer::new();
+
+        viewer.load_html_for_message(Some("msg-1"), "<p>Hello</p>", None);
+        assert_eq!(viewer.imp().current_message_id.borrow().as_deref(), Some("msg-1"));
+
+        viewer.clear();
+        assert_eq!(viewer.imp().current_message_id.borrow().as_deref(), None);
+        assert_eq!(viewer.imp().current_html.borrow().as_deref(), None);
+
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(stack) = viewer.imp().renderer_stack.borrow().as_ref() {
+                assert_eq!(stack.visible_child_name().as_deref(), Some("placeholder"));
+            }
+        }
+    }
+
+    #[test]
+    fn test_mail_viewer_prepare_for_loading_resets_stale_content() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let viewer = super::MailViewer::new();
+
+        viewer.load_html_for_message(Some("msg-1"), "<p>Hello</p>", None);
+        assert_eq!(viewer.imp().current_message_id.borrow().as_deref(), Some("msg-1"));
+
+        viewer.prepare_for_loading(Some("msg-2"));
+        assert_eq!(viewer.imp().current_message_id.borrow().as_deref(), Some("msg-2"));
+        assert_eq!(viewer.imp().current_html.borrow().as_deref(), None);
+
+        #[cfg(target_os = "linux")]
+        {
+            assert!(!viewer.imp().webview_ready.get());
+        }
     }
 }
 

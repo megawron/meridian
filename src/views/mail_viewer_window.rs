@@ -943,15 +943,19 @@ impl MailViewerWindow {
                 })
                 .collect::<Vec<_>>();
             viewer.set_current_sender(Some(&sender));
-            viewer.load_message_content_with_fallback(
-                Some(&message.id()),
-                &message.html_body(),
-                &inline_images,
-                None,
-                Some(&message.preview_snippet()),
-            );
-            viewer.set_trash_banner_visible(message_is_trash(&message));
-            viewer.set_junk_banner_visible(message_is_junk(&message));
+            if !message.is_preview_only() {
+                viewer.load_message_content_with_fallback(
+                    Some(&message.id()),
+                    &message.html_body(),
+                    &inline_images,
+                    None,
+                    None,
+                );
+                viewer.set_trash_banner_visible(message_is_trash(&message));
+                viewer.set_junk_banner_visible(message_is_junk(&message));
+            } else {
+                viewer.prepare_for_loading(Some(&message.id()));
+            }
         }
 
         // Check for Crypto Envelope & Background Load
@@ -965,6 +969,11 @@ impl MailViewerWindow {
 
         while let Some(child) = bar.first_child() {
             bar.remove(&child);
+        }
+
+        if message.is_preview_only() {
+            scroll.set_visible(false);
+            return;
         }
 
         let attachments = message.attachments();
