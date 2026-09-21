@@ -1897,8 +1897,12 @@ fn load_messages_native(
             (Some(s), Some(f))
         }
         (Some(src), None) => {
-            let (s, _) = resolve_shared_mailbox_target(src, "");
-            (Some(s), None)
+            let (s, f) = resolve_shared_mailbox_target(src, "");
+            if !f.is_empty() {
+                (Some(s), Some(f))
+            } else {
+                (Some(s), None)
+            }
         }
         _ => (source_uid.map(str::to_string), folder_name.map(str::to_string)),
     };
@@ -2076,13 +2080,14 @@ fn load_messages_native(
                     loc.folder_name = target_rel;
                 }
                 break;
-            } else if let (Some(orig_src), Some(orig_fld)) = (source_uid, folder_name) {
+            } else if let Some(orig_src) = source_uid {
                 if orig_src == profile.id || orig_src == profile.email {
-                    msg.folder_name = orig_fld.to_string();
-                    msg.folder_id = normalized_camel_folder_id("", orig_fld);
+                    let target_fld = folder_name.unwrap_or("Posteingang");
+                    msg.folder_name = target_fld.to_string();
+                    msg.folder_id = normalized_camel_folder_id("", target_fld);
                     if let Some(ref mut loc) = msg.backend_location {
                         loc.source_uid = orig_src.to_string();
-                        loc.folder_name = orig_fld.to_string();
+                        loc.folder_name = target_fld.to_string();
                     }
                     break;
                 }
