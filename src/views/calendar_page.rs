@@ -6770,6 +6770,9 @@ impl CalendarPage {
         }
 
         self.render_calendar_sidebar();
+        self.refresh_calendar_views();
+        self.refresh_event_list_visibility();
+        self.refresh_task_and_memo_panes();
     }
 
     pub(crate) fn reload_calendar_sources(&self) {
