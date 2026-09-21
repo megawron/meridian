@@ -74,7 +74,7 @@ const ALLOWED_TAGS: &[&str] = &[
 
 const BLOCKED_TAGS: &[&str] = &[
     "applet", "audio", "base", "canvas", "embed", "form", "iframe", "link", "math", "meta",
-    "noembed", "noscript", "object", "portal", "script", "style", "svg", "template", "track",
+    "noembed", "noscript", "object", "portal", "script", "style", "svg", "template", "title", "track",
     "video", "xml",
 ];
 
@@ -95,6 +95,12 @@ const ALLOWED_CSS_AT_RULES: &[&str] = &[
 /// default and the viewer's explicit “Bilder laden” action can enable them.
 /// Dangerous URI schemes are removed regardless of the image policy.
 pub fn sanitize_html(input: &str) -> String {
+    sanitize_html_with_options(input, false)
+}
+
+/// Sanitize untrusted mail HTML with optional allowance of remote resources
+/// (`srcset`, `background`, and CSS `url(...)`).
+pub fn sanitize_html_with_options(input: &str, allow_remote_resources: bool) -> String {
     let mut output = String::with_capacity(input.len());
     let mut cursor = 0;
 
@@ -132,7 +138,7 @@ pub fn sanitize_html(input: &str) -> String {
         if tag_name == "style" {
             if !closing {
                 if let Some((css, after_block)) = find_style_block_end(input, end + 1) {
-                    if let Some(css) = sanitize_stylesheet(css) {
+                    if let Some(css) = sanitize_stylesheet(css, allow_remote_resources) {
                         output.push_str("<style>");
                         output.push_str(&css);
                         output.push_str("</style>");
@@ -168,6 +174,7 @@ pub fn sanitize_html(input: &str) -> String {
                     | "style"
                     | "svg"
                     | "template"
+                    | "title"
                     | "video"
                     | "xml"
             );
@@ -179,7 +186,7 @@ pub fn sanitize_html(input: &str) -> String {
             continue;
         }
 
-        if let Some(safe_tag) = sanitize_tag(raw_tag, closing, &tag_name) {
+        if let Some(safe_tag) = sanitize_tag(raw_tag, closing, &tag_name, allow_remote_resources) {
             output.push_str(&safe_tag);
         }
         cursor = end + 1;
@@ -213,8 +220,10 @@ pub fn block_remote_images(input: &str) -> String {
         };
         let raw_tag = &input[start..=end];
         let is_remote_image = tag_name(raw_tag)
-            .is_some_and(|(closing, tag)| !closing && tag == "img")
-            && image_source(raw_tag).is_some_and(|source| is_remote_image_uri(&source));
+            .is_some_and(|(closing, tag)| !closing && (tag == "img" || tag == "source"))
+            && (image_attribute(raw_tag, "src").is_some_and(|source| is_remote_image_uri(&source))
+                || image_attribute(raw_tag, "srcset").is_some_and(|source| is_remote_srcset(&source))
+                || image_attribute(raw_tag, "xlink:href").is_some_and(|source| is_remote_image_uri(&source)));
         if !is_remote_image {
             output.push_str(raw_tag);
         }
@@ -771,7 +780,12 @@ struct ParsedAttribute {
     value: Option<String>,
 }
 
-fn sanitize_tag(raw_tag: &str, closing: bool, tag_name: &str) -> Option<String> {
+fn sanitize_tag(
+    raw_tag: &str,
+    closing: bool,
+    tag_name: &str,
+    allow_remote_resources: bool,
+) -> Option<String> {
     if !ALLOWED_TAGS.contains(&tag_name) {
         return None;
     }
@@ -786,12 +800,37 @@ fn sanitize_tag(raw_tag: &str, closing: bool, tag_name: &str) -> Option<String> 
         let value = attribute.value;
 
         if attribute_name == "style" {
-            if let Some(value) = value.as_deref().and_then(sanitize_css) {
+            if let Some(value) = value
+                .as_deref()
+                .and_then(|v| sanitize_css(v, allow_remote_resources))
+            {
                 attributes.push(format!(" style=\"{}\"", escape_attribute(&value)));
             }
             continue;
         }
-        if is_blocked_attribute(&attribute_name) {
+        if is_blocked_attribute(&attribute_name, allow_remote_resources) {
+            continue;
+        }
+        if matches!(attribute_name.as_str(), "srcset" | "imagesrcset") {
+            if let Some(value) = value.as_deref() {
+                if let Some(safe_srcset) = sanitize_srcset(value, tag_name) {
+                    attributes.push(format!(
+                        " {attribute_name}=\"{}\"",
+                        escape_attribute(&safe_srcset)
+                    ));
+                }
+            }
+            continue;
+        }
+        if attribute_name == "background" {
+            if let Some(value) = value.as_deref() {
+                if matches!(tag_name, "td" | "th" | "table" | "body")
+                    && is_safe_uri(value, tag_name, &attribute_name)
+                {
+                    let normalized = normalize_protocol_relative_uri(value);
+                    attributes.push(format!(" background=\"{}\"", escape_attribute(&normalized)));
+                }
+            }
             continue;
         }
         if let Some(value) = value.as_deref() {
@@ -803,7 +842,15 @@ fn sanitize_tag(raw_tag: &str, closing: bool, tag_name: &str) -> Option<String> 
                 attributes.push(format!(" rel=\"{}\"", escape_attribute(&safe_rel)));
                 continue;
             }
-            if is_uri_attribute(&attribute_name) && !is_safe_uri(value, tag_name, &attribute_name) {
+            if is_uri_attribute(&attribute_name) {
+                if !is_safe_uri(value, tag_name, &attribute_name) {
+                    continue;
+                }
+                let normalized = normalize_protocol_relative_uri(value);
+                attributes.push(format!(
+                    " {attribute_name}=\"{}\"",
+                    escape_attribute(&normalized)
+                ));
                 continue;
             }
             attributes.push(format!(" {attribute_name}=\"{}\"", escape_attribute(value)));
@@ -926,7 +973,7 @@ fn find_style_block_end(input: &str, start: usize) -> Option<(&str, usize)> {
     None
 }
 
-fn sanitize_css(value: &str) -> Option<String> {
+fn sanitize_css(value: &str, allow_remote_resources: bool) -> Option<String> {
     let trimmed = strip_css_comments(value);
     let trimmed = trimmed.trim();
     if trimmed.is_empty() {
@@ -934,26 +981,26 @@ fn sanitize_css(value: &str) -> Option<String> {
     }
 
     if trimmed.starts_with('@') || has_top_level_css_brace(trimmed) {
-        sanitize_stylesheet(trimmed)
+        sanitize_stylesheet(trimmed, allow_remote_resources)
     } else {
-        sanitize_inline_css(trimmed)
+        sanitize_inline_css(trimmed, allow_remote_resources)
     }
 }
 
-fn sanitize_stylesheet(value: &str) -> Option<String> {
+fn sanitize_stylesheet(value: &str, allow_remote_resources: bool) -> Option<String> {
     let without_comments = strip_css_comments(value);
-    let sanitized = sanitize_css_rules(&without_comments);
+    let sanitized = sanitize_css_rules(&without_comments, allow_remote_resources);
     (!sanitized.trim().is_empty()).then_some(sanitized)
 }
 
-fn sanitize_inline_css(value: &str) -> Option<String> {
+fn sanitize_inline_css(value: &str, allow_remote_resources: bool) -> Option<String> {
     let without_comments = strip_css_comments(value);
-    let declarations = sanitize_css_declarations(&without_comments)?;
+    let declarations = sanitize_css_declarations(&without_comments, allow_remote_resources)?;
     let declarations = declarations.trim().trim_end_matches(';').trim();
     (!declarations.is_empty()).then_some(declarations.to_string())
 }
 
-fn sanitize_css_rules(value: &str) -> String {
+fn sanitize_css_rules(value: &str, allow_remote_resources: bool) -> String {
     let mut output = String::new();
     let mut cursor = 0;
 
@@ -986,7 +1033,7 @@ fn sanitize_css_rules(value: &str) -> String {
                     break;
                 };
                 if let Some(rule) =
-                    sanitize_css_block(prelude, &value[delimiter_position + 1..close])
+                    sanitize_css_block(prelude, &value[delimiter_position + 1..close], allow_remote_resources)
                 {
                     output.push_str(&rule);
                 }
@@ -1000,8 +1047,8 @@ fn sanitize_css_rules(value: &str) -> String {
     output
 }
 
-fn sanitize_css_block(prelude: &str, body: &str) -> Option<String> {
-    if css_contains_blocked_construct(prelude) {
+fn sanitize_css_block(prelude: &str, body: &str, allow_remote_resources: bool) -> Option<String> {
+    if css_contains_blocked_construct(prelude, allow_remote_resources) {
         return None;
     }
 
@@ -1012,9 +1059,9 @@ fn sanitize_css_block(prelude: &str, body: &str) -> Option<String> {
         }
 
         let sanitized_body = if at_rule == "page" {
-            sanitize_css_declarations(body)?
+            sanitize_css_declarations(body, allow_remote_resources)?
         } else {
-            let rules = sanitize_css_rules(body);
+            let rules = sanitize_css_rules(body, allow_remote_resources);
             if rules.trim().is_empty() {
                 return None;
             }
@@ -1027,11 +1074,11 @@ fn sanitize_css_block(prelude: &str, body: &str) -> Option<String> {
         ));
     }
 
-    let declarations = sanitize_css_declarations(body)?;
+    let declarations = sanitize_css_declarations(body, allow_remote_resources)?;
     Some(format!("{} {{ {} }}", prelude.trim(), declarations.trim()))
 }
 
-fn sanitize_css_declarations(value: &str) -> Option<String> {
+fn sanitize_css_declarations(value: &str, allow_remote_resources: bool) -> Option<String> {
     let mut output = String::new();
     let mut start = 0;
 
@@ -1045,13 +1092,18 @@ fn sanitize_css_declarations(value: &str) -> Option<String> {
         let property_value = property_value.trim();
         if !is_safe_css_property(property)
             || property_value.is_empty()
-            || css_contains_blocked_construct(property_value)
+            || css_contains_blocked_construct(property_value, allow_remote_resources)
         {
             continue;
         }
+        let property_value = if allow_remote_resources {
+            normalize_css_urls(property_value)
+        } else {
+            property_value.to_string()
+        };
         output.push_str(property);
         output.push_str(": ");
-        output.push_str(property_value);
+        output.push_str(&property_value);
         output.push_str("; ");
     }
 
@@ -1061,11 +1113,16 @@ fn sanitize_css_declarations(value: &str) -> Option<String> {
         let property_value = property_value.trim();
         if is_safe_css_property(property)
             && !property_value.is_empty()
-            && !css_contains_blocked_construct(property_value)
+            && !css_contains_blocked_construct(property_value, allow_remote_resources)
         {
+            let property_value = if allow_remote_resources {
+                normalize_css_urls(property_value)
+            } else {
+                property_value.to_string()
+            };
             output.push_str(property);
             output.push_str(": ");
-            output.push_str(property_value);
+            output.push_str(&property_value);
             output.push_str("; ");
         }
     }
@@ -1315,9 +1372,9 @@ fn css_at_rule_name(prelude: &str) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-fn css_contains_blocked_construct(value: &str) -> bool {
+fn css_contains_blocked_construct(value: &str, allow_remote_resources: bool) -> bool {
     let normalized = normalize_css_for_policy(value);
-    [
+    let has_blocked_token = [
         "@font-face",
         "@import",
         "@namespace",
@@ -1333,8 +1390,21 @@ fn css_contains_blocked_construct(value: &str) -> bool {
         "progid:",
     ]
     .iter()
-    .any(|token| normalized.contains(token))
-        || [
+    .any(|token| normalized.contains(token));
+    if has_blocked_token {
+        return true;
+    }
+
+    let blocked_functions: &[&str] = if allow_remote_resources {
+        &[
+            "expression",
+            "image-set",
+            "-webkit-image-set",
+            "cross-fade",
+            "paint",
+        ]
+    } else {
+        &[
             "url",
             "expression",
             "image-set",
@@ -1342,8 +1412,160 @@ fn css_contains_blocked_construct(value: &str) -> bool {
             "cross-fade",
             "paint",
         ]
+    };
+
+    if blocked_functions
         .iter()
         .any(|function| css_function_present(&normalized, function))
+    {
+        return true;
+    }
+
+    if allow_remote_resources && css_function_present(&normalized, "url") {
+        if !css_urls_are_safe(value) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn is_safe_css_url(url: &str) -> bool {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let lower = normalize_uri_prefix(trimmed);
+    let percent_decoded = percent_decode_uri_prefix(&lower);
+    if [lower.as_str(), percent_decoded.as_str()]
+        .iter()
+        .any(|uri| {
+            uri.starts_with("javascript:")
+                || uri.starts_with("vbscript:")
+                || uri.starts_with("file:")
+                || uri.starts_with("data:text/html")
+                || uri.starts_with("data:image/svg")
+        })
+    {
+        return false;
+    }
+    if lower.starts_with("data:") {
+        return lower.starts_with("data:image/");
+    }
+    if lower.starts_with("//")
+        || lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("cid:")
+    {
+        return true;
+    }
+    !lower.contains(':')
+}
+
+fn css_urls_are_safe(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let lower = value.to_ascii_lowercase();
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        let Some(rel_pos) = lower[cursor..].find("url(") else {
+            break;
+        };
+        let start = cursor + rel_pos + 4;
+        let mut close_paren = None;
+        let mut inner_cursor = start;
+        let mut quote = None;
+        while inner_cursor < bytes.len() {
+            let b = bytes[inner_cursor];
+            if let Some(q) = quote {
+                if b == b'\\' {
+                    inner_cursor += 2;
+                    continue;
+                }
+                if b == q {
+                    quote = None;
+                }
+            } else if b == b'\'' || b == b'"' {
+                quote = Some(b);
+            } else if b == b')' {
+                close_paren = Some(inner_cursor);
+                break;
+            }
+            inner_cursor += 1;
+        }
+        let Some(end) = close_paren else {
+            return false;
+        };
+        let inner = value[start..end].trim();
+        let unquoted = inner.trim_matches(|c| c == '\'' || c == '"').trim();
+        if !is_safe_css_url(unquoted) {
+            return false;
+        }
+        cursor = end + 1;
+    }
+    true
+}
+
+fn normalize_css_urls(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let lower = value.to_ascii_lowercase();
+    let mut output = String::with_capacity(value.len());
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        let Some(rel_pos) = lower[cursor..].find("url(") else {
+            output.push_str(&value[cursor..]);
+            break;
+        };
+        let start = cursor + rel_pos;
+        output.push_str(&value[cursor..start + 4]);
+        let inner_start = start + 4;
+        let mut close_paren = None;
+        let mut inner_cursor = inner_start;
+        let mut quote = None;
+        while inner_cursor < bytes.len() {
+            let b = bytes[inner_cursor];
+            if let Some(q) = quote {
+                if b == b'\\' {
+                    inner_cursor += 2;
+                    continue;
+                }
+                if b == q {
+                    quote = None;
+                }
+            } else if b == b'\'' || b == b'"' {
+                quote = Some(b);
+            } else if b == b')' {
+                close_paren = Some(inner_cursor);
+                break;
+            }
+            inner_cursor += 1;
+        }
+        if let Some(end) = close_paren {
+            let inner = value[inner_start..end].trim();
+            let (quote_char, raw_url) = if (inner.starts_with('\'')
+                && inner.ends_with('\'')
+                && inner.len() >= 2)
+                || (inner.starts_with('"') && inner.ends_with('"') && inner.len() >= 2)
+            {
+                (Some(&inner[..1]), inner[1..inner.len() - 1].trim())
+            } else {
+                (None, inner)
+            };
+            let normalized_url = normalize_protocol_relative_uri(raw_url);
+            if let Some(q) = quote_char {
+                output.push_str(q);
+                output.push_str(&normalized_url);
+                output.push_str(q);
+            } else {
+                output.push_str(&normalized_url);
+            }
+            output.push(')');
+            cursor = end + 1;
+        } else {
+            output.push_str(&value[start + 4..]);
+            break;
+        }
+    }
+    output
 }
 
 fn css_function_present(value: &str, function: &str) -> bool {
@@ -1466,11 +1688,58 @@ fn strip_css_comments(value: &str) -> String {
 }
 
 fn image_source(raw_tag: &str) -> Option<String> {
+    image_attribute(raw_tag, "src")
+}
+
+pub(crate) fn image_attribute(raw_tag: &str, name: &str) -> Option<String> {
     parse_attributes(raw_tag)?
         .0
         .into_iter()
-        .find(|attribute| attribute.name == "src")
+        .find(|attribute| attribute.name == name)
         .and_then(|attribute| attribute.value)
+}
+
+pub fn is_remote_srcset(value: &str) -> bool {
+    value.split(',').any(|entry| {
+        let entry = entry.trim();
+        let url = entry.split_whitespace().next().unwrap_or(entry);
+        is_remote_image_uri(url)
+    })
+}
+
+pub fn normalize_protocol_relative_uri(uri: &str) -> String {
+    let trimmed = uri.trim();
+    if trimmed.starts_with("//") {
+        format!("https:{trimmed}")
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn sanitize_srcset(value: &str, tag_name: &str) -> Option<String> {
+    if tag_name != "img" && tag_name != "source" {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for candidate in value.split(',') {
+        let trimmed = candidate.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let mut tokens = trimmed.split_whitespace();
+        let Some(url) = tokens.next() else { continue };
+        if !is_safe_uri(url, tag_name, "srcset") {
+            return None;
+        }
+        let normalized_url = normalize_protocol_relative_uri(url);
+        let descriptor = tokens.collect::<Vec<_>>().join(" ");
+        if descriptor.is_empty() {
+            parts.push(normalized_url);
+        } else {
+            parts.push(format!("{normalized_url} {descriptor}"));
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join(", "))
 }
 
 fn is_remote_image_uri(value: &str) -> bool {
@@ -1483,30 +1752,35 @@ fn is_remote_image_uri(value: &str) -> bool {
         })
 }
 
-fn is_blocked_attribute(attribute_name: &str) -> bool {
-    attribute_name.starts_with("on")
-        || matches!(
-            attribute_name,
-            "action"
-                | "archive"
-                | "background"
-                | "classid"
-                | "codebase"
-                | "data"
-                | "dynsrc"
-                | "formaction"
-                | "imagesrcset"
-                | "integrity"
-                | "lowsrc"
-                | "manifest"
-                | "ping"
-                | "poster"
-                | "srcdoc"
-                | "srcset"
-                | "style"
-                | "usemap"
-                | "xml:base"
-        )
+fn is_blocked_attribute(attribute_name: &str, allow_remote_resources: bool) -> bool {
+    if attribute_name.starts_with("on") {
+        return true;
+    }
+    if allow_remote_resources && matches!(attribute_name, "background" | "srcset" | "imagesrcset") {
+        return false;
+    }
+    matches!(
+        attribute_name,
+        "action"
+            | "archive"
+            | "background"
+            | "classid"
+            | "codebase"
+            | "data"
+            | "dynsrc"
+            | "formaction"
+            | "imagesrcset"
+            | "integrity"
+            | "lowsrc"
+            | "manifest"
+            | "ping"
+            | "poster"
+            | "srcdoc"
+            | "srcset"
+            | "style"
+            | "usemap"
+            | "xml:base"
+    )
 }
 
 fn sanitize_link_relations(value: &str) -> String {
@@ -1539,7 +1813,10 @@ fn is_uri_attribute(attribute_name: &str) -> bool {
 fn is_safe_uri(value: &str, tag_name: &str, attribute_name: &str) -> bool {
     let is_allowed_target = match attribute_name {
         "href" => tag_name == "a",
-        "src" | "xlink:href" | "srcset" => tag_name == "img" || tag_name == "source",
+        "src" | "xlink:href" | "srcset" | "imagesrcset" => {
+            tag_name == "img" || tag_name == "source"
+        }
+        "background" => matches!(tag_name, "td" | "th" | "table" | "body"),
         // Forms are blocked as containers, so keeping an action URI would
         // only create an unnecessary future bypass if another form-like tag
         // is ever admitted.
@@ -1579,13 +1856,18 @@ fn is_safe_uri(value: &str, tag_name: &str, attribute_name: &str) -> bool {
     match scheme {
         "http" | "https" => true,
         "mailto" | "tel" => tag_name == "a" && attribute_name == "href",
-        "cid" => tag_name == "img" && matches!(attribute_name, "src" | "xlink:href"),
+        "cid" => {
+            (tag_name == "img" || tag_name == "source")
+                && matches!(attribute_name, "src" | "xlink:href" | "srcset")
+        }
         _ => false,
     }
 }
 
 fn is_allowed_data_image(value: &str, tag_name: &str, attribute_name: &str) -> bool {
-    if tag_name != "img" || !matches!(attribute_name, "src" | "xlink:href") {
+    if !(tag_name == "img" || tag_name == "source")
+        || !matches!(attribute_name, "src" | "xlink:href" | "srcset")
+    {
         return false;
     }
     let Some(image_data) = value.strip_prefix("data:image/") else {
@@ -2011,6 +2293,66 @@ mod tests {
             clean_mail_snippet_from_html(html),
             "Hallo Martin, hier ist die Zusammenfassung unserer Besprechung."
         );
+    }
+
+    #[test]
+    fn test_sanitize_html_with_options_remote_resources() {
+        let html = r#"<img src="//images.example.com/pic.jpg" srcset="//images.example.com/pic-1x.jpg 1x, https://images.example.com/pic-2x.jpg 2x"><table background="//images.example.com/bg.png"><tr><td style="background-image: url('//images.example.com/table-bg.png')">Content</td></tr></table><style>.hero { background: url(//images.example.com/hero.jpg); }</style>"#;
+
+        // When remote resources are disabled:
+        let blocked = sanitize_html_with_options(html, false);
+        assert!(!blocked.contains("srcset="));
+        assert!(!blocked.contains("background="));
+        assert!(!blocked.contains("url("));
+
+        // When remote resources are enabled:
+        let allowed = sanitize_html_with_options(html, true);
+        assert!(allowed.contains("src=\"https://images.example.com/pic.jpg\""));
+        assert!(allowed.contains("srcset=\"https://images.example.com/pic-1x.jpg 1x, https://images.example.com/pic-2x.jpg 2x\""));
+        assert!(allowed.contains("background=\"https://images.example.com/bg.png\""));
+        assert!(allowed.contains("background-image: url('https://images.example.com/table-bg.png')"));
+        assert!(allowed.contains("background: url(https://images.example.com/hero.jpg)"));
+
+        // Dangerous CSS urls are still rejected:
+        let evil = r#"<div style="background: url('javascript:alert(1)')">Evil</div>"#;
+        let evil_sanitized = sanitize_html_with_options(evil, true);
+        assert!(!evil_sanitized.contains("javascript"));
+        assert!(!evil_sanitized.contains("url("));
+    }
+
+    #[test]
+    fn test_block_remote_images_with_srcset_and_sources() {
+        let html = r#"<picture><source srcset="https://cdn.example/pic.webp"><img src="https://cdn.example/pic.jpg" srcset="https://cdn.example/pic.jpg 1x"></picture><img src="data:image/png;base64,AAAA">"#;
+        let sanitized = sanitize_html_with_options(html, true);
+        let blocked = block_remote_images(&sanitized);
+        assert!(!blocked.contains("cdn.example"));
+        assert!(blocked.contains("data:image/png;base64,AAAA"));
+    }
+
+    #[test]
+    fn test_strips_title_tag_and_contents() {
+        let html = r#"<html><head><title>Join us in our next event: GDG Rhein-Main Networking & Drinks September 2026 </title><style>a { color: blue; }</style></head><body><p>Visible content</p></body></html>"#;
+        let sanitized = sanitize_html(html);
+        assert!(!sanitized.contains("<title>"));
+        assert!(!sanitized.contains("</title>"));
+        assert!(!sanitized.contains("Join us in our next event"));
+        assert!(sanitized.contains("Visible content"));
+        assert!(sanitized.contains("<style>"));
+    }
+
+    #[test]
+    fn test_join_us_eml_does_not_leak_title() {
+        let eml_content = include_str!("../../../Join us.eml");
+        let html_start = eml_content.find("<html").expect("HTML start tag");
+        let html_end = eml_content.find("</html>").expect("HTML end tag") + 7;
+        let html = &eml_content[html_start..html_end];
+        let sanitized = sanitize_html(html);
+        assert!(
+            !sanitized.contains("Join us in our next event"),
+            "Sanitized HTML must not contain the <title> text from Join us.eml"
+        );
+        assert!(!sanitized.contains("<title>"));
+        assert!(!sanitized.contains("</title>"));
     }
 }
 
