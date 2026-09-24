@@ -300,6 +300,22 @@ impl EvolutionApplication {
                 "tasks-symbolic.svg",
                 include_str!("../data/icons/hicolor/scalable/actions/tasks-symbolic.svg"),
             ),
+            (
+                "view-cards-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/view-cards-symbolic.svg"),
+            ),
+            (
+                "view-list-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/view-list-symbolic.svg"),
+            ),
+            (
+                "meridian-view-cards-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/meridian-view-cards-symbolic.svg"),
+            ),
+            (
+                "meridian-view-table-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/meridian-view-table-symbolic.svg"),
+            ),
         ];
 
         for (filename, content) in icons {
