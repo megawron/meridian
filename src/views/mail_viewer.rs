@@ -2923,7 +2923,6 @@ html {
   height: auto !important;
   margin: 0 !important;
   padding: 0 !important;
-  background-color: transparent !important;
   box-sizing: border-box !important;
   overflow-x: auto !important;
   -webkit-text-size-adjust: 100%;
@@ -3023,6 +3022,202 @@ a {
 }
 "#;
 
+fn parse_hex_color(token: &str) -> Option<(u8, u8, u8)> {
+    let s = token.strip_prefix('#')?;
+    let hex: String = s.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+    if hex.len() == 3 {
+        let r = u8::from_str_radix(&hex[0..1], 16).ok()? * 17;
+        let g = u8::from_str_radix(&hex[1..2], 16).ok()? * 17;
+        let b = u8::from_str_radix(&hex[2..3], 16).ok()? * 17;
+        Some((r, g, b))
+    } else if hex.len() >= 6 {
+        let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+        Some((r, g, b))
+    } else {
+        None
+    }
+}
+
+fn color_luminance(r: u8, g: u8, b: u8) -> u32 {
+    (299 * r as u32 + 587 * g as u32 + 114 * b as u32) / 1000
+}
+
+fn is_light_color_token(token: &str) -> bool {
+    let t = token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '#');
+    if t.eq_ignore_ascii_case("white")
+        || t.eq_ignore_ascii_case("whitesmoke")
+        || t.eq_ignore_ascii_case("snow")
+        || t.eq_ignore_ascii_case("ghostwhite")
+        || t.eq_ignore_ascii_case("aliceblue")
+        || t.eq_ignore_ascii_case("ivory")
+    {
+        return true;
+    }
+    if let Some((r, g, b)) = parse_hex_color(t) {
+        return color_luminance(r, g, b) > 160;
+    }
+    false
+}
+
+fn is_dark_color_token(token: &str) -> bool {
+    let t = token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '#');
+    if t.eq_ignore_ascii_case("black") {
+        return true;
+    }
+    if let Some((r, g, b)) = parse_hex_color(t) {
+        return color_luminance(r, g, b) < 90;
+    }
+    false
+}
+
+fn has_explicit_light_background(html_lower: &str) -> bool {
+    let mut search_idx = 0;
+    while let Some(pos) = html_lower[search_idx..].find("bgcolor") {
+        let abs_pos = search_idx + pos;
+        let rest = &html_lower[abs_pos + 7..];
+        let rest_trimmed = rest.trim_start_matches(|c: char| c.is_ascii_whitespace() || c == '=');
+        let val = if rest_trimmed.starts_with('"') || rest_trimmed.starts_with('\'') {
+            let quote = rest_trimmed.chars().next().unwrap();
+            rest_trimmed[1..].split(quote).next().unwrap_or("")
+        } else {
+            rest_trimmed.split_whitespace().next().unwrap_or("").split('>').next().unwrap_or("")
+        };
+        if is_light_color_token(val) {
+            return true;
+        }
+        search_idx = abs_pos + 7;
+    }
+
+    let mut search_idx = 0;
+    while let Some(pos) = html_lower[search_idx..].find("background") {
+        let abs_pos = search_idx + pos;
+        let mut rest = &html_lower[abs_pos + 10..];
+        if rest.starts_with("-color") {
+            rest = &rest[6..];
+        }
+        let rest_trimmed = rest.trim_start();
+        if rest_trimmed.starts_with(':') {
+            let val_part = rest_trimmed[1..].trim_start();
+            let end_pos = val_part
+                .find(|c| c == ';' || c == '"' || c == '\'' || c == '}' || c == '>')
+                .unwrap_or(val_part.len());
+            let prop_val = &val_part[..end_pos];
+            for token in prop_val.split_whitespace() {
+                if is_light_color_token(token) {
+                    return true;
+                }
+            }
+        }
+        search_idx = abs_pos + 10;
+    }
+    false
+}
+
+fn dark_media_query_overrides_background(html_lower: &str) -> bool {
+    let Some(mq_pos) = html_lower.find("prefers-color-scheme") else {
+        return false;
+    };
+    let block = match html_lower[mq_pos..].find("</style>") {
+        Some(end) => &html_lower[mq_pos..mq_pos + end],
+        None => {
+            let max_len = 2000.min(html_lower.len() - mq_pos);
+            &html_lower[mq_pos..mq_pos + max_len]
+        }
+    };
+    let mut search_idx = 0;
+    while let Some(pos) = block[search_idx..].find("background") {
+        let abs_pos = search_idx + pos;
+        let mut rest = &block[abs_pos + 10..];
+        if rest.starts_with("-color") {
+            rest = &rest[6..];
+        }
+        let rest_trimmed = rest.trim_start();
+        if rest_trimmed.starts_with(':') {
+            let val_part = rest_trimmed[1..].trim_start();
+            let end_pos = val_part
+                .find(|c| c == ';' || c == '"' || c == '\'' || c == '}' || c == '>')
+                .unwrap_or(val_part.len());
+            let prop_val = &val_part[..end_pos];
+            for token in prop_val.split_whitespace() {
+                if is_dark_color_token(token) {
+                    return true;
+                }
+            }
+        }
+        search_idx = abs_pos + 10;
+    }
+    false
+}
+
+fn declares_dark_support(html_lower: &str) -> bool {
+    if html_lower.contains("prefers-color-scheme") && html_lower.contains("dark") {
+        return true;
+    }
+    for tag in ["color-scheme", "supported-color-schemes"] {
+        let mut search_idx = 0;
+        while let Some(pos) = html_lower[search_idx..].find(tag) {
+            let abs_pos = search_idx + pos;
+            let check_len = 150.min(html_lower.len() - abs_pos);
+            let snippet = &html_lower[abs_pos..abs_pos + check_len];
+            if snippet.contains("dark") {
+                return true;
+            }
+            search_idx = abs_pos + tag.len();
+        }
+    }
+    false
+}
+
+fn has_explicit_dark_background(html_lower: &str) -> bool {
+    for tag in ["<body", "<html"] {
+        if let Some(pos) = html_lower.find(tag) {
+            if let Some(tag_end) = html_lower[pos..].find('>') {
+                let snippet = &html_lower[pos..pos + tag_end];
+                if let Some(bg_pos) = snippet.find("bgcolor") {
+                    let rest = &snippet[bg_pos + 7..];
+                    let rest_trimmed = rest.trim_start_matches(|c: char| c.is_ascii_whitespace() || c == '=');
+                    let val = rest_trimmed.trim_matches(|c: char| c == '"' || c == '\'');
+                    let token = val.split_whitespace().next().unwrap_or("");
+                    if is_dark_color_token(token) {
+                        return true;
+                    }
+                }
+                if let Some(bg_pos) = snippet.find("background") {
+                    let mut rest = &snippet[bg_pos + 10..];
+                    if rest.starts_with("-color") {
+                        rest = &rest[6..];
+                    }
+                    let rest_trimmed = rest.trim_start();
+                    if rest_trimmed.starts_with(':') {
+                        let val_part = rest_trimmed[1..].trim_start();
+                        let end_pos = val_part.find(';').unwrap_or(val_part.len());
+                        for token in val_part[..end_pos].split_whitespace() {
+                            if is_dark_color_token(token) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+pub(crate) fn has_effective_native_dark_mode_from_lower(lower: &str) -> bool {
+    if has_explicit_light_background(lower) {
+        dark_media_query_overrides_background(lower)
+    } else {
+        declares_dark_support(lower) || has_explicit_dark_background(lower)
+    }
+}
+
+pub(crate) fn has_effective_native_dark_mode(sanitized: &str) -> bool {
+    has_effective_native_dark_mode_from_lower(&sanitized.to_ascii_lowercase())
+}
+
 fn compose_sanitized_mail_document(
     sanitized: &str,
     render_html: bool,
@@ -3036,9 +3231,7 @@ fn compose_sanitized_mail_document(
     let mail_font_family = safe_css_font_family(mail_font_family);
     let mail_font_size = safe_mail_font_size(mail_font_size);
     let lower = sanitized.to_ascii_lowercase();
-    let has_native_dark_mode = lower.contains("prefers-color-scheme")
-        || lower.contains("supported-color-schemes")
-        || (lower.contains("color-scheme") && lower.contains("dark"));
+    let has_native_dark_mode = has_effective_native_dark_mode_from_lower(&lower);
 
     let (body_css, dark_inversion_css) = if force_dark_mode {
         if !render_html || has_native_dark_mode {
@@ -3064,8 +3257,10 @@ fn compose_sanitized_mail_document(
                 r#"
   html {
     color-scheme: dark;
-    background-color: transparent !important;
+    background-color: #e1e1e1 !important;
     color: #2e3436;
+    filter: invert(100%) hue-rotate(180deg);
+    -webkit-filter: invert(100%) hue-rotate(180deg);
   }
   body {
     font-family: __FONT_FAMILY__;
@@ -3073,8 +3268,6 @@ fn compose_sanitized_mail_document(
     line-height: 1.6;
     color: inherit;
     background-color: #e1e1e1 !important;
-    filter: invert(100%) hue-rotate(180deg);
-    -webkit-filter: invert(100%) hue-rotate(180deg);
   }
 "#,
                 r#"
@@ -4410,6 +4603,90 @@ mod tests {
                 "brevo.eml document must retain fixed-width container tables for eye icon and logo"
             );
         }
+    }
+
+    #[test]
+    fn test_google_eml_dark_mode_inversion() {
+        let google_path = std::path::Path::new("/tmp/meridian-test/Meridian/google.eml");
+        if let Ok(bytes) = std::fs::read(google_path) {
+            let parsed = crate::services::mail_store_service::parse_rfc822_bytes("test", "inbox", &bytes, false)
+                .expect("google.eml must parse successfully");
+            let plan = super::prepare_mail_body(&parsed.html_body, None, true, true);
+            let colors = test_citation_colors();
+            let doc = super::compose_sanitized_mail_document(
+                &plan.body,
+                true,
+                true,
+                true,
+                "sans-serif",
+                14,
+                false,
+                &colors,
+            );
+            assert!(doc.contains("color-scheme: dark"));
+            assert!(doc.contains("filter: invert(100%) hue-rotate(180deg)"));
+            assert!(doc.contains("background-color: #e1e1e1"));
+            assert!(doc.contains("img, video, canvas, svg, iframe, input[type=\"image\"]"));
+        }
+    }
+
+    #[test]
+    fn test_eml_files_dark_mode_smart_inversion() {
+        for eml_filename in &["1.eml", "2.eml", "3.eml"] {
+            let eml_path = std::path::Path::new("/tmp/meridian-test/Meridian").join(eml_filename);
+            if let Ok(bytes) = std::fs::read(&eml_path) {
+                let parsed = crate::services::mail_store_service::parse_rfc822_bytes("test", "inbox", &bytes, false)
+                    .unwrap_or_else(|| panic!("{} must parse successfully", eml_filename));
+                let plan = super::prepare_mail_body(&parsed.html_body, None, true, true);
+                let colors = test_citation_colors();
+                let doc = super::compose_sanitized_mail_document(
+                    &plan.body,
+                    true,
+                    true,
+                    true,
+                    "sans-serif",
+                    14,
+                    false,
+                    &colors,
+                );
+                assert!(
+                    doc.contains("filter: invert(100%) hue-rotate(180deg)"),
+                    "{} must have smart inversion applied in dark mode",
+                    eml_filename
+                );
+                assert!(
+                    doc.contains("background-color: #e1e1e1"),
+                    "{} must have #e1e1e1 background-color in dark mode inversion",
+                    eml_filename
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_has_effective_native_dark_mode_classification() {
+        // Standard light html: not natively dark
+        assert!(!super::has_effective_native_dark_mode("<p>Hallo Light</p>"));
+
+        // Synthetic native dark with prefers-color-scheme and no explicit light background
+        assert!(super::has_effective_native_dark_mode(
+            "<style>@media (prefers-color-scheme: dark) { body { color: white; } }</style><p>Dark</p>"
+        ));
+
+        // Boilerplate with light background: not natively dark
+        assert!(!super::has_effective_native_dark_mode(
+            "<style>@media (prefers-color-scheme: dark) { a.link { color: blue; } }</style><body style=\"background: #fefefe\"><p>Text</p></body>"
+        ));
+
+        // Inherently dark email
+        assert!(super::has_effective_native_dark_mode(
+            "<body style=\"background-color: #121212; color: #fff;\"><p>Dark</p></body>"
+        ));
+
+        // Real dark override in media query
+        assert!(super::has_effective_native_dark_mode(
+            "<style>@media (prefers-color-scheme: dark) { body { background-color: #1a1a1a !important; } }</style><body style=\"background: #ffffff;\"><p>Dark</p></body>"
+        ));
     }
 }
 
