@@ -1612,6 +1612,7 @@ pub(crate) struct PreparedMailTableRow {
     pub is_forwarded: bool,
     pub has_attachments: bool,
     pub sender: String,
+    pub sender_email: String,
     pub recipient: String,
     pub subject: String,
     pub snippet: String,
@@ -1644,6 +1645,7 @@ impl Default for PreparedMailTableRow {
             is_forwarded: false,
             has_attachments: false,
             sender: String::new(),
+            sender_email: String::new(),
             recipient: String::new(),
             subject: String::new(),
             snippet: String::new(),
@@ -2218,6 +2220,7 @@ pub(crate) fn prepare_mail_table_layout(
             is_forwarded: msg.is_forwarded(),
             has_attachments: msg.attachment_count() > 0,
             sender: msg.sender_name(),
+            sender_email: msg.sender_email(),
             recipient: msg.recipient_to(),
             subject,
             snippet,
@@ -2587,6 +2590,71 @@ pub(crate) fn extract_initials(name: &str) -> String {
     }
 }
 
+pub(crate) fn draw_cairo_avatar_circle(
+    cr: &gtk::cairo::Context,
+    cx: f64,
+    cy: f64,
+    r: f64,
+    surface: Option<&gtk::cairo::ImageSurface>,
+    name: &str,
+    font_size: f64,
+    is_dark: bool,
+) {
+    if let Some(surf) = surface {
+        let d = r * 2.0;
+        let sw = surf.width() as f64;
+        let sh = surf.height() as f64;
+        if sw > 0.0 && sh > 0.0 {
+            let scale = (d / sw).max(d / sh);
+            let draw_w = sw * scale;
+            let draw_h = sh * scale;
+            let offset_x = cx - draw_w / 2.0;
+            let offset_y = cy - draw_h / 2.0;
+
+            let _ = cr.save();
+            cr.arc(cx, cy, r, 0.0, std::f64::consts::TAU);
+            cr.clip();
+
+            cr.translate(offset_x, offset_y);
+            cr.scale(scale, scale);
+            let _ = cr.set_source_surface(surf, 0.0, 0.0);
+            cr.source().set_filter(gtk::cairo::Filter::Bilinear);
+            let _ = cr.paint();
+            let _ = cr.restore();
+
+            // Circular hairline border around avatar image for clean contrast
+            if is_dark {
+                cr.set_source_rgba(1.0, 1.0, 1.0, 0.15);
+            } else {
+                cr.set_source_rgba(0.0, 0.0, 0.0, 0.10);
+            }
+            cr.set_line_width(1.0);
+            cr.arc(cx, cy, r - 0.5, 0.0, std::f64::consts::TAU);
+            let _ = cr.stroke();
+            return;
+        }
+    }
+
+    let (av_r, av_g, av_b) = avatar_color_for_name(name);
+    cr.set_source_rgb(av_r, av_g, av_b);
+    cr.arc(cx, cy, r, 0.0, std::f64::consts::TAU);
+    let _ = cr.fill();
+
+    let initials = extract_initials(name);
+    cr.set_source_rgb(1.0, 1.0, 1.0);
+    cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+    cr.set_font_size(font_size);
+    if let Ok(te) = cr.text_extents(&initials) {
+        cr.move_to(
+            cx - te.width() / 2.0 - te.x_bearing(),
+            cy - te.height() / 2.0 - te.y_bearing(),
+        );
+    } else {
+        cr.move_to(cx - 5.0, cy + 4.0);
+    }
+    let _ = cr.show_text(&initials);
+}
+
 pub(crate) fn format_mail_table_subject_markup(
     raw_subject: &str,
     raw_snippet: &str,
@@ -2651,6 +2719,7 @@ pub(crate) fn draw_mail_table_canvas(
     is_row_selected: &dyn Fn(usize) -> bool,
     is_dark: bool,
     scroll_y: f64,
+    get_avatar: &dyn Fn(&str, &str) -> Option<gtk::cairo::ImageSurface>,
 ) {
     let row_h = layout.row_height;
     let start_row = (scroll_y / row_h).floor().max(0.0) as usize;
@@ -2755,46 +2824,23 @@ pub(crate) fn draw_mail_table_canvas(
                 draw_cairo_flag(cr, 12.0, y + h / 2.0);
             }
 
-            // 2. Circular Avatar with initials OR checkmark when selected
+            // 2. Circular Avatar with initials OR contact photo OR checkmark when selected
             let avatar_cx = 38.0;
             let avatar_cy = y + h / 2.0;
             let avatar_r = 18.0;
 
             if layout.show_avatar {
-                if is_row_selected {
-                    // Convey-style selection indicator: vibrant blue circle with white checkmark
-                    cr.set_source_rgb(accent_rgb.0, accent_rgb.1, accent_rgb.2);
-                    cr.arc(avatar_cx, avatar_cy, avatar_r, 0.0, std::f64::consts::TAU);
-                    let _ = cr.fill();
-
-                    cr.set_source_rgb(1.0, 1.0, 1.0);
-                    cr.set_line_width(2.2);
-                    cr.set_line_cap(gtk::cairo::LineCap::Round);
-                    cr.set_line_join(gtk::cairo::LineJoin::Round);
-                    cr.move_to(avatar_cx - 5.5, avatar_cy);
-                    cr.line_to(avatar_cx - 1.5, avatar_cy + 4.0);
-                    cr.line_to(avatar_cx + 5.5, avatar_cy - 4.5);
-                    let _ = cr.stroke();
-                } else {
-                    let (av_r, av_g, av_b) = avatar_color_for_name(&row.sender);
-                    cr.set_source_rgb(av_r, av_g, av_b);
-                    cr.arc(avatar_cx, avatar_cy, avatar_r, 0.0, std::f64::consts::TAU);
-                    let _ = cr.fill();
-
-                    let initials = extract_initials(&row.sender);
-                    cr.set_source_rgb(1.0, 1.0, 1.0);
-                    cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
-                    cr.set_font_size(12.0);
-                    if let Ok(te) = cr.text_extents(&initials) {
-                        cr.move_to(
-                            avatar_cx - te.width() / 2.0 - te.x_bearing(),
-                            avatar_cy - te.height() / 2.0 - te.y_bearing(),
-                        );
-                    } else {
-                        cr.move_to(avatar_cx - 5.0, avatar_cy + 4.0);
-                    }
-                    let _ = cr.show_text(&initials);
-                }
+                let surf_opt = get_avatar(&row.sender_email, &row.sender);
+                draw_cairo_avatar_circle(
+                    cr,
+                    avatar_cx,
+                    avatar_cy,
+                    avatar_r,
+                    surf_opt.as_ref(),
+                    &row.sender,
+                    12.0,
+                    is_dark,
+                );
 
                 // Reply badge overlay
                 if row.is_replied {
@@ -2982,21 +3028,17 @@ pub(crate) fn draw_mail_table_canvas(
             let av_r = (h / 2.0 - 5.0).clamp(7.0, 11.0);
             let av_cx = sender_x + av_r + 4.0;
             let av_cy = y + h / 2.0;
-            let (cr_r, cr_g, cr_b) = avatar_color_for_name(&row.sender);
-            cr.set_source_rgb(cr_r, cr_g, cr_b);
-            cr.arc(av_cx, av_cy, av_r, 0.0, std::f64::consts::TAU);
-            let _ = cr.fill();
-            let initials = extract_initials(&row.sender);
-            cr.set_source_rgb(1.0, 1.0, 1.0);
-            cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
-            cr.set_font_size((av_r * 1.05).max(7.0));
-            if let Ok(te) = cr.text_extents(&initials) {
-                cr.move_to(
-                    av_cx - te.width() / 2.0 - te.x_bearing(),
-                    av_cy - te.height() / 2.0 - te.y_bearing(),
-                );
-                let _ = cr.show_text(&initials);
-            }
+            let surf_opt = get_avatar(&row.sender_email, &row.sender);
+            draw_cairo_avatar_circle(
+                cr,
+                av_cx,
+                av_cy,
+                av_r,
+                surf_opt.as_ref(),
+                &row.sender,
+                (av_r * 1.05).max(7.0),
+                is_dark,
+            );
             if let Some((ar, ag, ab)) = row.account_color {
                 let pip_cx = av_cx + av_r * 0.7;
                 let pip_cy = av_cy + av_r * 0.7;
@@ -5631,6 +5673,7 @@ mod imp {
         pub modern_star_button: RefCell<Option<gtk::Button>>,
         pub modern_actions_group: RefCell<Option<gtk::Box>>,
         pub sender_avatar_cache: RefCell<HashMap<String, Option<gtk::gdk::Texture>>>,
+        pub sender_surface_cache: RefCell<HashMap<String, Option<gtk::cairo::ImageSurface>>>,
         pub mail_subject_label: RefCell<Option<gtk::Label>>,
         pub is_compact_header: Cell<bool>,
         pub mail_subject_revealer: RefCell<Option<gtk::Revealer>>,
@@ -6727,9 +6770,73 @@ impl MailPage {
             replace_normal_header_rows(&grid, &filtered_fields);
         }
     }
+    fn generate_initials_texture(name: &str, size: i32) -> gtk::gdk::Texture {
+        let mut surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, size, size).unwrap();
+        {
+            let cr = gtk::cairo::Context::new(&surface).unwrap();
+
+            let avatar_r = size as f64 / 2.0;
+            let avatar_cx = avatar_r;
+            let avatar_cy = avatar_r;
+
+            let (av_r, av_g, av_b) = avatar_color_for_name(name);
+            cr.set_source_rgb(av_r, av_g, av_b);
+            cr.arc(avatar_cx, avatar_cy, avatar_r, 0.0, std::f64::consts::TAU);
+            let _ = cr.fill();
+
+            let initials = extract_initials(name);
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+            
+            let font_size = if size <= 28 { 10.0 } else { 12.0 };
+            cr.set_font_size(font_size);
+            
+            if let Ok(te) = cr.text_extents(&initials) {
+                cr.move_to(
+                    avatar_cx - te.width() / 2.0 - te.x_bearing(),
+                    avatar_cy - te.height() / 2.0 - te.y_bearing(),
+                );
+            } else {
+                cr.move_to(avatar_cx - 5.0, avatar_cy + 4.0);
+            }
+            let _ = cr.show_text(&initials);
+        }
+        
+        // Convert ImageSurface to MemoryTexture
+        let bytes = surface.data().expect("Failed to borrow surface data");
+        let memory_texture = gtk::gdk::MemoryTexture::new(
+            size,
+            size,
+            gtk::gdk::MemoryFormat::B8g8r8a8,
+            &glib::Bytes::from_owned(bytes.to_vec()),
+            size as usize * 4,
+        );
+        memory_texture.upcast()
+    }
+
+    fn texture_to_cairo_surface(texture: &gtk::gdk::Texture) -> Option<gtk::cairo::ImageSurface> {
+        let mut downloader = gtk::gdk::TextureDownloader::new(texture);
+        downloader.set_format(gtk::gdk::MemoryFormat::B8g8r8a8Premultiplied);
+        let (bytes, stride) = downloader.download_bytes();
+        gtk::cairo::ImageSurface::create_for_data(
+            bytes.to_vec(),
+            gtk::cairo::Format::ARgb32,
+            texture.width(),
+            texture.height(),
+            stride as i32,
+        ).ok()
+    }
 
     fn find_contact_photo_for_email(&self, email: &str) -> Option<gtk::gdk::Texture> {
-        let clean = email.trim().to_ascii_lowercase();
+        self.find_contact_photo_for_sender(email, "")
+    }
+
+    fn find_contact_photo_for_sender(&self, email: &str, sender_name: &str) -> Option<gtk::gdk::Texture> {
+        let clean = if !email.trim().is_empty() {
+            crate::services::avatar_cache_service::AvatarCacheService::extract_email(email)
+        } else {
+            crate::services::avatar_cache_service::AvatarCacheService::extract_email(sender_name)
+        };
         if clean.is_empty() {
             return None;
         }
@@ -6756,12 +6863,27 @@ impl MailPage {
             if let Ok(bytes) = rx.recv().await {
                 if let Some(page) = page_weak.upgrade() {
                     if let Ok(texture) = gtk::gdk::Texture::from_bytes(&bytes) {
+                        let surface = Self::texture_to_cairo_surface(&texture);
+                        page.imp()
+                            .sender_surface_cache
+                            .borrow_mut()
+                            .insert(clean_for_callback.clone(), surface);
                         page.imp()
                             .sender_avatar_cache
                             .borrow_mut()
-                            .insert(clean_for_callback, Some(texture.clone()));
-                        if let Some(avatar) = page.imp().modern_sender_avatar.borrow().as_ref() {
-                            avatar.set_custom_image(Some(&texture));
+                            .insert(clean_for_callback.clone(), Some(texture.clone()));
+                        
+                        // ONLY update the UI if this avatar belongs to the currently displayed message!
+                        let mut current_email = String::new();
+                        if let Some(lbl) = page.imp().modern_sender_address.borrow().as_ref() {
+                            current_email = lbl.text().to_string();
+                        }
+                        let current_clean = crate::services::avatar_cache_service::AvatarCacheService::extract_email(&current_email).to_ascii_lowercase();
+                        
+                        if current_clean == clean_for_callback {
+                            if let Some(avatar) = page.imp().modern_sender_avatar.borrow().as_ref() {
+                                avatar.set_custom_image(Some(&texture));
+                            }
                         }
                         if let Some(canvas) = page.imp().mail_table_canvas.borrow().as_ref() {
                             canvas.queue_draw();
@@ -6771,8 +6893,9 @@ impl MailPage {
             }
         });
 
-        let bytes_opt = AvatarCacheService::global().request_avatar(
+        let bytes_opt = AvatarCacheService::global().request_avatar_for_sender(
             &clean,
+            sender_name,
             allow_remote,
             Some(tx),
         );
@@ -6780,6 +6903,11 @@ impl MailPage {
         let mut found_texture = None;
         if let Some(bytes) = bytes_opt {
             if let Ok(texture) = gtk::gdk::Texture::from_bytes(&bytes) {
+                let surface = Self::texture_to_cairo_surface(&texture);
+                self.imp()
+                    .sender_surface_cache
+                    .borrow_mut()
+                    .insert(clean.clone(), surface);
                 found_texture = Some(texture);
             }
         }
@@ -6787,8 +6915,30 @@ impl MailPage {
         self.imp()
             .sender_avatar_cache
             .borrow_mut()
-            .insert(clean, found_texture.clone());
+            .insert(clean.clone(), found_texture.clone());
+        if found_texture.is_none() {
+            self.imp()
+                .sender_surface_cache
+                .borrow_mut()
+                .insert(clean, None);
+        }
         found_texture
+    }
+
+    pub(crate) fn find_contact_surface_for_sender(&self, email: &str, sender_name: &str) -> Option<gtk::cairo::ImageSurface> {
+        let clean = if !email.trim().is_empty() {
+            crate::services::avatar_cache_service::AvatarCacheService::extract_email(email)
+        } else {
+            crate::services::avatar_cache_service::AvatarCacheService::extract_email(sender_name)
+        };
+        if clean.is_empty() {
+            return None;
+        }
+        if let Some(cached) = self.imp().sender_surface_cache.borrow().get(&clean) {
+            return cached.clone();
+        }
+        self.find_contact_photo_for_sender(email, sender_name);
+        self.imp().sender_surface_cache.borrow().get(&clean).and_then(|opt| opt.clone())
     }
 
     pub(crate) fn set_header_compact(&self, compact: bool) {
@@ -6888,9 +7038,15 @@ impl MailPage {
 
         // 1. Avatar (real contact photo if available, fallback to initials)
         if let Some(avatar) = imp.modern_sender_avatar.borrow().as_ref() {
-            avatar.set_text(Some(if !sender_name.is_empty() { &sender_name } else { &sender_email }));
+            let display_text = if !sender_name.is_empty() { &sender_name } else { &sender_email };
+            avatar.set_text(Some(display_text));
             let photo_opt = self.find_contact_photo_for_email(&sender_email);
-            avatar.set_custom_image(photo_opt.as_ref());
+            if photo_opt.is_some() {
+                avatar.set_custom_image(photo_opt.as_ref());
+            } else {
+                let initials_tex = Self::generate_initials_texture(display_text, 38);
+                avatar.set_custom_image(Some(&initials_tex));
+            }
         }
 
         // 2. Sender Name & Address
@@ -7204,7 +7360,9 @@ impl MailPage {
                         page.imp().mail_table_layout.replace(None);
                         page.refresh_mail_column_header();
                         page.update_mail_table_canvas_layout();
-                        page.refresh_mail();
+                        if let Some(canvas) = page.imp().mail_table_canvas.borrow().as_ref() {
+                            canvas.queue_draw();
+                        }
                     }
                 });
             }
@@ -16772,12 +16930,6 @@ impl MailPage {
         self.refresh_mail_column_header();
         self.sync_mail_layout_visibility();
         self.imp().mail_table_layout.replace(None);
-        let list_view = self.imp().mail_list_view.borrow().as_ref().cloned();
-        let factory = self.imp().mail_list_factory.borrow().as_ref().cloned();
-        if let (Some(list_view), Some(factory)) = (list_view, factory) {
-            list_view.set_factory(None::<&gtk::ListItemFactory>);
-            list_view.set_factory(Some(&factory));
-        }
         if let Some(canvas) = self.imp().mail_table_canvas.borrow().as_ref() {
             canvas.queue_draw();
         }
@@ -17767,6 +17919,7 @@ impl MailPage {
                 is_forwarded: msg.is_forwarded(),
                 has_attachments: msg.attachment_count() > 0,
                 sender: msg.sender_name(),
+                sender_email: msg.sender_email(),
                 recipient: msg.recipient_to(),
                 subject,
                 snippet,
@@ -20078,7 +20231,18 @@ impl MailPage {
                     mail_list_profile_allows_column(&profile, wide_messages, "avatar")
                         && show_avatar,
                 );
-                avatar.set_text(Some(&msg.sender_name()));
+                let display_text = msg.sender_name();
+                avatar.set_text(Some(&display_text));
+                
+                if let Some(page) = page_for_bind.upgrade() {
+                    let photo_opt = page.find_contact_photo_for_email(&msg.sender_email());
+                    if photo_opt.is_some() {
+                        avatar.set_custom_image(photo_opt.as_ref());
+                    } else {
+                        let initials_tex = MailPage::generate_initials_texture(&display_text, 24);
+                        avatar.set_custom_image(Some(&initials_tex));
+                    }
+                }
             }
 
             let sender_col_width = page_for_bind
@@ -20815,686 +20979,213 @@ impl MailPage {
 
         let columns_popover_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(6)
+            .spacing(12)
             .margin_start(12)
             .margin_end(12)
-            .margin_top(10)
-            .margin_bottom(10)
-            .width_request(280)
-            .css_classes(vec!["mail-columns-popover", "view-options-popover"])
+            .margin_top(12)
+            .margin_bottom(12)
             .build();
-
-        // 1. Preview Pane / Layout
-        columns_popover_box.append(
-            &gtk::Label::builder()
-                .label(&gettext("Preview Pane"))
+            
+        let settings = AppSettings::try_new();
+        if let Some(ref settings) = settings {
+            // --- Section 1: Layout ---
+            let sec1_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(6)
+                .build();
+                
+            sec1_box.append(&gtk::Label::builder()
+                .label(&gettext("Ansicht"))
                 .halign(gtk::Align::Start)
-                .css_classes(vec!["heading", "view-options-heading"])
-                .build(),
-        );
-        let preview_layout_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(0)
-            .homogeneous(true)
-            .css_classes(vec!["linked"])
-            .build();
-        let horizontal_layout_button = gtk::ToggleButton::builder()
-            .label(&gettext("Bottom"))
-            .tooltip_text(&gettext("Classic view: preview below message list"))
-            .build();
-        let vertical_layout_button = gtk::ToggleButton::builder()
-            .label(&gettext("Right"))
-            .tooltip_text(&gettext("Modern view: preview to the right of message list"))
-            .build();
-        vertical_layout_button.set_group(Some(&horizontal_layout_button));
-        preview_layout_box.append(&horizontal_layout_button);
-        preview_layout_box.append(&vertical_layout_button);
-        columns_popover_box.append(&preview_layout_box);
-
-        columns_popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
-        // 2. Layout Profile
-        columns_popover_box.append(
-            &gtk::Label::builder()
-                .label(&gettext("Layout Profile"))
-                .halign(gtk::Align::Start)
-                .css_classes(vec!["heading", "view-options-heading"])
-                .build(),
-        );
-        let profile_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(0)
-            .homogeneous(true)
-            .css_classes(vec!["linked"])
-            .build();
-        let messages_profile_button = gtk::ToggleButton::builder()
-            .label(&gettext("Standard"))
-            .tooltip_text(&gettext("Compact, multi-line email list"))
-            .build();
-        let wide_profile_button = gtk::ToggleButton::builder()
-            .label(&gettext("Wide"))
-            .tooltip_text(&gettext("Tabular list with columns"))
-            .build();
-        let cards_profile_button = gtk::ToggleButton::builder()
-            .label(&gettext("Cards"))
-            .tooltip_text(&gettext("Spacious card view (Gmail / Outlook style)"))
-            .build();
-        wide_profile_button.set_group(Some(&messages_profile_button));
-        cards_profile_button.set_group(Some(&messages_profile_button));
-        profile_box.append(&messages_profile_button);
-        profile_box.append(&wide_profile_button);
-        profile_box.append(&cards_profile_button);
-        columns_popover_box.append(&profile_box);
-
-        columns_popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
-        // 3. Kopfzeilen-Stil
-        columns_popover_box.append(
-            &gtk::Label::builder()
-                .label(&gettext("Header Style"))
-                .halign(gtk::Align::Start)
-                .css_classes(vec!["heading", "view-options-heading"])
-                .build(),
-        );
-        let header_style_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(0)
-            .homogeneous(true)
-            .css_classes(vec!["linked"])
-            .build();
-        let modern_header_button = gtk::ToggleButton::builder()
-            .label(&gettext("Modern"))
-            .tooltip_text(&gettext("Webmail style with avatar, prominent sender, and collapsible details"))
-            .build();
-        let classic_header_button = gtk::ToggleButton::builder()
-            .label(&gettext("Classic"))
-            .tooltip_text(&gettext("Traditional tabular headers (GNOME Evolution)"))
-            .build();
-        classic_header_button.set_group(Some(&modern_header_button));
-        header_style_box.append(&modern_header_button);
-        header_style_box.append(&classic_header_button);
-        columns_popover_box.append(&header_style_box);
-
-        columns_popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
-        // 4. Grouping & Display
-        columns_popover_box.append(
-            &gtk::Label::builder()
-                .label(&gettext("Grouping & Display"))
-                .halign(gtk::Align::Start)
-                .css_classes(vec!["heading", "view-options-heading"])
-                .build(),
-        );
-
-        let column_settings: [(&'static str, String); 12] = [
-            ("mail-show-status", gettext("Status")),
-            ("mail-show-attachment", gettext("Attachments")),
-            ("mail-show-flagged", gettext("Flag")),
-            ("mail-show-avatar", gettext("Avatars")),
-            ("mail-show-sender", gettext("Sender")),
-            ("mail-show-recipient", gettext("Recipient")),
-            ("mail-show-date", gettext("Date")),
-            ("mail-show-preview-text", gettext("Preview text")),
-            ("mail-show-labels", gettext("Labels")),
-            ("mail-show-size", gettext("Size")),
-            ("mail-show-follow-up-due", gettext("Due by")),
-            ("mail-show-location", gettext("Location")),
-        ];
-
-        if let Some(settings) = AppSettings::try_new() {
-            // Preview layout initial state and signal
-            match settings.mail_layout().as_str() {
-                "horizontal" | "classic" => horizontal_layout_button.set_active(true),
-                _ => vertical_layout_button.set_active(true),
-            }
-            let page_weak_for_horizontal = self.downgrade();
-            let settings_for_horizontal = settings.clone();
-            horizontal_layout_button.connect_toggled(move |button| {
-                if button.is_active() {
-                    settings_for_horizontal.set_mail_layout("horizontal");
-                    if let Some(page) = page_weak_for_horizontal.upgrade() {
-                        page.apply_mail_layout(MailLayout::Horizontal);
-                    }
-                }
-            });
-            let page_weak_for_vertical = self.downgrade();
-            let settings_for_vertical = settings.clone();
-            vertical_layout_button.connect_toggled(move |button| {
-                if button.is_active() {
-                    settings_for_vertical.set_mail_layout("vertical");
-                    if let Some(page) = page_weak_for_vertical.upgrade() {
-                        page.apply_mail_layout(MailLayout::Vertical);
-                    }
-                }
-            });
-            let horizontal_layout_weak = horizontal_layout_button.downgrade();
-            let vertical_layout_weak = vertical_layout_button.downgrade();
-            settings.connect_changed(Some("mail-layout"), move |settings, _| {
-                let Some(horiz_btn) = horizontal_layout_weak.upgrade() else {
-                    return;
-                };
-                let Some(vert_btn) = vertical_layout_weak.upgrade() else {
-                    return;
-                };
-                let layout_str = settings.string("mail-layout");
-                let is_horizontal = layout_str.as_str() == "horizontal" || layout_str.as_str() == "classic";
-                if is_horizontal {
-                    if !horiz_btn.is_active() {
-                        horiz_btn.set_active(true);
-                    }
-                } else if !vert_btn.is_active() {
-                    vert_btn.set_active(true);
-                }
-            });
-
-            // View profile initial state and signal
+                .css_classes(vec!["dim-label", "caption"])
+                .build()
+            );
+            
+            let layout_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(0)
+                .homogeneous(true)
+                .css_classes(vec!["linked"])
+                .build();
+            
+            let btn_list = gtk::ToggleButton::builder().build();
+            let content_list = adw::ButtonContent::builder()
+                .icon_name("meridian-view-table-symbolic")
+                .label(&gettext("Tabelle"))
+                .build();
+            btn_list.set_child(Some(&content_list));
+            
+            let btn_cards = gtk::ToggleButton::builder().build();
+            let content_cards = adw::ButtonContent::builder()
+                .icon_name("meridian-view-cards-symbolic")
+                .label(&gettext("Liste"))
+                .build();
+            btn_cards.set_child(Some(&content_cards));
+            btn_cards.set_group(Some(&btn_list));
+            
+            layout_box.append(&btn_list);
+            layout_box.append(&btn_cards);
+            sec1_box.append(&layout_box);
+            columns_popover_box.append(&sec1_box);
+            
             match settings.mail_list_view_profile().as_str() {
-                "wide" => wide_profile_button.set_active(true),
-                "cards" => cards_profile_button.set_active(true),
-                "messages" => messages_profile_button.set_active(true),
-                _ => {}
+                "wide" => btn_list.set_active(true),
+                "cards" => btn_cards.set_active(true),
+                _ => btn_list.set_active(true),
             }
-            let settings_for_messages_profile = settings.clone();
-            messages_profile_button.connect_toggled(move |button| {
-                if button.is_active() {
-                    settings_for_messages_profile.apply_mail_list_view_profile("messages");
+            
+            let settings_for_wide = settings.clone();
+            btn_list.connect_toggled(move |btn| {
+                if btn.is_active() && settings_for_wide.mail_list_view_profile() != "wide" {
+                    settings_for_wide.apply_mail_list_view_profile("wide");
                 }
             });
-            let settings_for_wide_profile = settings.clone();
-            wide_profile_button.connect_toggled(move |button| {
-                if button.is_active() {
-                    settings_for_wide_profile.apply_mail_list_view_profile("wide");
+            let settings_for_cards = settings.clone();
+            btn_cards.connect_toggled(move |btn| {
+                if btn.is_active() && settings_for_cards.mail_list_view_profile() != "cards" {
+                    settings_for_cards.apply_mail_list_view_profile("cards");
                 }
             });
-            let settings_for_cards_profile = settings.clone();
-            cards_profile_button.connect_toggled(move |button| {
-                if button.is_active() {
-                    settings_for_cards_profile.apply_mail_list_view_profile("cards");
+            
+            // --- Section 2: Preview Pane ---
+            let sec2_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(6)
+                .build();
+                
+            sec2_box.append(&gtk::Label::builder()
+                .label(&gettext("Lesebereich"))
+                .halign(gtk::Align::Start)
+                .css_classes(vec!["dim-label", "caption"])
+                .build()
+            );
+            
+            let preview_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(0)
+                .homogeneous(true)
+                .css_classes(vec!["linked"])
+                .build();
+                
+            let btn_prev_off = gtk::ToggleButton::builder().label(&gettext("Aus")).build();
+            let btn_prev_right = gtk::ToggleButton::builder().label(&gettext("Rechts")).build();
+            let btn_prev_bottom = gtk::ToggleButton::builder().label(&gettext("Unten")).build();
+            
+            btn_prev_right.set_group(Some(&btn_prev_off));
+            btn_prev_bottom.set_group(Some(&btn_prev_off));
+            
+            preview_box.append(&btn_prev_off);
+            preview_box.append(&btn_prev_right);
+            preview_box.append(&btn_prev_bottom);
+            sec2_box.append(&preview_box);
+            columns_popover_box.append(&sec2_box);
+            
+            let is_horizontal = settings.mail_layout() == "horizontal" || settings.mail_layout() == "classic";
+            if settings.show_message_preview() {
+                if is_horizontal {
+                    btn_prev_bottom.set_active(true);
+                } else {
+                    btn_prev_right.set_active(true);
                 }
-            });
-            let messages_profile_button_weak = messages_profile_button.downgrade();
-            let wide_profile_button_weak = wide_profile_button.downgrade();
-            let cards_profile_button_weak = cards_profile_button.downgrade();
-            settings.connect_changed(Some("mail-list-view-profile"), move |settings, _| {
-                let Some(messages_button) = messages_profile_button_weak.upgrade() else {
-                    return;
-                };
-                let Some(wide_button) = wide_profile_button_weak.upgrade() else {
-                    return;
-                };
-                let Some(cards_button) = cards_profile_button_weak.upgrade() else {
-                    return;
-                };
-                match settings.string("mail-list-view-profile").as_str() {
-                    "messages" => {
-                        if !messages_button.is_active() {
-                            messages_button.set_active(true);
-                        }
-                    }
-                    "wide" => {
-                        if !wide_button.is_active() {
-                            wide_button.set_active(true);
-                        }
-                    }
-                    "cards" => {
-                        if !cards_button.is_active() {
-                            cards_button.set_active(true);
-                        }
-                    }
-                    _ => {
-                        messages_button.set_active(false);
-                        wide_button.set_active(false);
-                        cards_button.set_active(false);
-                    }
-                }
-            });
-
-            // Header style initial state and signals
-            if settings.mail_header_style() == "classic" {
-                classic_header_button.set_active(true);
             } else {
-                modern_header_button.set_active(true);
+                btn_prev_off.set_active(true);
             }
-            let settings_for_modern_hdr = settings.clone();
-            modern_header_button.connect_toggled(move |btn| {
+            
+            let settings_for_off = settings.clone();
+            btn_prev_off.connect_toggled(move |btn| {
+                if btn.is_active() && settings_for_off.show_message_preview() {
+                    settings_for_off.set_show_message_preview(false);
+                }
+            });
+            
+            let settings_for_right = settings.clone();
+            btn_prev_right.connect_toggled(move |btn| {
                 if btn.is_active() {
-                    settings_for_modern_hdr.set_mail_header_style("modern");
+                    if !settings_for_right.show_message_preview() || settings_for_right.mail_layout() != "vertical" {
+                        settings_for_right.set_show_message_preview(true);
+                        settings_for_right.set_mail_layout("vertical");
+                    }
                 }
             });
-            let settings_for_classic_hdr = settings.clone();
-            classic_header_button.connect_toggled(move |btn| {
+            
+            let settings_for_bottom = settings.clone();
+            btn_prev_bottom.connect_toggled(move |btn| {
                 if btn.is_active() {
-                    settings_for_classic_hdr.set_mail_header_style("classic");
-                }
-            });
-            let modern_hdr_weak = modern_header_button.downgrade();
-            let classic_hdr_weak = classic_header_button.downgrade();
-            settings.connect_changed(Some("mail-header-style"), move |settings, _| {
-                let style = settings.string("mail-header-style");
-                if style.as_str() == "classic" {
-                    if let Some(btn) = classic_hdr_weak.upgrade() {
-                        if !btn.is_active() {
-                            btn.set_active(true);
-                        }
-                    }
-                } else if let Some(btn) = modern_hdr_weak.upgrade() {
-                    if !btn.is_active() {
-                        btn.set_active(true);
+                    if !settings_for_bottom.show_message_preview() || settings_for_bottom.mail_layout() != "horizontal" {
+                        settings_for_bottom.set_show_message_preview(true);
+                        settings_for_bottom.set_mail_layout("horizontal");
                     }
                 }
             });
-
-            // Gruppierung & Filter
-            let threading_check = gtk::CheckButton::builder()
-                .label(&gettext("Group by conversations"))
-                .tooltip_text(&gettext("Group related emails into discussion threads"))
-                .active(settings.mail_threading())
+            
+            // --- Section 3: Switches (Boxed List) ---
+            let listbox = gtk::ListBox::builder()
+                .selection_mode(gtk::SelectionMode::None)
+                .css_classes(vec!["boxed-list"])
                 .build();
-            let page_weak_for_threading = self.downgrade();
-            let settings_for_threading = settings.clone();
-            threading_check.connect_toggled(move |btn| {
-                let active = btn.is_active();
-                settings_for_threading.set_mail_threading(active);
-                if let Some(page) = page_weak_for_threading.upgrade() {
-                    page.reload_sort_preferences();
-                }
-            });
-            let threading_weak = threading_check.downgrade();
-            settings.connect_changed(Some("mail-threading"), move |settings, _| {
-                if let Some(btn) = threading_weak.upgrade() {
-                    let active = settings.boolean("mail-threading");
-                    if btn.is_active() != active {
-                        btn.set_active(active);
-                    }
-                }
-            });
-            columns_popover_box.append(&threading_check);
-
-            let accordion_check = gtk::CheckButton::builder()
-                .label(&gettext("Conversation accordion"))
-                .tooltip_text(&gettext("Show previous thread messages as an expandable accordion in the preview pane"))
-                .active(settings.mail_conversation_accordion())
+                
+            let row_avatars = adw::ActionRow::builder()
+                .title(&gettext("Avatare anzeigen"))
                 .build();
-            let page_weak_for_accordion = self.downgrade();
-            let settings_for_accordion = settings.clone();
-            accordion_check.connect_toggled(move |btn| {
-                let active = btn.is_active();
-                settings_for_accordion.set_mail_conversation_accordion(active);
-                if let Some(page) = page_weak_for_accordion.upgrade() {
-                    let preferred = page.imp().last_selected_mail_index.get();
-                    if let Some(sel) = page.imp().message_selection.borrow().as_ref() {
-                        if let Some(msg) = selected_mail_message(sel, preferred) {
-                            page.render_thread_context(&msg);
-                        }
-                    }
-                }
-            });
-            let accordion_weak = accordion_check.downgrade();
-            settings.connect_changed(Some("mail-conversation-accordion"), move |settings, _| {
-                if let Some(btn) = accordion_weak.upgrade() {
-                    let active = settings.boolean("mail-conversation-accordion");
-                    if btn.is_active() != active {
-                        btn.set_active(active);
-                    }
-                }
-            });
-            columns_popover_box.append(&accordion_check);
-
-            let show_deleted_check = gtk::CheckButton::builder()
-                .label(&gettext("Show deleted messages"))
-                .tooltip_text(&gettext("Leave emails marked for deletion struck through in the list"))
-                .active(settings.mail_show_deleted())
+            let switch_avatars = gtk::Switch::builder()
+                .valign(gtk::Align::Center)
+                .active(settings.mail_show_avatar())
                 .build();
-            let page_weak_for_deleted = self.downgrade();
-            let settings_for_deleted = settings.clone();
-            show_deleted_check.connect_toggled(move |btn| {
-                let active = btn.is_active();
-                settings_for_deleted.set_mail_show_deleted(active);
-                if let Some(page) = page_weak_for_deleted.upgrade() {
-                    page.refresh_mail();
-                }
-            });
-            let deleted_weak = show_deleted_check.downgrade();
-            settings.connect_changed(Some("mail-show-deleted"), move |settings, _| {
-                if let Some(btn) = deleted_weak.upgrade() {
-                    let active = settings.boolean("mail-show-deleted");
-                    if btn.is_active() != active {
-                        btn.set_active(active);
-                    }
-                }
-            });
-            columns_popover_box.append(&show_deleted_check);
-
-            let remote_logos_check = gtk::CheckButton::builder()
-                .label(&gettext("Load sender logos from internet"))
-                .tooltip_text(&gettext("Fetch company favicons and logos for known domains"))
+            row_avatars.add_suffix(&switch_avatars);
+            
+            let row_logos = adw::ActionRow::builder()
+                .title(&gettext("Sender-Logos laden"))
+                .subtitle(&gettext("Favicons aus dem Internet laden"))
+                .build();
+            let switch_logos = gtk::Switch::builder()
+                .valign(gtk::Align::Center)
                 .active(settings.mail_fetch_remote_logos())
                 .build();
-            let page_weak_for_logos = self.downgrade();
+            row_logos.add_suffix(&switch_logos);
+            row_logos.set_sensitive(settings.mail_show_avatar());
+            
+            let settings_for_avatars = settings.clone();
+            let row_logos_weak = row_logos.downgrade();
+            switch_avatars.connect_state_set(move |_, state| {
+                if settings_for_avatars.mail_show_avatar() != state {
+                    settings_for_avatars.set_mail_show_avatar(state);
+                }
+                if let Some(row) = row_logos_weak.upgrade() {
+                    row.set_sensitive(state);
+                }
+                glib::Propagation::Proceed
+            });
+            listbox.append(&row_avatars);
+            
+            let row_thread = adw::ActionRow::builder()
+                .title(&gettext("Konversationen gruppieren"))
+                .subtitle(&gettext("Antworten als Thread anzeigen"))
+                .build();
+            let switch_thread = gtk::Switch::builder()
+                .valign(gtk::Align::Center)
+                .active(settings.mail_threading())
+                .build();
+            row_thread.add_suffix(&switch_thread);
+            
+            let settings_for_thread = settings.clone();
+            switch_thread.connect_state_set(move |_, state| {
+                if settings_for_thread.mail_threading() != state {
+                    settings_for_thread.set_mail_threading(state);
+                }
+                glib::Propagation::Proceed
+            });
+            listbox.append(&row_thread);
+            
             let settings_for_logos = settings.clone();
-            remote_logos_check.connect_toggled(move |btn| {
-                let active = btn.is_active();
-                settings_for_logos.set_mail_fetch_remote_logos(active);
-                if let Some(page) = page_weak_for_logos.upgrade() {
-                    page.imp().sender_avatar_cache.borrow_mut().clear();
-                    if let Some(canvas) = page.imp().mail_table_canvas.borrow().as_ref() {
-                        canvas.queue_draw();
-                    }
+            switch_logos.connect_state_set(move |_, state| {
+                if settings_for_logos.mail_fetch_remote_logos() != state {
+                    settings_for_logos.set_mail_fetch_remote_logos(state);
                 }
+                glib::Propagation::Proceed
             });
-            let logos_weak = remote_logos_check.downgrade();
-            settings.connect_changed(Some("mail-fetch-remote-logos"), move |settings, _| {
-                if let Some(btn) = logos_weak.upgrade() {
-                    let active = settings.boolean("mail-fetch-remote-logos");
-                    if btn.is_active() != active {
-                        btn.set_active(active);
-                    }
-                }
-            });
-            columns_popover_box.append(&remote_logos_check);
-
-            let unified_inbox_check = gtk::CheckButton::builder()
-                .label(&gettext("Show unified folders"))
-                .tooltip_text(&gettext("Show combined All Inboxes, Unread, and Flagged in sidebar"))
-                .active(settings.mail_enable_unified_inbox())
-                .build();
-            let page_weak_for_unified = self.downgrade();
-            let settings_for_unified = settings.clone();
-            unified_inbox_check.connect_toggled(move |btn| {
-                let active = btn.is_active();
-                settings_for_unified.set_mail_enable_unified_inbox(active);
-                if let Some(page) = page_weak_for_unified.upgrade() {
-                    if let Some(sec) = page.imp().unified_folder_section.borrow().as_ref() {
-                        sec.set_visible(active);
-                    }
-                }
-            });
-            let unified_weak = unified_inbox_check.downgrade();
-            settings.connect_changed(Some("mail-enable-unified-inbox"), move |settings, _| {
-                if let Some(btn) = unified_weak.upgrade() {
-                    let active = settings.boolean("mail-enable-unified-inbox");
-                    if btn.is_active() != active {
-                        btn.set_active(active);
-                    }
-                }
-            });
-            columns_popover_box.append(&unified_inbox_check);
-
-            columns_popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
-            // 4. Visible Columns (Table View)
-            let table_options_box = gtk::Box::builder()
-                .orientation(gtk::Orientation::Vertical)
-                .spacing(6)
-                .build();
-
-            table_options_box.append(
-                &gtk::Label::builder()
-                    .label(&gettext("Visible Columns"))
-                    .halign(gtk::Align::Start)
-                    .css_classes(vec!["heading", "view-options-heading"])
-                    .build(),
-            );
-
-            let columns_grid = gtk::Grid::builder()
-                .column_spacing(12)
-                .row_spacing(2)
-                .build();
-
-            for (idx, (key, label)) in column_settings.iter().enumerate() {
-                let active = match *key {
-                    "mail-show-status" => settings.mail_show_status(),
-                    "mail-show-attachment" => settings.mail_show_attachment(),
-                    "mail-show-flagged" => settings.mail_show_flagged(),
-                    "mail-show-avatar" => settings.mail_show_avatar(),
-                    "mail-show-sender" => settings.mail_show_sender(),
-                    "mail-show-recipient" => settings.mail_show_recipient(),
-                    "mail-show-date" => settings.mail_show_date(),
-                    "mail-show-preview-text" => settings.mail_show_preview_text(),
-                    "mail-show-labels" => settings.mail_show_labels(),
-                    "mail-show-size" => settings.mail_show_size(),
-                    "mail-show-follow-up-due" => settings.mail_show_follow_up_due(),
-                    "mail-show-location" => settings.mail_show_location(),
-                    _ => false,
-                };
-                let check = gtk::CheckButton::builder()
-                    .label(label)
-                    .active(active)
-                    .build();
-                let settings_for_check = settings.clone();
-                let key_str = *key;
-                check.connect_toggled(move |check| {
-                    settings_for_check.set_mail_list_view_profile("custom");
-                    match key_str {
-                        "mail-show-status" => {
-                            settings_for_check.set_mail_show_status(check.is_active())
-                        }
-                        "mail-show-attachment" => {
-                            settings_for_check.set_mail_show_attachment(check.is_active())
-                        }
-                        "mail-show-flagged" => {
-                            settings_for_check.set_mail_show_flagged(check.is_active())
-                        }
-                        "mail-show-avatar" => {
-                            settings_for_check.set_mail_show_avatar(check.is_active())
-                        }
-                        "mail-show-sender" => {
-                            settings_for_check.set_mail_show_sender(check.is_active())
-                        }
-                        "mail-show-recipient" => {
-                            settings_for_check.set_mail_show_recipient(check.is_active())
-                        }
-                        "mail-show-date" => settings_for_check.set_mail_show_date(check.is_active()),
-                        "mail-show-preview-text" => {
-                            settings_for_check.set_mail_show_preview_text(check.is_active())
-                        }
-                        "mail-show-labels" => {
-                            settings_for_check.set_mail_show_labels(check.is_active())
-                        }
-                        "mail-show-size" => settings_for_check.set_mail_show_size(check.is_active()),
-                        "mail-show-follow-up-due" => {
-                            settings_for_check.set_mail_show_follow_up_due(check.is_active())
-                        }
-                        "mail-show-location" => {
-                            settings_for_check.set_mail_show_location(check.is_active())
-                        }
-                        _ => {}
-                    }
-                });
-                let check_weak = check.downgrade();
-                let key_for_changed = *key;
-                settings.connect_changed(Some(key_for_changed), move |settings, _| {
-                    if let Some(check) = check_weak.upgrade() {
-                        let active = settings.boolean(key_for_changed);
-                        if check.is_active() != active {
-                            check.set_active(active);
-                        }
-                    }
-                });
-                let col = (idx / 6) as i32;
-                let row = (idx % 6) as i32;
-                columns_grid.attach(&check, col, row, 1, 1);
-            }
-            table_options_box.append(&columns_grid);
-
-            let reorder_icon_name = themed_icon_name(&columns_popover_box, "view-column-symbolic", "view-list-symbolic");
-            let reorder_button = gtk::Button::builder()
-                .css_classes(vec!["flat"])
-                .halign(gtk::Align::Fill)
-                .margin_top(4)
-                .build();
-            let reorder_box = gtk::Box::builder()
-                .orientation(gtk::Orientation::Horizontal)
-                .spacing(8)
-                .halign(gtk::Align::Start)
-                .hexpand(true)
-                .build();
-            let reorder_icon = gtk::Image::builder()
-                .icon_name(reorder_icon_name)
-                .css_classes(vec!["dim-label"])
-                .build();
-            let reorder_lbl = gtk::Label::builder()
-                .label(&gettext("Customize column order…"))
-                .halign(gtk::Align::Start)
-                .xalign(0.0)
-                .build();
-            reorder_box.append(&reorder_icon);
-            reorder_box.append(&reorder_lbl);
-            reorder_button.set_child(Some(&reorder_box));
-            let page_weak_reorder = self.downgrade();
-            reorder_button.connect_clicked(move |_| {
-                if let Some(page) = page_weak_reorder.upgrade() {
-                    page.open_mail_column_order_dialog();
-                }
-            });
-            table_options_box.append(&reorder_button);
-            columns_popover_box.append(&table_options_box);
-
-            // 4b. Card Options (Simple / Cards View)
-            let card_options_box = gtk::Box::builder()
-                .orientation(gtk::Orientation::Vertical)
-                .spacing(6)
-                .build();
-
-            card_options_box.append(
-                &gtk::Label::builder()
-                    .label(&gettext("Display Options"))
-                    .halign(gtk::Align::Start)
-                    .css_classes(vec!["heading", "view-options-heading"])
-                    .build(),
-            );
-
-            let card_column_settings: [(&'static str, String); 6] = [
-                ("mail-show-avatar", gettext("Avatars")),
-                ("mail-show-preview-text", gettext("Preview text")),
-                ("mail-show-labels", gettext("Labels")),
-                ("mail-show-status", gettext("Status")),
-                ("mail-show-flagged", gettext("Flag")),
-                ("mail-show-date", gettext("Date")),
-            ];
-
-            let card_grid = gtk::Grid::builder()
-                .column_spacing(12)
-                .row_spacing(2)
-                .build();
-
-            for (idx, (key, label)) in card_column_settings.iter().enumerate() {
-                let active = match *key {
-                    "mail-show-avatar" => settings.mail_show_avatar(),
-                    "mail-show-preview-text" => settings.mail_show_preview_text(),
-                    "mail-show-labels" => settings.mail_show_labels(),
-                    "mail-show-status" => settings.mail_show_status(),
-                    "mail-show-flagged" => settings.mail_show_flagged(),
-                    "mail-show-date" => settings.mail_show_date(),
-                    _ => false,
-                };
-                let check = gtk::CheckButton::builder()
-                    .label(label)
-                    .active(active)
-                    .build();
-                let settings_for_check = settings.clone();
-                let key_str = *key;
-                check.connect_toggled(move |check| {
-                    match key_str {
-                        "mail-show-avatar" => {
-                            settings_for_check.set_mail_show_avatar(check.is_active())
-                        }
-                        "mail-show-preview-text" => {
-                            settings_for_check.set_mail_show_preview_text(check.is_active())
-                        }
-                        "mail-show-labels" => {
-                            settings_for_check.set_mail_show_labels(check.is_active())
-                        }
-                        "mail-show-status" => {
-                            settings_for_check.set_mail_show_status(check.is_active())
-                        }
-                        "mail-show-flagged" => {
-                            settings_for_check.set_mail_show_flagged(check.is_active())
-                        }
-                        "mail-show-date" => {
-                            settings_for_check.set_mail_show_date(check.is_active())
-                        }
-                        _ => {}
-                    }
-                });
-                let check_weak = check.downgrade();
-                let key_for_changed = *key;
-                settings.connect_changed(Some(key_for_changed), move |settings, _| {
-                    if let Some(check) = check_weak.upgrade() {
-                        let active = settings.boolean(key_for_changed);
-                        if check.is_active() != active {
-                            check.set_active(active);
-                        }
-                    }
-                });
-                let col = (idx / 3) as i32;
-                let row = (idx % 3) as i32;
-                card_grid.attach(&check, col, row, 1, 1);
-            }
-            card_options_box.append(&card_grid);
-            columns_popover_box.append(&card_options_box);
-
-            let is_table = settings.mail_list_view_profile() == "wide";
-            table_options_box.set_visible(is_table);
-            card_options_box.set_visible(!is_table);
-
-            let table_box_weak = table_options_box.downgrade();
-            let card_box_weak = card_options_box.downgrade();
-            settings.connect_changed(Some("mail-list-view-profile"), move |settings, _| {
-                let is_table = settings.string("mail-list-view-profile").as_str() == "wide";
-                if let Some(tb) = table_box_weak.upgrade() {
-                    tb.set_visible(is_table);
-                }
-                if let Some(cb) = card_box_weak.upgrade() {
-                    cb.set_visible(!is_table);
-                }
-            });
-
-            columns_popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
-            // 5. Toolbar
-            let mark_read_toggle = gtk::CheckButton::builder()
-                .label(&gettext("Show status actions in toolbar"))
-                .active(settings.mail_show_mark_read_actions())
-                .margin_top(2)
-                .build();
-            let page_weak_toggle = self.downgrade();
-            let settings_for_toggle = settings.clone();
-            mark_read_toggle.connect_toggled(move |btn| {
-                let active = btn.is_active();
-                settings_for_toggle.set_mail_show_mark_read_actions(active);
-                if let Some(page) = page_weak_toggle.upgrade() {
-                    if let Some(group) = page.imp().mail_status_group.borrow().as_ref() {
-                        group.set_visible(active);
-                    }
-                    if let Some(sep) = page.imp().mail_status_separator.borrow().as_ref() {
-                        sep.set_visible(active);
-                    }
-                }
-            });
-            columns_popover_box.append(&mark_read_toggle);
-
-            // 6. Agenda / Sidebar
-            columns_popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-            let agenda_tasks_toggle = gtk::CheckButton::builder()
-                .label(&gettext("Show tasks in agenda"))
-                .active(settings.agenda_show_tasks())
-                .margin_top(2)
-                .build();
-            let settings_for_agenda = settings.clone();
-            agenda_tasks_toggle.connect_toggled(move |btn| {
-                settings_for_agenda.set_agenda_show_tasks(btn.is_active());
-            });
-            let agenda_tasks_weak = agenda_tasks_toggle.downgrade();
-            settings.connect_changed(Some("agenda-show-tasks"), move |settings, _| {
-                if let Some(check) = agenda_tasks_weak.upgrade() {
-                    let active = settings.boolean("agenda-show-tasks");
-                    if check.is_active() != active {
-                        check.set_active(active);
-                    }
-                }
-            });
-            columns_popover_box.append(&agenda_tasks_toggle);
+            listbox.append(&row_logos);
+            
+            columns_popover_box.append(&listbox);
         } else {
             columns_popover_box.append(
                 &gtk::Label::builder()
@@ -21504,7 +21195,16 @@ impl MailPage {
                     .build(),
             );
         }
-        let columns_popover = gtk::Popover::builder().child(&columns_popover_box).build();
+        
+        let columns_popover_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .propagate_natural_height(true)
+            .max_content_height(600)
+            .child(&columns_popover_box)
+            .build();
+            
+        let columns_popover = gtk::Popover::builder().child(&columns_popover_scroll).build();
         let str_view_opts = gettext("View options");
         let columns_button = gtk::MenuButton::builder()
             .icon_name("view-column-symbolic")
@@ -21517,7 +21217,7 @@ impl MailPage {
         columns_button.set_icon_name(&themed_icon_name(
             &columns_button,
             "view-column-symbolic",
-            "view-list-symbolic",
+            "meridian-view-table-symbolic",
         ));
 
         let search_options_box = gtk::Box::builder()
@@ -22170,7 +21870,10 @@ impl MailPage {
             } else {
                 0.0
             };
-            draw_mail_table_canvas(cr, &layout, width as f64, height as f64, hovered, &is_row_selected, is_dark, scroll_y);
+            let get_avatar = |email: &str, sender_name: &str| -> Option<gtk::cairo::ImageSurface> {
+                page.find_contact_surface_for_sender(email, sender_name)
+            };
+            draw_mail_table_canvas(cr, &layout, width as f64, height as f64, hovered, &is_row_selected, is_dark, scroll_y, &get_avatar);
         });
 
         let click_gesture = gtk::GestureClick::new();
@@ -35610,6 +35313,7 @@ mod tests {
                 is_forwarded: false,
                 has_attachments: true,
                 sender: "Alice".to_string(),
+                sender_email: String::new(),
                 recipient: "Bob".to_string(),
                 subject: "Project Discussion".to_string(),
                 snippet: "Here is the agenda for the meeting...".to_string(),
@@ -35639,6 +35343,7 @@ mod tests {
                 is_forwarded: false,
                 has_attachments: false,
                 sender: "Bob".to_string(),
+                sender_email: String::new(),
                 recipient: "Alice".to_string(),
                 subject: "Re: Project Discussion".to_string(),
                 snippet: "Sounds great, looking forward to it.".to_string(),
@@ -35848,6 +35553,7 @@ mod tests {
                 is_forwarded: false,
                 has_attachments: false,
                 sender: "Sender".to_string(),
+                sender_email: String::new(),
                 recipient: "Recipient".to_string(),
                 subject: "Test Subject".to_string(),
                 snippet: "Snippet".to_string(),
@@ -35901,6 +35607,7 @@ mod tests {
                 is_forwarded: false,
                 has_attachments: false,
                 sender: "Sender".to_string(),
+                sender_email: String::new(),
                 recipient: "Recipient".to_string(),
                 subject: "Test Subject".to_string(),
                 snippet: "Snippet".to_string(),
@@ -35971,6 +35678,7 @@ mod tests {
                 is_forwarded: false,
                 has_attachments: true,
                 sender: "Alice".to_string(),
+                sender_email: String::new(),
                 recipient: "Bob".to_string(),
                 subject: "🚀 Project Update ⚠️ 😀".to_string(),
                 snippet: "Everything is running smoothly.".to_string(),
@@ -36000,6 +35708,7 @@ mod tests {
                 is_forwarded: true,
                 has_attachments: false,
                 sender: "Bob".to_string(),
+                sender_email: String::new(),
                 recipient: "Alice".to_string(),
                 subject: "🎉 Re: Project Update 📧".to_string(),
                 snippet: "Thanks for the update!".to_string(),
@@ -36037,10 +35746,26 @@ mod tests {
         );
 
         // Draw light mode
-        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, Some(0), &|_| false, false, 0.0);
+        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, Some(0), &|_| false, false, 0.0, &|_, _| None);
 
         // Draw dark mode
-        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, Some(1), &|idx| idx == 1, true, 0.0);
+        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, Some(1), &|idx| idx == 1, true, 0.0, &|_, _| None);
+
+        // Draw with real ImageSurface avatar
+        let avatar_surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 48, 48).unwrap();
+        draw_cairo_avatar_circle(&cr, 50.0, 50.0, 18.0, Some(&avatar_surface), "Alice", 12.0, false);
+        draw_cairo_avatar_circle(&cr, 50.0, 100.0, 10.0, Some(&avatar_surface), "Bob", 8.0, true);
+
+        let avatar_surf_clone = avatar_surface.clone();
+        let get_test_avatar = move |email: &str, _name: &str| -> Option<gtk::cairo::ImageSurface> {
+            if email.contains("Alice") || email.is_empty() {
+                Some(avatar_surf_clone.clone())
+            } else {
+                None
+            }
+        };
+        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, Some(0), &|_| false, false, 0.0, &get_test_avatar);
+        assert_eq!(cr.status(), Ok(()));
 
         // Vector icon tests
         draw_cairo_paperclip(&cr, 50.0, 50.0, 0.5, 0.5, 0.5, 0.9);
@@ -36067,6 +35792,7 @@ mod tests {
                 is_forwarded: false,
                 has_attachments: false,
                 sender: "Alice".to_string(),
+                sender_email: String::new(),
                 recipient: "Bob".to_string(),
                 subject: "Subj 1".to_string(),
                 snippet: "Snip 1".to_string(),
@@ -36096,6 +35822,7 @@ mod tests {
                 is_forwarded: false,
                 has_attachments: false,
                 sender: "Bob".to_string(),
+                sender_email: String::new(),
                 recipient: "Alice".to_string(),
                 subject: "Subj 2".to_string(),
                 snippet: "Snip 2".to_string(),
@@ -36146,7 +35873,7 @@ mod tests {
         // Cairo headless draw with explicit selection: row 1 selected overrides cached row 0 selected
         let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 800, 100).unwrap();
         let cr = gtk::cairo::Context::new(&surface).unwrap();
-        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, None, &|idx| idx == 1, false, 0.0);
+        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, None, &|idx| idx == 1, false, 0.0, &|_, _| None);
     }
 
     #[test]
@@ -36167,6 +35894,7 @@ mod tests {
                 is_forwarded: false,
                 has_attachments: false,
                 sender: "Alice".to_string(),
+                sender_email: String::new(),
                 recipient: "Bob".to_string(),
                 subject: "Test Multi 1".to_string(),
                 snippet: "Preview 1".to_string(),
@@ -36196,6 +35924,7 @@ mod tests {
                 is_forwarded: false,
                 has_attachments: true,
                 sender: "Bob".to_string(),
+                sender_email: String::new(),
                 recipient: "Alice".to_string(),
                 subject: "Test Multi 2".to_string(),
                 snippet: "Preview 2".to_string(),
@@ -36236,13 +35965,13 @@ mod tests {
         let cr = gtk::cairo::Context::new(&surface).unwrap();
 
         // 1. None selected (initial state)
-        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, None, &|_| false, false, 0.0);
-        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, None, &|_| false, true, 0.0);
+        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, None, &|_| false, false, 0.0, &|_, _| None);
+        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, None, &|_| false, true, 0.0, &|_, _| None);
 
         // 2. Multi-selection: both row 0 and row 1 selected
         let multi_selected = |idx: usize| idx == 0 || idx == 1;
-        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, None, &multi_selected, false, 0.0);
-        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, Some(0), &multi_selected, true, 0.0);
+        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, None, &multi_selected, false, 0.0, &|_, _| None);
+        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, Some(0), &multi_selected, true, 0.0, &|_, _| None);
 
         // 3. Verify neither row has cached selection baked into layout
         assert!(!layout.rows[0].selected);
@@ -36267,6 +35996,7 @@ mod tests {
                 is_forwarded: false,
                 has_attachments: true,
                 sender: "Wolfgang Fisher".to_string(),
+                sender_email: String::new(),
                 recipient: "Me".to_string(),
                 subject: "Außerhalb der Nachrichten".to_string(),
                 snippet: "Was ist das Neue draußen in der Welt?".to_string(),
@@ -36296,6 +36026,7 @@ mod tests {
                 is_forwarded: false,
                 has_attachments: false,
                 sender: "Peter Weber".to_string(),
+                sender_email: String::new(),
                 recipient: "Me".to_string(),
                 subject: "Meetup".to_string(),
                 snippet: "Das ist sehr schön, wenn wir uns treffen.".to_string(),
@@ -36350,8 +36081,8 @@ mod tests {
         // Headless Cairo render to verify no panics or drawing errors
         let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 420, 160).unwrap();
         let cr = gtk::cairo::Context::new(&surface).unwrap();
-        draw_mail_table_canvas(&cr, &layout, 420.0, 152.0, Some(0), &|idx| idx == 1, false, 0.0);
-        draw_mail_table_canvas(&cr, &layout, 420.0, 152.0, Some(0), &|idx| idx == 1, true, 0.0);
+        draw_mail_table_canvas(&cr, &layout, 420.0, 152.0, Some(0), &|idx| idx == 1, false, 0.0, &|_, _| None);
+        draw_mail_table_canvas(&cr, &layout, 420.0, 152.0, Some(0), &|idx| idx == 1, true, 0.0, &|_, _| None);
 
         // Initials test
         assert_eq!(extract_initials("Wolfgang Fisher"), "WF");
