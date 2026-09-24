@@ -72,7 +72,8 @@ pub(crate) fn normalized_mail_list_view_profile(value: &str) -> &'static str {
         "wide" => "wide",
         "cards" => "cards",
         "custom" => "custom",
-        _ => "messages",
+        "messages" => "wide",
+        _ => "wide",
     }
 }
 
@@ -4412,7 +4413,7 @@ mod tests {
         );
         let wide = mail_list_profile_column_order("wide");
         assert_eq!(&wide[..4], &["status", "flagged", "follow-up", "messages"]);
-        assert_eq!(normalized_mail_list_view_profile("unknown"), "messages");
+        assert_eq!(normalized_mail_list_view_profile("unknown"), "wide");
 
         let normalized = normalize_mail_list_column_order("date,subject,date,unknown,status");
         assert_eq!(&normalized[..3], &["date", "subject", "status"]);
