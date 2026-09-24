@@ -451,17 +451,18 @@ pub fn load_folders_from_sqlite(
 
 /// Helper to parse "Name <email>" or just "email".
 fn parse_address(raw: &str) -> (String, String) {
-    let raw = raw.trim();
-    if let Some(start) = raw.find('<') {
-        if let Some(end) = raw.rfind('>') {
-            if start < end {
-                let name = raw[..start].trim().trim_matches('"').trim();
-                let email = raw[start + 1..end].trim();
-                return (name.to_string(), email.to_string());
-            }
+    let decoded = crate::services::mail_store_service::decode_mime_header(raw);
+    let trimmed = decoded.trim();
+    if let Some(start) = trimmed.rfind('<') {
+        if let Some(end_offset) = trimmed[start..].find('>') {
+            let end = start + end_offset;
+            let email = trimmed[start + 1..end].trim().to_string();
+            let name = trimmed[..start].trim().trim_matches('"').trim().to_string();
+            return (if name.is_empty() { email.clone() } else { name }, email);
         }
     }
-    ("".to_string(), raw.to_string())
+    let email = trimmed.trim_matches('"').to_string();
+    (email.clone(), email)
 }
 
 /// Fast reader for folder messages directly from Evolution's local `folders.db`.

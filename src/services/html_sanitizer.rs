@@ -2342,7 +2342,20 @@ mod tests {
 
     #[test]
     fn test_join_us_eml_does_not_leak_title() {
-        let eml_content = include_str!("../../../Join us.eml");
+        let eml_content = r#"From: GDG <events@example.com>
+Subject: Community Event
+Content-Type: text/html; charset=utf-8
+
+<!DOCTYPE html>
+<html>
+<head>
+<title>Join us in our next event: GDG Rhein-Main Networking & Drinks September 2026 </title>
+<style>body { margin: 0; }</style>
+</head>
+<body>
+<p>Welcome to the community event!</p>
+</body>
+</html>"#;
         let html_start = eml_content.find("<html").expect("HTML start tag");
         let html_end = eml_content.find("</html>").expect("HTML end tag") + 7;
         let html = &eml_content[html_start..html_end];
