@@ -56,6 +56,11 @@ pub mod credential_service;
 pub mod portable_mail_engine;
 pub mod evolution_summary_cache;
 pub mod evolution_contact_cache;
+pub mod avatar_cache_service;
+pub mod recent_recipients_service;
+
+pub use avatar_cache_service::AvatarCacheService;
+pub use recent_recipients_service::{RecentRecipient, RecentRecipientsService};
 
 pub use autodiscover_service::{
     AutodiscoverService, DiscoveredAccountConfig, DiscoveryTier, ServerConfig, TlsMode,

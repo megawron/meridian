@@ -382,8 +382,12 @@ accessibility helpers, and view-local GTK state.
   `.secondary-tz-header`, `.secondary-tz-label`) showing live converted times, sticky column
   day headers with today accentuation, dedicated all-day event rows, distinct
   background styling for business hours vs off-hours, solid 1px hour divisions,
-  dashed half-hour divisions, and dotted fine sub-divisions, compact event chips
-  (`calendar-grid-event`) with left color bar and drag-and-drop support, and double-click
+  dashed half-hour divisions, and dotted fine sub-divisions, Google Calendar planar event chips
+  (`calendar-grid-event`, `all-day-chip`, `month-bar-chip`) with GNOME Calendar pastel 25% tint fills
+  (`pastel_colors_for_hex`), borderless geometry without left accent markers, high-contrast typography
+  (`#2e3436` in light theme, `#ffffff` in dark theme), 4px rounded corners on normal boundaries,
+  pointed arrow continuation ends (`draw_month_event_bar`) for spanning multi-day/all-day events,
+  and drag-and-drop support, and double-click
   event creation across all empty time slots. Month view uses a seamless border table grid
   (`calendar-month-grid`, `calendar-month-cell`) without isolated cards or rounded gaps,
   supports weekend compression styling (`calendar-compress-weekend`, `.weekend.compressed`),

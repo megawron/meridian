@@ -458,6 +458,21 @@ pub(crate) const SHORTCUTS: &[ShortcutSpec] = &[
         action: "win.mail-print",
     },
     ShortcutSpec {
+        group: ShortcutGroup::Mail,
+        title: "Zoom In",
+        action: "win.zoom-in",
+    },
+    ShortcutSpec {
+        group: ShortcutGroup::Mail,
+        title: "Zoom Out",
+        action: "win.zoom-out",
+    },
+    ShortcutSpec {
+        group: ShortcutGroup::Mail,
+        title: "Normal Size",
+        action: "win.zoom-reset",
+    },
+    ShortcutSpec {
         group: ShortcutGroup::Modules,
         title: "Mail",
         action: "win.switch-mail",

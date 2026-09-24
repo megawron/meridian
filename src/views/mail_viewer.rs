@@ -48,6 +48,9 @@ mod imp {
         pub banner: adw::Banner,
         pub trash_banner: adw::Banner,
         pub junk_banner: adw::Banner,
+        pub last_measured_content_height: Cell<Option<i32>>,
+        pub adapted_card_height: Cell<Option<i32>>,
+        pub last_parent_height: Cell<i32>,
         #[cfg(target_os = "linux")]
         pub webview: RefCell<Option<webkit6::WebView>>,
         #[cfg(target_os = "linux")]
@@ -63,6 +66,8 @@ mod imp {
         pub current_fallback_text: RefCell<Option<String>>,
         pub(super) displayed_plaintext: RefCell<Option<DisplayedPlaintext>>,
         pub(super) fallback_search_tag: RefCell<Option<gtk::TextTag>>,
+        pub(super) fallback_zoom_tag: RefCell<Option<gtk::TextTag>>,
+        pub zoom_level: Cell<f64>,
         pub(super) message_search: RefCell<Option<ActiveMessageSearch>>,
         pub(super) search_generation: Cell<u64>,
         pub remote_images_allowed_for_current: Cell<bool>,
@@ -91,6 +96,7 @@ mod imp {
         pub remote_content_allowed_senders: RefCell<HashSet<String>>,
         pub current_sender: RefCell<Option<String>>,
         pub on_remote_images_blocked: RefCell<Option<Box<dyn Fn(bool) + 'static>>>,
+        pub on_scroll_offset: RefCell<Vec<Box<dyn Fn(f64) + 'static>>>,
     }
 
     impl std::fmt::Debug for MailViewer {
@@ -112,6 +118,7 @@ mod imp {
 
     impl ObjectImpl for MailViewer {
         fn constructed(&self) {
+            self.zoom_level.set(1.0);
             self.parent_constructed();
             self.obj().build_ui();
         }
@@ -131,6 +138,20 @@ mod imp {
         fn realize(&self) {
             self.parent_realize();
         }
+
+        fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
+            let (min, nat, min_b, nat_b) = self.parent_measure(orientation, for_size);
+            if orientation == gtk::Orientation::Vertical {
+                if let Some(target_h) = self.adapted_card_height.get() {
+                    return (target_h, target_h, -1, -1);
+                }
+            }
+            (min, nat, min_b, nat_b)
+        }
+
+        fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
+            self.parent_size_allocate(width, height, baseline);
+        }
     }
 }
 
@@ -138,6 +159,17 @@ glib::wrapper! {
     pub struct MailViewer(ObjectSubclass<imp::MailViewer>)
         @extends gtk::Widget,
         @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
+}
+
+/// Disables slide-down/slide-up animations on an `AdwBanner` by configuring
+/// its internal `GtkRevealer` with transition duration 0 and transition type None.
+/// This prevents layout shifting and content jumping when emails with blocked
+/// remote images or warnings are loaded and displayed.
+fn disable_banner_animation(banner: &adw::Banner) {
+    if let Some(revealer) = banner.first_child().and_then(|c| c.downcast::<gtk::Revealer>().ok()) {
+        revealer.set_transition_duration(0);
+        revealer.set_transition_type(gtk::RevealerTransitionType::None);
+    }
 }
 
 impl MailViewer {
@@ -169,10 +201,16 @@ impl MailViewer {
         tracing::debug!("MailViewer construction started");
         self.set_overflow(gtk::Overflow::Hidden);
         self.set_hexpand(true);
+        // Card styling (.card, .mail-preview-card) is placed on the inner
+        // box_container rather than on `self` so that the background,
+        // border-radius and box-shadow are drawn at the *constrained*
+        // child allocation (see size_allocate above), not at the full
+        // height the parent Box/Paned gives us.
         let box_container = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .overflow(gtk::Overflow::Hidden)
             .hexpand(true)
+            .css_classes(vec!["card", "mail-preview-card"])
             .build();
 
         // ── 1. Privacy Banner for Remote Images ────────────────────────────
@@ -183,6 +221,7 @@ impl MailViewer {
             .visible(false)
             .css_classes(vec!["mail-status-banner"])
             .build();
+        disable_banner_animation(&banner);
 
         banner.connect_button_clicked(glib::clone!(
             #[weak(rename_to = viewer)]
@@ -191,6 +230,9 @@ impl MailViewer {
                 viewer.allow_remote_images();
                 b.set_revealed(false);
                 b.set_visible(false);
+                if let Some(ch) = viewer.imp().last_measured_content_height.get() {
+                    viewer.apply_adapted_height(ch);
+                }
             }
         ));
 
@@ -204,6 +246,7 @@ impl MailViewer {
             .visible(false)
             .css_classes(vec!["mail-status-banner"])
             .build();
+        disable_banner_animation(&trash_banner);
         box_container.append(&trash_banner);
 
         // ── 3. Junk Banner ─────────────────────────────────────────────────
@@ -214,6 +257,7 @@ impl MailViewer {
             .visible(false)
             .css_classes(vec!["mail-status-banner"])
             .build();
+        disable_banner_animation(&junk_banner);
         box_container.append(&junk_banner);
 
         let caret_mode = AppSettings::try_new()
@@ -224,8 +268,8 @@ impl MailViewer {
             .cursor_visible(caret_mode)
             .wrap_mode(gtk::WrapMode::WordChar)
             .css_classes(vec!["mail-plain-view"])
-            .top_margin(16)
-            .bottom_margin(16)
+            .top_margin(12)
+            .bottom_margin(12)
             .left_margin(16)
             .right_margin(16)
             .hexpand(true)
@@ -237,11 +281,18 @@ impl MailViewer {
         let fallback_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .propagate_natural_height(true)
             .min_content_width(0)
             .child(&fallback_view)
             .hexpand(true)
             .vexpand(true)
             .build();
+        let viewer_weak_fb = self.downgrade();
+        fallback_scroll.vadjustment().connect_value_changed(move |adj| {
+            if let Some(viewer) = viewer_weak_fb.upgrade() {
+                viewer.notify_scroll_offset(adj.value());
+            }
+        });
         self.imp()
             .fallback_scroll
             .replace(Some(fallback_scroll.clone()));
@@ -312,6 +363,8 @@ impl MailViewer {
             // remains the platform for the production HTML renderer.
             box_container.append(&fallback_scroll);
         }
+
+
         self.imp().fallback_view.replace(Some(fallback_view));
         let remote_content_store = RemoteContentStore::default();
         self.imp()
@@ -372,9 +425,86 @@ impl MailViewer {
         unsafe {
             let imp = self.imp();
             let mut_imp = imp as *const imp::MailViewer as *mut imp::MailViewer;
-            let mut_banner = &mut (*mut_imp).banner;
-            *mut_banner = banner;
+            (*mut_imp).banner = banner;
+            (*mut_imp).trash_banner = trash_banner;
+            (*mut_imp).junk_banner = junk_banner;
         }
+
+        // ── 4. Zoom Gestures & Keyboard Shortcuts ──────────────────────────
+        // Mouse wheel zoom with Ctrl modifier (Ctrl + Scroll Up/Down)
+        let scroll_ctrl = gtk::EventControllerScroll::new(
+            gtk::EventControllerScrollFlags::VERTICAL,
+        );
+        scroll_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let scroll_accum = std::rc::Rc::new(std::cell::Cell::new(0.0f64));
+        let viewer_weak_scroll = self.downgrade();
+        let accum_clone = scroll_accum.clone();
+        scroll_ctrl.connect_scroll(move |controller, _dx, dy| {
+            let state = controller.current_event_state();
+            let is_ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+                && !state.contains(gtk::gdk::ModifierType::ALT_MASK)
+                && !state.contains(gtk::gdk::ModifierType::SUPER_MASK);
+            if is_ctrl {
+                if let Some(viewer) = viewer_weak_scroll.upgrade() {
+                    let mut val = accum_clone.get() + dy;
+                    if val <= -0.5 {
+                        viewer.zoom_in();
+                        val = 0.0;
+                    } else if val >= 0.5 {
+                        viewer.zoom_out();
+                        val = 0.0;
+                    }
+                    accum_clone.set(val);
+                    return glib::Propagation::Stop;
+                }
+            } else {
+                accum_clone.set(0.0);
+            }
+            glib::Propagation::Proceed
+        });
+        self.add_controller(scroll_ctrl);
+
+        // Keyboard zoom shortcuts when focus is inside the viewer (Ctrl++, Ctrl+-, Ctrl+0)
+        let key_ctrl = gtk::EventControllerKey::new();
+        key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let viewer_weak_key = self.downgrade();
+        key_ctrl.connect_key_pressed(move |controller, key, _keycode, _state| {
+            let state = controller.current_event_state();
+            let is_ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+                && !state.contains(gtk::gdk::ModifierType::ALT_MASK)
+                && !state.contains(gtk::gdk::ModifierType::SUPER_MASK);
+            if is_ctrl {
+                match key {
+                    gtk::gdk::Key::plus
+                    | gtk::gdk::Key::KP_Add
+                    | gtk::gdk::Key::equal => {
+                        if let Some(viewer) = viewer_weak_key.upgrade() {
+                            viewer.zoom_in();
+                            return glib::Propagation::Stop;
+                        }
+                    }
+                    gtk::gdk::Key::minus
+                    | gtk::gdk::Key::KP_Subtract
+                    | gtk::gdk::Key::underscore => {
+                        if let Some(viewer) = viewer_weak_key.upgrade() {
+                            viewer.zoom_out();
+                            return glib::Propagation::Stop;
+                        }
+                    }
+                    gtk::gdk::Key::_0
+                    | gtk::gdk::Key::KP_0 => {
+                        if let Some(viewer) = viewer_weak_key.upgrade() {
+                            viewer.zoom_reset();
+                            return glib::Propagation::Stop;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        self.add_controller(key_ctrl);
+
         tracing::debug!("MailViewer construction finished");
     }
 
@@ -437,11 +567,16 @@ impl MailViewer {
         self.set_current_sender(None);
         self.set_trash_banner_visible(false);
         self.set_junk_banner_visible(false);
+        self.imp().last_measured_content_height.set(None);
+        self.set_vexpand(true);
+        self.set_valign(gtk::Align::Fill);
+        self.set_height_request(-1);
 
         #[cfg(target_os = "linux")]
         {
             self.imp().webview_ready.set(false);
             if let Some(webview) = self.imp().webview.borrow().as_ref() {
+                webview.set_height_request(-1);
                 webview.set_opacity(0.0);
             }
             if let Some(stack) = self.imp().renderer_stack.borrow().as_ref() {
@@ -455,6 +590,7 @@ impl MailViewer {
                 view.buffer().set_text("");
             }
         }
+        self.notify_scroll_offset(0.0);
     }
 
     /// Prepare the viewer for asynchronous message body loading.
@@ -462,6 +598,7 @@ impl MailViewer {
     /// stale content, preliminary snippets, or empty-state warnings do not flash
     /// before the actual email body arrives.
     pub(crate) fn prepare_for_loading(&self, message_id: Option<&str>) {
+        self.notify_scroll_offset(0.0);
         self.invalidate_message_search_context();
         self.imp().remote_images_allowed_for_current.set(false);
         self.imp().remote_images_blocked_for_current.set(false);
@@ -481,11 +618,17 @@ impl MailViewer {
         self.imp().displayed_plaintext.take();
         self.set_trash_banner_visible(false);
         self.set_junk_banner_visible(false);
+        self.imp().last_measured_content_height.set(None);
+        self.imp().adapted_card_height.set(None);
+        self.set_vexpand(true);
+        self.set_valign(gtk::Align::Fill);
+        self.set_height_request(-1);
 
         #[cfg(target_os = "linux")]
         {
             self.imp().webview_ready.set(false);
             if let Some(webview) = self.imp().webview.borrow().as_ref() {
+                webview.set_height_request(-1);
                 webview.set_opacity(0.0);
             }
         }
@@ -665,7 +808,6 @@ impl MailViewer {
         self.imp()
             .render_worker_generation
             .store(generation, Ordering::Release);
-        self.imp().banner.set_revealed(false);
 
         let decision = {
             let cache = self.imp().render_cache.borrow();
@@ -830,6 +972,9 @@ impl MailViewer {
                 // `data:`, `cid:` and `blob:` content. The sanitized body,
                 // CSP and policy CSS continue to deny remote sources.
                 settings.set_auto_load_images(true);
+                let desktop_font = detect_desktop_font_family();
+                settings.set_default_font_family(&desktop_font);
+                settings.set_sans_serif_font_family(&desktop_font);
             }
             let base_uri = self.imp().current_base_uri.borrow().clone();
             let effective_base_uri =
@@ -859,6 +1004,7 @@ impl MailViewer {
                             viewer.imp().webview_ready.set(true);
                             if let Some(wv) = viewer.imp().webview.borrow().as_ref() {
                                 wv.set_opacity(1.0);
+                                viewer.adapt_card_height(wv);
                             }
                             viewer.show_renderer_ready();
                         }
@@ -1075,54 +1221,93 @@ impl MailViewer {
 
     /// Increase text/content zoom level in the viewer.
     pub fn zoom_in(&self) {
+        let current = self.zoom_level();
+        let new_level = ((current + 0.1) * 10.0).round() / 10.0;
+        let new_level = new_level.min(3.0);
+        self.imp().zoom_level.set(new_level);
         #[cfg(target_os = "linux")]
         if let Some(ref webview) = *self.imp().webview.borrow() {
-            let current = webview.zoom_level();
-            let new_level = (current + 0.1).min(3.0);
             webview.set_zoom_level(new_level);
+            let viewer_weak = self.downgrade();
+            let wv = webview.clone();
+            glib::timeout_add_local_once(Duration::from_millis(60), move || {
+                if let Some(v) = viewer_weak.upgrade() {
+                    v.adapt_card_height(&wv);
+                }
+            });
         }
+        self.apply_fallback_zoom(new_level);
     }
 
     /// Decrease text/content zoom level in the viewer.
     pub fn zoom_out(&self) {
+        let current = self.zoom_level();
+        let new_level = ((current - 0.1) * 10.0).round() / 10.0;
+        let new_level = new_level.max(0.5);
+        self.imp().zoom_level.set(new_level);
         #[cfg(target_os = "linux")]
         if let Some(ref webview) = *self.imp().webview.borrow() {
-            let current = webview.zoom_level();
-            let new_level = (current - 0.1).max(0.5);
             webview.set_zoom_level(new_level);
+            let viewer_weak = self.downgrade();
+            let wv = webview.clone();
+            glib::timeout_add_local_once(Duration::from_millis(60), move || {
+                if let Some(v) = viewer_weak.upgrade() {
+                    v.adapt_card_height(&wv);
+                }
+            });
         }
+        self.apply_fallback_zoom(new_level);
     }
 
     /// Reset zoom level in the viewer to 100%.
     pub fn zoom_reset(&self) {
+        self.imp().zoom_level.set(1.0);
         #[cfg(target_os = "linux")]
         if let Some(ref webview) = *self.imp().webview.borrow() {
             webview.set_zoom_level(1.0);
+            let viewer_weak = self.downgrade();
+            let wv = webview.clone();
+            glib::timeout_add_local_once(Duration::from_millis(60), move || {
+                if let Some(v) = viewer_weak.upgrade() {
+                    v.adapt_card_height(&wv);
+                }
+            });
         }
+        self.apply_fallback_zoom(1.0);
     }
 
     /// Return the current zoom level.
     pub fn zoom_level(&self) -> f64 {
-        #[cfg(target_os = "linux")]
-        if let Some(ref webview) = *self.imp().webview.borrow() {
-            return webview.zoom_level();
+        let level = self.imp().zoom_level.get();
+        if level <= 0.0 {
+            1.0
+        } else {
+            level
         }
-        1.0
     }
 
     pub fn set_trash_banner_visible(&self, visible: bool) {
         self.imp().trash_banner.set_visible(visible);
         self.imp().trash_banner.set_revealed(visible);
+        if let Some(ch) = self.imp().last_measured_content_height.get() {
+            self.apply_adapted_height(ch);
+        }
     }
 
     pub fn set_junk_banner_visible(&self, visible: bool) {
         self.imp().junk_banner.set_visible(visible);
         self.imp().junk_banner.set_revealed(visible);
+        if let Some(ch) = self.imp().last_measured_content_height.get() {
+            self.apply_adapted_height(ch);
+        }
     }
 
     pub fn set_remote_images_banner_visible(&self, visible: bool) {
         self.imp().banner.set_visible(visible);
         self.imp().banner.set_revealed(visible);
+        if let Some(ch) = self.imp().last_measured_content_height.get() {
+            self.apply_adapted_height(ch);
+        }
     }
 
     pub fn is_remote_images_banner_revealed(&self) -> bool {
@@ -1160,6 +1345,19 @@ impl MailViewer {
     pub(crate) fn notify_remote_images_blocked(&self, blocked: bool) {
         if let Some(cb) = self.imp().on_remote_images_blocked.borrow().as_ref() {
             cb(blocked);
+        }
+    }
+
+    pub fn connect_scroll_offset<F: Fn(f64) + 'static>(&self, callback: F) {
+        self.imp()
+            .on_scroll_offset
+            .borrow_mut()
+            .push(Box::new(callback));
+    }
+
+    pub(crate) fn notify_scroll_offset(&self, offset_y: f64) {
+        for cb in self.imp().on_scroll_offset.borrow().iter() {
+            cb(offset_y);
         }
     }
 
@@ -1660,6 +1858,34 @@ impl MailViewer {
     fn set_fallback_text(&self, text: &str) {
         if let Some(view) = self.imp().fallback_view.borrow().as_ref() {
             view.buffer().set_text(text);
+            self.apply_fallback_zoom(self.zoom_level());
+        }
+        let line_count = text.lines().count().max(1) as i32;
+        let estimated_h = (line_count * 22 + 40).min(2000);
+        self.imp().last_measured_content_height.set(Some(estimated_h));
+        self.apply_adapted_height(estimated_h);
+    }
+
+    fn apply_fallback_zoom(&self, level: f64) {
+        if let Some(view) = self.imp().fallback_view.borrow().as_ref() {
+            let buffer = view.buffer();
+            let tag = if let Some(tag) = self.imp().fallback_zoom_tag.borrow().as_ref() {
+                tag.clone()
+            } else {
+                let tag = gtk::TextTag::builder()
+                    .name("evolution-mail-zoom")
+                    .scale(level)
+                    .build();
+                if buffer.tag_table().add(&tag) {
+                    self.imp().fallback_zoom_tag.replace(Some(tag.clone()));
+                    tag
+                } else {
+                    return;
+                }
+            };
+            tag.set_scale(level);
+            let (start, end) = buffer.bounds();
+            buffer.apply_tag(&tag, &start, &end);
         }
     }
 
@@ -1673,7 +1899,10 @@ impl MailViewer {
         tracing::debug!("Creating deferred WebKitGTK context and view");
         let web_context = webkit6::WebContext::new();
         let settings = webkit6::Settings::new();
-        settings.set_enable_javascript(false);
+        // Enable JavaScript so internal measurement scripts (adapt_card_height) can execute.
+        // Document scripts in incoming emails remain strictly blocked by ammonia HTML
+        // sanitization and Content-Security-Policy (`script-src 'none'`).
+        settings.set_enable_javascript(true);
         let caret_mode = AppSettings::try_new()
             .map(|s| s.mail_caret_mode())
             .unwrap_or(false);
@@ -1685,6 +1914,9 @@ impl MailViewer {
         settings.set_enable_developer_extras(false);
         settings.set_enable_page_cache(true);
         settings.set_enable_smooth_scrolling(true);
+        let desktop_font = detect_desktop_font_family();
+        settings.set_default_font_family(&desktop_font);
+        settings.set_sans_serif_font_family(&desktop_font);
 
         let user_content_manager = webkit6::UserContentManager::new();
         let user_style_sheet = webkit6::UserStyleSheet::new(
@@ -1695,6 +1927,50 @@ impl MailViewer {
             &[],
         );
         user_content_manager.add_style_sheet(&user_style_sheet);
+        let scroll_script = webkit6::UserScript::new(
+            "(() => {
+                let isCompact = false;
+                let ticking = false;
+                window.addEventListener('scroll', () => {
+                    if (!ticking) {
+                        window.requestAnimationFrame(() => {
+                            try {
+                                const y = window.scrollY || document.documentElement.scrollTop || 0;
+                                if (!isCompact && y > 45) {
+                                    isCompact = true;
+                                    window.webkit.messageHandlers.meridianScroll.postMessage(y);
+                                } else if (isCompact && y < 15) {
+                                    isCompact = false;
+                                    window.webkit.messageHandlers.meridianScroll.postMessage(y);
+                                }
+                            } catch (e) {}
+                            ticking = false;
+                        });
+                        ticking = true;
+                    }
+                }, { passive: true });
+            })();",
+            webkit6::UserContentInjectedFrames::TopFrame,
+            webkit6::UserScriptInjectionTime::End,
+            &[],
+            &[],
+        );
+        user_content_manager.add_script(&scroll_script);
+        user_content_manager.register_script_message_handler("meridianScroll", None);
+        let viewer_weak_scroll = self.downgrade();
+        user_content_manager.connect_local(
+            "script-message-received::meridianScroll",
+            false,
+            move |values| {
+                if let Some(viewer) = viewer_weak_scroll.upgrade() {
+                    if let Some(js_val) = values.get(1).and_then(|v| v.get::<javascriptcore6::Value>().ok()) {
+                        let offset_y = js_val.to_double();
+                        viewer.notify_scroll_offset(offset_y);
+                    }
+                }
+                None
+            },
+        );
 
         let webview = webkit6::WebView::builder()
             .web_context(&web_context)
@@ -1703,6 +1979,8 @@ impl MailViewer {
             .hexpand(true)
             .vexpand(true)
             .build();
+        webview.set_background_color(&gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.0));
+        webview.set_zoom_level(self.zoom_level());
 
         let viewer_weak = self.downgrade();
         webview.connect_load_changed(move |webview, event| {
@@ -1716,6 +1994,21 @@ impl MailViewer {
                 webkit6::LoadEvent::Finished => {
                     viewer.imp().webview_ready.set(true);
                     viewer.show_renderer_ready();
+                    viewer.adapt_card_height(webview);
+                    let viewer_weak_d1 = viewer.downgrade();
+                    let wv_d1 = webview.clone();
+                    glib::timeout_add_local_once(std::time::Duration::from_millis(60), move || {
+                        if let Some(v) = viewer_weak_d1.upgrade() {
+                            v.adapt_card_height(&wv_d1);
+                        }
+                    });
+                    let viewer_weak_d2 = viewer.downgrade();
+                    let wv_d2 = webview.clone();
+                    glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
+                        if let Some(v) = viewer_weak_d2.upgrade() {
+                            v.adapt_card_height(&wv_d2);
+                        }
+                    });
                 }
                 _ => {}
             }
@@ -1817,6 +2110,187 @@ impl MailViewer {
         }
         if let Some(stack) = self.imp().renderer_stack.borrow().as_ref() {
             stack.set_visible_child_name("webkit");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn adapt_card_height(&self, webview: &webkit6::WebView) {
+        let viewer_weak = self.downgrade();
+        // Measure the bottom of the lowest element in body or body.offsetHeight.
+        // DO NOT use document.documentElement.scrollHeight because in WebKit that is always >= viewport height!
+        let script = r#"
+(() => {
+    let body = document.body;
+    if (!body) return 0;
+    let maxBottom = 0;
+    let children = body.children;
+    let scrollY = window.scrollY || window.pageYOffset || 0;
+    for (let i = 0; i < children.length; i++) {
+        let r = children[i].getBoundingClientRect();
+        let bottom = r.bottom + scrollY;
+        if (bottom > maxBottom) {
+            maxBottom = bottom;
+        }
+    }
+    let rangeBottom = 0;
+    try {
+        let range = document.createRange();
+        range.selectNodeContents(body);
+        let rangeRect = range.getBoundingClientRect();
+        rangeBottom = rangeRect.bottom + scrollY;
+    } catch (e) {}
+    let docEl = document.documentElement;
+    let computed = window.getComputedStyle(body);
+    let padBottom = parseFloat(computed.paddingBottom) || 16;
+    let measured = Math.max(
+        maxBottom + padBottom,
+        rangeBottom + padBottom,
+        body.scrollHeight || 0,
+        docEl ? (docEl.scrollHeight || 0) : 0
+    );
+    return Math.ceil(measured);
+})()
+"#;
+        let viewer_weak_fb = viewer_weak.clone();
+        let script_clone = script.to_string();
+        let webview_clone = webview.clone();
+        webview.evaluate_javascript(
+            script,
+            None,
+            Some("meridian-measure"),
+            None::<&gio::Cancellable>,
+            move |result| {
+                match result {
+                    Ok(value) => {
+                        let measured_h = value.to_double().max(0.0) as i32;
+                        let content_height = if measured_h > 0 { measured_h + 8 } else { 500 };
+                        if let Some(viewer) = viewer_weak.upgrade() {
+                            tracing::debug!(content_height, "Measured email content height (isolated world)");
+                            viewer.imp().last_measured_content_height.set(Some(content_height));
+                            viewer.apply_adapted_height(content_height);
+                        }
+                    }
+                    Err(err) => {
+                        tracing::debug!(?err, "evaluate_javascript in isolated world failed, trying default world");
+                        webview_clone.evaluate_javascript(
+                            &script_clone,
+                            None,
+                            None,
+                            None::<&gio::Cancellable>,
+                            move |result2| {
+                                match result2 {
+                                    Ok(value) => {
+                                        let measured_h = value.to_double().max(0.0) as i32;
+                                        let content_height = if measured_h > 0 { measured_h + 8 } else { 500 };
+                                        if let Some(viewer) = viewer_weak_fb.upgrade() {
+                                            tracing::debug!(content_height, "Measured email content height (default world)");
+                                            viewer.imp().last_measured_content_height.set(Some(content_height));
+                                            viewer.apply_adapted_height(content_height);
+                                        }
+                                    }
+                                    Err(err2) => {
+                                        tracing::warn!(?err2, "evaluate_javascript in default world also failed");
+                                    }
+                                }
+                            },
+                        );
+                    }
+                }
+            },
+        );
+    }
+
+    pub fn apply_adapted_height(&self, content_height: i32) {
+        if content_height <= 0 {
+            if self.imp().adapted_card_height.get().is_some() {
+                self.imp().adapted_card_height.set(None);
+                self.set_vexpand(true);
+                self.set_valign(gtk::Align::Fill);
+                self.set_height_request(-1);
+                #[cfg(target_os = "linux")]
+                if let Some(wv) = self.imp().webview.borrow().as_ref() {
+                    wv.set_vexpand(true);
+                    wv.set_valign(gtk::Align::Fill);
+                    wv.set_height_request(-1);
+                }
+                if let Some(stack) = self.imp().renderer_stack.borrow().as_ref() {
+                    stack.set_vexpand(true);
+                    stack.set_valign(gtk::Align::Fill);
+                    stack.set_height_request(-1);
+                }
+            }
+            return;
+        }
+
+        // Available height in parent message pane: determine from the enclosing
+        // Paned or Window so that available height does not shrink when the viewer shrinks.
+        let available_height = {
+            let mut container_h = 0;
+            let mut current = self.parent();
+            while let Some(w) = current {
+                if w.is::<gtk::Paned>() || w.is::<gtk::Window>() {
+                    container_h = w.height();
+                    break;
+                }
+                current = w.parent();
+            }
+            if container_h <= 120 {
+                container_h = self.root().map(|r| r.height()).unwrap_or(0);
+            }
+            if container_h > 120 {
+                let other_h = if let Some(parent) = self.parent() {
+                    let mut sum = 0;
+                    let mut sibling = parent.first_child();
+                    while let Some(child) = sibling {
+                        if child != *self.upcast_ref::<gtk::Widget>() && child.is_visible() {
+                            sum += child.height();
+                        }
+                        sibling = child.next_sibling();
+                    }
+                    sum
+                } else {
+                    120
+                };
+                let margins = self.margin_top() + self.margin_bottom();
+                (container_h - other_h - margins).max(100)
+            } else {
+                500
+            }
+        };
+
+        let mut banner_extra = 0;
+        if self.imp().banner.is_revealed() || self.imp().banner.is_visible() {
+            banner_extra += 48;
+        }
+        if self.imp().trash_banner.is_revealed() || self.imp().trash_banner.is_visible() {
+            banner_extra += 48;
+        }
+        if self.imp().junk_banner.is_revealed() || self.imp().junk_banner.is_visible() {
+            banner_extra += 48;
+        }
+
+        let needed_total = (content_height + banner_extra).max(80);
+
+        tracing::debug!(
+            content_height,
+            needed_total,
+            available_height,
+            is_short = needed_total < available_height,
+            "Applying adapted mail viewer card height"
+        );
+
+        if needed_total < available_height {
+            if self.imp().adapted_card_height.get() != Some(needed_total) {
+                self.imp().adapted_card_height.set(Some(needed_total));
+                self.set_vexpand(false);
+                self.set_valign(gtk::Align::Start);
+                self.set_height_request(needed_total);
+            }
+        } else if self.imp().adapted_card_height.get().is_some() {
+            self.imp().adapted_card_height.set(None);
+            self.set_vexpand(true);
+            self.set_valign(gtk::Align::Fill);
+            self.set_height_request(-1);
         }
     }
 
@@ -2265,7 +2739,33 @@ fn effective_mail_base_uri(base_uri: Option<&str>, remote_images_allowed: bool) 
     (lower.starts_with("http://") || lower.starts_with("https://")).then_some(base_uri)
 }
 
-fn safe_css_font_family(value: &str) -> String {
+#[cfg(target_os = "linux")]
+pub(crate) fn detect_desktop_font_family() -> String {
+    if gio::SettingsSchemaSource::default()
+        .and_then(|s| s.lookup("org.gnome.desktop.interface", true))
+        .is_some()
+    {
+        let s = gio::Settings::new("org.gnome.desktop.interface");
+        let font_name = s.string("font-name");
+        if let Some(idx) = font_name.rfind(' ') {
+            let (fam, _) = font_name.split_at(idx);
+            let fam = fam.trim();
+            if !fam.is_empty() {
+                return fam.to_string();
+            }
+        } else if !font_name.trim().is_empty() {
+            return font_name.trim().to_string();
+        }
+    }
+    "Cantarell".to_string()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn detect_desktop_font_family() -> String {
+    "Cantarell".to_string()
+}
+
+pub(crate) fn safe_css_font_family(value: &str) -> String {
     let value = value.trim();
     if value.is_empty()
         || value.len() > 120
@@ -2273,7 +2773,13 @@ fn safe_css_font_family(value: &str) -> String {
             .chars()
             .any(|character| !(character.is_ascii_alphanumeric() || " ,-_'\"".contains(character)))
     {
-        "system-ui, sans-serif".to_string()
+        "Cantarell, \"Adwaita Sans\", system-ui, -apple-system, sans-serif".to_string()
+    } else if value == "system-ui, sans-serif" || value == "sans-serif" {
+        "Cantarell, \"Adwaita Sans\", system-ui, -apple-system, sans-serif".to_string()
+    } else if !value.contains("Cantarell") && !value.contains("Adwaita Sans") && !value.contains("sans-serif") {
+        format!("{value}, Cantarell, \"Adwaita Sans\", sans-serif")
+    } else if !value.contains("Cantarell") && !value.contains("Adwaita Sans") {
+        format!("Cantarell, \"Adwaita Sans\", {value}")
     } else {
         value.to_string()
     }
@@ -2377,23 +2883,17 @@ pub(crate) const USER_MAIL_OVERRIDE_CSS: &str = r#"
 *[class*="preview-text" i], *[id*="preview-text" i],
 *[class*="preview_text" i], *[id*="preview_text" i],
 *[class*="email-preview" i], *[id*="email-preview" i],
-*[class*="mail-preview" i], *[id*="mail-preview" i],
-*[class*="snippet" i], *[id*="snippet" i],
 *[class*="mso-hide" i],
-*[style*="display:none" i], *[style*="display: none" i],
-*[style*="visibility:hidden" i], *[style*="visibility: hidden" i],
-*[style*="mso-hide:all" i], *[style*="mso-hide: all" i],
-*[style*="font-size:0" i], *[style*="font-size: 0" i],
-*[style*="font-size:1px" i], *[style*="font-size: 1px" i],
-*[style*="font-size: 0px" i], *[style*="font-size:0px" i],
-*[style*="font-size:0pt" i], *[style*="font-size: 0pt" i],
-*[style*="font-size: 0.0" i], *[style*="font-size:0.0" i],
-*[style*="max-height:0" i], *[style*="max-height: 0" i],
-*[style*="height:0" i], *[style*="height: 0" i],
-*[style*="line-height:0" i], *[style*="line-height: 0" i],
-*[style*="line-height:1px" i], *[style*="line-height: 1px" i],
-*[style*="opacity:0" i], *[style*="opacity: 0" i],
-*[style*="color:transparent" i], *[style*="color: transparent" i] {
+div[style*="display:none" i], div[style*="display: none" i],
+div[style*="visibility:hidden" i], div[style*="visibility: hidden" i],
+div[style*="mso-hide:all" i], div[style*="mso-hide: all" i],
+div[style*="font-size:1px" i], div[style*="font-size: 1px" i],
+div[style*="max-height:0" i], div[style*="max-height: 0" i],
+span[style*="display:none" i], span[style*="display: none" i],
+span[style*="visibility:hidden" i], span[style*="visibility: hidden" i],
+span[style*="mso-hide:all" i], span[style*="mso-hide: all" i],
+span[style*="font-size:1px" i], span[style*="font-size: 1px" i],
+span[style*="max-height:0" i], span[style*="max-height: 0" i] {
   display: none !important;
   visibility: hidden !important;
   opacity: 0 !important;
@@ -2413,16 +2913,29 @@ pub(crate) const USER_MAIL_OVERRIDE_CSS: &str = r#"
 }
 
 * {
-  box-sizing: border-box !important;
   min-width: 0 !important;
 }
-html, body {
+html {
   width: 100% !important;
   max-width: 100% !important;
   min-width: 0 !important;
-  min-height: 100% !important;
+  min-height: 0 !important;
+  height: auto !important;
   margin: 0 !important;
   padding: 0 !important;
+  background-color: transparent !important;
+  box-sizing: border-box !important;
+  overflow-x: auto !important;
+  -webkit-text-size-adjust: 100%;
+}
+body {
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  height: auto !important;
+  margin: 0 !important;
+  padding: 12px 16px !important;
   box-sizing: border-box !important;
   overflow-x: auto !important;
   -webkit-text-size-adjust: 100%;
@@ -2440,12 +2953,10 @@ img, video, iframe, canvas, svg {
 table {
   border-collapse: collapse !important;
   table-layout: fixed !important;
-  width: 100% !important;
   max-width: 100% !important;
   min-width: 0 !important;
 }
 table[width], table[style*="width"] {
-  width: 100% !important;
   max-width: 100% !important;
   min-width: 0 !important;
 }
@@ -2455,8 +2966,7 @@ div[style*="width"], div[width] {
   min-width: 0 !important;
 }
 body > table, body > div, body > center, body > article, body > main,
-center > table, table[align="center"] {
-  width: 100% !important;
+center > table {
   max-width: 100% !important;
   min-width: 0 !important;
   margin-left: auto !important;
@@ -2464,12 +2974,10 @@ center > table, table[align="center"] {
 }
 @media (max-width: 768px), screen and (max-width: 768px) {
   body > table, body > div, body > center, body > article, body > main,
-  center > table, table[align="center"] {
+  center > table {
     margin-left: 0 !important;
     margin-right: 0 !important;
   }
-  table[align="left"], table[align="right"],
-  td[align="left"], td[align="right"],
   td[class*="col" i], th[class*="col" i],
   td[class*="stack" i], th[class*="stack" i],
   td[class*="column" i], th[class*="column" i],
@@ -2487,16 +2995,7 @@ center > table, table[align="center"] {
   html, body {
     padding: 8px !important;
   }
-  table, tbody, tr, td, th {
-    display: block !important;
-    width: 100% !important;
-    max-width: 100% !important;
-    min-width: 0 !important;
-    float: none !important;
-    box-sizing: border-box !important;
-  }
   center {
-    width: 100% !important;
     max-width: 100% !important;
     min-width: 0 !important;
   }
@@ -2514,7 +3013,7 @@ center > table, table[align="center"] {
 pre, code {
   white-space: pre-wrap !important;
   word-wrap: break-word !important;
-  font-family: inherit;
+  font-family: inherit !important;
   font-size: inherit;
   margin: 0;
 }
@@ -2547,7 +3046,7 @@ fn compose_sanitized_mail_document(
                 r#"
   html {
     color-scheme: dark;
-    background-color: #1e1e1e;
+    background-color: transparent !important;
     color: #eeeeec;
   }
   body {
@@ -2555,7 +3054,7 @@ fn compose_sanitized_mail_document(
     font-size: __FONT_SIZE__px;
     line-height: 1.6;
     color: inherit;
-    background-color: transparent;
+    background-color: #1e1e1e !important;
   }
 "#,
                 "",
@@ -2565,19 +3064,17 @@ fn compose_sanitized_mail_document(
                 r#"
   html {
     color-scheme: dark;
-    background-color: #e1e1e1;
+    background-color: transparent !important;
     color: #2e3436;
-    filter: invert(100%) hue-rotate(180deg);
-    -webkit-filter: invert(100%) hue-rotate(180deg);
-    min-height: 100%;
   }
   body {
     font-family: __FONT_FAMILY__;
     font-size: __FONT_SIZE__px;
     line-height: 1.6;
     color: inherit;
-    background-color: transparent;
-    min-height: 100%;
+    background-color: #e1e1e1 !important;
+    filter: invert(100%) hue-rotate(180deg);
+    -webkit-filter: invert(100%) hue-rotate(180deg);
   }
 "#,
                 r#"
@@ -2593,7 +3090,7 @@ fn compose_sanitized_mail_document(
             r#"
   html {
     color-scheme: light;
-    background-color: #ffffff;
+    background-color: transparent !important;
     color: #2e3436;
   }
   body {
@@ -2601,7 +3098,7 @@ fn compose_sanitized_mail_document(
     font-size: __FONT_SIZE__px;
     line-height: 1.6;
     color: inherit;
-    background-color: transparent;
+    background-color: #ffffff !important;
   }
 "#,
             "",
@@ -2942,6 +3439,7 @@ mod tests {
     };
     use crate::services::inline_content_service::InlineImage;
     use glib::subclass::prelude::ObjectSubclassIsExt;
+    use gtk::prelude::*;
     use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
 
@@ -3177,11 +3675,11 @@ mod tests {
     fn viewer_font_inputs_have_safe_bounds() {
         assert_eq!(
             safe_css_font_family("system-ui, sans-serif"),
-            "system-ui, sans-serif"
+            "Cantarell, \"Adwaita Sans\", system-ui, -apple-system, sans-serif"
         );
         assert_eq!(
             safe_css_font_family("</style><script>bad</script>"),
-            "system-ui, sans-serif"
+            "Cantarell, \"Adwaita Sans\", system-ui, -apple-system, sans-serif"
         );
         assert_eq!(safe_mail_font_size(1), 8);
         assert_eq!(safe_mail_font_size(100), 48);
@@ -3436,12 +3934,20 @@ mod tests {
             &colors,
         );
         assert!(doc.contains(".preheader, .preview-text"));
-        assert!(doc.contains("*[style*=\"display:none\" i]"));
-        assert!(doc.contains("*[style*=\"font-size:1px\" i]"));
-        assert!(doc.contains("*[style*=\"max-height:0\" i]"));
+        assert!(doc.contains("div[style*=\"display:none\" i]"));
+        assert!(doc.contains("div[style*=\"font-size:1px\" i]"));
+        assert!(doc.contains("div[style*=\"max-height:0\" i]"));
+        assert!(doc.contains("span[style*=\"display:none\" i]"));
+        assert!(doc.contains("span[style*=\"font-size:1px\" i]"));
+        assert!(doc.contains("span[style*=\"max-height:0\" i]"));
         assert!(doc.contains("display: none !important"));
         assert!(doc.contains("visibility: hidden !important"));
         assert!(doc.contains("mso-hide: all !important"));
+        assert!(!doc.contains("font-size: 0px"), "Must not suppress font-size: 0px which is used by email column layouts");
+        assert!(!doc.contains("font-size:0px"), "Must not suppress font-size:0px");
+        assert!(!doc.contains("font-size: 0pt"), "Must not suppress font-size: 0pt");
+        assert!(!doc.contains("font-size:0pt"), "Must not suppress font-size:0pt");
+        assert!(!doc.contains("*[style*=\"max-height:0\""), "Must not use wildcard max-height:0 matching on all elements");
         // Ensure style_tag comes after the mail's own head rules
         let own_rule_pos = doc.find(".own-rule").unwrap();
         let override_style_pos = doc.find(".preheader, .preview-text").unwrap();
@@ -3489,6 +3995,37 @@ mod tests {
             "MailViewer minimum width must be <= 160px so it can fit narrow responsive panels, got {min_w}"
         );
     }
+
+    #[test]
+    fn test_mail_viewer_adapted_height() {
+        use gtk::prelude::*;
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let viewer = super::MailViewer::new();
+
+        // Short email: height fits within available parent height
+        viewer.apply_adapted_height(120);
+        assert_eq!(viewer.valign(), gtk::Align::Start);
+        assert!(!viewer.vexpands());
+        assert_eq!(viewer.height_request(), 120);
+
+        // Long email: exceeds default available height (500)
+        viewer.apply_adapted_height(1200);
+        assert_eq!(viewer.valign(), gtk::Align::Fill);
+        assert!(viewer.vexpands());
+        assert_eq!(viewer.height_request(), -1);
+
+        // Reset/cleared state
+        viewer.clear();
+        assert_eq!(viewer.valign(), gtk::Align::Fill);
+        assert!(viewer.vexpands());
+        assert_eq!(viewer.height_request(), -1);
+    }
+
 
     #[test]
     fn test_mail_viewer_composed_document_dark_mode_css() {
@@ -3600,14 +4137,14 @@ mod tests {
     }
 
     #[test]
-    fn test_user_mail_override_css_has_zero_padding() {
+    fn test_user_mail_override_css_has_card_padding() {
         assert!(
-            super::USER_MAIL_OVERRIDE_CSS.contains("padding: 0 !important;"),
-            "html, body must have 0 padding to match evolution/convey flush preview behavior"
+            super::USER_MAIL_OVERRIDE_CSS.contains("padding: 12px 16px !important;"),
+            "body must have 12px 16px padding for libadwaita card preview"
         );
         assert!(
-            !super::USER_MAIL_OVERRIDE_CSS.contains("padding: 12px !important;"),
-            "12px body padding must not be present"
+            super::USER_MAIL_OVERRIDE_CSS.contains("padding: 0 !important;"),
+            "html root must have 0 padding"
         );
     }
 
@@ -3656,6 +4193,222 @@ mod tests {
         #[cfg(target_os = "linux")]
         {
             assert!(!viewer.imp().webview_ready.get());
+        }
+    }
+
+    #[test]
+    fn test_mail_viewer_zoom_operations_and_clamping() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let viewer = super::MailViewer::new();
+
+        assert_eq!(viewer.zoom_level(), 1.0);
+        viewer.zoom_in();
+        assert!((viewer.zoom_level() - 1.1).abs() < 1e-5);
+        viewer.zoom_out();
+        assert!((viewer.zoom_level() - 1.0).abs() < 1e-5);
+
+        // Clamping to max 3.0
+        for _ in 0..30 {
+            viewer.zoom_in();
+        }
+        assert_eq!(viewer.zoom_level(), 3.0);
+
+        // Clamping to min 0.5
+        for _ in 0..40 {
+            viewer.zoom_out();
+        }
+        assert_eq!(viewer.zoom_level(), 0.5);
+
+        // Reset to 1.0
+        viewer.zoom_reset();
+        assert_eq!(viewer.zoom_level(), 1.0);
+    }
+
+    #[test]
+    fn test_user_mail_override_css_does_not_hide_background_color_transparent() {
+        assert!(
+            !super::USER_MAIL_OVERRIDE_CSS.contains("style*=\"color:transparent"),
+            "USER_MAIL_OVERRIDE_CSS must not hide elements matching color:transparent as it hides background-color:transparent"
+        );
+        assert!(
+            !super::USER_MAIL_OVERRIDE_CSS.contains("style*=\"color: transparent"),
+            "USER_MAIL_OVERRIDE_CSS must not hide elements matching color: transparent"
+        );
+    }
+
+    #[test]
+    fn test_fideapi_html_renders_without_being_hidden() {
+        let fide_path = std::path::Path::new("/tmp/meridian-test/fixture-a.eml");
+        if let Ok(bytes) = std::fs::read(fide_path) {
+            let parsed = crate::services::mail_store_service::parse_rfc822_bytes(
+                "fide-test",
+                "inbox",
+                &bytes,
+                false,
+            );
+            assert!(parsed.is_some(), "fideapi.eml must parse successfully");
+            let parsed = parsed.unwrap();
+            assert!(!parsed.html_body.is_empty(), "fideapi.eml must have an HTML body");
+
+            let plan = super::prepare_mail_body(&parsed.html_body, None, true, false);
+            assert!(!plan.used_fallback, "fideapi.eml must not fall back to plain text");
+            assert!(!plan.body.is_empty(), "fideapi.eml sanitized body must not be empty");
+
+            let doc = super::compose_sanitized_mail_document(
+                &plan.body,
+                true,
+                false,
+                false,
+                "system-ui, sans-serif",
+                16,
+                true,
+                &[
+                    "#729FCF".to_string(),
+                    "#AD7FA8".to_string(),
+                    "#8AE234".to_string(),
+                    "#FCAF3E".to_string(),
+                    "#E9B96E".to_string(),
+                ],
+            );
+            assert!(doc.contains("Sie haben einige Google-Kontodaten mit FideAPI geteilt") || doc.contains("Google-Kontodaten"));
+            assert!(!doc.contains("style*=\"color:transparent"), "doc must not contain color:transparent override rule");
+        }
+    }
+
+    #[test]
+    fn test_flink_and_xai_render() {
+        assert!(
+            !super::USER_MAIL_OVERRIDE_CSS.contains("font-size: 0px")
+                && !super::USER_MAIL_OVERRIDE_CSS.contains("font-size:0px")
+                && !super::USER_MAIL_OVERRIDE_CSS.contains("font-size: 0pt")
+                && !super::USER_MAIL_OVERRIDE_CSS.contains("font-size:0pt"),
+            "USER_MAIL_OVERRIDE_CSS must not hide elements with font-size: 0 as it destroys column layouts in MJML and email templates"
+        );
+        assert!(
+            !super::USER_MAIL_OVERRIDE_CSS.contains("*[style*=\"max-height:0\""),
+            "USER_MAIL_OVERRIDE_CSS must not hide elements matching wildcard max-height:0 as it breaks tables"
+        );
+
+        for filename in &["flink.eml", "xai.eml"] {
+            let path = std::path::Path::new("/tmp/meridian-test").join(filename);
+            if let Ok(bytes) = std::fs::read(&path) {
+                let parsed = crate::services::mail_store_service::parse_rfc822_bytes(
+                    "test",
+                    "inbox",
+                    &bytes,
+                    false,
+                );
+                assert!(parsed.is_some(), "{filename} must parse");
+                let parsed = parsed.unwrap();
+                let plan = super::prepare_mail_body(&parsed.html_body, None, true, false);
+                assert!(!plan.used_fallback, "{filename} must not fall back to plain text");
+                assert!(!plan.body.is_empty(), "{filename} body must not be empty");
+                let doc = super::compose_sanitized_mail_document(
+                    &plan.body,
+                    true,
+                    false,
+                    false,
+                    "system-ui, sans-serif",
+                    16,
+                    true,
+                    &[
+                        "#729FCF".to_string(),
+                        "#AD7FA8".to_string(),
+                        "#8AE234".to_string(),
+                        "#FCAF3E".to_string(),
+                        "#E9B96E".to_string(),
+                    ],
+                );
+                if *filename == "flink.eml" {
+                    assert!(
+                        doc.contains("Asian Weeks") || doc.contains("Discover Asian Weeks"),
+                        "flink.eml doc must contain its content"
+                    );
+                } else if *filename == "xai.eml" {
+                    assert!(
+                        doc.contains("Introducing the Voice Agent Builder") || doc.contains("Voice Agent Builder"),
+                        "xai.eml doc must contain its content"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_mail_viewer_banner_animations_are_disabled() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let viewer = super::MailViewer::new();
+        for banner in [&viewer.imp().banner, &viewer.imp().trash_banner, &viewer.imp().junk_banner] {
+            let revealer = banner
+                .first_child()
+                .and_then(|c| c.downcast::<gtk::Revealer>().ok())
+                .expect("Banner must have an internal GtkRevealer child");
+            assert_eq!(revealer.transition_duration(), 0, "Banner animation duration must be 0ms");
+            assert_eq!(revealer.transition_type(), gtk::RevealerTransitionType::None, "Banner transition type must be None");
+        }
+    }
+
+    #[test]
+    fn test_brevo_mail_renders_without_oversized_images() {
+        assert!(
+            !super::USER_MAIL_OVERRIDE_CSS.contains("table[width], table[style*=\"width\"] {\n  width: 100% !important;"),
+            "USER_MAIL_OVERRIDE_CSS must not force fixed-width tables to width: 100% !important as it expands email logos and icons"
+        );
+        assert!(
+            !super::USER_MAIL_OVERRIDE_CSS.contains("td[align=\"right\"]"),
+            "USER_MAIL_OVERRIDE_CSS must not force aligned table cells to display: block width: 100%"
+        );
+        assert!(
+            !super::USER_MAIL_OVERRIDE_CSS.contains("* {\n  box-sizing: border-box !important;"),
+            "USER_MAIL_OVERRIDE_CSS must not force box-sizing: border-box on * as it breaks email button height and vertical padding"
+        );
+
+        let brevo_path = std::path::Path::new("/tmp/meridian-test/fixture-e.eml");
+        if let Ok(bytes) = std::fs::read(brevo_path) {
+            let parsed = crate::services::mail_store_service::parse_rfc822_bytes(
+                "brevo-test",
+                "inbox",
+                &bytes,
+                false,
+            );
+            assert!(parsed.is_some(), "brevo.eml must parse successfully");
+            let parsed = parsed.unwrap();
+            assert!(!parsed.html_body.is_empty(), "brevo.eml must have an HTML body");
+
+            let plan = super::prepare_mail_body(&parsed.html_body, None, true, false);
+            assert!(!plan.used_fallback, "brevo.eml must not fall back to plain text");
+            assert!(!plan.body.is_empty(), "brevo.eml sanitized body must not be empty");
+
+            let doc = super::compose_sanitized_mail_document(
+                &plan.body,
+                true,
+                false,
+                false,
+                "system-ui, sans-serif",
+                16,
+                true,
+                &[
+                    "#729FCF".to_string(),
+                    "#AD7FA8".to_string(),
+                    "#8AE234".to_string(),
+                    "#FCAF3E".to_string(),
+                    "#E9B96E".to_string(),
+                ],
+            );
+            assert!(
+                doc.contains("width=\"24\"") && doc.contains("width=\"120\""),
+                "brevo.eml document must retain fixed-width container tables for eye icon and logo"
+            );
         }
     }
 }

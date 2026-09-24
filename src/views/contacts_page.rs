@@ -6,8 +6,10 @@ use crate::i18n::gettext;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gdk, gio, glib};
+#[cfg(target_os = "linux")]
+use webkit6::prelude::*;
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -81,7 +83,7 @@ impl ContactPageSearchState {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub(crate) enum ContactTableColumn {
     #[default]
     Name,
@@ -90,6 +92,64 @@ pub(crate) enum ContactTableColumn {
     Email,
     Phone,
     Categories,
+}
+
+impl ContactTableColumn {
+    pub(crate) fn id(&self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::Company => "company",
+            Self::Title => "title",
+            Self::Email => "email",
+            Self::Phone => "phone",
+            Self::Categories => "categories",
+        }
+    }
+
+    pub(crate) fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "name" => Some(Self::Name),
+            "company" => Some(Self::Company),
+            "title" => Some(Self::Title),
+            "email" => Some(Self::Email),
+            "phone" => Some(Self::Phone),
+            "categories" => Some(Self::Categories),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn label(&self) -> String {
+        match self {
+            Self::Name => crate::i18n::gettext("Name"),
+            Self::Company => crate::i18n::gettext("Organization"),
+            Self::Title => crate::i18n::gettext("Job Title"),
+            Self::Email => crate::i18n::gettext("Email"),
+            Self::Phone => crate::i18n::gettext("Phone"),
+            Self::Categories => crate::i18n::gettext("Categories"),
+        }
+    }
+
+    pub(crate) fn default_width(&self) -> i32 {
+        match self {
+            Self::Name => 180,
+            Self::Company => 140,
+            Self::Title => 120,
+            Self::Email => 180,
+            Self::Phone => 120,
+            Self::Categories => 120,
+        }
+    }
+
+    pub(crate) fn min_width(&self) -> i32 {
+        match self {
+            Self::Name => 80,
+            Self::Company => 60,
+            Self::Title => 60,
+            Self::Email => 80,
+            Self::Phone => 60,
+            Self::Categories => 60,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -112,6 +172,7 @@ pub(crate) struct PreparedContactTableLayout {
     pub width: f64,
     pub height: f64,
     pub row_height: f64,
+    pub columns: Vec<(ContactTableColumn, f64)>,
     pub col_name_w: f64,
     pub col_company_w: f64,
     pub col_title_w: f64,
@@ -120,13 +181,14 @@ pub(crate) struct PreparedContactTableLayout {
     pub col_categories_w: f64,
 }
 
-pub(crate) fn prepare_contact_table_layout(
+pub(crate) fn prepare_contact_table_layout_with_columns(
     contacts: &[EBookContactRecord],
     visible_filter: Option<&HashSet<ContactIdentity>>,
     selected_identities: &HashSet<ContactIdentity>,
     sort_col: ContactTableColumn,
     sort_desc: bool,
     width: f64,
+    columns: &[(ContactTableColumn, f64)],
 ) -> PreparedContactTableLayout {
     let row_height = 32.0;
     let mut filtered_contacts: Vec<&EBookContactRecord> = contacts
@@ -179,6 +241,52 @@ pub(crate) fn prepare_contact_table_layout(
         });
     }
 
+    let mut col_name_w = 0.0;
+    let mut col_company_w = 0.0;
+    let mut col_title_w = 0.0;
+    let mut col_email_w = 0.0;
+    let mut col_phone_w = 0.0;
+    let mut col_categories_w = 0.0;
+    let mut total_cols_w = 0.0;
+
+    for &(col, col_w) in columns {
+        total_cols_w += col_w;
+        match col {
+            ContactTableColumn::Name => col_name_w = col_w,
+            ContactTableColumn::Company => col_company_w = col_w,
+            ContactTableColumn::Title => col_title_w = col_w,
+            ContactTableColumn::Email => col_email_w = col_w,
+            ContactTableColumn::Phone => col_phone_w = col_w,
+            ContactTableColumn::Categories => col_categories_w = col_w,
+        }
+    }
+
+    let total_w = total_cols_w.max(width).max(800.0);
+    let height = (rows.len() as f64 * row_height).max(40.0);
+
+    PreparedContactTableLayout {
+        rows,
+        width: total_w,
+        height,
+        row_height,
+        columns: columns.to_vec(),
+        col_name_w,
+        col_company_w,
+        col_title_w,
+        col_email_w,
+        col_phone_w,
+        col_categories_w,
+    }
+}
+
+pub(crate) fn prepare_contact_table_layout(
+    contacts: &[EBookContactRecord],
+    visible_filter: Option<&HashSet<ContactIdentity>>,
+    selected_identities: &HashSet<ContactIdentity>,
+    sort_col: ContactTableColumn,
+    sort_desc: bool,
+    width: f64,
+) -> PreparedContactTableLayout {
     let min_width = 800.0;
     let available_w = width.max(min_width);
     let col_name_w = (available_w * 0.22).max(150.0);
@@ -187,20 +295,23 @@ pub(crate) fn prepare_contact_table_layout(
     let col_email_w = (available_w * 0.20).max(140.0);
     let col_phone_w = (available_w * 0.14).max(110.0);
     let col_categories_w = (available_w - col_name_w - col_company_w - col_title_w - col_email_w - col_phone_w).max(100.0);
-
-    let height = (rows.len() as f64 * row_height).max(40.0);
-    PreparedContactTableLayout {
-        rows,
-        width: available_w,
-        height,
-        row_height,
-        col_name_w,
-        col_company_w,
-        col_title_w,
-        col_email_w,
-        col_phone_w,
-        col_categories_w,
-    }
+    let default_cols = [
+        (ContactTableColumn::Name, col_name_w),
+        (ContactTableColumn::Company, col_company_w),
+        (ContactTableColumn::Title, col_title_w),
+        (ContactTableColumn::Email, col_email_w),
+        (ContactTableColumn::Phone, col_phone_w),
+        (ContactTableColumn::Categories, col_categories_w),
+    ];
+    prepare_contact_table_layout_with_columns(
+        contacts,
+        visible_filter,
+        selected_identities,
+        sort_col,
+        sort_desc,
+        width,
+        &default_cols,
+    )
 }
 
 pub(crate) fn hit_test_contact_table_header(
@@ -211,27 +322,13 @@ pub(crate) fn hit_test_contact_table_header(
         return None;
     }
     let mut cur = 0.0;
-    cur += layout.col_name_w;
-    if x <= cur {
-        return Some(ContactTableColumn::Name);
+    for &(col, col_w) in &layout.columns {
+        cur += col_w;
+        if x <= cur {
+            return Some(col);
+        }
     }
-    cur += layout.col_company_w;
-    if x <= cur {
-        return Some(ContactTableColumn::Company);
-    }
-    cur += layout.col_title_w;
-    if x <= cur {
-        return Some(ContactTableColumn::Title);
-    }
-    cur += layout.col_email_w;
-    if x <= cur {
-        return Some(ContactTableColumn::Email);
-    }
-    cur += layout.col_phone_w;
-    if x <= cur {
-        return Some(ContactTableColumn::Phone);
-    }
-    Some(ContactTableColumn::Categories)
+    None
 }
 
 pub(crate) fn hit_test_contact_table(
@@ -390,133 +487,115 @@ pub(crate) fn draw_contact_table_canvas(
         let _ = cr.stroke();
 
         let mut col_x = 0.0;
+        for &(col, col_w) in &layout.columns {
+            match col {
+                ContactTableColumn::Name => {
+                    let _ = cr.save();
+                    cr.rectangle(col_x + 4.0, y, (col_w - 8.0).max(10.0), h);
+                    let _ = cr.clip();
 
-        // 1. Name Column (with avatar initials circle)
-        let name_w = layout.col_name_w;
-        let _ = cr.save();
-        cr.rectangle(col_x + 4.0, y, (name_w - 8.0).max(10.0), h);
-        let _ = cr.clip();
+                    let avatar_cx = col_x + 16.0;
+                    let avatar_cy = y + h / 2.0;
+                    cr.set_source_rgba(0.21, 0.51, 0.96, 0.25);
+                    cr.arc(avatar_cx, avatar_cy, 9.0, 0.0, std::f64::consts::TAU);
+                    let _ = cr.fill();
 
-        let avatar_cx = col_x + 16.0;
-        let avatar_cy = y + h / 2.0;
-        cr.set_source_rgba(0.21, 0.51, 0.96, 0.25);
-        cr.arc(avatar_cx, avatar_cy, 9.0, 0.0, std::f64::consts::TAU);
-        let _ = cr.fill();
+                    let initials: String = row
+                        .name
+                        .split_whitespace()
+                        .take(2)
+                        .filter_map(|w| w.chars().next())
+                        .collect();
+                    cr.set_source_rgb(0.21, 0.51, 0.96);
+                    cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+                    cr.set_font_size(9.0);
+                    cr.move_to(avatar_cx - 5.0, avatar_cy + 3.5);
+                    let _ = cr.show_text(&initials);
 
-        let initials: String = row
-            .name
-            .split_whitespace()
-            .take(2)
-            .filter_map(|w| w.chars().next())
-            .collect();
-        cr.set_source_rgb(0.21, 0.51, 0.96);
-        cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
-        cr.set_font_size(9.0);
-        cr.move_to(avatar_cx - 5.0, avatar_cy + 3.5);
-        let _ = cr.show_text(&initials);
+                    cr.set_source_rgb(r, g, b);
+                    cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+                    cr.set_font_size(12.0);
+                    cr.move_to(col_x + 32.0, y + h / 2.0 + 4.0);
+                    let _ = cr.show_text(&row.name);
+                    let _ = cr.restore();
+                }
+                ContactTableColumn::Company => {
+                    let _ = cr.save();
+                    cr.rectangle(col_x + 6.0, y, (col_w - 12.0).max(10.0), h);
+                    let _ = cr.clip();
+                    cr.set_source_rgb(dim_r, dim_g, dim_b);
+                    cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
+                    cr.set_font_size(12.0);
+                    cr.move_to(col_x + 6.0, y + h / 2.0 + 4.0);
+                    let _ = cr.show_text(&row.company);
+                    let _ = cr.restore();
+                }
+                ContactTableColumn::Title => {
+                    let _ = cr.save();
+                    cr.rectangle(col_x + 6.0, y, (col_w - 12.0).max(10.0), h);
+                    let _ = cr.clip();
+                    cr.set_source_rgb(dim_r, dim_g, dim_b);
+                    cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
+                    cr.set_font_size(12.0);
+                    cr.move_to(col_x + 6.0, y + h / 2.0 + 4.0);
+                    let _ = cr.show_text(&row.title);
+                    let _ = cr.restore();
+                }
+                ContactTableColumn::Email => {
+                    let _ = cr.save();
+                    cr.rectangle(col_x + 6.0, y, (col_w - 12.0).max(10.0), h);
+                    let _ = cr.clip();
+                    if is_dark {
+                        cr.set_source_rgb(0.45, 0.70, 1.0);
+                    } else {
+                        cr.set_source_rgb(0.15, 0.45, 0.85);
+                    }
+                    cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
+                    cr.set_font_size(12.0);
+                    cr.move_to(col_x + 6.0, y + h / 2.0 + 4.0);
+                    let _ = cr.show_text(&row.email);
+                    let _ = cr.restore();
+                }
+                ContactTableColumn::Phone => {
+                    let _ = cr.save();
+                    cr.rectangle(col_x + 6.0, y, (col_w - 12.0).max(10.0), h);
+                    let _ = cr.clip();
+                    cr.set_source_rgb(dim_r, dim_g, dim_b);
+                    cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
+                    cr.set_font_size(12.0);
+                    cr.move_to(col_x + 6.0, y + h / 2.0 + 4.0);
+                    let _ = cr.show_text(&row.phone);
+                    let _ = cr.restore();
+                }
+                ContactTableColumn::Categories => {
+                    let _ = cr.save();
+                    cr.rectangle(col_x + 6.0, y, (col_w - 12.0).max(10.0), h);
+                    let _ = cr.clip();
+                    let cat_str = row.categories.join(", ");
+                    cr.set_source_rgb(dim_r, dim_g, dim_b);
+                    cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
+                    cr.set_font_size(11.0);
+                    cr.move_to(col_x + 6.0, y + h / 2.0 + 4.0);
+                    let _ = cr.show_text(&cat_str);
+                    let _ = cr.restore();
+                }
+            }
+            col_x += col_w;
 
-        cr.set_source_rgb(r, g, b);
-        cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
-        cr.set_font_size(12.0);
-        cr.move_to(col_x + 32.0, y + h / 2.0 + 4.0);
-        let _ = cr.show_text(&row.name);
-        let _ = cr.restore();
-        col_x += name_w;
-
-        cr.set_source_rgba(div_r, div_g, div_b, 0.08);
-        cr.move_to(col_x - 0.5, y + 3.0);
-        cr.line_to(col_x - 0.5, y + h - 3.0);
-        let _ = cr.stroke();
-
-        // 2. Company Column
-        let comp_w = layout.col_company_w;
-        let _ = cr.save();
-        cr.rectangle(col_x + 6.0, y, (comp_w - 12.0).max(10.0), h);
-        let _ = cr.clip();
-        cr.set_source_rgb(dim_r, dim_g, dim_b);
-        cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
-        cr.set_font_size(12.0);
-        cr.move_to(col_x + 6.0, y + h / 2.0 + 4.0);
-        let _ = cr.show_text(&row.company);
-        let _ = cr.restore();
-        col_x += comp_w;
-
-        cr.set_source_rgba(div_r, div_g, div_b, 0.08);
-        cr.move_to(col_x - 0.5, y + 3.0);
-        cr.line_to(col_x - 0.5, y + h - 3.0);
-        let _ = cr.stroke();
-
-        // 3. Title Column
-        let title_w = layout.col_title_w;
-        let _ = cr.save();
-        cr.rectangle(col_x + 6.0, y, (title_w - 12.0).max(10.0), h);
-        let _ = cr.clip();
-        cr.set_source_rgb(dim_r, dim_g, dim_b);
-        cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
-        cr.set_font_size(12.0);
-        cr.move_to(col_x + 6.0, y + h / 2.0 + 4.0);
-        let _ = cr.show_text(&row.title);
-        let _ = cr.restore();
-        col_x += title_w;
-
-        cr.set_source_rgba(div_r, div_g, div_b, 0.08);
-        cr.move_to(col_x - 0.5, y + 3.0);
-        cr.line_to(col_x - 0.5, y + h - 3.0);
-        let _ = cr.stroke();
-
-        // 4. Email Column
-        let email_w = layout.col_email_w;
-        let _ = cr.save();
-        cr.rectangle(col_x + 6.0, y, (email_w - 12.0).max(10.0), h);
-        let _ = cr.clip();
-        if is_dark {
-            cr.set_source_rgb(0.45, 0.70, 1.0);
-        } else {
-            cr.set_source_rgb(0.15, 0.45, 0.85);
+            cr.set_source_rgba(div_r, div_g, div_b, 0.08);
+            cr.move_to(col_x - 0.5, y + 3.0);
+            cr.line_to(col_x - 0.5, y + h - 3.0);
+            let _ = cr.stroke();
         }
-        cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
-        cr.set_font_size(12.0);
-        cr.move_to(col_x + 6.0, y + h / 2.0 + 4.0);
-        let _ = cr.show_text(&row.email);
-        let _ = cr.restore();
-        col_x += email_w;
-
-        cr.set_source_rgba(div_r, div_g, div_b, 0.08);
-        cr.move_to(col_x - 0.5, y + 3.0);
-        cr.line_to(col_x - 0.5, y + h - 3.0);
-        let _ = cr.stroke();
-
-        // 5. Phone Column
-        let phone_w = layout.col_phone_w;
-        let _ = cr.save();
-        cr.rectangle(col_x + 6.0, y, (phone_w - 12.0).max(10.0), h);
-        let _ = cr.clip();
-        cr.set_source_rgb(dim_r, dim_g, dim_b);
-        cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
-        cr.set_font_size(12.0);
-        cr.move_to(col_x + 6.0, y + h / 2.0 + 4.0);
-        let _ = cr.show_text(&row.phone);
-        let _ = cr.restore();
-        col_x += phone_w;
-
-        cr.set_source_rgba(div_r, div_g, div_b, 0.08);
-        cr.move_to(col_x - 0.5, y + 3.0);
-        cr.line_to(col_x - 0.5, y + h - 3.0);
-        let _ = cr.stroke();
-
-        // 6. Categories Column
-        let cat_w = layout.col_categories_w;
-        let _ = cr.save();
-        cr.rectangle(col_x + 6.0, y, (cat_w - 12.0).max(10.0), h);
-        let _ = cr.clip();
-        let cat_str = row.categories.join(", ");
-        cr.set_source_rgb(dim_r, dim_g, dim_b);
-        cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
-        cr.set_font_size(11.0);
-        cr.move_to(col_x + 6.0, y + h / 2.0 + 4.0);
-        let _ = cr.show_text(&cat_str);
-        let _ = cr.restore();
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ContactViewMode {
+    #[default]
+    Simple,
+    Cards,
+    Table,
 }
 
 // ─── GObject Subclass ───────────────────────────────────────────────────────
@@ -544,6 +623,10 @@ mod imp {
 
     #[derive(Debug, Default)]
     pub struct ContactsPage {
+        pub current_view_mode: Cell<ContactViewMode>,
+        pub simple_vpane_pos: Cell<i32>,
+        pub cards_vpane_pos: Cell<i32>,
+        pub table_vpane_pos: Cell<i32>,
         pub ebook_monitor_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
         pub contact_search_cancel: RefCell<Option<Arc<AtomicBool>>>,
         pub contact_search_field: Cell<ContactSearchField>,
@@ -556,7 +639,9 @@ mod imp {
         pub new_list_button: RefCell<Option<gtk::Button>>,
         pub drawer_total: RefCell<Option<gtk::Label>>,
         pub contact_list: RefCell<Option<gtk::ListBox>>,
-        pub contact_table_header: RefCell<Option<gtk::DrawingArea>>,
+        pub contact_table_header: RefCell<Option<gtk::Box>>,
+        pub column_header_scroll: RefCell<Option<gtk::ScrolledWindow>>,
+        pub contact_col_widths: RefCell<HashMap<String, i32>>,
         pub contact_table_canvas: RefCell<Option<gtk::DrawingArea>>,
         pub contact_table_layout: RefCell<Option<PreparedContactTableLayout>>,
         pub contact_table_hovered_row: Cell<Option<usize>>,
@@ -568,9 +653,15 @@ mod imp {
         pub search_state: RefCell<Option<Rc<ContactPageSearchState>>>,
         pub contact_cards_flow: RefCell<Option<gtk::FlowBox>>,
         pub cards_scroll: RefCell<Option<gtk::ScrolledWindow>>,
+        pub simple_list_scroll: RefCell<Option<gtk::ScrolledWindow>>,
         pub view_stack: RefCell<Option<gtk::Stack>>,
         pub alphabet_box: RefCell<Option<gtk::ListBox>>,
         pub list_scroll: RefCell<Option<gtk::ScrolledWindow>>,
+        pub address_group: RefCell<Option<adw::PreferencesGroup>>,
+        pub address_box: RefCell<Option<gtk::Box>>,
+        pub map_box: RefCell<Option<gtk::Box>>,
+        #[cfg(target_os = "linux")]
+        pub map_webview: RefCell<Option<webkit6::WebView>>,
         pub search_entry: RefCell<Option<gtk::SearchEntry>>,
         pub outer_paned: RefCell<Option<gtk::Paned>>,
         pub reload_fn: RefCell<Option<ReloadContactsCallback>>,
@@ -610,6 +701,9 @@ mod imp {
     impl ObjectImpl for ContactsPage {
         fn constructed(&self) {
             self.parent_constructed();
+            self.simple_vpane_pos.set(380);
+            self.cards_vpane_pos.set(580);
+            self.table_vpane_pos.set(820);
             self.obj().set_vexpand(true);
             self.obj().set_hexpand(true);
             self.obj().build_ui();
@@ -684,20 +778,22 @@ impl ContactsPage {
             .map(|c| c.width() as f64)
             .unwrap_or(800.0)
             .max(800.0);
-        let layout = prepare_contact_table_layout(
+        let active_cols = self.active_contact_table_columns(w);
+        let layout = prepare_contact_table_layout_with_columns(
             stored_contacts,
             visible_filter,
             selected_identities,
             sort_col,
             sort_desc,
             w,
+            &active_cols,
         );
         if let Some(canvas) = self.imp().contact_table_canvas.borrow().as_ref() {
             canvas.set_content_height(layout.height as i32);
             canvas.set_content_width(layout.width as i32);
         }
         if let Some(header) = self.imp().contact_table_header.borrow().as_ref() {
-            header.set_content_width(layout.width as i32);
+            header.set_width_request(layout.width as i32);
         }
         self.imp().contact_table_layout.replace(Some(layout));
         self.queue_contacts_table_draw();
@@ -709,7 +805,13 @@ impl ContactsPage {
         let search_opt = self.imp().search_state.borrow().clone();
         if let (Some(stored), Some(list), Some(search)) = (stored_opt, list_opt, search_opt) {
             let vis = search.visible_identities.borrow();
-            let visible_filter = if vis.is_empty() && search.active_query().clauses.is_empty() {
+            let active_query = search.active_query();
+            let has_active_filter = !active_query.clauses.is_empty()
+                || active_query.filters.source_uid.is_some()
+                || active_query.filters.category.is_some()
+                || active_query.filters.unmatched_category
+                || active_query.filters.duplicate_only;
+            let visible_filter = if !has_active_filter {
                 None
             } else {
                 Some(&*vis)
@@ -717,6 +819,835 @@ impl ContactsPage {
             let selected = current_contact_selected_identities(&list);
             self.update_contacts_table_layout(&stored.borrow(), visible_filter, &selected);
         }
+        self.refresh_contact_column_header();
+    }
+
+    pub(crate) fn active_contact_table_columns(&self, _available_w: f64) -> Vec<(ContactTableColumn, f64)> {
+        let settings = AppSettings::try_new();
+        let order = settings
+            .as_ref()
+            .map(|s| s.contact_table_column_order())
+            .unwrap_or_else(|| {
+                crate::services::settings_service::CONTACT_TABLE_COLUMN_IDS
+                    .iter()
+                    .map(|id| (*id).to_string())
+                    .collect()
+            });
+
+        let mut res = Vec::new();
+        for col_id in order {
+            let Some(col) = ContactTableColumn::from_id(&col_id) else { continue };
+            let visible = settings.as_ref().map(|s| s.contact_col_visible(&col_id)).unwrap_or(true);
+            if visible {
+                let width = self.get_contact_column_width(&col_id) as f64;
+                res.push((col, width));
+            }
+        }
+        if res.is_empty() {
+            res.push((ContactTableColumn::Name, 200.0));
+        }
+        res
+    }
+
+    pub(crate) fn apply_contact_column_width(&self, col_id: &str, width: i32) {
+        self.imp().contact_col_widths.borrow_mut().insert(col_id.to_string(), width);
+
+        if let Some(header) = self.imp().contact_table_header.borrow().as_ref() {
+            if let Some(col_widget) = Self::contact_column_child(header, col_id) {
+                col_widget.set_width_request(width);
+            }
+        }
+
+        if let Some(mut layout) = self.imp().contact_table_layout.borrow().clone() {
+            let mut total_w = 0.0;
+            for (col, col_w) in layout.columns.iter_mut() {
+                if col.id() == col_id {
+                    *col_w = width as f64;
+                }
+                total_w += *col_w;
+                match col {
+                    ContactTableColumn::Name => layout.col_name_w = *col_w,
+                    ContactTableColumn::Company => layout.col_company_w = *col_w,
+                    ContactTableColumn::Title => layout.col_title_w = *col_w,
+                    ContactTableColumn::Email => layout.col_email_w = *col_w,
+                    ContactTableColumn::Phone => layout.col_phone_w = *col_w,
+                    ContactTableColumn::Categories => layout.col_categories_w = *col_w,
+                }
+            }
+            layout.width = total_w.max(800.0);
+            if let Some(canvas) = self.imp().contact_table_canvas.borrow().as_ref() {
+                canvas.set_content_width(layout.width as i32);
+                canvas.queue_draw();
+            }
+            if let Some(header) = self.imp().contact_table_header.borrow().as_ref() {
+                header.set_width_request(layout.width as i32);
+            }
+            self.imp().contact_table_layout.replace(Some(layout));
+        }
+    }
+
+    pub(crate) fn get_contact_column_width(&self, col_id: &str) -> i32 {
+        if let Some(w) = self.imp().contact_col_widths.borrow().get(col_id) {
+            return *w;
+        }
+        if let Some(settings) = AppSettings::try_new() {
+            return settings.contact_col_width(col_id);
+        }
+        ContactTableColumn::from_id(col_id)
+            .map(|c| c.default_width())
+            .unwrap_or(120)
+    }
+
+    fn contact_column_child(container: &gtk::Box, column_id: &str) -> Option<gtk::Widget> {
+        let target_name = format!("contact-column-{column_id}");
+        let mut child = container.first_child();
+        while let Some(widget) = child {
+            if widget.widget_name() == target_name {
+                return Some(widget);
+            }
+            child = widget.next_sibling();
+        }
+        None
+    }
+
+    fn setup_contact_column_header_drag_and_sort(
+        &self,
+        column_id: String,
+        column_widget: &gtk::Box,
+        sort_column: ContactTableColumn,
+        sort_gesture: &gtk::GestureClick,
+        header: &gtk::Box,
+    ) {
+        let is_dragging = Rc::new(Cell::new(false));
+        let start_header_x = Rc::new(Cell::new(0.0f64));
+        let drop_target = Rc::new(RefCell::new(None::<(String, bool)>));
+
+        let page_weak_sort = self.downgrade();
+        let is_dragging_for_sort = Rc::clone(&is_dragging);
+        sort_gesture.connect_released(move |_, _, _, _| {
+            if is_dragging_for_sort.get() {
+                return;
+            }
+            if let Some(page) = page_weak_sort.upgrade() {
+                let cur_col = page.imp().contact_sort_col.get();
+                let cur_desc = page.imp().contact_sort_desc.get();
+                let new_desc = if cur_col == sort_column { !cur_desc } else { false };
+                page.imp().contact_sort_col.set(sort_column);
+                page.imp().contact_sort_desc.set(new_desc);
+                page.refresh_contact_column_header();
+                page.refresh_table_canvas();
+            }
+        });
+
+        let drag_gesture = gtk::GestureDrag::new();
+        drag_gesture.set_button(1);
+
+        let col_widget_begin = column_widget.clone();
+        let header_begin = header.clone();
+        let is_dragging_begin = Rc::clone(&is_dragging);
+        let start_x_begin = Rc::clone(&start_header_x);
+        let drop_target_begin = Rc::clone(&drop_target);
+
+        drag_gesture.connect_drag_begin(move |_, start_x, start_y| {
+            is_dragging_begin.set(false);
+            *drop_target_begin.borrow_mut() = None;
+            let h_x = col_widget_begin
+                .compute_point(&header_begin, &gtk::graphene::Point::new(start_x as f32, start_y as f32))
+                .map(|p| p.x() as f64)
+                .unwrap_or(start_x);
+            start_x_begin.set(h_x);
+        });
+
+        let col_widget_update = column_widget.clone();
+        let header_update = header.clone();
+        let is_dragging_update = Rc::clone(&is_dragging);
+        let start_x_update = Rc::clone(&start_header_x);
+        let drop_target_update = Rc::clone(&drop_target);
+        let col_id_update = column_id.clone();
+
+        drag_gesture.connect_drag_update(move |gesture, offset_x, _offset_y| {
+            if offset_x.abs() > 6.0 || is_dragging_update.get() {
+                is_dragging_update.set(true);
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                col_widget_update.add_css_class("column-dragging");
+                col_widget_update.set_cursor(gdk::Cursor::from_name("grabbing", None).as_ref());
+
+                let cur_header_x = start_x_update.get() + offset_x;
+
+                let mut columns: Vec<(String, gtk::Widget, f64, f64)> = Vec::new();
+                let mut child = header_update.first_child();
+                while let Some(w) = child {
+                    child = w.next_sibling();
+                    let name = w.widget_name().to_string();
+                    if name.starts_with("contact-column-") && !name.starts_with("contact-column-sep-") && w.is_visible() {
+                        let id = name.trim_start_matches("contact-column-").to_string();
+                        if let Some(pt) = w.compute_point(&header_update, &gtk::graphene::Point::new(0.0, 0.0)) {
+                            let width = w.width().max(1) as f64;
+                            columns.push((id, w.clone(), pt.x() as f64, width));
+                        }
+                    }
+                }
+
+                for (_, w, _, _) in &columns {
+                    w.remove_css_class("drop-target-left");
+                    w.remove_css_class("drop-target-right");
+                }
+
+                let mut target = None;
+                if !columns.is_empty() {
+                    if cur_header_x < columns[0].2 {
+                        let (first_id, first_w, _, _) = &columns[0];
+                        if first_id != &col_id_update {
+                            first_w.add_css_class("drop-target-left");
+                        }
+                        target = Some((first_id.clone(), false));
+                    } else if cur_header_x > columns.last().unwrap().2 + columns.last().unwrap().3 {
+                        let (last_id, last_w, _, _) = columns.last().unwrap();
+                        if last_id != &col_id_update {
+                            last_w.add_css_class("drop-target-right");
+                        }
+                        target = Some((last_id.clone(), true));
+                    } else {
+                        for (id, w, x, width) in &columns {
+                            if cur_header_x >= *x && cur_header_x <= *x + *width {
+                                let drop_after = cur_header_x >= (*x + *width / 2.0);
+                                if id != &col_id_update {
+                                    if drop_after {
+                                        w.add_css_class("drop-target-right");
+                                    } else {
+                                        w.add_css_class("drop-target-left");
+                                    }
+                                }
+                                target = Some((id.clone(), drop_after));
+                                break;
+                            }
+                        }
+                    }
+                }
+                *drop_target_update.borrow_mut() = target;
+            }
+        });
+
+        let col_widget_end = column_widget.clone();
+        let header_end = header.clone();
+        let is_dragging_end = Rc::clone(&is_dragging);
+        let drop_target_end = Rc::clone(&drop_target);
+        let page_weak_end = self.downgrade();
+        let col_id_end = column_id;
+
+        drag_gesture.connect_drag_end(move |_, _, _| {
+            col_widget_end.remove_css_class("column-dragging");
+            col_widget_end.set_cursor(None);
+            let mut child = header_end.first_child();
+            while let Some(w) = child {
+                child = w.next_sibling();
+                w.remove_css_class("drop-target-left");
+                w.remove_css_class("drop-target-right");
+            }
+
+            if is_dragging_end.get() {
+                if let Some((target_id, drop_after)) = drop_target_end.borrow_mut().take() {
+                    if target_id != col_id_end {
+                        if let Some(settings) = AppSettings::try_new() {
+                            let mut order = settings.contact_table_column_order();
+                            if let Some(src_pos) = order.iter().position(|id| id == &col_id_end) {
+                                let item = order.remove(src_pos);
+                                if let Some(tgt_pos) = order.iter().position(|id| id == &target_id) {
+                                    let insert_pos = if drop_after { tgt_pos + 1 } else { tgt_pos };
+                                    order.insert(insert_pos.min(order.len()), item);
+                                    settings.set_contact_table_column_order(&order);
+                                    if let Some(page) = page_weak_end.upgrade() {
+                                        page.rebuild_contact_column_layout();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                let is_dragging_reset = Rc::clone(&is_dragging_end);
+                glib::idle_add_local_once(move || {
+                    is_dragging_reset.set(false);
+                });
+            }
+        });
+
+        column_widget.add_controller(drag_gesture);
+    }
+
+    fn setup_contact_column_resizer(
+        &self,
+        column_id: String,
+        separator: &gtk::Box,
+        column_widget: &gtk::Box,
+        header: &gtk::Box,
+    ) {
+        let drag_gesture = gtk::GestureDrag::new();
+        drag_gesture.set_button(1);
+
+        let width_at_start = Rc::new(Cell::new(0i32));
+        let sep_x_at_start = Rc::new(Cell::new(0.0f64));
+        let header_x_at_start = Rc::new(Cell::new(0.0f64));
+
+        let page_begin = self.downgrade();
+        let col_w_begin = column_widget.clone();
+        let header_begin = header.clone();
+        let sep_begin = separator.clone();
+        let w_start_begin = Rc::clone(&width_at_start);
+        let sep_x_begin = Rc::clone(&sep_x_at_start);
+        let h_x_begin = Rc::clone(&header_x_at_start);
+
+        drag_gesture.connect_drag_begin(move |gesture, start_x, start_y| {
+            if let Some(_page) = page_begin.upgrade() {
+                let cur_w = col_w_begin.width().max(col_w_begin.width_request());
+                w_start_begin.set(cur_w);
+                sep_x_begin.set(start_x);
+                let h_x = sep_begin
+                    .compute_point(&header_begin, &gtk::graphene::Point::new(start_x as f32, start_y as f32))
+                    .map(|p| p.x() as f64)
+                    .unwrap_or(start_x);
+                h_x_begin.set(h_x);
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+            }
+        });
+
+        let page_update = self.downgrade();
+        let header_update = header.clone();
+        let sep_update = separator.clone();
+        let col_id_update = column_id.clone();
+        let w_start_update = Rc::clone(&width_at_start);
+        let sep_x_update = Rc::clone(&sep_x_at_start);
+        let h_x_update = Rc::clone(&header_x_at_start);
+
+        drag_gesture.connect_drag_update(move |gesture, offset_x, offset_y| {
+            if let Some(page) = page_update.upgrade() {
+                let cur_sep_x = sep_x_update.get() + offset_x;
+                let cur_sep_y = offset_y;
+                let delta_x = if let Some(pt) = sep_update
+                    .compute_point(&header_update, &gtk::graphene::Point::new(cur_sep_x as f32, cur_sep_y as f32))
+                {
+                    pt.x() as f64 - h_x_update.get()
+                } else {
+                    offset_x
+                };
+                let min_w = ContactTableColumn::from_id(&col_id_update)
+                    .map(|c| c.min_width())
+                    .unwrap_or(60) as f64;
+                let new_width = (w_start_update.get() as f64 + delta_x)
+                    .round()
+                    .clamp(min_w, 600.0) as i32;
+                page.apply_contact_column_width(&col_id_update, new_width);
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+            }
+        });
+
+        let page_end = self.downgrade();
+        let col_id_end = column_id;
+        drag_gesture.connect_drag_end(move |_, _, _| {
+            if let Some(page) = page_end.upgrade() {
+                let final_w = page.get_contact_column_width(&col_id_end);
+                if let Some(settings) = AppSettings::try_new() {
+                    settings.set_contact_col_width(&col_id_end, final_w);
+                }
+            }
+        });
+
+        separator.add_controller(drag_gesture);
+    }
+
+    pub(crate) fn build_contact_column_header(&self) -> gtk::Box {
+        let settings = AppSettings::try_new();
+        let header = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(0)
+            .hexpand(false)
+            .halign(gtk::Align::Start)
+            .margin_start(0)
+            .margin_end(0)
+            .margin_top(0)
+            .margin_bottom(0)
+            .css_classes(vec!["mail-column-header"])
+            .build();
+
+        let order = settings
+            .as_ref()
+            .map(|s| s.contact_table_column_order())
+            .unwrap_or_else(|| {
+                crate::services::settings_service::CONTACT_TABLE_COLUMN_IDS
+                    .iter()
+                    .map(|id| (*id).to_string())
+                    .collect()
+            });
+
+        for col_id in &order {
+            let Some(col) = ContactTableColumn::from_id(col_id) else { continue };
+            let width = settings
+                .as_ref()
+                .map(|s| s.contact_col_width(col_id))
+                .unwrap_or_else(|| col.default_width());
+            let visible = settings
+                .as_ref()
+                .map(|s| s.contact_col_visible(col_id))
+                .unwrap_or(true);
+
+            let col_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(4)
+                .width_request(width)
+                .hexpand(false)
+                .halign(gtk::Align::Fill)
+                .overflow(gtk::Overflow::Hidden)
+                .visible(visible)
+                .css_classes(vec!["mail-column-header-cell", "contact-cell"])
+                .build();
+            col_box.set_widget_name(&format!("contact-column-{col_id}"));
+
+            let label = gtk::Label::builder()
+                .label(&col.label())
+                .halign(gtk::Align::Fill)
+                .xalign(0.0)
+                .hexpand(true)
+                .ellipsize(pango::EllipsizeMode::End)
+                .width_chars(1)
+                .css_classes(vec!["dim-label"])
+                .build();
+            col_box.append(&label);
+
+            let sort_indicator = gtk::Label::builder()
+                .label("")
+                .halign(gtk::Align::End)
+                .css_classes(vec!["dim-label"])
+                .build();
+            sort_indicator.set_widget_name(&format!("contact-column-sort-{col_id}"));
+            col_box.append(&sort_indicator);
+
+            let sort_gesture = gtk::GestureClick::new();
+            sort_gesture.set_button(1);
+            self.setup_contact_column_header_drag_and_sort(
+                col_id.clone(),
+                &col_box,
+                col,
+                &sort_gesture,
+                &header,
+            );
+            col_box.add_controller(sort_gesture);
+
+            let sep = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .width_request(6)
+                .halign(gtk::Align::Center)
+                .valign(gtk::Align::Fill)
+                .visible(visible)
+                .css_classes(vec!["mail-column-separator"])
+                .build();
+            sep.set_cursor(gdk::Cursor::from_name("col-resize", None).as_ref());
+            sep.set_widget_name(&format!("contact-column-sep-{col_id}"));
+
+            self.setup_contact_column_resizer(col_id.clone(), &sep, &col_box, &header);
+
+            header.append(&col_box);
+            header.append(&sep);
+        }
+
+        // Right-click context menu gesture
+        let header_context_gesture = gtk::GestureClick::new();
+        header_context_gesture.set_button(3);
+        let page_for_header_context = self.downgrade();
+        let header_weak = header.downgrade();
+        header_context_gesture.connect_pressed(move |gesture, _, x, y| {
+            if let (Some(page), Some(header)) = (page_for_header_context.upgrade(), header_weak.upgrade()) {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                page.show_contact_header_context_menu(&header, x, y);
+            }
+        });
+        header.add_controller(header_context_gesture);
+
+        // Long press for touch devices
+        let header_long_press = gtk::GestureLongPress::new();
+        let page_for_header_lp = self.downgrade();
+        let header_weak_lp = header.downgrade();
+        header_long_press.connect_pressed(move |gesture, x, y| {
+            if let (Some(page), Some(header)) = (page_for_header_lp.upgrade(), header_weak_lp.upgrade()) {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                page.show_contact_header_context_menu(&header, x, y);
+            }
+        });
+        header.add_controller(header_long_press);
+
+        header
+    }
+
+    fn refresh_contact_column_header(&self) {
+        let Some(header) = self.imp().contact_table_header.borrow().as_ref().cloned() else { return; };
+        let settings = AppSettings::try_new();
+        let sort_col = self.imp().contact_sort_col.get();
+        let sort_desc = self.imp().contact_sort_desc.get();
+
+        for col_id in &crate::services::settings_service::CONTACT_TABLE_COLUMN_IDS {
+            let Some(col) = ContactTableColumn::from_id(col_id) else { continue };
+            let visible = settings.as_ref().map(|s| s.contact_col_visible(col_id)).unwrap_or(true);
+            let width = settings.as_ref().map(|s| s.contact_col_width(col_id)).unwrap_or_else(|| col.default_width());
+
+            if let Some(col_box) = Self::contact_column_child(&header, col_id) {
+                col_box.set_visible(visible);
+                col_box.set_width_request(width);
+
+                let sort_label_name = format!("contact-column-sort-{col_id}");
+                let mut child = col_box.first_child();
+                while let Some(w) = child {
+                    if w.widget_name() == sort_label_name {
+                        if let Some(lbl) = w.downcast_ref::<gtk::Label>() {
+                            if col == sort_col {
+                                lbl.set_label(if sort_desc { " ▼" } else { " ▲" });
+                            } else {
+                                lbl.set_label("");
+                            }
+                        }
+                        break;
+                    }
+                    child = w.next_sibling();
+                }
+            }
+
+            let sep_name = format!("contact-column-sep-{col_id}");
+            let mut child = header.first_child();
+            while let Some(w) = child {
+                if w.widget_name() == sep_name {
+                    w.set_visible(visible);
+                    break;
+                }
+                child = w.next_sibling();
+            }
+        }
+    }
+
+    fn reorder_contact_column_container(container: &gtk::Box, order: &[String]) {
+        let mut children = HashMap::new();
+        let mut child = container.first_child();
+        while let Some(widget) = child {
+            child = widget.next_sibling();
+            children.insert(widget.widget_name().to_string(), widget.clone());
+            container.remove(&widget);
+        }
+        for column in order {
+            if let Some(widget) = children.remove(&format!("contact-column-{column}")) {
+                container.append(&widget);
+                if let Some(sep) = children.remove(&format!("contact-column-sep-{column}")) {
+                    container.append(&sep);
+                }
+            }
+        }
+        for (_, widget) in children {
+            container.append(&widget);
+        }
+    }
+
+    pub(crate) fn rebuild_contact_column_layout(&self) {
+        let settings = AppSettings::try_new();
+        let order = settings
+            .as_ref()
+            .map(|s| s.contact_table_column_order())
+            .unwrap_or_else(|| {
+                crate::services::settings_service::CONTACT_TABLE_COLUMN_IDS
+                    .iter()
+                    .map(|id| (*id).to_string())
+                    .collect()
+            });
+
+        if let Some(header) = self.imp().contact_table_header.borrow().as_ref() {
+            Self::reorder_contact_column_container(header, &order);
+            self.refresh_contact_column_header();
+        }
+        self.refresh_table_canvas();
+    }
+
+    fn show_contact_header_context_menu(&self, header: &gtk::Box, x: f64, y: f64) {
+        let popover = gtk::Popover::builder()
+            .has_arrow(true)
+            .pointing_to(&gdk::Rectangle::new(x as i32, y as i32, 1, 1))
+            .build();
+        popover.set_parent(header);
+
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(6)
+            .margin_bottom(6)
+            .build();
+
+        let title = gtk::Label::builder()
+            .label(&crate::i18n::gettext("Columns"))
+            .halign(gtk::Align::Start)
+            .css_classes(vec!["heading"])
+            .build();
+        content.append(&title);
+
+        let settings = AppSettings::try_new();
+
+        let column_toggles: [(&'static str, String); 5] = [
+            ("company", crate::i18n::gettext("Organization")),
+            ("title", crate::i18n::gettext("Job Title")),
+            ("email", crate::i18n::gettext("Email")),
+            ("phone", crate::i18n::gettext("Phone")),
+            ("categories", crate::i18n::gettext("Categories")),
+        ];
+
+        let page_weak = self.downgrade();
+        for (key, label) in column_toggles {
+            let active = if let Some(ref s) = settings {
+                s.contact_col_visible(key)
+            } else {
+                true
+            };
+
+            let check = gtk::CheckButton::builder()
+                .label(&label)
+                .active(active)
+                .build();
+            let key_str = key;
+            let settings_cloned = settings.clone();
+            let page_for_chk = page_weak.clone();
+            check.connect_toggled(move |btn| {
+                if let Some(ref s) = settings_cloned {
+                    s.set_contact_col_visible(key_str, btn.is_active());
+                }
+                if let Some(page) = page_for_chk.upgrade() {
+                    page.rebuild_contact_column_layout();
+                }
+            });
+            content.append(&check);
+        }
+
+        content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+        let make_popover_action_button = |icon_name: &str, label_text: &str| -> gtk::Button {
+            let btn = gtk::Button::builder()
+                .css_classes(vec!["flat"])
+                .halign(gtk::Align::Fill)
+                .build();
+            let row = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(8)
+                .halign(gtk::Align::Start)
+                .hexpand(true)
+                .build();
+            let icon = gtk::Image::builder()
+                .icon_name(icon_name)
+                .css_classes(vec!["dim-label"])
+                .build();
+            let label = gtk::Label::builder()
+                .label(label_text)
+                .halign(gtk::Align::Start)
+                .xalign(0.0)
+                .build();
+            row.append(&icon);
+            row.append(&label);
+            btn.set_child(Some(&row));
+            btn
+        };
+
+        let reorder_btn = make_popover_action_button("view-column-symbolic", &crate::i18n::gettext("Customize column order…"));
+        let page_for_reorder = page_weak.clone();
+        let popover_for_reorder = popover.clone();
+        reorder_btn.connect_clicked(move |_| {
+            popover_for_reorder.popdown();
+            if let Some(page) = page_for_reorder.upgrade() {
+                page.open_contact_column_order_dialog();
+            }
+        });
+        content.append(&reorder_btn);
+
+        let reset_btn = make_popover_action_button("edit-undo-symbolic", &crate::i18n::gettext("Restore default columns"));
+        let page_for_reset = page_weak.clone();
+        let popover_for_reset = popover.clone();
+        let settings_for_reset = settings.clone();
+        reset_btn.connect_clicked(move |_| {
+            if let Some(ref s) = settings_for_reset {
+                s.reset_contact_table_columns_to_default();
+            }
+            if let Some(page) = page_for_reset.upgrade() {
+                page.imp().contact_col_widths.borrow_mut().clear();
+                page.rebuild_contact_column_layout();
+            }
+            popover_for_reset.popdown();
+        });
+        content.append(&reset_btn);
+
+        popover.set_child(Some(&content));
+        popover.popup();
+    }
+
+    pub(crate) fn open_contact_column_order_dialog(&self) {
+        let dialog_title = crate::i18n::gettext("Customize Column Order");
+        let dialog = adw::Window::builder()
+            .title(&dialog_title)
+            .modal(true)
+            .default_width(420)
+            .default_height(520)
+            .build();
+        if let Some(root) = self.root().and_downcast::<gtk::Window>() {
+            dialog.set_transient_for(Some(&root));
+        }
+
+        let toolbar = adw::ToolbarView::new();
+        let header = adw::HeaderBar::new();
+        toolbar.add_top_bar(&header);
+
+        let scrolled = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .vexpand(true)
+            .build();
+
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(12)
+            .margin_start(16)
+            .margin_end(16)
+            .margin_top(12)
+            .margin_bottom(16)
+            .build();
+
+        let desc_label = gtk::Label::builder()
+            .label(&crate::i18n::gettext("Adjust the order and visibility of columns. Changes take effect immediately."))
+            .wrap(true)
+            .xalign(0.0)
+            .css_classes(vec!["dim-label", "caption"])
+            .build();
+        content.append(&desc_label);
+
+        let list_box = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(vec!["boxed-list"])
+            .build();
+
+        let settings = AppSettings::try_new();
+        let initial_order: Vec<String> = settings
+            .as_ref()
+            .map(|s| s.contact_table_column_order())
+            .unwrap_or_else(|| {
+                crate::services::settings_service::CONTACT_TABLE_COLUMN_IDS
+                    .iter()
+                    .map(|id| (*id).to_string())
+                    .collect()
+            });
+
+        let order_state = Rc::new(RefCell::new(initial_order));
+        let page_weak = self.downgrade();
+
+        fn populate_contact_order_list(
+            list: &gtk::ListBox,
+            state: &Rc<RefCell<Vec<String>>>,
+            settings: &Option<AppSettings>,
+            page_weak: &glib::WeakRef<ContactsPage>,
+        ) {
+            while let Some(child) = list.first_child() {
+                list.remove(&child);
+            }
+            let columns = state.borrow().clone();
+            for (index, column_id) in columns.iter().enumerate() {
+                let Some(col) = ContactTableColumn::from_id(column_id) else { continue };
+                let label_text = col.label();
+                let row = adw::ActionRow::builder()
+                    .title(&label_text)
+                    .subtitle(column_id)
+                    .build();
+
+                // Visibility switch (except for Name which is mandatory)
+                if column_id != "name" {
+                    let is_vis = settings.as_ref().map(|s| s.contact_col_visible(column_id)).unwrap_or(true);
+                    let vis_check = gtk::CheckButton::builder()
+                        .active(is_vis)
+                        .tooltip_text(&crate::i18n::gettext("Show column"))
+                        .build();
+                    let col_id_vis = column_id.clone();
+                    let settings_for_vis = settings.clone();
+                    let page_for_vis = page_weak.clone();
+                    vis_check.connect_toggled(move |btn| {
+                        if let Some(ref s) = settings_for_vis {
+                            s.set_contact_col_visible(&col_id_vis, btn.is_active());
+                        }
+                        if let Some(page) = page_for_vis.upgrade() {
+                            page.rebuild_contact_column_layout();
+                        }
+                    });
+                    row.add_suffix(&vis_check);
+                }
+
+                let up = gtk::Button::builder()
+                    .icon_name("go-up-symbolic")
+                    .tooltip_text(&crate::i18n::gettext("Move column up / left"))
+                    .css_classes(vec!["flat", "circular"])
+                    .sensitive(index > 0)
+                    .build();
+                let down = gtk::Button::builder()
+                    .icon_name("go-down-symbolic")
+                    .tooltip_text(&crate::i18n::gettext("Move column down / right"))
+                    .css_classes(vec!["flat", "circular"])
+                    .sensitive(index + 1 < columns.len())
+                    .build();
+                row.add_suffix(&up);
+                row.add_suffix(&down);
+
+                for (button, target) in [(up, index.checked_sub(1)), (down, Some(index + 1))] {
+                    let state_rc = Rc::clone(state);
+                    let list_cloned = list.clone();
+                    let settings_cloned = settings.clone();
+                    let page_weak_cloned = page_weak.clone();
+                    button.connect_clicked(move |_| {
+                        let Some(target) = target.filter(|target| *target < state_rc.borrow().len()) else {
+                            return;
+                        };
+                        state_rc.borrow_mut().swap(index, target);
+                        let order = state_rc.borrow().clone();
+                        if let Some(settings) = settings_cloned.as_ref() {
+                            settings.set_contact_table_column_order(&order);
+                        }
+                        if let Some(page) = page_weak_cloned.upgrade() {
+                            page.rebuild_contact_column_layout();
+                        }
+                        populate_contact_order_list(&list_cloned, &state_rc, &settings_cloned, &page_weak_cloned);
+                    });
+                }
+                list.append(&row);
+            }
+        }
+
+        populate_contact_order_list(&list_box, &order_state, &settings, &page_weak);
+        content.append(&list_box);
+
+        let reset_btn = gtk::Button::builder()
+            .label(&crate::i18n::gettext("Restore Default Order"))
+            .css_classes(vec!["flat"])
+            .halign(gtk::Align::Center)
+            .margin_top(8)
+            .build();
+        let state_for_reset = Rc::clone(&order_state);
+        let list_for_reset = list_box.clone();
+        let settings_for_reset = settings.clone();
+        let page_for_reset = page_weak.clone();
+        reset_btn.connect_clicked(move |_| {
+            let defaults: Vec<String> = crate::services::settings_service::CONTACT_TABLE_COLUMN_IDS
+                .iter()
+                .map(|id| (*id).to_string())
+                .collect();
+            *state_for_reset.borrow_mut() = defaults.clone();
+            if let Some(settings) = settings_for_reset.as_ref() {
+                settings.reset_contact_table_columns_to_default();
+            }
+            if let Some(page) = page_for_reset.upgrade() {
+                page.imp().contact_col_widths.borrow_mut().clear();
+                page.rebuild_contact_column_layout();
+            }
+            populate_contact_order_list(&list_for_reset, &state_for_reset, &settings_for_reset, &page_for_reset);
+        });
+        content.append(&reset_btn);
+
+        scrolled.set_child(Some(&content));
+        toolbar.set_content(Some(&scrolled));
+        dialog.set_content(Some(&toolbar));
+        dialog.present();
     }
 
     pub fn reload_contacts(&self) {
@@ -838,8 +1769,8 @@ impl ContactsPage {
             }
             if visible {
                 let saved_pos = AppSettings::try_new()
-                    .map(|s| s.mail_sidebar_position())
-                    .unwrap_or(260)
+                    .map(|s| s.contact_hpane_position())
+                    .unwrap_or(320)
                     .clamp(crate::window::MIN_SIDEBAR_WIDTH, crate::window::MAX_SIDEBAR_WIDTH);
                 if paned.position() < 180 {
                     paned.set_position(saved_pos);
@@ -1268,31 +2199,59 @@ impl ContactsPage {
                         eds_service::discover_sources(eds_service::EdsSourceKind::AddressBook).await;
                     let status = discovery.status_text();
                     let mut sources = discovery.sources;
-                    sources.retain(|source| source.enabled);
-
-                    // Ensure all configured accounts are present
-                    for collection in eds_service::load_configured_account_collections() {
-                        if !collection.contacts_enabled {
-                            continue;
+                    sources.retain(|source| {
+                        if !source.enabled {
+                            return false;
                         }
-                        let account_name = collection.display_name.clone();
-                        let already_represented = sources.iter().any(|s| {
-                            s.parent_name.as_deref() == Some(&account_name)
-                                || s.uid == collection.uid
-                                || s.uid == format!("account-contacts-{}", collection.uid)
-                        });
-                        if !already_represented {
-                            sources.push(eds_service::EdsSource {
-                                uid: format!("account-contacts-{}", collection.uid),
-                                display_name: gettext("Contacts"),
-                                backend_name: collection.backend_name.clone(),
-                                enabled: collection.enabled,
-                                parent_name: Some(account_name),
-                                color: None,
-                                foreign_mail: None,
-                            });
+                        let parent = source.parent_name.as_deref().unwrap_or("");
+                        let fm = source.foreign_mail.as_deref().unwrap_or("");
+                        !eds_service::is_shared_or_delegate_mailbox(parent)
+                            && !eds_service::is_shared_or_delegate_mailbox(fm)
+                            && !eds_service::is_shared_or_delegate_mailbox(&source.uid)
+                            && !eds_service::is_shared_or_delegate_mailbox(&source.display_name)
+                    });
+
+                    // Canonicalize parent names for discovered sources
+                    for s in &mut sources {
+                        if s.parent_name.is_none() || s.parent_name.as_deref().unwrap_or("").starts_with("account-contacts-") {
+                            let resolved = eds_service::resolve_source_parent_name(&s.uid);
+                            if !resolved.is_empty() {
+                                s.parent_name = Some(resolved);
+                            }
                         }
                     }
+
+                    // Omit GOA redundant wrappers if authoritative books exist for that parent
+                    let non_goa_parents: std::collections::HashSet<String> = sources
+                        .iter()
+                        .filter(|s| !s.uid.starts_with("goa-contacts-"))
+                        .filter_map(|s| s.parent_name.as_ref().map(|p| p.to_lowercase()))
+                        .collect();
+                    sources.retain(|s| {
+                        if s.uid.starts_with("goa-contacts-") {
+                            let parent = s.parent_name.as_deref().unwrap_or("").to_lowercase();
+                            !non_goa_parents.contains(&parent)
+                        } else {
+                            true
+                        }
+                    });
+
+                    // Deduplicate sources across caches and backends by (parent_name, canonical_book_name / display_name)
+                    let mut deduped_sources: Vec<eds_service::EdsSource> = Vec::new();
+                    for s in sources {
+                        let p_name = s.parent_name.as_deref().unwrap_or("").to_lowercase();
+                        let c_kind = eds_service::canonical_book_name(&s.display_name);
+                        let is_dup = deduped_sources.iter().any(|existing| {
+                            existing.uid == s.uid
+                                || (existing.parent_name.as_deref().unwrap_or("").to_lowercase() == p_name
+                                    && (!c_kind.is_empty() && c_kind == eds_service::canonical_book_name(&existing.display_name)
+                                        || existing.display_name.eq_ignore_ascii_case(&s.display_name)))
+                        });
+                        if !is_dup {
+                            deduped_sources.push(s);
+                        }
+                    }
+                    let mut sources = deduped_sources;
 
                     sources.sort_by_cached_key(|source| {
                         (source.display_name.to_lowercase(), source.uid.clone())
@@ -1324,12 +2283,15 @@ impl ContactsPage {
                         uids.push(source.uid);
                     }
                     if !default_source_uid.trim().is_empty()
+                        && !eds_service::is_shared_or_delegate_mailbox(&default_source_uid)
                         && !uids.iter().any(|uid| uid == &default_source_uid)
                     {
                         names.push(crate::i18n::gettext("Unavailable source"));
                         uids.push(default_source_uid.clone());
                     }
-                    if crate::services::contact_store_service::ContactStoreService::new().is_writable() {
+                    if crate::services::contact_store_service::ContactStoreService::new().is_writable()
+                        && !uids.iter().any(|uid| uid == LOCAL_ADDRESS_BOOK_SOURCE_UID)
+                    {
                         names.push(crate::i18n::gettext("Local Address Book"));
                         uids.push(LOCAL_ADDRESS_BOOK_SOURCE_UID.to_string());
                     }
@@ -1478,7 +2440,17 @@ impl ContactsPage {
                                 let gname = group_name.clone();
                                 let group_gesture = gtk::GestureClick::new();
                                 let render_holder_click = Rc::clone(&render_holder_for_toggle);
+                                let book_selector_click = book_selector.clone();
+                                let first_target_idx = indices.first().copied();
+                                if let Some(first_idx) = first_target_idx {
+                                    unsafe {
+                                        group_row.set_data("source-index", first_idx);
+                                    }
+                                }
                                 group_gesture.connect_released(move |_, _, _, _| {
+                                    if let Some(first_idx) = first_target_idx {
+                                        book_selector_click.set_selected(first_idx as u32);
+                                    }
                                     if let Some(p) = page_weak_toggle.upgrade() {
                                         let mut col = p.imp().collapsed_addressbook_groups.borrow_mut();
                                         if col.contains(&gname) {
@@ -2027,12 +2999,15 @@ impl ContactsPage {
         self.imp().stored_contacts.replace(Some(Rc::clone(&stored_contacts)));
         self.imp().search_state.replace(Some(Rc::clone(&search_state)));
 
-        let contact_table_header = gtk::DrawingArea::builder()
-            .content_height(28)
-            .hexpand(true)
-            .css_classes(vec!["contacts-table-header"])
+        let contact_table_header = self.build_contact_column_header();
+        let column_header_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::External)
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .min_content_width(120)
+            .child(&contact_table_header)
+            .propagate_natural_width(false)
+            .margin_end(32)
             .build();
-        set_accessible_label(&contact_table_header, "Kontakttabellen-Kopfzeile");
 
         let contact_table_canvas = gtk::DrawingArea::builder()
             .content_height(100)
@@ -2044,105 +3019,33 @@ impl ContactsPage {
             .build();
         set_accessible_label(&contact_table_canvas, "Kontaktliste Canvas");
 
-        self.imp().contact_table_header.replace(Some(contact_table_header.clone()));
-        self.imp().contact_table_canvas.replace(Some(contact_table_canvas.clone()));
-
-        contact_list.set_visible(false);
-
-        let contact_list_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
+        let simple_list_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&contact_list)
             .vexpand(true)
             .hexpand(true)
+            .margin_end(32)
+            .css_classes(vec!["contact-simple-list-scroll"])
             .build();
-        contact_list_box.append(&contact_table_canvas);
-        contact_list_box.append(&contact_list);
+        self.imp().simple_list_scroll.replace(Some(simple_list_scroll.clone()));
 
         let list_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .child(&contact_list_box)
+            .child(&contact_table_canvas)
             .vexpand(true)
             .hexpand(true)
             .margin_end(32)
             .build();
         self.imp().list_scroll.replace(Some(list_scroll.clone()));
 
-        let header_for_hadj = contact_table_header.clone();
-        list_scroll.hadjustment().connect_value_changed(move |_| {
-            header_for_hadj.queue_draw();
-        });
+        column_header_scroll.set_hadjustment(Some(&list_scroll.hadjustment()));
 
-        // Header Draw Func
-        {
-            let page_weak = self.downgrade();
-            let list_scroll_clone = list_scroll.clone();
-            contact_table_header.set_draw_func(move |_, cr, _width, _height| {
-                let Some(page) = page_weak.upgrade() else { return; };
-                let layout_ref = page.imp().contact_table_layout.borrow();
-                let Some(layout) = layout_ref.as_ref() else { return; };
-                let sort_col = page.imp().contact_sort_col.get();
-                let sort_desc = page.imp().contact_sort_desc.get();
-                let hovered_col = page.imp().contact_table_hovered_header.get();
-                let is_dark = adw::StyleManager::default().is_dark();
-                let scroll_x = list_scroll_clone.hadjustment().value();
-                let _ = cr.save();
-                cr.translate(-scroll_x, 0.0);
-                draw_contact_table_header(cr, layout, sort_col, sort_desc, hovered_col, is_dark);
-                let _ = cr.restore();
-            });
-        }
-
-        // Header Click Gesture
-        {
-            let header_click = gtk::GestureClick::new();
-            let page_weak = self.downgrade();
-            let list_scroll_clone = list_scroll.clone();
-            header_click.connect_pressed(move |gesture, _n_press, x, _y| {
-                gesture.set_state(gtk::EventSequenceState::Claimed);
-                let Some(page) = page_weak.upgrade() else { return; };
-                let scroll_x = list_scroll_clone.hadjustment().value();
-                let layout_ref = page.imp().contact_table_layout.borrow();
-                let Some(layout) = layout_ref.as_ref() else { return; };
-                if let Some(col) = hit_test_contact_table_header(layout, x + scroll_x) {
-                    let cur_col = page.imp().contact_sort_col.get();
-                    let cur_desc = page.imp().contact_sort_desc.get();
-                    let new_desc = if cur_col == col { !cur_desc } else { false };
-                    page.imp().contact_sort_col.set(col);
-                    page.imp().contact_sort_desc.set(new_desc);
-                    drop(layout_ref);
-                    page.refresh_table_canvas();
-                }
-            });
-            contact_table_header.add_controller(header_click);
-        }
-
-        // Header Motion Controller
-        {
-            let header_motion = gtk::EventControllerMotion::new();
-            let page_weak = self.downgrade();
-            let list_scroll_clone = list_scroll.clone();
-            let header_clone = contact_table_header.clone();
-            header_motion.connect_motion(move |_, x, _y| {
-                let Some(page) = page_weak.upgrade() else { return; };
-                let scroll_x = list_scroll_clone.hadjustment().value();
-                let layout_ref = page.imp().contact_table_layout.borrow();
-                let col = layout_ref.as_ref().and_then(|l| hit_test_contact_table_header(l, x + scroll_x));
-                if page.imp().contact_table_hovered_header.get() != col {
-                    page.imp().contact_table_hovered_header.set(col);
-                    header_clone.queue_draw();
-                }
-            });
-            let page_weak_leave = self.downgrade();
-            let header_clone_leave = contact_table_header.clone();
-            header_motion.connect_leave(move |_| {
-                let Some(page) = page_weak_leave.upgrade() else { return; };
-                if page.imp().contact_table_hovered_header.get().is_some() {
-                    page.imp().contact_table_hovered_header.set(None);
-                    header_clone_leave.queue_draw();
-                }
-            });
-            contact_table_header.add_controller(header_motion);
-        }
+        self.imp().contact_table_header.replace(Some(contact_table_header.clone()));
+        self.imp().column_header_scroll.replace(Some(column_header_scroll.clone()));
+        self.imp().contact_table_canvas.replace(Some(contact_table_canvas.clone()));
+        contact_list.set_visible(true);
 
         // Canvas Draw Func
         {
@@ -2156,10 +3059,12 @@ impl ContactsPage {
                 draw_contact_table_canvas(cr, layout, width as f64, height as f64, hovered, is_dark);
             });
             let canvas_for_theme = contact_table_canvas.clone();
-            let header_for_theme = contact_table_header.clone();
+            let page_for_theme = self.downgrade();
             adw::StyleManager::default().connect_dark_notify(move |_| {
                 canvas_for_theme.queue_draw();
-                header_for_theme.queue_draw();
+                if let Some(page) = page_for_theme.upgrade() {
+                    page.refresh_contact_column_header();
+                }
             });
         }
 
@@ -2365,7 +3270,7 @@ impl ContactsPage {
             .vexpand(true)
             .hexpand(true)
             .build();
-        contact_table_box.append(&contact_table_header);
+        contact_table_box.append(&column_header_scroll);
         contact_table_box.append(&list_scroll);
 
         let contact_cards_flow = gtk::FlowBox::builder()
@@ -2454,9 +3359,10 @@ impl ContactsPage {
             .vexpand(true)
             .hexpand(true)
             .build();
+        view_stack.add_named(&simple_list_scroll, Some("simple"));
         view_stack.add_named(&cards_scroll, Some("cards"));
-        view_stack.add_named(&contact_table_box, Some("list"));
-        view_stack.set_visible_child_name("cards");
+        view_stack.add_named(&contact_table_box, Some("table"));
+        view_stack.set_visible_child_name("simple");
         self.imp().view_stack.replace(Some(view_stack.clone()));
 
         let alphabet_box = gtk::ListBox::builder()
@@ -3094,6 +4000,7 @@ impl ContactsPage {
                                     );
                                     *selected_contact_for_action.borrow_mut() = Some(merged.clone());
                                     if let Some(page) = page_weak_for_result.upgrade() {
+                                        page.update_contact_address_and_map(Some(&merged.contact));
                                         page.imp().selected_identity.replace(Some(
                                             ContactIdentity::new(
                                                 merged.source_uid.clone(),
@@ -4044,19 +4951,44 @@ impl ContactsPage {
             .margin_end(4)
             .build();
 
-        let card_view_btn = gtk::ToggleButton::builder()
-            .icon_name("view-grid-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Card View"))
+        let simple_view_btn = gtk::ToggleButton::builder()
+            .icon_name("view-list-symbolic")
+            .tooltip_text(&crate::i18n::gettext("Simple List"))
             .active(true)
             .css_classes(vec!["flat"])
             .build();
 
-        let list_view_btn = gtk::ToggleButton::builder()
-            .icon_name("view-list-symbolic")
-            .tooltip_text(&crate::i18n::gettext("List View"))
-            .group(&card_view_btn)
+        let card_view_btn = gtk::ToggleButton::builder()
+            .icon_name("view-grid-symbolic")
+            .tooltip_text(&crate::i18n::gettext("Card View"))
+            .group(&simple_view_btn)
             .css_classes(vec!["flat"])
             .build();
+
+        let table_view_btn = gtk::ToggleButton::builder()
+            .icon_name("x-office-spreadsheet-symbolic")
+            .tooltip_text(&crate::i18n::gettext("Table View"))
+            .group(&simple_view_btn)
+            .css_classes(vec!["flat"])
+            .build();
+
+        let view_stack_for_simple = view_stack.clone();
+        let page_weak_for_simple = self.downgrade();
+        simple_view_btn.connect_toggled(glib::clone!(
+            #[weak]
+            view_stack_for_simple,
+            move |btn| {
+                if btn.is_active() {
+                    view_stack_for_simple.set_visible_child_name("simple");
+                    if let Some(page) = page_weak_for_simple.upgrade() {
+                        page.imp().current_view_mode.set(ContactViewMode::Simple);
+                        if let Some(paned) = page.imp().contact_preview_paned.borrow().as_ref() {
+                            paned.set_position(page.imp().simple_vpane_pos.get());
+                        }
+                    }
+                }
+            }
+        ));
 
         let view_stack_for_card = view_stack.clone();
         let page_weak_for_card = self.downgrade();
@@ -4067,31 +4999,54 @@ impl ContactsPage {
                 if btn.is_active() {
                     view_stack_for_card.set_visible_child_name("cards");
                     if let Some(page) = page_weak_for_card.upgrade() {
+                        page.imp().current_view_mode.set(ContactViewMode::Cards);
                         if let Some(paned) = page.imp().contact_preview_paned.borrow().as_ref() {
-                            if paned.position() < 600 {
-                                paned.set_position(650);
-                            }
+                            paned.set_position(page.imp().cards_vpane_pos.get());
                         }
                     }
                 }
             }
         ));
 
-        let view_stack_for_list = view_stack.clone();
-        list_view_btn.connect_toggled(glib::clone!(
+        let view_stack_for_table = view_stack.clone();
+        let page_weak_for_table = self.downgrade();
+        table_view_btn.connect_toggled(glib::clone!(
             #[weak]
-            view_stack_for_list,
+            view_stack_for_table,
             move |btn| {
                 if btn.is_active() {
-                    view_stack_for_list.set_visible_child_name("list");
+                    view_stack_for_table.set_visible_child_name("table");
+                    if let Some(page) = page_weak_for_table.upgrade() {
+                        page.imp().current_view_mode.set(ContactViewMode::Table);
+                        if let Some(paned) = page.imp().contact_preview_paned.borrow().as_ref() {
+                            paned.set_position(page.imp().table_vpane_pos.get());
+                        }
+                    }
                 }
             }
         ));
 
+        view_switcher_box.append(&simple_view_btn);
         view_switcher_box.append(&card_view_btn);
-        view_switcher_box.append(&list_view_btn);
+        view_switcher_box.append(&table_view_btn);
 
         right_box.append(&view_switcher_box);
+
+        let table_cols_btn = gtk::Button::builder()
+            .icon_name("view-column-symbolic")
+            .tooltip_text(&crate::i18n::gettext("Customize Column Order"))
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .margin_start(4)
+            .build();
+        set_accessible_label(&table_cols_btn, &crate::i18n::gettext("Customize Column Order"));
+        let page_for_cols_btn = self.downgrade();
+        table_cols_btn.connect_clicked(move |_| {
+            if let Some(page) = page_for_cols_btn.upgrade() {
+                page.open_contact_column_order_dialog();
+            }
+        });
+        right_box.append(&table_cols_btn);
 
         let spacer = gtk::Box::builder().hexpand(true).build();
         contacts_toolbar.append(&left_box);
@@ -4108,7 +5063,7 @@ impl ContactsPage {
         contacts_toolbar_scroll.set_visible(
             AppSettings::try_new()
                 .map(|settings| settings.contact_show_toolbar())
-                .unwrap_or(false),
+                .unwrap_or(true),
         );
         self.imp()
             .toolbar
@@ -4173,7 +5128,31 @@ impl ContactsPage {
         email_row1.add_suffix(&copy_btn1);
         email_group.add(&email_row1);
 
+        let address_group = adw::PreferencesGroup::builder()
+            .title(&crate::i18n::gettext("Address"))
+            .visible(false)
+            .build();
+
+        let address_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .build();
+        address_group.add(&address_box);
+
+        let map_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .margin_top(8)
+            .visible(false)
+            .build();
+        address_group.add(&map_box);
+
+        self.imp().address_group.replace(Some(address_group.clone()));
+        self.imp().address_box.replace(Some(address_box.clone()));
+        self.imp().map_box.replace(Some(map_box.clone()));
+
         info_box.append(&email_group);
+        info_box.append(&address_group);
         info_box.append(&detail_extra);
         info_scroll.set_child(Some(&info_box));
         detail_box.append(&info_scroll);
@@ -4406,6 +5385,7 @@ impl ContactsPage {
                                             &detail_extra_for_monitor,
                                             &email_row_for_monitor,
                                         );
+                                        page.update_contact_address_and_map(Some(&record.contact));
                                     }
                                 }
                             }
@@ -4453,8 +5433,8 @@ impl ContactsPage {
             });
         }
 
-        list_container.set_size_request(0, -1);
-        detail_box.set_size_request(0, -1);
+        list_container.set_size_request(300, -1);
+        detail_box.set_size_request(340, -1);
         detail_box.set_vexpand(true);
         detail_box.set_hexpand(true);
 
@@ -4466,29 +5446,40 @@ impl ContactsPage {
             .build();
         preview_paned.set_start_child(Some(&list_container));
         preview_paned.set_end_child(Some(&detail_box));
-        preview_paned.set_resize_start_child(false);
+        preview_paned.set_resize_start_child(true);
         preview_paned.set_resize_end_child(true);
-        preview_paned.set_shrink_start_child(true);
+        preview_paned.set_shrink_start_child(false);
         preview_paned.set_shrink_end_child(true);
 
-        let vpane_pos = AppSettings::try_new()
+        let stored_pos = AppSettings::try_new()
             .map(|s| s.contact_vpane_position())
-            .unwrap_or(380)
-            .clamp(260, 900);
+            .unwrap_or(380);
+        let vpane_pos = stored_pos.clamp(300, 1600);
+        self.imp().simple_vpane_pos.set(vpane_pos);
         preview_paned.set_position(vpane_pos);
         if let Some(settings) = AppSettings::try_new() {
             let settings_for_notify = settings.clone();
+            let page_weak_paned = self.downgrade();
             preview_paned.connect_position_notify(move |paned| {
                 let pos = paned.position();
-                if (260..=900).contains(&pos) && settings_for_notify.contact_vpane_position() != pos {
-                    settings_for_notify.set_contact_vpane_position(pos);
+                if (300..=1600).contains(&pos) {
+                    if let Some(page) = page_weak_paned.upgrade() {
+                        match page.imp().current_view_mode.get() {
+                            ContactViewMode::Simple => page.imp().simple_vpane_pos.set(pos),
+                            ContactViewMode::Cards => page.imp().cards_vpane_pos.set(pos),
+                            ContactViewMode::Table => page.imp().table_vpane_pos.set(pos),
+                        }
+                    }
+                    if settings_for_notify.contact_vpane_position() != pos {
+                        settings_for_notify.set_contact_vpane_position(pos);
+                    }
                 }
             });
 
             let preview_weak = preview_paned.downgrade();
             settings.connect_changed(Some("contact-vpane-position"), move |settings, _| {
                 if let Some(paned) = preview_weak.upgrade() {
-                    let pos = settings.int("contact-vpane-position").clamp(260, 900);
+                    let pos = settings.int("contact-vpane-position").clamp(300, 1600);
                     if (paned.position() - pos).abs() > 1 {
                         paned.set_position(pos);
                     }
@@ -4516,8 +5507,8 @@ impl ContactsPage {
         paned.set_shrink_end_child(true);
 
         let sidebar_position = AppSettings::try_new()
-            .map(|settings| settings.mail_sidebar_position())
-            .unwrap_or(260)
+            .map(|settings| settings.contact_hpane_position())
+            .unwrap_or(320)
             .clamp(80, 1500);
         paned.set_position(sidebar_position);
         if let Some(settings) = AppSettings::try_new() {
@@ -4533,9 +5524,6 @@ impl ContactsPage {
                     if let Some(win) = crate::window::find_evolution_window(paned) {
                         win.set_sidebar_position_sync(position);
                     }
-                    if settings_for_notify.mail_sidebar_position() != position {
-                        settings_for_notify.set_mail_sidebar_position(position);
-                    }
                     if settings_for_notify.contact_hpane_position() != position {
                         settings_for_notify.set_contact_hpane_position(position);
                     }
@@ -4543,9 +5531,9 @@ impl ContactsPage {
             });
 
             let paned_weak = paned.downgrade();
-            settings.connect_changed(Some("mail-sidebar-position"), move |settings, _| {
+            settings.connect_changed(Some("contact-hpane-position"), move |settings, _| {
                 if let Some(paned) = paned_weak.upgrade() {
-                    let pos = settings.int("mail-sidebar-position").clamp(80, 1500);
+                    let pos = settings.int("contact-hpane-position").clamp(80, 1500);
                     if (paned.position() - pos).abs() > 1 {
                         paned.set_position(pos);
                     }
@@ -4580,27 +5568,39 @@ impl ContactsPage {
                 }
             });
 
+            let page_weak_home = self.downgrade();
             let detail_extra_for_home = detail_extra.clone();
             let selected_for_home = Rc::clone(&selected_contact);
             settings.connect_changed(Some("contact-preview-home-before-work"), move |_, _| {
                 if let Some(record) = selected_for_home.borrow().as_ref() {
                     detail_extra_for_home.set_label(&contact_detail_summary(&record.contact));
+                    if let Some(page) = page_weak_home.upgrade() {
+                        page.update_contact_address_and_map(Some(&record.contact));
+                    }
                 }
             });
 
+            let page_weak_maps = self.downgrade();
             let detail_extra_for_maps = detail_extra.clone();
             let selected_for_maps = Rc::clone(&selected_contact);
             settings.connect_changed(Some("contact-preview-show-maps"), move |_, _| {
                 if let Some(record) = selected_for_maps.borrow().as_ref() {
                     detail_extra_for_maps.set_label(&contact_detail_summary(&record.contact));
+                    if let Some(page) = page_weak_maps.upgrade() {
+                        page.update_contact_address_and_map(Some(&record.contact));
+                    }
                 }
             });
 
+            let page_weak_formatting = self.downgrade();
             let detail_extra_for_formatting = detail_extra.clone();
             let selected_for_formatting = Rc::clone(&selected_contact);
             settings.connect_changed(Some("contact-address-formatting"), move |_, _| {
                 if let Some(record) = selected_for_formatting.borrow().as_ref() {
                     detail_extra_for_formatting.set_label(&contact_detail_summary(&record.contact));
+                    if let Some(page) = page_weak_formatting.upgrade() {
+                        page.update_contact_address_and_map(Some(&record.contact));
+                    }
                 }
             });
         }
@@ -4733,6 +5733,137 @@ impl ContactsPage {
         }
         tracing::warn!(%message, "Contact page result");
     }
+
+    pub(crate) fn update_contact_address_and_map(&self, contact: Option<&VCardContact>) {
+        let Some(group) = self.imp().address_group.borrow().clone() else { return; };
+        let Some(addr_box) = self.imp().address_box.borrow().clone() else { return; };
+        let Some(map_box) = self.imp().map_box.borrow().clone() else { return; };
+
+        while let Some(child) = addr_box.first_child() {
+            addr_box.remove(&child);
+        }
+
+        let Some(contact) = contact else {
+            group.set_visible(false);
+            map_box.set_visible(false);
+            return;
+        };
+
+        let home_before_work = AppSettings::try_new()
+            .map(|s| s.contact_preview_home_before_work())
+            .unwrap_or(false);
+        let show_maps = AppSettings::try_new()
+            .map(|s| s.contact_preview_show_maps())
+            .unwrap_or(true);
+        let target = AppSettings::try_new()
+            .map(|s| s.contact_open_map_target())
+            .unwrap_or_else(|| "openstreetmap".to_string());
+        let prefer_local = AppSettings::try_new()
+            .map(|s| s.contact_open_map_prefer_local())
+            .unwrap_or(true);
+
+        let ordered_addrs = ordered_contact_addresses(contact, home_before_work);
+        if ordered_addrs.is_empty() {
+            group.set_visible(false);
+            map_box.set_visible(false);
+            return;
+        }
+
+        group.set_visible(true);
+
+        for addr in &ordered_addrs {
+            let row = adw::ActionRow::builder()
+                .title(addr)
+                .selectable(false)
+                .css_classes(vec!["property"])
+                .build();
+            let prefix_icon = gtk::Image::from_icon_name("mark-location-symbolic");
+            row.add_prefix(&prefix_icon);
+
+            let copy_btn = gtk::Button::builder()
+                .icon_name("edit-copy-symbolic")
+                .valign(gtk::Align::Center)
+                .css_classes(vec!["flat"])
+                .tooltip_text(&crate::i18n::gettext("Copy address"))
+                .build();
+            let addr_for_copy = addr.clone();
+            let page_weak = self.downgrade();
+            copy_btn.connect_clicked(move |btn| {
+                btn.display().clipboard().set_text(&addr_for_copy);
+                if let Some(p) = page_weak.upgrade() {
+                    p.show_toast(&crate::i18n::gettext("Address copied"));
+                }
+            });
+            row.add_suffix(&copy_btn);
+
+            let open_map_btn = gtk::Button::builder()
+                .icon_name("web-browser-symbolic")
+                .valign(gtk::Align::Center)
+                .css_classes(vec!["flat"])
+                .tooltip_text(&crate::i18n::gettext("Open in Map"))
+                .build();
+            let addr_for_map = addr.clone();
+            let target_clone = target.clone();
+            open_map_btn.connect_clicked(move |_| {
+                let (primary, fallback) = crate::services::settings_service::build_contact_map_uri(
+                    &addr_for_map,
+                    &target_clone,
+                    prefer_local,
+                );
+                if gio::AppInfo::launch_default_for_uri(&primary, None::<&gio::AppLaunchContext>).is_err() {
+                    if let Some(fb) = fallback {
+                        let _ = gio::AppInfo::launch_default_for_uri(&fb, None::<&gio::AppLaunchContext>);
+                    }
+                }
+            });
+            row.add_suffix(&open_map_btn);
+            addr_box.append(&row);
+        }
+
+        if show_maps {
+            map_box.set_visible(true);
+            #[cfg(target_os = "linux")]
+            {
+                if self.imp().map_webview.borrow().is_none() {
+                    let view = webkit6::WebView::builder()
+                        .hexpand(true)
+                        .vexpand(false)
+                        .height_request(220)
+                        .css_classes(vec!["contact-map-webview"])
+                        .build();
+                    let frame = gtk::Frame::builder()
+                        .css_classes(vec!["contact-map-frame"])
+                        .child(&view)
+                        .build();
+                    map_box.append(&frame);
+                    self.imp().map_webview.replace(Some(view));
+                }
+                if let Some(view) = self.imp().map_webview.borrow().as_ref() {
+                    let primary_addr = &ordered_addrs[0];
+                    let encoded_query = url_encode(primary_addr);
+                    let embed_url = format!("https://www.openstreetmap.org/export/embed.html?layer=mapnik&q={encoded_query}");
+                    view.load_uri(&embed_url);
+                }
+            }
+        } else {
+            map_box.set_visible(false);
+        }
+    }
+}
+
+fn url_encode(input: &str) -> String {
+    let mut out = String::with_capacity(input.len() * 3);
+    for b in input.bytes() {
+        if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~' {
+            out.push(b as char);
+        } else if b == b' ' {
+            out.push('+');
+        } else {
+            use std::fmt::Write;
+            let _ = write!(out, "%{:02X}", b);
+        }
+    }
+    out
 }
 
 fn refresh_contacts(
@@ -6106,12 +7237,19 @@ fn visible_contact_records_checked(
     let records = stored_contacts.borrow();
     let mut visible = Vec::new();
 
+    let active_query = search_state.active_query();
+    let has_active_filter = !active_query.clauses.is_empty()
+        || active_query.filters.source_uid.is_some()
+        || active_query.filters.category.is_some()
+        || active_query.filters.unmatched_category
+        || active_query.filters.duplicate_only;
+
     let mut child = contact_list.first_child();
     while let Some(current) = child {
         let next = current.next_sibling();
         if let Ok(row) = current.downcast::<gtk::ListBoxRow>() {
             if let Some(identity) = row_contact_identity(&row) {
-                let is_visible = if visible_ids.is_empty() {
+                let is_visible = if !has_active_filter {
                     true
                 } else {
                     visible_ids.contains(&identity)
@@ -6326,6 +7464,7 @@ fn sync_contact_selection(
                 detail_extra,
                 email_row,
             );
+            page.update_contact_address_and_map(None);
             apply_contact_selection_action_state(
                 ContactSelectionActionState {
                     selection_count: 0,
@@ -6368,6 +7507,7 @@ fn sync_contact_selection(
                 detail_extra,
                 email_row,
             );
+            page.update_contact_address_and_map(None);
         }
         [record] => {
             *selected_contact.borrow_mut() = Some(record.clone());
@@ -6388,6 +7528,7 @@ fn sync_contact_selection(
                 detail_extra,
                 email_row,
             );
+            page.update_contact_address_and_map(Some(&record.contact));
         }
         records => {
             *selected_contact.borrow_mut() = None;
@@ -6419,6 +7560,7 @@ fn sync_contact_selection(
                 crate::i18n::gettext("Multiple selection: Print and Export write verified vCards. Deletion is disabled for read-only sources.")
             };
             detail_extra.set_label(&extra_label);
+            page.update_contact_address_and_map(None);
         }
     }
     let selected_ids = current_contact_selected_identities(contact_list);
@@ -6545,15 +7687,15 @@ fn update_alphabet_pane(
 
             select_contact_row(&contact_list_clone, &s_uid, &u_id);
 
-            let is_cards = page
+            let current_view = page
                 .imp()
                 .view_stack
                 .borrow()
                 .as_ref()
                 .and_then(|stack| stack.visible_child_name())
-                .is_none_or(|name| name == "cards");
+                .unwrap_or_else(|| glib::GString::from("simple"));
 
-            if is_cards {
+            if current_view == "cards" {
                 if let (Some(flow), Some(cards_scroll)) = (
                     page.imp().contact_cards_flow.borrow().as_ref(),
                     page.imp().cards_scroll.borrow().as_ref(),
@@ -6570,7 +7712,7 @@ fn update_alphabet_pane(
                         }
                     }
                 }
-            } else {
+            } else if current_view == "table" || current_view == "list" {
                 if let Some(scroll) = page.imp().list_scroll.borrow().as_ref() {
                     if let Some(layout) = page.imp().contact_table_layout.borrow().as_ref() {
                         let letter_upper: String = letter.to_uppercase().collect();
@@ -6583,9 +7725,11 @@ fn update_alphabet_pane(
                         }
                     }
                 }
+            } else {
+                // "simple" list view
                 if target_row_clone.is_mapped() {
                     target_row_clone.grab_focus();
-                    if let Some(scroll) = page.imp().list_scroll.borrow().as_ref() {
+                    if let Some(scroll) = page.imp().simple_list_scroll.borrow().as_ref() {
                         #[allow(deprecated)]
                         let coords = target_row_clone.translate_coordinates(&contact_list_clone, 0.0, 0.0);
                         if let Some((_, y)) = coords {
@@ -7845,7 +8989,7 @@ mod tests {
     use std::rc::Rc;
     use super::{
         hit_test_contact_table, hit_test_contact_table_header, prepare_contact_table_layout,
-        ContactTableColumn,
+        prepare_contact_table_layout_with_columns, ContactTableColumn,
     };
 
     fn record(source_uid: &str, uid: &str, contact: VCardContact) -> EBookContactRecord {
@@ -8647,22 +9791,22 @@ mod tests {
 
         if let Some(settings) = crate::services::settings_service::AppSettings::try_new() {
             settings.set_mail_sidebar_position(210);
-            settings.set_contact_hpane_position(210);
+            settings.set_contact_hpane_position(320);
 
             // Re-sync with position
-            paned.set_position(320);
+            paned.set_position(340);
             while context.iteration(false) {}
-            assert_eq!(settings.mail_sidebar_position(), 320);
-            assert_eq!(settings.contact_hpane_position(), 320);
+            assert_eq!(settings.contact_hpane_position(), 340);
+            assert_eq!(settings.mail_sidebar_position(), 210);
 
-            // Moving paned must write mail_sidebar_position and contact_hpane_position
+            // Moving paned must write contact_hpane_position without altering mail_sidebar_position
             paned.set_position(440);
             while context.iteration(false) {}
-            assert_eq!(settings.mail_sidebar_position(), 440);
             assert_eq!(settings.contact_hpane_position(), 440);
+            assert_eq!(settings.mail_sidebar_position(), 210);
 
-            // External change to mail_sidebar_position updates paned
-            settings.set_mail_sidebar_position(280);
+            // External change to contact_hpane_position updates paned
+            settings.set_contact_hpane_position(280);
             while context.iteration(false) {}
             assert_eq!(paned.position(), 280);
         } else {
@@ -8734,35 +9878,35 @@ mod tests {
             "UI paned must clamp small external GSettings to 80"
         );
 
-        // 2. Window View Switching & Unified Sidebar Width
+        // 2. Window View Switching & Sidebar Width Independence
         let app = crate::application::EvolutionApplication::new();
         let window = crate::window::EvolutionWindow::new(&app);
 
-        settings.set_mail_sidebar_position(380);
+        settings.set_mail_sidebar_position(240);
+        settings.set_contact_hpane_position(320);
         while context.iteration(false) {}
 
-        // Switching between all views preserves unified sidebar width
-        for view in &["contacts", "mail", "calendar", "tasks", "memos", "contacts"] {
-            window.set_active_view(view);
-            while context.iteration(false) {}
-            assert_eq!(
-                settings.mail_sidebar_position(),
-                380,
-                "Switching to view {view} must keep unified mail_sidebar_position"
-            );
-        }
-
-        // Altering mail-sidebar-position while in mail view syncs across views
+        // Switching between views keeps independent sidebar widths
         window.set_active_view("mail");
         while context.iteration(false) {}
-        settings.set_mail_sidebar_position(490);
-        while context.iteration(false) {}
-        assert_eq!(settings.mail_sidebar_position(), 490);
+        assert_eq!(settings.mail_sidebar_position(), 240);
 
-        // Switching back to contacts view: contact paned remains unified
         window.set_active_view("contacts");
         while context.iteration(false) {}
-        assert_eq!(settings.mail_sidebar_position(), 490);
+        assert_eq!(settings.contact_hpane_position(), 320);
+        assert_eq!(settings.mail_sidebar_position(), 240);
+
+        // Altering contact-hpane-position while in contacts does not alter mail_sidebar_position
+        settings.set_contact_hpane_position(350);
+        while context.iteration(false) {}
+        assert_eq!(settings.contact_hpane_position(), 350);
+        assert_eq!(settings.mail_sidebar_position(), 240);
+
+        // Switching back to mail view preserves mail_sidebar_position
+        window.set_active_view("mail");
+        while context.iteration(false) {}
+        assert_eq!(settings.mail_sidebar_position(), 240);
+        assert_eq!(settings.contact_hpane_position(), 350);
     }
 
     #[test]
@@ -9173,6 +10317,87 @@ mod tests {
     }
 
     #[test]
+    fn test_contact_table_custom_columns_and_reordering() {
+        use crate::services::settings_service::normalize_contact_table_column_order;
+
+        // 1. Check ContactTableColumn properties and round-trips
+        for id in &crate::services::settings_service::CONTACT_TABLE_COLUMN_IDS {
+            let col = ContactTableColumn::from_id(id).expect("valid column id");
+            assert_eq!(col.id(), *id);
+            assert!(!col.label().is_empty());
+            assert!(col.default_width() >= col.min_width());
+        }
+
+        // 2. Column order normalization
+        let normalized = normalize_contact_table_column_order("email,phone,name");
+        assert_eq!(normalized[0], "email");
+        assert_eq!(normalized[1], "phone");
+        assert_eq!(normalized[2], "name");
+        assert_eq!(normalized.len(), 6); // Remaining columns appended
+
+        // Invalid columns filtered out, duplicates removed
+        let norm_weird = normalize_contact_table_column_order("phone,unknown_col,phone");
+        assert_eq!(norm_weird[0], "phone");
+        assert_eq!(norm_weird.len(), 6);
+
+        // 3. Layout with custom column order & widths
+        let mut c1 = VCardContact::new("Ada Lovelace", "ada@example.test", "12345", "Countess");
+        c1.org = "Babbage Engines".to_string();
+        let r1 = record("book-1", "id-ada", c1);
+        let contacts = vec![r1];
+        let selected = std::collections::HashSet::new();
+
+        let custom_cols = vec![
+            (ContactTableColumn::Email, 250.0),
+            (ContactTableColumn::Name, 150.0),
+            (ContactTableColumn::Phone, 100.0),
+        ];
+
+        let layout = prepare_contact_table_layout_with_columns(
+            &contacts,
+            None,
+            &selected,
+            ContactTableColumn::Name,
+            false,
+            800.0,
+            &custom_cols,
+        );
+
+        assert_eq!(layout.columns.len(), 3);
+        assert_eq!(layout.columns[0].0, ContactTableColumn::Email);
+        assert_eq!(layout.columns[0].1, 250.0);
+        assert_eq!(layout.columns[1].0, ContactTableColumn::Name);
+        assert_eq!(layout.columns[1].1, 150.0);
+        assert_eq!(layout.columns[2].0, ContactTableColumn::Phone);
+        assert_eq!(layout.columns[2].1, 100.0);
+
+        // Hit testing matches custom order:
+        // x in [0..250] is Email
+        assert_eq!(hit_test_contact_table_header(&layout, 10.0), Some(ContactTableColumn::Email));
+        assert_eq!(hit_test_contact_table_header(&layout, 240.0), Some(ContactTableColumn::Email));
+        // x in [250..400] is Name
+        assert_eq!(hit_test_contact_table_header(&layout, 260.0), Some(ContactTableColumn::Name));
+        assert_eq!(hit_test_contact_table_header(&layout, 390.0), Some(ContactTableColumn::Name));
+        // x in [400..500] is Phone
+        assert_eq!(hit_test_contact_table_header(&layout, 410.0), Some(ContactTableColumn::Phone));
+        assert_eq!(hit_test_contact_table_header(&layout, 490.0), Some(ContactTableColumn::Phone));
+        // x > 500 is None
+        assert_eq!(hit_test_contact_table_header(&layout, 510.0), None);
+
+        // 4. Source checks for interactive header architecture
+        let source = include_str!("contacts_page.rs");
+        assert!(source.contains("build_contact_column_header"));
+        assert!(source.contains("setup_contact_column_resizer"));
+        assert!(source.contains("setup_contact_column_header_drag_and_sort"));
+        assert!(source.contains("open_contact_column_order_dialog"));
+        assert!(source.contains("show_contact_header_context_menu"));
+        assert!(source.contains("column_header_scroll"));
+        assert!(source.contains("view-column-symbolic"));
+        assert!(source.contains("mail-column-separator"));
+        assert!(source.contains("mail-column-header-cell"));
+    }
+
+    #[test]
     fn test_contacts_toolbar_and_search_bar_hig() {
         let source = include_str!("contacts_page.rs");
         // Collapsible SearchBar pattern matching Mail and Calendar
@@ -9275,5 +10500,42 @@ mod tests {
                 .map(|e| e.text().to_string()),
             Some("test-query".to_string())
         );
+    }
+
+    #[test]
+    fn test_contact_url_encode() {
+        assert_eq!(super::url_encode("Berlin"), "Berlin");
+        assert_eq!(super::url_encode("Brandenburger Tor, Berlin"), "Brandenburger+Tor%2C+Berlin");
+        assert_eq!(super::url_encode("Hauptstraße 1, 80331 München"), "Hauptstra%C3%9Fe+1%2C+80331+M%C3%BCnchen");
+    }
+
+    #[test]
+    fn test_contacts_view_stack_and_simple_list() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        use adw::subclass::prelude::*;
+        let page = ContactsPage::new();
+        let view_stack = page.imp().view_stack.borrow().clone().expect("view stack exists");
+        assert_eq!(view_stack.visible_child_name().as_deref(), Some("simple"));
+        assert!(page.imp().simple_list_scroll.borrow().is_some());
+        assert!(page.imp().cards_scroll.borrow().is_some());
+        assert!(page.imp().list_scroll.borrow().is_some());
+
+        // Test switching views
+        view_stack.set_visible_child_name("cards");
+        assert_eq!(view_stack.visible_child_name().as_deref(), Some("cards"));
+        view_stack.set_visible_child_name("table");
+        assert_eq!(view_stack.visible_child_name().as_deref(), Some("table"));
+        view_stack.set_visible_child_name("simple");
+        assert_eq!(view_stack.visible_child_name().as_deref(), Some("simple"));
+
+        // Paned layout default position and min sizes
+        let preview_paned = page.imp().contact_preview_paned.borrow().clone().expect("paned exists");
+        assert!(preview_paned.position() >= 320);
     }
 }

@@ -262,9 +262,10 @@ textview {
 .mail-column-header-cell.date-cell,
 .mail-column-header-cell.sender-cell,
 .mail-column-header-cell.recipient-cell,
-.mail-column-header-cell.subject-cell {
+.mail-column-header-cell.subject-cell,
+.mail-column-header-cell.contact-cell {
   border-right: none;
-  padding: 2px 4px;
+  padding: 2px 6px;
 }
 
 .mail-column-separator {
@@ -340,8 +341,8 @@ textview {
   font-weight: 700;
   line-height: 1.35;
   color: @window_fg_color;
-  margin-top: 2px;
-  margin-bottom: 4px;
+  margin-top: 0;
+  margin-bottom: 2px;
   padding: 0 2px;
 }
 
@@ -386,11 +387,11 @@ textview {
 
 .mail-preview-actions-bar {
   min-height: 28px;
-  padding: 4px 8px;
+  padding: 0;
   margin: 0;
   background-color: transparent;
   border-top: none;
-  border-bottom: 1px solid alpha(@borders, 0.45);
+  border-bottom: none;
 }
 
 .mail-preview-actions-bar .mail-preview-reply-actions {
@@ -470,7 +471,24 @@ textview {
 
 .mail-plain-view {
   color: @window_fg_color;
-  background-color: @view_bg_color;
+  background-color: transparent;
+  font-family: Cantarell, "Adwaita Sans", system-ui, -apple-system, sans-serif;
+}
+
+/* ── Mail Preview Container & Card ─────────────────────────────────────── */
+.mail-preview-card {
+  background-color: @card_bg_color;
+  border-radius: 12px;
+  border: 1px solid alpha(currentColor, 0.08);
+  box-shadow: 0 1px 3px alpha(currentColor, 0.04);
+}
+
+.mail-preview-card banner.mail-status-banner,
+.mail-preview-card .mail-status-banner,
+.mail-preview-card banner.mail-status-banner > revealer > widget,
+.mail-preview-card .mail-status-banner > revealer > widget {
+  border-top-left-radius: 12px;
+  border-top-right-radius: 12px;
 }
 
 /* ── Calendar Event Chips ──────────────────────────────────────────────── */
@@ -1643,16 +1661,17 @@ searchbar {
   border-radius: 6px;
 }
 
-/* Event chip in time grid - GNOME Calendar borderless style with saturated left edge */
+/* Event chip in time grid - Google Calendar planar style with GNOME Calendar pastel coloring */
 .calendar-grid-event {
   margin: 1px 0;
-  padding: 3px 6px 3px 8px;
-  border-radius: 6px;
+  padding: 3px 6px;
+  border-radius: 4px;
   border: none;
   outline: none;
-  background-color: @accent_bg_color;
-  color: @accent_fg_color;
-  font-size: 0.95rem;
+  box-shadow: none;
+  background-color: alpha(@accent_bg_color, 0.25);
+  color: @view_fg_color;
+  font-size: 1.0rem;
   font-weight: 500;
   transition: background-color 100ms ease;
 }
@@ -1660,39 +1679,48 @@ searchbar {
 .calendar-grid-event:hover {
   border: none;
   outline: none;
+  box-shadow: none;
 }
 
 .calendar-grid-event:active {
   border: none;
   outline: none;
+  box-shadow: none;
 }
 
 .calendar-grid-event.all-day-chip,
 button.calendar-grid-event.all-day-chip {
   margin: 1px 2px;
-  padding: 2px 6px 2px 8px;
-  border-radius: 6px;
+  padding: 0;
+  border-radius: 4px;
   border: none;
   outline: none;
-  font-size: 0.92rem;
+  box-shadow: none;
+  background-color: transparent;
+  font-size: 0.98rem;
   min-height: 22px;
   line-height: 1.2;
 }
 
 .calendar-grid-event.all-day-chip:hover,
-button.calendar-grid-event.all-day-chip:hover {
+button.calendar-grid-event.all-day-chip:hover,
+.calendar-grid-event.all-day-chip:active,
+button.calendar-grid-event.all-day-chip:active {
   border: none;
   outline: none;
+  box-shadow: none;
+  background-color: transparent;
 }
 
 .calendar-grid-event.month-bar-chip,
 button.calendar-grid-event.month-bar-chip {
   margin: 1px 2px;
-  padding: 2px 6px 2px 8px;
-  border-radius: 6px;
+  padding: 2px 6px;
+  border-radius: 4px;
   border: none;
   outline: none;
-  font-size: 0.92rem;
+  box-shadow: none;
+  font-size: 0.98rem;
   min-height: 21px;
   line-height: 1.2;
 }
@@ -1702,6 +1730,7 @@ button.calendar-grid-event.month-bar-chip:hover {
   filter: brightness(0.96);
   border: none;
   outline: none;
+  box-shadow: none;
 }
 
 /* Multi-day all-day continuous bar spanning in month view */
@@ -2535,6 +2564,22 @@ button.month-bar-chip.span-end {
   outline: none;
 }
 
+/* ── Contacts Simple List & Map Preview ────────────────────────────── */
+.contact-simple-list-scroll {
+  background-color: transparent;
+}
+
+.contact-map-frame {
+  border-radius: 12px;
+  border: 1px solid alpha(currentColor, 0.15);
+  overflow: hidden;
+  background-color: alpha(currentColor, 0.04);
+}
+
+.contact-map-webview {
+  border-radius: 12px;
+}
+
 /* ── Agenda / To Do Sidebar (Parity with Left Sidebar Drawer) ── */
 .todo-sidebar {
   background-color: @sidebar_bg_color;
@@ -2749,9 +2794,57 @@ scrollbar.mail-table-overlay-scrollbar slider:active {
 
 /* ── Modern Webmail Header & Conversation Bar ────────────────────────── */
 .mail-modern-header-card {
-  padding: 4px 0 6px 0;
+  padding: 2px 0;
   border-radius: 0;
   background-color: transparent;
+  transition: padding 200ms ease;
+}
+
+.mail-modern-header-card.is-compact {
+  padding: 0;
+}
+
+/* ── Classic Mail Header Collapsible & Responsive Layout ─────────────── */
+.mail-classic-header-box {
+  padding: 2px 0;
+  transition: padding 200ms ease;
+}
+
+.mail-classic-header-box.is-compact {
+  padding: 0;
+}
+
+.mail-classic-compact-box {
+  min-height: 28px;
+}
+
+.mail-classic-compact-sender {
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.mail-classic-compact-bullet {
+  opacity: 0.45;
+  font-size: 0.85rem;
+  margin: 0 4px;
+}
+
+.mail-classic-compact-subject {
+  font-weight: 500;
+  font-size: 0.95rem;
+  opacity: 0.90;
+}
+
+.mail-compact-bullet {
+  opacity: 0.45;
+  font-size: 0.85rem;
+  margin: 0 4px;
+}
+
+.mail-compact-subject {
+  font-weight: 500;
+  font-size: 0.95rem;
+  opacity: 0.90;
 }
 
 .mail-modern-sender-name {
@@ -2856,9 +2949,9 @@ banner.mail-status-banner button,
 }
 
 .mail-header-action-btn {
-  min-width: 32px;
-  min-height: 32px;
-  padding: 5px;
+  min-width: 30px;
+  min-height: 30px;
+  padding: 4px;
   border-radius: 9999px;
   color: @window_fg_color;
   transition: all 120ms ease-in-out;
@@ -2938,4 +3031,18 @@ popover.menu.touch modelbutton {
   min-height: 38px;
   padding: 6px 8px;
 }
+
+/* ── Conversation Accordion ────────────────────────────────────────────── */
+.mail-accordion-card {
+  border-radius: 8px;
+  background-color: alpha(currentColor, 0.04);
+  border: 1px solid alpha(currentColor, 0.08);
+  margin-bottom: 6px;
+  transition: all 150ms ease;
+}
+
+.mail-accordion-card:hover {
+  background-color: alpha(currentColor, 0.07);
+}
+
 

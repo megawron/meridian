@@ -566,60 +566,68 @@ pub fn load_configured_account_collections() -> Vec<EdsAccountCollection> {
 
 fn load_configured_account_collections_uncached() -> Vec<EdsAccountCollection> {
     let mut collections = Vec::new();
-    let dir = glib::user_config_dir().join("evolution/sources");
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("source") {
-                continue;
-            }
-            let kf = KeyFile::new();
-            if kf.load_from_file(&path, KeyFileFlags::NONE).is_err() {
-                continue;
-            }
-            if !kf.has_group("Collection") {
-                continue;
-            }
-            let enabled = kf.boolean("Data Source", "Enabled").unwrap_or(true);
-            if !enabled {
-                continue;
-            }
-            let uid = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or_default()
-                .to_string();
-            let display_name = kf
-                .locale_string("Data Source", "DisplayName", None)
-                .or_else(|_| kf.string("Data Source", "DisplayName"))
-                .or_else(|_| kf.string("Collection", "Identity"))
-                .ok()
-                .map(|s| s.to_string())
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| uid.clone());
-            let backend_name = kf
-                .string("Collection", "BackendName")
-                .map(|s| s.to_string())
-                .unwrap_or_else(|_| "collection".to_string());
-            let calendar_enabled = kf.boolean("Collection", "CalendarEnabled").unwrap_or(true);
-            let contacts_enabled = kf.boolean("Collection", "ContactsEnabled").unwrap_or(true);
-            let mail_enabled = kf.boolean("Collection", "MailEnabled").unwrap_or(true);
+    let dirs = [
+        glib::user_config_dir().join("evolution/sources"),
+        glib::home_dir().join(".var/app/org.gnome.Evolution/config/evolution/sources"),
+    ];
+    for dir in &dirs {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("source") {
+                    continue;
+                }
+                let uid = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_default()
+                    .to_string();
+                if collections.iter().any(|c: &EdsAccountCollection| c.uid == uid) {
+                    continue;
+                }
+                let kf = KeyFile::new();
+                if kf.load_from_file(&path, KeyFileFlags::NONE).is_err() {
+                    continue;
+                }
+                if !kf.has_group("Collection") {
+                    continue;
+                }
+                let enabled = kf.boolean("Data Source", "Enabled").unwrap_or(true);
+                if !enabled {
+                    continue;
+                }
+                let display_name = kf
+                    .locale_string("Data Source", "DisplayName", None)
+                    .or_else(|_| kf.string("Data Source", "DisplayName"))
+                    .or_else(|_| kf.string("Collection", "Identity"))
+                    .ok()
+                    .map(|s| s.to_string())
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| uid.clone());
+                let backend_name = kf
+                    .string("Collection", "BackendName")
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|_| "collection".to_string());
+                let calendar_enabled = kf.boolean("Collection", "CalendarEnabled").unwrap_or(true);
+                let contacts_enabled = kf.boolean("Collection", "ContactsEnabled").unwrap_or(true);
+                let mail_enabled = kf.boolean("Collection", "MailEnabled").unwrap_or(true);
 
-            collections.push(EdsAccountCollection {
-                uid,
-                display_name,
-                backend_name,
-                enabled,
-                calendar_enabled,
-                contacts_enabled,
-                mail_enabled,
-            });
+                collections.push(EdsAccountCollection {
+                    uid,
+                    display_name,
+                    backend_name,
+                    enabled,
+                    calendar_enabled,
+                    contacts_enabled,
+                    mail_enabled,
+                });
+            }
         }
     }
 
     // Also include enabled accounts from AccountConfigStore if not already present
     for profile in crate::services::account_config_service::AccountConfigStore::default().load() {
-        if !profile.enabled {
+        if !profile.enabled || profile.is_shared_mailbox || profile.open_mailbox_other_user {
             continue;
         }
         let name = if !profile.display_name.trim().is_empty() {
@@ -627,14 +635,15 @@ fn load_configured_account_collections_uncached() -> Vec<EdsAccountCollection> {
         } else {
             profile.email.clone()
         };
-        if !collections.iter().any(|c| c.uid == profile.id || c.display_name == name || c.display_name == profile.email) {
+        if !collections.iter().any(|c| c.uid == profile.id || c.display_name.eq_ignore_ascii_case(&name) || c.display_name.eq_ignore_ascii_case(&profile.email)) {
+            let contacts_enabled = profile.protocol == crate::services::account_config_service::AccountProtocol::Exchange;
             collections.push(EdsAccountCollection {
                 uid: profile.id,
                 display_name: name,
                 backend_name: "account".to_string(),
                 enabled: true,
                 calendar_enabled: true,
-                contacts_enabled: true,
+                contacts_enabled,
                 mail_enabled: true,
             });
         }
@@ -681,7 +690,8 @@ pub fn resolve_source_parent_name(uid: &str) -> String {
 
 fn resolve_source_parent_name_uncached(uid: &str) -> String {
     let clean_uid = uid
-        .strip_prefix("account-tasks-")
+        .strip_prefix("account-contacts-")
+        .or_else(|| uid.strip_prefix("account-tasks-"))
         .or_else(|| uid.strip_prefix("account-calendar-"))
         .or_else(|| uid.strip_prefix("account-memos-"))
         .or_else(|| uid.strip_prefix("col-tasks-"))
@@ -691,15 +701,24 @@ fn resolve_source_parent_name_uncached(uid: &str) -> String {
     if clean_uid.starts_with("local-") || clean_uid == "local" || clean_uid == "system-calendar" {
         return "Auf diesem Computer".to_string();
     }
-    // If clean_uid matches an account collection, immediately return its display name
+    // Check if clean_uid matches an account collection, immediately return its display name
     for col in load_configured_account_collections() {
         if col.uid == clean_uid {
             return col.display_name;
         }
     }
 
+    // Check if known in cached address book sources (e.g. Google or Exchange GAL)
+    let cached_sources = crate::services::evolution_contact_cache::list_cached_address_book_sources();
+    if let Some(cached) = cached_sources.iter().find(|s| s.uid == clean_uid) {
+        if let Some(parent) = &cached.parent_name {
+            return parent.clone();
+        }
+    }
+
     let mut candidate_paths = Vec::new();
     candidate_paths.push(glib::user_config_dir().join("evolution/sources").join(format!("{clean_uid}.source")));
+    candidate_paths.push(glib::home_dir().join(".var/app/org.gnome.Evolution/config/evolution/sources").join(format!("{clean_uid}.source")));
     candidate_paths.push(std::path::PathBuf::from("/usr/share/evolution-data-server/sources").join(format!("{clean_uid}.source")));
 
     for path in candidate_paths {
@@ -1081,6 +1100,52 @@ async fn get_goa_contacts_accounts() -> Result<Vec<EdsSource>, EdsServiceError> 
     Ok(goa_sources)
 }
 
+/// Helper to identify shared, delegate, or functional mailboxes that do not possess
+/// their own personal address books.
+pub fn is_shared_or_delegate_mailbox(email_or_name: &str) -> bool {
+    let lower = email_or_name.trim().to_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+    // Check known shared mailboxes from AccountConfigStore
+    let profiles = crate::services::account_config_service::AccountConfigStore::default().load();
+    for p in &profiles {
+        if p.is_shared_mailbox || p.open_mailbox_other_user || !p.foreign_mailbox.trim().is_empty() {
+            if p.email.to_lowercase() == lower
+                || p.foreign_mailbox.to_lowercase() == lower
+                || p.display_name.to_lowercase() == lower
+                || format!("account:{}", p.email).to_lowercase() == lower
+                || format!("account:{}", p.display_name).to_lowercase() == lower
+            {
+                return true;
+            }
+        }
+    }
+    // Check known delegate mailbox names and functional addresses
+    if lower == "edv" || lower.starts_with("edv@")
+        || lower == "datenimport" || lower.starts_with("datenimport@")
+        || lower == "dev" || lower.starts_with("dev@")
+    {
+        return true;
+    }
+    false
+}
+
+/// Normalize address book names to identify duplicates across English/German localizations.
+pub fn canonical_book_name(name: &str) -> &'static str {
+    let trimmed = name.trim();
+    if trimmed.eq_ignore_ascii_case("contacts") || trimmed.eq_ignore_ascii_case("kontakte") {
+        "contacts"
+    } else if trimmed.eq_ignore_ascii_case("global address list")
+        || trimmed.eq_ignore_ascii_case("globales adressbuch")
+        || trimmed.eq_ignore_ascii_case("gal")
+    {
+        "gal"
+    } else {
+        ""
+    }
+}
+
 /// List all address book sources from EDS (including configured accounts & GOA).
 #[allow(dead_code)]
 #[cfg(not(target_os = "macos"))]
@@ -1091,26 +1156,67 @@ pub async fn list_address_book_sources() -> Result<Vec<EdsSource>, EdsServiceErr
         Err(error) => (Vec::new(), Some(error)),
     };
 
-    if sources.is_empty() {
-        if let Ok(goa_contacts) = get_goa_contacts_accounts().await {
-            for goa in goa_contacts {
-                if !sources
-                    .iter()
-                    .any(|s| s.uid == goa.uid || s.display_name == goa.display_name)
-                {
-                    sources.push(goa);
-                }
+    // Filter out shared/delegate mailboxes which do not have address books
+    sources.retain(|s| {
+        let parent = s.parent_name.as_deref().unwrap_or("");
+        let fm = s.foreign_mail.as_deref().unwrap_or("");
+        !is_shared_or_delegate_mailbox(parent)
+            && !is_shared_or_delegate_mailbox(fm)
+            && !is_shared_or_delegate_mailbox(&s.uid)
+            && !is_shared_or_delegate_mailbox(&s.display_name)
+    });
+
+    // Canonicalize parent names for discovered sources
+    for s in &mut sources {
+        if s.parent_name.is_none() || s.parent_name.as_deref().unwrap_or("").starts_with("account-contacts-") {
+            let resolved = resolve_source_parent_name(&s.uid);
+            if !resolved.is_empty() {
+                s.parent_name = Some(resolved);
             }
         }
     }
 
+    if let Ok(goa_contacts) = get_goa_contacts_accounts().await {
+        for goa in goa_contacts {
+            let parent = goa.parent_name.as_deref().unwrap_or("");
+            if is_shared_or_delegate_mailbox(parent) || is_shared_or_delegate_mailbox(&goa.display_name) {
+                continue;
+            }
+            if !sources
+                .iter()
+                .any(|s| s.uid == goa.uid || s.display_name == goa.display_name)
+            {
+                sources.push(goa);
+            }
+        }
+    }
+
+    // Add all cached sources discovered from Evolution SQLite caches
+    let cached_sources = crate::services::evolution_contact_cache::list_cached_address_book_sources();
+    for cached in cached_sources {
+        let parent = cached.parent_name.as_deref().unwrap_or("");
+        if is_shared_or_delegate_mailbox(parent) || is_shared_or_delegate_mailbox(&cached.display_name) {
+            continue;
+        }
+        let c_kind = canonical_book_name(&cached.display_name);
+        let is_dup = sources.iter().any(|s| {
+            s.uid == cached.uid
+                || (s.parent_name.as_deref().unwrap_or("").eq_ignore_ascii_case(parent)
+                    && (!c_kind.is_empty() && c_kind == canonical_book_name(&s.display_name)
+                        || s.display_name.eq_ignore_ascii_case(&cached.display_name)))
+        });
+        if !is_dup {
+            sources.push(cached);
+        }
+    }
+
     for collection in load_configured_account_collections() {
-        if !collection.contacts_enabled {
+        if !collection.contacts_enabled || is_shared_or_delegate_mailbox(&collection.display_name) || is_shared_or_delegate_mailbox(&collection.uid) {
             continue;
         }
         let account_name = collection.display_name.clone();
         let already_represented = sources.iter().any(|s| {
-            s.parent_name.as_deref() == Some(&account_name)
+            s.parent_name.as_deref().unwrap_or("").eq_ignore_ascii_case(&account_name)
                 || s.uid == collection.uid
                 || s.uid == format!("account-contacts-{}", collection.uid)
         });
@@ -1126,6 +1232,38 @@ pub async fn list_address_book_sources() -> Result<Vec<EdsSource>, EdsServiceErr
             });
         }
     }
+
+    // Omit GOA redundant wrappers if authoritative books exist for that parent
+    let non_goa_parents: std::collections::HashSet<String> = sources
+        .iter()
+        .filter(|s| !s.uid.starts_with("goa-contacts-"))
+        .filter_map(|s| s.parent_name.as_ref().map(|p| p.to_lowercase()))
+        .collect();
+    sources.retain(|s| {
+        if s.uid.starts_with("goa-contacts-") {
+            let parent = s.parent_name.as_deref().unwrap_or("").to_lowercase();
+            !non_goa_parents.contains(&parent)
+        } else {
+            true
+        }
+    });
+
+    // Deduplicate any duplicate GAL / Kontakte under the same parent account
+    let mut deduped: Vec<EdsSource> = Vec::new();
+    for s in sources {
+        let p_name = s.parent_name.as_deref().unwrap_or("").to_lowercase();
+        let c_kind = canonical_book_name(&s.display_name);
+        let is_dup = deduped.iter().any(|existing| {
+            existing.uid == s.uid
+                || (existing.parent_name.as_deref().unwrap_or("").to_lowercase() == p_name
+                    && (!c_kind.is_empty() && c_kind == canonical_book_name(&existing.display_name)
+                        || existing.display_name.eq_ignore_ascii_case(&s.display_name)))
+        });
+        if !is_dup {
+            deduped.push(s);
+        }
+    }
+    let mut sources = deduped;
 
     sort_sources(&mut sources);
     if sources.is_empty() {
@@ -1705,6 +1843,12 @@ mod tests {
             book_discovery.sources.len(),
             book_discovery.origin
         );
+        for s in &book_discovery.sources {
+            println!(
+                "  [Book] uid={}, name={}, backend={}, parent={:?}",
+                s.uid, s.display_name, s.backend_name, s.parent_name
+            );
+        }
 
         let mail_discovery = discover_sources(EdsSourceKind::Mail).await;
         println!(
@@ -1712,6 +1856,12 @@ mod tests {
             mail_discovery.sources.len(),
             mail_discovery.origin
         );
+        for s in &mail_discovery.sources {
+            println!(
+                "  [Mail] uid={}, name={}, backend={}, parent={:?}",
+                s.uid, s.display_name, s.backend_name, s.parent_name
+            );
+        }
     }
 
     #[tokio::test]
@@ -1796,7 +1946,7 @@ mod tests {
         if let Ok(sources) = sources {
             let collections = load_configured_account_collections();
             for coll in collections {
-                if coll.contacts_enabled {
+                if coll.contacts_enabled && !is_shared_or_delegate_mailbox(&coll.display_name) && !is_shared_or_delegate_mailbox(&coll.uid) {
                     assert!(
                         sources.iter().any(|s| {
                             s.parent_name.as_deref() == Some(&coll.display_name)

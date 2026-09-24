@@ -62,9 +62,9 @@ pub(crate) const ACCELERATOR_BINDINGS: &[(&str, &[&str])] = &[
     ("win.mark-unread", &["<Ctrl><Shift>K"]),
     ("win.mark-all-read", &["<Ctrl><Shift>M"]),
     ("win.mark-thread-read", &["<Ctrl><Alt>M"]),
-    ("win.zoom-in", &["<Ctrl>plus", "<Ctrl>equal"]),
-    ("win.zoom-out", &["<Ctrl>minus"]),
-    ("win.zoom-reset", &["<Ctrl>0"]),
+    ("win.zoom-in", &["<Ctrl>plus", "<Ctrl>equal", "<Ctrl>KP_Add"]),
+    ("win.zoom-out", &["<Ctrl>minus", "<Ctrl>KP_Subtract"]),
+    ("win.zoom-reset", &["<Ctrl>0", "<Ctrl>KP_0"]),
     ("win.expand-all-threads", &["<Shift>plus", "<Shift>KP_Add"]),
     (
         "win.collapse-all-threads",

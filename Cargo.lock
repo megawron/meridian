@@ -1230,6 +1230,7 @@ dependencies = [
  "gio",
  "glib",
  "gtk4",
+ "javascriptcore6",
  "libadwaita",
  "once_cell",
  "pango",

@@ -365,7 +365,7 @@ impl MailViewerWindow {
             .margin_start(12)
             .margin_end(12)
             .margin_top(8)
-            .margin_bottom(6)
+            .margin_bottom(0)
             .build();
 
         let normal_headers_grid = gtk::Grid::builder()
@@ -442,6 +442,7 @@ impl MailViewerWindow {
         header_box.append(&all_headers_revealer);
 
         let header_separator = gtk::Separator::new(gtk::Orientation::Horizontal);
+        header_separator.set_visible(false);
 
         // Find in message bar
         let message_find_entry = gtk::SearchEntry::builder()
@@ -505,6 +506,10 @@ impl MailViewerWindow {
         // MailViewer
         let mail_viewer = MailViewer::new();
         mail_viewer.set_vexpand(true);
+        mail_viewer.set_margin_start(8);
+        mail_viewer.set_margin_end(8);
+        mail_viewer.set_margin_top(8);
+        mail_viewer.set_margin_bottom(8);
         self.imp().mail_viewer.replace(Some(mail_viewer.clone()));
 
         // Attachment bar

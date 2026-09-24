@@ -22,7 +22,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::services::AppSettings;
+use crate::services::{AppSettings, AvatarCacheService, RecentRecipientsService};
 use crate::services::account_config_service::{
     AccountConfigStore, AccountProfile, reconciled_local_default_account,
 };
@@ -360,6 +360,11 @@ impl ComposeDialog {
             ));
         }
         dialog
+    }
+
+    pub fn set_requested_account(&self, source_uid: Option<String>, from: Option<String>) {
+        *self.imp().requested_source_uid.borrow_mut() = source_uid;
+        *self.imp().requested_from.borrow_mut() = from;
     }
 
     pub fn forward(subject: &str) -> Self {
@@ -2109,6 +2114,16 @@ impl ComposeDialog {
                                             message.push_str(
                                                 "; ein neuerer Recovery-Entwurf wurde erhalten",
                                             );
+                                        }
+                                        let recent_service = RecentRecipientsService::new();
+                                        if let Some(entry) = dialog.imp().entry_to.borrow().as_ref() {
+                                            recent_service.record_recipients_from_header(&entry.text());
+                                        }
+                                        if let Some(entry) = dialog.imp().entry_cc.borrow().as_ref() {
+                                            recent_service.record_recipients_from_header(&entry.text());
+                                        }
+                                        if let Some(entry) = dialog.imp().entry_bcc.borrow().as_ref() {
+                                            recent_service.record_recipients_from_header(&entry.text());
                                         }
                                         if let Some(callback) = dialog.imp().on_send_success.borrow().as_ref() {
                                             callback();
@@ -5425,10 +5440,41 @@ fn setup_recipient_autocompletion(
                         .margin_bottom(4)
                         .build();
 
-                    let icon = gtk::Image::builder()
-                        .icon_name("avatar-default-symbolic")
+                    let display = if sugg.display.is_empty() {
+                        &sugg.address
+                    } else {
+                        &sugg.display
+                    };
+
+                    let avatar = adw::Avatar::builder()
+                        .size(28)
+                        .text(display)
+                        .show_initials(true)
                         .build();
-                    row.append(&icon);
+
+                    let allow_remote = AppSettings::try_new()
+                        .map(|s| s.mail_fetch_remote_logos())
+                        .unwrap_or(true);
+
+                    let (tx, rx) = async_channel::bounded(1);
+                    let avatar_weak = avatar.downgrade();
+                    glib::spawn_future_local(async move {
+                        if let Ok(bytes) = rx.recv().await {
+                            if let Some(avatar) = avatar_weak.upgrade() {
+                                if let Ok(texture) = gtk::gdk::Texture::from_bytes(&bytes) {
+                                    avatar.set_custom_image(Some(&texture));
+                                }
+                            }
+                        }
+                    });
+
+                    if let Some(bytes) = AvatarCacheService::global().request_avatar(&sugg.address, allow_remote, Some(tx)) {
+                        if let Ok(texture) = gtk::gdk::Texture::from_bytes(&bytes) {
+                            avatar.set_custom_image(Some(&texture));
+                        }
+                    }
+
+                    row.append(&avatar);
 
                     let text_box = gtk::Box::builder()
                         .orientation(gtk::Orientation::Vertical)
@@ -5436,11 +5482,6 @@ fn setup_recipient_autocompletion(
                         .hexpand(true)
                         .build();
 
-                    let display = if sugg.display.is_empty() {
-                        &sugg.address
-                    } else {
-                        &sugg.display
-                    };
                     let lbl_name = gtk::Label::builder()
                         .label(display)
                         .xalign(0.0)
@@ -5480,16 +5521,33 @@ fn search_recipient_suggestions(query: &str, show_address: bool) -> Vec<Recipien
     if query_norm.is_empty() {
         return Vec::new();
     }
+    let mut results = Vec::new();
+
+    // 1. Check recent recipients (frecency ranking)
+    let recent = RecentRecipientsService::new().search_recent(query);
+    for r in recent {
+        if !r.email.is_empty() {
+            results.push(RecipientSuggestion {
+                display: r.display_name,
+                address: r.email,
+            });
+        }
+    }
+
+    // 2. Query local EDS contacts
     let store = ContactStoreService::new();
     let contacts = store.load_contacts();
-    let mut results = Vec::new();
 
     for record in contacts {
         let c = &record.contact;
         if contact_matches_query(c, &query_norm) {
             let suggestions = contact_to_recipient_suggestions(c, show_address);
             for s in suggestions {
-                if !results.iter().any(|r: &RecipientSuggestion| r.address.eq_ignore_ascii_case(&s.address)) {
+                if let Some(existing) = results.iter_mut().find(|r| r.address.eq_ignore_ascii_case(&s.address)) {
+                    if existing.display.is_empty() && !s.display.is_empty() {
+                        existing.display = s.display;
+                    }
+                } else {
                     results.push(s);
                 }
             }

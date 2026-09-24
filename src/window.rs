@@ -854,10 +854,7 @@ impl EvolutionWindow {
                 hb.set_show_start_title_buttons(true);
             }
         } else {
-            let saved_pos = AppSettings::try_new()
-                .map(|s| s.mail_sidebar_position())
-                .unwrap_or(260)
-                .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+            let saved_pos = self.sidebar_position_for_view(&self.active_view_name());
             let cur_pos = if is_vis {
                 self.active_view_outer_paned()
                     .map(|p| p.position())
@@ -1422,10 +1419,7 @@ impl EvolutionWindow {
             } else {
                 let vis = self.is_sidebar_visible_for_active_view();
                 sb_h.set_visible(vis);
-                let target_pos = AppSettings::try_new()
-                    .map(|s| s.mail_sidebar_position())
-                    .unwrap_or(260)
-                    .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+                let target_pos = self.sidebar_position_for_view(&self.active_view_name());
                 if vis {
                     sb_h.set_size_request(target_pos, -1);
                 } else {
@@ -1450,6 +1444,20 @@ impl EvolutionWindow {
 
         self.sync_back_button();
         self.sync_right_sidebar_toggle();
+    }
+
+    pub fn sidebar_position_for_view(&self, view_name: &str) -> i32 {
+        let settings = AppSettings::try_new();
+        match view_name {
+            "contacts" => settings
+                .map(|s| s.contact_hpane_position())
+                .unwrap_or(320)
+                .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH),
+            _ => settings
+                .map(|s| s.mail_sidebar_position())
+                .unwrap_or(240)
+                .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH),
+        }
     }
 
     pub fn update_sidebar_title(&self, title: &str) {
@@ -1518,10 +1526,7 @@ impl EvolutionWindow {
             }
         };
 
-        let target_pos = AppSettings::try_new()
-            .map(|s| s.mail_sidebar_position())
-            .unwrap_or(260)
-            .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+        let target_pos = self.sidebar_position_for_view(&self.active_view_name());
 
         let is_start_visible = outer_paned.start_child().map(|s| s.property::<bool>("visible")).unwrap_or(false);
         let current_pos = outer_paned.position();
@@ -2980,17 +2985,21 @@ impl EvolutionWindow {
                 let (sidebar_pos, sidebar_vis) = window_weak
                     .upgrade()
                     .map(|w| {
-                        let pos = AppSettings::try_new()
-                            .map(|s| s.mail_sidebar_position())
-                            .unwrap_or(260)
-                            .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+                        let pos = w.sidebar_position_for_view(name);
                         (pos, w.imp().sidebar_visible.get())
                     })
                     .unwrap_or_else(|| {
-                        let pos = AppSettings::try_new()
-                            .map(|s| s.mail_sidebar_position())
-                            .unwrap_or(260)
-                            .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+                        let settings = AppSettings::try_new();
+                        let pos = match name {
+                            "contacts" => settings
+                                .map(|s| s.contact_hpane_position())
+                                .unwrap_or(320)
+                                .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH),
+                            _ => settings
+                                .map(|s| s.mail_sidebar_position())
+                                .unwrap_or(240)
+                                .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH),
+                        };
                         let vis = AppSettings::try_new()
                             .map(|s| s.mail_show_sidebar())
                             .unwrap_or(true);
@@ -3093,7 +3102,6 @@ impl EvolutionWindow {
         let sync_sidebar_position: Rc<dyn Fn(i32)> = {
             let mail_page = mail_page.clone();
             let calendar_bin = calendar_bin.clone();
-            let contacts_bin = contacts_bin.clone();
             let tasks_bin = tasks_bin.clone();
             let memos_bin = memos_bin.clone();
             let win_weak_sidebar_pos = self.downgrade();
@@ -3101,17 +3109,14 @@ impl EvolutionWindow {
                 let clamped = pos.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
                 mail_page.set_sidebar_position(clamped);
                 if let Some(win) = win_weak_sidebar_pos.upgrade() {
-                    if let Some(sb_h) = win.imp().sidebar_header.borrow().as_ref() {
-                        sb_h.set_size_request(clamped, -1);
+                    if win.active_view_name() != "contacts" {
+                        if let Some(sb_h) = win.imp().sidebar_header.borrow().as_ref() {
+                            sb_h.set_size_request(clamped, -1);
+                        }
                     }
                 }
                 if let Some(child) = calendar_bin.child() {
                     if let Ok(page) = child.downcast::<CalendarPage>() {
-                        page.set_sidebar_position(clamped);
-                    }
-                }
-                if let Some(child) = contacts_bin.child() {
-                    if let Ok(page) = child.downcast::<ContactsPage>() {
                         page.set_sidebar_position(clamped);
                     }
                 }
@@ -3161,14 +3166,14 @@ impl EvolutionWindow {
         // development builds.  Keep persistence optional, but always replace
         // the placeholder when the user navigates to a module.
         let ensure_module_loaded_for_signal = Rc::clone(&ensure_module_loaded);
-        let sync_sidebar_position_for_signal = Rc::clone(&sync_sidebar_position);
         let settings_for_view = AppSettings::try_new();
         let window_for_search_route = self.downgrade();
         view_stack.connect_visible_child_name_notify(move |stack| {
             if let Some(view_name) = stack.visible_child_name() {
+                let view_str = view_name.as_str();
                 if let Some(window) = window_for_search_route.upgrade() {
-                    window.invalidate_search_route_for_visible_page(Some(view_name.as_str()));
-                    let title = match view_name.as_str() {
+                    window.invalidate_search_route_for_visible_page(Some(view_str));
+                    let title = match view_str {
                         "mail" => window
                             .mail_page()
                             .map(|m| m.active_folder_display_title())
@@ -3180,8 +3185,40 @@ impl EvolutionWindow {
                         _ => String::new(),
                     };
                     window.update_sidebar_title(&title);
+                    let view_pos = window.sidebar_position_for_view(view_str);
+                    if let Some(sb_h) = window.imp().sidebar_header.borrow().as_ref() {
+                        sb_h.set_size_request(view_pos, -1);
+                    }
+                    match view_str {
+                        "contacts" => {
+                            if let Some(c) = window.contacts_page() {
+                                c.set_sidebar_position(view_pos);
+                            }
+                        }
+                        "mail" => {
+                            if let Some(m) = window.mail_page() {
+                                m.set_sidebar_position(view_pos);
+                            }
+                        }
+                        "calendar" => {
+                            if let Some(c) = window.calendar_page() {
+                                c.set_sidebar_position(view_pos);
+                            }
+                        }
+                        "tasks" => {
+                            if let Some(t) = window.tasks_page() {
+                                t.set_sidebar_position(view_pos);
+                            }
+                        }
+                        "memos" => {
+                            if let Some(m) = window.memos_page() {
+                                m.set_sidebar_position(view_pos);
+                            }
+                        }
+                        _ => {}
+                    }
                 }
-                ensure_module_loaded_for_signal(view_name.as_str());
+                ensure_module_loaded_for_signal(view_str);
                 if let Some(window) = window_for_search_route.upgrade() {
                     window.set_screen_mode(window.imp().is_mobile.get(), window.imp().is_tablet.get());
                     window.sync_sidebar_state_for_current_view();
@@ -3189,19 +3226,14 @@ impl EvolutionWindow {
                     window.sync_toolbar_state_for_current_view();
                 }
                 if let Some(settings) = settings_for_view.as_ref() {
-                    settings.set_active_view(view_name.as_str());
-                    let pos = settings.mail_sidebar_position();
-                    sync_sidebar_position_for_signal(pos);
+                    settings.set_active_view(view_str);
                 }
             } else if let Some(window) = window_for_search_route.upgrade() {
                 window.invalidate_search_route_for_visible_page(None);
             }
         });
 
-        let initial_sidebar_pos = AppSettings::try_new()
-            .map(|s| s.mail_sidebar_position())
-            .unwrap_or(260)
-            .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+        let initial_sidebar_pos = self.sidebar_position_for_view(&active_view);
         let initial_sidebar_vis = AppSettings::try_new()
             .map(|s| s.mail_show_sidebar())
             .unwrap_or(true);
@@ -6577,7 +6609,7 @@ mod tests {
         let memos_paned = memos_page.outer_paned().expect("memos paned");
         assert_eq!(memos_paned.position(), 330);
 
-        // Switch to contacts - contacts divider is synchronized with mail_sidebar_position
+        // Switch to contacts - contacts divider uses its independent contact_hpane_position (default 320)
         window.set_active_view("contacts");
         let contacts_bin = stack
             .child_by_name("contacts")
@@ -6588,7 +6620,7 @@ mod tests {
             .and_downcast::<ContactsPage>()
             .expect("contacts page");
         let contacts_paned = contacts_page.outer_paned().expect("contacts paned");
-        assert_eq!(contacts_paned.position(), 330);
+        assert_eq!(contacts_paned.position(), 320);
 
         // Switch back to mail
         window.set_active_view("mail");
@@ -6703,6 +6735,25 @@ mod tests {
         assert!(tasks_page.is_sidebar_visible());
         assert!(calendar_page.is_sidebar_visible());
         assert!(mail_page.is_sidebar_visible());
+
+        // 5. Contacts sidebar view-dependent width independence
+        window.set_active_view("contacts");
+        let contacts_bin = stack
+            .child_by_name("contacts")
+            .and_downcast::<adw::Bin>()
+            .expect("contacts bin");
+        let contacts_page = contacts_bin
+            .child()
+            .and_downcast::<ContactsPage>()
+            .expect("contacts page");
+        let contacts_paned = contacts_page.outer_paned().expect("contacts paned");
+        assert_eq!(contacts_paned.position(), 320);
+        assert_eq!(sb_h.size_request().0, 320);
+
+        // Switch back to mail: mail remains at 300
+        window.set_active_view("mail");
+        assert_eq!(mail_page.outer_paned().position(), 300);
+        assert_eq!(sb_h.size_request().0, 300);
     }
 
     #[test]

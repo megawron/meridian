@@ -36,6 +36,7 @@ pkg-config = "0.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit6.workspace = true
+javascriptcore6.workspace = true
 
 [features]
 default = []

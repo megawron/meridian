@@ -110,6 +110,33 @@ pub(crate) fn normalize_mail_list_column_order(value: &str) -> Vec<String> {
     order
 }
 
+pub(crate) const CONTACT_TABLE_COLUMN_IDS: [&str; 6] = [
+    "name",
+    "company",
+    "title",
+    "email",
+    "phone",
+    "categories",
+];
+
+pub(crate) fn normalize_contact_table_column_order(value: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut order = value
+        .split(',')
+        .map(str::trim)
+        .filter(|column| CONTACT_TABLE_COLUMN_IDS.contains(column))
+        .filter(|column| seen.insert((*column).to_string()))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    order.extend(
+        CONTACT_TABLE_COLUMN_IDS
+            .iter()
+            .filter(|column| seen.insert((**column).to_string()))
+            .map(|column| (*column).to_string()),
+    );
+    order
+}
+
 fn normalize_mail_folder_sort_order(value: &str) -> Result<String, String> {
     let order = serde_json::from_str::<BTreeMap<String, u32>>(value)
         .map_err(|_| "ungültige Ordnersortierung".to_string())?;
@@ -1529,6 +1556,14 @@ impl AppSettings {
         self.set_boolean("composer-show-reply-to", value);
     }
 
+    pub fn composer_track_recent_recipients(&self) -> bool {
+        self.settings.boolean("composer-track-recent-recipients")
+    }
+
+    pub fn set_composer_track_recent_recipients(&self, value: bool) {
+        self.set_boolean("composer-track-recent-recipients", value);
+    }
+
     pub fn composer_prompt_empty_subject(&self) -> bool {
         self.settings.boolean("composer-prompt-empty-subject")
     }
@@ -2244,6 +2279,14 @@ impl AppSettings {
         self.set_boolean("mail-threading", value);
     }
 
+    pub fn mail_conversation_accordion(&self) -> bool {
+        self.settings.boolean("mail-conversation-accordion")
+    }
+
+    pub fn set_mail_conversation_accordion(&self, value: bool) {
+        self.set_boolean("mail-conversation-accordion", value);
+    }
+
     /// Persisted explicit folder ordinals.  The sidebar validates and applies
     /// this portable JSON map because only it knows which folder identities
     /// are currently loaded and which ones are siblings.
@@ -2322,6 +2365,22 @@ impl AppSettings {
 
     pub fn set_mail_show_avatar(&self, value: bool) {
         self.set_boolean("mail-show-avatar", value);
+    }
+
+    pub fn mail_fetch_remote_logos(&self) -> bool {
+        self.settings.boolean("mail-fetch-remote-logos")
+    }
+
+    pub fn set_mail_fetch_remote_logos(&self, value: bool) {
+        self.set_boolean("mail-fetch-remote-logos", value);
+    }
+
+    pub fn mail_enable_unified_inbox(&self) -> bool {
+        self.settings.boolean("mail-enable-unified-inbox")
+    }
+
+    pub fn set_mail_enable_unified_inbox(&self, value: bool) {
+        self.set_boolean("mail-enable-unified-inbox", value);
     }
 
     pub fn mail_show_sender(&self) -> bool {
@@ -2876,6 +2935,111 @@ impl AppSettings {
         self.set_int("contact-vpane-position", value.clamp(80, 4_096));
     }
 
+    pub fn contact_table_column_order(&self) -> Vec<String> {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("contact-table-column-order"))
+            .unwrap_or(false);
+        if has_key {
+            normalize_contact_table_column_order(&self.settings.string("contact-table-column-order"))
+        } else {
+            CONTACT_TABLE_COLUMN_IDS.iter().map(|s| (*s).to_string()).collect()
+        }
+    }
+
+    pub fn set_contact_table_column_order(&self, order: &[String]) {
+        let normalized = normalize_contact_table_column_order(&order.join(","));
+        self.set_string("contact-table-column-order", &normalized.join(","));
+    }
+
+    pub fn contact_col_width(&self, col: &str) -> i32 {
+        let (key, default_w) = match col {
+            "name" => ("contact-col-name-width", 180),
+            "company" => ("contact-col-company-width", 140),
+            "title" => ("contact-col-title-width", 120),
+            "email" => ("contact-col-email-width", 180),
+            "phone" => ("contact-col-phone-width", 120),
+            "categories" => ("contact-col-categories-width", 120),
+            _ => return 120,
+        };
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key(key))
+            .unwrap_or(false);
+        if has_key {
+            let val = self.settings.int(key);
+            if val <= 0 { default_w } else { val.clamp(60, 600) }
+        } else {
+            default_w
+        }
+    }
+
+    pub fn set_contact_col_width(&self, col: &str, width: i32) {
+        let key = match col {
+            "name" => "contact-col-name-width",
+            "company" => "contact-col-company-width",
+            "title" => "contact-col-title-width",
+            "email" => "contact-col-email-width",
+            "phone" => "contact-col-phone-width",
+            "categories" => "contact-col-categories-width",
+            _ => return,
+        };
+        self.set_int(key, width.clamp(60, 600));
+    }
+
+    pub fn contact_col_visible(&self, col: &str) -> bool {
+        if col == "name" {
+            return true;
+        }
+        let key = match col {
+            "company" => "contact-show-company",
+            "title" => "contact-show-title",
+            "email" => "contact-show-email",
+            "phone" => "contact-show-phone",
+            "categories" => "contact-show-categories",
+            _ => return true,
+        };
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key(key))
+            .unwrap_or(false);
+        if has_key {
+            self.settings.boolean(key)
+        } else {
+            true
+        }
+    }
+
+    pub fn set_contact_col_visible(&self, col: &str, visible: bool) {
+        let key = match col {
+            "company" => "contact-show-company",
+            "title" => "contact-show-title",
+            "email" => "contact-show-email",
+            "phone" => "contact-show-phone",
+            "categories" => "contact-show-categories",
+            _ => return,
+        };
+        self.set_boolean(key, visible);
+    }
+
+    pub fn reset_contact_table_columns_to_default(&self) {
+        self.set_contact_table_column_order(&CONTACT_TABLE_COLUMN_IDS.iter().map(|s| (*s).to_string()).collect::<Vec<_>>());
+        self.set_contact_col_width("name", 180);
+        self.set_contact_col_width("company", 140);
+        self.set_contact_col_width("title", 120);
+        self.set_contact_col_width("email", 180);
+        self.set_contact_col_width("phone", 120);
+        self.set_contact_col_width("categories", 120);
+        self.set_contact_col_visible("company", true);
+        self.set_contact_col_visible("title", true);
+        self.set_contact_col_visible("email", true);
+        self.set_contact_col_visible("phone", true);
+        self.set_contact_col_visible("categories", true);
+    }
+
     pub fn contact_editor_show_phone(&self) -> bool {
         self.settings.boolean("contact-editor-show-phone")
     }
@@ -3265,6 +3429,9 @@ impl AppSettings {
             "mail-dark-mode" => self.set_mail_dark_mode(parse_migrated_bool(key, value)?),
             "render-html" => self.set_render_html(parse_migrated_bool(key, value)?),
             "composer-html" => self.set_composer_html(parse_migrated_bool(key, value)?),
+            "composer-track-recent-recipients" => {
+                self.set_composer_track_recent_recipients(parse_migrated_bool(key, value)?);
+            }
             "composer-charset" => {
                 let value = normalize_composer_charset(value)
                     .ok_or_else(|| format!("ungültige Zeichenkodierung für „{key}“"))?;
@@ -3330,6 +3497,12 @@ impl AppSettings {
             "mail-show-flagged" => self.set_mail_show_flagged(parse_migrated_bool(key, value)?),
             "mail-show-follow-up" => self.set_mail_show_follow_up(parse_migrated_bool(key, value)?),
             "mail-show-avatar" => self.set_mail_show_avatar(parse_migrated_bool(key, value)?),
+            "mail-fetch-remote-logos" => {
+                self.set_mail_fetch_remote_logos(parse_migrated_bool(key, value)?);
+            }
+            "mail-enable-unified-inbox" => {
+                self.set_mail_enable_unified_inbox(parse_migrated_bool(key, value)?);
+            }
             "mail-show-sender" => self.set_mail_show_sender(parse_migrated_bool(key, value)?),
             "mail-show-recipient" => {
                 self.set_mail_show_recipient(parse_migrated_bool(key, value)?);
@@ -3433,6 +3606,9 @@ impl AppSettings {
                 self.set_mail_sort_descending(parse_migrated_bool(key, value)?);
             }
             "mail-threading" => self.set_mail_threading(parse_migrated_bool(key, value)?),
+            "mail-conversation-accordion" => {
+                self.set_mail_conversation_accordion(parse_migrated_bool(key, value)?);
+            }
             "mail-folder-sort-order" => {
                 let value = normalize_mail_folder_sort_order(value)?;
                 self.set_mail_folder_sort_order(&value);
@@ -3781,6 +3957,7 @@ impl AppSettings {
             "mail-dark-mode",
             "render-html",
             "composer-html",
+            "composer-track-recent-recipients",
             "composer-charset",
             "request-read-receipt",
             "spellcheck-languages",
@@ -3805,6 +3982,8 @@ impl AppSettings {
             "mail-classic-preview-position",
             "mail-row-density",
             "mail-show-avatar",
+            "mail-fetch-remote-logos",
+            "mail-enable-unified-inbox",
             "mail-show-sender",
             "mail-show-recipient",
             "mail-show-date",
@@ -4219,11 +4398,12 @@ mod tests {
     fn mail_list_profiles_and_corrupt_orders_normalize_without_losing_columns() {
         let messages = mail_list_profile_column_order("messages");
         assert_eq!(
-            &messages[..7],
+            &messages[..8],
             &[
                 "status",
                 "attachment",
                 "flagged",
+                "follow-up",
                 "sender",
                 "recipient",
                 "subject",
@@ -4231,7 +4411,7 @@ mod tests {
             ]
         );
         let wide = mail_list_profile_column_order("wide");
-        assert_eq!(&wide[..3], &["status", "flagged", "messages"]);
+        assert_eq!(&wide[..4], &["status", "flagged", "follow-up", "messages"]);
         assert_eq!(normalized_mail_list_view_profile("unknown"), "messages");
 
         let normalized = normalize_mail_list_column_order("date,subject,date,unknown,status");
@@ -5138,7 +5318,7 @@ mod tests {
         assert!(settings.contact_open_map_prefer_local());
         assert_eq!(settings.contact_layout(), "classic");
         assert!(settings.contact_preview_visible());
-        assert_eq!(settings.contact_hpane_position(), 200);
+        assert_eq!(settings.contact_hpane_position(), 320);
         assert_eq!(settings.contact_vpane_position(), 400);
         assert!(settings.contact_editor_show_phone());
         assert!(settings.contact_editor_show_sip());

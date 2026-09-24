@@ -455,6 +455,126 @@ fn create_categories_picker_popover(entry: &gtk::Entry) -> (gtk::Button, gtk::Po
     (btn, popover)
 }
 
+fn create_room_picker_popover(
+    entry: &gtk::Entry,
+    location_row: &adw::EntryRow,
+) -> (gtk::Button, gtk::Popover) {
+    let btn = gtk::Button::builder()
+        .label("Räume…")
+        .tooltip_text("Besprechungsraum auswählen")
+        .build();
+    let popover = gtk::Popover::builder().has_arrow(true).build();
+    let scroll = gtk::ScrolledWindow::builder()
+        .max_content_height(280)
+        .min_content_width(320)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .build();
+    let box_content = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(6)
+        .margin_start(10)
+        .margin_end(10)
+        .margin_top(10)
+        .margin_bottom(10)
+        .build();
+
+    let list_box = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(vec!["boxed-list"])
+        .build();
+
+    let mut available_rooms: Vec<(String, String, String)> = vec![
+        (
+            "Konferenzraum Spree".to_string(),
+            "spree-meeting@firma.de".to_string(),
+            "12 Plätze · Beamer, Video-Konferenz".to_string(),
+        ),
+        (
+            "Meetingraum Havel".to_string(),
+            "havel-meeting@firma.de".to_string(),
+            "6 Plätze · Monitor, Whiteboard".to_string(),
+        ),
+        (
+            "Besprechungsraum 1".to_string(),
+            "raum-1@firma.de".to_string(),
+            "4 Plätze · TV, Konferenztelefon".to_string(),
+        ),
+        (
+            "Kreativ-Lounge".to_string(),
+            "lounge@firma.de".to_string(),
+            "8 Plätze · Couch, mobiles Board".to_string(),
+        ),
+        (
+            "Fokusbox / Einzel-Booth".to_string(),
+            "fokusbox@firma.de".to_string(),
+            "1 Platz · Schallisoliert".to_string(),
+        ),
+    ];
+
+    let snapshot = CalendarStoreService::new().load_snapshot();
+    for event in &snapshot.events {
+        let parsed = parse_component_attendees(&event.component);
+        for room in parsed.rooms {
+            let email = room.trim_start_matches("mailto:").to_string();
+            if !available_rooms.iter().any(|(_, e, _)| e.eq_ignore_ascii_case(&email)) {
+                let name = if !event.location.is_empty() {
+                    event.location.clone()
+                } else {
+                    email.clone()
+                };
+                available_rooms.push((name, email, "Ressource aus Kalender".to_string()));
+            }
+        }
+    }
+
+    for (name, email, details) in available_rooms {
+        let row = adw::ActionRow::builder()
+            .title(&name)
+            .subtitle(&format!("{email} · {details}"))
+            .activatable(true)
+            .build();
+
+        let icon = gtk::Image::builder()
+            .icon_name("x-office-calendar-symbolic")
+            .build();
+        row.add_prefix(&icon);
+
+        let entry_weak = entry.downgrade();
+        let loc_weak = location_row.downgrade();
+        let popover_weak = popover.downgrade();
+        let room_name = name.clone();
+        let room_email = email.clone();
+
+        row.connect_activated(move |_| {
+            if let Some(entry) = entry_weak.upgrade() {
+                entry.set_text(&format!("mailto:{room_email}"));
+            }
+            if let Some(loc) = loc_weak.upgrade() {
+                if loc.text().trim().is_empty() {
+                    loc.set_text(&room_name);
+                }
+            }
+            if let Some(pop) = popover_weak.upgrade() {
+                pop.popdown();
+            }
+        });
+
+        list_box.append(&row);
+    }
+
+    box_content.append(&list_box);
+    scroll.set_child(Some(&box_content));
+    popover.set_child(Some(&scroll));
+    popover.set_parent(&btn);
+
+    let popover_clone = popover.clone();
+    btn.connect_clicked(move |_| {
+        popover_clone.popup();
+    });
+
+    (btn, popover)
+}
+
 fn update_day_schedule_timeline(
     all_day_box: &gtk::Box,
     timeline_fixed: &gtk::Fixed,
@@ -1181,6 +1301,43 @@ impl EventDialog {
             .build();
         group_options.add(&row_attendees);
 
+        let row_room = adw::ActionRow::builder()
+            .title("Besprechungsraum / Ressource")
+            .subtitle("CUTYPE=ROOM für Raumressourcen nach RFC 5545")
+            .build();
+        let entry_room = gtk::Entry::builder()
+            .placeholder_text("Raumadresse (z. B. raum-1@firma.de)…")
+            .hexpand(true)
+            .valign(gtk::Align::Center)
+            .build();
+        let (btn_room, _pop_room) = create_room_picker_popover(&entry_room, &row_location);
+        btn_room.set_valign(gtk::Align::Center);
+
+        let btn_room_availability = gtk::Button::builder()
+            .icon_name("alarm-symbolic")
+            .tooltip_text("Freie Zeiten / Raum-Verfügbarkeit prüfen")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+
+        let entry_start_date_for_avail = entry_start_date.clone();
+        btn_room_availability.connect_clicked(move |btn| {
+            let date_str = entry_start_date_for_avail.text();
+            let date = chrono::NaiveDate::parse_from_str(date_str.trim(), "%Y-%m-%d")
+                .or_else(|_| chrono::NaiveDate::parse_from_str(date_str.trim(), "%d.%m.%Y"))
+                .unwrap_or_else(|_| chrono::Local::now().date_naive());
+            let avail_dialog = crate::dialogs::AvailabilityDialog::new(date);
+            if let Some(root) = btn.root().and_then(|r| r.downcast::<gtk::Window>().ok()) {
+                avail_dialog.set_transient_for(Some(&root));
+            }
+            avail_dialog.present();
+        });
+
+        row_room.add_suffix(&entry_room);
+        row_room.add_suffix(&btn_room);
+        row_room.add_suffix(&btn_room_availability);
+        group_options.add(&row_room);
+
         let row_private = adw::SwitchRow::builder()
             .title("Privater Termin")
             .subtitle("Andere Personen sehen den Termin als privat markiert")
@@ -1538,7 +1695,9 @@ impl EventDialog {
             row_recurrence.set_text(&ical_property(component, "RRULE").unwrap_or_default());
             row_rdates.set_text(&ical_properties(component, "RDATE").join(","));
             row_exdates.set_text(&ical_properties(component, "EXDATE").join(","));
-            row_attendees.set_text(&ical_properties(component, "ATTENDEE").join(", "));
+            let parsed_attendees = parse_component_attendees(component);
+            row_attendees.set_text(&parsed_attendees.individuals.join(", "));
+            entry_room.set_text(&parsed_attendees.rooms.join(", "));
             entry_categories.set_text(&ical_property(component, "CATEGORIES").unwrap_or_default());
             row_private.set_active(
                 ical_property(component, "CLASS")
@@ -1656,6 +1815,7 @@ impl EventDialog {
             let row_rdates = row_rdates.clone();
             let row_exdates = row_exdates.clone();
             let row_attendees = row_attendees.clone();
+            let entry_room = entry_room.clone();
             let entry_categories = entry_categories.clone();
             let alarm_editor = alarm_editor.clone();
             let row_private = row_private.clone();
@@ -1732,6 +1892,7 @@ impl EventDialog {
                         "",
                         &alarms,
                         row_private.is_active(),
+                        &entry_room.text(),
                     ),
                     _ => build_event_component(
                         &entry_title.text(),
@@ -1751,6 +1912,7 @@ impl EventDialog {
                         "",
                         &alarms,
                         row_private.is_active(),
+                        &entry_room.text(),
                     ),
                 };
 
@@ -2660,6 +2822,7 @@ fn build_event_component(
     attachments: &str,
     alarms: &[Alarm],
     private: bool,
+    rooms: &str,
 ) -> Result<String, String> {
     let title = title.trim();
     if title.is_empty() {
@@ -2681,6 +2844,7 @@ fn build_event_component(
         ("RDATE", rdates),
         ("EXDATE", exdates),
         ("Teilnehmer", attendees),
+        ("Räume", rooms),
         ("Konferenz-URL", conference),
     ] {
         if value
@@ -2718,12 +2882,24 @@ fn build_event_component(
     };
     let rdate_line = build_recurrence_property_line("RDATE", rdates, all_day);
     let exdate_line = build_recurrence_property_line("EXDATE", exdates, all_day);
-    let attendee_lines = attendees
+    let mut attendee_lines = attendees
         .split(|character| character == ',' || character == ';')
         .map(str::trim)
         .filter(|attendee| !attendee.is_empty())
-        .map(|attendee| format!("ATTENDEE:{}\r\n", escape_ical_text(attendee)))
+        .map(|attendee| {
+            if attendee.starts_with("ATTENDEE") {
+                format!("{}\r\n", attendee)
+            } else {
+                format!("ATTENDEE:{}\r\n", escape_ical_text(attendee))
+            }
+        })
         .collect::<String>();
+    for room in parse_attendees(rooms) {
+        let (room_mailto, prefix) = format_room_attendee(&room);
+        if !room_mailto.is_empty() {
+            attendee_lines.push_str(&format!("{prefix}:{}\r\n", escape_ical_text(&room_mailto)));
+        }
+    }
     let categories_line = if categories.trim().is_empty() {
         String::new()
     } else {
@@ -2790,6 +2966,7 @@ pub(crate) fn update_existing_event_component(
     attachments: &str,
     alarms: &[Alarm],
     private: bool,
+    rooms: &str,
 ) -> Result<String, String> {
     let title = title.trim();
     if title.is_empty() {
@@ -2811,6 +2988,7 @@ pub(crate) fn update_existing_event_component(
         ("RDATE", rdates),
         ("EXDATE", exdates),
         ("Teilnehmer", attendees),
+        ("Räume", rooms),
         ("Konferenz-URL", conference),
     ] {
         if value
@@ -2906,18 +3084,78 @@ pub(crate) fn update_existing_event_component(
         Some(if private { "PRIVATE" } else { "PUBLIC" }),
     );
     let attendees = parse_attendees(attendees);
-    updated = replace_ical_attendees(&updated, &attendees);
+    let rooms = parse_attendees(rooms);
+    updated = replace_ical_attendees_with_rooms(&updated, &attendees, &rooms);
     let attachments = parse_attachments(attachments);
     updated = replace_ical_attachments(&updated, &attachments);
     updated = replace_component_alarms(&updated, alarms);
     Ok(updated)
 }
 
-fn replace_ical_attendees(raw: &str, values: &[String]) -> String {
+pub(crate) fn replace_ical_attendees_with_rooms(
+    raw: &str,
+    individual_values: &[String],
+    room_values: &[String],
+) -> String {
     let existing = existing_attendee_properties(raw);
     let mut lines = Vec::new();
     let mut replaced = false;
     let mut depth = 0usize;
+
+    let mut attendee_lines = Vec::new();
+    let mut used = vec![false; existing.len()];
+
+    for value in individual_values {
+        let matching_existing = existing
+            .iter()
+            .enumerate()
+            .find(|(index, (existing_value, prop_prefix))| {
+                !used[*index]
+                    && !prop_prefix.to_ascii_uppercase().contains("CUTYPE=ROOM")
+                    && !prop_prefix.to_ascii_uppercase().contains("CUTYPE=RESOURCE")
+                    && existing_value.eq_ignore_ascii_case(value)
+            });
+        let line = if let Some((index, (_, property_prefix))) = matching_existing {
+            used[index] = true;
+            format!("{property_prefix}:{}", escape_ical_text(value))
+        } else {
+            let mailto = if value.starts_with("mailto:") || !value.contains('@') {
+                value.clone()
+            } else {
+                format!("mailto:{value}")
+            };
+            format!("ATTENDEE:{}", escape_ical_text(&mailto))
+        };
+        attendee_lines.push(line);
+    }
+
+    for room in room_values {
+        let (room_mailto, default_prefix) = format_room_attendee(room);
+        if room_mailto.is_empty() {
+            continue;
+        }
+        let matching_existing = existing
+            .iter()
+            .enumerate()
+            .find(|(index, (existing_value, _))| {
+                !used[*index] && existing_value.eq_ignore_ascii_case(&room_mailto)
+            });
+        let line = if let Some((index, (_, property_prefix))) = matching_existing {
+            used[index] = true;
+            let final_prefix = if property_prefix.to_ascii_uppercase().contains("CUTYPE=ROOM")
+                || property_prefix.to_ascii_uppercase().contains("CUTYPE=RESOURCE")
+            {
+                property_prefix.clone()
+            } else {
+                format!("{property_prefix};CUTYPE=ROOM")
+            };
+            format!("{final_prefix}:{}", escape_ical_text(&room_mailto))
+        } else {
+            format!("{default_prefix}:{}", escape_ical_text(&room_mailto))
+        };
+        attendee_lines.push(line);
+    }
+
     for line in unfold_ical_lines(raw) {
         let property_part = line
             .split_once(':')
@@ -2930,23 +3168,7 @@ fn replace_ical_attendees(raw: &str, values: &[String]) -> String {
             .to_ascii_uppercase();
         if property == "ATTENDEE" && depth <= 1 {
             if !replaced {
-                let mut used = vec![false; existing.len()];
-                for value in values {
-                    let matching_existing =
-                        existing
-                            .iter()
-                            .enumerate()
-                            .find(|(index, (existing_value, _))| {
-                                !used[*index] && existing_value.eq_ignore_ascii_case(value)
-                            });
-                    let line = if let Some((index, (_, property_prefix))) = matching_existing {
-                        used[index] = true;
-                        format!("{property_prefix}:{}", escape_ical_text(value))
-                    } else {
-                        format!("ATTENDEE:{}", escape_ical_text(value))
-                    };
-                    lines.push(line);
-                }
+                lines.extend(attendee_lines.clone());
                 replaced = true;
             }
             continue;
@@ -2958,18 +3180,18 @@ fn replace_ical_attendees(raw: &str, values: &[String]) -> String {
             depth = depth.saturating_sub(1);
         }
     }
-    if !replaced && !values.is_empty() {
-        insert_before_event_end(
-            &mut lines,
-            values
-                .iter()
-                .map(|value| format!("ATTENDEE:{}", escape_ical_text(value))),
-        );
+
+    if !replaced && !attendee_lines.is_empty() {
+        insert_before_event_end(&mut lines, attendee_lines);
     }
     format!("{}\r\n", lines.join("\r\n"))
 }
 
-fn existing_attendee_properties(raw: &str) -> Vec<(String, String)> {
+pub(crate) fn replace_ical_attendees(raw: &str, values: &[String]) -> String {
+    replace_ical_attendees_with_rooms(raw, values, &[])
+}
+
+pub(crate) fn existing_attendee_properties(raw: &str) -> Vec<(String, String)> {
     let mut attendees = Vec::new();
     let mut depth = 0usize;
     for line in unfold_ical_lines(raw) {
@@ -2991,6 +3213,64 @@ fn existing_attendee_properties(raw: &str) -> Vec<(String, String)> {
         }
     }
     attendees
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct ParsedAttendees {
+    pub individuals: Vec<String>,
+    pub rooms: Vec<String>,
+}
+
+pub(crate) fn parse_component_attendees(raw: &str) -> ParsedAttendees {
+    let mut individuals = Vec::new();
+    let mut rooms = Vec::new();
+    for (value, prop_prefix) in existing_attendee_properties(raw) {
+        let upper = prop_prefix.to_ascii_uppercase();
+        if upper.contains("CUTYPE=ROOM") || upper.contains("CUTYPE=RESOURCE") {
+            rooms.push(value);
+        } else {
+            individuals.push(value);
+        }
+    }
+    ParsedAttendees { individuals, rooms }
+}
+
+pub(crate) fn format_room_attendee(raw_room: &str) -> (String, String) {
+    let trimmed = raw_room.trim();
+    if trimmed.is_empty() {
+        return (String::new(), String::new());
+    }
+    if let (Some(start), Some(end)) = (trimmed.find('<'), trimmed.find('>')) {
+        if start < end {
+            let name = trimmed[..start].trim().trim_matches('"');
+            let email = trimmed[start + 1..end].trim();
+            let mailto = if email.starts_with("mailto:") {
+                email.to_string()
+            } else {
+                format!("mailto:{email}")
+            };
+            let prefix = if name.is_empty() {
+                "ATTENDEE;CUTYPE=ROOM;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE".to_string()
+            } else {
+                format!("ATTENDEE;CUTYPE=ROOM;CN={name};ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE")
+            };
+            return (mailto, prefix);
+        }
+    }
+    let mailto = if trimmed.starts_with("mailto:") {
+        trimmed.to_string()
+    } else if trimmed.contains('@') {
+        format!("mailto:{trimmed}")
+    } else {
+        let slug = trimmed.to_lowercase().replace(' ', "-");
+        let mailto = format!("mailto:{slug}@local");
+        let prefix = format!("ATTENDEE;CUTYPE=ROOM;CN={trimmed};ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE");
+        return (mailto, prefix);
+    };
+    (
+        mailto,
+        "ATTENDEE;CUTYPE=ROOM;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE".to_string(),
+    )
 }
 
 fn insert_before_event_end<I>(lines: &mut Vec<String>, values: I)
@@ -3096,6 +3376,7 @@ mod tests {
                 None,
             )],
             true,
+            "",
         )
         .expect("event should serialize");
 
@@ -3139,6 +3420,7 @@ mod tests {
                 "",
                 &[],
                 false,
+                "",
             )
             .is_err()
         );
@@ -3161,6 +3443,7 @@ mod tests {
                 "",
                 &[],
                 false,
+                "",
             )
             .is_err()
         );
@@ -3209,6 +3492,7 @@ mod tests {
             "https://calendar.example.test/agenda.ics?tags=a,b;kind=agenda\nfile:///tmp/notes.pdf",
             &[],
             false,
+            "",
         )
         .expect("event with attachments should serialize");
         assert!(ical_properties(&component, "ATTACH").contains(
@@ -3427,6 +3711,7 @@ mod tests {
             "https://example.com/spec.pdf\nhttps://example.com/agenda.pdf",
             &alarms,
             true,
+            "",
         )
         .expect("update_existing_event_component should succeed");
 
@@ -3505,7 +3790,8 @@ mod tests {
                 "",
                 "",
                 &[],
-                false
+                false,
+                "",
             )
             .is_err()
         );
@@ -3531,7 +3817,8 @@ mod tests {
                 "",
                 "",
                 &[],
-                false
+                false,
+                "",
             )
             .is_err()
         );
@@ -3557,7 +3844,8 @@ mod tests {
                 "",
                 "",
                 &[],
-                false
+                false,
+                "",
             )
             .is_err()
         );
@@ -3583,7 +3871,8 @@ mod tests {
                 "",
                 "",
                 &[],
-                false
+                false,
+                "",
             )
             .is_err()
         );
@@ -3614,6 +3903,7 @@ mod tests {
             "",
             &[],
             false,
+            "",
         )
         .expect("should convert to all-day");
 
@@ -3642,12 +3932,92 @@ mod tests {
             "",
             &[],
             false,
+            "",
         )
         .expect("should convert to timed");
 
         assert!(back_to_timed.contains("DTSTART:20260810T140000"));
         assert!(back_to_timed.contains("DTEND:20260810T150000"));
         assert!(!back_to_timed.contains("VALUE=DATE"));
+    }
+
+    #[test]
+    fn test_room_attendee_serialization_with_cutype_room() {
+        let component = build_event_component(
+            "Quarterly Review",
+            "Konferenzraum Spree",
+            "",
+            "CONFIRMED",
+            false,
+            false,
+            "2026-08-10 14:00",
+            "2026-08-10 15:00",
+            "Review session",
+            "",
+            "",
+            "",
+            "mailto:colleague@example.com",
+            "",
+            "",
+            &[],
+            false,
+            "spree-meeting@firma.de",
+        )
+        .expect("should build event with room");
+
+        let unfolded = unfold_ical_lines(&component);
+        assert!(unfolded.contains(&"ATTENDEE:mailto:colleague@example.com".to_string()));
+        assert!(unfolded.iter().any(|line| line.contains("CUTYPE=ROOM") && line.contains("mailto:spree-meeting@firma.de")));
+    }
+
+    #[test]
+    fn test_parse_component_attendees_separates_rooms_and_individuals() {
+        let raw = concat!(
+            "BEGIN:VEVENT\r\nUID:event-room-test\r\n",
+            "ATTENDEE;CN=Alice;ROLE=REQ-PARTICIPANT:mailto:alice@example.com\r\n",
+            "ATTENDEE;CUTYPE=ROOM;CN=Konferenzraum 1;ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED:mailto:raum1@firma.de\r\n",
+            "ATTENDEE;CN=Bob:mailto:bob@example.com\r\n",
+            "END:VEVENT\r\n"
+        );
+        let parsed = parse_component_attendees(raw);
+        assert_eq!(parsed.individuals, vec!["mailto:alice@example.com", "mailto:bob@example.com"]);
+        assert_eq!(parsed.rooms, vec!["mailto:raum1@firma.de"]);
+    }
+
+    #[test]
+    fn test_update_existing_event_component_preserves_room_parameters() {
+        let raw = concat!(
+            "BEGIN:VEVENT\r\nUID:event-room-preserve\r\n",
+            "ATTENDEE;CN=Alice:mailto:alice@example.com\r\n",
+            "ATTENDEE;CUTYPE=ROOM;CN=Konferenzraum 1;ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED:mailto:raum1@firma.de\r\n",
+            "END:VEVENT\r\n"
+        );
+        let updated = update_existing_event_component(
+            raw,
+            "event-room-preserve",
+            "Updated Title",
+            "",
+            "",
+            "CONFIRMED",
+            false,
+            false,
+            "2026-08-10 14:00",
+            "2026-08-10 15:00",
+            "",
+            "",
+            "",
+            "",
+            "mailto:alice@example.com",
+            "",
+            "",
+            &[],
+            false,
+            "mailto:raum1@firma.de",
+        )
+        .expect("should update preserving room");
+
+        let unfolded = unfold_ical_lines(&updated);
+        assert!(unfolded.contains(&"ATTENDEE;CUTYPE=ROOM;CN=Konferenzraum 1;ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED:mailto:raum1@firma.de".to_string()));
     }
 
     #[test]

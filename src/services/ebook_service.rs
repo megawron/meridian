@@ -639,95 +639,69 @@ pub(crate) fn load_contacts_prefer_eds_cached(use_cache: bool) -> EBookLoadResul
 }
 
 fn load_contacts_prefer_eds_fresh() -> EBookLoadResult {
-    let sqlite_contacts = crate::services::evolution_contact_cache::load_contacts_from_evolution_sqlite_cache();
-    if !sqlite_contacts.is_empty() {
-        let mut contacts = sqlite_contacts;
-        let local_service = ContactStoreService::new();
-        if local_service.is_writable() {
-            contacts.extend(local_service.load_contacts().into_iter().map(|record| {
-                EBookContactRecord {
-                    source_uid: "local-addressbook".to_string(),
-                    source_display_name: "Lokales Adressbuch".to_string(),
-                    uid: record.id,
-                    vcard: record.vcard,
-                    contact: record.contact,
-                }
-            }));
+    let (mut contacts, warning) = match EBookService::new().load_contacts() {
+        Ok((loaded, warn)) => (loaded, warn),
+        Err(err) => {
+            tracing::warn!("Native EBookService load_contacts error: {:?}", err);
+            let warn = match err {
+                EBookServiceError::Unsupported => None,
+                other => Some(other.to_string()),
+            };
+            (Vec::new(), warn)
         }
-        return EBookLoadResult {
-            contacts,
-            origin: EBookDataOrigin::Eds,
-            warning: None,
-        };
+    };
+
+    // Augment with SQLite cached contacts (e.g. from Flatpak or offline caches)
+    let sqlite_contacts = crate::services::evolution_contact_cache::load_contacts_from_evolution_sqlite_cache();
+    for sc in sqlite_contacts {
+        let is_dup = contacts.iter().any(|c| {
+            c.uid == sc.uid
+                || (!c.contact.fn_name.is_empty()
+                    && c.contact.fn_name == sc.contact.fn_name
+                    && c.contact.email == sc.contact.email)
+        });
+        if !is_dup {
+            contacts.push(sc);
+        }
     }
 
-    match EBookService::new().load_contacts() {
-        Ok((mut contacts, warning)) => {
-            let local_service = ContactStoreService::new();
-            if local_service.is_writable() {
-                contacts.extend(local_service.load_contacts().into_iter().map(|record| {
-                    EBookContactRecord {
-                        source_uid: "local-addressbook".to_string(),
-                        source_display_name: "Lokales Adressbuch".to_string(),
-                        uid: record.id,
-                        vcard: record.vcard,
-                        contact: record.contact,
-                    }
-                }));
-            }
-            if contacts.is_empty() {
-                if let Some(graph) = load_contacts_from_graph() {
-                    return graph;
-                }
-            }
-            EBookLoadResult {
-                contacts,
-                origin: EBookDataOrigin::Eds,
-                warning,
-            }
+    let local_service = ContactStoreService::new();
+    #[cfg(all(target_os = "macos", macos_bridge))]
+    {
+        if local_service.is_writable() && local_service.load_contacts().is_empty() {
+            let macos = super::macos_integration_service::MacosIntegrationService::new();
+            let _ = macos.sync_apple_contacts_to_store(&local_service);
         }
-        Err(error) => {
-            if let Some(graph) = load_contacts_from_graph() {
-                return graph;
+    }
+
+    if local_service.is_writable() {
+        contacts.extend(local_service.load_contacts().into_iter().map(|record| {
+            EBookContactRecord {
+                source_uid: "local-addressbook".to_string(),
+                source_display_name: "Lokales Adressbuch".to_string(),
+                uid: record.id,
+                vcard: record.vcard,
+                contact: record.contact,
             }
-            let local_service = ContactStoreService::new();
-            #[cfg(all(target_os = "macos", macos_bridge))]
-            {
-                if local_service.is_writable() && local_service.load_contacts().is_empty() {
-                    let macos = super::macos_integration_service::MacosIntegrationService::new();
-                    let _ = macos.sync_apple_contacts_to_store(&local_service);
-                }
-            }
-            let local_source_uid = if local_service.is_writable() {
-                "local-addressbook"
-            } else {
-                ""
-            };
-            let local_source_name = if local_service.is_writable() {
-                "Lokales Adressbuch"
-            } else {
-                ""
-            };
-            let contacts = local_service
-                .load_contacts()
-                .into_iter()
-                .map(|record| EBookContactRecord {
-                    source_uid: local_source_uid.to_string(),
-                    source_display_name: local_source_name.to_string(),
-                    uid: record.id,
-                    vcard: record.vcard,
-                    contact: record.contact,
-                })
-                .collect();
-            EBookLoadResult {
-                contacts,
-                origin: EBookDataOrigin::Local,
-                warning: match error {
-                    EBookServiceError::Unsupported => None,
-                    other => Some(other.to_string()),
-                },
-            }
+        }));
+    }
+
+    if contacts.is_empty() {
+        if let Some(graph) = load_contacts_from_graph() {
+            return graph;
         }
+    }
+
+    let origin = if !contacts.is_empty() {
+        EBookDataOrigin::Eds
+    } else {
+        EBookDataOrigin::Local
+    };
+
+    EBookLoadResult {
+        contacts,
+        origin,
+        warning,
     }
 }
 

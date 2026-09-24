@@ -7837,12 +7837,12 @@ impl CalendarPage {
             .margin_end(1)
             .build();
 
-        // Collect unique all-day events across the displayed days
+        // Collect unique all-day and multi-day events across the displayed days
         let mut unique_allday: Vec<CalendarEventRecord> = Vec::new();
         let mut seen_ids: HashSet<String> = HashSet::new();
         for day in days {
             if let Some(day_events) = events_by_date.get(day) {
-                for event in day_events.iter().filter(|e| e.all_day) {
+                for event in day_events.iter().filter(|e| e.all_day || event_display_range(e).map(|r| r.len_days() > 1).unwrap_or(false)) {
                     let id = format!("{}_{}_{}", event.uid, event.summary, event.start);
                     if seen_ids.insert(id) {
                         unique_allday.push(event.clone());
@@ -7915,6 +7915,10 @@ impl CalendarPage {
                 }
             }
 
+            let range = event_display_range(&item.event);
+            let cont_left = range.as_ref().map(|r| r.start < days[0]).unwrap_or(false);
+            let cont_right = range.as_ref().map(|r| r.last_inclusive() > days[days.len() - 1]).unwrap_or(false);
+
             let chip = calendar_grid_event_chip(
                 self,
                 &item.event,
@@ -7922,6 +7926,8 @@ impl CalendarPage {
                 days[item.start_col],
                 None,
                 1,
+                cont_left,
+                cont_right,
             );
             allday_grid.attach(
                 &chip,
@@ -8922,8 +8928,11 @@ impl CalendarPage {
             .hexpand(true)
             .build();
 
-        // 1. All-day events
-        let all_day_events: Vec<&CalendarEventRecord> = events.iter().filter(|e| e.all_day).collect();
+        // 1. All-day and multi-day events
+        let all_day_events: Vec<&CalendarEventRecord> = events
+            .iter()
+            .filter(|e| e.all_day || event_display_range(e).map(|r| r.len_days() > 1).unwrap_or(false))
+            .collect();
         if !all_day_events.is_empty() {
             let allday_box = gtk::Box::builder()
                 .orientation(gtk::Orientation::Vertical)
@@ -8931,14 +8940,20 @@ impl CalendarPage {
                 .margin_bottom(4)
                 .build();
             for ev in all_day_events {
-                let chip = calendar_grid_event_chip(self, ev, true, date, None, 1);
+                let range = event_display_range(ev);
+                let cont_left = range.as_ref().map(|r| r.start < date).unwrap_or(false);
+                let cont_right = range.as_ref().map(|r| r.last_inclusive() > date).unwrap_or(false);
+                let chip = calendar_grid_event_chip(self, ev, true, date, None, 1, cont_left, cont_right);
                 allday_box.append(&chip);
             }
             content_box.append(&allday_box);
         }
 
         // 2. Timed events
-        let timed_events: Vec<&CalendarEventRecord> = events.iter().filter(|e| !e.all_day).collect();
+        let timed_events: Vec<&CalendarEventRecord> = events
+            .iter()
+            .filter(|e| !e.all_day && event_display_range(e).map(|r| r.len_days() <= 1).unwrap_or(true))
+            .collect();
 
         struct TimedItem<'a> {
             event: &'a CalendarEventRecord,
@@ -10801,7 +10816,8 @@ pub(crate) fn compute_week_cell_layouts(
     for date in week_dates.iter() {
         if let Some(events) = events_by_date.get(date) {
             for ev in events {
-                if ev.all_day {
+                let is_multi = ev.all_day || event_display_range(ev).map(|r| r.len_days() > 1).unwrap_or(false);
+                if is_multi {
                     if let Some(range) = event_display_range(ev) {
                         if range.len_days() > 1 {
                             let key = (ev.uid.clone(), ev.start.clone());
@@ -10880,7 +10896,8 @@ pub(crate) fn compute_week_cell_layouts(
     for (col, date) in week_dates.iter().enumerate() {
         if let Some(events) = events_by_date.get(date) {
             for ev in events {
-                if ev.all_day && seen_multi_uids.contains(&(ev.uid.clone(), ev.start.clone())) {
+                let is_multi = ev.all_day || event_display_range(ev).map(|r| r.len_days() > 1).unwrap_or(false);
+                if is_multi && seen_multi_uids.contains(&(ev.uid.clone(), ev.start.clone())) {
                     continue;
                 }
                 let mut target_track = 0;
@@ -11665,7 +11682,7 @@ pub(crate) fn prepare_month_layout(
                         end_col,
                         continues_left: cont_left,
                         continues_right: cont_right,
-                        all_day: event.all_day,
+                        all_day: event.all_day || event_range.as_ref().map(|r| r.len_days() > 1).unwrap_or(false),
                         time_str,
                         bg_hex,
                         hov_hex,
@@ -11795,43 +11812,36 @@ pub(crate) fn draw_month_event_bar(
     continues_right: bool,
 ) {
     let r = radius.min(h / 2.0).min(w / 4.0);
+    let arrow_w = (h / 2.5).clamp(5.0, 7.0).min(w / 3.0);
     let degrees = std::f64::consts::PI / 180.0;
     cr.new_sub_path();
 
-    if continues_right {
-        cr.line_to(x + w, y);
-        cr.line_to(x + w, y + h);
+    if continues_left {
+        cr.move_to(x + arrow_w, y);
     } else {
+        cr.move_to(x + r, y);
+    }
+
+    if continues_right {
+        cr.line_to(x + w - arrow_w, y);
+        cr.line_to(x + w, y + h / 2.0);
+        cr.line_to(x + w - arrow_w, y + h);
+    } else {
+        cr.line_to(x + w - r, y);
         cr.arc(x + w - r, y + r, r, -90.0 * degrees, 0.0 * degrees);
         cr.arc(x + w - r, y + h - r, r, 0.0 * degrees, 90.0 * degrees);
     }
 
     if continues_left {
-        cr.line_to(x, y + h);
-        cr.line_to(x, y);
+        cr.line_to(x + arrow_w, y + h);
+        cr.line_to(x, y + h / 2.0);
+        cr.line_to(x + arrow_w, y);
     } else {
+        cr.line_to(x + r, y + h);
         cr.arc(x + r, y + h - r, r, 90.0 * degrees, 180.0 * degrees);
         cr.arc(x + r, y + r, r, 180.0 * degrees, 270.0 * degrees);
     }
 
-    cr.close_path();
-}
-
-pub(crate) fn draw_month_event_left_edge(
-    cr: &gtk::cairo::Context,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    radius: f64,
-) {
-    let r = radius.min(h / 2.0).min(w);
-    let degrees = std::f64::consts::PI / 180.0;
-    cr.new_sub_path();
-    cr.line_to(x + w, y);
-    cr.line_to(x + w, y + h);
-    cr.arc(x + r, y + h - r, r, 90.0 * degrees, 180.0 * degrees);
-    cr.arc(x + r, y + r, r, 180.0 * degrees, 270.0 * degrees);
     cr.close_path();
 }
 
@@ -12143,76 +12153,37 @@ pub(crate) fn draw_month_canvas(
                     bar.continues_left,
                     bar.continues_right,
                 );
+                let active_hex = if is_hovered { &bar.hov_hex } else { &bar.bg_hex };
                 let (bg_r, bg_g, bg_b) =
-                    parse_hex_color(if is_hovered { &bar.hov_hex } else { &bar.bg_hex })
-                        .unwrap_or((220, 230, 245));
+                    parse_hex_color(active_hex).unwrap_or(if is_dark { (40, 60, 84) } else { (205, 224, 248) });
                 cr.set_source_rgba(
                     bg_r as f64 / 255.0,
                     bg_g as f64 / 255.0,
                     bg_b as f64 / 255.0,
-                    0.95,
+                    1.0,
                 );
                 let _ = cr.fill();
 
-                let (col_r, col_g, col_b) =
-                    parse_hex_color(&bar.color_hex).unwrap_or((53, 132, 228));
+                let (txt_r, txt_g, txt_b) =
+                    parse_hex_color(&bar.fg_hex).unwrap_or(if is_dark { (255, 255, 255) } else { (46, 52, 54) });
 
-                if !bar.continues_left {
-                    cr.set_source_rgba(
-                        col_r as f64 / 255.0,
-                        col_g as f64 / 255.0,
-                        col_b as f64 / 255.0,
-                        1.0,
-                    );
-                    draw_month_event_left_edge(cr, bar_x, bar_y, 4.5, chip_h, 4.0);
-                    let _ = cr.fill();
-                }
-
-                if bar.continues_left {
-                    cr.set_source_rgba(
-                        col_r as f64 / 255.0,
-                        col_g as f64 / 255.0,
-                        col_b as f64 / 255.0,
-                        0.80,
-                    );
-                    cr.set_line_width(1.2);
-                    cr.move_to(bar_x + 5.0, bar_y + 5.0);
-                    cr.line_to(bar_x + 1.5, bar_y + chip_h / 2.0);
-                    cr.line_to(bar_x + 5.0, bar_y + chip_h - 5.0);
-                    let _ = cr.stroke();
-                }
-                if bar.continues_right {
-                    cr.set_source_rgba(
-                        col_r as f64 / 255.0,
-                        col_g as f64 / 255.0,
-                        col_b as f64 / 255.0,
-                        0.80,
-                    );
-                    cr.set_line_width(1.2);
-                    cr.move_to(bar_x + bar_w - 5.0, bar_y + 5.0);
-                    cr.line_to(bar_x + bar_w - 1.5, bar_y + chip_h / 2.0);
-                    cr.line_to(bar_x + bar_w - 5.0, bar_y + chip_h - 5.0);
-                    let _ = cr.stroke();
-                }
+                let arrow_w = (chip_h / 2.5).clamp(5.0, 7.0).min(bar_w / 3.0);
+                let text_pad_left = if bar.continues_left { arrow_w + 4.0 } else { 6.0 };
+                let text_pad_right = if bar.continues_right { arrow_w + 4.0 } else { 6.0 };
+                let text_x = bar_x + text_pad_left;
+                let max_text_w = (bar_w - text_pad_left - text_pad_right).max(0.0);
 
                 let _ = cr.save();
-                let text_x = bar_x + if bar.continues_left { 9.0 } else { 8.0 };
-                let max_text_w = (bar_w
-                    - if bar.continues_left { 9.0 } else { 6.0 }
-                    - if bar.continues_right { 9.0 } else { 6.0 })
-                .max(0.0);
                 cr.rectangle(text_x, bar_y, max_text_w, chip_h);
                 let _ = cr.clip();
 
-                let (fg_r, fg_g, fg_b) =
-                    parse_hex_color(&bar.fg_hex).unwrap_or((20, 20, 20));
                 cr.set_source_rgba(
-                    fg_r as f64 / 255.0,
-                    fg_g as f64 / 255.0,
-                    fg_b as f64 / 255.0,
+                    txt_r as f64 / 255.0,
+                    txt_g as f64 / 255.0,
+                    txt_b as f64 / 255.0,
                     1.0,
                 );
-                cr.set_font_size(11.0);
+                cr.set_font_size(12.0);
                 cr.select_font_face(
                     "sans-serif",
                     gtk::cairo::FontSlant::Normal,
@@ -12226,20 +12197,19 @@ pub(crate) fn draw_month_canvas(
                 }
                 let _ = cr.restore();
             } else {
-                let (bg_r, bg_g, bg_b) =
-                    parse_hex_color(if is_hovered { &bar.hov_hex } else { &bar.bg_hex })
-                        .unwrap_or((240, 240, 240));
-                draw_cairo_rounded_rect(cr, bar_x, bar_y, bar_w, chip_h, 3.5);
-                cr.set_source_rgba(
-                    bg_r as f64 / 255.0,
-                    bg_g as f64 / 255.0,
-                    bg_b as f64 / 255.0,
-                    if is_hovered { 0.70 } else { 0.35 },
-                );
-                let _ = cr.fill();
-
                 let (col_r, col_g, col_b) =
                     parse_hex_color(&bar.color_hex).unwrap_or((53, 132, 228));
+                if is_hovered {
+                    draw_cairo_rounded_rect(cr, bar_x, bar_y, bar_w, chip_h, 4.0);
+                    cr.set_source_rgba(
+                        col_r as f64 / 255.0,
+                        col_g as f64 / 255.0,
+                        col_b as f64 / 255.0,
+                        0.15,
+                    );
+                    let _ = cr.fill();
+                }
+
                 cr.arc(
                     bar_x + 7.0,
                     bar_y + chip_h / 2.0,
@@ -12266,15 +12236,9 @@ pub(crate) fn draw_month_canvas(
                 } else {
                     bar.event.summary.clone()
                 };
-                let (fg_r, fg_g, fg_b) =
-                    parse_hex_color(&bar.fg_hex).unwrap_or((20, 20, 20));
-                cr.set_source_rgba(
-                    fg_r as f64 / 255.0,
-                    fg_g as f64 / 255.0,
-                    fg_b as f64 / 255.0,
-                    1.0,
-                );
-                cr.set_font_size(11.0);
+                let fg = if is_dark { 1.0 } else { 0.0 };
+                cr.set_source_rgba(fg, fg, fg, if is_dark { 0.95 } else { 0.85 });
+                cr.set_font_size(12.0);
                 cr.select_font_face(
                     "sans-serif",
                     gtk::cairo::FontSlant::Normal,
@@ -12434,8 +12398,11 @@ fn compute_placed_timed_chips(
     interval_minutes: u32,
     slot_count: usize,
 ) -> Vec<PlacedTimeGridChip> {
-    let mut timed_events: Vec<CalendarEventRecord> =
-        day_events.iter().filter(|e| !e.all_day).cloned().collect();
+    let mut timed_events: Vec<CalendarEventRecord> = day_events
+        .iter()
+        .filter(|e| !e.all_day && event_display_range(e).map(|r| r.len_days() <= 1).unwrap_or(true))
+        .cloned()
+        .collect();
     timed_events.sort_by_key(|e| event_start_datetime(e));
 
     struct RawTimedEvent {
@@ -12581,27 +12548,17 @@ fn draw_time_grid_chip(
     let (bg_hex, hov_hex, _, fg_hex) = pastel_colors_for_hex(&color_hex, is_dark);
     let active_bg_hex = if is_hovered { &hov_hex } else { &bg_hex };
 
-    let (bg_r, bg_g, bg_b) = parse_hex_color(active_bg_hex).unwrap_or((53, 132, 228));
-    let (fg_r, fg_g, fg_b) = parse_hex_color(&fg_hex).unwrap_or((20, 20, 20));
+    let (bg_r, bg_g, bg_b) =
+        parse_hex_color(active_bg_hex).unwrap_or(if is_dark { (40, 60, 84) } else { (205, 224, 248) });
+    let (fg_r, fg_g, fg_b) =
+        parse_hex_color(&fg_hex).unwrap_or(if is_dark { (255, 255, 255) } else { (46, 52, 54) });
 
-    // Rounded background card (GNOME Calendar borderless style)
-    draw_cairo_rounded_rect(cr, x, y, w, h, 6.0);
+    // Planar card (Google Calendar borderless 4px rounded style with GNOME Calendar pastel coloring, no left mark)
+    draw_cairo_rounded_rect(cr, x, y, w, h, 4.0);
     cr.set_source_rgba(
         bg_r as f64 / 255.0,
         bg_g as f64 / 255.0,
         bg_b as f64 / 255.0,
-        0.95,
-    );
-    let _ = cr.fill();
-
-    // Left vertical color accent strip (GNOME Calendar widget.edge style)
-    let (accent_r, accent_g, accent_b) =
-        parse_hex_color(&color_hex).unwrap_or((bg_r, bg_g, bg_b));
-    draw_cairo_rounded_rect(cr, x + 1.0, y + 1.0, 4.5, h - 2.0, 3.0);
-    cr.set_source_rgba(
-        accent_r as f64 / 255.0,
-        accent_g as f64 / 255.0,
-        accent_b as f64 / 255.0,
         1.0,
     );
     let _ = cr.fill();
@@ -12613,12 +12570,12 @@ fn draw_time_grid_chip(
         chip.event.summary.as_str()
     };
 
-    let text_x = x + 9.0;
-    let max_text_w = (w - 12.0).max(10.0);
+    let text_x = x + 6.0;
+    let max_text_w = (w - 10.0).max(10.0);
 
     let _ = cr.save();
-    // Clip to chip interior to ensure zero overflow
-    draw_cairo_rounded_rect(cr, x, y, w, h, 6.0);
+    // Clip to chip interior
+    draw_cairo_rounded_rect(cr, x, y, w, h, 4.0);
     let _ = cr.clip();
 
     cr.set_source_rgba(
@@ -12631,41 +12588,41 @@ fn draw_time_grid_chip(
     if chip.row_span >= 2 && h >= 32.0 {
         // Multi-line: Title bold on top, time smaller below
         cr.select_font_face(
-            "Sans",
+            "sans-serif",
             gtk::cairo::FontSlant::Normal,
             gtk::cairo::FontWeight::Bold,
         );
-        cr.set_font_size(11.0);
+        cr.set_font_size(12.0);
         let trunc_title = truncate_cairo_text(cr, title, max_text_w);
-        cr.move_to(text_x, y + 13.0);
+        cr.move_to(text_x, y + 14.0);
         let _ = cr.show_text(&trunc_title);
 
         cr.select_font_face(
-            "Sans",
+            "sans-serif",
             gtk::cairo::FontSlant::Normal,
             gtk::cairo::FontWeight::Normal,
         );
-        cr.set_font_size(9.5);
+        cr.set_font_size(10.5);
         cr.set_source_rgba(
             fg_r as f64 / 255.0,
             fg_g as f64 / 255.0,
             fg_b as f64 / 255.0,
-            0.75,
+            0.90,
         );
         let trunc_time = truncate_cairo_text(cr, &chip.time_text, max_text_w);
-        cr.move_to(text_x, y + 25.0);
+        cr.move_to(text_x, y + 27.0);
         let _ = cr.show_text(&trunc_time);
     } else {
         // Single-line: "10:00 Meeting..."
         cr.select_font_face(
-            "Sans",
+            "sans-serif",
             gtk::cairo::FontSlant::Normal,
             gtk::cairo::FontWeight::Bold,
         );
-        cr.set_font_size(10.5);
+        cr.set_font_size(11.5);
         let single_line = format!("{} {}", chip.time_text, title);
         let trunc = truncate_cairo_text(cr, &single_line, max_text_w);
-        cr.move_to(text_x, y + (h / 2.0 + 3.5).floor());
+        cr.move_to(text_x, y + (h / 2.0 + 4.0).floor());
         let _ = cr.show_text(&trunc);
     }
 
@@ -14034,13 +13991,13 @@ fn ensure_event_chip_css_class(
             class_name.clone()
         } else {
             let class_name = format!("cal-chip-{}", map.len());
-            let provider = gtk::CssProvider::new();
-            provider.load_from_string(&format!(
-                "button.{class_name} {{ border: none; outline: none; border-radius: 6px; box-shadow: inset 5px 0 0 0 {base_hex}; background-color: {bg}; color: {fg}; }} \
-                 button.{class_name}:hover {{ border: none; outline: none; border-radius: 6px; box-shadow: inset 5px 0 0 0 {base_hex}; background-color: {hover}; color: {fg}; }} \
-                 button.{class_name}:active {{ border: none; outline: none; border-radius: 6px; box-shadow: inset 5px 0 0 0 {base_hex}; background-color: {active}; color: {fg}; }}"
-            ));
             if let Some(display) = gtk::gdk::Display::default() {
+                let provider = gtk::CssProvider::new();
+                provider.load_from_string(&format!(
+                    "button.{class_name} {{ border: none; outline: none; border-radius: 4px; box-shadow: none; background-color: {bg}; color: {fg}; }} \
+                     button.{class_name}:hover {{ border: none; outline: none; border-radius: 4px; box-shadow: none; background-color: {hover}; color: {fg}; }} \
+                     button.{class_name}:active {{ border: none; outline: none; border-radius: 4px; box-shadow: none; background-color: {active}; color: {fg}; }}"
+                ));
                 gtk::style_context_add_provider_for_display(
                     &display,
                     &provider,
@@ -16054,7 +16011,7 @@ fn parse_hex_color(hex: &str) -> Option<(u8, u8, u8)> {
     }
 }
 
-/// Computes event background tint (25% mix matching GNOME Calendar events.css), hover, active, and text colors.
+/// Computes event background tint (25% mix matching GNOME Calendar events.css), hover (35%), active (45%), and text colors.
 pub(crate) fn pastel_colors_for_hex(hex: &str, is_dark: bool) -> (String, String, String, String) {
     let (r, g, b) = parse_hex_color(hex).unwrap_or((53, 132, 228)); // default GNOME accent blue
 
@@ -16096,7 +16053,7 @@ pub(crate) fn pastel_colors_for_hex(hex: &str, is_dark: bool) -> (String, String
             format!("#{bg_r:02x}{bg_g:02x}{bg_b:02x}"),
             format!("#{hov_r:02x}{hov_g:02x}{hov_b:02x}"),
             format!("#{act_r:02x}{act_g:02x}{act_b:02x}"),
-            "#1c1c1c".to_string(),
+            "#2e3436".to_string(), // GNOME Calendar dark text
         )
     }
 }
@@ -16108,6 +16065,8 @@ fn calendar_grid_event_chip(
     day: NaiveDate,
     custom_time_text: Option<&str>,
     row_span: usize,
+    continues_left: bool,
+    continues_right: bool,
 ) -> gtk::Widget {
     let untitled_default = crate::i18n::gettext("(Untitled)");
     let title = if event.summary.trim().is_empty() {
@@ -16119,132 +16078,286 @@ fn calendar_grid_event_chip(
         .map(|s| s.to_string())
         .unwrap_or_else(|| event_time_text(event));
     let color = event_color_for_record(event);
-    let chip_button = gtk::Button::builder()
-        .halign(gtk::Align::Fill)
-        .valign(if is_all_day {
-            gtk::Align::Start
-        } else {
-            gtk::Align::Fill
-        })
-        .hexpand(true)
-        .vexpand(false)
-        .margin_start(if is_all_day { 1 } else { 2 })
-        .margin_end(if is_all_day { 1 } else { 12 })
-        .margin_top(1)
-        .margin_bottom(1)
-        .height_request(if is_all_day { 19 } else { -1 })
-        .css_classes(if is_all_day {
-            vec!["flat", "calendar-grid-event", "all-day-chip"]
-        } else {
-            vec!["flat", "calendar-grid-event"]
-        })
-        .build();
 
-    // Borderless card styling with saturated left edge indicator (GNOME Calendar)
-    let is_dark = adw::StyleManager::default().is_dark();
-    let (bg, hover, active, fg) = pastel_colors_for_hex(&color, is_dark);
-    let chip_class = ensure_event_chip_css_class(&color, &bg, &hover, &active, &fg);
-    chip_button.add_css_class(&chip_class);
+    if is_all_day {
+        let chip_button = gtk::Button::builder()
+            .halign(gtk::Align::Fill)
+            .valign(gtk::Align::Start)
+            .hexpand(true)
+            .vexpand(false)
+            .margin_start(1)
+            .margin_end(1)
+            .margin_top(1)
+            .margin_bottom(1)
+            .height_request(22)
+            .css_classes(vec!["flat", "calendar-grid-event", "all-day-chip"])
+            .build();
 
-    let text = if is_all_day {
-        format!("<b>{}</b>", glib::markup_escape_text(title))
-    } else if row_span >= 2 {
-        format!(
-            "<b>{}</b>\n<span size=\"smaller\" alpha=\"75%\">{}</span>",
-            glib::markup_escape_text(title),
-            glib::markup_escape_text(&time_text)
-        )
+        let drawing_area = gtk::DrawingArea::builder()
+            .hexpand(true)
+            .vexpand(true)
+            .height_request(22)
+            .build();
+
+        let ev_draw = event.clone();
+        let color_draw = color.clone();
+        let is_hovered = Rc::new(Cell::new(false));
+        let is_hovered_draw = is_hovered.clone();
+
+        drawing_area.set_draw_func(move |_area, cr, width_i32, height_i32| {
+            let w = width_i32 as f64;
+            let h = height_i32 as f64;
+            if w <= 1.0 || h <= 1.0 {
+                return;
+            }
+
+            let is_dark = adw::StyleManager::default().is_dark();
+            let (bg_hex, hov_hex, _, fg_hex) = pastel_colors_for_hex(&color_draw, is_dark);
+            let active_bg_hex = if is_hovered_draw.get() { &hov_hex } else { &bg_hex };
+            let (bg_r, bg_g, bg_b) =
+                parse_hex_color(active_bg_hex).unwrap_or(if is_dark { (40, 60, 84) } else { (205, 224, 248) });
+            let (txt_r, txt_g, txt_b) =
+                parse_hex_color(&fg_hex).unwrap_or(if is_dark { (255, 255, 255) } else { (46, 52, 54) });
+
+            draw_month_event_bar(cr, 1.0, 1.0, w - 2.0, h - 2.0, 4.0, continues_left, continues_right);
+            cr.set_source_rgba(
+                bg_r as f64 / 255.0,
+                bg_g as f64 / 255.0,
+                bg_b as f64 / 255.0,
+                1.0,
+            );
+            let _ = cr.fill();
+
+            let arrow_w = (h / 2.5).clamp(5.0, 7.0).min(w / 3.0);
+            let pad_left = if continues_left { arrow_w + 4.0 } else { 6.0 };
+            let pad_right = if continues_right { arrow_w + 4.0 } else { 6.0 };
+            let text_x = 1.0 + pad_left;
+            let max_text_w = (w - 2.0 - pad_left - pad_right).max(0.0);
+
+            let _ = cr.save();
+            cr.rectangle(text_x, 1.0, max_text_w, h - 2.0);
+            let _ = cr.clip();
+
+            cr.set_source_rgba(txt_r as f64 / 255.0, txt_g as f64 / 255.0, txt_b as f64 / 255.0, 1.0);
+            cr.set_font_size(12.0);
+            cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+
+            let untitled = crate::i18n::gettext("(Untitled)");
+            let summary_str = if ev_draw.summary.trim().is_empty() {
+                untitled.as_str()
+            } else {
+                ev_draw.summary.as_str()
+            };
+            let trunc = truncate_cairo_text(cr, summary_str, max_text_w);
+            if let Ok(ext) = cr.text_extents(&trunc) {
+                let ty = 1.0 + (h - 2.0 - ext.height()) / 2.0 - ext.y_bearing();
+                cr.move_to(text_x, ty);
+                let _ = cr.show_text(&trunc);
+            }
+            let _ = cr.restore();
+        });
+
+        let motion = gtk::EventControllerMotion::new();
+        let area_weak1 = drawing_area.downgrade();
+        let is_hov_enter = is_hovered.clone();
+        motion.connect_enter(move |_, _, _| {
+            is_hov_enter.set(true);
+            if let Some(a) = area_weak1.upgrade() {
+                a.queue_draw();
+            }
+        });
+        let area_weak2 = drawing_area.downgrade();
+        let is_hov_leave = is_hovered.clone();
+        motion.connect_leave(move |_| {
+            is_hov_leave.set(false);
+            if let Some(a) = area_weak2.upgrade() {
+                a.queue_draw();
+            }
+        });
+        chip_button.add_controller(motion);
+        chip_button.set_child(Some(&drawing_area));
+
+        set_accessible_label(&chip_button, &crate::i18n::gettext("Open appointment: {title}").replace("{title}", title));
+        if !event.source_display_name.is_empty() {
+            chip_button.set_tooltip_text(Some(&format!(
+                "{title}\n{time_text} · {}",
+                event.source_display_name
+            )));
+        }
+
+        let event_identity_for_click = CalendarEventIdentity::from_event(event);
+        let event_for_click = event.clone();
+        let page_weak_for_click = page.downgrade();
+        let target_day = day;
+
+        let gesture = gtk::GestureClick::new();
+        gesture.set_button(1);
+        gesture.connect_released(move |gesture, n_press, _x, _y| {
+            let (Some(page), Some(widget)) = (page_weak_for_click.upgrade(), gesture.widget()) else {
+                return;
+            };
+            if n_press == 2 {
+                if let Some(id) = event_identity_for_click.as_ref() {
+                    page.open_event_editor_for_identity(&widget, id);
+                }
+            } else if n_press == 1 {
+                show_calendar_event_details_popover(&page, &widget, &event_for_click, Some(target_day));
+            }
+        });
+        chip_button.add_controller(gesture);
+
+        let right_click = gtk::GestureClick::builder().button(3).build();
+        let page_weak_for_rc = page.downgrade();
+        let event_for_rc = event.clone();
+        right_click.connect_pressed(move |gesture, _, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            if let (Some(page), Some(widget)) = (page_weak_for_rc.upgrade(), gesture.widget()) {
+                let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+                show_calendar_event_context_menu(&page, &widget, &event_for_rc, rect);
+            }
+        });
+        chip_button.add_controller(right_click);
+
+        let long_press = gtk::GestureLongPress::new();
+        let page_weak_for_lp = page.downgrade();
+        let event_for_lp = event.clone();
+        long_press.connect_pressed(move |gesture, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            if let (Some(page), Some(widget)) = (page_weak_for_lp.upgrade(), gesture.widget()) {
+                let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+                show_calendar_event_context_menu(&page, &widget, &event_for_lp, rect);
+            }
+        });
+        chip_button.add_controller(long_press);
+
+        let key_controller = gtk::EventControllerKey::new();
+        let event_for_key = event.clone();
+        let page_weak_for_key = page.downgrade();
+        key_controller.connect_key_pressed(move |controller, keyval, _, _| {
+            if keyval == gdk::Key::Return || keyval == gdk::Key::KP_Enter || keyval == gdk::Key::space {
+                if let (Some(page), Some(widget)) = (page_weak_for_key.upgrade(), controller.widget()) {
+                    show_calendar_event_details_popover(&page, &widget, &event_for_key, Some(target_day));
+                    return glib::Propagation::Stop;
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        chip_button.add_controller(key_controller);
+
+        install_event_drag_source(&chip_button, event, day);
+        chip_button.upcast()
     } else {
-        format!(
-            "<b>{}</b>  {}",
-            glib::markup_escape_text(&time_text),
-            glib::markup_escape_text(title)
-        )
-    };
+        let is_dark = adw::StyleManager::default().is_dark();
+        let (bg, hover, active, fg) = pastel_colors_for_hex(&color, is_dark);
+        let chip_class = ensure_event_chip_css_class(&color, &bg, &hover, &active, &fg);
 
-    let label = gtk::Label::builder()
-        .halign(gtk::Align::Fill)
-        .valign(if is_all_day {
-            gtk::Align::Center
+        let chip_button = gtk::Button::builder()
+            .halign(gtk::Align::Fill)
+            .valign(gtk::Align::Fill)
+            .hexpand(true)
+            .vexpand(false)
+            .margin_start(2)
+            .margin_end(12)
+            .margin_top(1)
+            .margin_bottom(1)
+            .height_request(-1)
+            .css_classes(vec!["flat", "calendar-grid-event", chip_class.as_str()])
+            .build();
+
+        let text = if row_span >= 2 {
+            format!(
+                "<b>{}</b>\n<span size=\"smaller\" alpha=\"90%\">{}</span>",
+                glib::markup_escape_text(title),
+                glib::markup_escape_text(&time_text)
+            )
         } else {
-            gtk::Align::Start
-        })
-        .xalign(0.0)
-        .ellipsize(gtk::pango::EllipsizeMode::End)
-        .use_markup(true)
-        .label(&text)
-        .build();
-
-    chip_button.set_child(Some(&label));
-    set_accessible_label(&chip_button, &crate::i18n::gettext("Open appointment: {title}").replace("{title}", title));
-    if !event.source_display_name.is_empty() {
-        chip_button.set_tooltip_text(Some(&format!(
-            "{title}\n{time_text} · {}",
-            event.source_display_name
-        )));
-    }
-
-    let event_identity_for_click = CalendarEventIdentity::from_event(event);
-    let event_for_click = event.clone();
-    let page_weak_for_click = page.downgrade();
-    let target_day = day;
-
-    let gesture = gtk::GestureClick::new();
-    gesture.set_button(1);
-    gesture.connect_released(move |gesture, n_press, _x, _y| {
-        let (Some(page), Some(widget)) = (page_weak_for_click.upgrade(), gesture.widget()) else {
-            return;
+            format!(
+                "<b>{}</b>  {}",
+                glib::markup_escape_text(&time_text),
+                glib::markup_escape_text(title)
+            )
         };
-        if n_press == 2 {
-            if let Some(id) = event_identity_for_click.as_ref() {
-                page.open_event_editor_for_identity(&widget, id);
+
+        let label = gtk::Label::builder()
+            .halign(gtk::Align::Fill)
+            .valign(gtk::Align::Start)
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .use_markup(true)
+            .label(&text)
+            .build();
+
+        chip_button.set_child(Some(&label));
+        set_accessible_label(&chip_button, &crate::i18n::gettext("Open appointment: {title}").replace("{title}", title));
+        if !event.source_display_name.is_empty() {
+            chip_button.set_tooltip_text(Some(&format!(
+                "{title}\n{time_text} · {}",
+                event.source_display_name
+            )));
+        }
+
+        let event_identity_for_click = CalendarEventIdentity::from_event(event);
+        let event_for_click = event.clone();
+        let page_weak_for_click = page.downgrade();
+        let target_day = day;
+
+        let gesture = gtk::GestureClick::new();
+        gesture.set_button(1);
+        gesture.connect_released(move |gesture, n_press, _x, _y| {
+            let (Some(page), Some(widget)) = (page_weak_for_click.upgrade(), gesture.widget()) else {
+                return;
+            };
+            if n_press == 2 {
+                if let Some(id) = event_identity_for_click.as_ref() {
+                    page.open_event_editor_for_identity(&widget, id);
+                }
+            } else if n_press == 1 {
+                show_calendar_event_details_popover(&page, &widget, &event_for_click, Some(target_day));
             }
-        } else if n_press == 1 {
-            show_calendar_event_details_popover(&page, &widget, &event_for_click, Some(target_day));
-        }
-    });
-    chip_button.add_controller(gesture);
+        });
+        chip_button.add_controller(gesture);
 
-    let right_click = gtk::GestureClick::builder().button(3).build();
-    let page_weak_for_rc = page.downgrade();
-    let event_for_rc = event.clone();
-    right_click.connect_pressed(move |gesture, _, x, y| {
-        gesture.set_state(gtk::EventSequenceState::Claimed);
-        if let (Some(page), Some(widget)) = (page_weak_for_rc.upgrade(), gesture.widget()) {
-            let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
-            show_calendar_event_context_menu(&page, &widget, &event_for_rc, rect);
-        }
-    });
-    chip_button.add_controller(right_click);
-
-    let long_press = gtk::GestureLongPress::new();
-    let page_weak_for_lp = page.downgrade();
-    let event_for_lp = event.clone();
-    long_press.connect_pressed(move |gesture, x, y| {
-        gesture.set_state(gtk::EventSequenceState::Claimed);
-        if let (Some(page), Some(widget)) = (page_weak_for_lp.upgrade(), gesture.widget()) {
-            let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
-            show_calendar_event_context_menu(&page, &widget, &event_for_lp, rect);
-        }
-    });
-    chip_button.add_controller(long_press);
-
-    let key_controller = gtk::EventControllerKey::new();
-    let event_for_key = event.clone();
-    let page_weak_for_key = page.downgrade();
-    key_controller.connect_key_pressed(move |controller, keyval, _, _| {
-        if keyval == gdk::Key::Return || keyval == gdk::Key::KP_Enter || keyval == gdk::Key::space {
-            if let (Some(page), Some(widget)) = (page_weak_for_key.upgrade(), controller.widget()) {
-                show_calendar_event_details_popover(&page, &widget, &event_for_key, Some(target_day));
-                return glib::Propagation::Stop;
+        let right_click = gtk::GestureClick::builder().button(3).build();
+        let page_weak_for_rc = page.downgrade();
+        let event_for_rc = event.clone();
+        right_click.connect_pressed(move |gesture, _, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            if let (Some(page), Some(widget)) = (page_weak_for_rc.upgrade(), gesture.widget()) {
+                let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+                show_calendar_event_context_menu(&page, &widget, &event_for_rc, rect);
             }
-        }
-        glib::Propagation::Proceed
-    });
-    chip_button.add_controller(key_controller);
+        });
+        chip_button.add_controller(right_click);
 
-    install_event_drag_source(&chip_button, event, day);
-    chip_button.upcast()
+        let long_press = gtk::GestureLongPress::new();
+        let page_weak_for_lp = page.downgrade();
+        let event_for_lp = event.clone();
+        long_press.connect_pressed(move |gesture, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            if let (Some(page), Some(widget)) = (page_weak_for_lp.upgrade(), gesture.widget()) {
+                let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+                show_calendar_event_context_menu(&page, &widget, &event_for_lp, rect);
+            }
+        });
+        chip_button.add_controller(long_press);
+
+        let key_controller = gtk::EventControllerKey::new();
+        let event_for_key = event.clone();
+        let page_weak_for_key = page.downgrade();
+        key_controller.connect_key_pressed(move |controller, keyval, _, _| {
+            if keyval == gdk::Key::Return || keyval == gdk::Key::KP_Enter || keyval == gdk::Key::space {
+                if let (Some(page), Some(widget)) = (page_weak_for_key.upgrade(), controller.widget()) {
+                    show_calendar_event_details_popover(&page, &widget, &event_for_key, Some(target_day));
+                    return glib::Propagation::Stop;
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        chip_button.add_controller(key_controller);
+
+        install_event_drag_source(&chip_button, event, day);
+        chip_button.upcast()
+    }
 }
 
 fn calendar_event_row(page: &CalendarPage, event: &CalendarEventRecord) -> adw::ActionRow {
@@ -21118,20 +21231,49 @@ mod tests {
 
     #[test]
     fn test_draw_month_event_bar_geometry() {
-        let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 200, 100).unwrap();
+        let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 200, 200).unwrap();
         let cr = gtk::cairo::Context::new(&surface).unwrap();
 
-        // Standard rounded rect
+        // 1. Standard rounded rect (starts and ends within range)
         draw_month_event_bar(&cr, 10.0, 10.0, 80.0, 20.0, 4.0, false, false);
         let _ = cr.fill();
 
-        // Left continuing (straight / chevron on left)
+        // 2. Left continuing (pointed on left, rounded on right)
         draw_month_event_bar(&cr, 10.0, 40.0, 80.0, 20.0, 4.0, true, false);
         let _ = cr.fill();
 
-        // Right continuing (straight / chevron on right)
+        // 3. Right continuing (rounded on left, pointed on right)
         draw_month_event_bar(&cr, 10.0, 70.0, 80.0, 20.0, 4.0, false, true);
         let _ = cr.fill();
+
+        // 4. Both continuing (pointed on both ends)
+        draw_month_event_bar(&cr, 10.0, 100.0, 80.0, 20.0, 4.0, true, true);
+        let _ = cr.fill();
+    }
+
+    #[test]
+    fn test_google_calendar_planar_event_colors_and_contrast() {
+        // Dark theme blue: white text on 25% GNOME Calendar dark view mix (#242424)
+        let (bg, hover, active, fg) = pastel_colors_for_hex("#1a73e8", true);
+        assert_eq!(fg, "#ffffff");
+        assert!(!bg.is_empty());
+        assert!(!hover.is_empty());
+        assert!(!active.is_empty());
+        assert_ne!(bg, "#1a73e8");
+
+        // Light theme blue: GNOME Calendar dark text (#2e3436) on 25% white view mix
+        let (bg_light, _, _, fg_light) = pastel_colors_for_hex("#1a73e8", false);
+        assert_ne!(bg_light, "#1a73e8");
+        assert_eq!(fg_light, "#2e3436");
+
+        // Yellow: GNOME Calendar dark text (#2e3436) on 25% white view mix
+        let (bg_yellow, _, _, fg_yellow) = pastel_colors_for_hex("#f6bf26", false);
+        assert_ne!(bg_yellow, "#f6bf26");
+        assert_eq!(fg_yellow, "#2e3436");
+
+        // CSS class should be planar without inset border shadow
+        let css_class = ensure_event_chip_css_class("#1a73e8", &bg_light, "#d0e0f8", "#b8d4f4", &fg_light);
+        assert!(css_class.starts_with("cal-chip-"));
     }
 
     #[test]

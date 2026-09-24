@@ -532,10 +532,17 @@ impl HtmlEditor {
             .hexpand(true)
             .build();
 
-        let font_family = AppSettings::try_new()
+        if let Some(settings) = webkit6::prelude::WebViewExt::settings(&web_view) {
+            let desktop_font = crate::views::mail_viewer::detect_desktop_font_family();
+            settings.set_default_font_family(&desktop_font);
+            settings.set_sans_serif_font_family(&desktop_font);
+        }
+
+        let font_family_raw = AppSettings::try_new()
             .as_ref()
             .map(AppSettings::mail_font_family)
             .unwrap_or_else(|| "system-ui, sans-serif".to_string());
+        let font_family = crate::views::mail_viewer::safe_css_font_family(&font_family_raw);
         let font_size = AppSettings::try_new()
             .as_ref()
             .map(AppSettings::mail_font_size)
