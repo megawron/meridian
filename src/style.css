@@ -9,7 +9,31 @@ label,
 button,
 entry,
 textview {
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "Helvetica Neue", Cantarell, "Segoe UI", Roboto, sans-serif;
+  font-family: "Adwaita Sans", Cantarell, -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "Helvetica Neue", "Segoe UI", Roboto, sans-serif;
+}
+
+/* ── Text Entry & Search Entry Typography & Clearance ─────────────────── */
+/* Ensures glyph ascenders and cap-height (e.g. T, M, A, S in Cantarell/Adwaita) */
+/* are never clipped at the top by GtkText's internal snapshot clip rect. */
+entry {
+  min-height: 34px;
+}
+
+entry.search,
+searchbar entry {
+  min-height: 34px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+entry text,
+entry.search text,
+searchbar entry text {
+  min-height: 22px;
+  padding-top: 1px;
+  padding-bottom: 1px;
+  margin-top: 1px;
+  margin-bottom: 0;
 }
 
 /* ── Sidebar Typography (Identical to previous default) ────────────────── */
@@ -19,7 +43,7 @@ textview {
 .tasks-sidebar,
 .contacts-sidebar,
 .evolution-sidebar-drawer {
-  font-family: Cantarell, -apple-system, sans-serif;
+  font-family: "Adwaita Sans", Cantarell, -apple-system, sans-serif;
 }
 
 /* ── Badge (unread count) ──────────────────────────────────────────────── */
@@ -436,7 +460,7 @@ textview {
 }
 
 .mail-search-bar {
-  min-height: 28px;
+  min-height: 34px;
   margin-top: 4px;
   margin-bottom: 4px;
 }
@@ -729,6 +753,13 @@ listview.navigation-sidebar {
   padding: 0;
   color: alpha(@window_fg_color, 0.7);
   transition: color 150ms ease-in-out;
+}
+
+
+.mail-sidebar .shared-mailbox-indicator {
+  opacity: 0.7;
+  margin-start: 4px;
+  margin-end: 2px;
 }
 
 .mail-sidebar listview row:hover treeexpander > expander,
@@ -1468,8 +1499,10 @@ splitview > .sidebar {
 
 .unified-mail-toolbar dropdown,
 .unified-view-toolbar dropdown,
+.unified-mail-toolbar entry.search,
 .unified-mail-toolbar search-entry,
 .unified-mail-toolbar .search-entry,
+.unified-view-toolbar entry.search,
 .unified-view-toolbar search-entry,
 .unified-view-toolbar .search-entry {
   min-height: 30px;
@@ -1483,6 +1516,7 @@ splitview > .sidebar {
   padding: 1px 8px;
 }
 
+.unified-mail-toolbar entry.search text,
 .unified-mail-toolbar search-entry text,
 .unified-mail-toolbar .search-entry text {
   min-height: 22px;
@@ -1490,8 +1524,10 @@ splitview > .sidebar {
   padding-bottom: 1px;
 }
 
+.unified-mail-toolbar entry.search,
 .unified-mail-toolbar search-entry,
 .unified-mail-toolbar .search-entry,
+.unified-view-toolbar entry.search,
 .unified-view-toolbar search-entry,
 .unified-view-toolbar .search-entry {
   min-width: 220px;
@@ -1756,23 +1792,23 @@ button.calendar-grid-event.month-bar-chip:hover {
 /* Multi-day all-day continuous bar spanning in month view */
 .month-bar-chip.span-start,
 button.month-bar-chip.span-start {
-  border-top-right-radius: 0 !important;
-  border-bottom-right-radius: 0 !important;
-  margin-right: -5px !important;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  margin-right: -5px;
 }
 
 .month-bar-chip.span-middle,
 button.month-bar-chip.span-middle {
-  border-radius: 0 !important;
-  margin-left: -5px !important;
-  margin-right: -5px !important;
+  border-radius: 0;
+  margin-left: -5px;
+  margin-right: -5px;
 }
 
 .month-bar-chip.span-end,
 button.month-bar-chip.span-end {
-  border-top-left-radius: 0 !important;
-  border-bottom-left-radius: 0 !important;
-  margin-left: -5px !important;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  margin-left: -5px;
 }
 
 /* Month view overflow indicator dots */
@@ -2779,8 +2815,13 @@ scrollbar.vertical.mail-table-overlay-scrollbar {
   border: none;
   box-shadow: none;
   padding: 0;
-  margin: 0 3px 0 0;
-  min-width: 7px;
+  margin: 0 1px 0 0;
+  min-width: 4px;
+}
+
+scrollbar.mail-table-overlay-scrollbar:hover,
+scrollbar.vertical.mail-table-overlay-scrollbar:hover {
+  min-width: 6px;
 }
 
 scrollbar.mail-table-overlay-scrollbar trough,
@@ -2790,14 +2831,19 @@ scrollbar.vertical.mail-table-overlay-scrollbar trough {
   box-shadow: none;
   padding: 0;
   margin: 0;
-  min-width: 7px;
+  min-width: 4px;
+}
+
+scrollbar.mail-table-overlay-scrollbar:hover trough,
+scrollbar.vertical.mail-table-overlay-scrollbar:hover trough {
+  min-width: 6px;
 }
 
 scrollbar.mail-table-overlay-scrollbar slider,
 scrollbar.vertical.mail-table-overlay-scrollbar slider {
-  min-width: 7px;
+  min-width: 4px;
   border-radius: 9999px;
-  background-color: alpha(currentColor, 0.4);
+  background-color: alpha(currentColor, 0.35);
   margin: 0;
   padding: 0;
   border: none;
@@ -2808,8 +2854,8 @@ scrollbar.mail-table-overlay-scrollbar:hover slider,
 scrollbar.mail-table-overlay-scrollbar slider:hover,
 scrollbar.mail-table-overlay-scrollbar:active slider,
 scrollbar.mail-table-overlay-scrollbar slider:active {
-  min-width: 10px;
-  background-color: alpha(currentColor, 0.75);
+  min-width: 6px;
+  background-color: alpha(currentColor, 0.7);
 }
 
 /* ── Modern Webmail Header & Conversation Bar ────────────────────────── */
@@ -3065,4 +3111,49 @@ popover.menu.touch modelbutton {
   background-color: alpha(currentColor, 0.07);
 }
 
+/* ── Calendar Quick-Add Popover (Google & GNOME Calendar parity) ──────── */
+.calendar-quick-add-popover {
+  border-radius: 12px;
+}
+
+.calendar-quick-add-content {
+  padding: 4px;
+}
+
+.quick-add-title-entry {
+  font-size: 1.15rem;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 8px;
+}
+
+.quick-add-time-label {
+  font-size: 0.95rem;
+  color: @window_fg_color;
+  font-weight: 500;
+}
+
+.calendar-quick-add-color-dot {
+  min-width: 12px;
+  min-height: 12px;
+  margin-end: 2px;
+}
+
+/* ── Calendar Month Overflow Popover (+X weitere) ─────────────────────── */
+.calendar-overflow-popover {
+  border-radius: 12px;
+}
+
+.calendar-overflow-list {
+  background: transparent;
+}
+
+.calendar-overflow-item-btn {
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+
+.calendar-overflow-item-btn:hover {
+  background: alpha(@theme_fg_color, 0.08);
+}
 
