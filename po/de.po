@@ -3305,7 +3305,7 @@ msgstr "Keine lesbaren E-Mail-Ordner gefunden"
 
 #: src/views/mail_page.rs:5367
 msgid "Star"
-msgstr "Markieren"
+msgstr "Stern"
 
 #: src/views/mail_page.rs:5368 src/views/mail_page.rs:18848
 #: src/views/mail_page.rs:19980
@@ -3743,7 +3743,7 @@ msgstr ""
 #: src/views/mail_page.rs:10400 src/views/mail_page.rs:10430
 #: src/views/mail_page.rs:15460 and 1 more
 msgid "Follow-up"
-msgstr "Folgenachricht"
+msgstr "Markierung"
 
 #: src/views/mail_page.rs:10432 src/views/mail_page.rs:15455
 #: src/views/mail_page.rs:19964
@@ -4976,7 +4976,7 @@ msgstr ""
 
 #: src/views/mail_viewer_window.rs:297 src/window.rs:3650
 msgid "View"
-msgstr ""
+msgstr "Ansicht"
 
 #: src/views/mail_viewer_window.rs:300
 #, fuzzy
@@ -8117,3 +8117,21 @@ msgstr ""
 
 #~ msgid "Next 7 Days"
 #~ msgstr "Nächste 7 Tage"
+
+msgid "Table"
+msgstr "Tabelle"
+
+msgid "Off"
+msgstr "Aus"
+
+msgid "Show avatars"
+msgstr "Avatare anzeigen"
+
+msgid "Load sender logos"
+msgstr "Sender-Logos laden"
+
+msgid "Download favicons from the Internet"
+msgstr "Favicons aus dem Internet laden"
+
+msgid "Show replies grouped as threads"
+msgstr "Antworten als Thread anzeigen"

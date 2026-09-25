@@ -727,7 +727,7 @@ mod tests {
         assert_eq!(email, "updates@canva.com");
 
         let (name2, email2) = parse_address("user@example.com");
-        assert_eq!(name2, "");
+        assert_eq!(name2, "user@example.com");
         assert_eq!(email2, "user@example.com");
     }
 

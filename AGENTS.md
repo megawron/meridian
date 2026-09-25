@@ -101,6 +101,12 @@ When the user requests a durable behavior change, record it here or in the relev
 - Publish changes in small commits grouped by purpose. Keep macOS integration
   and development-fallback changes separate from Linux/performance work unless
   the user explicitly includes them in a later publication request.
+- **100% English Codebase & UI Strings**: All Rust source code, identifiers,
+  comments, documentation, test assertions, and user-facing UI strings
+  (`gettext("...")`, `.label(...)`, `.title(...)`, `.tooltip_text(...)`) MUST
+  be written in 100% US-English. Hardcoded German (or any other language) in
+  source code is strictly forbidden. German and other language localizations
+  belong exclusively in the gettext `.po` catalogs (e.g. `po/de.po`).
 
 ## Roadmap Workflow
 

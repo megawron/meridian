@@ -13991,18 +13991,20 @@ fn ensure_event_chip_css_class(
             class_name.clone()
         } else {
             let class_name = format!("cal-chip-{}", map.len());
-            if let Some(display) = gtk::gdk::Display::default() {
-                let provider = gtk::CssProvider::new();
-                provider.load_from_string(&format!(
-                    "button.{class_name} {{ border: none; outline: none; border-radius: 4px; box-shadow: none; background-color: {bg}; color: {fg}; }} \
-                     button.{class_name}:hover {{ border: none; outline: none; border-radius: 4px; box-shadow: none; background-color: {hover}; color: {fg}; }} \
-                     button.{class_name}:active {{ border: none; outline: none; border-radius: 4px; box-shadow: none; background-color: {active}; color: {fg}; }}"
-                ));
-                gtk::style_context_add_provider_for_display(
-                    &display,
-                    &provider,
-                    gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-                );
+            if gtk::is_initialized_main_thread() {
+                if let Some(display) = gtk::gdk::Display::default() {
+                    let provider = gtk::CssProvider::new();
+                    provider.load_from_string(&format!(
+                        "button.{class_name} {{ border: none; outline: none; border-radius: 4px; box-shadow: none; background-color: {bg}; color: {fg}; }} \
+                         button.{class_name}:hover {{ border: none; outline: none; border-radius: 4px; box-shadow: none; background-color: {hover}; color: {fg}; }} \
+                         button.{class_name}:active {{ border: none; outline: none; border-radius: 4px; box-shadow: none; background-color: {active}; color: {fg}; }}"
+                    ));
+                    gtk::style_context_add_provider_for_display(
+                        &display,
+                        &provider,
+                        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                    );
+                }
             }
             map.insert(key, class_name.clone());
             class_name

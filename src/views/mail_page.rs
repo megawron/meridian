@@ -1517,6 +1517,9 @@ fn mail_list_uses_wide_messages(profile: &str, order: &[String]) -> bool {
 }
 
 fn mail_list_profile_allows_column(profile: &str, wide_messages: bool, column: &str) -> bool {
+    if column == "important" {
+        return false;
+    }
     match profile {
         "messages" => matches!(
             column,
@@ -1527,6 +1530,7 @@ fn mail_list_profile_allows_column(profile: &str, wide_messages: bool, column: &
         _ => match column {
             "messages" => wide_messages,
             "sender" | "subject" => !wide_messages,
+            "important" => false,
             _ => true,
         },
     }
@@ -1737,6 +1741,30 @@ pub(crate) fn compute_table_columns_geometry(
         }
     }
 
+    // In table mode, subject is the flexible column with hexpand=true.
+    // Ensure date and size are positioned after subject so canvas geometry
+    // always matches GTK header layout deterministically.
+    if let (Some(pos_subj), Some(pos_date)) = (
+        resolved_order.iter().position(|c| *c == "subject"),
+        resolved_order.iter().position(|c| *c == "date"),
+    ) {
+        if pos_date < pos_subj {
+            resolved_order.remove(pos_date);
+            let new_subj_pos = resolved_order.iter().position(|c| *c == "subject").unwrap();
+            resolved_order.insert(new_subj_pos + 1, "date");
+        }
+    }
+    if let (Some(pos_subj), Some(pos_size)) = (
+        resolved_order.iter().position(|c| *c == "subject"),
+        resolved_order.iter().position(|c| *c == "size"),
+    ) {
+        if pos_size < pos_subj {
+            resolved_order.remove(pos_size);
+            let new_subj_pos = resolved_order.iter().position(|c| *c == "subject").unwrap();
+            resolved_order.insert(new_subj_pos + 1, "size");
+        }
+    }
+
     let mut geom = TableColumnsGeometry::default();
     let mut cur_x = 0.0;
 
@@ -1806,6 +1834,7 @@ pub(crate) struct PreparedMailTableLayout {
     pub show_attachment: bool,
     pub show_flagged: bool,
     pub show_follow_up: bool,
+    pub show_sender: bool,
     pub show_recipient: bool,
     pub show_date: bool,
     pub show_size: bool,
@@ -1921,14 +1950,22 @@ impl PreparedMailTableLayout {
         self.col_sender.x
     }
     pub fn col_sender_w(&self) -> f64 {
-        self.col_sender.width
+        if self.show_sender {
+            self.col_sender.width
+        } else {
+            0.0
+        }
     }
 
     pub fn col_sender_sep_x(&self) -> f64 {
         self.col_sender_x() + self.col_sender_w()
     }
     pub fn col_sender_sep_w(&self) -> f64 {
-        self.sep_width
+        if self.show_sender {
+            self.sep_width
+        } else {
+            0.0
+        }
     }
 
     pub fn col_recipient_x(&self) -> f64 {
@@ -2015,7 +2052,7 @@ impl PreparedMailTableLayout {
         self.sender_width = sender_width.max(60.0);
         self.recipient_width = recipient_width.max(0.0);
         self.date_width = date_width.max(60.0);
-        let show_sender = self.show_avatar || self.sender_width > 0.0;
+        let show_sender = self.show_sender;
         let geom = compute_table_columns_geometry(
             order,
             self.width,
@@ -2133,6 +2170,7 @@ pub(crate) fn prepare_mail_table_layout_from_rows(
         show_attachment,
         show_flagged,
         show_follow_up,
+        show_sender,
         show_recipient,
         show_date,
         show_size,
@@ -3021,182 +3059,207 @@ pub(crate) fn draw_mail_table_canvas(
             );
         }
 
-        // 4. Sender Column
-        let sender_x = layout.col_sender_x();
-        let sender_w = layout.col_sender_w();
-        let (text_start, avail_sender_w) = if layout.show_avatar && sender_w > 50.0 {
-            let av_r = (h / 2.0 - 5.0).clamp(7.0, 11.0);
-            let av_cx = sender_x + av_r + 4.0;
-            let av_cy = y + h / 2.0;
-            let surf_opt = get_avatar(&row.sender_email, &row.sender);
-            draw_cairo_avatar_circle(
+        // 3b. Follow-up Column
+        if layout.show_follow_up && layout.col_follow_up_w() > 0.0 && row.follow_up_state != MailFollowUpState::None {
+            draw_cairo_follow_up(
                 cr,
-                av_cx,
-                av_cy,
-                av_r,
-                surf_opt.as_ref(),
-                &row.sender,
-                (av_r * 1.05).max(7.0),
+                layout.col_follow_up_x() + 14.0,
+                y + h / 2.0,
+                row.follow_up_state,
                 is_dark,
+                is_hovered,
             );
-            if let Some((ar, ag, ab)) = row.account_color {
-                let pip_cx = av_cx + av_r * 0.7;
-                let pip_cy = av_cy + av_r * 0.7;
+        }
+
+        // 4. Sender Column
+        if layout.show_sender && layout.col_sender_w() > 0.0 {
+            let sender_x = layout.col_sender_x();
+            let sender_w = layout.col_sender_w();
+            let (text_start, avail_sender_w) = if layout.show_avatar && sender_w > 50.0 {
+                let av_r = (h / 2.0 - 5.0).clamp(7.0, 11.0);
+                let av_cx = sender_x + av_r + 4.0;
+                let av_cy = y + h / 2.0;
+                let surf_opt = get_avatar(&row.sender_email, &row.sender);
+                draw_cairo_avatar_circle(
+                    cr,
+                    av_cx,
+                    av_cy,
+                    av_r,
+                    surf_opt.as_ref(),
+                    &row.sender,
+                    (av_r * 1.05).max(7.0),
+                    is_dark,
+                );
+                if let Some((ar, ag, ab)) = row.account_color {
+                    let pip_cx = av_cx + av_r * 0.7;
+                    let pip_cy = av_cy + av_r * 0.7;
+                    cr.set_source_rgb(ar, ag, ab);
+                    cr.arc(pip_cx, pip_cy, 2.5, 0.0, std::f64::consts::TAU);
+                    let _ = cr.fill();
+                }
+                (sender_x + av_r * 2.0 + 10.0, (sender_w - av_r * 2.0 - 16.0).max(0.0))
+            } else if let Some((ar, ag, ab)) = row.account_color {
+                let dot_x = sender_x + 6.0;
+                let dot_y = y + h / 2.0;
                 cr.set_source_rgb(ar, ag, ab);
-                cr.arc(pip_cx, pip_cy, 2.5, 0.0, std::f64::consts::TAU);
+                cr.arc(dot_x, dot_y, 3.0, 0.0, std::f64::consts::TAU);
                 let _ = cr.fill();
+                (sender_x + 14.0, (sender_w - 20.0).max(0.0))
+            } else {
+                (sender_x + 6.0, (sender_w - 12.0).max(0.0))
+            };
+            if avail_sender_w > 4.0 {
+                cr.set_source_rgb(r, g, b);
+                let desc = if row.is_unread { &primary_desc_bold } else { &primary_desc_normal };
+                pango_layout.set_alignment(gtk::pango::Alignment::Left);
+                pango_layout.set_attributes(None);
+                pango_layout.set_font_description(Some(desc));
+                pango_layout.set_text(&row.sender);
+                pango_layout.set_single_paragraph_mode(true);
+                pango_layout.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                pango_layout.set_width((avail_sender_w * gtk::pango::SCALE as f64) as i32);
+                let text_y = y + primary_text_offset;
+                cr.move_to(text_start, text_y);
+                pangocairo_ffi::update_layout(cr, &pango_layout);
+                pangocairo_ffi::show_layout(cr, &pango_layout);
             }
-            (sender_x + av_r * 2.0 + 10.0, (sender_w - av_r * 2.0 - 16.0).max(10.0))
-        } else if let Some((ar, ag, ab)) = row.account_color {
-            let dot_x = sender_x + 6.0;
-            let dot_y = y + h / 2.0;
-            cr.set_source_rgb(ar, ag, ab);
-            cr.arc(dot_x, dot_y, 3.0, 0.0, std::f64::consts::TAU);
-            let _ = cr.fill();
-            (sender_x + 14.0, (sender_w - 20.0).max(10.0))
-        } else {
-            (sender_x + 6.0, (sender_w - 12.0).max(10.0))
-        };
-        cr.set_source_rgb(r, g, b);
-        let desc = if row.is_unread { &primary_desc_bold } else { &primary_desc_normal };
-        pango_layout.set_alignment(gtk::pango::Alignment::Left);
-        pango_layout.set_attributes(None);
-        pango_layout.set_font_description(Some(desc));
-        pango_layout.set_text(&row.sender);
-        pango_layout.set_single_paragraph_mode(true);
-        pango_layout.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        pango_layout.set_width((avail_sender_w * gtk::pango::SCALE as f64) as i32);
-        let text_y = y + primary_text_offset;
-        cr.move_to(text_start, text_y);
-        pangocairo_ffi::update_layout(cr, &pango_layout);
-        pangocairo_ffi::show_layout(cr, &pango_layout);
+        }
 
         // 5. Recipient Column (if visible)
-        if layout.show_recipient && layout.recipient_width > 0.0 {
+        if layout.show_recipient && layout.col_recipient_w() > 0.0 {
             let recip_x = layout.col_recipient_x();
             let recip_w = layout.col_recipient_w();
             let text_start = recip_x + 6.0;
-            let avail_recip_w = (recip_w - 12.0).max(10.0);
-            cr.set_source_rgb(r, g, b);
-            let desc = if row.is_unread { &primary_desc_bold } else { &primary_desc_normal };
-            pango_layout.set_alignment(gtk::pango::Alignment::Left);
-            pango_layout.set_attributes(None);
-            pango_layout.set_font_description(Some(desc));
-            pango_layout.set_text(&row.recipient);
-            pango_layout.set_single_paragraph_mode(true);
-            pango_layout.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            pango_layout.set_width((avail_recip_w * gtk::pango::SCALE as f64) as i32);
-            let text_y = y + primary_text_offset;
-            cr.move_to(text_start, text_y);
-            pangocairo_ffi::update_layout(cr, &pango_layout);
-            pangocairo_ffi::show_layout(cr, &pango_layout);
+            let avail_recip_w = (recip_w - 12.0).max(0.0);
+            if avail_recip_w > 4.0 {
+                cr.set_source_rgb(r, g, b);
+                let desc = if row.is_unread { &primary_desc_bold } else { &primary_desc_normal };
+                pango_layout.set_alignment(gtk::pango::Alignment::Left);
+                pango_layout.set_attributes(None);
+                pango_layout.set_font_description(Some(desc));
+                pango_layout.set_text(&row.recipient);
+                pango_layout.set_single_paragraph_mode(true);
+                pango_layout.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                pango_layout.set_width((avail_recip_w * gtk::pango::SCALE as f64) as i32);
+                let text_y = y + primary_text_offset;
+                cr.move_to(text_start, text_y);
+                pangocairo_ffi::update_layout(cr, &pango_layout);
+                pangocairo_ffi::show_layout(cr, &pango_layout);
+            }
         }
 
         // 6. Subject Column
-        let subject_x = layout.col_subject_x();
-        let subject_w = layout.col_subject_w();
-        let indent = (row.depth as f64) * 16.0;
+        if layout.col_subject_w() > 0.0 {
+            let subject_x = layout.col_subject_x();
+            let subject_w = layout.col_subject_w();
+            let indent = (row.depth as f64) * 16.0;
 
-        if row.depth > 0 {
-            cr.set_source_rgba(dim_r, dim_g, dim_b, 0.35);
-            cr.set_line_width(1.0);
-            let line_x = subject_x + indent - 8.0;
-            cr.move_to(line_x, y);
-            cr.line_to(line_x, y + h / 2.0);
-            cr.line_to(line_x + 6.0, y + h / 2.0);
-            let _ = cr.stroke();
+            if row.depth > 0 {
+                cr.set_source_rgba(dim_r, dim_g, dim_b, 0.35);
+                cr.set_line_width(1.0);
+                let line_x = subject_x + indent - 8.0;
+                cr.move_to(line_x, y);
+                cr.line_to(line_x, y + h / 2.0);
+                cr.line_to(line_x + 6.0, y + h / 2.0);
+                let _ = cr.stroke();
+            }
+
+            if row.is_expandable {
+                cr.set_source_rgba(dim_r, dim_g, dim_b, 0.80);
+                cr.set_line_width(1.7);
+                cr.set_line_cap(gtk::cairo::LineCap::Round);
+                cr.set_line_join(gtk::cairo::LineJoin::Round);
+                let cx = subject_x + indent + 9.0;
+                let cy = y + h / 2.0;
+                if row.is_expanded {
+                    cr.move_to(cx - 5.0, cy - 2.5);
+                    cr.line_to(cx, cy + 2.5);
+                    cr.line_to(cx + 5.0, cy - 2.5);
+                } else {
+                    cr.move_to(cx - 2.5, cy - 5.0);
+                    cr.line_to(cx + 2.5, cy);
+                    cr.line_to(cx - 2.5, cy + 5.0);
+                }
+                let _ = cr.stroke();
+            }
+
+            let text_start = subject_x + indent + if row.is_expandable { 22.0 } else { 6.0 };
+            let avail_text_w = (subject_x + subject_w - text_start - 6.0).max(0.0);
+            if avail_text_w > 4.0 {
+                let markup: &str = if is_dark {
+                    if row.markup_dark.is_empty() {
+                        &row.subject
+                    } else {
+                        &row.markup_dark
+                    }
+                } else {
+                    if row.markup_light.is_empty() {
+                        &row.subject
+                    } else {
+                        &row.markup_light
+                    }
+                };
+
+                pango_layout.set_alignment(gtk::pango::Alignment::Left);
+                pango_layout.set_attributes(None);
+                pango_layout.set_font_description(Some(&primary_desc_normal));
+                pango_layout.set_markup(markup);
+                pango_layout.set_single_paragraph_mode(true);
+                pango_layout.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                pango_layout.set_width((avail_text_w * gtk::pango::SCALE as f64) as i32);
+                let text_y = y + primary_text_offset;
+                cr.move_to(text_start, text_y);
+                pangocairo_ffi::update_layout(cr, &pango_layout);
+                pangocairo_ffi::show_layout(cr, &pango_layout);
+            }
         }
-
-        if row.is_expandable {
-            cr.set_source_rgba(dim_r, dim_g, dim_b, 0.80);
-            cr.set_line_width(1.7);
-            cr.set_line_cap(gtk::cairo::LineCap::Round);
-            cr.set_line_join(gtk::cairo::LineJoin::Round);
-            let cx = subject_x + indent + 9.0;
-            let cy = y + h / 2.0;
-            if row.is_expanded {
-                cr.move_to(cx - 5.0, cy - 2.5);
-                cr.line_to(cx, cy + 2.5);
-                cr.line_to(cx + 5.0, cy - 2.5);
-            } else {
-                cr.move_to(cx - 2.5, cy - 5.0);
-                cr.line_to(cx + 2.5, cy);
-                cr.line_to(cx - 2.5, cy + 5.0);
-            }
-            let _ = cr.stroke();
-        }
-
-        let text_start = subject_x + indent + if row.is_expandable { 22.0 } else { 6.0 };
-        let avail_text_w = (subject_x + subject_w - text_start - 6.0).max(10.0);
-
-        let markup: &str = if is_dark {
-            if row.markup_dark.is_empty() {
-                &row.subject
-            } else {
-                &row.markup_dark
-            }
-        } else {
-            if row.markup_light.is_empty() {
-                &row.subject
-            } else {
-                &row.markup_light
-            }
-        };
-
-        pango_layout.set_alignment(gtk::pango::Alignment::Left);
-        pango_layout.set_attributes(None);
-        pango_layout.set_font_description(Some(&primary_desc_normal));
-        pango_layout.set_markup(markup);
-        pango_layout.set_single_paragraph_mode(true);
-        pango_layout.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        pango_layout.set_width((avail_text_w * gtk::pango::SCALE as f64) as i32);
-        let text_y = y + primary_text_offset;
-        cr.move_to(text_start, text_y);
-        pangocairo_ffi::update_layout(cr, &pango_layout);
-        pangocairo_ffi::show_layout(cr, &pango_layout);
 
         // 7. Date Column (if visible)
-        if layout.show_date && layout.date_width > 0.0 {
+        if layout.show_date && layout.col_date_w() > 0.0 {
             let date_x = layout.col_date_x();
             let date_w = layout.col_date_w();
-            let avail_date_w = (date_w - 12.0).max(10.0);
-            cr.set_source_rgb(dim_r, dim_g, dim_b);
-            pango_layout.set_attributes(None);
-            pango_layout.set_font_description(Some(&secondary_desc));
-            pango_layout.set_text(&row.date);
-            pango_layout.set_single_paragraph_mode(true);
-            pango_layout.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            pango_layout.set_width((avail_date_w * gtk::pango::SCALE as f64) as i32);
-            if layout.date_align_left {
-                pango_layout.set_alignment(gtk::pango::Alignment::Left);
-            } else {
-                pango_layout.set_alignment(gtk::pango::Alignment::Right);
+            let avail_date_w = (date_w - 12.0).max(0.0);
+            if avail_date_w > 4.0 {
+                cr.set_source_rgb(dim_r, dim_g, dim_b);
+                pango_layout.set_attributes(None);
+                pango_layout.set_font_description(Some(&secondary_desc));
+                pango_layout.set_text(&row.date);
+                pango_layout.set_single_paragraph_mode(true);
+                pango_layout.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                pango_layout.set_width((avail_date_w * gtk::pango::SCALE as f64) as i32);
+                if layout.date_align_left {
+                    pango_layout.set_alignment(gtk::pango::Alignment::Left);
+                } else {
+                    pango_layout.set_alignment(gtk::pango::Alignment::Right);
+                }
+                let text_y = y + secondary_text_offset;
+                let text_x = date_x + 6.0;
+                cr.move_to(text_x, text_y);
+                pangocairo_ffi::update_layout(cr, &pango_layout);
+                pangocairo_ffi::show_layout(cr, &pango_layout);
             }
-            let text_y = y + secondary_text_offset;
-            let text_x = date_x + 6.0;
-            cr.move_to(text_x, text_y);
-            pangocairo_ffi::update_layout(cr, &pango_layout);
-            pangocairo_ffi::show_layout(cr, &pango_layout);
         }
 
         // 8. Size Column (if visible)
-        if layout.show_size && layout.size_width > 0.0 && !row.size_str.is_empty() {
+        if layout.show_size && layout.col_size_w() > 0.0 && !row.size_str.is_empty() {
             let size_x = layout.col_size_x();
             let size_w = layout.col_size_w();
-            let avail_size_w = (size_w - 12.0).max(10.0);
-            cr.set_source_rgb(dim_r, dim_g, dim_b);
-            pango_layout.set_attributes(None);
-            pango_layout.set_font_description(Some(&secondary_desc));
-            pango_layout.set_text(&row.size_str);
-            pango_layout.set_single_paragraph_mode(true);
-            pango_layout.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            pango_layout.set_width((avail_size_w * gtk::pango::SCALE as f64) as i32);
-            pango_layout.set_alignment(gtk::pango::Alignment::Right);
-            let text_y = y + secondary_text_offset;
-            let text_x = size_x + 6.0;
-            cr.move_to(text_x, text_y);
-            pangocairo_ffi::update_layout(cr, &pango_layout);
-            pangocairo_ffi::show_layout(cr, &pango_layout);
+            let avail_size_w = (size_w - 12.0).max(0.0);
+            if avail_size_w > 4.0 {
+                cr.set_source_rgb(dim_r, dim_g, dim_b);
+                pango_layout.set_attributes(None);
+                pango_layout.set_font_description(Some(&secondary_desc));
+                pango_layout.set_text(&row.size_str);
+                pango_layout.set_single_paragraph_mode(true);
+                pango_layout.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                pango_layout.set_width((avail_size_w * gtk::pango::SCALE as f64) as i32);
+                pango_layout.set_alignment(gtk::pango::Alignment::Right);
+                let text_y = y + secondary_text_offset;
+                let text_x = size_x + 6.0;
+                cr.move_to(text_x, text_y);
+                pangocairo_ffi::update_layout(cr, &pango_layout);
+                pangocairo_ffi::show_layout(cr, &pango_layout);
+            }
         }
         pango_layout.set_alignment(gtk::pango::Alignment::Left);
         pango_layout.set_attributes(None);
@@ -6333,7 +6396,7 @@ impl MailPage {
         let profile = AppSettings::try_new()
             .map(|s| s.mail_list_view_profile())
             .unwrap_or_else(|| "messages".to_string());
-        let is_cards_mode = is_mobile || profile == "cards";
+        let is_cards_mode = is_mobile || profile == "cards" || profile == "wide";
         if let Some(header_scroll) = imp.column_header_scroll.borrow().as_ref() {
             header_scroll.set_visible(!is_cards_mode);
         }
@@ -16930,6 +16993,12 @@ impl MailPage {
         self.refresh_mail_column_header();
         self.sync_mail_layout_visibility();
         self.imp().mail_table_layout.replace(None);
+        let list_view = self.imp().mail_list_view.borrow().as_ref().cloned();
+        let factory = self.imp().mail_list_factory.borrow().as_ref().cloned();
+        if let (Some(list_view), Some(factory)) = (list_view, factory) {
+            list_view.set_factory(None::<&gtk::ListItemFactory>);
+            list_view.set_factory(Some(&factory));
+        }
         if let Some(canvas) = self.imp().mail_table_canvas.borrow().as_ref() {
             canvas.queue_draw();
         }
@@ -17127,10 +17196,11 @@ impl MailPage {
 
         let settings = AppSettings::try_new();
 
-        let column_toggles: [(&'static str, String); 12] = [
+        let column_toggles: [(&'static str, String); 13] = [
             ("mail-show-status", gettext("Status")),
             ("mail-show-attachment", gettext("Attachments")),
-            ("mail-show-flagged", gettext("Flag")),
+            ("mail-show-flagged", gettext("Star")),
+            ("mail-show-follow-up", gettext("Follow-up")),
             ("mail-show-sender", gettext("Sender")),
             ("mail-show-recipient", gettext("Recipient")),
             ("mail-show-date", gettext("Date")),
@@ -17148,6 +17218,7 @@ impl MailPage {
                 match key {
                     "mail-show-status" => s.mail_show_status(),
                     "mail-show-flagged" => s.mail_show_flagged(),
+                    "mail-show-follow-up" => s.mail_show_follow_up(),
                     "mail-show-sender" => s.mail_show_sender(),
                     "mail-show-recipient" => s.mail_show_recipient(),
                     "mail-show-date" => s.mail_show_date(),
@@ -17173,10 +17244,10 @@ impl MailPage {
             let page_for_chk = page_weak.clone();
             check.connect_toggled(move |btn| {
                 if let Some(ref s) = settings_cloned {
-                    s.set_mail_list_view_profile("custom");
                     match key_str {
                         "mail-show-status" => s.set_mail_show_status(btn.is_active()),
                         "mail-show-flagged" => s.set_mail_show_flagged(btn.is_active()),
+                        "mail-show-follow-up" => s.set_mail_show_follow_up(btn.is_active()),
                         "mail-show-sender" => s.set_mail_show_sender(btn.is_active()),
                         "mail-show-recipient" => s.set_mail_show_recipient(btn.is_active()),
                         "mail-show-date" => s.set_mail_show_date(btn.is_active()),
@@ -17191,9 +17262,7 @@ impl MailPage {
                     }
                 }
                 if let Some(page) = page_for_chk.upgrade() {
-                    page.imp().mail_table_layout.replace(None);
-                    page.refresh_mail_column_header();
-                    page.update_mail_table_canvas_layout();
+                    page.rebuild_mail_column_layout();
                 }
             });
             content.append(&check);
@@ -17257,18 +17326,16 @@ impl MailPage {
         let settings_for_reset = settings.clone();
         reset_btn.connect_clicked(move |_| {
             if let Some(ref s) = settings_for_reset {
-                let defaults: Vec<String> = crate::services::settings_service::MAIL_LIST_COLUMN_IDS
-                    .iter()
-                    .map(|id| (*id).to_string())
-                    .collect();
-                s.set_mail_list_column_order(&defaults);
+                let current_profile = s.mail_list_view_profile();
+                let target_profile = if current_profile == "cards" || current_profile == "wide" {
+                    "cards"
+                } else {
+                    "messages"
+                };
+                s.apply_mail_list_view_profile(target_profile);
                 s.set_mail_sender_column_width(180);
                 s.set_mail_recipient_column_width(180);
                 s.set_mail_date_column_width(MAIL_DATE_COLUMN_WIDTH);
-                s.set_mail_show_sender(true);
-                s.set_mail_show_recipient(false);
-                s.set_mail_show_date(true);
-                s.set_mail_show_attachment(true);
             }
             if let Some(page) = page_for_reset.upgrade() {
                 page.apply_mail_column_widths(180, 180, MAIL_DATE_COLUMN_WIDTH);
@@ -17345,6 +17412,10 @@ impl MailPage {
         let show_flagged = settings
             .as_ref()
             .map(AppSettings::mail_show_flagged)
+            .unwrap_or(false);
+        let show_follow_up = settings
+            .as_ref()
+            .map(AppSettings::mail_show_follow_up)
             .unwrap_or(true);
         let show_preview = settings
             .as_ref()
@@ -17394,11 +17465,10 @@ impl MailPage {
             }
         }
         if let Some(follow_up) = Self::mail_column_child(&header, "follow-up") {
-            follow_up.set_visible(mail_list_profile_allows_column(
-                &profile,
-                wide_messages,
-                "follow-up",
-            ));
+            follow_up.set_visible(
+                mail_list_profile_allows_column(&profile, wide_messages, "follow-up")
+                    && show_follow_up,
+            );
             if let Some(lbl) = Self::cell_label(&follow_up) {
                 lbl.set_label(&self.mail_header_sort_label("⚑", MailSortField::FollowUp));
             }
@@ -17412,11 +17482,7 @@ impl MailPage {
             }
         }
         if let Some(important) = Self::mail_column_child(&header, "important") {
-            important.set_visible(mail_list_profile_allows_column(
-                &profile,
-                wide_messages,
-                "important",
-            ));
+            important.set_visible(false);
             if let Some(lbl) = Self::cell_label(&important) {
                 lbl.set_label(&self.mail_header_sort_label("!", MailSortField::Important));
             }
@@ -17492,9 +17558,10 @@ impl MailPage {
             }
         }
         if let Some(size) = Self::mail_column_child(&header, "size") {
-            size.set_visible(
-                mail_list_profile_allows_column(&profile, wide_messages, "size") && show_size,
-            );
+            let visible = (mail_list_profile_allows_column(&profile, wide_messages, "size") || show_size)
+                && show_size
+                && !wide_messages;
+            size.set_visible(visible);
             if let Some(lbl) = Self::cell_label(&size) {
                 lbl.set_label(&self.mail_header_sort_label(&gettext("Size"), MailSortField::Size));
             }
@@ -17672,7 +17739,7 @@ impl MailPage {
         let profile = AppSettings::try_new()
             .map(|s| s.mail_list_view_profile())
             .unwrap_or_else(|| "messages".to_string());
-        if self.imp().is_mobile.get() || profile == "cards" {
+        if self.imp().is_mobile.get() || profile == "cards" || profile == "wide" {
             return 76.0;
         }
         let settings = AppSettings::try_new();
@@ -17769,7 +17836,7 @@ impl MailPage {
             .as_ref()
             .map(|s| s.mail_list_view_profile())
             .unwrap_or_else(|| "messages".to_string());
-        let is_cards_mode = self.imp().is_mobile.get() || profile == "cards";
+        let is_cards_mode = self.imp().is_mobile.get() || profile == "cards" || profile == "wide";
         let row_height = if is_cards_mode { 76.0 } else { self.mail_table_row_height() };
         let order = settings
             .as_ref()
@@ -17807,8 +17874,10 @@ impl MailPage {
         let show_date = mail_list_profile_allows_column(&profile, wide_messages, "date")
             && settings.as_ref().map(|s| s.mail_show_date()).unwrap_or(true);
 
-        let show_size = mail_list_profile_allows_column(&profile, wide_messages, "size")
-            && settings.as_ref().map(|s| s.mail_show_size()).unwrap_or(false);
+        let show_size = (mail_list_profile_allows_column(&profile, wide_messages, "size")
+            || settings.as_ref().map(|s| s.mail_show_size()).unwrap_or(false))
+            && settings.as_ref().map(|s| s.mail_show_size()).unwrap_or(false)
+            && !wide_messages;
 
         let show_avatar = settings
             .as_ref()
@@ -17986,6 +18055,7 @@ impl MailPage {
             show_attachment,
             show_flagged,
             show_follow_up,
+            show_sender,
             show_recipient,
             show_date,
             show_size,
@@ -18568,18 +18638,18 @@ impl MailPage {
                 ("status", status_column.clone().upcast()),
                 ("attachment", attachment_column.clone().upcast()),
                 ("flagged", star_column.clone().upcast()),
+                ("follow-up", follow_up_column.clone().upcast()),
                 ("sender", sender_column.clone().upcast()),
                 ("recipient", recipient_column.clone().upcast()),
                 ("subject", subject_column.clone().upcast()),
                 ("date", date_column.clone().upcast()),
-                ("follow-up", follow_up_column.clone().upcast()),
-                ("important", important_column.clone().upcast()),
+                ("size", size_column.clone().upcast()),
                 ("avatar", avatar_spacer.clone().upcast()),
                 ("preview", preview_column.clone().upcast()),
-                ("size", size_column.clone().upcast()),
                 ("follow-up-due", due_column.clone().upcast()),
                 ("location", location_column.clone().upcast()),
                 ("messages", messages_column.clone().upcast()),
+                ("important", important_column.clone().upcast()),
             ],
         );
 
@@ -19749,18 +19819,18 @@ impl MailPage {
                     ("status", status.clone().upcast()),
                     ("attachment", attachment.clone().upcast()),
                     ("flagged", btn_star.clone().upcast()),
+                    ("follow-up", btn_follow_up.clone().upcast()),
                     ("sender", sender_box.clone().upcast()),
                     ("recipient", recipient_box.clone().upcast()),
                     ("subject", subject_box.clone().upcast()),
                     ("date", date.clone().upcast()),
-                    ("follow-up", btn_follow_up.clone().upcast()),
-                    ("important", btn_important.clone().upcast()),
+                    ("size", size.clone().upcast()),
                     ("avatar", avatar.clone().upcast()),
                     ("preview", preview.clone().upcast()),
-                    ("size", size.clone().upcast()),
                     ("follow-up-due", follow_up_due.clone().upcast()),
                     ("location", location.clone().upcast()),
                     ("messages", messages.clone().upcast()),
+                    ("important", btn_important.clone().upcast()),
                 ],
             );
 
@@ -20162,6 +20232,14 @@ impl MailPage {
                 .as_ref()
                 .map(AppSettings::mail_show_attachment)
                 .unwrap_or(true);
+            let show_flagged = settings
+                .as_ref()
+                .map(AppSettings::mail_show_flagged)
+                .unwrap_or(false);
+            let show_follow_up = settings
+                .as_ref()
+                .map(AppSettings::mail_show_follow_up)
+                .unwrap_or(true);
             let show_preview_text = settings
                 .as_ref()
                 .map(AppSettings::mail_show_preview_text)
@@ -20341,11 +20419,10 @@ impl MailPage {
             if let Some(button) =
                 Self::mail_column_child(&header_box, "follow-up").and_downcast::<gtk::Button>()
             {
-                button.set_visible(mail_list_profile_allows_column(
-                    &profile,
-                    wide_messages,
-                    "follow-up",
-                ));
+                button.set_visible(
+                    mail_list_profile_allows_column(&profile, wide_messages, "follow-up")
+                        && show_follow_up,
+                );
                 button.remove_css_class("follow-up-pending");
                 button.remove_css_class("follow-up-completed");
                 match msg.follow_up_state() {
@@ -20390,11 +20467,10 @@ impl MailPage {
             if let Some(btn_star) =
                 Self::mail_column_child(&header_box, "flagged").and_downcast::<gtk::Button>()
             {
-                btn_star.set_visible(mail_list_profile_allows_column(
-                    &profile,
-                    wide_messages,
-                    "flagged",
-                ));
+                btn_star.set_visible(
+                    mail_list_profile_allows_column(&profile, wide_messages, "flagged")
+                        && show_flagged,
+                );
                 let graph_follow_up_only = msg
                     .backend_location()
                     .as_ref()
@@ -20437,11 +20513,7 @@ impl MailPage {
             if let Some(btn_important) =
                 Self::mail_column_child(&header_box, "important").and_downcast::<gtk::Button>()
             {
-                btn_important.set_visible(mail_list_profile_allows_column(
-                    &profile,
-                    wide_messages,
-                    "important",
-                ));
+                btn_important.set_visible(false);
                 set_button_icon_with_fallback(
                     &btn_important,
                     "mail-mark-important-symbolic",
@@ -20578,7 +20650,9 @@ impl MailPage {
                 Self::mail_column_child(&header_box, "size").and_downcast::<gtk::Label>()
             {
                 size.set_visible(
-                    mail_list_profile_allows_column(&profile, wide_messages, "size") && show_size,
+                    (mail_list_profile_allows_column(&profile, wide_messages, "size") || show_size)
+                        && show_size
+                        && !wide_messages,
                 );
                 size.set_label(&format_message_size(msg.message_size()));
             }
@@ -20995,7 +21069,7 @@ impl MailPage {
                 .build();
                 
             sec1_box.append(&gtk::Label::builder()
-                .label(&gettext("Ansicht"))
+                .label(&gettext("View"))
                 .halign(gtk::Align::Start)
                 .css_classes(vec!["dim-label", "caption"])
                 .build()
@@ -21011,14 +21085,14 @@ impl MailPage {
             let btn_list = gtk::ToggleButton::builder().build();
             let content_list = adw::ButtonContent::builder()
                 .icon_name("meridian-view-table-symbolic")
-                .label(&gettext("Tabelle"))
+                .label(&gettext("Table"))
                 .build();
             btn_list.set_child(Some(&content_list));
             
             let btn_cards = gtk::ToggleButton::builder().build();
             let content_cards = adw::ButtonContent::builder()
                 .icon_name("meridian-view-cards-symbolic")
-                .label(&gettext("Liste"))
+                .label(&gettext("List"))
                 .build();
             btn_cards.set_child(Some(&content_cards));
             btn_cards.set_group(Some(&btn_list));
@@ -21028,22 +21102,34 @@ impl MailPage {
             sec1_box.append(&layout_box);
             columns_popover_box.append(&sec1_box);
             
-            match settings.mail_list_view_profile().as_str() {
-                "wide" => btn_list.set_active(true),
-                "cards" => btn_cards.set_active(true),
-                _ => btn_list.set_active(true),
+            let current_profile = settings.mail_list_view_profile();
+            if current_profile == "cards" || current_profile == "wide" {
+                if current_profile == "wide" {
+                    settings.apply_mail_list_view_profile("cards");
+                }
+                btn_cards.set_active(true);
+            } else {
+                btn_list.set_active(true);
             }
             
-            let settings_for_wide = settings.clone();
+            let settings_for_table = settings.clone();
+            let page_weak_table = self.downgrade();
             btn_list.connect_toggled(move |btn| {
-                if btn.is_active() && settings_for_wide.mail_list_view_profile() != "wide" {
-                    settings_for_wide.apply_mail_list_view_profile("wide");
+                if btn.is_active() && settings_for_table.mail_list_view_profile() != "messages" {
+                    settings_for_table.apply_mail_list_view_profile("messages");
+                    if let Some(page) = page_weak_table.upgrade() {
+                        page.rebuild_mail_column_layout();
+                    }
                 }
             });
-            let settings_for_cards = settings.clone();
+            let settings_for_list = settings.clone();
+            let page_weak_list = self.downgrade();
             btn_cards.connect_toggled(move |btn| {
-                if btn.is_active() && settings_for_cards.mail_list_view_profile() != "cards" {
-                    settings_for_cards.apply_mail_list_view_profile("cards");
+                if btn.is_active() && settings_for_list.mail_list_view_profile() != "cards" {
+                    settings_for_list.apply_mail_list_view_profile("cards");
+                    if let Some(page) = page_weak_list.upgrade() {
+                        page.rebuild_mail_column_layout();
+                    }
                 }
             });
             
@@ -21054,7 +21140,7 @@ impl MailPage {
                 .build();
                 
             sec2_box.append(&gtk::Label::builder()
-                .label(&gettext("Lesebereich"))
+                .label(&gettext("Preview Pane"))
                 .halign(gtk::Align::Start)
                 .css_classes(vec!["dim-label", "caption"])
                 .build()
@@ -21067,9 +21153,9 @@ impl MailPage {
                 .css_classes(vec!["linked"])
                 .build();
                 
-            let btn_prev_off = gtk::ToggleButton::builder().label(&gettext("Aus")).build();
-            let btn_prev_right = gtk::ToggleButton::builder().label(&gettext("Rechts")).build();
-            let btn_prev_bottom = gtk::ToggleButton::builder().label(&gettext("Unten")).build();
+            let btn_prev_off = gtk::ToggleButton::builder().label(&gettext("Off")).build();
+            let btn_prev_right = gtk::ToggleButton::builder().label(&gettext("Right")).build();
+            let btn_prev_bottom = gtk::ToggleButton::builder().label(&gettext("Bottom")).build();
             
             btn_prev_right.set_group(Some(&btn_prev_off));
             btn_prev_bottom.set_group(Some(&btn_prev_off));
@@ -21124,42 +21210,9 @@ impl MailPage {
                 .css_classes(vec!["boxed-list"])
                 .build();
                 
-            let row_avatars = adw::ActionRow::builder()
-                .title(&gettext("Avatare anzeigen"))
-                .build();
-            let switch_avatars = gtk::Switch::builder()
-                .valign(gtk::Align::Center)
-                .active(settings.mail_show_avatar())
-                .build();
-            row_avatars.add_suffix(&switch_avatars);
-            
-            let row_logos = adw::ActionRow::builder()
-                .title(&gettext("Sender-Logos laden"))
-                .subtitle(&gettext("Favicons aus dem Internet laden"))
-                .build();
-            let switch_logos = gtk::Switch::builder()
-                .valign(gtk::Align::Center)
-                .active(settings.mail_fetch_remote_logos())
-                .build();
-            row_logos.add_suffix(&switch_logos);
-            row_logos.set_sensitive(settings.mail_show_avatar());
-            
-            let settings_for_avatars = settings.clone();
-            let row_logos_weak = row_logos.downgrade();
-            switch_avatars.connect_state_set(move |_, state| {
-                if settings_for_avatars.mail_show_avatar() != state {
-                    settings_for_avatars.set_mail_show_avatar(state);
-                }
-                if let Some(row) = row_logos_weak.upgrade() {
-                    row.set_sensitive(state);
-                }
-                glib::Propagation::Proceed
-            });
-            listbox.append(&row_avatars);
-            
             let row_thread = adw::ActionRow::builder()
-                .title(&gettext("Konversationen gruppieren"))
-                .subtitle(&gettext("Antworten als Thread anzeigen"))
+                .title(&gettext("Group by conversations"))
+                .subtitle(&gettext("Show replies grouped as threads"))
                 .build();
             let switch_thread = gtk::Switch::builder()
                 .valign(gtk::Align::Center)
@@ -21176,6 +21229,42 @@ impl MailPage {
             });
             listbox.append(&row_thread);
             
+            let row_avatars = adw::ActionRow::builder()
+                .title(&gettext("Show avatars"))
+                .build();
+            let switch_avatars = gtk::Switch::builder()
+                .valign(gtk::Align::Center)
+                .active(settings.mail_show_avatar())
+                .build();
+            row_avatars.add_suffix(&switch_avatars);
+            listbox.append(&row_avatars);
+            
+            let row_logos = adw::ActionRow::builder()
+                .title(&gettext("Load sender logos"))
+                .subtitle(&gettext("Download favicons from the Internet"))
+                .visible(settings.mail_show_avatar())
+                .build();
+            let switch_logos = gtk::Switch::builder()
+                .valign(gtk::Align::Center)
+                .active(settings.mail_fetch_remote_logos())
+                .build();
+            row_logos.add_suffix(&switch_logos);
+            row_logos.set_sensitive(settings.mail_show_avatar());
+            listbox.append(&row_logos);
+            
+            let settings_for_avatars = settings.clone();
+            let row_logos_weak = row_logos.downgrade();
+            switch_avatars.connect_state_set(move |_, state| {
+                if settings_for_avatars.mail_show_avatar() != state {
+                    settings_for_avatars.set_mail_show_avatar(state);
+                }
+                if let Some(row) = row_logos_weak.upgrade() {
+                    row.set_visible(state);
+                    row.set_sensitive(state);
+                }
+                glib::Propagation::Proceed
+            });
+            
             let settings_for_logos = settings.clone();
             switch_logos.connect_state_set(move |_, state| {
                 if settings_for_logos.mail_fetch_remote_logos() != state {
@@ -21183,7 +21272,6 @@ impl MailPage {
                 }
                 glib::Propagation::Proceed
             });
-            listbox.append(&row_logos);
             
             columns_popover_box.append(&listbox);
         } else {
@@ -30447,6 +30535,7 @@ mod tests {
             show_attachment: true,
             show_flagged,
             show_follow_up: true,
+            show_sender: true,
             show_recipient,
             show_date,
             show_size,
@@ -31899,18 +31988,14 @@ mod tests {
     fn mail_view_options_popover_exposes_gnome_hig_controls() {
         let source = include_str!("mail_page.rs");
         assert!(source.contains("view-column-symbolic"), "missing view-column-symbolic icon");
-        assert!(source.contains("\"View options\""), "missing View options tooltip");
         assert!(source.contains("\"Preview Pane\""), "missing Preview Pane section");
-        assert!(source.contains("\"Layout Profile\""), "missing Layout Profile section");
-        assert!(source.contains("\"Grouping & Display\""), "missing Grouping & Display section");
-        assert!(source.contains("\"Visible Columns\""), "missing Visible Columns section");
+        assert!(source.contains("\"View\""), "missing Layout Profile section");
+        assert!(source.contains("\"Table\""), "missing table toggle");
+        assert!(source.contains("\"List\""), "missing list toggle");
         assert!(source.contains("\"Bottom\""), "missing classic layout toggle");
         assert!(source.contains("\"Right\""), "missing modern layout toggle");
-        assert!(source.contains("\"Standard\""), "missing standard profile toggle");
-        assert!(source.contains("\"Wide\""), "missing wide profile toggle");
+        assert!(source.contains("\"Off\""), "missing off layout toggle");
         assert!(source.contains("\"Group by conversations\""), "missing threading toggle");
-        assert!(source.contains("\"Show deleted messages\""), "missing show deleted toggle");
-        assert!(source.contains("columns_grid"), "missing 2-column grid for columns");
     }
 
     #[test]
@@ -35212,10 +35297,6 @@ mod tests {
         assert!(context_fn.contains("themed_icon_name"));
         assert!(context_fn.contains("\"view-column-symbolic\", \"view-list-symbolic\""));
         assert!(context_fn.contains("btn.set_child(Some(&row))"));
-
-        let options_fn = rust_function_body(source, "build_message_list");
-        assert!(options_fn.contains("themed_icon_name"));
-        assert!(options_fn.contains("reorder_button.set_child(Some(&reorder_box))"));
     }
 
     #[test]
@@ -35490,6 +35571,12 @@ mod tests {
         assert_eq!(layout_no_recip.col_recipient_w(), 0.0);
         assert_eq!(layout_no_recip.col_recipient_sep_w(), 0.0);
         assert_eq!(layout_no_recip.col_subject_x(), 290.0);
+
+        // When sender is hidden (e.g. wide view):
+        let mut layout_no_sender = layout.clone();
+        layout_no_sender.show_sender = false;
+        assert_eq!(layout_no_sender.col_sender_w(), 0.0);
+        assert_eq!(layout_no_sender.col_sender_sep_w(), 0.0);
     }
 
     #[test]

@@ -29,6 +29,10 @@ service coordination for the Evolution replacement.
   scopes, and shortcut-help metadata share `action_contract.rs`. Accelerator
   bindings remain executable application data and every documented shortcut
   must resolve through that table; do not add parallel menu/help-only IDs.
+- All Rust source code, doc comments, logs, and user-facing UI strings
+  (`gettext("...")`, `.label(...)`, `.title(...)`, `.tooltip_text(...)`) MUST
+  be written in 100% US-English. Non-English translations belong exclusively in
+  gettext `.po` catalogs.
 
 ## Work Guidance
 

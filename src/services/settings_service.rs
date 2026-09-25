@@ -40,13 +40,13 @@ pub(crate) const MAIL_LIST_COLUMN_IDS: [&str; 15] = [
     "recipient",
     "subject",
     "date",
-    "important",
+    "size",
     "avatar",
     "preview",
-    "size",
     "follow-up-due",
     "location",
     "messages",
+    "important",
 ];
 
 const MAIL_LIST_WIDE_COLUMN_IDS: [&str; 15] = [
@@ -55,25 +55,25 @@ const MAIL_LIST_WIDE_COLUMN_IDS: [&str; 15] = [
     "follow-up",
     "messages",
     "attachment",
-    "date",
-    "important",
-    "avatar",
-    "preview",
-    "size",
-    "follow-up-due",
-    "location",
     "sender",
     "recipient",
     "subject",
+    "date",
+    "size",
+    "avatar",
+    "preview",
+    "follow-up-due",
+    "location",
+    "important",
 ];
 
 pub(crate) fn normalized_mail_list_view_profile(value: &str) -> &'static str {
-    match value {
+    match value.trim().to_ascii_lowercase().as_str() {
         "wide" => "wide",
         "cards" => "cards",
         "custom" => "custom",
-        "messages" => "wide",
-        _ => "wide",
+        "messages" | "table" => "messages",
+        _ => "messages",
     }
 }
 
@@ -2567,6 +2567,22 @@ impl AppSettings {
         let order = mail_list_profile_column_order(profile);
         self.set_string("mail-list-column-order", &order.join(","));
         self.set_string("mail-list-view-profile", profile);
+        if profile == "messages" {
+            self.set_mail_show_status(true);
+            self.set_mail_show_attachment(true);
+            self.set_mail_show_follow_up(true);
+            self.set_mail_show_flagged(false);
+            self.set_mail_show_sender(true);
+            self.set_mail_show_recipient(false);
+            self.set_mail_show_date(true);
+            self.set_mail_show_size(false);
+        } else if profile == "cards" || profile == "wide" {
+            self.set_mail_show_status(true);
+            self.set_mail_show_follow_up(true);
+            self.set_mail_show_flagged(false);
+            self.set_mail_show_avatar(true);
+            self.set_mail_show_preview_text(true);
+        }
     }
 
     pub fn task_filter(&self) -> String {
@@ -4413,7 +4429,7 @@ mod tests {
         );
         let wide = mail_list_profile_column_order("wide");
         assert_eq!(&wide[..4], &["status", "flagged", "follow-up", "messages"]);
-        assert_eq!(normalized_mail_list_view_profile("unknown"), "wide");
+        assert_eq!(normalized_mail_list_view_profile("unknown"), "messages");
 
         let normalized = normalize_mail_list_column_order("date,subject,date,unknown,status");
         assert_eq!(&normalized[..3], &["date", "subject", "status"]);

@@ -464,7 +464,7 @@
       <summary>Show read/unread status indicator in the mail list</summary>
     </key>
     <key name="mail-show-flagged" type="b">
-      <default>true</default>
+      <default>false</default>
       <summary>Show flagged/star indicator in the mail list</summary>
     </key>
     <key name="mail-show-follow-up" type="b">
@@ -585,7 +585,7 @@
       <summary>Style of the email message header (modern card or classic tabular)</summary>
     </key>
     <key name="mail-list-column-order" type="s">
-      <default>'status,attachment,flagged,sender,recipient,subject,date,follow-up,important,avatar,preview,size,follow-up-due,location,messages'</default>
+      <default>'status,attachment,flagged,follow-up,sender,recipient,subject,date,size,avatar,preview,follow-up-due,location,messages,important'</default>
       <summary>Stable ordered mail list column identifiers</summary>
     </key>
     <key name="color-scheme" type="s">
