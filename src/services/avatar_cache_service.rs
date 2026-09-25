@@ -101,6 +101,13 @@ impl AvatarCacheService {
         &self.cache_dir
     }
 
+    /// Clear in-memory decoded avatar and logo cache.
+    pub fn clear_memory_cache(&self) {
+        if let Ok(mut cache) = self.memory_cache.lock() {
+            cache.clear();
+        }
+    }
+
     /// Extract a clean email address from a string like "Name <email@example.com>".
     pub fn extract_email(raw: &str) -> String {
         let trimmed = raw.trim();
@@ -452,17 +459,23 @@ impl AvatarCacheService {
             return None;
         }
 
-        // 1. Fast cache check
-        if let Some(bytes) = self.get_cached_for_sender(&clean, sender_name) {
-            return Some(bytes);
+        // If remote logos are disabled, ONLY check local contact photo from address book.
+        // Never return remote domain favicons or Gravatars from memory or disk cache.
+        if !allow_remote {
+            return self.get_local_contact_photo(&clean);
         }
 
-        // 2. Check local contact photo via cached ContactStoreService
+        // 1. Check local contact photo via cached ContactStoreService (takes precedence over remote logos)
         if let Some(glib_bytes) = self.get_local_contact_photo(&clean) {
             if let Ok(mut cache) = self.memory_cache.lock() {
                 cache.insert(clean.clone(), Some(glib_bytes.clone()));
             }
             return Some(glib_bytes);
+        }
+
+        // 2. Fast cache check (memory and disk cache for remote logos)
+        if let Some(bytes) = self.get_cached_for_sender(&clean, sender_name) {
+            return Some(bytes);
         }
 
         // 3. Remote fetch if permitted
@@ -766,5 +779,24 @@ mod tests {
 
         let accounts = AvatarCacheService::candidate_domains_for_sender("no-reply@accounts.google.com", "Google");
         assert_eq!(accounts, vec!["accounts.google.com", "google.com"]);
+    }
+
+    #[test]
+    fn test_allow_remote_disabled_returns_none_and_clear_memory_cache() {
+        let service = AvatarCacheService::new();
+        // Insert a dummy remote avatar into memory cache
+        if let Ok(mut cache) = service.memory_cache.lock() {
+            cache.insert("user@example.com".to_string(), Some(glib::Bytes::from_static(b"fake-avatar")));
+        }
+
+        // With allow_remote = false, request_avatar_for_sender must not return the remote logo
+        let res = service.request_avatar_for_sender("user@example.com", "User", false, None);
+        assert!(res.is_none());
+
+        // clear_memory_cache should empty the in-memory cache
+        service.clear_memory_cache();
+        if let Ok(cache) = service.memory_cache.lock() {
+            assert!(cache.is_empty());
+        }
     }
 }

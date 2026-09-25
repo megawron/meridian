@@ -1679,6 +1679,7 @@ pub(crate) struct TableColumnsGeometry {
     pub attachment: ColumnRect,
     pub flagged: ColumnRect,
     pub follow_up: ColumnRect,
+    pub avatar: ColumnRect,
     pub sender: ColumnRect,
     pub recipient: ColumnRect,
     pub subject: ColumnRect,
@@ -1693,6 +1694,7 @@ pub(crate) fn compute_table_columns_geometry(
     show_attachment: bool,
     show_flagged: bool,
     show_follow_up: bool,
+    show_avatar: bool,
     show_sender: bool,
     sender_width: f64,
     show_recipient: bool,
@@ -1709,12 +1711,13 @@ pub(crate) fn compute_table_columns_geometry(
     let w_attachment = if show_attachment { FIXED_ICON_WIDTH } else { 0.0 };
     let w_flagged = if show_flagged { FIXED_ICON_WIDTH } else { 0.0 };
     let w_follow_up = if show_follow_up { FIXED_ICON_WIDTH } else { 0.0 };
+    let w_avatar = if show_avatar { FIXED_ICON_WIDTH } else { 0.0 };
     let w_sender = if show_sender { sender_width.max(60.0) + sep_width } else { 0.0 };
     let w_recipient = if show_recipient { recipient_width.max(60.0) + sep_width } else { 0.0 };
     let w_date = if show_date { date_width.max(60.0) + sep_width } else { 0.0 };
     let w_size = if show_size { size_width.max(40.0) } else { 0.0 };
 
-    let total_non_subject = w_status + w_attachment + w_flagged + w_follow_up + w_sender + w_recipient + w_date + w_size;
+    let total_non_subject = w_status + w_attachment + w_flagged + w_follow_up + w_avatar + w_sender + w_recipient + w_date + w_size;
     let w_subject = (total_width - total_non_subject).max(60.0);
 
     let default_order = [
@@ -1722,13 +1725,14 @@ pub(crate) fn compute_table_columns_geometry(
         "attachment",
         "flagged",
         "follow-up",
+        "avatar",
         "sender",
         "recipient",
         "subject",
         "date",
         "size",
     ];
-    let mut resolved_order: Vec<&str> = Vec::with_capacity(9);
+    let mut resolved_order: Vec<&str> = Vec::with_capacity(10);
     for col in order {
         let s = col.as_str();
         if default_order.contains(&s) && !resolved_order.contains(&s) {
@@ -1738,6 +1742,18 @@ pub(crate) fn compute_table_columns_geometry(
     for def in default_order {
         if !resolved_order.contains(&def) {
             resolved_order.push(def);
+        }
+    }
+
+    // Ensure avatar is placed before sender unless sender is absent
+    if let (Some(pos_avatar), Some(pos_sender)) = (
+        resolved_order.iter().position(|c| *c == "avatar"),
+        resolved_order.iter().position(|c| *c == "sender"),
+    ) {
+        if pos_avatar > pos_sender {
+            resolved_order.remove(pos_avatar);
+            let new_sender_pos = resolved_order.iter().position(|c| *c == "sender").unwrap();
+            resolved_order.insert(new_sender_pos, "avatar");
         }
     }
 
@@ -1785,6 +1801,10 @@ pub(crate) fn compute_table_columns_geometry(
             "follow-up" => {
                 geom.follow_up = ColumnRect { x: cur_x, width: w_follow_up };
                 cur_x += w_follow_up;
+            }
+            "avatar" => {
+                geom.avatar = ColumnRect { x: cur_x, width: w_avatar };
+                cur_x += w_avatar;
             }
             "sender" => {
                 let actual_w = if show_sender { sender_width.max(60.0) } else { 0.0 };
@@ -1847,6 +1867,7 @@ pub(crate) struct PreparedMailTableLayout {
     pub col_attachment: ColumnRect,
     pub col_flagged: ColumnRect,
     pub col_follow_up: ColumnRect,
+    pub col_avatar: ColumnRect,
     pub col_sender: ColumnRect,
     pub col_recipient: ColumnRect,
     pub col_subject: ColumnRect,
@@ -1941,6 +1962,17 @@ impl PreparedMailTableLayout {
     pub fn col_follow_up_w(&self) -> f64 {
         if self.show_follow_up {
             self.col_follow_up.width
+        } else {
+            0.0
+        }
+    }
+
+    pub fn col_avatar_x(&self) -> f64 {
+        self.col_avatar.x
+    }
+    pub fn col_avatar_w(&self) -> f64 {
+        if self.show_avatar {
+            self.col_avatar.width
         } else {
             0.0
         }
@@ -2060,6 +2092,7 @@ impl PreparedMailTableLayout {
             self.show_attachment,
             self.show_flagged,
             self.show_follow_up,
+            self.show_avatar,
             show_sender,
             self.sender_width,
             self.show_recipient,
@@ -2074,6 +2107,7 @@ impl PreparedMailTableLayout {
         self.col_attachment = geom.attachment;
         self.col_flagged = geom.flagged;
         self.col_follow_up = geom.follow_up;
+        self.col_avatar = geom.avatar;
         self.col_sender = geom.sender;
         self.col_recipient = geom.recipient;
         self.col_subject = geom.subject;
@@ -2124,6 +2158,7 @@ pub(crate) fn prepare_mail_table_layout_from_rows(
     let show_attachment = true;
     let show_flagged = true;
     let show_follow_up = true;
+    let show_avatar = false;
     let show_sender = true;
     let show_recipient = recipient_width > 0.0;
     let show_date = date_width > 0.0;
@@ -2143,6 +2178,7 @@ pub(crate) fn prepare_mail_table_layout_from_rows(
         show_attachment,
         show_flagged,
         show_follow_up,
+        show_avatar,
         show_sender,
         sender_width,
         show_recipient,
@@ -2174,7 +2210,7 @@ pub(crate) fn prepare_mail_table_layout_from_rows(
         show_recipient,
         show_date,
         show_size,
-        show_avatar: true,
+        show_avatar,
         show_labels: true,
         show_preview_text: true,
         date_align_left: false,
@@ -2183,6 +2219,7 @@ pub(crate) fn prepare_mail_table_layout_from_rows(
         col_attachment: geom.attachment,
         col_flagged: geom.flagged,
         col_follow_up: geom.follow_up,
+        col_avatar: geom.avatar,
         col_sender: geom.sender,
         col_recipient: geom.recipient,
         col_subject: geom.subject,
@@ -3071,36 +3108,39 @@ pub(crate) fn draw_mail_table_canvas(
             );
         }
 
+        // 3c. Avatar Column (Dedicated column when avatars are enabled)
+        if layout.show_avatar && layout.col_avatar_w() > 0.0 {
+            let av_cx = layout.col_avatar_x() + layout.col_avatar_w() / 2.0;
+            let av_cy = y + h / 2.0;
+            let av_r = (h / 2.0 - 4.0).clamp(7.0, 11.0);
+            let surf_opt = get_avatar(&row.sender_email, &row.sender);
+            draw_cairo_avatar_circle(
+                cr,
+                av_cx,
+                av_cy,
+                av_r,
+                surf_opt.as_ref(),
+                &row.sender,
+                (av_r * 1.05).max(7.0),
+                is_dark,
+            );
+            if let Some((ar, ag, ab)) = row.account_color {
+                let pip_cx = av_cx + av_r * 0.7;
+                let pip_cy = av_cy + av_r * 0.7;
+                cr.set_source_rgb(ar, ag, ab);
+                cr.arc(pip_cx, pip_cy, 2.5, 0.0, std::f64::consts::TAU);
+                let _ = cr.fill();
+            }
+        }
+
         // 4. Sender Column
         if layout.show_sender && layout.col_sender_w() > 0.0 {
             let sender_x = layout.col_sender_x();
             let sender_w = layout.col_sender_w();
-            let (text_start, avail_sender_w) = if layout.show_avatar && sender_w > 50.0 {
-                let av_r = (h / 2.0 - 5.0).clamp(7.0, 11.0);
-                let av_cx = sender_x + av_r + 4.0;
-                let av_cy = y + h / 2.0;
-                let surf_opt = get_avatar(&row.sender_email, &row.sender);
-                draw_cairo_avatar_circle(
-                    cr,
-                    av_cx,
-                    av_cy,
-                    av_r,
-                    surf_opt.as_ref(),
-                    &row.sender,
-                    (av_r * 1.05).max(7.0),
-                    is_dark,
-                );
-                if let Some((ar, ag, ab)) = row.account_color {
-                    let pip_cx = av_cx + av_r * 0.7;
-                    let pip_cy = av_cy + av_r * 0.7;
-                    cr.set_source_rgb(ar, ag, ab);
-                    cr.arc(pip_cx, pip_cy, 2.5, 0.0, std::f64::consts::TAU);
-                    let _ = cr.fill();
-                }
-                (sender_x + av_r * 2.0 + 10.0, (sender_w - av_r * 2.0 - 16.0).max(0.0))
-            } else if let Some((ar, ag, ab)) = row.account_color {
+            let (text_start, avail_sender_w) = if (!layout.show_avatar || layout.col_avatar_w() == 0.0) && row.account_color.is_some() {
                 let dot_x = sender_x + 6.0;
                 let dot_y = y + h / 2.0;
+                let (ar, ag, ab) = row.account_color.unwrap();
                 cr.set_source_rgb(ar, ag, ab);
                 cr.arc(dot_x, dot_y, 3.0, 0.0, std::f64::consts::TAU);
                 let _ = cr.fill();
@@ -3390,18 +3430,30 @@ fn mail_search_record(message: &MailMessageObject, include_body: bool) -> MailSe
     let recipient_bcc = message.recipient_bcc();
     let subject = message.subject();
     let preview = message.preview_snippet();
-    let prepared_body = include_body
-        .then(|| message.searchable_body_text())
-        .flatten()
-        .map(|body| body.to_string())
-        .unwrap_or_default();
-    let labels = message.labels().join(" ");
+    let prepared_body = if include_body {
+        message
+            .searchable_body_text()
+            .map(|body| body.to_string())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let raw_labels = message.labels();
+    let labels = if raw_labels.is_empty() {
+        String::new()
+    } else {
+        raw_labels.join(" ")
+    };
     let attachments = message.attachments();
-    let filenames = attachments
-        .iter()
-        .map(|attachment| attachment.filename.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
+    let filenames = if attachments.is_empty() {
+        String::new()
+    } else {
+        attachments
+            .iter()
+            .map(|attachment| attachment.filename.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
     let reply_to = message.reply_to();
     let folder_id = message.folder_id();
     let message_id = message.message_id().unwrap_or_else(|| message.id());
@@ -3422,11 +3474,12 @@ fn mail_search_record(message: &MailMessageObject, include_body: bool) -> MailSe
             )
         })
         .unwrap_or_default();
-    let body = [preview.as_str(), prepared_body.as_str()]
-        .into_iter()
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
+    let body = match (preview.is_empty(), prepared_body.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => preview.clone(),
+        (true, false) => prepared_body.clone(),
+        (false, false) => format!("{preview} {prepared_body}"),
+    };
     let searchable_text = [
         subject.as_str(),
         sender_name.as_str(),
@@ -3439,6 +3492,9 @@ fn mail_search_record(message: &MailMessageObject, include_body: bool) -> MailSe
         labels.as_str(),
         filenames.as_str(),
     ]
+    .into_iter()
+    .filter(|value| !value.is_empty())
+    .collect::<Vec<_>>()
     .join(" ");
 
     MailSearchRecord {
@@ -5756,6 +5812,7 @@ mod imp {
         pub preview_reply_labels: RefCell<Vec<gtk::Label>>,
         pub load_remote_images_btn: RefCell<Option<adw::SplitButton>>,
         pub modern_load_remote_images_btn: RefCell<Option<gtk::Button>>,
+        pub view_options_split_btn: RefCell<Option<adw::SplitButton>>,
         pub header_separator: RefCell<Option<gtk::Separator>>,
         pub all_headers_generation: Cell<u64>,
         pub all_headers_cancellation: RefCell<Option<Arc<AtomicBool>>>,
@@ -6919,49 +6976,57 @@ impl MailPage {
             .map(|s| s.mail_fetch_remote_logos())
             .unwrap_or(true);
 
-        let (tx, rx) = async_channel::bounded(1);
-        let page_weak = self.downgrade();
-        let clean_for_callback = clean.clone();
+        let (tx, rx) = if allow_remote {
+            let (tx, rx) = async_channel::bounded(1);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
 
-        glib::spawn_future_local(async move {
-            if let Ok(bytes) = rx.recv().await {
-                if let Some(page) = page_weak.upgrade() {
-                    if let Ok(texture) = gtk::gdk::Texture::from_bytes(&bytes) {
-                        let surface = Self::texture_to_cairo_surface(&texture);
-                        page.imp()
-                            .sender_surface_cache
-                            .borrow_mut()
-                            .insert(clean_for_callback.clone(), surface);
-                        page.imp()
-                            .sender_avatar_cache
-                            .borrow_mut()
-                            .insert(clean_for_callback.clone(), Some(texture.clone()));
-                        
-                        // ONLY update the UI if this avatar belongs to the currently displayed message!
-                        let mut current_email = String::new();
-                        if let Some(lbl) = page.imp().modern_sender_address.borrow().as_ref() {
-                            current_email = lbl.text().to_string();
-                        }
-                        let current_clean = crate::services::avatar_cache_service::AvatarCacheService::extract_email(&current_email).to_ascii_lowercase();
-                        
-                        if current_clean == clean_for_callback {
-                            if let Some(avatar) = page.imp().modern_sender_avatar.borrow().as_ref() {
-                                avatar.set_custom_image(Some(&texture));
+        if let Some(rx) = rx {
+            let page_weak = self.downgrade();
+            let clean_for_callback = clean.clone();
+
+            glib::spawn_future_local(async move {
+                if let Ok(bytes) = rx.recv().await {
+                    if let Some(page) = page_weak.upgrade() {
+                        if let Ok(texture) = gtk::gdk::Texture::from_bytes(&bytes) {
+                            let surface = Self::texture_to_cairo_surface(&texture);
+                            page.imp()
+                                .sender_surface_cache
+                                .borrow_mut()
+                                .insert(clean_for_callback.clone(), surface);
+                            page.imp()
+                                .sender_avatar_cache
+                                .borrow_mut()
+                                .insert(clean_for_callback.clone(), Some(texture.clone()));
+                            
+                            // ONLY update the UI if this avatar belongs to the currently displayed message!
+                            let mut current_email = String::new();
+                            if let Some(lbl) = page.imp().modern_sender_address.borrow().as_ref() {
+                                current_email = lbl.text().to_string();
                             }
-                        }
-                        if let Some(canvas) = page.imp().mail_table_canvas.borrow().as_ref() {
-                            canvas.queue_draw();
+                            let current_clean = crate::services::avatar_cache_service::AvatarCacheService::extract_email(&current_email).to_ascii_lowercase();
+                            
+                            if current_clean == clean_for_callback {
+                                if let Some(avatar) = page.imp().modern_sender_avatar.borrow().as_ref() {
+                                    avatar.set_custom_image(Some(&texture));
+                                }
+                            }
+                            if let Some(canvas) = page.imp().mail_table_canvas.borrow().as_ref() {
+                                canvas.queue_draw();
+                            }
                         }
                     }
                 }
-            }
-        });
+            });
+        }
 
         let bytes_opt = AvatarCacheService::global().request_avatar_for_sender(
             &clean,
             sender_name,
             allow_remote,
-            Some(tx),
+            tx,
         );
 
         let mut found_texture = None;
@@ -7003,6 +7068,18 @@ impl MailPage {
         }
         self.find_contact_photo_for_sender(email, sender_name);
         self.imp().sender_surface_cache.borrow().get(&clean).and_then(|opt| opt.clone())
+    }
+
+    pub(crate) fn refresh_sender_avatars(&self) {
+        self.imp().sender_avatar_cache.borrow_mut().clear();
+        self.imp().sender_surface_cache.borrow_mut().clear();
+        crate::services::avatar_cache_service::AvatarCacheService::global().clear_memory_cache();
+        if let Some(msg) = self.selected_message() {
+            self.populate_modern_header_card(&msg);
+        }
+        if let Some(canvas) = self.imp().mail_table_canvas.borrow().as_ref() {
+            canvas.queue_draw();
+        }
     }
 
     pub(crate) fn set_header_compact(&self, compact: bool) {
@@ -14192,7 +14269,7 @@ impl MailPage {
                 row.add_css_class("account-root-row");
                 row.remove_css_class("is-selected");
                 expander.set_indent_for_depth(false);
-                expander.set_indent_for_icon(true);
+                expander.set_indent_for_icon(false);
             } else {
                 expander.remove_css_class("account-root-expander");
                 row.remove_css_class("account-root-row");
@@ -14201,8 +14278,16 @@ impl MailPage {
                 } else {
                     row.remove_css_class("is-selected");
                 }
-                expander.set_indent_for_depth(true);
-                expander.set_indent_for_icon(true);
+                if tree_row.depth() == 1 {
+                    // Level-1 folders (directly under account) align on the exact same
+                    // vertical line as unified/global folders without an extra depth indent.
+                    expander.set_indent_for_depth(false);
+                    expander.set_indent_for_icon(true);
+                } else {
+                    // Nested subfolders (depth >= 2) indent beneath their parent folder.
+                    expander.set_indent_for_depth(true);
+                    expander.set_indent_for_icon(true);
+                }
             }
 
             // 0: icon
@@ -14510,28 +14595,28 @@ impl MailPage {
         let unified_folder_list = gtk::ListBox::new();
         unified_folder_list.set_selection_mode(gtk::SelectionMode::Single);
         unified_folder_list.add_css_class("navigation-sidebar");
-        unified_folder_list.set_margin_start(2);
+        unified_folder_list.set_margin_start(0);
         unified_folder_list.set_visible(!is_collapsed);
 
-        unified_folder_list.append(&Self::create_folder_row(
+        unified_folder_list.append(&Self::create_unified_folder_row(
             "unified_inbox",
             "mail-inbox-symbolic",
             &gettext("All Inboxes"),
             "",
         ));
-        unified_folder_list.append(&Self::create_folder_row(
+        unified_folder_list.append(&Self::create_unified_folder_row(
             "unified_unread",
             "mail-unread-symbolic",
             &gettext("All Unread"),
             "",
         ));
-        unified_folder_list.append(&Self::create_folder_row(
+        unified_folder_list.append(&Self::create_unified_folder_row(
             "unified_flagged",
             "starred-symbolic",
             &gettext("All Flagged"),
             "",
         ));
-        unified_folder_list.append(&Self::create_folder_row(
+        unified_folder_list.append(&Self::create_unified_folder_row(
             "unified_sent",
             "mail-send-symbolic",
             &gettext("All Sent"),
@@ -14798,6 +14883,22 @@ impl MailPage {
         Self::create_folder_row_with_backend(
             folder_id, icon_name, label_text, badge_text, None, None, false,
         )
+    }
+
+    fn create_unified_folder_row(
+        folder_id: &str,
+        icon_name: &str,
+        label_text: &str,
+        badge_text: &str,
+    ) -> gtk::ListBoxRow {
+        let row = Self::create_folder_row_with_backend(
+            folder_id, icon_name, label_text, badge_text, None, None, false,
+        );
+        if let Some(hbox) = row.child().and_downcast::<gtk::Box>() {
+            hbox.set_margin_start(20);
+            hbox.set_spacing(5);
+        }
+        row
     }
 
     fn create_search_folder_row(
@@ -15436,6 +15537,8 @@ impl MailPage {
                 || folder.folder_name.starts_with('.')
                 || folder.folder_name.contains("/.")
                 || folder.display_name.starts_with('.')
+                || folder.folder_name == "[Gmail]"
+                || folder.folder_name.eq_ignore_ascii_case("[Google Mail]")
             {
                 continue;
             }
@@ -15445,11 +15548,17 @@ impl MailPage {
                 continue;
             }
             let parent_name = Self::parent_folder_name(&folder.folder_name);
+            let display_name = folder
+                .display_name
+                .strip_prefix("[Gmail]/")
+                .or_else(|| folder.display_name.strip_prefix("[Google Mail]/"))
+                .unwrap_or(&folder.display_name)
+                .to_string();
             nodes.push(DynamicFolderNode {
                 source_uid: canonical_src.to_string(),
                 source_display_name: folder.source_display_name.clone(),
                 folder_name: folder.folder_name.clone(),
-                display_name: folder.display_name.clone(),
+                display_name,
                 icon_name: Self::folder_icon_name(&folder.folder_id).to_string(),
                 unread_count: folder.unread_count,
                 total_count: folder.total_count,
@@ -15466,6 +15575,9 @@ impl MailPage {
         for node in &nodes {
             let mut parent_name = node.parent_name.clone();
             while let Some(parent) = parent_name {
+                if parent == "[Gmail]" || parent.eq_ignore_ascii_case("[Google Mail]") {
+                    break;
+                }
                 let key = Self::dynamic_folder_key(&node.source_uid, &parent);
                 if known_nodes.insert(key) {
                     synthetic_nodes.push(DynamicFolderNode {
@@ -15776,16 +15888,27 @@ impl MailPage {
                     &display_name,
                 );
                 for folder in cached_folders {
+                    if folder.folder_name == "[Gmail]"
+                        || folder.folder_name.eq_ignore_ascii_case("[Google Mail]")
+                    {
+                        continue;
+                    }
                     let key = Self::dynamic_folder_key(canon, &folder.folder_name);
                     if !seen_nodes.insert(key) {
                         continue;
                     }
                     let parent_name = Self::parent_folder_name(&folder.folder_name);
+                    let display_name = folder
+                        .display_name
+                        .strip_prefix("[Gmail]/")
+                        .or_else(|| folder.display_name.strip_prefix("[Google Mail]/"))
+                        .unwrap_or(&folder.display_name)
+                        .to_string();
                     nodes.push(DynamicFolderNode {
                         source_uid: canon.to_string(),
                         source_display_name: folder.source_display_name.clone(),
                         folder_name: folder.folder_name.clone(),
-                        display_name: folder.display_name.clone(),
+                        display_name,
                         icon_name: Self::folder_icon_name(&folder.folder_id).to_string(),
                         unread_count: folder.unread_count,
                         total_count: folder.total_count,
@@ -16021,7 +16144,11 @@ impl MailPage {
     }
 
     fn parent_folder_name(folder_name: &str) -> Option<String> {
-        folder_name
+        let clean = folder_name
+            .strip_prefix("[Gmail]/")
+            .or_else(|| folder_name.strip_prefix("[Google Mail]/"))
+            .unwrap_or(folder_name);
+        clean
             .rsplit_once('/')
             .map(|(parent, _)| parent.to_string())
             .filter(|parent| !parent.is_empty())
@@ -16048,6 +16175,12 @@ impl MailPage {
             "user-trash-symbolic"
         } else if clean.contains("junk") || clean.contains("spam") {
             "mail-mark-junk-symbolic"
+        } else if clean.contains("starred") || clean.contains("markiert") {
+            "starred-symbolic"
+        } else if clean.contains("important") || clean.contains("wichtig") {
+            "mail-mark-important-symbolic"
+        } else if clean.contains("all mail") || clean.contains("alle nachrichten") {
+            "mail-read-symbolic"
         } else if clean.contains("archive") || clean.contains("archiv") {
             "folder-symbolic"
         } else if clean.contains("outbox") || clean.contains("postausgang") {
@@ -16455,7 +16588,7 @@ impl MailPage {
 
     fn build_unified_mail_toolbar(
         &self,
-        columns_button: &gtk::MenuButton,
+        columns_button: &adw::SplitButton,
     ) -> gtk::Box {
         let toolbar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -17085,6 +17218,7 @@ impl MailPage {
         }
         self.refresh_mail_column_header();
         self.sync_mail_layout_visibility();
+        self.sync_view_split_button();
         self.imp().mail_table_layout.replace(None);
         let list_view = self.imp().mail_list_view.borrow().as_ref().cloned();
         let factory = self.imp().mail_list_factory.borrow().as_ref().cloned();
@@ -17095,6 +17229,50 @@ impl MailPage {
         if let Some(canvas) = self.imp().mail_table_canvas.borrow().as_ref() {
             canvas.queue_draw();
         }
+    }
+
+    pub(crate) fn sync_view_split_button(&self) {
+        let Some(split_btn) = self.imp().view_options_split_btn.borrow().clone() else {
+            return;
+        };
+        let settings = AppSettings::try_new();
+        let profile = settings
+            .as_ref()
+            .map(|s| s.mail_list_view_profile())
+            .unwrap_or_else(|| "messages".to_string());
+        let is_cards = profile == "cards" || profile == "wide";
+
+        // In GNOME Files (Nautilus) split-button style:
+        // The main button directly toggles between Table and List view.
+        // Its icon and tooltip represent the view mode it will switch to on click
+        // (Action-oriented toggle: in Table view -> shows List View "view-list-symbolic" to switch to List;
+        // in List/Cards view -> shows Table View "meridian-view-table-symbolic" to switch to Table).
+        let (icon_name, tooltip_text) = if is_cards {
+            let theme = gtk::IconTheme::for_display(&split_btn.display());
+            let icon = if theme.has_icon("meridian-view-table-symbolic") {
+                "meridian-view-table-symbolic"
+            } else if theme.has_icon("view-grid-symbolic") {
+                "view-grid-symbolic"
+            } else if theme.has_icon("view-column-symbolic") {
+                "view-column-symbolic"
+            } else {
+                "meridian-view-table-symbolic"
+            };
+            (icon.to_string(), crate::i18n::gettext("Table view"))
+        } else {
+            let theme = gtk::IconTheme::for_display(&split_btn.display());
+            let icon = if theme.has_icon("view-list-symbolic") {
+                "view-list-symbolic"
+            } else if theme.has_icon("meridian-view-cards-symbolic") {
+                "meridian-view-cards-symbolic"
+            } else {
+                "view-list-symbolic"
+            };
+            (icon.to_string(), crate::i18n::gettext("List view"))
+        };
+        split_btn.set_icon_name(&icon_name);
+        split_btn.set_tooltip_text(Some(&tooltip_text));
+        set_accessible_label(&split_btn, &tooltip_text);
     }
 
     pub(crate) fn open_mail_column_order_dialog(&self) {
@@ -17355,6 +17533,9 @@ impl MailPage {
                     }
                 }
                 if let Some(page) = page_for_chk.upgrade() {
+                    if key_str == "mail-show-avatar" {
+                        page.refresh_sender_avatars();
+                    }
                     page.rebuild_mail_column_layout();
                 }
             });
@@ -18121,6 +18302,7 @@ impl MailPage {
             show_attachment,
             show_flagged,
             show_follow_up,
+            show_avatar,
             show_sender,
             sender_width,
             show_recipient,
@@ -18161,6 +18343,7 @@ impl MailPage {
             col_attachment: geom.attachment,
             col_flagged: geom.flagged,
             col_follow_up: geom.follow_up,
+            col_avatar: geom.avatar,
             col_sender: geom.sender,
             col_recipient: geom.recipient,
             col_subject: geom.subject,
@@ -18421,10 +18604,22 @@ impl MailPage {
             .build();
         status_column.append(&status_icon);
 
-        let avatar_spacer = gtk::Box::builder()
+        let avatar_column = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
             .width_request(MAIL_AVATAR_COLUMN_WIDTH)
+            .halign(gtk::Align::Fill)
+            .hexpand(false)
             .css_classes(vec!["mail-column-header-cell", "icon-cell"])
             .build();
+        let avatar_icon = gtk::Image::builder()
+            .icon_name("face-smile-symbolic")
+            .pixel_size(16)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .hexpand(true)
+            .css_classes(vec!["dim-label", "mail-avatar-header-icon"])
+            .build();
+        avatar_column.append(&avatar_icon);
 
         let sender_column = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -18719,7 +18914,7 @@ impl MailPage {
             group.add_widget(&important_column);
         }
         if let Some(group) = self.imp().avatar_size_group.borrow().as_ref() {
-            group.add_widget(&avatar_spacer);
+            group.add_widget(&avatar_column);
         }
         if let Some(group) = self.imp().preview_size_group.borrow().as_ref() {
             group.add_widget(&preview_column);
@@ -18732,12 +18927,12 @@ impl MailPage {
                 ("attachment", attachment_column.clone().upcast()),
                 ("flagged", star_column.clone().upcast()),
                 ("follow-up", follow_up_column.clone().upcast()),
+                ("avatar", avatar_column.clone().upcast()),
                 ("sender", sender_column.clone().upcast()),
                 ("recipient", recipient_column.clone().upcast()),
                 ("subject", subject_column.clone().upcast()),
                 ("date", date_column.clone().upcast()),
                 ("size", size_column.clone().upcast()),
-                ("avatar", avatar_spacer.clone().upcast()),
                 ("preview", preview_column.clone().upcast()),
                 ("follow-up-due", due_column.clone().upcast()),
                 ("location", location_column.clone().upcast()),
@@ -19089,7 +19284,7 @@ impl MailPage {
         }
 
         for (col_id, column, tooltip) in [
-            ("avatar", &avatar_spacer, gettext("Avatar column (drag to reorder)")),
+            ("avatar", &avatar_column, gettext("Avatar column (drag to reorder)")),
             ("preview", &preview_column, gettext("Preview column (drag to reorder)")),
             ("messages", &messages_column, gettext("Messages column (drag to reorder)")),
         ] {
@@ -19913,12 +20108,12 @@ impl MailPage {
                     ("attachment", attachment.clone().upcast()),
                     ("flagged", btn_star.clone().upcast()),
                     ("follow-up", btn_follow_up.clone().upcast()),
+                    ("avatar", avatar.clone().upcast()),
                     ("sender", sender_box.clone().upcast()),
                     ("recipient", recipient_box.clone().upcast()),
                     ("subject", subject_box.clone().upcast()),
                     ("date", date.clone().upcast()),
                     ("size", size.clone().upcast()),
-                    ("avatar", avatar.clone().upcast()),
                     ("preview", preview.clone().upcast()),
                     ("follow-up-due", follow_up_due.clone().upcast()),
                     ("location", location.clone().upcast()),
@@ -21055,6 +21250,8 @@ impl MailPage {
         let filter_for_search = custom_filter.clone();
         let thread_filter_for_search = thread_filter.clone();
         let page_for_search = self.downgrade();
+        let search_debounce: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+        let search_debounce_clone = Rc::clone(&search_debounce);
         search_entry.connect_search_changed(move |entry| {
             let Some(page) = page_for_search.upgrade() else {
                 return;
@@ -21062,13 +21259,44 @@ impl MailPage {
             if page.imp().saved_search_applying.get() {
                 return;
             }
-            page.set_saved_search_target_valid(true);
-            let field_scope = page.imp().search_field_scope.get();
-            *query_for_search.borrow_mut() =
-                MessageSearchQuery::parse_with_field_scope(entry.text().as_str(), field_scope);
-            filter_for_search.changed(gtk::FilterChange::Different);
-            thread_filter_for_search.changed(gtk::FilterChange::Different);
-            page.handle_search_changed(entry.text().as_str());
+            if let Some(source) = search_debounce_clone.borrow_mut().take() {
+                source.remove();
+            }
+
+            let text = entry.text().to_string();
+            let query_rc = Rc::clone(&query_for_search);
+            let filter_clone = filter_for_search.clone();
+            let thread_filter_clone = thread_filter_for_search.clone();
+            let page_weak = page.downgrade();
+
+            // When cleared to empty: apply immediately without delay for instantaneous UI reset
+            if text.is_empty() {
+                page.set_saved_search_target_valid(true);
+                let field_scope = page.imp().search_field_scope.get();
+                *query_rc.borrow_mut() =
+                    MessageSearchQuery::parse_with_field_scope("", field_scope);
+                filter_clone.changed(gtk::FilterChange::Different);
+                thread_filter_clone.changed(gtk::FilterChange::Different);
+                page.handle_search_changed("");
+                return;
+            }
+
+            // When typing: debounce by 160ms so fast keystrokes don't lag or freeze the UI thread
+            let debounce_holder = Rc::clone(&search_debounce_clone);
+            let source = glib::timeout_add_local_once(std::time::Duration::from_millis(160), move || {
+                debounce_holder.borrow_mut().take();
+                let Some(page) = page_weak.upgrade() else {
+                    return;
+                };
+                page.set_saved_search_target_valid(true);
+                let field_scope = page.imp().search_field_scope.get();
+                *query_rc.borrow_mut() =
+                    MessageSearchQuery::parse_with_field_scope(text.as_str(), field_scope);
+                filter_clone.changed(gtk::FilterChange::Different);
+                thread_filter_clone.changed(gtk::FilterChange::Different);
+                page.handle_search_changed(text.as_str());
+            });
+            search_debounce_clone.borrow_mut().replace(source);
         });
 
         let sort_model = gtk::StringList::new(&[
@@ -21146,87 +21374,21 @@ impl MailPage {
 
         let columns_popover_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(12)
+            .spacing(10)
             .margin_start(12)
             .margin_end(12)
             .margin_top(12)
             .margin_bottom(12)
+            .width_request(310)
             .build();
             
         let settings = AppSettings::try_new();
         if let Some(ref settings) = settings {
-            // --- Section 1: Layout ---
-            let sec1_box = gtk::Box::builder()
-                .orientation(gtk::Orientation::Vertical)
-                .spacing(6)
-                .build();
-                
-            sec1_box.append(&gtk::Label::builder()
-                .label(&gettext("View"))
-                .halign(gtk::Align::Start)
-                .css_classes(vec!["dim-label", "caption"])
-                .build()
-            );
-            
-            let layout_box = gtk::Box::builder()
-                .orientation(gtk::Orientation::Horizontal)
-                .spacing(0)
-                .homogeneous(true)
-                .css_classes(vec!["linked"])
-                .build();
-            
-            let btn_list = gtk::ToggleButton::builder().build();
-            let content_list = adw::ButtonContent::builder()
-                .icon_name("meridian-view-table-symbolic")
-                .label(&gettext("Table"))
-                .build();
-            btn_list.set_child(Some(&content_list));
-            
-            let btn_cards = gtk::ToggleButton::builder().build();
-            let content_cards = adw::ButtonContent::builder()
-                .icon_name("meridian-view-cards-symbolic")
-                .label(&gettext("List"))
-                .build();
-            btn_cards.set_child(Some(&content_cards));
-            btn_cards.set_group(Some(&btn_list));
-            
-            layout_box.append(&btn_list);
-            layout_box.append(&btn_cards);
-            sec1_box.append(&layout_box);
-            columns_popover_box.append(&sec1_box);
-            
-            let current_profile = settings.mail_list_view_profile();
-            if current_profile == "cards" || current_profile == "wide" {
-                if current_profile == "wide" {
-                    settings.apply_mail_list_view_profile("cards");
-                }
-                btn_cards.set_active(true);
-            } else {
-                btn_list.set_active(true);
+            if settings.mail_list_view_profile() == "wide" {
+                settings.apply_mail_list_view_profile("cards");
             }
-            
-            let settings_for_table = settings.clone();
-            let page_weak_table = self.downgrade();
-            btn_list.connect_toggled(move |btn| {
-                if btn.is_active() && settings_for_table.mail_list_view_profile() != "messages" {
-                    settings_for_table.apply_mail_list_view_profile("messages");
-                    if let Some(page) = page_weak_table.upgrade() {
-                        page.rebuild_mail_column_layout();
-                    }
-                }
-            });
-            let settings_for_list = settings.clone();
-            let page_weak_list = self.downgrade();
-            btn_cards.connect_toggled(move |btn| {
-                if btn.is_active() && settings_for_list.mail_list_view_profile() != "cards" {
-                    settings_for_list.apply_mail_list_view_profile("cards");
-                    if let Some(page) = page_weak_list.upgrade() {
-                        page.rebuild_mail_column_layout();
-                    }
-                }
-            });
-            
-            // --- Section 2: Preview Pane ---
+
+            // --- Section 1: Preview Pane ---
             let sec2_box = gtk::Box::builder()
                 .orientation(gtk::Orientation::Vertical)
                 .spacing(6)
@@ -21297,21 +21459,26 @@ impl MailPage {
                 }
             });
             
-            // --- Section 3: Switches (Boxed List) ---
+            // --- Separator between layout and feature switches ---
+            columns_popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+            // --- Section 2: Switches (Flat rows, GNOME HIG) ---
             let listbox = gtk::ListBox::builder()
                 .selection_mode(gtk::SelectionMode::None)
-                .css_classes(vec!["boxed-list"])
+                .css_classes(vec!["view-options-list"])
                 .build();
                 
             let row_thread = adw::ActionRow::builder()
                 .title(&gettext("Group by conversations"))
                 .subtitle(&gettext("Show replies grouped as threads"))
+                .activatable(true)
                 .build();
             let switch_thread = gtk::Switch::builder()
                 .valign(gtk::Align::Center)
                 .active(settings.mail_threading())
                 .build();
             row_thread.add_suffix(&switch_thread);
+            row_thread.set_activatable_widget(Some(&switch_thread));
             
             let settings_for_thread = settings.clone();
             switch_thread.connect_state_set(move |_, state| {
@@ -21324,18 +21491,20 @@ impl MailPage {
             
             let row_avatars = adw::ActionRow::builder()
                 .title(&gettext("Show avatars"))
+                .activatable(true)
                 .build();
             let switch_avatars = gtk::Switch::builder()
                 .valign(gtk::Align::Center)
                 .active(settings.mail_show_avatar())
                 .build();
             row_avatars.add_suffix(&switch_avatars);
+            row_avatars.set_activatable_widget(Some(&switch_avatars));
             listbox.append(&row_avatars);
             
             let row_logos = adw::ActionRow::builder()
                 .title(&gettext("Load sender logos"))
                 .subtitle(&gettext("Download favicons from the Internet"))
-                .visible(settings.mail_show_avatar())
+                .activatable(true)
                 .build();
             let switch_logos = gtk::Switch::builder()
                 .valign(gtk::Align::Center)
@@ -21343,25 +21512,72 @@ impl MailPage {
                 .build();
             row_logos.add_suffix(&switch_logos);
             row_logos.set_sensitive(settings.mail_show_avatar());
-            listbox.append(&row_logos);
+            row_logos.set_activatable_widget(Some(&switch_logos));
+
+            let revealer_logos = gtk::Revealer::builder()
+                .transition_type(gtk::RevealerTransitionType::SlideDown)
+                .transition_duration(200)
+                .reveal_child(settings.mail_show_avatar())
+                .child(&row_logos)
+                .build();
+
+            let row_logos_container = gtk::ListBoxRow::builder()
+                .activatable(false)
+                .selectable(false)
+                .css_classes(vec!["view-options-revealer-row"])
+                .child(&revealer_logos)
+                .visible(settings.mail_show_avatar())
+                .build();
+
+            let container_weak = row_logos_container.downgrade();
+            revealer_logos.connect_child_revealed_notify(move |rev| {
+                if !rev.reveals_child() && !rev.is_child_revealed() {
+                    if let Some(container) = container_weak.upgrade() {
+                        container.set_visible(false);
+                    }
+                }
+            });
+
+            listbox.append(&row_logos_container);
             
             let settings_for_avatars = settings.clone();
             let row_logos_weak = row_logos.downgrade();
+            let revealer_logos_weak = revealer_logos.downgrade();
+            let container_weak_for_switch = row_logos_container.downgrade();
+            let page_weak_avatars = self.downgrade();
             switch_avatars.connect_state_set(move |_, state| {
                 if settings_for_avatars.mail_show_avatar() != state {
                     settings_for_avatars.set_mail_show_avatar(state);
                 }
+                if let Some(container) = container_weak_for_switch.upgrade() {
+                    if state {
+                        container.set_visible(true);
+                    }
+                }
+                if let Some(rev) = revealer_logos_weak.upgrade() {
+                    rev.set_reveal_child(state);
+                }
                 if let Some(row) = row_logos_weak.upgrade() {
-                    row.set_visible(state);
                     row.set_sensitive(state);
                 }
+                let page_weak = page_weak_avatars.clone();
+                glib::idle_add_local_once(move || {
+                    if let Some(page) = page_weak.upgrade() {
+                        page.refresh_sender_avatars();
+                        page.rebuild_mail_column_layout();
+                    }
+                });
                 glib::Propagation::Proceed
             });
             
             let settings_for_logos = settings.clone();
+            let page_weak_logos = self.downgrade();
             switch_logos.connect_state_set(move |_, state| {
                 if settings_for_logos.mail_fetch_remote_logos() != state {
                     settings_for_logos.set_mail_fetch_remote_logos(state);
+                    if let Some(page) = page_weak_logos.upgrade() {
+                        page.refresh_sender_avatars();
+                    }
                 }
                 glib::Propagation::Proceed
             });
@@ -21386,20 +21602,40 @@ impl MailPage {
             .build();
             
         let columns_popover = gtk::Popover::builder().child(&columns_popover_scroll).build();
+        columns_popover.add_css_class("view-options-popover");
         let str_view_opts = gettext("View options");
-        let columns_button = gtk::MenuButton::builder()
-            .icon_name("view-column-symbolic")
-            .tooltip_text(&str_view_opts)
+        let columns_button = adw::SplitButton::builder()
+            .icon_name("view-list-symbolic")
+            .tooltip_text(&gettext("List view"))
+            .dropdown_tooltip(&str_view_opts)
             .popover(&columns_popover)
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&columns_button, &str_view_opts);
-        columns_button.set_icon_name(&themed_icon_name(
-            &columns_button,
-            "view-column-symbolic",
-            "meridian-view-table-symbolic",
-        ));
+        self.imp()
+            .view_options_split_btn
+            .replace(Some(columns_button.clone()));
+
+        let page_weak_split = self.downgrade();
+        let settings_for_split = settings.clone();
+        columns_button.connect_clicked(move |_| {
+            let Some(settings) = settings_for_split.as_ref() else {
+                return;
+            };
+            let current = settings.mail_list_view_profile();
+            let target = if current == "cards" || current == "wide" {
+                "messages"
+            } else {
+                "cards"
+            };
+            settings.apply_mail_list_view_profile(target);
+            if let Some(page) = page_weak_split.upgrade() {
+                page.rebuild_mail_column_layout();
+            }
+        });
+
+        self.sync_view_split_button();
 
         let search_options_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -21538,6 +21774,16 @@ impl MailPage {
         search_scope_selector.connect_selected_notify(move |_| ind_scope());
         let ind_filter = Rc::clone(&update_indicator);
         quick_filter.connect_selected_notify(move |_| ind_filter());
+        let search_key_controller = gtk::EventControllerKey::new();
+        let search_entry_for_keys = search_entry.clone();
+        search_key_controller.connect_key_pressed(move |_, key, _, modifier| {
+            if modifier.contains(gdk::ModifierType::CONTROL_MASK) && (key == gdk::Key::a || key == gdk::Key::A) {
+                search_entry_for_keys.select_region(0, -1);
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        search_entry.add_controller(search_key_controller);
 
         self.imp().search_entry.replace(Some(search_entry.clone()));
 
@@ -28406,7 +28652,7 @@ impl MailPage {
             let started = Instant::now();
 
             // SQLite-First Fast Path: Deliver local database summary immediately (<10ms)
-            if !worker_input.offline_mode {
+            if !worker_input.offline_mode && worker_input.request.offset == 0 {
                 let hint = worker_input.request.source_uid.as_deref();
                 if let Some(cache) = crate::services::evolution_summary_cache::find_evolution_account_cache(hint) {
                     let effective_source = hint.unwrap_or(&cache.source_uid);
@@ -28421,11 +28667,15 @@ impl MailPage {
                         &cache.display_name,
                     )
                     .unwrap_or_default();
+                    let page_limit = worker_input
+                        .request
+                        .max_messages_per_folder
+                        .max(1) as usize;
                     let sqlite_msgs = crate::services::evolution_summary_cache::load_folder_messages_from_sqlite(
                         &cache.folders_db,
                         effective_source,
                         folder_to_load,
-                        None,
+                        Some(page_limit),
                     )
                     .unwrap_or_default();
                     if !sqlite_msgs.is_empty() || !sqlite_folders.is_empty() {
@@ -30612,6 +30862,7 @@ mod tests {
             true,
             show_flagged,
             false,
+            false,
             true,
             sender_width,
             show_recipient,
@@ -30642,7 +30893,7 @@ mod tests {
             show_recipient,
             show_date,
             show_size,
-            show_avatar: true,
+            show_avatar: is_cards_mode,
             show_labels: true,
             show_preview_text,
             date_align_left,
@@ -30651,6 +30902,7 @@ mod tests {
             col_attachment: geom.attachment,
             col_flagged: geom.flagged,
             col_follow_up: geom.follow_up,
+            col_avatar: geom.avatar,
             col_sender: geom.sender,
             col_recipient: geom.recipient,
             col_subject: geom.subject,
@@ -32092,13 +32344,15 @@ mod tests {
         let source = include_str!("mail_page.rs");
         assert!(source.contains("view-column-symbolic"), "missing view-column-symbolic icon");
         assert!(source.contains("\"Preview Pane\""), "missing Preview Pane section");
-        assert!(source.contains("\"View\""), "missing Layout Profile section");
-        assert!(source.contains("\"Table\""), "missing table toggle");
-        assert!(source.contains("\"List\""), "missing list toggle");
         assert!(source.contains("\"Bottom\""), "missing classic layout toggle");
         assert!(source.contains("\"Right\""), "missing modern layout toggle");
         assert!(source.contains("\"Off\""), "missing off layout toggle");
         assert!(source.contains("\"Group by conversations\""), "missing threading toggle");
+        assert!(source.contains("adw::SplitButton"), "missing split button");
+        assert!(source.contains("view_options_split_btn"), "missing view options split button field");
+        assert!(source.contains(".width_request(310)"), "popover should have comfortable width request");
+        assert!(source.contains("\"view-options-list\""), "popover should use flat view-options-list without boxed-list card");
+        assert!(source.contains("activatable_widget"), "popover switch rows should be activatable");
     }
 
     #[test]
@@ -35726,6 +35980,99 @@ mod tests {
     }
 
     #[test]
+    fn test_mail_avatar_column_header_and_geometry() {
+        let source = include_str!("mail_page.rs");
+        let header_fn = rust_function_body(source, "build_mail_column_header");
+        assert!(header_fn.contains("avatar_column"));
+        assert!(header_fn.contains("\"face-smile-symbolic\""));
+        assert!(header_fn.contains("avatar_size_group"));
+
+        let default_order: Vec<String> = crate::services::settings_service::MAIL_LIST_COLUMN_IDS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+
+        // 1. With avatar enabled, avatar column precedes sender and takes 28.0px
+        let geom_with_avatar = compute_table_columns_geometry(
+            &default_order,
+            1000.0,
+            true,  // show_status
+            true,  // show_attachment
+            true,  // show_flagged
+            false, // show_follow_up
+            true,  // show_avatar
+            true,  // show_sender
+            200.0, // sender_width
+            false, // show_recipient
+            150.0, // recipient_width
+            true,  // show_date
+            120.0, // date_width
+            true,  // show_size
+            82.0,  // size_width
+            6.0,   // sep_width
+        );
+        assert_eq!(geom_with_avatar.status.x, 0.0);
+        assert_eq!(geom_with_avatar.status.width, 28.0);
+        assert_eq!(geom_with_avatar.attachment.x, 28.0);
+        assert_eq!(geom_with_avatar.attachment.width, 28.0);
+        assert_eq!(geom_with_avatar.flagged.x, 56.0);
+        assert_eq!(geom_with_avatar.flagged.width, 28.0);
+        assert_eq!(geom_with_avatar.avatar.x, 84.0);
+        assert_eq!(geom_with_avatar.avatar.width, 28.0);
+        assert_eq!(geom_with_avatar.sender.x, 112.0);
+        assert_eq!(geom_with_avatar.sender.width, 200.0);
+
+        // 2. Legacy order where avatar was at the end is normalized to precede sender
+        let legacy_order: Vec<String> = vec![
+            "status", "attachment", "flagged", "follow-up", "sender",
+            "recipient", "subject", "date", "size", "avatar",
+        ].into_iter().map(String::from).collect();
+        let geom_legacy = compute_table_columns_geometry(
+            &legacy_order,
+            1000.0,
+            true,
+            true,
+            true,
+            false,
+            true,  // show_avatar
+            true,
+            200.0,
+            false,
+            150.0,
+            true,
+            120.0,
+            true,
+            82.0,
+            6.0,
+        );
+        assert_eq!(geom_legacy.avatar.x, 84.0);
+        assert_eq!(geom_legacy.avatar.width, 28.0);
+        assert_eq!(geom_legacy.sender.x, 112.0);
+
+        // 3. With avatar disabled, avatar column has width 0.0 and sender starts at 84.0
+        let geom_no_avatar = compute_table_columns_geometry(
+            &default_order,
+            1000.0,
+            true,
+            true,
+            true,
+            false,
+            false, // show_avatar: false
+            true,
+            200.0,
+            false,
+            150.0,
+            true,
+            120.0,
+            true,
+            82.0,
+            6.0,
+        );
+        assert_eq!(geom_no_avatar.avatar.width, 0.0);
+        assert_eq!(geom_no_avatar.sender.x, 84.0);
+    }
+
+    #[test]
     fn test_mail_table_layout_update_column_widths_realtime() {
         let rows = vec![
             PreparedMailTableRow {
@@ -36616,6 +36963,22 @@ mod tests {
         assert_eq!(filtered.len(), 2);
         assert_eq!(filtered[0].folder_name, "INBOX");
         assert_eq!(filtered[1].folder_name, "Sent");
+    }
+
+    #[test]
+    fn test_gmail_folder_flattening_and_symbolic_icons() {
+        assert_eq!(MailPage::parent_folder_name("[Gmail]/Gesendete Nachrichten"), None);
+        assert_eq!(MailPage::parent_folder_name("[Google Mail]/Papierkorb"), None);
+        assert_eq!(MailPage::parent_folder_name("[Gmail]/All Mail"), None);
+        assert_eq!(MailPage::parent_folder_name("INBOX"), None);
+        assert_eq!(MailPage::parent_folder_name("Archive/2026"), Some("Archive".to_string()));
+
+        assert_eq!(MailPage::folder_icon_name("eds:123/[Gmail]/Markiert"), "starred-symbolic");
+        assert_eq!(MailPage::folder_icon_name("eds:123/[Gmail]/Starred"), "starred-symbolic");
+        assert_eq!(MailPage::folder_icon_name("eds:123/[Gmail]/Wichtig"), "mail-mark-important-symbolic");
+        assert_eq!(MailPage::folder_icon_name("eds:123/[Gmail]/Important"), "mail-mark-important-symbolic");
+        assert_eq!(MailPage::folder_icon_name("eds:123/[Gmail]/Alle Nachrichten"), "mail-read-symbolic");
+        assert_eq!(MailPage::folder_icon_name("eds:123/[Gmail]/All Mail"), "mail-read-symbolic");
     }
 
     #[test]
@@ -37911,7 +38274,154 @@ mod tests {
         let color1_repeat = account_color_for_message(&msg_loc1);
         assert_eq!(color1, color1_repeat);
     }
+
+    #[test]
+    fn test_sidebar_subfolder_and_unified_indentation_contract() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        // 1. Unified folder row margin_start must be 20px (matching depth 1 with expander column and Contacts sidebar)
+        let unified_row = MailPage::create_unified_folder_row(
+            "unified_inbox",
+            "mail-inbox-symbolic",
+            "All Inboxes",
+            "",
+        );
+        let hbox = unified_row
+            .child()
+            .and_downcast::<gtk::Box>()
+            .expect("Unified folder row must have a child Box");
+        assert_eq!(
+            hbox.margin_start(),
+            20,
+            "Unified folder rows must have margin_start = 20 to align with level-1 subfolders (matching Contacts sidebar)"
+        );
+
+        // 2. TreeExpander configuration contract:
+        // Account root: indent_for_depth = false, indent_for_icon = false
+        let root_expander = gtk::TreeExpander::new();
+        root_expander.set_indent_for_depth(false);
+        root_expander.set_indent_for_icon(false);
+        assert!(!root_expander.is_indent_for_depth());
+        assert!(!root_expander.is_indent_for_icon());
+
+        // Level-1 subfolder (directly under account): indent_for_depth = false, indent_for_icon = true
+        let level1_expander = gtk::TreeExpander::new();
+        level1_expander.set_indent_for_depth(false);
+        level1_expander.set_indent_for_icon(true);
+        assert!(!level1_expander.is_indent_for_depth());
+        assert!(level1_expander.is_indent_for_icon());
+
+        // Nested subfolder (depth >= 2): indent_for_depth = true, indent_for_icon = true
+        let child_expander = gtk::TreeExpander::new();
+        child_expander.set_indent_for_depth(true);
+        child_expander.set_indent_for_icon(true);
+        assert!(child_expander.is_indent_for_depth());
+        assert!(child_expander.is_indent_for_icon());
+    }
+
+    #[test]
+    fn test_view_options_split_button_and_toggle_contract() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let page = MailPage::new();
+        let split_btn = page.imp().view_options_split_btn.borrow().clone();
+        assert!(split_btn.is_some(), "view_options_split_btn must be present on MailPage");
+        let split_btn = split_btn.unwrap();
+
+        // 1. Dropdown tooltip must be "View options"
+        assert_eq!(
+            split_btn.dropdown_tooltip().as_str(),
+            crate::i18n::gettext("View options")
+        );
+
+        // 2. Synchronized state between Table view and List view:
+        if let Some(settings) = AppSettings::try_new() {
+            // When in messages (table) view profile:
+            settings.apply_mail_list_view_profile("messages");
+            page.sync_view_split_button();
+            assert_eq!(
+                split_btn.tooltip_text().unwrap_or_default().as_str(),
+                crate::i18n::gettext("List view")
+            );
+            assert_eq!(
+                split_btn.icon_name().unwrap_or_default().as_str(),
+                "view-list-symbolic"
+            );
+
+            // When in cards (list) view profile:
+            settings.apply_mail_list_view_profile("cards");
+            page.sync_view_split_button();
+            assert_eq!(
+                split_btn.tooltip_text().unwrap_or_default().as_str(),
+                crate::i18n::gettext("Table view")
+            );
+            let icon = split_btn.icon_name().unwrap_or_default();
+            assert!(
+                icon == "meridian-view-table-symbolic"
+                    || icon == "view-grid-symbolic"
+                    || icon == "view-column-symbolic",
+                "unexpected icon: {icon}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_view_options_avatar_logos_revealer() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let listbox = gtk::ListBox::new();
+        let row_avatars = adw::ActionRow::builder()
+            .title("Show avatars")
+            .build();
+        listbox.append(&row_avatars);
+
+        let row_logos = adw::ActionRow::builder()
+            .title("Load sender logos")
+            .subtitle("Download favicons from the Internet")
+            .build();
+
+        let revealer = gtk::Revealer::builder()
+            .transition_type(gtk::RevealerTransitionType::SlideDown)
+            .transition_duration(200)
+            .reveal_child(false)
+            .child(&row_logos)
+            .build();
+
+        let row_logos_container = gtk::ListBoxRow::builder()
+            .activatable(false)
+            .selectable(false)
+            .css_classes(vec!["view-options-revealer-row"])
+            .child(&revealer)
+            .visible(false)
+            .build();
+
+        listbox.append(&row_logos_container);
+        assert!(!revealer.reveals_child());
+        assert!(!row_logos_container.is_visible());
+
+        row_logos_container.set_visible(true);
+        revealer.set_reveal_child(true);
+        assert!(revealer.reveals_child());
+        assert!(row_logos_container.is_visible());
+    }
 }
+
+
 
 
 

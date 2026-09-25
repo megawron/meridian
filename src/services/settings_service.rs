@@ -36,12 +36,12 @@ pub(crate) const MAIL_LIST_COLUMN_IDS: [&str; 15] = [
     "attachment",
     "flagged",
     "follow-up",
+    "avatar",
     "sender",
     "recipient",
     "subject",
     "date",
     "size",
-    "avatar",
     "preview",
     "follow-up-due",
     "location",
@@ -55,12 +55,12 @@ const MAIL_LIST_WIDE_COLUMN_IDS: [&str; 15] = [
     "follow-up",
     "messages",
     "attachment",
+    "avatar",
     "sender",
     "recipient",
     "subject",
     "date",
     "size",
-    "avatar",
     "preview",
     "follow-up-due",
     "location",
@@ -108,6 +108,21 @@ pub(crate) fn normalize_mail_list_column_order(value: &str) -> Vec<String> {
             .filter(|column| seen.insert((**column).to_string()))
             .map(|column| (*column).to_string()),
     );
+    // Migration: If avatar was placed after sender/date/size from the legacy default order,
+    // position it right before sender so that avatars appear next to the sender column.
+    if let (Some(pos_avatar), Some(pos_sender)) = (
+        order.iter().position(|c| c == "avatar"),
+        order.iter().position(|c| c == "sender"),
+    ) {
+        if pos_avatar > pos_sender && (
+            pos_avatar >= order.iter().position(|c| c == "size").unwrap_or(usize::MAX)
+            || value.trim() == "status,attachment,flagged,follow-up,sender,recipient,subject,date,size,avatar,preview,follow-up-due,location,messages,important"
+        ) {
+            let col = order.remove(pos_avatar);
+            let new_sender_pos = order.iter().position(|c| c == "sender").unwrap();
+            order.insert(new_sender_pos, col);
+        }
+    }
     order
 }
 
@@ -4415,12 +4430,13 @@ mod tests {
     fn mail_list_profiles_and_corrupt_orders_normalize_without_losing_columns() {
         let messages = mail_list_profile_column_order("messages");
         assert_eq!(
-            &messages[..8],
+            &messages[..9],
             &[
                 "status",
                 "attachment",
                 "flagged",
                 "follow-up",
+                "avatar",
                 "sender",
                 "recipient",
                 "subject",
