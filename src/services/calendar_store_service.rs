@@ -402,6 +402,33 @@ pub struct CalendarSnapshot {
     pub memos: Vec<MemoRecord>,
 }
 
+impl CalendarSnapshot {
+    /// Return all event records that overlap with the specified date range.
+    /// Dates can be YYYY-MM-DD or RFC3339/ISO prefixes.
+    pub fn events_in_range<'a>(&'a self, start_date: &str, end_date: &str) -> Vec<&'a CalendarEventRecord> {
+        self.events
+            .iter()
+            .filter(|ev| {
+                if !ev.start.is_empty() && !end_date.is_empty() && ev.start.as_str() > end_date {
+                    return false;
+                }
+                if !ev.end.is_empty() && !start_date.is_empty() && ev.end.as_str() < start_date {
+                    return false;
+                }
+                true
+            })
+            .collect()
+    }
+
+    /// Return all event records matching a specific source UID without cloning the entire snapshot.
+    pub fn events_for_source<'a>(&'a self, source_uid: &str) -> Vec<&'a CalendarEventRecord> {
+        self.events
+            .iter()
+            .filter(|ev| ev.source_uid == source_uid)
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CalendarPurgeResult {
     pub removed_count: usize,
@@ -3659,6 +3686,55 @@ END:VCALENDAR\r\n";
 
         assert_eq!(snapshot.tasks.len(), 1);
         assert_eq!(snapshot.tasks[0].source_display_name, "Einkaufsliste");
+    }
+
+    #[test]
+    fn test_calendar_snapshot_range_and_source_filtering() {
+        let mut snapshot = CalendarSnapshot::default();
+        snapshot.events.push(CalendarEventRecord {
+            uid: "ev-1".to_string(),
+            source_uid: "src-work".to_string(),
+            source_display_name: "Work".to_string(),
+            component: String::new(),
+            summary: "Sprint Planning".to_string(),
+            start: "2026-09-20T09:00:00".to_string(),
+            end: "2026-09-20T10:00:00".to_string(),
+            location: String::new(),
+            description: String::new(),
+            all_day: false,
+        });
+        snapshot.events.push(CalendarEventRecord {
+            uid: "ev-2".to_string(),
+            source_uid: "src-home".to_string(),
+            source_display_name: "Home".to_string(),
+            component: String::new(),
+            summary: "Dinner".to_string(),
+            start: "2026-09-25T19:00:00".to_string(),
+            end: "2026-09-25T21:00:00".to_string(),
+            location: String::new(),
+            description: String::new(),
+            all_day: false,
+        });
+
+        // Test range filtering
+        let sep25 = snapshot.events_in_range("2026-09-25", "2026-09-25T23:59:59");
+        assert_eq!(sep25.len(), 1);
+        assert_eq!(sep25[0].uid, "ev-2");
+
+        let all = snapshot.events_in_range("2026-09-01", "2026-09-30");
+        assert_eq!(all.len(), 2);
+
+        let none = snapshot.events_in_range("2026-10-01", "2026-10-31");
+        assert_eq!(none.len(), 0);
+
+        // Test source filtering
+        let work = snapshot.events_for_source("src-work");
+        assert_eq!(work.len(), 1);
+        assert_eq!(work[0].uid, "ev-1");
+
+        let home = snapshot.events_for_source("src-home");
+        assert_eq!(home.len(), 1);
+        assert_eq!(home[0].uid, "ev-2");
     }
 
     fn temporary_directory(label: &str) -> PathBuf {

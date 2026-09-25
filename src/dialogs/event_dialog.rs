@@ -45,6 +45,7 @@ mod imp {
         pub initial_start: RefCell<Option<String>>,
         pub initial_end: RefCell<Option<String>>,
         pub initial_allday: Cell<bool>,
+        pub initial_summary: RefCell<Option<String>>,
     }
 
     #[glib::object_subclass]
@@ -67,6 +68,7 @@ mod imp {
                     glib::ParamSpecString::builder("initial-start").build(),
                     glib::ParamSpecString::builder("initial-end").build(),
                     glib::ParamSpecBoolean::builder("initial-allday").build(),
+                    glib::ParamSpecString::builder("initial-summary").build(),
                 ]
             })
         }
@@ -92,6 +94,9 @@ mod imp {
                 "initial-allday" => {
                     self.initial_allday.set(value.get().unwrap_or(false))
                 }
+                "initial-summary" => {
+                    *self.initial_summary.borrow_mut() = value.get().expect("string property")
+                }
                 _ => {}
             }
         }
@@ -105,6 +110,7 @@ mod imp {
                 "initial-start" => self.initial_start.borrow().to_value(),
                 "initial-end" => self.initial_end.borrow().to_value(),
                 "initial-allday" => self.initial_allday.get().to_value(),
+                "initial-summary" => self.initial_summary.borrow().to_value(),
                 _ => glib::Value::from_type(pspec.value_type()),
             }
         }
@@ -903,26 +909,63 @@ impl EventDialog {
     }
 
     pub fn new_all_day_for_date(date: NaiveDate) -> Self {
-        glib::Object::builder()
-            .property("title", "Termin — Keine Zusammenfassung")
+        Self::new_all_day_for_date_with_summary(date, None, None)
+    }
+
+    pub fn new_all_day_for_date_with_summary(
+        date: NaiveDate,
+        summary: Option<&str>,
+        source_uid: Option<&str>,
+    ) -> Self {
+        let title_text = summary
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| format!("Termin — {s}"))
+            .unwrap_or_else(|| "Termin — Keine Zusammenfassung".to_string());
+        let mut builder = glib::Object::builder()
+            .property("title", title_text)
             .property("modal", false)
             .property("default-width", 880)
             .property("default-height", 680)
             .property("initial-date", date.format("%Y-%m-%d").to_string())
-            .property("initial-allday", true)
-            .build()
+            .property("initial-allday", true);
+        if let Some(s) = summary.filter(|s| !s.trim().is_empty()) {
+            builder = builder.property("initial-summary", s);
+        }
+        if let Some(src) = source_uid.filter(|s| !s.trim().is_empty()) {
+            builder = builder.property("edit-source-uid", src);
+        }
+        builder.build()
     }
 
     pub fn new_for_time_range(start: NaiveDateTime, end: NaiveDateTime) -> Self {
-        glib::Object::builder()
-            .property("title", "Termin — Keine Zusammenfassung")
+        Self::new_for_time_range_with_summary(start, end, None, None)
+    }
+
+    pub fn new_for_time_range_with_summary(
+        start: NaiveDateTime,
+        end: NaiveDateTime,
+        summary: Option<&str>,
+        source_uid: Option<&str>,
+    ) -> Self {
+        let title_text = summary
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| format!("Termin — {s}"))
+            .unwrap_or_else(|| "Termin — Keine Zusammenfassung".to_string());
+        let mut builder = glib::Object::builder()
+            .property("title", title_text)
             .property("modal", false)
             .property("default-width", 880)
             .property("default-height", 680)
             .property("initial-start", start.format("%Y-%m-%d %H:%M").to_string())
             .property("initial-end", end.format("%Y-%m-%d %H:%M").to_string())
-            .property("initial-date", start.date().format("%Y-%m-%d").to_string())
-            .build()
+            .property("initial-date", start.date().format("%Y-%m-%d").to_string());
+        if let Some(s) = summary.filter(|s| !s.trim().is_empty()) {
+            builder = builder.property("initial-summary", s);
+        }
+        if let Some(src) = source_uid.filter(|s| !s.trim().is_empty()) {
+            builder = builder.property("edit-source-uid", src);
+        }
+        builder.build()
     }
 
     pub fn new_for_edit(event: &CalendarEventRecord) -> Self {
@@ -1707,6 +1750,13 @@ impl EventDialog {
             if let Some(description) = ical_property(component, "DESCRIPTION") {
                 text_desc.buffer().set_text(&description);
             }
+        } else if let Some(summary) = self.imp().initial_summary.borrow().as_deref() {
+            let trimmed = summary.trim();
+            if !trimmed.is_empty() {
+                entry_title.set_text(trimmed);
+                self.set_title(Some(&format!("Termin — {trimmed}")));
+                window_title.set_subtitle(trimmed);
+            }
         }
 
         let calendar_source_uids_for_discovery = Rc::clone(&calendar_source_uids);
@@ -1824,8 +1874,11 @@ impl EventDialog {
                 let Some(dialog) = dialog_weak.upgrade() else {
                     return;
                 };
-                let source_uid = if let Some(source_uid) = dialog.imp().edit_source_uid.borrow().clone() {
-                    source_uid
+                let source_uid = if dialog.imp().edit_uid.borrow().is_some() {
+                    dialog.imp().edit_source_uid.borrow().clone().unwrap_or_else(|| {
+                        let selected = row_calendar.selected() as usize;
+                        calendar_source_uids.borrow().get(selected).cloned().unwrap_or_default()
+                    })
                 } else {
                     let selected = row_calendar.selected() as usize;
                     let Some(source_uid) = calendar_source_uids.borrow().get(selected).cloned() else {
@@ -2804,7 +2857,7 @@ fn format_event_datetime_for_editor(value: &str, all_day: bool) -> String {
     value.to_string()
 }
 
-fn build_event_component(
+pub(crate) fn build_event_component(
     title: &str,
     location: &str,
     conference: &str,
@@ -4127,5 +4180,65 @@ mod tests {
         assert!(dialog_src.contains("initial-allday"));
         assert!(dialog_src.contains("row_allday.set_active(true);"));
     }
-}
 
+    #[test]
+    fn test_event_dialog_quick_add_escalation_contract() {
+        let dialog_src = include_str!("event_dialog.rs");
+        assert!(dialog_src.contains("pub fn new_all_day_for_date_with_summary("));
+        assert!(dialog_src.contains("pub fn new_for_time_range_with_summary("));
+        assert!(dialog_src.contains("initial-summary"));
+
+        // Verify build_event_component works with basic quick-add parameters
+        let component = build_event_component(
+            "Quick Add Meeting",
+            "",
+            "",
+            "CONFIRMED",
+            false,
+            false,
+            "2026-09-25 10:00",
+            "2026-09-25 11:30",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            &[],
+            false,
+            "",
+        )
+        .expect("build_event_component should succeed");
+        assert!(component.contains("SUMMARY:Quick Add Meeting"));
+        assert!(component.contains("DTSTART:20260925T100000"));
+        assert!(component.contains("DTEND:20260925T113000"));
+        assert!(component.contains("STATUS:CONFIRMED"));
+
+        // All-day quick add event
+        let allday_component = build_event_component(
+            "Quick All Day Vacation",
+            "",
+            "",
+            "CONFIRMED",
+            false,
+            true,
+            "2026-09-25",
+            "2026-09-25",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            &[],
+            false,
+            "",
+        )
+        .expect("build_event_component all-day should succeed");
+        assert!(allday_component.contains("SUMMARY:Quick All Day Vacation"));
+        assert!(allday_component.contains("DTSTART;VALUE=DATE:20260925"));
+        assert!(allday_component.contains("DTEND;VALUE=DATE:20260925"));
+    }
+}

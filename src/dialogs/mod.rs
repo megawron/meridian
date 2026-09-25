@@ -29,6 +29,7 @@ pub mod manage_groups_dialog;
 pub mod name_selector_dialog;
 pub mod oof_dialog;
 pub mod preferences_dialog;
+pub mod quick_add_popover;
 pub mod reminder_dialog;
 pub mod search_folder_dialog;
 pub mod shortcuts_dialog;
@@ -61,6 +62,9 @@ pub use manage_groups_dialog::ManageGroupsDialog;
 pub use name_selector_dialog::NameSelectorDialog;
 pub use oof_dialog::OutOfOfficeDialog;
 pub use preferences_dialog::PreferencesDialog;
+pub use quick_add_popover::{
+    present_quick_add_popover, QuickAddCalendarItem, QuickAddEventDraft,
+};
 pub use reminder_dialog::{ReminderDialog, ReminderDialogAction};
 pub use search_folder_dialog::SearchFolderDialog;
 pub use shortcuts_dialog::show_shortcuts_dialog;
