@@ -5764,6 +5764,7 @@ mod imp {
         pub unified_folder_section: RefCell<Option<gtk::Box>>,
         pub unified_folder_list: RefCell<Option<gtk::ListBox>>,
         pub unified_header_badge: RefCell<Option<gtk::Label>>,
+        pub sidebar_scroll: RefCell<Option<gtk::ScrolledWindow>>,
         pub local_folder_ids: RefCell<HashSet<String>>,
         pub local_folder_collapsed: RefCell<HashSet<String>>,
         pub dynamic_folder_store: RefCell<Option<gio::ListStore>>,
@@ -7178,16 +7179,25 @@ impl MailPage {
         let is_flagged = msg.is_flagged();
 
         // 1. Avatar (real contact photo if available, fallback to initials)
+        let show_avatar = AppSettings::try_new()
+            .map(|settings| settings.mail_show_avatar())
+            .unwrap_or(true);
         if let Some(avatar) = imp.modern_sender_avatar.borrow().as_ref() {
-            let display_text = if !sender_name.is_empty() { &sender_name } else { &sender_email };
-            avatar.set_text(Some(display_text));
-            let photo_opt = self.find_contact_photo_for_email(&sender_email);
-            if photo_opt.is_some() {
-                avatar.set_custom_image(photo_opt.as_ref());
-            } else {
-                let initials_tex = Self::generate_initials_texture(display_text, 38);
-                avatar.set_custom_image(Some(&initials_tex));
+            avatar.set_visible(show_avatar);
+            if show_avatar {
+                let display_text = if !sender_name.is_empty() { &sender_name } else { &sender_email };
+                avatar.set_text(Some(display_text));
+                let photo_opt = self.find_contact_photo_for_email(&sender_email);
+                if photo_opt.is_some() {
+                    avatar.set_custom_image(photo_opt.as_ref());
+                } else {
+                    let initials_tex = Self::generate_initials_texture(display_text, 38);
+                    avatar.set_custom_image(Some(&initials_tex));
+                }
             }
+        }
+        if let Some(grid) = imp.modern_details_grid.borrow().as_ref() {
+            grid.set_margin_start(if show_avatar { 48 } else { 0 });
         }
 
         // 2. Sender Name & Address
@@ -7503,6 +7513,10 @@ impl MailPage {
                         page.update_mail_table_canvas_layout();
                         if let Some(canvas) = page.imp().mail_table_canvas.borrow().as_ref() {
                             canvas.queue_draw();
+                        }
+                        if key == "mail-show-avatar" {
+                            let selected = page.selected_message();
+                            page.refresh_normal_headers_for_message(selected.as_ref());
                         }
                     }
                 });
@@ -13923,7 +13937,17 @@ impl MailPage {
                 .ellipsize(pango::EllipsizeMode::End)
                 .build();
 
-            // 2: Sync icon (account root only)
+            // 2: Shared mailbox indicator (account root only when shared)
+            let shared_icon = gtk::Image::builder()
+                .icon_name("system-users-symbolic")
+                .pixel_size(14)
+                .valign(gtk::Align::Center)
+                .css_classes(["dim-label", "shared-mailbox-indicator"])
+                .tooltip_text("Freigegebenes Postfach (Exchange)")
+                .visible(false)
+                .build();
+
+            // 3: Sync icon (account root only)
             let sync_icon = gtk::Image::builder()
                 .icon_name("mail-sync-symbolic")
                 .pixel_size(16)
@@ -13932,7 +13956,7 @@ impl MailPage {
                 .visible(false)
                 .build();
 
-            // 3: Badge (unread count)
+            // 4: Badge (unread count)
             let badge = gtk::Label::builder()
                 .xalign(1.0)
                 .valign(gtk::Align::Center)
@@ -13953,6 +13977,7 @@ impl MailPage {
 
             row.append(&icon);
             row.append(&label);
+            row.append(&shared_icon);
             row.append(&sync_icon);
             row.append(&badge);
 
@@ -14268,8 +14293,10 @@ impl MailPage {
                 expander.add_css_class("account-root-expander");
                 row.add_css_class("account-root-row");
                 row.remove_css_class("is-selected");
+                expander.remove_css_class("folder-sub-expander");
                 expander.set_indent_for_depth(false);
                 expander.set_indent_for_icon(false);
+                expander.set_margin_start(0);
             } else {
                 expander.remove_css_class("account-root-expander");
                 row.remove_css_class("account-root-row");
@@ -14278,30 +14305,25 @@ impl MailPage {
                 } else {
                     row.remove_css_class("is-selected");
                 }
+                expander.set_indent_for_depth(false);
+                expander.set_indent_for_icon(true);
                 if tree_row.depth() == 1 {
-                    // Level-1 folders (directly under account) align on the exact same
-                    // vertical line as unified/global folders without an extra depth indent.
-                    expander.set_indent_for_depth(false);
-                    expander.set_indent_for_icon(true);
+                    // Level-1 folders align flush with unified/global folders (icon at 16px)
+                    expander.remove_css_class("folder-sub-expander");
+                    expander.set_margin_start(0);
                 } else {
-                    // Nested subfolders (depth >= 2) indent beneath their parent folder.
-                    expander.set_indent_for_depth(true);
-                    expander.set_indent_for_icon(true);
+                    // Level-2+ subfolders step by exactly 16px per depth level (icon under parent text)
+                    expander.add_css_class("folder-sub-expander");
+                    expander.set_margin_start(((tree_row.depth() - 1) * 16) as i32);
                 }
             }
 
-            // 0: icon
+            // 0: icon (folder icon; account roots have no leading icon)
             if let Some(icon) = row.first_child().and_downcast::<gtk::Image>() {
                 if is_account_root {
-                    if !folder.icon_name().is_empty() {
-                        icon.set_visible(true);
-                        set_image_icon_with_fallback(&icon, &folder.icon_name(), "system-users-symbolic");
-                        icon.set_tooltip_text(Some("Freigegebenes Postfach (Exchange)"));
-                    } else {
-                        icon.set_visible(false);
-                        icon.set_icon_name(None);
-                        icon.set_tooltip_text(None);
-                    }
+                    icon.set_visible(false);
+                    icon.set_icon_name(None);
+                    icon.set_tooltip_text(None);
                 } else {
                     icon.set_visible(true);
                     set_image_icon_with_fallback(&icon, &folder.icon_name(), "folder-symbolic");
@@ -14329,9 +14351,21 @@ impl MailPage {
                 }
             }
 
-            // 2: sync_icon
+            // 2: shared_icon (account root only, if shared mailbox)
+            if let Some(shared_icon) = row
+                .first_child()
+                .and_then(|c| c.next_sibling())
+                .and_then(|c| c.next_sibling())
+                .and_downcast::<gtk::Image>()
+            {
+                let is_shared = is_account_root && !folder.icon_name().is_empty();
+                shared_icon.set_visible(is_shared);
+            }
+
+            // 3: sync_icon
             if let Some(sync_icon) = row
                 .first_child()
+                .and_then(|c| c.next_sibling())
                 .and_then(|c| c.next_sibling())
                 .and_then(|c| c.next_sibling())
                 .and_downcast::<gtk::Image>()
@@ -14339,7 +14373,7 @@ impl MailPage {
                 sync_icon.set_visible(is_account_root);
             }
 
-            // 3: badge
+            // 4: badge
             let badge_opt = row.last_child().and_downcast::<gtk::Label>();
             if let Some(badge) = badge_opt.as_ref() {
                 let count = folder.unread_count();
@@ -14420,6 +14454,8 @@ impl MailPage {
                     row.remove_css_class("account-root-row");
                 }
                 expander.remove_css_class("account-root-expander");
+                expander.remove_css_class("folder-sub-expander");
+                expander.set_margin_start(0);
                 expander.set_list_row(None);
             }
         });
@@ -14855,6 +14891,9 @@ impl MailPage {
             .css_classes(vec!["evolution-sidebar-drawer"])
             .build();
         sidebar_scroll.set_vexpand(true);
+        self.imp()
+            .sidebar_scroll
+            .replace(Some(sidebar_scroll.clone()));
         sidebar_content.append(&drawer_header);
         sidebar_content.append(&sidebar_scroll);
         sidebar_content.append(&source_status_area);
@@ -15447,6 +15486,13 @@ impl MailPage {
         force: bool,
     ) {
         let started = Instant::now();
+        let scroll_y = self
+            .imp()
+            .sidebar_scroll
+            .borrow()
+            .as_ref()
+            .map(|scroll| scroll.vadjustment().value())
+            .unwrap_or(0.0);
         tracing::debug!(
             folder_count = folders.len(),
             force,
@@ -15548,18 +15594,23 @@ impl MailPage {
                 continue;
             }
             let parent_name = Self::parent_folder_name(&folder.folder_name);
-            let display_name = folder
+            let raw_display = folder
                 .display_name
                 .strip_prefix("[Gmail]/")
                 .or_else(|| folder.display_name.strip_prefix("[Google Mail]/"))
-                .unwrap_or(&folder.display_name)
+                .unwrap_or(&folder.display_name);
+            let display_name = raw_display
+                .rsplit('/')
+                .next()
+                .filter(|name| !name.is_empty())
+                .unwrap_or(raw_display)
                 .to_string();
             nodes.push(DynamicFolderNode {
                 source_uid: canonical_src.to_string(),
                 source_display_name: folder.source_display_name.clone(),
                 folder_name: folder.folder_name.clone(),
                 display_name,
-                icon_name: Self::folder_icon_name(&folder.folder_id).to_string(),
+                icon_name: Self::folder_icon_name_for(&folder.folder_id, &folder.folder_name).to_string(),
                 unread_count: folder.unread_count,
                 total_count: folder.total_count,
                 selectable: folder.is_selectable,
@@ -15898,18 +15949,23 @@ impl MailPage {
                         continue;
                     }
                     let parent_name = Self::parent_folder_name(&folder.folder_name);
-                    let display_name = folder
+                    let raw_display = folder
                         .display_name
                         .strip_prefix("[Gmail]/")
                         .or_else(|| folder.display_name.strip_prefix("[Google Mail]/"))
-                        .unwrap_or(&folder.display_name)
+                        .unwrap_or(&folder.display_name);
+                    let display_name = raw_display
+                        .rsplit('/')
+                        .next()
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or(raw_display)
                         .to_string();
                     nodes.push(DynamicFolderNode {
                         source_uid: canon.to_string(),
                         source_display_name: folder.source_display_name.clone(),
                         folder_name: folder.folder_name.clone(),
                         display_name,
-                        icon_name: Self::folder_icon_name(&folder.folder_id).to_string(),
+                        icon_name: Self::folder_icon_name_for(&folder.folder_id, &folder.folder_name).to_string(),
                         unread_count: folder.unread_count,
                         total_count: folder.total_count,
                         selectable: folder.is_selectable,
@@ -16102,6 +16158,14 @@ impl MailPage {
         if let Some(section) = self.imp().folder_section.borrow().as_ref() {
             section.set_visible(true);
         }
+        if scroll_y > 0.0 {
+            if let Some(scroll) = self.imp().sidebar_scroll.borrow().as_ref().cloned() {
+                glib::idle_add_local_once(move || {
+                    let adj = scroll.vadjustment();
+                    adj.set_value(scroll_y.min(adj.upper() - adj.page_size()));
+                });
+            }
+        }
         self.imp().updating_folder_rows.set(was_updating);
         tracing::info!(
             elapsed_ms = started.elapsed().as_millis() as u64,
@@ -16154,39 +16218,96 @@ impl MailPage {
             .filter(|parent| !parent.is_empty())
     }
 
-    fn folder_icon_name(folder_id: &str) -> &'static str {
-        let clean = folder_id.trim().to_ascii_lowercase();
-        if clean.contains("inbox") || clean.contains("posteingang") {
-            "mail-inbox-symbolic"
-        } else if clean.contains("sent")
-            || clean.contains("gesendet")
-            || clean.contains("gesendete")
-        {
-            "mail-send-symbolic"
-        } else if clean.contains("draft") || clean.contains("entwurf") || clean.contains("entwürfe")
-        {
-            "mail-drafts-symbolic"
-        } else if clean.contains("trash")
-            || clean.contains("mülleimer")
-            || clean.contains("papierkorb")
-            || clean.contains("gelöschte")
-            || clean.contains("deleted")
-        {
-            "user-trash-symbolic"
-        } else if clean.contains("junk") || clean.contains("spam") {
-            "mail-mark-junk-symbolic"
-        } else if clean.contains("starred") || clean.contains("markiert") {
-            "starred-symbolic"
-        } else if clean.contains("important") || clean.contains("wichtig") {
-            "mail-mark-important-symbolic"
-        } else if clean.contains("all mail") || clean.contains("alle nachrichten") {
-            "mail-read-symbolic"
-        } else if clean.contains("archive") || clean.contains("archiv") {
-            "folder-symbolic"
-        } else if clean.contains("outbox") || clean.contains("postausgang") {
-            "mail-outbox-symbolic"
+    pub(crate) fn folder_icon_name(folder_id: &str) -> &'static str {
+        Self::folder_icon_name_for(folder_id, "")
+    }
+
+    pub(crate) fn folder_icon_name_for(folder_id: &str, folder_name: &str) -> &'static str {
+        let candidate = if !folder_name.trim().is_empty() {
+            folder_name.trim()
         } else {
-            "folder-symbolic"
+            folder_id.trim()
+        };
+
+        let mut clean = candidate;
+        if let Some(rest) = clean.strip_prefix("eds:") {
+            if let Some((_, path)) = rest.split_once('/') {
+                clean = path;
+            } else if let Some((_, path)) = rest.split_once(':') {
+                clean = path;
+            } else {
+                clean = rest;
+            }
+        } else if let Some((_, path)) = clean.split_once(':') {
+            clean = path;
+        }
+
+        for prefix in ["[Gmail]/", "[Google Mail]/"] {
+            if let Some(stripped) = clean.strip_prefix(prefix) {
+                clean = stripped;
+                break;
+            }
+        }
+
+        let clean_path = clean.trim().to_ascii_lowercase();
+        let leaf = clean_path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&clean_path)
+            .trim();
+        let is_subfolder = clean_path.contains('/');
+
+        if !is_subfolder {
+            if clean_path.contains("inbox") || clean_path.contains("posteingang") {
+                "mail-inbox-symbolic"
+            } else if clean_path.contains("sent")
+                || clean_path.contains("gesendet")
+                || clean_path.contains("gesendete")
+            {
+                "mail-send-symbolic"
+            } else if clean_path.contains("draft")
+                || clean_path.contains("entwurf")
+                || clean_path.contains("entwürfe")
+                || clean_path.contains("entwuerfe")
+            {
+                "mail-drafts-symbolic"
+            } else if clean_path.contains("trash")
+                || clean_path.contains("mülleimer")
+                || clean_path.contains("papierkorb")
+                || clean_path.contains("gelöschte")
+                || clean_path.contains("deleted")
+            {
+                "user-trash-symbolic"
+            } else if clean_path.contains("junk") || clean_path.contains("spam") {
+                "mail-mark-junk-symbolic"
+            } else if clean_path.contains("starred") || clean_path.contains("markiert") {
+                "starred-symbolic"
+            } else if clean_path.contains("important") || clean_path.contains("wichtig") {
+                "mail-mark-important-symbolic"
+            } else if clean_path.contains("all mail") || clean_path.contains("alle nachrichten") {
+                "mail-read-symbolic"
+            } else if clean_path.contains("archive") || clean_path.contains("archiv") {
+                "folder-symbolic"
+            } else if clean_path.contains("outbox") || clean_path.contains("postausgang") {
+                "mail-outbox-symbolic"
+            } else {
+                "folder-symbolic"
+            }
+        } else {
+            // For nested subfolders, only provide standard mail icons if the leaf name itself explicitly matches
+            if leaf == "inbox" || leaf == "posteingang" {
+                "mail-inbox-symbolic"
+            } else if leaf == "sent" || leaf == "gesendet" || leaf == "gesendete elemente" {
+                "mail-send-symbolic"
+            } else if leaf == "drafts" || leaf == "entwürfe" || leaf == "entwuerfe" {
+                "mail-drafts-symbolic"
+            } else if leaf == "trash" || leaf == "papierkorb" || leaf == "gelöschte elemente" {
+                "user-trash-symbolic"
+            } else if leaf == "junk" || leaf == "spam" || leaf == "junk-e-mail" {
+                "mail-mark-junk-symbolic"
+            } else {
+                "folder-symbolic"
+            }
         }
     }
 
@@ -21409,15 +21530,15 @@ impl MailPage {
                 .build();
                 
             let btn_prev_off = gtk::ToggleButton::builder().label(&gettext("Off")).build();
-            let btn_prev_right = gtk::ToggleButton::builder().label(&gettext("Right")).build();
             let btn_prev_bottom = gtk::ToggleButton::builder().label(&gettext("Bottom")).build();
+            let btn_prev_right = gtk::ToggleButton::builder().label(&gettext("Right")).build();
             
-            btn_prev_right.set_group(Some(&btn_prev_off));
             btn_prev_bottom.set_group(Some(&btn_prev_off));
+            btn_prev_right.set_group(Some(&btn_prev_off));
             
             preview_box.append(&btn_prev_off);
-            preview_box.append(&btn_prev_right);
             preview_box.append(&btn_prev_bottom);
+            preview_box.append(&btn_prev_right);
             sec2_box.append(&preview_box);
             columns_popover_box.append(&sec2_box);
             
@@ -21455,6 +21576,66 @@ impl MailPage {
                     if !settings_for_bottom.show_message_preview() || settings_for_bottom.mail_layout() != "horizontal" {
                         settings_for_bottom.set_show_message_preview(true);
                         settings_for_bottom.set_mail_layout("horizontal");
+                    }
+                }
+            });
+            
+            // --- Section: Header Style ---
+            let sec_header_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(6)
+                .build();
+
+            sec_header_box.append(&gtk::Label::builder()
+                .label(&gettext("Header Style"))
+                .halign(gtk::Align::Start)
+                .css_classes(vec!["dim-label", "caption"])
+                .build()
+            );
+
+            let header_style_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(0)
+                .homogeneous(true)
+                .css_classes(vec!["linked"])
+                .build();
+
+            let btn_header_modern = gtk::ToggleButton::builder().label(&gettext("Modern")).build();
+            let btn_header_classic = gtk::ToggleButton::builder().label(&gettext("Classic")).build();
+            btn_header_classic.set_group(Some(&btn_header_modern));
+
+            header_style_box.append(&btn_header_modern);
+            header_style_box.append(&btn_header_classic);
+            sec_header_box.append(&header_style_box);
+            columns_popover_box.append(&sec_header_box);
+
+            let is_classic = settings.mail_header_style() == "classic";
+            if is_classic {
+                btn_header_classic.set_active(true);
+            } else {
+                btn_header_modern.set_active(true);
+            }
+
+            let settings_for_modern = settings.clone();
+            let page_weak_modern = self.downgrade();
+            btn_header_modern.connect_toggled(move |btn| {
+                if btn.is_active() && settings_for_modern.mail_header_style() != "modern" {
+                    settings_for_modern.set_mail_header_style("modern");
+                    if let Some(page) = page_weak_modern.upgrade() {
+                        let selected = page.selected_message();
+                        page.refresh_normal_headers_for_message(selected.as_ref());
+                    }
+                }
+            });
+
+            let settings_for_classic = settings.clone();
+            let page_weak_classic = self.downgrade();
+            btn_header_classic.connect_toggled(move |btn| {
+                if btn.is_active() && settings_for_classic.mail_header_style() != "classic" {
+                    settings_for_classic.set_mail_header_style("classic");
+                    if let Some(page) = page_weak_classic.upgrade() {
+                        let selected = page.selected_message();
+                        page.refresh_normal_headers_for_message(selected.as_ref());
                     }
                 }
             });
@@ -21565,6 +21746,8 @@ impl MailPage {
                     if let Some(page) = page_weak.upgrade() {
                         page.refresh_sender_avatars();
                         page.rebuild_mail_column_layout();
+                        let selected = page.selected_message();
+                        page.refresh_normal_headers_for_message(selected.as_ref());
                     }
                 });
                 glib::Propagation::Proceed
@@ -22892,7 +23075,7 @@ impl MailPage {
 
         vscrollbar.set_halign(gtk::Align::End);
         vscrollbar.set_valign(gtk::Align::Fill);
-        vscrollbar.set_margin_end(3);
+        vscrollbar.set_margin_end(1);
         vscrollbar.set_margin_start(0);
         vscrollbar.set_margin_top(0);
         vscrollbar.set_margin_bottom(0);
@@ -29505,7 +29688,7 @@ impl MailPage {
             if let Some(folder_list) = self.imp().folder_list.borrow().as_ref() {
                 let all_folders = self.imp().mail_folder_summaries.borrow().clone();
                 if pending.replace {
-                    self.force_rebuild_camel_folder_rows(folder_list, &all_folders);
+                    self.rebuild_camel_folder_rows(folder_list, &all_folders);
                 }
                 self.update_camel_folder_counts(folder_list, &all_folders, None);
             }
@@ -38316,12 +38499,30 @@ mod tests {
         assert!(!level1_expander.is_indent_for_depth());
         assert!(level1_expander.is_indent_for_icon());
 
-        // Nested subfolder (depth >= 2): indent_for_depth = true, indent_for_icon = true
+        // Nested subfolder (depth >= 2): indent_for_depth = false, indent_for_icon = true, margin_start = 16 * (depth - 1)
         let child_expander = gtk::TreeExpander::new();
-        child_expander.set_indent_for_depth(true);
+        child_expander.set_indent_for_depth(false);
         child_expander.set_indent_for_icon(true);
-        assert!(child_expander.is_indent_for_depth());
+        child_expander.set_margin_start(16);
+        assert!(!child_expander.is_indent_for_depth());
         assert!(child_expander.is_indent_for_icon());
+        assert_eq!(child_expander.margin_start(), 16);
+
+        // 3. folder-sub-expander class contract for depth >= 2:
+        child_expander.add_css_class("folder-sub-expander");
+        assert!(child_expander.has_css_class("folder-sub-expander"));
+        level1_expander.remove_css_class("folder-sub-expander");
+        assert!(!level1_expander.has_css_class("folder-sub-expander"));
+        root_expander.remove_css_class("folder-sub-expander");
+        assert!(!root_expander.has_css_class("folder-sub-expander"));
+
+        // 4. Subfolder icon & display name isolation contracts:
+        // Nested subfolders do NOT inherit parent folder icons unless their leaf name explicitly matches
+        assert_eq!(MailPage::folder_icon_name_for("ews:1/Posteingang/Kunden", "Posteingang/Kunden"), "folder-symbolic");
+        assert_eq!(MailPage::folder_icon_name_for("ews:1/Synchronisierungsprobleme/Konflikte", "Synchronisierungsprobleme/Konflikte"), "folder-symbolic");
+        assert_eq!(MailPage::folder_icon_name_for("ews:1/Gesendete Elemente/Projekt2024", "Gesendete Elemente/Projekt2024"), "folder-symbolic");
+        assert_eq!(MailPage::folder_icon_name_for("inbox", "Posteingang"), "mail-inbox-symbolic");
+        assert_eq!(MailPage::folder_icon_name_for("sent", "Gesendete Elemente"), "mail-send-symbolic");
     }
 
     #[test]
@@ -38418,6 +38619,55 @@ mod tests {
         revealer.set_reveal_child(true);
         assert!(revealer.reveals_child());
         assert!(row_logos_container.is_visible());
+    }
+
+    #[test]
+    fn test_view_options_header_style_switcher_contract() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let btn_header_modern = gtk::ToggleButton::builder().label("Modern").build();
+        let btn_header_classic = gtk::ToggleButton::builder().label("Classic").build();
+        btn_header_classic.set_group(Some(&btn_header_modern));
+
+        btn_header_modern.set_active(true);
+        assert!(btn_header_modern.is_active());
+        assert!(!btn_header_classic.is_active());
+
+        btn_header_classic.set_active(true);
+        assert!(!btn_header_modern.is_active());
+        assert!(btn_header_classic.is_active());
+    }
+
+    #[test]
+    fn test_modern_header_avatar_visibility_contract() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let avatar = adw::Avatar::new(38, Some("Alice"), true);
+        let grid = gtk::Grid::new();
+
+        // When show_avatar is false
+        let show_avatar = false;
+        avatar.set_visible(show_avatar);
+        grid.set_margin_start(if show_avatar { 48 } else { 0 });
+        assert!(!avatar.is_visible());
+        assert_eq!(grid.margin_start(), 0);
+
+        // When show_avatar is true
+        let show_avatar = true;
+        avatar.set_visible(show_avatar);
+        grid.set_margin_start(if show_avatar { 48 } else { 0 });
+        assert!(avatar.is_visible());
+        assert_eq!(grid.margin_start(), 48);
     }
 }
 
