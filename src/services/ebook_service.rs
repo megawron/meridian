@@ -653,16 +653,26 @@ fn load_contacts_prefer_eds_fresh() -> EBookLoadResult {
 
     // Augment with SQLite cached contacts (e.g. from Flatpak or offline caches)
     let sqlite_contacts = crate::services::evolution_contact_cache::load_contacts_from_evolution_sqlite_cache();
+    let mut known_uids: std::collections::HashSet<String> = contacts.iter().map(|c| c.uid.clone()).collect();
+    let mut known_identities: std::collections::HashSet<(String, String)> = contacts
+        .iter()
+        .filter(|c| !c.contact.fn_name.is_empty())
+        .map(|c| (c.contact.fn_name.clone(), c.contact.email.clone()))
+        .collect();
+
     for sc in sqlite_contacts {
-        let is_dup = contacts.iter().any(|c| {
-            c.uid == sc.uid
-                || (!c.contact.fn_name.is_empty()
-                    && c.contact.fn_name == sc.contact.fn_name
-                    && c.contact.email == sc.contact.email)
-        });
-        if !is_dup {
-            contacts.push(sc);
+        if known_uids.contains(&sc.uid) {
+            continue;
         }
+        let has_fn = !sc.contact.fn_name.is_empty();
+        if has_fn && known_identities.contains(&(sc.contact.fn_name.clone(), sc.contact.email.clone())) {
+            continue;
+        }
+        known_uids.insert(sc.uid.clone());
+        if has_fn {
+            known_identities.insert((sc.contact.fn_name.clone(), sc.contact.email.clone()));
+        }
+        contacts.push(sc);
     }
 
     let local_service = ContactStoreService::new();

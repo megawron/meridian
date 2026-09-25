@@ -106,8 +106,14 @@ impl SqliteDb {
         count
     }
 
-    fn query_contacts_cache(&self) -> Vec<(String, String)> {
-        let sql = CString::new("SELECT ECacheUID, ECacheOBJ FROM ECacheObjects;").unwrap();
+    fn query_contacts_cache(&self, limit: Option<usize>) -> Vec<(String, String)> {
+        let sql_str = match limit {
+            Some(lim) if lim > 0 => format!("SELECT ECacheUID, ECacheOBJ FROM ECacheObjects LIMIT {lim};"),
+            _ => "SELECT ECacheUID, ECacheOBJ FROM ECacheObjects;".to_string(),
+        };
+        let Ok(sql) = CString::new(sql_str) else {
+            return Vec::new();
+        };
         let mut stmt: *mut Sqlite3Stmt = std::ptr::null_mut();
         let rc = unsafe {
             sqlite3_prepare_v2(self.ptr, sql.as_ptr(), -1, &mut stmt, std::ptr::null_mut())
@@ -132,8 +138,14 @@ impl SqliteDb {
         results
     }
 
-    fn query_contacts_local(&self) -> Vec<(String, String)> {
-        let sql = CString::new("SELECT uid, vcard FROM folder_id;").unwrap();
+    fn query_contacts_local(&self, limit: Option<usize>) -> Vec<(String, String)> {
+        let sql_str = match limit {
+            Some(lim) if lim > 0 => format!("SELECT uid, vcard FROM folder_id LIMIT {lim};"),
+            _ => "SELECT uid, vcard FROM folder_id;".to_string(),
+        };
+        let Ok(sql) = CString::new(sql_str) else {
+            return Vec::new();
+        };
         let mut stmt: *mut Sqlite3Stmt = std::ptr::null_mut();
         let rc = unsafe {
             sqlite3_prepare_v2(self.ptr, sql.as_ptr(), -1, &mut stmt, std::ptr::null_mut())
@@ -441,8 +453,8 @@ pub fn discover_address_book_dbs() -> Vec<AddressBookDbTarget> {
     targets
 }
 
-/// Load all contacts directly from the local Evolution SQLite databases.
-pub fn load_contacts_from_evolution_sqlite_cache() -> Vec<EBookContactRecord> {
+/// Load contacts directly from the local Evolution SQLite databases, with an optional limit.
+pub fn load_contacts_from_evolution_sqlite_cache_limited(limit: Option<usize>) -> Vec<EBookContactRecord> {
     let targets = discover_address_book_dbs();
     let mut records = Vec::new();
     let mut seen_contact_identities: HashSet<String> = HashSet::new();
@@ -453,9 +465,9 @@ pub fn load_contacts_from_evolution_sqlite_cache() -> Vec<EBookContactRecord> {
         };
 
         let raw_contacts = if target.is_cache_table {
-            db.query_contacts_cache()
+            db.query_contacts_cache(limit)
         } else {
-            db.query_contacts_local()
+            db.query_contacts_local(limit)
         };
 
         for (uid, vcard) in raw_contacts {
@@ -477,10 +489,21 @@ pub fn load_contacts_from_evolution_sqlite_cache() -> Vec<EBookContactRecord> {
                 vcard,
                 contact,
             });
+
+            if let Some(lim) = limit {
+                if records.len() >= lim {
+                    return records;
+                }
+            }
         }
     }
 
     records
+}
+
+/// Load all contacts directly from the local Evolution SQLite databases.
+pub fn load_contacts_from_evolution_sqlite_cache() -> Vec<EBookContactRecord> {
+    load_contacts_from_evolution_sqlite_cache_limited(None)
 }
 
 /// List all address book sources discovered in Evolution caches, formatted as `EdsSource`.
