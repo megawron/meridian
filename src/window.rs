@@ -4745,6 +4745,26 @@ impl EvolutionWindow {
             #[weak(rename_to = win)]
             self,
             move |_, _| {
+                if let Some(focus) = gtk::prelude::GtkWindowExt::focus(&win) {
+                    if let Some(editable) = focus.downcast_ref::<gtk::Editable>() {
+                        editable.select_region(0, -1);
+                        return;
+                    }
+                    if let Some(text_view) = focus.downcast_ref::<gtk::TextView>() {
+                        let buffer = text_view.buffer();
+                        buffer.select_range(&buffer.start_iter(), &buffer.end_iter());
+                        return;
+                    }
+                    let mut parent = focus.parent();
+                    while let Some(p) = parent {
+                        if let Some(editable) = p.downcast_ref::<gtk::Editable>() {
+                            editable.select_region(0, -1);
+                            return;
+                        }
+                        parent = p.parent();
+                    }
+                }
+
                 let count = win
                     .mail_page()
                     .map(|mail_page| mail_page.select_all_visible_messages())
