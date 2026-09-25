@@ -832,12 +832,13 @@ pub(crate) fn load_evolution_cached_folders(
                     if file_type.is_dir() {
                         let name = entry.file_name().to_string_lossy().to_string();
                         let folder_id = normalized_camel_folder_id("", &name);
+                        let leaf_name = name.rsplit('/').next().unwrap_or(&name).to_string();
                         result.push(CamelFolderSummary {
                             source_uid: source_uid.to_string(),
                             source_display_name: source_display_name.to_string(),
                             folder_id,
-                            folder_name: name.clone(),
-                            display_name: name,
+                            folder_name: name,
+                            display_name: leaf_name,
                             unread_count: 0,
                             total_count: 0,
                             is_selectable: true,
@@ -2043,12 +2044,18 @@ fn load_messages_native(
                 continue;
             }
 
+            let clean_display = if mapped_display_name.contains('/') {
+                mapped_display_name.rsplit('/').next().unwrap_or(&mapped_display_name).to_string()
+            } else {
+                mapped_display_name
+            };
+
             folder_summaries.push(CamelFolderSummary {
                 source_uid: mapped_source_uid,
                 source_display_name: mapped_source_display_name,
                 folder_id: normalized_camel_folder_id(&c_string(folder.folder_id), &mapped_folder_name),
                 folder_name: mapped_folder_name,
-                display_name: mapped_display_name,
+                display_name: clean_display,
                 unread_count: folder.unread_count,
                 total_count: folder.total_count,
                 is_selectable: folder.is_selectable != 0,

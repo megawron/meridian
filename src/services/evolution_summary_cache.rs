@@ -391,12 +391,13 @@ pub fn load_folders_from_sqlite(
                 let mut mapped_source_uid = source_uid.to_string();
                 let mut mapped_source_display_name = account_name.to_string();
                 let mut mapped_folder_name = name.clone();
+                let leaf_name = name.rsplit('/').next().unwrap_or(&name);
                 let mut mapped_display_name = if let Some(stripped) = name.strip_prefix("[Gmail]/") {
-                    stripped.to_string()
-                } else if name.eq_ignore_ascii_case("INBOX") {
+                    stripped.rsplit('/').next().unwrap_or(stripped).to_string()
+                } else if leaf_name.eq_ignore_ascii_case("INBOX") {
                     "Posteingang".to_string()
                 } else {
-                    name.clone()
+                    leaf_name.to_string()
                 };
 
                 let mut matched_shared = false;
@@ -465,30 +466,48 @@ fn parse_address(raw: &str) -> (String, String) {
     (email.clone(), email)
 }
 
-/// Fast reader for folder messages directly from Evolution's local `folders.db`.
-pub fn load_folder_messages_from_sqlite(
+/// Keyset cursor for pagination in Evolution SQLite mail summaries: (dreceived, dsent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MessageCursor {
+    pub dreceived: i64,
+    pub dsent: i64,
+}
+
+/// Fast reader for a page of folder messages directly from Evolution's local `folders.db`
+/// using Keyset Pagination (O(1) seek via index on (dreceived, dsent)).
+pub fn load_folder_messages_page_from_sqlite(
     db_path: &Path,
     source_uid: &str,
     folder_name: &str,
-    limit: Option<usize>,
-) -> Result<Vec<ParsedMail>, String> {
+    cursor: Option<MessageCursor>,
+    limit: usize,
+) -> Result<(Vec<ParsedMail>, Option<MessageCursor>), String> {
     let (effective_source_uid, effective_folder_name) =
         crate::services::camel_mail_service::resolve_shared_mailbox_target(source_uid, folder_name);
 
     let db = SqliteDb::open(db_path)?;
     let Some((folder_id, real_folder_name)) = db.resolve_folder_id(&effective_folder_name)? else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), None));
     };
 
     let table_name = format!("messages_{folder_id}");
-    let limit_clause = match limit {
-        Some(lim) if lim > 0 => format!(" LIMIT {lim}"),
-        _ => String::new(),
+    let limit_clause = if limit > 0 && limit < usize::MAX {
+        format!(" LIMIT {limit}")
+    } else {
+        String::new()
+    };
+
+    let where_clause = match cursor {
+        Some(c) => format!(
+            " WHERE (dreceived < {}) OR (dreceived = {} AND dsent < {})",
+            c.dreceived, c.dreceived, c.dsent
+        ),
+        None => String::new(),
     };
 
     let sql_str = format!(
         "SELECT uid, flags, size, dsent, dreceived, subject, mail_from, mail_to, preview \
-         FROM {table_name} ORDER BY dreceived DESC, dsent DESC{limit_clause};"
+         FROM {table_name}{where_clause} ORDER BY dreceived DESC, dsent DESC{limit_clause};"
     );
 
     let c_sql = CString::new(sql_str).map_err(|_| "Ungültiger SQL-String".to_string())?;
@@ -507,6 +526,7 @@ pub fn load_folder_messages_from_sqlite(
     let is_shared_target = effective_source_uid != source_uid;
 
     let mut messages = Vec::new();
+    let mut last_cursor: Option<MessageCursor> = None;
     unsafe {
         while sqlite3_step(stmt) == SQLITE_ROW {
             let uid_ptr = sqlite3_column_text(stmt, 0);
@@ -518,6 +538,8 @@ pub fn load_folder_messages_from_sqlite(
             let size = sqlite3_column_int64(stmt, 2) as usize;
             let dsent = sqlite3_column_int64(stmt, 3);
             let dreceived = sqlite3_column_int64(stmt, 4);
+
+            last_cursor = Some(MessageCursor { dreceived, dsent });
 
             let subject_ptr = sqlite3_column_text(stmt, 5);
             let subject = if !subject_ptr.is_null() {
@@ -660,6 +682,29 @@ pub fn load_folder_messages_from_sqlite(
         sqlite3_finalize(stmt);
     }
 
+    let next_cursor = if limit > 0 && limit < usize::MAX && messages.len() == limit {
+        last_cursor
+    } else {
+        None
+    };
+
+    Ok((messages, next_cursor))
+}
+
+/// Fast reader for folder messages directly from Evolution's local `folders.db`.
+pub fn load_folder_messages_from_sqlite(
+    db_path: &Path,
+    source_uid: &str,
+    folder_name: &str,
+    limit: Option<usize>,
+) -> Result<Vec<ParsedMail>, String> {
+    let (messages, _) = load_folder_messages_page_from_sqlite(
+        db_path,
+        source_uid,
+        folder_name,
+        None,
+        limit.unwrap_or(usize::MAX),
+    )?;
     Ok(messages)
 }
 
@@ -781,6 +826,51 @@ mod tests {
             ).expect("Reading shared mailbox messages must succeed");
             if !shared_msgs.is_empty() {
                 assert_eq!(shared_msgs[0].backend_location.as_ref().unwrap().source_uid, shared.id);
+            }
+        }
+    }
+
+    #[test]
+    fn test_keyset_pagination() {
+        let caches = discover_evolution_mail_caches();
+        if caches.is_empty() {
+            return;
+        }
+        let cache = &caches[0];
+        let folders = load_folders_from_sqlite(&cache.folders_db, &cache.source_uid, "Test Account")
+            .expect("Reading folders must succeed");
+        if folders.is_empty() {
+            return;
+        }
+        let inbox_folder = folders
+            .iter()
+            .find(|f| f.folder_name.eq_ignore_ascii_case("inbox") || f.folder_name == "Posteingang")
+            .map(|f| f.folder_name.as_str())
+            .unwrap_or(&folders[0].folder_name);
+
+        let (page1, cursor1) = load_folder_messages_page_from_sqlite(
+            &cache.folders_db,
+            &cache.source_uid,
+            inbox_folder,
+            None,
+            3,
+        ).expect("Page 1 must succeed");
+
+        if page1.len() == 3 {
+            assert!(cursor1.is_some(), "Full page must yield a next cursor");
+            let (page2, _) = load_folder_messages_page_from_sqlite(
+                &cache.folders_db,
+                &cache.source_uid,
+                inbox_folder,
+                cursor1,
+                3,
+            ).expect("Page 2 must succeed");
+
+            // Verify pages are disjoint
+            for m1 in &page1 {
+                for m2 in &page2 {
+                    assert_ne!(m1.id, m2.id, "Page 1 and Page 2 must not contain identical UIDs");
+                }
             }
         }
     }
