@@ -3036,7 +3036,7 @@ impl PreferencesDialog {
             .subtitle("Copy EML, mbox, or Maildir files/folders into configured local import folder")
             .build();
         let import_mail_button = gtk::Button::builder()
-            .icon_name("mail-folder-inbox-symbolic")
+            .icon_name("mail-inbox-symbolic")
             .tooltip_text("Select mail files")
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)

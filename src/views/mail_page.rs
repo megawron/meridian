@@ -320,8 +320,8 @@ impl FolderSelection {
             (name.clone(), MailPage::folder_icon_name(name))
         } else {
             match self.folder_id.as_str() {
-                "all" => (crate::i18n::gettext("All Messages"), "mail-folder-inbox-symbolic"),
-                "unified_inbox" => (crate::i18n::gettext("All Inboxes"), "mail-folder-inbox-symbolic"),
+                "all" => (crate::i18n::gettext("All Messages"), "mail-inbox-symbolic"),
+                "unified_inbox" => (crate::i18n::gettext("All Inboxes"), "mail-inbox-symbolic"),
                 "unified_unread" => (crate::i18n::gettext("All Unread"), "mail-unread-symbolic"),
                 "unified_flagged" => (crate::i18n::gettext("All Flagged"), "starred-symbolic"),
                 "unified_sent" => (crate::i18n::gettext("All Sent"), "mail-send-symbolic"),
@@ -5707,6 +5707,7 @@ mod imp {
         pub folder_list: RefCell<Option<gtk::ListBox>>,
         pub unified_folder_section: RefCell<Option<gtk::Box>>,
         pub unified_folder_list: RefCell<Option<gtk::ListBox>>,
+        pub unified_header_badge: RefCell<Option<gtk::Label>>,
         pub local_folder_ids: RefCell<HashSet<String>>,
         pub local_folder_collapsed: RefCell<HashSet<String>>,
         pub dynamic_folder_store: RefCell<Option<gio::ListStore>>,
@@ -14500,31 +14501,21 @@ impl MailPage {
         local_folder_toolbar.append(&local_folder_header);
         local_folder_toolbar.append(&new_local_folder_button);
 
-        let unified_folder_toolbar = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(4)
-            .margin_start(4)
-            .margin_end(4)
-            .margin_top(3)
-            .margin_bottom(1)
-            .build();
-        let unified_folder_header = gtk::Label::builder()
-            .label(&gettext("Unified Folders"))
-            .css_classes(vec!["sidebar-section-header"])
-            .halign(gtk::Align::Start)
-            .hexpand(true)
-            .ellipsize(pango::EllipsizeMode::End)
-            .build();
-        unified_folder_toolbar.append(&unified_folder_header);
+        let is_collapsed = self
+            .imp()
+            .dynamic_folder_expanded
+            .borrow()
+            .contains("unified:collapsed");
 
         let unified_folder_list = gtk::ListBox::new();
         unified_folder_list.set_selection_mode(gtk::SelectionMode::Single);
         unified_folder_list.add_css_class("navigation-sidebar");
         unified_folder_list.set_margin_start(2);
+        unified_folder_list.set_visible(!is_collapsed);
 
         unified_folder_list.append(&Self::create_folder_row(
             "unified_inbox",
-            "mail-folder-inbox-symbolic",
+            "mail-inbox-symbolic",
             &gettext("All Inboxes"),
             "",
         ));
@@ -14546,6 +14537,104 @@ impl MailPage {
             &gettext("All Sent"),
             "",
         ));
+
+        let arrow = gtk::Image::builder()
+            .icon_name(if is_collapsed {
+                "pan-end-symbolic"
+            } else {
+                "pan-down-symbolic"
+            })
+            .pixel_size(16)
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["dim-label"])
+            .build();
+
+        let unified_folder_header = gtk::Label::builder()
+            .label(&gettext("All"))
+            .css_classes(vec!["account-heading"])
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .ellipsize(pango::EllipsizeMode::End)
+            .build();
+
+        let header_badge = gtk::Label::builder()
+            .xalign(1.0)
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["badge", "numeric"])
+            .visible(false)
+            .build();
+
+        let unified_folder_toolbar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(5)
+            .margin_start(4)
+            .margin_end(4)
+            .margin_top(3)
+            .margin_bottom(1)
+            .css_classes(vec![
+                "sidebar-account-row",
+                "account-root-row",
+                "mail-sidebar-row",
+            ])
+            .tooltip_text(if is_collapsed {
+                gettext("Expand group")
+            } else {
+                gettext("Collapse group")
+            })
+            .build();
+        unified_folder_toolbar.set_cursor_from_name(Some("pointer"));
+        unified_folder_toolbar.append(&arrow);
+        unified_folder_toolbar.append(&unified_folder_header);
+        unified_folder_toolbar.append(&header_badge);
+
+        let click = gtk::GestureClick::builder()
+            .button(gtk::gdk::BUTTON_PRIMARY)
+            .build();
+        let page_for_unified_toggle = self.downgrade();
+        let arrow_for_toggle = arrow.clone();
+        let header_for_toggle = unified_folder_toolbar.clone();
+        let unified_list_for_toggle = unified_folder_list.clone();
+        let header_badge_for_toggle = header_badge.clone();
+        click.connect_released(move |_, _, _, _| {
+            let Some(page) = page_for_unified_toggle.upgrade() else {
+                return;
+            };
+            let mut set = page.imp().dynamic_folder_expanded.borrow_mut();
+            let is_now_collapsed = if set.contains("unified:collapsed") {
+                set.remove("unified:collapsed");
+                false
+            } else {
+                set.insert("unified:collapsed".to_string());
+                true
+            };
+            let set_clone = set.clone();
+            drop(set);
+            page.persist_dynamic_folder_expanded(&set_clone);
+
+            arrow_for_toggle.set_icon_name(Some(if is_now_collapsed {
+                "pan-end-symbolic"
+            } else {
+                "pan-down-symbolic"
+            }));
+            let tip = if is_now_collapsed {
+                gettext("Expand group")
+            } else {
+                gettext("Collapse group")
+            };
+            header_for_toggle.set_tooltip_text(Some(&tip));
+            unified_list_for_toggle.set_visible(!is_now_collapsed);
+            if !is_now_collapsed {
+                header_badge_for_toggle.set_visible(false);
+            } else if let Some(b) = page.imp().unified_header_badge.borrow().as_ref() {
+                let count: u32 = b.label().parse().unwrap_or(0);
+                b.set_visible(count > 0);
+            }
+        });
+        unified_folder_toolbar.add_controller(click);
+
+        self.imp()
+            .unified_header_badge
+            .replace(Some(header_badge));
 
         let unified_enabled = AppSettings::try_new()
             .map(|s| s.mail_enable_unified_inbox())
@@ -14840,7 +14929,11 @@ impl MailPage {
             .css_classes(vec!["mail-sidebar-row"])
             .build();
 
-        let icon = gtk::Image::from_icon_name(icon_name);
+        let icon = gtk::Image::builder()
+            .pixel_size(16)
+            .valign(gtk::Align::Center)
+            .build();
+        set_image_icon_with_fallback(&icon, icon_name, "folder-symbolic");
         icon.add_css_class("dim-label");
 
         let label = gtk::Label::builder()
@@ -30113,6 +30206,16 @@ impl MailPage {
                     badge.set_visible(unread > 0);
                 }
             }
+
+            if let Some(header_badge) = self.imp().unified_header_badge.borrow().as_ref() {
+                let is_collapsed = self
+                    .imp()
+                    .dynamic_folder_expanded
+                    .borrow()
+                    .contains("unified:collapsed");
+                header_badge.set_label(&unified_inbox_unread.to_string());
+                header_badge.set_visible(is_collapsed && unified_inbox_unread > 0);
+            }
         }
 
         if let Some(index) = self.imp().dynamic_folder_index.borrow().as_ref().cloned() {
@@ -37748,7 +37851,7 @@ mod tests {
         assert_eq!(sel_inbox.source_uid, None);
         let (title, icon) = sel_inbox.title_and_icon();
         assert_eq!(title, crate::i18n::gettext("All Inboxes"));
-        assert_eq!(icon, "mail-folder-inbox-symbolic");
+        assert_eq!(icon, "mail-inbox-symbolic");
 
         let sel_unread = FolderSelection::from_folder_id("unified_unread");
         let (title, icon) = sel_unread.title_and_icon();

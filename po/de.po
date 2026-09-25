@@ -2074,11 +2074,11 @@ msgstr ""
 
 #: src/views/contacts_page.rs:1435
 msgid "Expand group"
-msgstr ""
+msgstr "Gruppe ausklappen"
 
 #: src/views/contacts_page.rs:1437
 msgid "Collapse group"
-msgstr ""
+msgstr "Gruppe einklappen"
 
 #: src/views/contacts_page.rs:1520 src/views/contacts_page.rs:1558
 #: src/views/contacts_page.rs:1615 and 2 more
@@ -2986,6 +2986,18 @@ msgstr ""
 #: src/views/mail_page.rs:300 src/views/mail_page.rs:12334
 msgid "All Messages"
 msgstr "Alle Nachrichten"
+
+msgid "All Inboxes"
+msgstr "Alle Posteingänge"
+
+msgid "All Unread"
+msgstr "Alle ungelesenen"
+
+msgid "All Flagged"
+msgstr "Alle markierten"
+
+msgid "All Sent"
+msgstr "Alle gesendeten"
 
 #: src/views/mail_page.rs:301 src/views/mail_page.rs:308
 #: src/views/mail_page.rs:3231 and 15 more
