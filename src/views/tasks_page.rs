@@ -4263,9 +4263,6 @@ impl TasksPage {
                         is_writable,
                         is_primary,
                     );
-                    if let Some(parent) = root_window.as_ref() {
-                        dialog.set_transient_for(Some(parent));
-                    }
                     let page_weak_save = page.downgrade();
                     dialog.set_on_save(move |update| {
                         if let Some(p) = page_weak_save.upgrade() {
@@ -4289,7 +4286,7 @@ impl TasksPage {
                             p.refresh_tasks();
                         }
                     });
-                    dialog.present();
+                    dialog.present(Some(&page));
                 }
             }
         });

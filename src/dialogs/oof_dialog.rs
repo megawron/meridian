@@ -27,7 +27,7 @@ mod imp {
     impl ObjectSubclass for OutOfOfficeDialog {
         const NAME: &'static str = "EvolutionOutOfOfficeDialog";
         type Type = super::OutOfOfficeDialog;
-        type ParentType = adw::Window;
+        type ParentType = adw::Dialog;
     }
 
     impl ObjectImpl for OutOfOfficeDialog {
@@ -38,24 +38,21 @@ mod imp {
     }
 
     impl WidgetImpl for OutOfOfficeDialog {}
-    impl WindowImpl for OutOfOfficeDialog {}
-    impl AdwWindowImpl for OutOfOfficeDialog {}
+    impl AdwDialogImpl for OutOfOfficeDialog {}
 }
 
 glib::wrapper! {
     pub struct OutOfOfficeDialog(ObjectSubclass<imp::OutOfOfficeDialog>)
-        @extends adw::Window, gtk::Window, gtk::Widget,
-        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget,
-                    gtk::Native, gtk::Root, gtk::ShortcutManager;
+        @extends adw::Dialog, gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
 impl OutOfOfficeDialog {
     pub fn new() -> Self {
         glib::Object::builder()
             .property("title", "Abwesenheitsnotiz (Auto-Responder)")
-            .property("modal", true)
-            .property("default-width", 600)
-            .property("default-height", 520)
+            .property("content-width", 600)
+            .property("content-height", 520)
             .build()
     }
 
@@ -299,7 +296,7 @@ impl OutOfOfficeDialog {
 
         content_scroll.set_child(Some(&content_box));
         toolbar_view.set_content(Some(&content_scroll));
-        self.set_content(Some(&toolbar_view));
+        self.set_child(Some(&toolbar_view));
     }
 }
 
@@ -379,11 +376,9 @@ fn load_graph_settings(
 
 fn show_dialog_toast(dialog: &OutOfOfficeDialog, message: &str) {
     let toast = adw::Toast::new(message);
-    if let Some(parent) = dialog.transient_for() {
-        if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>() {
-            window.add_toast(&toast);
-            return;
-        }
+    if let Some(window) = dialog.root().and_downcast::<crate::window::EvolutionWindow>() {
+        window.add_toast(&toast);
+        return;
     }
     tracing::info!(%message, "Out-of-office dialog result");
 }

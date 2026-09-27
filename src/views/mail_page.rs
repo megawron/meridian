@@ -6540,21 +6540,7 @@ impl MailPage {
 
             match imp.drill_down_level.get() {
                 MailDrillDownLevel::Viewer => {
-                    // In tablet viewer mode: 2 columns [Messages | Viewer] (Folders hidden)
-                    if let Some(sb) = sidebar.as_ref() {
-                        sb.set_visible(false);
-                    }
-                    if let Some(msg) = message_container.as_ref() {
-                        msg.set_size_request(180, -1);
-                        msg.set_visible(true);
-                    }
-                    if let Some(detail) = detail_view.as_ref() {
-                        detail.set_size_request(120, -1);
-                        detail.set_visible(true);
-                    }
-                }
-                _ => {
-                    // In tablet browse mode (default): 2 columns [Folders | Messages] (Viewer folded)
+                    // In tablet/split-screen viewer mode: 2 columns [Folders | Viewer] (Message list stacked/hidden)
                     if let Some(sb) = sidebar.as_ref() {
                         let sb_vis = AppSettings::try_new()
                             .map(|s| s.mail_show_sidebar())
@@ -6562,7 +6548,24 @@ impl MailPage {
                         sb.set_visible(sb_vis);
                     }
                     if let Some(msg) = message_container.as_ref() {
-                        msg.set_size_request(180, -1);
+                        msg.set_size_request(0, -1);
+                        msg.set_visible(false);
+                    }
+                    if let Some(detail) = detail_view.as_ref() {
+                        detail.set_size_request(0, -1);
+                        detail.set_visible(true);
+                    }
+                }
+                _ => {
+                    // In tablet/split-screen browse mode (default): 2 columns [Folders | Messages] (Viewer stacked/hidden)
+                    if let Some(sb) = sidebar.as_ref() {
+                        let sb_vis = AppSettings::try_new()
+                            .map(|s| s.mail_show_sidebar())
+                            .unwrap_or(true);
+                        sb.set_visible(sb_vis);
+                    }
+                    if let Some(msg) = message_container.as_ref() {
+                        msg.set_size_request(0, -1);
                         msg.set_visible(true);
                     }
                     if let Some(detail) = detail_view.as_ref() {
@@ -8038,8 +8041,7 @@ impl MailPage {
                     page.apply_advanced_search_query(query);
                 }
             });
-        dialog.set_transient_for(Some(&parent));
-        dialog.present();
+        dialog.present(Some(&parent));
     }
 
     pub(crate) fn select_search_result(&self, message_id: &str) -> bool {
@@ -8588,10 +8590,7 @@ impl MailPage {
             return false;
         };
         let dialog = crate::dialogs::ContactDialog::new_for_email(&name, &email);
-        if let Some(parent) = self.root().and_downcast::<gtk::Window>() {
-            dialog.set_transient_for(Some(&parent));
-        }
-        dialog.present();
+        dialog.present(self.root().as_ref());
         true
     }
 
@@ -10603,7 +10602,11 @@ impl MailPage {
             return false;
         };
         dialog.set_transient_for(Some(&root));
-        dialog.present();
+        if self.imp().is_mobile.get() || self.imp().is_tablet.get() {
+            dialog.present_modal(&root);
+        } else {
+            dialog.present_standalone();
+        }
         true
     }
 
@@ -11340,10 +11343,7 @@ impl MailPage {
                 page.refresh_mail();
             }
         });
-        if let Some(root) = self.root().and_downcast::<gtk::Window>() {
-            dialog.set_transient_for(Some(&root));
-        }
-        dialog.present();
+        dialog.present(self.root().as_ref());
     }
 
     /// Present a factual, read-only snapshot for the active popup target or
@@ -11355,10 +11355,7 @@ impl MailPage {
             return;
         };
         let dialog = crate::dialogs::FolderPropertiesDialog::new(snapshot);
-        if let Some(root) = self.root().and_downcast::<gtk::Window>() {
-            dialog.set_transient_for(Some(&root));
-        }
-        dialog.present();
+        dialog.present(self.root().as_ref());
     }
 
     /// Empty the portable app-owned trash without blocking GTK.  Imported
@@ -14469,7 +14466,7 @@ impl MailPage {
         let page_for_dynamic_activate = self.downgrade();
         dynamic_folder_view.connect_activate(move |_, _| {
             if let Some(page) = page_for_dynamic_activate.upgrade() {
-                if page.imp().is_mobile.get() {
+                if page.imp().is_mobile.get() || page.imp().is_tablet.get() {
                     page.set_drill_down_level(MailDrillDownLevel::Messages);
                 }
             }
@@ -14479,7 +14476,7 @@ impl MailPage {
         let page_for_dynamic_click = self.downgrade();
         click_for_dynamic_folder.connect_released(move |_, _, _, _| {
             if let Some(page) = page_for_dynamic_click.upgrade() {
-                if page.imp().is_mobile.get() {
+                if page.imp().is_mobile.get() || page.imp().is_tablet.get() {
                     page.set_drill_down_level(MailDrillDownLevel::Messages);
                 }
             }
@@ -14578,7 +14575,7 @@ impl MailPage {
                 },
                 true,
             );
-            if page.imp().is_mobile.get() {
+            if page.imp().is_mobile.get() || page.imp().is_tablet.get() {
                 page.set_drill_down_level(MailDrillDownLevel::Messages);
             }
         });
@@ -15008,18 +15005,12 @@ impl MailPage {
             let search_for_edit = search.clone();
             let search_list_for_edit = search_list.clone();
             edit_button.connect_clicked(move |button| {
-                let Some(root) = button.root().and_downcast::<gtk::Window>() else {
-                    tracing::warn!("Could not find a parent window for saved search editing");
-                    return;
-                };
                 let dialog = crate::dialogs::SearchFolderDialog::new_for_edit(&search_for_edit);
-                dialog.set_transient_for(Some(&root));
                 let search_list_for_close = search_list_for_edit.clone();
-                dialog.connect_close_request(move |_| {
+                dialog.connect_closed(move |_| {
                     Self::populate_search_folders(&search_list_for_close);
-                    glib::Propagation::Proceed
                 });
-                dialog.present();
+                dialog.present(button.root().as_ref());
             });
             let row_for_delete = row.downgrade();
             let search_list_for_delete = search_list.clone();
@@ -19634,6 +19625,11 @@ impl MailPage {
                 });
             let Some(sel_pos) = target_pos else {
                 flat_selection_for_tree.unselect_all();
+                if (page.imp().is_tablet.get() || page.imp().is_mobile.get())
+                    && page.imp().drill_down_level.get() == MailDrillDownLevel::Viewer
+                {
+                    page.set_drill_down_level(MailDrillDownLevel::Messages);
+                }
                 return;
             };
             let Some(row) = selection.item(sel_pos).and_downcast::<gtk::TreeListRow>() else {
@@ -21163,7 +21159,12 @@ impl MailPage {
                 gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter | gtk::gdk::Key::ISO_Enter
             ) {
                 if let Some(page) = page_for_enter.upgrade() {
-                    if let Some(message) = page.selected_message() {
+                    if page.imp().is_mobile.get() || page.imp().is_tablet.get() {
+                        if page.selected_message().is_some() {
+                            page.set_drill_down_level(MailDrillDownLevel::Viewer);
+                            return glib::Propagation::Stop;
+                        }
+                    } else if let Some(message) = page.selected_message() {
                         page.open_standalone_message_viewer(&message);
                         return glib::Propagation::Stop;
                     }
@@ -21259,17 +21260,13 @@ impl MailPage {
                 source_uid,
                 folder_name,
             );
-            if let Some(root) = page.root().and_downcast::<gtk::Window>() {
-                dialog.set_transient_for(Some(&root));
-            }
             let page_for_close = page.downgrade();
-            dialog.connect_close_request(move |_| {
+            dialog.connect_closed(move |_| {
                 if let Some(page) = page_for_close.upgrade() {
                     page.refresh_search_folders();
                 }
-                glib::Propagation::Proceed
             });
-            dialog.present();
+            dialog.present(page.root().as_ref());
         });
 
         let search_field_model = gtk::StringList::new(&[
@@ -22948,7 +22945,12 @@ impl MailPage {
 
             match keyval {
                 gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter | gtk::gdk::Key::ISO_Enter => {
-                    if let Some(message) = page.selected_message() {
+                    if page.imp().is_mobile.get() || page.imp().is_tablet.get() {
+                        if page.selected_message().is_some() {
+                            page.set_drill_down_level(MailDrillDownLevel::Viewer);
+                            return glib::Propagation::Stop;
+                        }
+                    } else if let Some(message) = page.selected_message() {
                         page.open_standalone_message_viewer(&message);
                         return glib::Propagation::Stop;
                     }
@@ -23199,7 +23201,7 @@ impl MailPage {
                     page.select_message_after_reload(&anchor);
                 }
             }
-            if page.imp().is_mobile.get() {
+            if page.imp().is_mobile.get() || page.imp().is_tablet.get() {
                 page.set_drill_down_level(MailDrillDownLevel::Messages);
             }
         });
@@ -23207,7 +23209,7 @@ impl MailPage {
         let page_for_folder_activate = self.downgrade();
         folder_list.connect_row_activated(move |_, _| {
             if let Some(page) = page_for_folder_activate.upgrade() {
-                if page.imp().is_mobile.get() {
+                if page.imp().is_mobile.get() || page.imp().is_tablet.get() {
                     page.set_drill_down_level(MailDrillDownLevel::Messages);
                 }
             }
@@ -23238,7 +23240,7 @@ impl MailPage {
             };
             if let Some(saved_search) = saved_search {
                 page.apply_saved_search(Some(saved_search));
-                if page.imp().is_mobile.get() {
+                if page.imp().is_mobile.get() || page.imp().is_tablet.get() {
                     page.set_drill_down_level(MailDrillDownLevel::Messages);
                 }
             } else {
@@ -23315,7 +23317,7 @@ impl MailPage {
                     let anchor = page.anchor_for_folder(&selection);
                     page.select_message_after_reload(&anchor);
                 }
-                if page.imp().is_mobile.get() {
+                if page.imp().is_mobile.get() || page.imp().is_tablet.get() {
                     page.set_drill_down_level(MailDrillDownLevel::Messages);
                 }
             });
@@ -23323,7 +23325,7 @@ impl MailPage {
             let page_for_unified_activate = self.downgrade();
             unified_list.connect_row_activated(move |_, _| {
                 if let Some(page) = page_for_unified_activate.upgrade() {
-                    if page.imp().is_mobile.get() {
+                    if page.imp().is_mobile.get() || page.imp().is_tablet.get() {
                         page.set_drill_down_level(MailDrillDownLevel::Messages);
                     }
                 }
@@ -24992,6 +24994,11 @@ impl MailPage {
                         page.refresh_normal_headers_for_message(None);
                         page.refresh_all_headers_for_message(None);
                         page.hide_thread_context();
+                        if (page.imp().is_tablet.get() || page.imp().is_mobile.get())
+                            && page.imp().drill_down_level.get() == MailDrillDownLevel::Viewer
+                        {
+                            page.set_drill_down_level(MailDrillDownLevel::Messages);
+                        }
                     }
                 }
             }
@@ -26733,7 +26740,7 @@ impl MailPage {
                     } else if n_press == 2 {
                         page.dismiss_active_agenda_popover();
                         let dialog = crate::dialogs::EventDialog::new_for_edit(event);
-                        dialog.present();
+                        dialog.present(page.root().as_ref());
                     }
                 }
                 AgendaSidebarCanvasItem::TaskRow { task, completed, checkbox_rect, y: row_y, height: row_h, .. } => {
@@ -27466,9 +27473,9 @@ impl MailPage {
             if let Some(pop) = popover_weak_edit.upgrade() {
                 pop.popdown();
             }
-            if let Some(_page) = page_for_edit.upgrade() {
+            if let Some(page) = page_for_edit.upgrade() {
                 let dialog = crate::dialogs::EventDialog::new_for_edit(&ev_for_edit);
-                dialog.present();
+                dialog.present(page.root().as_ref());
             }
         });
         actions_box.append(&edit_btn);

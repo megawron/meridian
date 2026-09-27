@@ -250,11 +250,8 @@ impl PreferencesDialog {
     }
 
     fn present_account_dialog(&self, dialog: crate::dialogs::AccountSetupDialog) {
-        if let Some(window) = self.root().and_downcast::<gtk::Window>() {
-            dialog.set_transient_for(Some(&window));
-        }
         let page = self.downgrade();
-        dialog.connect_close_request(move |_| {
+        dialog.connect_closed(move |_| {
             if let Some(page) = page.upgrade() {
                 page.refresh_managed_account_rows();
                 page.refresh_local_profile_rows();
@@ -262,9 +259,8 @@ impl PreferencesDialog {
                     window.reload_accounts();
                 }
             }
-            glib::Propagation::Proceed
         });
-        dialog.present();
+        dialog.present(Some(self));
     }
 
     fn reconcile_local_default(&self, affected_local_id: &str) {
@@ -1680,11 +1676,7 @@ impl PreferencesDialog {
             self,
             move |_| {
                 let dialog = crate::dialogs::OutOfOfficeDialog::new();
-                let root = page.root();
-                if let Some(win) = root.and_then(|r| r.downcast::<gtk::Window>().ok()) {
-                    dialog.set_transient_for(Some(&win));
-                }
-                dialog.present();
+                dialog.present(Some(&page));
             }
         ));
         group_accounts.add(&row_oof);
@@ -1737,11 +1729,7 @@ impl PreferencesDialog {
             self,
             move |_| {
                 let dialog = crate::dialogs::FilterEditorDialog::new();
-                let root = page.root();
-                if let Some(win) = root.and_then(|r| r.downcast::<gtk::Window>().ok()) {
-                    dialog.set_transient_for(Some(&win));
-                }
-                dialog.present();
+                dialog.present(Some(&page));
             }
         ));
         group_filters.add(&row_add_filter);
@@ -1859,12 +1847,7 @@ impl PreferencesDialog {
                 self,
                 move |_| {
                     let dialog = crate::dialogs::FilterEditorDialog::new_for_edit(&rule_for_edit);
-                    let root = page.root();
-                    if let Some(window) = root.and_then(|root| root.downcast::<gtk::Window>().ok())
-                    {
-                        dialog.set_transient_for(Some(&window));
-                    }
-                    dialog.present();
+                    dialog.present(Some(&page));
                 }
             ));
             let enabled = gtk::Switch::builder()
@@ -5609,8 +5592,7 @@ impl PreferencesDialog {
         let refresh_on_close = Rc::clone(&refresh_smime_selectors);
         let open_cert_manager = move || {
             let Some(pref_dialog) = self_weak_for_mgr.upgrade() else { return; };
-            let root_win = pref_dialog.root().and_downcast::<gtk::Window>();
-            let mgr_dialog = crate::dialogs::CertificateManagerDialog::new(root_win.as_ref());
+            let mgr_dialog = crate::dialogs::CertificateManagerDialog::new(Some(&pref_dialog));
             let refresh_cb = Rc::clone(&refresh_on_close);
             mgr_dialog.connect_close_request(move |_| {
                 refresh_cb();

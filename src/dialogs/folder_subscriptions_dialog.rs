@@ -44,7 +44,7 @@ struct SubscriptionDialogState {
 /// A lightweight GTK4/libadwaita view over one exact Camel source.  Native
 /// reads and mutations always execute in a worker thread.
 pub struct FolderSubscriptionsDialog {
-    window: adw::Window,
+    dialog: adw::Dialog,
     state: Rc<RefCell<SubscriptionDialogState>>,
 }
 
@@ -53,11 +53,10 @@ impl FolderSubscriptionsDialog {
     where
         F: Fn() + 'static,
     {
-        let window = adw::Window::builder()
+        let dialog = adw::Dialog::builder()
             .title(format!("Ordner-Abonnements: {account_name}"))
-            .modal(true)
-            .default_width(560)
-            .default_height(500)
+            .content_width(560)
+            .content_height(500)
             .build();
         let toolbar = adw::ToolbarView::new();
         let header = adw::HeaderBar::new();
@@ -114,7 +113,7 @@ impl FolderSubscriptionsDialog {
                 .build(),
         );
         toolbar.set_content(Some(&content));
-        window.set_content(Some(&toolbar));
+        dialog.set_child(Some(&toolbar));
 
         let state = Rc::new(RefCell::new(SubscriptionDialogState {
             source_uid: source_uid.trim().to_string(),
@@ -146,34 +145,31 @@ impl FolderSubscriptionsDialog {
             state_for_search.borrow_mut().filter = entry.text().trim().to_ascii_lowercase();
             rebuild_list(&state_for_search);
         });
-        let window_for_close = window.downgrade();
+        let dialog_for_close = dialog.downgrade();
         close.connect_clicked(move |_| {
-            if let Some(window) = window_for_close.upgrade() {
-                window.close();
+            if let Some(dialog) = dialog_for_close.upgrade() {
+                dialog.close();
             }
         });
         let state_for_close = Rc::clone(&state);
-        window.connect_close_request(move |_| {
+        dialog.connect_closed(move |_| {
             let mut state = state_for_close.borrow_mut();
             state.closed = true;
             state.generation = state.generation.wrapping_add(1);
             if let Some(cancelled) = state.cancellation.as_ref() {
                 cancelled.store(true, Ordering::Relaxed);
             }
-            glib::Propagation::Proceed
         });
 
-        let dialog = Self { window, state };
-        start_load(&dialog.state);
-        dialog
+        let folder_dialog = Self { dialog, state };
+        start_load(&folder_dialog.state);
+        folder_dialog
     }
 
-    pub fn set_transient_for(&self, parent: Option<&gtk::Window>) {
-        self.window.set_transient_for(parent);
-    }
+    pub fn set_transient_for(&self, _parent: Option<&gtk::Window>) {}
 
-    pub fn present(&self) {
-        self.window.present();
+    pub fn present(&self, parent: Option<&impl IsA<gtk::Widget>>) {
+        self.dialog.present(parent);
     }
 }
 

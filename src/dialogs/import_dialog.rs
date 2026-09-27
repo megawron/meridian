@@ -36,7 +36,7 @@ mod imp {
     impl ObjectSubclass for ImportDialog {
         const NAME: &'static str = "EvolutionImportDialog";
         type Type = super::ImportDialog;
-        type ParentType = adw::Window;
+        type ParentType = adw::Dialog;
     }
 
     impl ObjectImpl for ImportDialog {
@@ -47,15 +47,13 @@ mod imp {
     }
 
     impl WidgetImpl for ImportDialog {}
-    impl WindowImpl for ImportDialog {}
-    impl AdwWindowImpl for ImportDialog {}
+    impl AdwDialogImpl for ImportDialog {}
 }
 
 glib::wrapper! {
     pub struct ImportDialog(ObjectSubclass<imp::ImportDialog>)
-        @extends adw::Window, gtk::Window, gtk::Widget,
-        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget,
-                    gtk::Native, gtk::Root, gtk::ShortcutManager;
+        @extends adw::Dialog, gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
 impl ImportDialog {
@@ -64,9 +62,9 @@ impl ImportDialog {
     }
 
     fn build_ui(&self) {
-        self.set_title(Some("Daten importieren"));
-        self.set_default_size(540, 480);
-        self.set_modal(true);
+        self.set_title("Daten importieren");
+        self.set_content_width(540);
+        self.set_content_height(480);
 
         let toolbar = adw::ToolbarView::new();
         let header = adw::HeaderBar::new();
@@ -240,7 +238,7 @@ impl ImportDialog {
         main_box.append(&button_box);
 
         toolbar.set_content(Some(&main_box));
-        self.set_content(Some(&toolbar));
+        self.set_child(Some(&toolbar));
     }
 
     fn auto_select_target_for_path(&self, path: &std::path::Path) {

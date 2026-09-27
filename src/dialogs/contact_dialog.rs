@@ -37,7 +37,7 @@ mod imp {
     impl ObjectSubclass for ContactDialog {
         const NAME: &'static str = "EvolutionContactDialog";
         type Type = super::ContactDialog;
-        type ParentType = adw::Window;
+        type ParentType = adw::Dialog;
     }
 
     impl ObjectImpl for ContactDialog {
@@ -85,33 +85,29 @@ mod imp {
     }
 
     impl WidgetImpl for ContactDialog {}
-    impl WindowImpl for ContactDialog {}
-    impl AdwWindowImpl for ContactDialog {}
+    impl AdwDialogImpl for ContactDialog {}
 }
 
 glib::wrapper! {
     pub struct ContactDialog(ObjectSubclass<imp::ContactDialog>)
-        @extends adw::Window, gtk::Window, gtk::Widget,
-        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget,
-                    gtk::Native, gtk::Root, gtk::ShortcutManager;
+        @extends adw::Dialog, gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
 impl ContactDialog {
     pub fn new() -> Self {
         glib::Object::builder()
             .property("title", "Neuer Kontakt")
-            .property("modal", true)
-            .property("default-width", 560)
-            .property("default-height", 560)
+            .property("content-width", 560)
+            .property("content-height", 560)
             .build()
     }
 
     pub(crate) fn new_for_list() -> Self {
         glib::Object::builder()
             .property("title", "Neue Kontaktliste")
-            .property("modal", true)
-            .property("default-width", 620)
-            .property("default-height", 620)
+            .property("content-width", 620)
+            .property("content-height", 620)
             .property("list-mode", true)
             .build()
     }
@@ -119,9 +115,8 @@ impl ContactDialog {
     pub(crate) fn new_for_edit(record: &EBookContactRecord) -> Self {
         glib::Object::builder()
             .property("title", "Kontakt bearbeiten")
-            .property("modal", true)
-            .property("default-width", 560)
-            .property("default-height", 600)
+            .property("content-width", 560)
+            .property("content-height", 600)
             .property("edit-vcard", &record.vcard)
             .property("edit-uid", &record.uid)
             .property("edit-source-uid", &record.source_uid)
@@ -133,9 +128,8 @@ impl ContactDialog {
         let seed = VCardContact::new(name.trim(), email.trim(), "", "").to_vcard_string();
         glib::Object::builder()
             .property("title", "Absender zum Adressbuch hinzufügen")
-            .property("modal", true)
-            .property("default-width", 560)
-            .property("default-height", 560)
+            .property("content-width", 560)
+            .property("content-height", 560)
             .property("edit-vcard", seed)
             .build()
     }
@@ -716,7 +710,7 @@ impl ContactDialog {
 
         content_scroll.set_child(Some(&content_box));
         toolbar_view.set_content(Some(&content_scroll));
-        self.set_content(Some(&toolbar_view));
+        self.set_child(Some(&toolbar_view));
 
         let source_model_for_load = source_model.clone();
         let source_uids_for_load = Rc::clone(&source_uids);
@@ -1437,15 +1431,11 @@ impl ContactDialog {
             .child(&content_box)
             .build();
         toolbar_view.set_content(Some(&content_scroll));
-        self.set_content(Some(&toolbar_view));
+        self.set_child(Some(&toolbar_view));
     }
 
     fn show_toast(&self, message: &str) {
-        let Some(parent) = self.transient_for() else {
-            tracing::warn!(%message, "EBook dialog result");
-            return;
-        };
-        if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>() {
+        if let Some(window) = crate::window::find_evolution_window(self) {
             window.add_toast(&adw::Toast::new(message));
         } else {
             tracing::warn!(%message, "EBook dialog result");
@@ -1454,15 +1444,11 @@ impl ContactDialog {
 
     fn guard_close_while_saving(&self) {
         let dialog_weak = self.downgrade();
-        self.connect_close_request(move |_| {
-            let Some(dialog) = dialog_weak.upgrade() else {
-                return glib::Propagation::Proceed;
-            };
-            if dialog.imp().save_in_progress.get() {
-                dialog.show_toast("Speichern läuft noch – bitte kurz warten");
-                glib::Propagation::Stop
-            } else {
-                glib::Propagation::Proceed
+        self.connect_close_attempt(move |_| {
+            if let Some(dialog) = dialog_weak.upgrade() {
+                if dialog.imp().save_in_progress.get() {
+                    dialog.show_toast("Speichern läuft noch – bitte kurz warten");
+                }
             }
         });
     }

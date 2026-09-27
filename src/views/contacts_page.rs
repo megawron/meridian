@@ -2546,10 +2546,7 @@ impl ContactsPage {
                                             let child_box_weak = child_box_weak.clone();
                                             let child_label = child_label_for_dialog.clone();
                                             move || {
-                                                let root_window = child_box_weak
-                                                    .upgrade()
-                                                    .and_then(|r| r.root())
-                                                    .and_downcast::<gtk::Window>();
+                                                let parent_widget = child_box_weak.upgrade();
                                                 let dialog = crate::dialogs::SourcePropertiesDialog::new(
                                                     &uid,
                                                     &name,
@@ -2558,9 +2555,6 @@ impl ContactsPage {
                                                     true,
                                                     is_primary,
                                                 );
-                                                if let Some(parent) = root_window.as_ref() {
-                                                    dialog.set_transient_for(Some(parent));
-                                                }
                                                 let child_label_for_save = child_label.clone();
                                                 dialog.set_on_save(move |update| {
                                                     child_label_for_save.set_label(&update.display_name);
@@ -2572,7 +2566,7 @@ impl ContactsPage {
                                                         }
                                                     }
                                                 });
-                                                dialog.present();
+                                                dialog.present(parent_widget.as_ref());
                                             }
                                         }),
                                         Some({
@@ -2989,10 +2983,7 @@ impl ContactsPage {
                             Rc::clone(&contacts_for_apply),
                         );
                     });
-                if let Some(window) = page.root().and_downcast::<gtk::Window>() {
-                    dialog.set_transient_for(Some(&window));
-                }
-                dialog.present();
+                dialog.present(Some(&page));
             }
         ));
 
@@ -3451,10 +3442,6 @@ impl ContactsPage {
             self,
             move |_| {
                 let dialog = crate::dialogs::ContactDialog::new();
-                let root = page.root();
-                if let Some(win) = root.and_then(|r| r.downcast::<gtk::Window>().ok()) {
-                    dialog.set_transient_for(Some(&win));
-                }
                 let contact_list_for_close = contact_list_for_new.clone();
                 let stored_contacts_for_close = Rc::clone(&stored_contacts_for_new);
                 let empty_state_for_close = empty_state_for_new.clone();
@@ -3465,7 +3452,7 @@ impl ContactsPage {
                 let refresh_generation_for_close = Rc::clone(&refresh_generation_for_new);
                 let search_state_for_close = Rc::clone(&search_state_for_new);
                 let page_weak_for_close = page_weak_for_new_refresh.clone();
-                dialog.connect_close_request(move |_| {
+                dialog.connect_closed(move |_| {
                     refresh_contacts(
                         contact_list_for_close.clone(),
                         Rc::clone(&stored_contacts_for_close),
@@ -3478,9 +3465,8 @@ impl ContactsPage {
                         page_weak_for_close.clone(),
                         Rc::clone(&search_state_for_close),
                     );
-                    glib::Propagation::Proceed
                 });
-                dialog.present();
+                dialog.present(page.root().as_ref());
             }
         ));
         self.imp()
@@ -3510,10 +3496,6 @@ impl ContactsPage {
             self,
             move |_| {
                 let dialog = crate::dialogs::ContactDialog::new_for_list();
-                let root = page.root();
-                if let Some(win) = root.and_then(|root| root.downcast::<gtk::Window>().ok()) {
-                    dialog.set_transient_for(Some(&win));
-                }
                 let contact_list_for_close = contact_list_for_new_list.clone();
                 let stored_contacts_for_close = Rc::clone(&stored_contacts_for_new_list);
                 let empty_state_for_close = empty_state_for_new_list.clone();
@@ -3524,7 +3506,7 @@ impl ContactsPage {
                 let refresh_generation_for_close = Rc::clone(&refresh_generation_for_new_list);
                 let search_state_for_close = Rc::clone(&search_state_for_new_list);
                 let page_weak_for_close = page_weak_for_new_list_refresh.clone();
-                dialog.connect_close_request(move |_| {
+                dialog.connect_closed(move |_| {
                     refresh_contacts(
                         contact_list_for_close.clone(),
                         Rc::clone(&stored_contacts_for_close),
@@ -3537,9 +3519,8 @@ impl ContactsPage {
                         page_weak_for_close.clone(),
                         Rc::clone(&search_state_for_close),
                     );
-                    glib::Propagation::Proceed
                 });
-                dialog.present();
+                dialog.present(page.root().as_ref());
             }
         ));
         set_accessible_label(&new_list_btn, &crate::i18n::gettext("Create new contact list"));
@@ -3772,10 +3753,6 @@ impl ContactsPage {
                     return;
                 }
                 let dialog = crate::dialogs::ContactDialog::new_for_edit(&record);
-                let root = page.root();
-                if let Some(win) = root.and_then(|r| r.downcast::<gtk::Window>().ok()) {
-                    dialog.set_transient_for(Some(&win));
-                }
                 let contact_list_for_close = contact_list_for_edit.clone();
                 let stored_contacts_for_close = Rc::clone(&stored_contacts_for_edit);
                 let empty_state_for_close = empty_state_for_edit.clone();
@@ -3786,7 +3763,7 @@ impl ContactsPage {
                 let refresh_generation_for_close = Rc::clone(&refresh_generation_for_edit);
                 let search_state_for_close = Rc::clone(&search_state_for_edit);
                 let page_weak_for_close = page_weak_for_edit_refresh.clone();
-                dialog.connect_close_request(move |_| {
+                dialog.connect_closed(move |_| {
                     refresh_contacts(
                         contact_list_for_close.clone(),
                         Rc::clone(&stored_contacts_for_close),
@@ -3799,9 +3776,8 @@ impl ContactsPage {
                         page_weak_for_close.clone(),
                         Rc::clone(&search_state_for_close),
                     );
-                    glib::Propagation::Proceed
                 });
-                dialog.present();
+                dialog.present(page.root().as_ref());
             }
         ));
 

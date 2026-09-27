@@ -70,7 +70,7 @@ mod imp {
     impl ObjectSubclass for CalendarPurgeDialog {
         const NAME: &'static str = "EvolutionCalendarPurgeDialog";
         type Type = super::CalendarPurgeDialog;
-        type ParentType = adw::Window;
+        type ParentType = adw::Dialog;
     }
 
     impl ObjectImpl for CalendarPurgeDialog {
@@ -81,15 +81,13 @@ mod imp {
     }
 
     impl WidgetImpl for CalendarPurgeDialog {}
-    impl WindowImpl for CalendarPurgeDialog {}
-    impl AdwWindowImpl for CalendarPurgeDialog {}
+    impl AdwDialogImpl for CalendarPurgeDialog {}
 }
 
 glib::wrapper! {
     pub struct CalendarPurgeDialog(ObjectSubclass<imp::CalendarPurgeDialog>)
-        @extends adw::Window, gtk::Window, gtk::Widget,
-        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget,
-                    gtk::Native, gtk::Root, gtk::ShortcutManager;
+        @extends adw::Dialog, gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
 impl CalendarPurgeDialog {
@@ -110,9 +108,9 @@ impl CalendarPurgeDialog {
     }
 
     fn build_ui(&self) {
-        self.set_title(Some("Vergangene Termine löschen"));
-        self.set_default_size(460, 360);
-        self.set_modal(true);
+        self.set_title("Vergangene Termine löschen");
+        self.set_content_width(460);
+        self.set_content_height(360);
 
         let toolbar = adw::ToolbarView::new();
         toolbar.add_top_bar(&adw::HeaderBar::new());
@@ -216,26 +214,27 @@ impl CalendarPurgeDialog {
         self.imp().purge_button.replace(Some(purge));
         main_box.append(&buttons);
 
-        self.connect_close_request(|dialog| {
+        self.connect_close_attempt(|dialog| {
             if !dialog.imp().running.get() {
-                return glib::Propagation::Proceed;
+                dialog.set_can_close(true);
+                dialog.close();
+                return;
             }
             if let Some(cancellation) = dialog.imp().cancellation.borrow().as_ref() {
                 cancellation.store(true, Ordering::Relaxed);
             }
             dialog.set_status("Bereinigung wird abgebrochen …", false);
-            glib::Propagation::Stop
         });
 
         toolbar.set_content(Some(&main_box));
-        self.set_content(Some(&toolbar));
+        self.set_child(Some(&toolbar));
     }
 
     fn execute_purge(&self, cutoff_timestamp: i64) {
         if self.imp().running.replace(true) {
             return;
         }
-        self.set_deletable(false);
+        self.set_can_close(false);
         if let Some(button) = self.imp().purge_button.borrow().as_ref() {
             button.set_sensitive(false);
         }
@@ -279,7 +278,7 @@ impl CalendarPurgeDialog {
             };
             dialog.imp().running.set(false);
             dialog.imp().cancellation.replace(None);
-            dialog.set_deletable(true);
+            dialog.set_can_close(true);
             if let Some(button) = dialog.imp().purge_button.borrow().as_ref() {
                 button.set_sensitive(true);
             }

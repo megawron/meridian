@@ -1512,13 +1512,12 @@ impl CalendarPage {
             crate::dialogs::EventDialog::new_for_date(*self.imp().current_date.borrow())
         };
         let page_for_refresh = self.downgrade();
-        dialog.connect_close_request(move |_| {
+        dialog.connect_closed(move |_| {
             if let Some(page) = page_for_refresh.upgrade() {
                 page.reload_calendar_data();
             }
-            glib::Propagation::Proceed
         });
-        dialog.present();
+        dialog.present(self.root().as_ref());
     }
 
     pub fn outer_paned(&self) -> Option<gtk::Paned> {
@@ -1929,10 +1928,7 @@ impl CalendarPage {
             }
             show_toast_for_widget(&page, &outcome.message());
         });
-        if let Some(root) = self.root().and_downcast::<gtk::Window>() {
-            dialog.set_transient_for(Some(&root));
-        }
-        dialog.present();
+        dialog.present(Some(self));
     }
 
     /// Return all currently loaded calendar events as a cloned vector.
@@ -2656,13 +2652,12 @@ impl CalendarPage {
                         )
                     };
                     let page_for_refresh = page.downgrade();
-                    dialog.connect_close_request(move |_| {
+                    dialog.connect_closed(move |_| {
                         if let Some(p) = page_for_refresh.upgrade() {
                             p.reload_calendar_data();
                         }
-                        glib::Propagation::Proceed
                     });
-                    dialog.present();
+                    dialog.present(page.root().as_ref());
                 }
             },
         );
@@ -3410,10 +3405,7 @@ impl CalendarPage {
             move |button| {
                 let date = *page.imp().current_date.borrow();
                 let dialog = crate::dialogs::AvailabilityDialog::new(date);
-                if let Some(window) = button.root().and_downcast::<gtk::Window>() {
-                    dialog.set_transient_for(Some(&window));
-                }
-                dialog.present();
+                dialog.present(Some(button));
             }
         ));
 
@@ -7147,9 +7139,6 @@ impl CalendarPage {
                         is_writable,
                         is_primary,
                     );
-                    if let Some(parent) = root_window.as_ref() {
-                        dialog.set_transient_for(Some(parent));
-                    }
                     let page_weak_save = page.downgrade();
                     dialog.set_on_save(move |update| {
                         if let Some(page) = page_weak_save.upgrade() {
@@ -7176,7 +7165,7 @@ impl CalendarPage {
                             page.refresh_event_list_visibility();
                         }
                     });
-                    dialog.present();
+                    dialog.present(Some(&page));
                 }
             }
         });
@@ -14054,13 +14043,12 @@ fn show_calendar_day_context_menu(
                 crate::dialogs::EventDialog::new_for_date(date)
             };
             let page_for_refresh = page.downgrade();
-            dialog.connect_close_request(move |_| {
+            dialog.connect_closed(move |_| {
                 if let Some(page) = page_for_refresh.upgrade() {
                     page.reload_calendar_data();
                 }
-                glib::Propagation::Proceed
             });
-            dialog.present();
+            dialog.present(page.root().as_ref());
         }
     });
     menu_box.append(&new_btn);
@@ -14074,13 +14062,12 @@ fn show_calendar_day_context_menu(
         if let Some(page) = page_weak_allday.upgrade() {
             let dialog = crate::dialogs::EventDialog::new_all_day_for_date(date);
             let page_for_refresh = page.downgrade();
-            dialog.connect_close_request(move |_| {
+            dialog.connect_closed(move |_| {
                 if let Some(page) = page_for_refresh.upgrade() {
                     page.reload_calendar_data();
                 }
-                glib::Propagation::Proceed
             });
-            dialog.present();
+            dialog.present(page.root().as_ref());
         }
     });
     menu_box.append(&allday_btn);
@@ -17331,15 +17318,14 @@ fn open_event_editor_for_widget<W: IsA<gtk::Widget>>(widget: &W, event: &Calenda
             .ok();
         if let Some(window) = evolution_window {
             let window = window.downgrade();
-            dialog.connect_close_request(move |_| {
+            dialog.connect_closed(move |_| {
                 if let Some(window) = window.upgrade() {
                     window.refresh_calendar_page();
                 }
-                glib::Propagation::Proceed
             });
         }
     }
-    dialog.present();
+    dialog.present(widget.root().as_ref());
 }
 
 fn event_time_text(event: &CalendarEventRecord) -> String {
@@ -18729,15 +18715,14 @@ fn append_event_row(
                 .ok();
             if let Some(window) = evolution_window {
                 let window = window.downgrade();
-                dialog.connect_close_request(move |_| {
+                dialog.connect_closed(move |_| {
                     if let Some(window) = window.upgrade() {
                         window.refresh_calendar_page();
                     }
-                    glib::Propagation::Proceed
                 });
             }
         }
-        dialog.present();
+        dialog.present(edit_button_for_click.root().as_ref());
     });
 
     let event_for_print = event.clone();

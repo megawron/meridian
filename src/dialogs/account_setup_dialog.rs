@@ -51,7 +51,7 @@ mod imp {
     impl ObjectSubclass for AccountSetupDialog {
         const NAME: &'static str = "EvolutionAccountSetupDialog";
         type Type = super::AccountSetupDialog;
-        type ParentType = adw::Window;
+        type ParentType = adw::Dialog;
     }
 
     impl ObjectImpl for AccountSetupDialog {
@@ -82,25 +82,22 @@ mod imp {
     }
 
     impl WidgetImpl for AccountSetupDialog {}
-    impl WindowImpl for AccountSetupDialog {
-        fn close_request(&self) -> glib::Propagation {
+    impl AdwDialogImpl for AccountSetupDialog {
+        fn closed(&self) {
             if let Some(cancellation) = self.discovery_cancellation.borrow().as_ref() {
                 cancellation.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             if let Some(source) = self.debounce_source.borrow_mut().take() {
                 source.remove();
             }
-            self.parent_close_request()
         }
     }
-    impl AdwWindowImpl for AccountSetupDialog {}
 }
 
 glib::wrapper! {
     pub struct AccountSetupDialog(ObjectSubclass<imp::AccountSetupDialog>)
-        @extends adw::Window, gtk::Window, gtk::Widget,
-        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget,
-                    gtk::Native, gtk::Root, gtk::ShortcutManager;
+        @extends adw::Dialog, gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
 /// Validates whether an email string is syntactically complete and eligible for autodiscovery.
@@ -137,9 +134,8 @@ impl AccountSetupDialog {
     pub fn new() -> Self {
         glib::Object::builder()
             .property("title", "Neues Konto einrichten")
-            .property("modal", true)
-            .property("default-width", 880)
-            .property("default-height", 680)
+            .property("content-width", 880)
+            .property("content-height", 680)
             .build()
     }
 
@@ -147,9 +143,8 @@ impl AccountSetupDialog {
         let encoded = serde_json::to_string(profile).expect("account profile should serialize");
         glib::Object::builder()
             .property("title", "Kontoeinstellungen")
-            .property("modal", true)
-            .property("default-width", 880)
-            .property("default-height", 680)
+            .property("content-width", 880)
+            .property("content-height", 680)
             .property("edit-profile-json", encoded)
             .build()
     }
@@ -2466,7 +2461,7 @@ impl AccountSetupDialog {
         }
 
         toast_overlay.set_child(Some(&split_view));
-        self.set_content(Some(&toast_overlay));
+        self.set_child(Some(&toast_overlay));
     }
 }
 

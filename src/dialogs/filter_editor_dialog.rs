@@ -30,7 +30,7 @@ mod imp {
     impl ObjectSubclass for FilterEditorDialog {
         const NAME: &'static str = "EvolutionFilterEditorDialog";
         type Type = super::FilterEditorDialog;
-        type ParentType = adw::Window;
+        type ParentType = adw::Dialog;
     }
 
     impl ObjectImpl for FilterEditorDialog {
@@ -61,15 +61,13 @@ mod imp {
     }
 
     impl WidgetImpl for FilterEditorDialog {}
-    impl WindowImpl for FilterEditorDialog {}
-    impl AdwWindowImpl for FilterEditorDialog {}
+    impl AdwDialogImpl for FilterEditorDialog {}
 }
 
 glib::wrapper! {
     pub struct FilterEditorDialog(ObjectSubclass<imp::FilterEditorDialog>)
-        @extends adw::Window, gtk::Window, gtk::Widget,
-        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget,
-                    gtk::Native, gtk::Root, gtk::ShortcutManager;
+        @extends adw::Dialog, gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
 struct ConditionEditor {
@@ -453,9 +451,8 @@ impl FilterEditorDialog {
     pub fn new() -> Self {
         glib::Object::builder()
             .property("title", "Filterregel erstellen")
-            .property("modal", true)
-            .property("default-width", 620)
-            .property("default-height", 540)
+            .property("content-width", 620)
+            .property("content-height", 540)
             .build()
     }
 
@@ -463,9 +460,8 @@ impl FilterEditorDialog {
         let encoded = serde_json::to_string(rule).expect("filter rule should serialize");
         glib::Object::builder()
             .property("title", "Filterregel bearbeiten")
-            .property("modal", true)
-            .property("default-width", 620)
-            .property("default-height", 540)
+            .property("content-width", 620)
+            .property("content-height", 540)
             .property("edit-rule-json", encoded)
             .build()
     }
@@ -710,11 +706,7 @@ impl FilterEditorDialog {
                 let name = row_rulename.text().trim().to_string();
                 if name.is_empty() {
                     tracing::warn!("Cannot save a mail filter without a name");
-                    if let Some(parent) = dialog.transient_for() {
-                        if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>() {
-                            window.add_toast(&adw::Toast::new("Bitte einen Regelnamen eingeben"));
-                        }
-                    }
+                    dialog.show_toast("Bitte einen Regelnamen eingeben");
                     return;
                 }
                 let conditions = match condition_editors
@@ -729,23 +721,11 @@ impl FilterEditorDialog {
                 {
                     Ok(conditions) if !conditions.is_empty() => conditions,
                     Ok(_) => {
-                        if let Some(parent) = dialog.transient_for() {
-                            if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>()
-                            {
-                                window.add_toast(&adw::Toast::new(
-                                    "Bitte mindestens eine Filterbedingung anlegen",
-                                ));
-                            }
-                        }
+                        dialog.show_toast("Bitte mindestens eine Filterbedingung anlegen");
                         return;
                     }
                     Err(error) => {
-                        if let Some(parent) = dialog.transient_for() {
-                            if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>()
-                            {
-                                window.add_toast(&adw::Toast::new(&error));
-                            }
-                        }
+                        dialog.show_toast(&error);
                         return;
                     }
                 };
@@ -758,23 +738,11 @@ impl FilterEditorDialog {
                 {
                     Ok(actions) if !actions.is_empty() => actions,
                     Ok(_) => {
-                        if let Some(parent) = dialog.transient_for() {
-                            if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>()
-                            {
-                                window.add_toast(&adw::Toast::new(
-                                    "Bitte mindestens eine Filteraktion anlegen",
-                                ));
-                            }
-                        }
+                        dialog.show_toast("Bitte mindestens eine Filteraktion anlegen");
                         return;
                     }
                     Err(error) => {
-                        if let Some(parent) = dialog.transient_for() {
-                            if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>()
-                            {
-                                window.add_toast(&adw::Toast::new(&error));
-                            }
-                        }
+                        dialog.show_toast(&error);
                         return;
                     }
                 };
@@ -803,24 +771,14 @@ impl FilterEditorDialog {
                 match MailFilterStore::default().upsert(rule) {
                     Ok(()) => {
                         tracing::info!("Mail filter rule persisted");
-                        if let Some(parent) = dialog.transient_for() {
-                            if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>()
-                            {
-                                window.add_toast(&adw::Toast::new("Filterregel gespeichert"));
-                            }
-                        }
+                        dialog.show_toast("Filterregel gespeichert");
                         dialog.close();
                     }
                     Err(error) => {
                         tracing::error!(%error, "Could not persist mail filter rule");
-                        if let Some(parent) = dialog.transient_for() {
-                            if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>()
-                            {
-                                window.add_toast(&adw::Toast::new(&format!(
-                                    "Filterregel konnte nicht gespeichert werden: {error}"
-                                )));
-                            }
-                        }
+                        dialog.show_toast(&format!(
+                            "Filterregel konnte nicht gespeichert werden: {error}"
+                        ));
                     }
                 }
             }
@@ -828,7 +786,13 @@ impl FilterEditorDialog {
 
         content_scroll.set_child(Some(&content_box));
         toolbar_view.set_content(Some(&content_scroll));
-        self.set_content(Some(&toolbar_view));
+        self.set_child(Some(&toolbar_view));
+    }
+
+    fn show_toast(&self, message: &str) {
+        if let Some(window) = crate::window::find_evolution_window(self) {
+            window.add_toast(&adw::Toast::new(message));
+        }
     }
 }
 

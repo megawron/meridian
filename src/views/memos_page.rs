@@ -1114,9 +1114,6 @@ impl MemosPage {
                         is_writable,
                         is_primary,
                     );
-                    if let Some(parent) = root_window.as_ref() {
-                        dialog.set_transient_for(Some(parent));
-                    }
                     let page_weak_save = page.downgrade();
                     dialog.set_on_save(move |update| {
                         if let Some(page) = page_weak_save.upgrade() {
@@ -1138,7 +1135,7 @@ impl MemosPage {
                             page.render_memo_sidebar();
                         }
                     });
-                    dialog.present();
+                    dialog.present(Some(&page));
                 }
             }
         });

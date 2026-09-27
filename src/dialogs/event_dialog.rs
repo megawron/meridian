@@ -52,7 +52,7 @@ mod imp {
     impl ObjectSubclass for EventDialog {
         const NAME: &'static str = "EvolutionEventDialog";
         type Type = super::EventDialog;
-        type ParentType = adw::Window;
+        type ParentType = adw::Dialog;
     }
 
     impl ObjectImpl for EventDialog {
@@ -122,15 +122,13 @@ mod imp {
     }
 
     impl WidgetImpl for EventDialog {}
-    impl WindowImpl for EventDialog {}
-    impl AdwWindowImpl for EventDialog {}
+    impl AdwDialogImpl for EventDialog {}
 }
 
 glib::wrapper! {
     pub struct EventDialog(ObjectSubclass<imp::EventDialog>)
-        @extends adw::Window, gtk::Window, gtk::Widget,
-        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget,
-                    gtk::Native, gtk::Root, gtk::ShortcutManager;
+        @extends adw::Dialog, gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
 const HOUR_HEIGHT: f64 = 34.0;
@@ -892,18 +890,16 @@ impl EventDialog {
     pub fn new() -> Self {
         glib::Object::builder()
             .property("title", "Termin — Keine Zusammenfassung")
-            .property("modal", false)
-            .property("default-width", 880)
-            .property("default-height", 680)
+            .property("content-width", 880)
+            .property("content-height", 680)
             .build()
     }
 
     pub fn new_for_date(date: NaiveDate) -> Self {
         glib::Object::builder()
             .property("title", "Termin — Keine Zusammenfassung")
-            .property("modal", false)
-            .property("default-width", 880)
-            .property("default-height", 680)
+            .property("content-width", 880)
+            .property("content-height", 680)
             .property("initial-date", date.format("%Y-%m-%d").to_string())
             .build()
     }
@@ -923,9 +919,8 @@ impl EventDialog {
             .unwrap_or_else(|| "Termin — Keine Zusammenfassung".to_string());
         let mut builder = glib::Object::builder()
             .property("title", title_text)
-            .property("modal", false)
-            .property("default-width", 880)
-            .property("default-height", 680)
+            .property("content-width", 880)
+            .property("content-height", 680)
             .property("initial-date", date.format("%Y-%m-%d").to_string())
             .property("initial-allday", true);
         if let Some(s) = summary.filter(|s| !s.trim().is_empty()) {
@@ -953,9 +948,8 @@ impl EventDialog {
             .unwrap_or_else(|| "Termin — Keine Zusammenfassung".to_string());
         let mut builder = glib::Object::builder()
             .property("title", title_text)
-            .property("modal", false)
-            .property("default-width", 880)
-            .property("default-height", 680)
+            .property("content-width", 880)
+            .property("content-height", 680)
             .property("initial-start", start.format("%Y-%m-%d %H:%M").to_string())
             .property("initial-end", end.format("%Y-%m-%d %H:%M").to_string())
             .property("initial-date", start.date().format("%Y-%m-%d").to_string());
@@ -974,9 +968,8 @@ impl EventDialog {
             .unwrap_or_else(|| "Keine Zusammenfassung".to_string());
         glib::Object::builder()
             .property("title", &format!("Termin — {summary}"))
-            .property("modal", false)
-            .property("default-width", 880)
-            .property("default-height", 680)
+            .property("content-width", 880)
+            .property("content-height", 680)
             .property("edit-component", &event.component)
             .property("edit-uid", &event.uid)
             .property("edit-source-uid", &event.source_uid)
@@ -1370,10 +1363,7 @@ impl EventDialog {
                 .or_else(|_| chrono::NaiveDate::parse_from_str(date_str.trim(), "%d.%m.%Y"))
                 .unwrap_or_else(|_| chrono::Local::now().date_naive());
             let avail_dialog = crate::dialogs::AvailabilityDialog::new(date);
-            if let Some(root) = btn.root().and_then(|r| r.downcast::<gtk::Window>().ok()) {
-                avail_dialog.set_transient_for(Some(&root));
-            }
-            avail_dialog.present();
+            avail_dialog.present(Some(btn));
         });
 
         row_room.add_suffix(&entry_room);
@@ -1515,7 +1505,7 @@ impl EventDialog {
         split_box.append(&timeline_container);
 
         toolbar_view.set_content(Some(&split_box));
-        self.set_content(Some(&toolbar_view));
+        self.set_child(Some(&toolbar_view));
 
         let bp = adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 680sp").unwrap());
         bp.add_setter(&timeline_container, "visible", Some(&false.to_value()));
@@ -1626,10 +1616,10 @@ impl EventDialog {
                 let text = entry.text();
                 let trimmed = text.trim();
                 if trimmed.is_empty() {
-                    dialog.set_title(Some("Termin — Keine Zusammenfassung"));
+                    dialog.set_title("Termin — Keine Zusammenfassung");
                     window_title_clone.set_subtitle("");
                 } else {
-                    dialog.set_title(Some(&format!("Termin — {trimmed}")));
+                    dialog.set_title(&format!("Termin — {trimmed}"));
                     window_title_clone.set_subtitle(trimmed);
                 }
             }
@@ -1679,10 +1669,10 @@ impl EventDialog {
             entry_title.set_text(&summary);
             let trimmed = summary.trim();
             if trimmed.is_empty() {
-                self.set_title(Some("Termin — Keine Zusammenfassung"));
+                self.set_title("Termin — Keine Zusammenfassung");
                 window_title.set_subtitle("");
             } else {
-                self.set_title(Some(&format!("Termin — {trimmed}")));
+                self.set_title(&format!("Termin — {trimmed}"));
                 window_title.set_subtitle(trimmed);
             }
             row_location.set_text(
@@ -1754,7 +1744,7 @@ impl EventDialog {
             let trimmed = summary.trim();
             if !trimmed.is_empty() {
                 entry_title.set_text(trimmed);
-                self.set_title(Some(&format!("Termin — {trimmed}")));
+                self.set_title(&format!("Termin — {trimmed}"));
                 window_title.set_subtitle(trimmed);
             }
         }
@@ -2048,11 +2038,7 @@ impl EventDialog {
     }
 
     fn show_toast(&self, message: &str) {
-        let Some(parent) = self.transient_for() else {
-            tracing::warn!(%message, "ECal dialog result");
-            return;
-        };
-        if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>() {
+        if let Some(window) = crate::window::find_evolution_window(self) {
             window.add_toast(&adw::Toast::new(message));
         } else {
             tracing::warn!(%message, "ECal dialog result");
@@ -2265,23 +2251,18 @@ impl AlarmEditor {
     }
 
     fn present_alarm_dialog(&self, index: Option<usize>) {
-        let Some(parent) = self.root.root().and_downcast::<gtk::Window>() else {
-            return;
-        };
         let existing = index.and_then(|index| self.alarms.borrow().get(index).cloned());
         let initial = existing
             .clone()
             .unwrap_or_else(|| Alarm::new_display_relative(AlarmRelation::Start, -15 * 60, None));
-        let window = adw::Window::builder()
+        let window = adw::Dialog::builder()
             .title(if index.is_some() {
                 "Erinnerung bearbeiten"
             } else {
                 "Erinnerung hinzufügen"
             })
-            .modal(true)
-            .default_width(480)
-            .default_height(620)
-            .transient_for(&parent)
+            .content_width(480)
+            .content_height(620)
             .build();
         let toolbar = adw::ToolbarView::new();
         let header = adw::HeaderBar::new();
@@ -2306,7 +2287,7 @@ impl AlarmEditor {
             .child(&content)
             .build();
         toolbar.set_content(Some(&scroll));
-        window.set_content(Some(&toolbar));
+        window.set_child(Some(&toolbar));
 
         let action_values = Rc::new({
             let mut values = vec![
@@ -2611,7 +2592,7 @@ impl AlarmEditor {
             window_for_save.close();
         });
 
-        window.present();
+        window.present(Some(&self.root));
     }
 }
 
@@ -2651,7 +2632,7 @@ fn is_valid_absolute_alarm_value(value: &str) -> bool {
     chrono::NaiveDateTime::parse_from_str(&value[..15], "%Y%m%dT%H%M%S").is_ok()
 }
 
-fn show_alarm_error(parent: &adw::Window, message: &str) {
+fn show_alarm_error(parent: &impl IsA<gtk::Widget>, message: &str) {
     let dialog = adw::AlertDialog::new(
         Some("Erinnerung konnte nicht übernommen werden"),
         Some(message),

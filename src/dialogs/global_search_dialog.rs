@@ -35,7 +35,7 @@ mod imp {
     impl ObjectSubclass for GlobalSearchDialog {
         const NAME: &'static str = "EvolutionGlobalSearchDialog";
         type Type = super::GlobalSearchDialog;
-        type ParentType = adw::Window;
+        type ParentType = adw::Dialog;
     }
 
     impl ObjectImpl for GlobalSearchDialog {
@@ -55,24 +55,21 @@ mod imp {
     }
 
     impl WidgetImpl for GlobalSearchDialog {}
-    impl WindowImpl for GlobalSearchDialog {}
-    impl AdwWindowImpl for GlobalSearchDialog {}
+    impl AdwDialogImpl for GlobalSearchDialog {}
 }
 
 glib::wrapper! {
     pub struct GlobalSearchDialog(ObjectSubclass<imp::GlobalSearchDialog>)
-        @extends adw::Window, gtk::Window, gtk::Widget,
-        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget,
-                    gtk::Native, gtk::Root, gtk::ShortcutManager;
+        @extends adw::Dialog, gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
 impl GlobalSearchDialog {
     pub fn new() -> Self {
         glib::Object::builder()
             .property("title", "Globale Suche")
-            .property("modal", false)
-            .property("default-width", 760)
-            .property("default-height", 600)
+            .property("content-width", 760)
+            .property("content-height", 600)
             .build()
     }
 
@@ -133,7 +130,7 @@ impl GlobalSearchDialog {
         content.append(&status);
         content.append(&scrolled);
         toolbar_view.set_content(Some(&content));
-        self.set_content(Some(&toolbar_view));
+        self.set_child(Some(&toolbar_view));
 
         self.imp().list.replace(Some(list));
         self.imp().status.replace(Some(status));
@@ -308,9 +305,16 @@ impl GlobalSearchDialog {
                 #[weak(rename_to = dialog)]
                 self,
                 move |_| {
-                    let Some(parent) = dialog.transient_for().and_then(|window| {
-                        window.downcast::<crate::window::EvolutionWindow>().ok()
-                    }) else {
+                    let parent = dialog
+                        .root()
+                        .and_downcast::<crate::window::EvolutionWindow>()
+                        .or_else(|| {
+                            gio::Application::default()
+                                .and_then(|app| app.downcast::<adw::Application>().ok())
+                                .and_then(|app| app.active_window())
+                                .and_then(|win| win.downcast::<crate::window::EvolutionWindow>().ok())
+                        });
+                    let Some(parent) = parent else {
                         return;
                     };
                     parent.show_search_result(Some(target.clone()));

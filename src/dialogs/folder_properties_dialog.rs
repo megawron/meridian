@@ -34,7 +34,7 @@ mod imp {
     impl ObjectSubclass for FolderPropertiesDialog {
         const NAME: &'static str = "EvolutionFolderPropertiesDialog";
         type Type = super::FolderPropertiesDialog;
-        type ParentType = adw::Window;
+        type ParentType = adw::Dialog;
     }
 
     impl ObjectImpl for FolderPropertiesDialog {
@@ -84,24 +84,21 @@ mod imp {
     }
 
     impl WidgetImpl for FolderPropertiesDialog {}
-    impl WindowImpl for FolderPropertiesDialog {}
-    impl AdwWindowImpl for FolderPropertiesDialog {}
+    impl AdwDialogImpl for FolderPropertiesDialog {}
 }
 
 glib::wrapper! {
     pub struct FolderPropertiesDialog(ObjectSubclass<imp::FolderPropertiesDialog>)
-        @extends adw::Window, gtk::Window, gtk::Widget,
-        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget,
-                    gtk::Native, gtk::Root, gtk::ShortcutManager;
+        @extends adw::Dialog, gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
 impl FolderPropertiesDialog {
     pub fn new(snapshot: FolderPropertiesSnapshot) -> Self {
         glib::Object::builder()
             .property("title", "Ordnereigenschaften")
-            .property("modal", true)
-            .property("default-width", 500)
-            .property("default-height", 520)
+            .property("content-width", 500)
+            .property("content-height", 520)
             .property("folder-name", snapshot.folder_name)
             .property("account-name", snapshot.account_name)
             .property("folder-path", snapshot.folder_path)
@@ -419,15 +416,13 @@ impl FolderPropertiesDialog {
         bottom_box.append(&close_btn);
         toolbar.add_bottom_bar(&bottom_box);
 
-        self.set_content(Some(&toolbar));
+        self.set_child(Some(&toolbar));
     }
 
     fn show_toast(&self, message: &str) {
-        if let Some(parent) = self.transient_for() {
-            if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>() {
-                window.add_toast(&adw::Toast::new(message));
-                return;
-            }
+        if let Some(window) = crate::window::find_evolution_window(self) {
+            window.add_toast(&adw::Toast::new(message));
+            return;
         }
         tracing::info!(%message, "FolderPropertiesDialog toast");
     }

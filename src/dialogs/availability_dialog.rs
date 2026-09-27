@@ -26,7 +26,7 @@ mod imp {
     impl ObjectSubclass for AvailabilityDialog {
         const NAME: &'static str = "EvolutionAvailabilityDialog";
         type Type = super::AvailabilityDialog;
-        type ParentType = adw::Window;
+        type ParentType = adw::Dialog;
     }
 
     impl ObjectImpl for AvailabilityDialog {
@@ -56,24 +56,21 @@ mod imp {
     }
 
     impl WidgetImpl for AvailabilityDialog {}
-    impl WindowImpl for AvailabilityDialog {}
-    impl AdwWindowImpl for AvailabilityDialog {}
+    impl AdwDialogImpl for AvailabilityDialog {}
 }
 
 glib::wrapper! {
     pub struct AvailabilityDialog(ObjectSubclass<imp::AvailabilityDialog>)
-        @extends adw::Window, gtk::Window, gtk::Widget,
-        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget,
-                    gtk::Native, gtk::Root, gtk::ShortcutManager;
+        @extends adw::Dialog, gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
 impl AvailabilityDialog {
     pub fn new(date: NaiveDate) -> Self {
         glib::Object::builder()
             .property("title", "Freie Zeiten")
-            .property("modal", true)
-            .property("default-width", 520)
-            .property("default-height", 420)
+            .property("content-width", 520)
+            .property("content-height", 420)
             .property("date", date.format("%Y-%m-%d").to_string())
             .build()
     }
@@ -157,12 +154,14 @@ impl AvailabilityDialog {
         }
         content.append(&list);
         toolbar.set_content(Some(&content));
-        self.set_content(Some(&toolbar));
+        self.set_child(Some(&toolbar));
 
         close.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
             self,
-            move |_| dialog.close()
+            move |_| {
+                dialog.close();
+            }
         ));
     }
 }

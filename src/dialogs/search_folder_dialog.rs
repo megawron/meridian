@@ -157,7 +157,7 @@ mod imp {
     impl ObjectSubclass for SearchFolderDialog {
         const NAME: &'static str = "EvolutionSearchFolderDialog";
         type Type = super::SearchFolderDialog;
-        type ParentType = adw::Window;
+        type ParentType = adw::Dialog;
     }
 
     impl ObjectImpl for SearchFolderDialog {
@@ -238,15 +238,13 @@ mod imp {
     }
 
     impl WidgetImpl for SearchFolderDialog {}
-    impl WindowImpl for SearchFolderDialog {}
-    impl AdwWindowImpl for SearchFolderDialog {}
+    impl AdwDialogImpl for SearchFolderDialog {}
 }
 
 glib::wrapper! {
     pub struct SearchFolderDialog(ObjectSubclass<imp::SearchFolderDialog>)
-        @extends adw::Window, gtk::Window, gtk::Widget,
-        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget,
-                    gtk::Native, gtk::Root, gtk::ShortcutManager;
+        @extends adw::Dialog, gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
 impl SearchFolderDialog {
@@ -274,9 +272,8 @@ impl SearchFolderDialog {
     ) -> Self {
         glib::Object::builder()
             .property("title", "Lokalen Suchordner speichern")
-            .property("modal", true)
-            .property("default-width", 520)
-            .property("default-height", 360)
+            .property("content-width", 520)
+            .property("content-height", 360)
             .property("initial-name", "")
             .property("initial-query", initial_query)
             .property("search-id", "")
@@ -291,9 +288,8 @@ impl SearchFolderDialog {
     pub fn new_for_edit(search: &SavedSearch) -> Self {
         glib::Object::builder()
             .property("title", "Lokalen Suchordner bearbeiten")
-            .property("modal", true)
-            .property("default-width", 520)
-            .property("default-height", 360)
+            .property("content-width", 520)
+            .property("content-height", 360)
             .property("initial-name", &search.name)
             .property("initial-query", &search.query)
             .property("search-id", &search.id)
@@ -421,7 +417,7 @@ impl SearchFolderDialog {
         content.append(&scope_row);
         content.append(&target_row);
         toolbar.set_content(Some(&content));
-        self.set_content(Some(&toolbar));
+        self.set_child(Some(&toolbar));
 
         save.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
@@ -477,11 +473,9 @@ impl SearchFolderDialog {
     }
 
     fn show_toast(&self, message: &str) {
-        if let Some(parent) = self.transient_for() {
-            if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>() {
-                window.add_toast(&adw::Toast::new(message));
-                return;
-            }
+        if let Some(window) = crate::window::find_evolution_window(self) {
+            window.add_toast(&adw::Toast::new(message));
+            return;
         }
         tracing::warn!(%message, "Search folder dialog result");
     }

@@ -36,26 +36,24 @@ struct ManagerState {
     btn_export: gtk::Button,
     btn_delete: gtk::Button,
     toast_overlay: adw::ToastOverlay,
-    window: adw::Window,
+    dialog: adw::Dialog,
 }
 
 pub struct CertificateManagerDialog {
-    window: adw::Window,
+    dialog: adw::Dialog,
+    stored_parent: RefCell<Option<gtk::Widget>>,
     state: Rc<RefCell<ManagerState>>,
 }
 
 impl CertificateManagerDialog {
-    pub fn new<W: IsA<gtk::Window>>(parent: Option<&W>) -> Self {
-        let window = adw::Window::builder()
+    pub fn new<W: IsA<gtk::Widget>>(parent: Option<&W>) -> Self {
+        let dialog = adw::Dialog::builder()
             .title("Zertifikatsverwaltung")
-            .modal(true)
-            .default_width(780)
-            .default_height(600)
+            .content_width(780)
+            .content_height(600)
             .build();
 
-        if let Some(p) = parent {
-            window.set_transient_for(Some(p));
-        }
+        let stored_parent = RefCell::new(parent.map(|p| p.upcast_ref::<gtk::Widget>().clone()));
 
         let toolbar_view = adw::ToolbarView::new();
         let toast_overlay = adw::ToastOverlay::new();
@@ -170,7 +168,7 @@ impl CertificateManagerDialog {
 
         toast_overlay.set_child(Some(&view_stack));
         toolbar_view.set_content(Some(&toast_overlay));
-        window.set_content(Some(&toolbar_view));
+        dialog.set_child(Some(&toolbar_view));
 
         let state = Rc::new(RefCell::new(ManagerState {
             search_query: String::new(),
@@ -184,14 +182,14 @@ impl CertificateManagerDialog {
             btn_export: btn_export.clone(),
             btn_delete: btn_delete.clone(),
             toast_overlay,
-            window: window.clone(),
+            dialog: dialog.clone(),
         }));
 
         // ── Wire Signals ──────────────────────────────────────────────────────
-        let window_weak = window.downgrade();
+        let dialog_weak = dialog.downgrade();
         btn_close.connect_clicked(move |_| {
-            if let Some(win) = window_weak.upgrade() {
-                win.close();
+            if let Some(dlg) = dialog_weak.upgrade() {
+                dlg.close();
             }
         });
 
@@ -254,26 +252,39 @@ impl CertificateManagerDialog {
         // Initial Load
         reload_all_lists(&state);
 
-        Self { window, state }
+        Self {
+            dialog,
+            stored_parent,
+            state,
+        }
     }
 
-    pub fn window(&self) -> &adw::Window {
-        &self.window
+    pub fn dialog(&self) -> &adw::Dialog {
+        &self.dialog
     }
 
-    pub fn set_transient_for<W: IsA<gtk::Window>>(&self, parent: Option<&W>) {
-        self.window.set_transient_for(parent);
+    pub fn set_transient_for<W: IsA<gtk::Widget>>(&self, parent: Option<&W>) {
+        *self.stored_parent.borrow_mut() = parent.map(|p| p.upcast_ref::<gtk::Widget>().clone());
     }
 
     pub fn connect_close_request<F>(&self, f: F)
     where
-        F: Fn(&adw::Window) -> glib::Propagation + 'static,
+        F: Fn(&adw::Dialog) -> glib::Propagation + 'static,
     {
-        self.window.connect_close_request(f);
+        self.dialog.connect_closed(move |d| {
+            let _ = f(d);
+        });
+    }
+
+    pub fn connect_closed<F>(&self, f: F)
+    where
+        F: Fn(&adw::Dialog) + 'static,
+    {
+        self.dialog.connect_closed(f);
     }
 
     pub fn present(&self) {
-        self.window.present();
+        self.dialog.present(self.stored_parent.borrow().as_ref());
     }
 }
 
@@ -487,22 +498,22 @@ fn populate_list_box(
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn show_details_dialog_for_selection(state: &Rc<RefCell<ManagerState>>) {
-    let (selected_id, window) = {
+    let (selected_id, dialog) = {
         let s = state.borrow();
-        (s.selected_id.clone(), s.window.clone())
+        (s.selected_id.clone(), s.dialog.clone())
     };
     let Some(id) = selected_id else { return };
     let Some(cert) = CertificateService::get_certificate(&id) else { return };
 
     let details_dialog = CertificateDetailsDialog::new(&cert);
-    details_dialog.set_transient_for(Some(&window));
+    details_dialog.set_transient_for(Some(&dialog));
     details_dialog.present();
 }
 
 fn show_trust_dialog_for_selection(state: &Rc<RefCell<ManagerState>>) {
-    let (selected_id, window) = {
+    let (selected_id, dialog) = {
         let s = state.borrow();
-        (s.selected_id.clone(), s.window.clone())
+        (s.selected_id.clone(), s.dialog.clone())
     };
     let Some(id) = selected_id else { return };
     let Some(cert) = CertificateService::get_certificate(&id) else { return };
@@ -514,14 +525,14 @@ fn show_trust_dialog_for_selection(state: &Rc<RefCell<ManagerState>>) {
         let _ = CertificateService::set_ca_trust(&cert_id, ssl, email, code_sign);
         reload_all_lists(&state_for_refresh);
     });
-    trust_dialog.set_transient_for(Some(&window));
+    trust_dialog.set_transient_for(Some(&dialog));
     trust_dialog.present();
 }
 
 fn delete_selected_certificate(state: &Rc<RefCell<ManagerState>>) {
-    let (selected_id, window) = {
+    let (selected_id, dialog) = {
         let s = state.borrow();
-        (s.selected_id.clone(), s.window.clone())
+        (s.selected_id.clone(), s.dialog.clone())
     };
     let Some(id) = selected_id else { return };
     let Some(cert) = CertificateService::get_certificate(&id) else { return };
@@ -538,7 +549,7 @@ fn delete_selected_certificate(state: &Rc<RefCell<ManagerState>>) {
     prompt.add_responses(&[("cancel", "Abbrechen"), ("delete", "Löschen")]);
     prompt.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
 
-    prompt.connect_response(None, move |dialog, response| {
+    prompt.connect_response(None, move |alert, response| {
         if response == "delete" {
             let s = state_for_delete.borrow();
             let _ = CertificateService::delete_certificate(&cert_id);
@@ -547,13 +558,13 @@ fn delete_selected_certificate(state: &Rc<RefCell<ManagerState>>) {
             state_for_delete.borrow_mut().selected_id = None;
             reload_all_lists(&state_for_delete);
         }
-        dialog.close();
+        alert.close();
     });
-    prompt.present(Some(&window));
+    prompt.present(Some(&dialog));
 }
 
 fn import_certificate_file(state: &Rc<RefCell<ManagerState>>) {
-    let window = state.borrow().window.clone();
+    let dialog = state.borrow().dialog.clone();
     let file_dialog = gtk::FileDialog::builder()
         .title("Zertifikat importieren")
         .modal(true)
@@ -574,7 +585,8 @@ fn import_certificate_file(state: &Rc<RefCell<ManagerState>>) {
     file_dialog.set_filters(Some(&filters));
 
     let state_for_result = Rc::clone(state);
-    file_dialog.open(Some(&window), None::<&gio::Cancellable>, move |result| {
+    let parent_win = dialog.root().and_downcast::<gtk::Window>();
+    file_dialog.open(parent_win.as_ref(), None::<&gio::Cancellable>, move |result| {
         let Ok(file) = result else { return };
         let Some(path) = file.path() else { return };
 
@@ -596,7 +608,7 @@ fn import_certificate_file(state: &Rc<RefCell<ManagerState>>) {
                     Err(err) => Err(err),
                 }
             });
-            prompt.set_transient_for(Some(&state_for_result.borrow().window));
+            prompt.set_transient_for(Some(&state_for_result.borrow().dialog));
             prompt.present();
         } else {
             let res = CertificateService::import_file(&path, None);
@@ -614,7 +626,7 @@ fn import_certificate_file(state: &Rc<RefCell<ManagerState>>) {
                         Some(&format!("Das Zertifikat konnte nicht importiert werden:\n\n{err}")),
                     );
                     alert.add_response("ok", "OK");
-                    alert.present(Some(&state_for_result.borrow().window));
+                    alert.present(Some(&state_for_result.borrow().dialog));
                 }
             }
         }
@@ -622,9 +634,9 @@ fn import_certificate_file(state: &Rc<RefCell<ManagerState>>) {
 }
 
 fn export_selected_certificate(state: &Rc<RefCell<ManagerState>>) {
-    let (selected_id, window) = {
+    let (selected_id, dialog) = {
         let s = state.borrow();
-        (s.selected_id.clone(), s.window.clone())
+        (s.selected_id.clone(), s.dialog.clone())
     };
     let Some(id) = selected_id else { return };
     let Some(cert) = CertificateService::get_certificate(&id) else { return };
@@ -637,7 +649,8 @@ fn export_selected_certificate(state: &Rc<RefCell<ManagerState>>) {
 
     let state_for_save = Rc::clone(state);
     let cert_clone = cert.clone();
-    file_dialog.save(Some(&window), None::<&gio::Cancellable>, move |result| {
+    let parent_win = dialog.root().and_downcast::<gtk::Window>();
+    file_dialog.save(parent_win.as_ref(), None::<&gio::Cancellable>, move |result| {
         let Ok(file) = result else { return };
         let Some(path) = file.path() else { return };
 
@@ -663,7 +676,7 @@ fn export_selected_certificate(state: &Rc<RefCell<ManagerState>>) {
                     Err(err) => Err(err),
                 }
             });
-            prompt.set_transient_for(Some(&state_for_save.borrow().window));
+            prompt.set_transient_for(Some(&state_for_save.borrow().dialog));
             prompt.present();
         } else {
             let res = CertificateService::export_file(
@@ -683,7 +696,7 @@ fn export_selected_certificate(state: &Rc<RefCell<ManagerState>>) {
                     Some(&format!("Fehler beim Exportieren:\n\n{err}")),
                 );
                 alert.add_response("ok", "OK");
-                alert.present(Some(&state_for_save.borrow().window));
+                alert.present(Some(&state_for_save.borrow().dialog));
             }
         }
     });
@@ -694,17 +707,19 @@ fn export_selected_certificate(state: &Rc<RefCell<ManagerState>>) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub struct CertificateDetailsDialog {
-    window: adw::Window,
+    dialog: adw::Dialog,
+    stored_parent: RefCell<Option<gtk::Widget>>,
 }
 
 impl CertificateDetailsDialog {
     pub fn new(cert: &CertificateRecord) -> Self {
-        let window = adw::Window::builder()
+        let dialog = adw::Dialog::builder()
             .title("Zertifikatsdetails")
-            .modal(true)
-            .default_width(620)
-            .default_height(680)
+            .content_width(620)
+            .content_height(680)
             .build();
+
+        let stored_parent = RefCell::new(None);
 
         let toolbar_view = adw::ToolbarView::new();
         let toast_overlay = adw::ToastOverlay::new();
@@ -717,10 +732,10 @@ impl CertificateDetailsDialog {
         header_bar.set_title_widget(Some(&title_widget));
 
         let btn_close = gtk::Button::builder().label("Schließen").build();
-        let win_close = window.downgrade();
+        let dlg_close = dialog.downgrade();
         btn_close.connect_clicked(move |_| {
-            if let Some(win) = win_close.upgrade() {
-                win.close();
+            if let Some(dlg) = dlg_close.upgrade() {
+                dlg.close();
             }
         });
         header_bar.pack_end(&btn_close);
@@ -869,17 +884,24 @@ impl CertificateDetailsDialog {
 
         toast_overlay.set_child(Some(&page));
         toolbar_view.set_content(Some(&toast_overlay));
-        window.set_content(Some(&toolbar_view));
+        dialog.set_child(Some(&toolbar_view));
 
-        Self { window }
+        Self {
+            dialog,
+            stored_parent,
+        }
     }
 
-    pub fn set_transient_for<W: IsA<gtk::Window>>(&self, parent: Option<&W>) {
-        self.window.set_transient_for(parent);
+    pub fn dialog(&self) -> &adw::Dialog {
+        &self.dialog
+    }
+
+    pub fn set_transient_for<W: IsA<gtk::Widget>>(&self, parent: Option<&W>) {
+        *self.stored_parent.borrow_mut() = parent.map(|p| p.upcast_ref::<gtk::Widget>().clone());
     }
 
     pub fn present(&self) {
-        self.window.present();
+        self.dialog.present(self.stored_parent.borrow().as_ref());
     }
 }
 
@@ -924,7 +946,8 @@ fn add_usage_subrow(expander: &adw::ExpanderRow, title: &str, enabled: bool) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub struct CertificateTrustDialog {
-    window: adw::Window,
+    dialog: adw::Dialog,
+    stored_parent: RefCell<Option<gtk::Widget>>,
 }
 
 impl CertificateTrustDialog {
@@ -932,12 +955,13 @@ impl CertificateTrustDialog {
     where
         F: Fn(TrustLevel, bool, bool, bool) + 'static,
     {
-        let window = adw::Window::builder()
+        let dialog = adw::Dialog::builder()
             .title("Vertrauensstellung bearbeiten")
-            .modal(true)
-            .default_width(540)
-            .default_height(520)
+            .content_width(540)
+            .content_height(520)
             .build();
+
+        let stored_parent = RefCell::new(None);
 
         let toolbar_view = adw::ToolbarView::new();
         let header_bar = adw::HeaderBar::new();
@@ -1024,18 +1048,18 @@ impl CertificateTrustDialog {
 
         page.add(&group_purposes);
         toolbar_view.set_content(Some(&page));
-        window.set_content(Some(&toolbar_view));
+        dialog.set_child(Some(&toolbar_view));
 
         // Wire Cancel
-        let win_cancel = window.downgrade();
+        let dlg_cancel = dialog.downgrade();
         btn_cancel.connect_clicked(move |_| {
-            if let Some(win) = win_cancel.upgrade() {
-                win.close();
+            if let Some(dlg) = dlg_cancel.upgrade() {
+                dlg.close();
             }
         });
 
         // Wire Save
-        let win_save = window.downgrade();
+        let dlg_save = dialog.downgrade();
         btn_save.connect_clicked(move |_| {
             let selected_trust = match combo_trust.selected() {
                 0 => TrustLevel::AlwaysTrust,
@@ -1051,20 +1075,27 @@ impl CertificateTrustDialog {
 
             on_save(selected_trust, ssl, email, code);
 
-            if let Some(win) = win_save.upgrade() {
-                win.close();
+            if let Some(dlg) = dlg_save.upgrade() {
+                dlg.close();
             }
         });
 
-        Self { window }
+        Self {
+            dialog,
+            stored_parent,
+        }
     }
 
-    pub fn set_transient_for<W: IsA<gtk::Window>>(&self, parent: Option<&W>) {
-        self.window.set_transient_for(parent);
+    pub fn dialog(&self) -> &adw::Dialog {
+        &self.dialog
+    }
+
+    pub fn set_transient_for<W: IsA<gtk::Widget>>(&self, parent: Option<&W>) {
+        *self.stored_parent.borrow_mut() = parent.map(|p| p.upcast_ref::<gtk::Widget>().clone());
     }
 
     pub fn present(&self) {
-        self.window.present();
+        self.dialog.present(self.stored_parent.borrow().as_ref());
     }
 }
 
@@ -1073,7 +1104,8 @@ impl CertificateTrustDialog {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub struct PassphrasePromptDialog {
-    window: adw::Window,
+    dialog: adw::Dialog,
+    stored_parent: RefCell<Option<gtk::Widget>>,
 }
 
 impl PassphrasePromptDialog {
@@ -1082,12 +1114,13 @@ impl PassphrasePromptDialog {
         F: Fn(String) -> Result<(), String> + 'static,
     {
         let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("Zertifikat");
-        let window = adw::Window::builder()
+        let dialog = adw::Dialog::builder()
             .title("Passphrase erforderlich")
-            .modal(true)
-            .default_width(440)
-            .default_height(260)
+            .content_width(440)
+            .content_height(260)
             .build();
+
+        let stored_parent = RefCell::new(None);
 
         let toolbar_view = adw::ToolbarView::new();
         let header_bar = adw::HeaderBar::new();
@@ -1125,28 +1158,28 @@ impl PassphrasePromptDialog {
 
         page.add(&group);
         toolbar_view.set_content(Some(&page));
-        window.set_content(Some(&toolbar_view));
+        dialog.set_child(Some(&toolbar_view));
 
-        let win_cancel = window.downgrade();
+        let dlg_cancel = dialog.downgrade();
         btn_cancel.connect_clicked(move |_| {
-            if let Some(win) = win_cancel.upgrade() {
-                win.close();
+            if let Some(dlg) = dlg_cancel.upgrade() {
+                dlg.close();
             }
         });
 
-        let win_unlock = window.downgrade();
+        let dlg_unlock = dialog.downgrade();
         let on_submit_rc = Rc::new(on_submit);
         let perform_unlock = {
             let row_pass = row_pass.clone();
             let lbl_error = lbl_error.clone();
             let on_submit = Rc::clone(&on_submit_rc);
-            let win_unlock = win_unlock.clone();
+            let dlg_unlock = dlg_unlock.clone();
             move || {
                 let password = row_pass.text().to_string();
                 match on_submit(password) {
                     Ok(_) => {
-                        if let Some(win) = win_unlock.upgrade() {
-                            win.close();
+                        if let Some(dlg) = dlg_unlock.upgrade() {
+                            dlg.close();
                         }
                     }
                     Err(err) => {
@@ -1163,19 +1196,23 @@ impl PassphrasePromptDialog {
         });
         row_pass.connect_entry_activated(move |_| perform_unlock());
 
-        Self { window }
+        Self {
+            dialog,
+            stored_parent,
+        }
     }
 
     pub fn new_for_export<F>(on_submit: F) -> Self
     where
         F: Fn(String) -> Result<(), String> + 'static,
     {
-        let window = adw::Window::builder()
+        let dialog = adw::Dialog::builder()
             .title("Zertifikatsexport schützen")
-            .modal(true)
-            .default_width(440)
-            .default_height(320)
+            .content_width(440)
+            .content_height(320)
             .build();
+
+        let stored_parent = RefCell::new(None);
 
         let toolbar_view = adw::ToolbarView::new();
         let header_bar = adw::HeaderBar::new();
@@ -1216,16 +1253,16 @@ impl PassphrasePromptDialog {
 
         page.add(&group);
         toolbar_view.set_content(Some(&page));
-        window.set_content(Some(&toolbar_view));
+        dialog.set_child(Some(&toolbar_view));
 
-        let win_cancel = window.downgrade();
+        let dlg_cancel = dialog.downgrade();
         btn_cancel.connect_clicked(move |_| {
-            if let Some(win) = win_cancel.upgrade() {
-                win.close();
+            if let Some(dlg) = dlg_cancel.upgrade() {
+                dlg.close();
             }
         });
 
-        let win_export = window.downgrade();
+        let dlg_export = dialog.downgrade();
         let on_submit_rc = Rc::new(on_submit);
         btn_export.connect_clicked(move |_| {
             let p1 = row_pass1.text().to_string();
@@ -1237,8 +1274,8 @@ impl PassphrasePromptDialog {
             }
             match on_submit_rc(p1) {
                 Ok(_) => {
-                    if let Some(win) = win_export.upgrade() {
-                        win.close();
+                    if let Some(dlg) = dlg_export.upgrade() {
+                        dlg.close();
                     }
                 }
                 Err(err) => {
@@ -1248,14 +1285,21 @@ impl PassphrasePromptDialog {
             }
         });
 
-        Self { window }
+        Self {
+            dialog,
+            stored_parent,
+        }
     }
 
-    pub fn set_transient_for<W: IsA<gtk::Window>>(&self, parent: Option<&W>) {
-        self.window.set_transient_for(parent);
+    pub fn dialog(&self) -> &adw::Dialog {
+        &self.dialog
+    }
+
+    pub fn set_transient_for<W: IsA<gtk::Widget>>(&self, parent: Option<&W>) {
+        *self.stored_parent.borrow_mut() = parent.map(|p| p.upcast_ref::<gtk::Widget>().clone());
     }
 
     pub fn present(&self) {
-        self.window.present();
+        self.dialog.present(self.stored_parent.borrow().as_ref());
     }
 }

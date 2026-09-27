@@ -61,7 +61,7 @@ mod imp {
     impl ObjectSubclass for ContactSearchDialog {
         const NAME: &'static str = "EvolutionContactSearchDialog";
         type Type = super::ContactSearchDialog;
-        type ParentType = adw::Window;
+        type ParentType = adw::Dialog;
     }
 
     impl ObjectImpl for ContactSearchDialog {
@@ -72,15 +72,13 @@ mod imp {
     }
 
     impl WidgetImpl for ContactSearchDialog {}
-    impl WindowImpl for ContactSearchDialog {}
-    impl AdwWindowImpl for ContactSearchDialog {}
+    impl AdwDialogImpl for ContactSearchDialog {}
 }
 
 glib::wrapper! {
     pub struct ContactSearchDialog(ObjectSubclass<imp::ContactSearchDialog>)
-        @extends adw::Window, gtk::Window, gtk::Widget,
-        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget,
-                    gtk::Native, gtk::Root, gtk::ShortcutManager;
+        @extends adw::Dialog, gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
 impl ContactSearchDialog {
@@ -94,9 +92,8 @@ impl ContactSearchDialog {
     {
         let dialog: Self = glib::Object::builder()
             .property("title", "Erweiterte Kontaktsuche")
-            .property("modal", false)
-            .property("default-width", 760)
-            .property("default-height", 580)
+            .property("content-width", 760)
+            .property("content-height", 580)
             .build();
         dialog.imp().on_apply.replace(Some(Box::new(on_apply)));
         let query = seed_query_for_reopen(&query);
@@ -237,7 +234,9 @@ impl ContactSearchDialog {
         cancel.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
             self,
-            move |_| dialog.close()
+            move |_| {
+                dialog.close();
+            }
         ));
         let apply = gtk::Button::builder()
             .label("Anwenden")
@@ -253,7 +252,7 @@ impl ContactSearchDialog {
         content.append(&actions);
 
         toolbar.set_content(Some(&content));
-        self.set_content(Some(&toolbar));
+        self.set_child(Some(&toolbar));
 
         append_clause_row(
             &rows,

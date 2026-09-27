@@ -133,7 +133,7 @@ mod imp {
     impl ObjectSubclass for AdvancedSearchDialog {
         const NAME: &'static str = "EvolutionAdvancedSearchDialog";
         type Type = super::AdvancedSearchDialog;
-        type ParentType = adw::Window;
+        type ParentType = adw::Dialog;
     }
 
     impl ObjectImpl for AdvancedSearchDialog {
@@ -144,15 +144,13 @@ mod imp {
     }
 
     impl WidgetImpl for AdvancedSearchDialog {}
-    impl WindowImpl for AdvancedSearchDialog {}
-    impl AdwWindowImpl for AdvancedSearchDialog {}
+    impl AdwDialogImpl for AdvancedSearchDialog {}
 }
 
 glib::wrapper! {
     pub struct AdvancedSearchDialog(ObjectSubclass<imp::AdvancedSearchDialog>)
-        @extends adw::Window, gtk::Window, gtk::Widget,
-        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget,
-                    gtk::Native, gtk::Root, gtk::ShortcutManager;
+        @extends adw::Dialog, gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
 impl AdvancedSearchDialog {
@@ -171,9 +169,8 @@ impl AdvancedSearchDialog {
     {
         let dialog: Self = glib::Object::builder()
             .property("title", "Erweiterte Suche")
-            .property("modal", true)
-            .property("default-width", 820)
-            .property("default-height", 620)
+            .property("content-width", 820)
+            .property("content-height", 620)
             .build();
         dialog.imp().on_apply.replace(Some(Box::new(on_apply)));
         dialog.configure_initial_query(initial_query);
@@ -181,13 +178,12 @@ impl AdvancedSearchDialog {
     }
 
     /// Convenience API for callers that already have a parent window.
-    pub fn present<F>(parent: &gtk::Window, initial_query: &str, on_apply: F)
+    pub fn present<W: IsA<gtk::Widget>, F>(parent: &W, initial_query: &str, on_apply: F)
     where
         F: Fn(String) + 'static,
     {
         let dialog = Self::with_query(initial_query, on_apply);
-        dialog.set_transient_for(Some(parent));
-        dialog.present();
+        dialog.present(Some(parent));
     }
 
     fn build_ui(&self) {
@@ -315,7 +311,9 @@ impl AdvancedSearchDialog {
         cancel.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
             self,
-            move |_| dialog.close()
+            move |_| {
+                dialog.close();
+            }
         ));
         let apply = gtk::Button::builder()
             .label("Anwenden")
@@ -336,7 +334,7 @@ impl AdvancedSearchDialog {
             .child(&content)
             .build();
         toolbar.set_content(Some(&scroll));
-        self.set_content(Some(&toolbar));
+        self.set_child(Some(&toolbar));
 
         append_rule_row(&rows, &rows_box, &next_row_id);
     }

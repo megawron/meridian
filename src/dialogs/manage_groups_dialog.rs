@@ -11,7 +11,8 @@ use std::rc::Rc;
 use crate::models::source_selector::SourceSelector;
 
 pub struct ManageGroupsDialog {
-    window: adw::Window,
+    dialog: adw::Dialog,
+    parent: Option<gtk::Widget>,
 }
 
 impl ManageGroupsDialog {
@@ -22,19 +23,16 @@ impl ManageGroupsDialog {
         on_save: F,
     ) -> Self
     where
-        P: IsA<gtk::Window>,
+        P: IsA<gtk::Widget>,
         F: Fn(SourceSelector) + 'static,
     {
-        let window = adw::Window::builder()
+        let dialog = adw::Dialog::builder()
             .title(format!("{domain_label}-Gruppen verwalten"))
-            .modal(true)
-            .default_width(480)
-            .default_height(520)
+            .content_width(480)
+            .content_height(520)
             .build();
 
-        if let Some(parent) = parent {
-            window.set_transient_for(Some(parent));
-        }
+        let parent_widget = parent.map(|p| p.upcast_ref::<gtk::Widget>().clone());
 
         let working_selector = Rc::new(RefCell::new(selector.clone()));
 
@@ -44,9 +42,9 @@ impl ManageGroupsDialog {
         let cancel_btn = gtk::Button::builder()
             .label("Abbrechen")
             .build();
-        let window_cancel = window.downgrade();
+        let dialog_cancel = dialog.downgrade();
         cancel_btn.connect_clicked(move |_| {
-            if let Some(w) = window_cancel.upgrade() {
+            if let Some(w) = dialog_cancel.upgrade() {
                 w.close();
             }
         });
@@ -56,13 +54,13 @@ impl ManageGroupsDialog {
             .label("Speichern")
             .css_classes(vec!["suggested-action"])
             .build();
-        let window_save = window.downgrade();
+        let dialog_save = dialog.downgrade();
         let ws_save = Rc::clone(&working_selector);
         let on_save_cb = Rc::new(on_save);
         save_btn.connect_clicked(move |_| {
             let final_selector = ws_save.borrow().clone();
             on_save_cb(final_selector);
-            if let Some(w) = window_save.upgrade() {
+            if let Some(w) = dialog_save.upgrade() {
                 w.close();
             }
         });
@@ -163,17 +161,20 @@ impl ManageGroupsDialog {
             .build();
 
         toolbar.set_content(Some(&scrolled));
-        window.set_content(Some(&toolbar));
+        dialog.set_child(Some(&toolbar));
 
-        Self { window }
+        Self {
+            dialog,
+            parent: parent_widget,
+        }
     }
 
-    pub fn window(&self) -> &adw::Window {
-        &self.window
+    pub fn dialog(&self) -> &adw::Dialog {
+        &self.dialog
     }
 
     pub fn present(&self) {
-        self.window.present();
+        self.dialog.present(self.parent.as_ref());
     }
 }
 

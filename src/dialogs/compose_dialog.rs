@@ -27,6 +27,7 @@ use crate::services::account_config_service::{
     AccountConfigStore, AccountProfile, reconciled_local_default_account,
 };
 use crate::dialogs::NameSelectorDialog;
+use crate::services::template_store_service::{MailTemplate, TemplateStore};
 use crate::services::camel_mail_service;
 use crate::services::contact_store_service::ContactStoreService;
 use crate::services::crypto_service::SmimeOptions;
@@ -43,8 +44,7 @@ use crate::services::mail_print_service::{
 };
 use crate::services::signature_store_service::SignatureStore;
 use crate::services::snippet_store_service::{MailSnippet, SnippetStore};
-use crate::services::template_store_service::{MailTemplate, TemplateStore};
-use crate::views::MailViewer;
+use crate::views::{EditorContent, MailViewer};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RecipientSuggestion {
@@ -218,6 +218,9 @@ mod imp {
         pub print_message_key: RefCell<String>,
         pub settings: RefCell<Option<AppSettings>>,
         pub on_send_success: RefCell<Option<Box<dyn Fn() + 'static>>>,
+        pub btn_open_in_new_window: RefCell<Option<gtk::Button>>,
+        pub is_modal: Cell<bool>,
+        pub stored_parent: RefCell<Option<gtk::Widget>>,
     }
 
     impl std::fmt::Debug for ComposeDialog {
@@ -234,7 +237,7 @@ mod imp {
     impl ObjectSubclass for ComposeDialog {
         const NAME: &'static str = "EvolutionComposeDialog";
         type Type = super::ComposeDialog;
-        type ParentType = adw::Window;
+        type ParentType = adw::Dialog;
     }
 
     impl ObjectImpl for ComposeDialog {
@@ -262,28 +265,216 @@ mod imp {
     }
 
     impl WidgetImpl for ComposeDialog {}
-    impl WindowImpl for ComposeDialog {}
-    impl AdwWindowImpl for ComposeDialog {}
+    impl AdwDialogImpl for ComposeDialog {}
 }
 
 glib::wrapper! {
     pub struct ComposeDialog(ObjectSubclass<imp::ComposeDialog>)
-        @extends adw::Window, gtk::Window, gtk::Widget,
-        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget,
-                    gtk::Native, gtk::Root, gtk::ShortcutManager;
+        @extends adw::Dialog, gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
+
+pub type ComposeModalDialog = ComposeDialog;
 
 impl ComposeDialog {
     pub fn new() -> Self {
         let dialog: Self = glib::Object::builder()
             .property("title", "Neue E-Mail")
-            .property("modal", false)
-            .property("default-width", 780)
-            .property("default-height", 620)
+            .property("content-width", 780)
+            .property("content-height", 620)
             .build();
         dialog.apply_default_signature();
         dialog.mark_saved();
         dialog
+    }
+
+    pub fn set_transient_for<W: IsA<gtk::Window> + IsA<gtk::Widget>>(&self, parent: Option<&W>) {
+        if let Some(p) = parent {
+            self.imp().stored_parent.replace(Some(p.clone().upcast()));
+        } else {
+            self.imp().stored_parent.borrow_mut().take();
+        }
+    }
+
+    pub fn present_modal(&self, parent: &impl IsA<gtk::Widget>) {
+        self.imp().is_modal.set(true);
+        self.imp().stored_parent.replace(Some(parent.upcast_ref::<gtk::Widget>().clone()));
+        if let Some(btn) = self.imp().btn_open_in_new_window.borrow().as_ref() {
+            btn.set_visible(true);
+        }
+        adw::prelude::AdwDialogExt::present(self, Some(parent));
+    }
+
+    pub fn is_modal(&self) -> bool {
+        self.imp().is_modal.get()
+    }
+
+    pub fn present_standalone(&self) {
+        self.imp().is_modal.set(false);
+        if let Some(btn) = self.imp().btn_open_in_new_window.borrow().as_ref() {
+            btn.set_visible(false);
+        }
+        adw::prelude::AdwDialogExt::present(self, None::<&gtk::Widget>);
+    }
+
+    pub fn present(&self) {
+        if self.imp().is_modal.get() {
+            if let Some(parent) = self.imp().stored_parent.borrow().as_ref() {
+                self.present_modal(parent);
+                return;
+            }
+        }
+        self.present_standalone();
+    }
+
+    pub fn build_draft_message(&self, content: &EditorContent) -> DraftMessage {
+        let to = self
+            .imp()
+            .entry_to
+            .borrow()
+            .as_ref()
+            .map(|e| e.text().to_string())
+            .unwrap_or_default();
+        let cc = self
+            .imp()
+            .entry_cc
+            .borrow()
+            .as_ref()
+            .map(|e| e.text().to_string())
+            .unwrap_or_default();
+        let bcc = self
+            .imp()
+            .entry_bcc
+            .borrow()
+            .as_ref()
+            .map(|e| e.text().to_string())
+            .unwrap_or_default();
+        let subject = self
+            .imp()
+            .entry_subject
+            .borrow()
+            .as_ref()
+            .map(|e| e.text().to_string())
+            .unwrap_or_default();
+        let selected_idx = self
+            .imp()
+            .combo_from
+            .borrow()
+            .as_ref()
+            .map(|c| c.selected())
+            .unwrap_or(0);
+        let identity = self.selected_identity(selected_idx);
+        let from = identity.from;
+        let reply_to = self.effective_reply_to(&identity.reply_to);
+        let source_uid = identity.source_uid;
+        let draft_id = self.imp().draft_id.borrow().clone();
+        let attachments = self.imp().attachments.borrow().clone();
+        let calendar_method = self.imp().calendar_method.borrow().clone();
+        let calendar_component = self.imp().calendar_component.borrow().clone();
+        let pgp_sign = self
+            .imp()
+            .pgp_sign_button
+            .borrow()
+            .as_ref()
+            .is_some_and(|button| button.is_active());
+        let pgp_encrypt = self
+            .imp()
+            .pgp_encrypt_button
+            .borrow()
+            .as_ref()
+            .is_some_and(|button| button.is_active());
+        let request_read_receipt = self.request_read_receipt_for_message();
+        let priority = self.priority_for_message();
+        let charset = self.imp().charset.borrow().clone();
+        let pgp_key = self.pgp_key_for_message();
+        let smime_options = self.smime_options_for_message();
+
+        DraftMessage {
+            id: draft_id,
+            from,
+            reply_to,
+            source_uid,
+            to,
+            cc,
+            bcc,
+            subject,
+            html_body: content.body.clone(),
+            plain_text: content.plain_text,
+            updated_at: Utc::now().to_rfc3339(),
+            attachments,
+            calendar_method,
+            calendar_component,
+            pgp_sign,
+            pgp_encrypt,
+            pgp_key,
+            smime_options: Some(DraftComposerOptions {
+                request_read_receipt,
+                priority,
+                charset,
+                smime: smime_options,
+            }),
+        }
+    }
+
+    pub fn to_draft<F: FnOnce(DraftMessage) + 'static>(&self, callback: F) {
+        let fallback = EditorContent {
+            body: String::new(),
+            plain_text: self
+                .imp()
+                .plain_text_button
+                .borrow()
+                .as_ref()
+                .is_some_and(|b| b.is_active()),
+        };
+        if let Some(html_editor) = self.imp().html_editor.borrow().clone() {
+            let dialog_weak = self.downgrade();
+            html_editor.read_content(move |result| {
+                let Some(dialog) = dialog_weak.upgrade() else {
+                    return;
+                };
+                let content = result.unwrap_or(fallback);
+                callback(dialog.build_draft_message(&content));
+            });
+        } else {
+            callback(self.build_draft_message(&fallback));
+        }
+    }
+
+    pub fn split_to_standalone_window(&self) {
+        if let Some(btn) = self.imp().btn_open_in_new_window.borrow().as_ref() {
+            btn.set_sensitive(false);
+        }
+        self.imp().close_confirmed.set(true);
+        self.set_can_close(true);
+        self.close();
+
+        let dialog_weak = self.downgrade();
+        let fallback = EditorContent {
+            body: String::new(),
+            plain_text: self
+                .imp()
+                .plain_text_button
+                .borrow()
+                .as_ref()
+                .is_some_and(|b| b.is_active()),
+        };
+        let handle_split = move |dialog: ComposeDialog, content: EditorContent| {
+            let draft = dialog.build_draft_message(&content);
+            let standalone = ComposeDialog::from_draft(&draft);
+            standalone.present_standalone();
+        };
+
+        if let Some(html_editor) = self.imp().html_editor.borrow().clone() {
+            html_editor.read_content(move |result| {
+                let Some(dialog) = dialog_weak.upgrade() else {
+                    return;
+                };
+                let content = result.unwrap_or(fallback);
+                handle_split(dialog, content);
+            });
+        } else {
+            handle_split(self.clone(), fallback);
+        }
     }
 
     pub fn html_editor(&self) -> Option<crate::views::HtmlEditor> {
@@ -337,7 +528,7 @@ impl ComposeDialog {
         style: &str,
     ) -> Self {
         let dialog = Self::new();
-        dialog.set_title(Some(&format!("Antworten: {subject}")));
+        dialog.set_title(&format!("Antworten: {subject}"));
         let recipient = if reply_to.trim().is_empty() {
             sender.trim()
         } else {
@@ -440,7 +631,7 @@ impl ComposeDialog {
             raw_message,
         )?;
         let dialog = Self::new();
-        dialog.set_title(Some(&format!("Weiterleiten: {subject}")));
+        dialog.set_title(&format!("Weiterleiten: {subject}"));
         if let Some(entry) = dialog.imp().entry_subject.borrow().as_ref() {
             entry.set_text(&forward_subject(subject));
         }
@@ -460,7 +651,7 @@ impl ComposeDialog {
         attachments: Vec<DraftAttachment>,
     ) -> Self {
         let dialog = Self::new();
-        dialog.set_title(Some(&format!("Als neue Nachricht bearbeiten: {subject}")));
+        dialog.set_title(&format!("Als neue Nachricht bearbeiten: {subject}"));
         if let Some(entry) = dialog.imp().entry_to.borrow().as_ref() {
             entry.set_text(recipient_to);
         }
@@ -536,7 +727,7 @@ impl ComposeDialog {
         quote_style: &str,
     ) -> Self {
         let dialog = Self::new();
-        dialog.set_title(Some(&format!("Weiterleiten: {subject}")));
+        dialog.set_title(&format!("Weiterleiten: {subject}"));
         if let Some(entry) = dialog.imp().entry_subject.borrow().as_ref() {
             entry.set_text(&forward_subject(subject));
         }
@@ -605,7 +796,7 @@ impl ComposeDialog {
         if let Some(entry) = dialog.imp().entry_cc.borrow().as_ref() {
             entry.set_text(&cc);
         }
-        dialog.set_title(Some(&format!("Allen antworten: {subject}")));
+        dialog.set_title(&format!("Allen antworten: {subject}"));
         dialog
     }
 
@@ -710,7 +901,7 @@ impl ComposeDialog {
         } else {
             format!("Entwurf: {}", draft.subject)
         };
-        dialog.set_title(Some(&title));
+        dialog.set_title(&title);
         dialog.imp().suppress_setting_persistence.set(false);
         dialog.imp().suppress_dirty_tracking.set(false);
         dialog.mark_saved();
@@ -724,11 +915,28 @@ impl ComposeDialog {
                 *stored_id = uuid::Uuid::new_v4().to_string();
             }
         }
-        self.set_default_size(860, 680);
+        self.set_content_width(860);
+        self.set_content_height(680);
         let toolbar_view = adw::ToolbarView::new();
 
         // ── Header bar ──────────────────────────────────────────────────────
         let header_bar = adw::HeaderBar::new();
+
+        let btn_open_in_new_window = gtk::Button::builder()
+            .icon_name("window-new-symbolic")
+            .tooltip_text("In neuem Fenster öffnen")
+            .css_classes(vec!["flat"])
+            .visible(self.imp().is_modal.get())
+            .build();
+        btn_open_in_new_window.connect_clicked(glib::clone!(
+            #[weak(rename_to = dialog)]
+            self,
+            move |_| {
+                dialog.split_to_standalone_window();
+            }
+        ));
+        header_bar.pack_start(&btn_open_in_new_window);
+        self.imp().btn_open_in_new_window.replace(Some(btn_open_in_new_window));
 
         let btn_close = gtk::Button::builder()
             .icon_name("window-close-symbolic")
@@ -752,7 +960,8 @@ impl ComposeDialog {
                     .build();
 
                 let dialog_for_file = dialog.clone();
-                file_dialog.open(Some(&dialog), None::<&gio::Cancellable>, move |res| {
+                let parent_win = dialog.root().and_downcast::<gtk::Window>();
+                file_dialog.open(parent_win.as_ref(), None::<&gio::Cancellable>, move |res| {
                     if let Ok(file) = res {
                         if let Some(path) = file.path() {
                             dialog_for_file.add_attachment_path(&path);
@@ -1025,7 +1234,6 @@ impl ComposeDialog {
                 let e_bcc_clone = e_bcc.clone();
                 let dialog_clone = dialog.clone();
                 let selector = NameSelectorDialog::new(
-                    &dialog,
                     &to_val,
                     &cc_val,
                     &bcc_val,
@@ -1036,7 +1244,7 @@ impl ComposeDialog {
                         dialog_clone.mark_changed();
                     },
                 );
-                selector.present();
+                selector.present(Some(&dialog));
             });
         };
 
@@ -2129,6 +2337,8 @@ impl ComposeDialog {
                                             callback();
                                         }
                                         dialog.show_toast(&message);
+                                        dialog.imp().close_confirmed.set(true);
+                                        dialog.set_can_close(true);
                                         dialog.close();
                                     }
                                     Err(error) => {
@@ -2502,6 +2712,7 @@ impl ComposeDialog {
                                             );
                                             if dialog.imp().close_after_save.replace(false) {
                                                 dialog.imp().close_confirmed.set(true);
+                                                dialog.set_can_close(true);
                                                 dialog.close();
                                             }
                                         }
@@ -2509,6 +2720,7 @@ impl ComposeDialog {
                                             dialog.show_toast("Entwurf lokal gespeichert");
                                             if dialog.imp().close_after_save.replace(false) {
                                                 dialog.imp().close_confirmed.set(true);
+                                                dialog.set_can_close(true);
                                                 dialog.close();
                                             }
                                         }
@@ -2545,7 +2757,7 @@ impl ComposeDialog {
         );
 
         toolbar_view.set_content(Some(&content_box));
-        self.set_content(Some(&toolbar_view));
+        self.set_child(Some(&toolbar_view));
         self.install_file_drop_target();
 
         self.start_local_autosave();
@@ -2633,11 +2845,8 @@ impl ComposeDialog {
                 return;
             }
             let new_dialog = ComposeDialog::new();
-            let parent = dialog.transient_for();
-            if parent.is_some() {
-                new_dialog.set_transient_for(parent.as_ref());
-            } else {
-                new_dialog.set_transient_for(Some(&dialog));
+            if let Some(parent) = dialog.imp().stored_parent.borrow().as_ref() {
+                new_dialog.imp().stored_parent.replace(Some(parent.clone()));
             }
             new_dialog.present();
         });
@@ -2953,13 +3162,15 @@ impl ComposeDialog {
         }
         self.add_controller(shortcut_controller);
 
+        self.set_can_close(false);
         let dialog_weak_for_close = self.downgrade();
-        self.connect_close_request(move |_| {
-            dialog_weak_for_close
-                .upgrade()
-                .is_some_and(|dialog| dialog.handle_close_request())
-                .then_some(glib::Propagation::Stop)
-                .unwrap_or(glib::Propagation::Proceed)
+        self.connect_close_attempt(move |_| {
+            if let Some(dialog) = dialog_weak_for_close.upgrade() {
+                if !dialog.handle_close_request() {
+                    dialog.set_can_close(true);
+                    dialog.close();
+                }
+            }
         });
 
         // Keep these bindings alive and make the intended surface explicit in
@@ -3045,6 +3256,7 @@ impl ComposeDialog {
             match response {
                 "discard" => {
                     dialog.imp().close_confirmed.set(true);
+                    dialog.set_can_close(true);
                     dialog.close();
                 }
                 "save" => {
@@ -3333,12 +3545,14 @@ impl ComposeDialog {
         }
         let viewer = MailViewer::new();
         viewer.load_print_document(&document)?;
-        let window = gtk::Window::builder()
+        let mut window_builder = gtk::Window::builder()
             .title("Druckvorschau")
             .default_width(900)
-            .default_height(700)
-            .transient_for(self)
-            .build();
+            .default_height(700);
+        if let Some(parent) = self.root().and_downcast::<gtk::Window>() {
+            window_builder = window_builder.transient_for(&parent);
+        }
+        let window = window_builder.build();
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
         content.append(&gtk::HeaderBar::new());
         content.append(&viewer);
@@ -3377,27 +3591,31 @@ impl ComposeDialog {
             let viewer = MailViewer::new();
             self.imp().print_viewer.replace(Some(viewer.clone()));
             let dialog = self.downgrade();
-            let parent: gtk::Window = self.clone().upcast();
-            viewer.print_document(&document, &parent, move |result| {
-                let Some(dialog) = dialog.upgrade() else {
-                    return;
-                };
-                dialog.imp().print_viewer.borrow_mut().take();
-                match result {
-                    Ok(crate::views::MailPrintDialogResult::Printed) => dialog.finish_print_state(
-                        generation,
-                        MailPrintJobState::Idle,
-                        "Druckauftrag wurde an das System übergeben",
-                    ),
-                    Ok(crate::views::MailPrintDialogResult::Cancelled) => dialog
-                        .finish_print_state(
+            let parent_window = self.root().and_downcast::<gtk::Window>();
+            if let Some(parent) = parent_window {
+                viewer.print_document(&document, &parent, move |result| {
+                    let Some(dialog) = dialog.upgrade() else {
+                        return;
+                    };
+                    dialog.imp().print_viewer.borrow_mut().take();
+                    match result {
+                        Ok(crate::views::MailPrintDialogResult::Printed) => dialog.finish_print_state(
                             generation,
-                            MailPrintJobState::Cancelled,
-                            "Druckdialog abgebrochen",
+                            MailPrintJobState::Idle,
+                            "Druckauftrag wurde an das System übergeben",
                         ),
-                    Err(error) => dialog.finish_print_error(generation, error),
-                }
-            });
+                        Ok(crate::views::MailPrintDialogResult::Cancelled) => dialog
+                            .finish_print_state(
+                                generation,
+                                MailPrintJobState::Cancelled,
+                                "Druckdialog abgebrochen",
+                            ),
+                        Err(error) => dialog.finish_print_error(generation, error),
+                    }
+                });
+            } else {
+                self.finish_print_error(generation, "Kein übergeordnetes Fenster für Druckdialog".to_string());
+            }
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -3605,8 +3823,9 @@ impl ComposeDialog {
             .initial_name("Nachricht.eml")
             .modal(true)
             .build();
+        let parent_win = self.root().and_downcast::<gtk::Window>();
         let dialog_weak = self.downgrade();
-        file_dialog.save(Some(self), None::<&gio::Cancellable>, move |result| {
+        file_dialog.save(parent_win.as_ref(), None::<&gio::Cancellable>, move |result| {
             let Ok(file) = result else {
                 return;
             };
@@ -4253,11 +4472,7 @@ impl ComposeDialog {
     }
 
     fn show_toast(&self, message: &str) {
-        let Some(parent) = self.transient_for() else {
-            tracing::warn!(%message, "Composer result");
-            return;
-        };
-        if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>() {
+        if let Some(window) = crate::window::find_evolution_window(self) {
             window.add_toast(&adw::Toast::new(message));
         } else {
             tracing::warn!(%message, "Composer result");

@@ -223,8 +223,7 @@ mod imp {
                 if std::env::args().any(|a| a == "--receiving") {
                     dialog.select_page("receiving");
                 }
-                dialog.set_transient_for(Some(&window));
-                dialog.present();
+                dialog.present(Some(&window));
             }
         }
 
@@ -552,8 +551,7 @@ impl EvolutionApplication {
                 tracing::info!("Draft manager action triggered");
                 let dialog = crate::dialogs::DraftsDialog::new();
                 let parent = app.active_window();
-                dialog.set_transient_for(parent.as_ref());
-                dialog.present();
+                dialog.present(parent.as_ref());
             }
         ));
         self.add_action(&action_drafts);
@@ -566,8 +564,7 @@ impl EvolutionApplication {
             move |_, _| {
                 let dialog = crate::dialogs::GlobalSearchDialog::new();
                 let parent = app.active_window();
-                dialog.set_transient_for(parent.as_ref());
-                dialog.present();
+                dialog.present(parent.as_ref());
             }
         ));
         self.add_action(&action_global_search);

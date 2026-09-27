@@ -11,34 +11,32 @@ use crate::services::plugin_service::{PluginCategory, PluginDescriptor, PluginMa
 use crate::services::settings_service::AppSettings;
 
 pub struct PluginsDialog {
-    window: adw::Window,
+    dialog: adw::Dialog,
+    stored_parent: RefCell<Option<gtk::Widget>>,
 }
 
 impl PluginsDialog {
-    pub fn new<P: IsA<gtk::Window>>(
+    pub fn new<P: IsA<gtk::Widget>>(
         parent: Option<&P>,
         settings: Option<AppSettings>,
     ) -> Self {
         let app_settings = settings.or_else(AppSettings::try_new);
 
-        let window = adw::Window::builder()
+        let dialog = adw::Dialog::builder()
             .title("Standard-Plugins")
-            .modal(true)
-            .default_width(620)
-            .default_height(560)
+            .content_width(620)
+            .content_height(560)
             .build();
 
-        if let Some(parent) = parent {
-            window.set_transient_for(Some(parent));
-        }
+        let stored_parent = RefCell::new(parent.map(|p| p.upcast_ref::<gtk::Widget>().clone()));
 
         let toolbar = adw::ToolbarView::new();
         let header = adw::HeaderBar::new();
 
         let close_btn = gtk::Button::builder().label("Schließen").build();
-        let win_close = window.downgrade();
+        let dlg_close = dialog.downgrade();
         close_btn.connect_clicked(move |_| {
-            if let Some(w) = win_close.upgrade() {
+            if let Some(w) = dlg_close.upgrade() {
                 w.close();
             }
         });
@@ -112,11 +110,11 @@ impl PluginsDialog {
                         .css_classes(vec!["flat"])
                         .build();
 
-                    let win_config = window.downgrade();
+                    let dlg_config = dialog.downgrade();
                     let settings_config = app_settings_rc.clone();
                     let plugin_id = plugin.id;
                     config_btn.connect_clicked(move |_| {
-                        if let Some(parent) = win_config.upgrade() {
+                        if let Some(parent) = dlg_config.upgrade() {
                             present_plugin_config_dialog(&parent, plugin_id, settings_config.as_ref().clone());
                         }
                     });
@@ -155,17 +153,24 @@ impl PluginsDialog {
         scrolled.set_child(Some(&pref_page));
         main_box.append(&scrolled);
         toolbar.set_content(Some(&main_box));
-        window.set_content(Some(&toolbar));
+        dialog.set_child(Some(&toolbar));
 
-        Self { window }
+        Self {
+            dialog,
+            stored_parent,
+        }
+    }
+
+    pub fn dialog(&self) -> &adw::Dialog {
+        &self.dialog
     }
 
     pub fn present(&self) {
-        self.window.present();
+        self.dialog.present(self.stored_parent.borrow().as_ref());
     }
 }
 
-pub fn present_plugins_dialog<P: IsA<gtk::Window>>(
+pub fn present_plugins_dialog<P: IsA<gtk::Widget>>(
     parent: Option<&P>,
     settings: Option<AppSettings>,
 ) {
@@ -173,25 +178,23 @@ pub fn present_plugins_dialog<P: IsA<gtk::Window>>(
     dialog.present();
 }
 
-fn present_plugin_config_dialog<P: IsA<gtk::Window>>(
+fn present_plugin_config_dialog<P: IsA<gtk::Widget>>(
     parent: &P,
     plugin_id: &str,
     settings: Option<AppSettings>,
 ) {
-    let window = adw::Window::builder()
-        .modal(true)
-        .default_width(500)
-        .default_height(420)
-        .transient_for(parent)
+    let dialog = adw::Dialog::builder()
+        .content_width(500)
+        .content_height(420)
         .build();
 
     let toolbar = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
 
     let close_btn = gtk::Button::builder().label("Fertig").build();
-    let win_close = window.downgrade();
+    let dlg_close = dialog.downgrade();
     close_btn.connect_clicked(move |_| {
-        if let Some(w) = win_close.upgrade() {
+        if let Some(w) = dlg_close.upgrade() {
             w.close();
         }
     });
@@ -202,7 +205,7 @@ fn present_plugin_config_dialog<P: IsA<gtk::Window>>(
 
     match plugin_id {
         "org.gnome.evolution.plugin.attachment-reminder" => {
-            window.set_title(Some("Anhang-Erinnerung konfigurieren"));
+            dialog.set_title("Anhang-Erinnerung konfigurieren");
             let group = adw::PreferencesGroup::builder()
                 .title("Erinnerungs-Schlüsselwörter")
                 .description("Wenn eine dieser Phrasen im Text vorkommt, aber kein Anhang vorhanden ist, warnt Evolution vor dem Senden.")
@@ -320,7 +323,7 @@ fn present_plugin_config_dialog<P: IsA<gtk::Window>>(
             pref_page.add(&group);
         }
         _ => {
-            window.set_title(Some("Plugin-Informationen"));
+            dialog.set_title("Plugin-Informationen");
             let group = adw::PreferencesGroup::builder()
                 .title("Standardeinstellungen")
                 .description("Für dieses Plugin sind keine zusätzlichen Parameter erforderlich.")
@@ -336,6 +339,6 @@ fn present_plugin_config_dialog<P: IsA<gtk::Window>>(
         .build();
 
     toolbar.set_content(Some(&scrolled));
-    window.set_content(Some(&toolbar));
-    window.present();
+    dialog.set_child(Some(&toolbar));
+    dialog.present(Some(parent));
 }

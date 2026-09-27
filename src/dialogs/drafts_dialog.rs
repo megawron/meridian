@@ -28,7 +28,7 @@ mod imp {
     impl ObjectSubclass for DraftsDialog {
         const NAME: &'static str = "EvolutionDraftsDialog";
         type Type = super::DraftsDialog;
-        type ParentType = adw::Window;
+        type ParentType = adw::Dialog;
     }
 
     impl ObjectImpl for DraftsDialog {
@@ -39,24 +39,21 @@ mod imp {
     }
 
     impl WidgetImpl for DraftsDialog {}
-    impl WindowImpl for DraftsDialog {}
-    impl AdwWindowImpl for DraftsDialog {}
+    impl AdwDialogImpl for DraftsDialog {}
 }
 
 glib::wrapper! {
     pub struct DraftsDialog(ObjectSubclass<imp::DraftsDialog>)
-        @extends adw::Window, gtk::Window, gtk::Widget,
-        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget,
-                    gtk::Native, gtk::Root, gtk::ShortcutManager;
+        @extends adw::Dialog, gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
 impl DraftsDialog {
     pub fn new() -> Self {
         glib::Object::builder()
             .property("title", "Lokale Entwürfe")
-            .property("modal", false)
-            .property("default-width", 720)
-            .property("default-height", 560)
+            .property("content-width", 720)
+            .property("content-height", 560)
             .build()
     }
 
@@ -107,7 +104,7 @@ impl DraftsDialog {
         content.append(&status);
         content.append(&scrolled);
         toolbar_view.set_content(Some(&content));
-        self.set_content(Some(&toolbar_view));
+        self.set_child(Some(&toolbar_view));
 
         self.imp().list.replace(Some(list));
         self.imp().status.replace(Some(status));
@@ -219,10 +216,8 @@ impl DraftsDialog {
     }
 
     fn present_composer(&self, composer: crate::dialogs::ComposeDialog) {
-        if let Some(parent) = self.transient_for() {
+        if let Some(parent) = self.root().and_downcast::<gtk::Window>() {
             composer.set_transient_for(Some(&parent));
-        } else {
-            composer.set_transient_for(Some(self.upcast_ref::<gtk::Window>()));
         }
         composer.present();
     }
@@ -249,11 +244,9 @@ impl DraftsDialog {
     }
 
     fn show_parent_toast(&self, message: &str) {
-        if let Some(parent) = self.transient_for() {
-            if let Ok(window) = parent.downcast::<crate::window::EvolutionWindow>() {
-                window.add_toast(&adw::Toast::new(message));
-                return;
-            }
+        if let Some(window) = self.root().and_downcast::<crate::window::EvolutionWindow>() {
+            window.add_toast(&adw::Toast::new(message));
+            return;
         }
         tracing::warn!(%message, "Draft manager result");
     }

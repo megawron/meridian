@@ -26,19 +26,17 @@ pub struct FolderSortOrderDialog;
 
 impl FolderSortOrderDialog {
     pub fn present<F>(
-        parent: &gtk::Window,
+        parent: &impl IsA<gtk::Widget>,
         title: &str,
         items: Vec<FolderSortOrderItem>,
         on_outcome: F,
     ) where
         F: Fn(FolderSortOrderOutcome) + 'static,
     {
-        let window = adw::Window::builder()
+        let dialog = adw::Dialog::builder()
             .title("Ordnersortierung")
-            .transient_for(parent)
-            .modal(true)
-            .default_width(460)
-            .default_height(420)
+            .content_width(460)
+            .content_height(420)
             .build();
         let order = Rc::new(RefCell::new(items));
         let list = gtk::ListBox::builder()
@@ -107,7 +105,7 @@ impl FolderSortOrderDialog {
         controls.append(&down);
         content.append(&controls);
         toolbar.set_content(Some(&content));
-        window.set_content(Some(&toolbar));
+        dialog.set_child(Some(&toolbar));
 
         let list_for_refresh = list.clone();
         let order_for_refresh = Rc::clone(&order);
@@ -183,7 +181,7 @@ impl FolderSortOrderDialog {
         let outcome = Rc::new(on_outcome);
         let outcome_for_save = Rc::clone(&outcome);
         let order_for_save = Rc::clone(&order);
-        let window_for_save = window.clone();
+        let dialog_for_save = dialog.clone();
         save.connect_clicked(move |_| {
             outcome_for_save(FolderSortOrderOutcome::Save(
                 order_for_save
@@ -192,20 +190,20 @@ impl FolderSortOrderDialog {
                     .map(|item| item.id.clone())
                     .collect(),
             ));
-            window_for_save.close();
+            dialog_for_save.close();
         });
         for (button, value) in [
             (reset_current, FolderSortOrderOutcome::ResetCurrent),
             (reset_all, FolderSortOrderOutcome::ResetAll),
         ] {
             let outcome = Rc::clone(&outcome);
-            let window = window.clone();
+            let dialog = dialog.clone();
             button.connect_clicked(move |_| {
                 outcome(value.clone());
-                window.close();
+                dialog.close();
             });
         }
-        window.present();
+        dialog.present(Some(parent));
     }
 }
 

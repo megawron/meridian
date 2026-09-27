@@ -142,25 +142,22 @@ mod imp {
     impl ObjectSubclass for NameSelectorDialog {
         const NAME: &'static str = "EvolutionNameSelectorDialog";
         type Type = super::NameSelectorDialog;
-        type ParentType = adw::Window;
+        type ParentType = adw::Dialog;
     }
 
     impl ObjectImpl for NameSelectorDialog {}
     impl WidgetImpl for NameSelectorDialog {}
-    impl WindowImpl for NameSelectorDialog {}
-    impl AdwWindowImpl for NameSelectorDialog {}
+    impl AdwDialogImpl for NameSelectorDialog {}
 }
 
 glib::wrapper! {
     pub struct NameSelectorDialog(ObjectSubclass<imp::NameSelectorDialog>)
-        @extends adw::Window, gtk::Window, gtk::Widget,
-        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget,
-                    gtk::Native, gtk::Root, gtk::ShortcutManager;
+        @extends adw::Dialog, gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
 impl NameSelectorDialog {
     pub fn new<F>(
-        parent: &impl IsA<gtk::Window>,
         initial_to: &str,
         initial_cc: &str,
         initial_bcc: &str,
@@ -171,10 +168,8 @@ impl NameSelectorDialog {
     {
         let dialog: Self = glib::Object::builder()
             .property("title", "Empfänger auswählen")
-            .property("modal", true)
-            .property("transient-for", parent)
-            .property("default-width", 780)
-            .property("default-height", 540)
+            .property("content-width", 780)
+            .property("content-height", 540)
             .build();
 
         dialog.imp().destinations_to.replace(parse_destinations(initial_to));
@@ -345,7 +340,7 @@ impl NameSelectorDialog {
 
         content_box.append(&main_grid);
         toolbar_view.set_content(Some(&content_box));
-        self.set_content(Some(&toolbar_view));
+        self.set_child(Some(&toolbar_view));
 
         // Populate initial destination lists
         Self::refresh_destination_list(self, &list_to, 0);

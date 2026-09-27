@@ -34,7 +34,7 @@ mod imp {
     impl ObjectSubclass for SourcePropertiesDialog {
         const NAME: &'static str = "EvolutionSourcePropertiesDialog";
         type Type = super::SourcePropertiesDialog;
-        type ParentType = adw::Window;
+        type ParentType = adw::Dialog;
     }
 
     impl ObjectImpl for SourcePropertiesDialog {
@@ -45,15 +45,13 @@ mod imp {
     }
 
     impl WidgetImpl for SourcePropertiesDialog {}
-    impl WindowImpl for SourcePropertiesDialog {}
-    impl AdwWindowImpl for SourcePropertiesDialog {}
+    impl AdwDialogImpl for SourcePropertiesDialog {}
 }
 
 glib::wrapper! {
     pub struct SourcePropertiesDialog(ObjectSubclass<imp::SourcePropertiesDialog>)
-        @extends adw::Window, gtk::Window, gtk::Widget,
-        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget,
-                    gtk::Native, gtk::Root, gtk::ShortcutManager;
+        @extends adw::Dialog, gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
 impl SourcePropertiesDialog {
@@ -91,9 +89,9 @@ impl SourcePropertiesDialog {
         let is_writable = *self.imp().is_writable.borrow();
         let is_default = *self.imp().is_default.borrow();
 
-        self.set_title(Some(&format!("Eigenschaften von „{display_name}“")));
-        self.set_default_size(520, 480);
-        self.set_modal(true);
+        self.set_title(&format!("Eigenschaften von „{display_name}“"));
+        self.set_content_width(520);
+        self.set_content_height(480);
 
         let toolbar = adw::ToolbarView::new();
         let header = adw::HeaderBar::new();
@@ -285,7 +283,7 @@ impl SourcePropertiesDialog {
             .build();
 
         toolbar.set_content(Some(&scrolled));
-        self.set_content(Some(&toolbar));
+        self.set_child(Some(&toolbar));
     }
 }
 

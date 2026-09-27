@@ -728,15 +728,13 @@ impl EvolutionWindow {
 
     fn present_account_setup(&self) {
         let dialog = crate::dialogs::AccountSetupDialog::new();
-        dialog.set_transient_for(Some(self));
         let window = self.downgrade();
-        dialog.connect_close_request(move |_| {
+        dialog.connect_closed(move |_| {
             if let Some(window) = window.upgrade() {
                 window.reload_mail_accounts();
             }
-            glib::Propagation::Proceed
         });
-        dialog.present();
+        dialog.present(Some(self));
     }
 
     fn memos_page(&self) -> Option<MemosPage> {
@@ -1763,7 +1761,11 @@ impl EvolutionWindow {
     fn present_new_mail(&self) {
         let dialog = crate::dialogs::ComposeDialog::new();
         dialog.set_transient_for(Some(self));
-        dialog.present();
+        if self.is_mobile() || self.is_tablet() {
+            dialog.present_modal(self);
+        } else {
+            dialog.present_standalone();
+        }
     }
 
     fn present_contextual_new(&self) {
@@ -3699,16 +3701,16 @@ impl EvolutionWindow {
         toast_overlay.set_child(Some(&toolbar_view));
 
         // Responsive Breakpoints: 4-Tier Model (matching GNOME Calendar & Convey)
-        // 1. Desktop (> 1000sp): 3 columns (Folders | Messages | Viewer)
-        // 2. Tablet (750sp - 1000sp): 2 columns
-        // 3. Mobile (450sp - 750sp): 1 column drilldown with bottom view switcher bar
-        // 4. Compact Mobile (<= 450sp): 1 column drilldown with compact controls (e.g. PinePhone 360px)
+        // 1. Desktop (> 900sp): 3 columns (Folders | Messages | Viewer)
+        // 2. Tablet / Split-Screen (550sp - 900sp): 2 columns (Folders | Stacked Message List / Viewer)
+        // 3. Mobile (400sp - 550sp): 1 column drilldown with bottom view switcher bar & overlay sidebar
+        // 4. Compact Mobile (<= 400sp): 1 column drilldown with compact controls (e.g. PinePhone 360px)
         let bp_tablet =
-            adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 1000sp").unwrap());
+            adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 900sp").unwrap());
         let bp_mobile =
-            adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 750sp").unwrap());
+            adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 550sp").unwrap());
         let bp_compact =
-            adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 450sp").unwrap());
+            adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 400sp").unwrap());
 
         let win_weak_tab_apply = self.downgrade();
         bp_tablet.connect_apply(move |_| {
@@ -4959,8 +4961,7 @@ impl EvolutionWindow {
             self,
             move |_, _| {
                 let dialog = crate::dialogs::OutOfOfficeDialog::new();
-                dialog.set_transient_for(Some(&win));
-                dialog.present();
+                dialog.present(Some(&win));
             }
         ));
         self.add_action(&action_oof);
@@ -4971,8 +4972,7 @@ impl EvolutionWindow {
             self,
             move |_, _| {
                 let dialog = crate::dialogs::FilterEditorDialog::new();
-                dialog.set_transient_for(Some(&win));
-                dialog.present();
+                dialog.present(Some(&win));
             }
         ));
         self.add_action(&action_filter);
@@ -4995,8 +4995,7 @@ impl EvolutionWindow {
             self,
             move |_, _| {
                 let dialog = crate::dialogs::SearchFolderDialog::new("");
-                dialog.set_transient_for(Some(&win));
-                dialog.present();
+                dialog.present(Some(&win));
             }
         ));
         self.add_action(&action_search_folder);
@@ -5238,8 +5237,7 @@ impl EvolutionWindow {
             self,
             move |_, _| {
                 let dialog = crate::dialogs::ImportDialog::new();
-                dialog.set_transient_for(Some(&win));
-                dialog.present();
+                dialog.present(Some(&win));
             }
         ));
         self.add_action(&action_import);
@@ -7366,26 +7364,123 @@ mod tests {
             view_stack.set_visible_child_name("mail");
         }
 
-        // Activate tablet mode (720px - 1000px)
+        // Activate tablet mode (550px - 900px)
         window.set_screen_mode(false, true);
 
-        // Initially in 2-column browse mode: Folders + Messages visible, Viewer folded
+        // Initially in 2-column browse mode: Folders + Messages visible, Viewer stacked/hidden
         assert!(!mail_page.can_navigate_back());
         assert!(!back_btn.is_visible());
+        assert!(mail_page.imp().inner_paned.start_child().map(|w| w.is_visible()).unwrap_or(false));
+        assert!(!mail_page.imp().inner_paned.end_child().map(|w| w.is_visible()).unwrap_or(true));
 
         // When user opens a message in tablet mode, drill down to Viewer
         mail_page.set_drill_down_level(crate::views::MailDrillDownLevel::Viewer);
         assert!(mail_page.can_navigate_back());
         assert!(back_btn.is_visible());
+        assert!(!mail_page.imp().inner_paned.start_child().map(|w| w.is_visible()).unwrap_or(true));
+        assert!(mail_page.imp().inner_paned.end_child().map(|w| w.is_visible()).unwrap_or(false));
 
         // Press back: Viewer -> Messages (returns to 2-column Folders + Messages)
         assert!(window.handle_navigate_back());
         assert!(!mail_page.can_navigate_back());
         assert!(!back_btn.is_visible());
         assert_eq!(mail_page.drill_down_level(), crate::views::MailDrillDownLevel::Messages);
+        assert!(mail_page.imp().inner_paned.start_child().map(|w| w.is_visible()).unwrap_or(false));
+        assert!(!mail_page.imp().inner_paned.end_child().map(|w| w.is_visible()).unwrap_or(true));
 
         // Press back again: does nothing in tablet mode
         assert!(!window.handle_navigate_back());
+    }
+
+    #[test]
+    fn test_folder_properties_dialog_is_modal_adw_dialog() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+        window.set_visible(true);
+
+        let snapshot = crate::dialogs::FolderPropertiesSnapshot {
+            folder_name: "Inbox".to_string(),
+            account_name: "Personal".to_string(),
+            folder_path: "INBOX".to_string(),
+            total_count: 42,
+            unread_count: 5,
+            is_remote: true,
+        };
+        let dialog = crate::dialogs::FolderPropertiesDialog::new(snapshot);
+        dialog.present(Some(&window));
+        assert!(dialog.root().is_some());
+        assert_eq!(dialog.root().as_ref(), window.root().as_ref());
+    }
+
+    #[test]
+    fn test_event_dialog_is_modal_adw_dialog() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+        window.set_visible(true);
+
+        let dialog = crate::dialogs::EventDialog::new();
+        dialog.present(Some(&window));
+        assert!(dialog.root().is_some());
+        assert_eq!(dialog.root().as_ref(), window.root().as_ref());
+    }
+
+    #[test]
+    fn test_compose_dialog_modal_presentation_and_split() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+        window.set_visible(true);
+
+        let dialog = crate::dialogs::ComposeDialog::new();
+        // Initially not modal until presented modal
+        assert!(!dialog.is_modal());
+
+        // Test modal presentation
+        dialog.present_modal(&window);
+        assert!(dialog.is_modal());
+        assert_eq!(dialog.root().as_ref(), window.root().as_ref());
+        let btn_open = dialog.imp().btn_open_in_new_window.borrow().clone();
+        assert!(btn_open.is_some());
+        assert!(btn_open.unwrap().is_visible());
+
+        // Test splitting to standalone window
+        dialog.split_to_standalone_window();
+        assert!(dialog.imp().close_confirmed.get());
+    }
+
+    #[test]
+    fn test_certificate_manager_dialog_is_modal_adw_dialog() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+        window.set_visible(true);
+
+        let mgr = crate::dialogs::CertificateManagerDialog::new(Some(&window));
+        mgr.present();
+        assert!(mgr.dialog().root().is_some());
+        assert_eq!(mgr.dialog().root().as_ref(), window.root().as_ref());
     }
 
     #[test]
