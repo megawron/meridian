@@ -506,7 +506,7 @@ pub fn load_folder_messages_page_from_sqlite(
     };
 
     let sql_str = format!(
-        "SELECT uid, flags, size, dsent, dreceived, subject, mail_from, mail_to, preview \
+        "SELECT uid, flags, size, dsent, dreceived, subject, mail_from, mail_to, preview, labels \
          FROM {table_name}{where_clause} ORDER BY dreceived DESC, dsent DESC{limit_clause};"
     );
 
@@ -569,6 +569,13 @@ pub fn load_folder_messages_page_from_sqlite(
                 String::new()
             };
 
+            let labels_ptr = sqlite3_column_text(stmt, 9);
+            let labels = if !labels_ptr.is_null() {
+                CStr::from_ptr(labels_ptr).to_string_lossy().into_owned()
+            } else {
+                String::new()
+            };
+
             // Flags mapping:
             // 16 = CAMEL_MESSAGE_SEEN
             // 8  = CAMEL_MESSAGE_FLAGGED
@@ -577,9 +584,10 @@ pub fn load_folder_messages_page_from_sqlite(
             // 32 = CAMEL_MESSAGE_ATTACHMENTS
             let is_unread = (flags & 16) == 0;
             let is_flagged = (flags & 8) != 0;
-            let is_replied = (flags & (1 | 64)) != 0;
-            let is_forwarded = (flags & 128) != 0;
-            let has_attachments = (flags & 32) != 0;
+            let is_replied = (flags & (1 | 64)) != 0 || labels.contains("$Answered");
+            let is_forwarded = (flags & 128) != 0 || labels.contains("$Forwarded");
+            let has_cal = labels.contains("$has_cal");
+            let has_attachments = (flags & 32) != 0 || has_cal;
 
             // Date resolution
             let effective_ts = if dreceived > 0 { dreceived } else { dsent };
@@ -629,7 +637,15 @@ pub fn load_folder_messages_page_from_sqlite(
                 message_id: Some(id.clone()),
             });
 
-            let attachments = if has_attachments {
+            let attachments = if has_cal {
+                vec![AttachmentInfo {
+                    filename: "invite.ics".to_string(),
+                    size_formatted: String::new(),
+                    mime_type: "text/calendar".to_string(),
+                    content_id: None,
+                    content: std::sync::Arc::from([]),
+                }]
+            } else if has_attachments {
                 vec![AttachmentInfo {
                     filename: "Anhang".to_string(),
                     size_formatted: String::new(),

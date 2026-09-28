@@ -12,6 +12,15 @@ use crate::services::mail_store_service::MailBackendLocation;
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum MailAttachmentKind {
+    #[default]
+    None,
+    File,
+    Calendar,
+    Contact,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachmentInfo {
     pub filename: String,
@@ -501,6 +510,24 @@ impl MailMessageObject {
 
     pub fn attachment_count(&self) -> usize {
         self.imp().attachments.borrow().len()
+    }
+
+    pub fn attachment_kind(&self) -> MailAttachmentKind {
+        let atts = self.imp().attachments.borrow();
+        if atts.is_empty() {
+            return MailAttachmentKind::None;
+        }
+        for att in atts.iter() {
+            let mime = att.mime_type.to_ascii_lowercase();
+            let filename = att.filename.to_ascii_lowercase();
+            if mime.contains("calendar") || filename.ends_with(".ics") || filename.ends_with(".ical") {
+                return MailAttachmentKind::Calendar;
+            }
+            if mime.contains("vcard") || mime.contains("x-vcard") || filename.ends_with(".vcf") {
+                return MailAttachmentKind::Contact;
+            }
+        }
+        MailAttachmentKind::File
     }
 
     pub fn is_preview_only(&self) -> bool {

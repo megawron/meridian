@@ -91,29 +91,22 @@ searchbar entry text {
   -gtk-icon-size: 14px;
 }
 
-.message-list .mail-status-icon.unread-dot {
-  color: @accent_color;
-  -gtk-icon-size: 8px;
-  min-width: 8px;
-  min-height: 8px;
-  opacity: 1;
-}
-
 .message-list .mail-status-icon.accent,
 .message-list .unread .mail-status-icon.accent {
   color: @accent_color;
-  opacity: 1;
+  opacity: 0.85;
+  -gtk-icon-size: 14px;
 }
 
 .message-list .mail-status-icon.status-replied {
   color: #e66100;
-  opacity: 1.0;
+  opacity: 0.85;
   -gtk-icon-size: 14px;
 }
 
 .message-list .mail-status-icon.status-forwarded {
   color: #1c71d8;
-  opacity: 1.0;
+  opacity: 0.85;
   -gtk-icon-size: 14px;
 }
 
@@ -121,9 +114,15 @@ searchbar entry text {
   opacity: 0.55;
 }
 
-.mail-status-header-icon {
-  -gtk-icon-size: 8px;
-  opacity: 0.55;
+.mail-status-header-icon,
+.mail-avatar-header-icon,
+.mail-column-header-icon {
+  -gtk-icon-size: 16px;
+  opacity: 0.65;
+}
+
+image.mail-column-header-icon {
+  opacity: 0.65;
 }
 
 /* Evolution's default mail table is deliberately a dense, single-line
@@ -148,6 +147,22 @@ searchbar entry text {
 .message-list .deleted label {
   text-decoration-line: line-through;
   opacity: 0.65;
+}
+
+/* Evolution's signature red text for important/flagged messages
+ * (#A7453E in light mode, #FF6B6B in dark mode) */
+.message-line.mail-important label,
+.message-list .mail-important label,
+.mail-important label {
+  color: #A7453E;
+}
+
+@media (prefers-color-scheme: dark) {
+  .message-line.mail-important label,
+  .message-list .mail-important label,
+  .mail-important label {
+    color: #FF6B6B;
+  }
 }
 
 .message-list button,
@@ -367,7 +382,7 @@ searchbar entry text {
   color: @window_fg_color;
   margin-top: 0;
   margin-bottom: 2px;
-  padding: 0 2px;
+  padding: 0;
 }
 
 .mail-detail-header grid label {
@@ -2860,19 +2875,19 @@ scrollbar.mail-table-overlay-scrollbar slider:active {
 
 /* ── Modern Webmail Header & Conversation Bar ────────────────────────── */
 .mail-modern-header-card {
-  padding: 10px 14px;
-  border-radius: 12px;
-  background-color: @card_bg_color;
-  border: 1px solid alpha(@borders, 0.4);
-  box-shadow: 0 1px 3px alpha(black, 0.03);
-  margin: 2px 10px 8px 10px;
+  padding: 2px 0 2px 0;
+  border-radius: 0;
+  background-color: transparent;
+  border: none;
+  box-shadow: none;
+  margin: 2px 0 2px 0;
   transition: padding 200ms ease, margin 200ms ease;
 }
 
 .mail-modern-header-card.is-compact {
-  padding: 4px 14px;
-  margin: 2px 10px 4px 10px;
-  min-height: 36px;
+  padding: 0;
+  margin: 0;
+  min-height: 32px;
 }
 
 /* ── Classic Mail Header Collapsible & Responsive Layout ─────────────── */
@@ -3038,36 +3053,62 @@ banner.mail-status-banner button,
 }
 
 .mail-header-action-btn {
-  min-width: 26px;
+  min-width: 28px;
   min-height: 26px;
-  padding: 2px;
+  padding: 2px 7px;
   border-radius: 6px;
+  border: none;
+  background-color: transparent;
   color: @window_fg_color;
+  box-shadow: none;
   transition: all 120ms ease-in-out;
 }
 
-.mail-header-action-btn image {
+button.mail-header-action-btn,
+menubutton.mail-header-action-btn > button {
+  min-width: 28px;
+  min-height: 26px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  border: none;
+  background-color: transparent;
+  color: @window_fg_color;
+  box-shadow: none;
+}
+
+.mail-header-action-btn image,
+button.mail-header-action-btn image,
+menubutton.mail-header-action-btn > button image {
   min-width: 15px;
   min-height: 15px;
+  -gtk-icon-size: 15px;
 }
 
-.mail-header-action-btn:hover {
-  background-color: alpha(@window_fg_color, 0.08);
-}
-
-.mail-header-actions-group {
-  margin-left: 0;
-}
-
-/* Convey-inspired linked action button groups */
+/* ── Convey-inspired Action Pills for Hauptaktionen & Nebenaktionen ── */
+.mail-action-pill.linked,
 .mail-header-actions-group.linked {
   background-color: alpha(@window_fg_color, 0.05);
   border: 1px solid alpha(@borders, 0.55);
   border-radius: 8px;
   box-shadow: 0 1px 2px alpha(black, 0.03);
+  padding: 0;
 }
 
-.mail-header-actions-group.linked button.mail-header-action-btn {
+@media (prefers-color-scheme: dark) {
+  .mail-action-pill.linked,
+  .mail-header-actions-group.linked {
+    background-color: alpha(@window_fg_color, 0.07);
+    border: 1px solid alpha(white, 0.12);
+    box-shadow: 0 1px 2px alpha(black, 0.15);
+  }
+}
+
+.mail-action-pill.linked > button.mail-header-action-btn,
+.mail-action-pill.linked > menubutton.mail-header-action-btn,
+.mail-action-pill.linked > menubutton.mail-header-action-btn > button,
+.mail-header-actions-group.linked > button.mail-header-action-btn,
+.mail-header-actions-group.linked > menubutton.mail-header-action-btn,
+.mail-header-actions-group.linked > menubutton.mail-header-action-btn > button {
   min-width: 28px;
   min-height: 26px;
   padding: 2px 7px;
@@ -3078,44 +3119,100 @@ banner.mail-status-banner button,
   box-shadow: none;
 }
 
-.mail-header-actions-group.linked button.mail-header-action-btn:not(:last-child) {
+.mail-action-pill.linked > menubutton.mail-header-action-btn,
+.mail-header-actions-group.linked > menubutton.mail-header-action-btn {
+  padding: 0;
+  margin: 0;
+  background: transparent;
+}
+
+/* Subtle vertical dividers between buttons inside the pill */
+.mail-action-pill.linked > button.mail-header-action-btn:not(:last-child),
+.mail-action-pill.linked > menubutton.mail-header-action-btn:not(:last-child) > button,
+.mail-header-actions-group.linked > button.mail-header-action-btn:not(:last-child),
+.mail-header-actions-group.linked > menubutton.mail-header-action-btn:not(:last-child) > button {
   border-right: 1px solid alpha(@borders, 0.35);
 }
 
-.mail-header-actions-group.linked button.mail-header-action-btn:first-child {
+@media (prefers-color-scheme: dark) {
+  .mail-action-pill.linked > button.mail-header-action-btn:not(:last-child),
+  .mail-action-pill.linked > menubutton.mail-header-action-btn:not(:last-child) > button,
+  .mail-header-actions-group.linked > button.mail-header-action-btn:not(:last-child),
+  .mail-header-actions-group.linked > menubutton.mail-header-action-btn:not(:last-child) > button {
+    border-right: 1px solid alpha(white, 0.08);
+  }
+}
+
+/* Rounded corners matching the pill container */
+.mail-action-pill.linked > button.mail-header-action-btn:first-child,
+.mail-action-pill.linked > menubutton.mail-header-action-btn:first-child > button,
+.mail-header-actions-group.linked > button.mail-header-action-btn:first-child,
+.mail-header-actions-group.linked > menubutton.mail-header-action-btn:first-child > button {
   border-top-left-radius: 7px;
   border-bottom-left-radius: 7px;
 }
 
-.mail-header-actions-group.linked button.mail-header-action-btn:last-child {
+.mail-action-pill.linked > button.mail-header-action-btn:last-child,
+.mail-action-pill.linked > menubutton.mail-header-action-btn:last-child > button,
+.mail-header-actions-group.linked > button.mail-header-action-btn:last-child,
+.mail-header-actions-group.linked > menubutton.mail-header-action-btn:last-child > button {
   border-top-right-radius: 7px;
   border-bottom-right-radius: 7px;
 }
 
-.mail-header-actions-group.linked button.mail-header-action-btn:only-child {
+.mail-action-pill.linked > button.mail-header-action-btn:only-child,
+.mail-action-pill.linked > menubutton.mail-header-action-btn:only-child > button,
+.mail-header-actions-group.linked > button.mail-header-action-btn:only-child,
+.mail-header-actions-group.linked > menubutton.mail-header-action-btn:only-child > button {
   border-radius: 7px;
 }
 
-.mail-header-actions-group.linked button.mail-header-action-btn:hover {
+/* Hover & Active / Checked states */
+.mail-action-pill.linked > button.mail-header-action-btn:hover,
+.mail-action-pill.linked > menubutton.mail-header-action-btn > button:hover,
+.mail-header-actions-group.linked > button.mail-header-action-btn:hover,
+.mail-header-actions-group.linked > menubutton.mail-header-action-btn > button:hover {
   background-color: alpha(@window_fg_color, 0.08);
 }
 
-.mail-header-actions-group.linked button.mail-header-action-btn:active,
-.mail-header-actions-group.linked button.mail-header-action-btn:checked {
+.mail-action-pill.linked > button.mail-header-action-btn:active,
+.mail-action-pill.linked > button.mail-header-action-btn:checked,
+.mail-action-pill.linked > menubutton.mail-header-action-btn > button:active,
+.mail-action-pill.linked > menubutton.mail-header-action-btn > button:checked,
+.mail-header-actions-group.linked > button.mail-header-action-btn:active,
+.mail-header-actions-group.linked > button.mail-header-action-btn:checked,
+.mail-header-actions-group.linked > menubutton.mail-header-action-btn > button:active,
+.mail-header-actions-group.linked > menubutton.mail-header-action-btn > button:checked {
   background-color: alpha(@window_fg_color, 0.18);
 }
 
+.mail-header-actions-group {
+  margin-left: 0;
+}
+
+.sidebar-drawer-header.mail-preview-actions-bar,
 .mail-preview-actions-bar {
   min-height: 28px;
-  padding: 4px 10px;
+  padding: 0;
+  margin-top: 3px;
+  margin-bottom: 4px;
+  border-bottom: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  .sidebar-drawer-header.mail-preview-actions-bar,
+  .mail-preview-actions-bar {
+    border-bottom: none;
+  }
 }
 
 .sidebar-drawer-header.mail-preview-actions-bar label.mail-preview-date-label,
 .mail-preview-actions-bar .mail-preview-date-label,
 .mail-preview-date-label {
-  font-size: 0.82rem;
+  font-size: 0.85rem;
   font-weight: 500;
-  opacity: 0.72;
+  color: alpha(@window_fg_color, 0.72);
+  margin-right: 2px;
 }
 
 /* Maintain consistent, rock-solid 46px height on all window headerbars */

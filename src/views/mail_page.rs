@@ -21,7 +21,7 @@ use crate::dialogs::{
 use crate::i18n::{gettext, ngettext};
 use crate::models::eds_source::EdsSourceObject;
 use crate::models::folder::FolderObject;
-use crate::models::mail_message::{MailMessageIdentity, MailMessageObject};
+use crate::models::mail_message::{MailAttachmentKind, MailMessageIdentity, MailMessageObject};
 use crate::services::AppSettings;
 use crate::services::AvatarCacheService;
 use crate::services::account_config_service::AccountConfigStore;
@@ -1567,9 +1567,9 @@ fn mail_row_status_icon(
     } else if is_replied {
         ("mail-replied-symbolic", gettext("Replied"))
     } else if is_forwarded {
-        ("mail-forwarded-symbolic", gettext("Forwarded"))
+        ("mail-forward-symbolic", gettext("Forwarded"))
     } else if is_unread {
-        ("media-record-symbolic", gettext("Unread"))
+        ("mail-unread-symbolic", gettext("Unread"))
     } else {
         ("", gettext("Read"))
     }
@@ -1787,6 +1787,7 @@ pub(crate) struct PreparedMailTableRow {
     pub is_important: bool,
     pub is_replied: bool,
     pub is_forwarded: bool,
+    pub attachment_kind: MailAttachmentKind,
     pub has_attachments: bool,
     pub sender: String,
     pub sender_email: String,
@@ -1820,6 +1821,7 @@ impl Default for PreparedMailTableRow {
             is_important: false,
             is_replied: false,
             is_forwarded: false,
+            attachment_kind: MailAttachmentKind::None,
             has_attachments: false,
             sender: String::new(),
             sender_email: String::new(),
@@ -2310,10 +2312,10 @@ pub(crate) fn prepare_mail_table_layout_from_rows(
         row.y = (i as f64) * row_height;
         row.height = row_height;
         if row.markup_dark.is_empty() {
-            row.markup_dark = format_mail_table_subject_markup(&row.subject, &row.snippet, row.is_unread, true, true);
+            row.markup_dark = format_mail_table_subject_markup(&row.subject, &row.snippet, row.is_unread, true, true, row.is_important);
         }
         if row.markup_light.is_empty() {
-            row.markup_light = format_mail_table_subject_markup(&row.subject, &row.snippet, row.is_unread, true, false);
+            row.markup_light = format_mail_table_subject_markup(&row.subject, &row.snippet, row.is_unread, true, false, row.is_important);
         }
     }
     let height = (rows.len() as f64 * row_height).max(40.0);
@@ -2450,8 +2452,9 @@ pub(crate) fn prepare_mail_table_layout(
         let subject = msg.subject();
         let snippet = msg.preview_snippet();
         let is_unread = msg.is_unread();
-        let markup_dark = format_mail_table_subject_markup(&subject, &snippet, is_unread, true, true);
-        let markup_light = format_mail_table_subject_markup(&subject, &snippet, is_unread, true, false);
+        let is_important = msg.is_important();
+        let markup_dark = format_mail_table_subject_markup(&subject, &snippet, is_unread, true, true, is_important);
+        let markup_light = format_mail_table_subject_markup(&subject, &snippet, is_unread, true, false, is_important);
 
         rows.push(PreparedMailTableRow {
             model_index: i as usize,
@@ -2466,6 +2469,7 @@ pub(crate) fn prepare_mail_table_layout(
             is_important: msg.is_important(),
             is_replied: msg.is_replied(),
             is_forwarded: msg.is_forwarded(),
+            attachment_kind: msg.attachment_kind(),
             has_attachments: msg.attachment_count() > 0,
             sender: msg.sender_name(),
             sender_email: msg.sender_email(),
@@ -2578,6 +2582,25 @@ mod pangocairo_ffi {
         unsafe {
             pango_cairo_update_layout(cr.to_raw_none(), layout.to_glib_none().0);
         }
+    }
+}
+
+pub(crate) fn draw_cairo_tinted_surface(
+    cr: &gtk::cairo::Context,
+    surface: &gtk::cairo::ImageSurface,
+    cx: f64,
+    cy: f64,
+    r: f64,
+    g: f64,
+    b: f64,
+    a: f64,
+) {
+    let w = surface.width() as f64;
+    let h = surface.height() as f64;
+    if let Ok(()) = cr.save() {
+        cr.set_source_rgba(r, g, b, a);
+        let _ = cr.mask_surface(surface, (cx - w / 2.0).round(), (cy - h / 2.0).round());
+        let _ = cr.restore();
     }
 }
 
@@ -2903,15 +2926,28 @@ pub(crate) fn draw_cairo_avatar_circle(
     let _ = cr.show_text(&initials);
 }
 
+pub(crate) const DEFAULT_IMPORTANT_FG_COLOR_LIGHT: &str = "#A7453E";
+pub(crate) const DEFAULT_IMPORTANT_FG_COLOR_DARK: &str = "#FF6B6B";
+
 pub(crate) fn format_mail_table_subject_markup(
     raw_subject: &str,
     raw_snippet: &str,
     is_unread: bool,
     show_preview_text: bool,
     is_dark: bool,
+    is_important: bool,
 ) -> String {
-    let unread_hex = if is_dark { "#ffffff" } else { "#000000" };
-    let read_hex = if is_dark { "#deddda" } else { "#1f1f1f" };
+    let (unread_hex, read_hex) = if is_important {
+        if is_dark {
+            (DEFAULT_IMPORTANT_FG_COLOR_DARK, DEFAULT_IMPORTANT_FG_COLOR_DARK)
+        } else {
+            (DEFAULT_IMPORTANT_FG_COLOR_LIGHT, DEFAULT_IMPORTANT_FG_COLOR_LIGHT)
+        }
+    } else if is_dark {
+        ("#ffffff", "#deddda")
+    } else {
+        ("#000000", "#1f1f1f")
+    };
     let dim_hex = if is_dark { "#9a9996" } else { "#5f6368" };
 
     let clean_subject = if raw_subject.contains('\n') || raw_subject.contains('\r') {
@@ -2968,6 +3004,7 @@ pub(crate) fn draw_mail_table_canvas(
     is_dark: bool,
     scroll_y: f64,
     get_avatar: &dyn Fn(&str, &str) -> Option<gtk::cairo::ImageSurface>,
+    get_icon: &dyn Fn(&str, i32) -> Option<gtk::cairo::ImageSurface>,
 ) {
     let row_h = layout.row_height;
     let start_row = (scroll_y / row_h).floor().max(0.0) as usize;
@@ -3010,7 +3047,13 @@ pub(crate) fn draw_mail_table_canvas(
         let row_idx = start_row + i;
         let Some(row) = layout.rows.get(row_idx) else { break; };
         let y = offset_y + (i as f64) * row_h;
-        let (r, g, b) = if row.is_unread {
+        let (r, g, b) = if row.is_important {
+            if is_dark {
+                (1.0, 0.420, 0.420) // Evolution dark mode important red #FF6B6B
+            } else {
+                (0.655, 0.271, 0.243) // Evolution light mode important red #A7453E
+            }
+        } else if row.is_unread {
             (unread_r, unread_g, unread_b)
         } else {
             (read_r, read_g, read_b)
@@ -3131,7 +3174,16 @@ pub(crate) fn draw_mail_table_canvas(
 
             // Line 2: Subject + right badges (Thread count, attachment, star, follow-up)
             let mut line2_right_x = width - right_pad;
-            if layout.show_flagged && row.is_flagged {
+            if layout.show_flagged && row.is_important {
+                if let Some(surf) = get_icon("emblem-important-symbolic", 14) {
+                    draw_cairo_tinted_surface(cr, &surf, line2_right_x - 7.0, y + 39.0, 0.88, 0.11, 0.14, 1.0);
+                } else {
+                    cr.set_source_rgb(0.88, 0.11, 0.14);
+                    cr.arc(line2_right_x - 7.0, y + 39.0, 6.0, 0.0, std::f64::consts::TAU);
+                    let _ = cr.fill();
+                }
+                line2_right_x -= 18.0;
+            } else if layout.show_flagged && row.is_flagged {
                 draw_cairo_star(cr, line2_right_x - 7.0, y + 39.0, 7.0, true, is_dark, is_hovered);
                 line2_right_x -= 18.0;
             }
@@ -3140,7 +3192,35 @@ pub(crate) fn draw_mail_table_canvas(
                 line2_right_x -= 18.0;
             }
             if row.has_attachments {
-                draw_cairo_paperclip(cr, line2_right_x - 7.0, y + 39.0, dim_r, dim_g, dim_b, 0.75);
+                let icon_drawn = match row.attachment_kind {
+                    MailAttachmentKind::Calendar => {
+                        if let Some(surf) = get_icon("x-office-calendar-symbolic", 14) {
+                            draw_cairo_tinted_surface(cr, &surf, line2_right_x - 7.0, y + 39.0, dim_r, dim_g, dim_b, 0.85);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    MailAttachmentKind::Contact => {
+                        if let Some(surf) = get_icon("x-office-address-book-symbolic", 14) {
+                            draw_cairo_tinted_surface(cr, &surf, line2_right_x - 7.0, y + 39.0, dim_r, dim_g, dim_b, 0.85);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    _ => {
+                        if let Some(surf) = get_icon("mail-attachment-symbolic", 14) {
+                            draw_cairo_tinted_surface(cr, &surf, line2_right_x - 7.0, y + 39.0, dim_r, dim_g, dim_b, 0.85);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                };
+                if !icon_drawn {
+                    draw_cairo_paperclip(cr, line2_right_x - 7.0, y + 39.0, dim_r, dim_g, dim_b, 0.75);
+                }
                 line2_right_x -= 16.0;
             }
             if row.thread_size > 1 {
@@ -3169,7 +3249,13 @@ pub(crate) fn draw_mail_table_canvas(
             pango_layout.set_single_paragraph_mode(true);
             pango_layout.set_ellipsize(gtk::pango::EllipsizeMode::End);
             pango_layout.set_width((subj_avail_w * gtk::pango::SCALE as f64) as i32);
-            if is_dark {
+            if row.is_important {
+                if is_dark {
+                    cr.set_source_rgb(1.0, 0.420, 0.420);
+                } else {
+                    cr.set_source_rgb(0.655, 0.271, 0.243);
+                }
+            } else if is_dark {
                 cr.set_source_rgb(0.92, 0.92, 0.92);
             } else {
                 cr.set_source_rgb(0.12, 0.12, 0.12);
@@ -3219,37 +3305,118 @@ pub(crate) fn draw_mail_table_canvas(
             continue;
         }
 
-        // 1. Status Column (Adwaita blue unread dot, HIG 9px diameter)
-        if layout.show_status && layout.col_status_w() > 0.0 && row.is_unread {
-            cr.set_source_rgba(accent_rgb.0, accent_rgb.1, accent_rgb.2, 1.0);
-            cr.arc(layout.col_status_x() + 14.0, y + h / 2.0, 4.5, 0.0, std::f64::consts::TAU);
-            let _ = cr.fill();
+        // 1. Status Column (GNOME HIG Status Icons: Replied, Forwarded, Unread, or Read open envelope)
+        if layout.show_status && layout.col_status_w() > 0.0 {
+            let cx = layout.col_status_x() + layout.col_status_w() / 2.0;
+            let cy = y + h / 2.0;
+
+            if row.is_replied {
+                if let Some(surf) = get_icon("mail-replied-symbolic", 16) {
+                    draw_cairo_tinted_surface(cr, &surf, cx, cy, accent_rgb.0, accent_rgb.1, accent_rgb.2, 0.85);
+                } else {
+                    draw_cairo_reply_badge(cr, cx, cy, is_dark);
+                }
+            } else if row.is_forwarded {
+                if let Some(surf) = get_icon("mail-forward-symbolic", 16) {
+                    draw_cairo_tinted_surface(cr, &surf, cx, cy, accent_rgb.0, accent_rgb.1, accent_rgb.2, 0.85);
+                } else {
+                    cr.set_source_rgba(accent_rgb.0, accent_rgb.1, accent_rgb.2, 0.85);
+                    cr.move_to(cx - 3.0, cy - 3.5);
+                    cr.line_to(cx + 2.5, cy);
+                    cr.line_to(cx - 3.0, cy + 3.5);
+                    cr.set_line_width(1.5);
+                    let _ = cr.stroke();
+                }
+            } else if row.is_unread {
+                if let Some(surf) = get_icon("mail-unread-symbolic", 16) {
+                    draw_cairo_tinted_surface(cr, &surf, cx, cy, accent_rgb.0, accent_rgb.1, accent_rgb.2, 0.85);
+                } else {
+                    cr.set_source_rgba(accent_rgb.0, accent_rgb.1, accent_rgb.2, 0.80);
+                    cr.arc(cx, cy, 4.0, 0.0, std::f64::consts::TAU);
+                    let _ = cr.fill();
+                }
+            } else {
+                if let Some(surf) = get_icon("mail-read-symbolic", 16) {
+                    draw_cairo_tinted_surface(cr, &surf, cx, cy, dim_r, dim_g, dim_b, 0.45);
+                }
+            }
         }
 
-        // 2. Attachment Column (Vector paperclip)
+        // 2. Attachment Column (Vector paperclip / Calendar / Contact per GNOME HIG)
         if layout.show_attachment && layout.col_attach_w() > 0.0 && row.has_attachments {
-            draw_cairo_paperclip(
-                cr,
-                layout.col_attach_x() + 14.0,
-                y + h / 2.0,
-                dim_r,
-                dim_g,
-                dim_b,
-                0.85,
-            );
+            let cx = layout.col_attach_x() + layout.col_attach_w() / 2.0;
+            let cy = y + h / 2.0;
+            let icon_drawn = match row.attachment_kind {
+                MailAttachmentKind::Calendar => {
+                    if let Some(surf) = get_icon("x-office-calendar-symbolic", 16) {
+                        draw_cairo_tinted_surface(cr, &surf, cx, cy, accent_rgb.0, accent_rgb.1, accent_rgb.2, 0.95);
+                        true
+                    } else {
+                        false
+                    }
+                }
+                MailAttachmentKind::Contact => {
+                    if let Some(surf) = get_icon("x-office-address-book-symbolic", 16) {
+                        draw_cairo_tinted_surface(cr, &surf, cx, cy, accent_rgb.0, accent_rgb.1, accent_rgb.2, 0.95);
+                        true
+                    } else {
+                        false
+                    }
+                }
+                _ => {
+                    if let Some(surf) = get_icon("mail-attachment-symbolic", 16) {
+                        draw_cairo_tinted_surface(cr, &surf, cx, cy, dim_r, dim_g, dim_b, 0.85);
+                        true
+                    } else {
+                        false
+                    }
+                }
+            };
+            if !icon_drawn {
+                draw_cairo_paperclip(
+                    cr,
+                    cx,
+                    cy,
+                    dim_r,
+                    dim_g,
+                    dim_b,
+                    0.85,
+                );
+            }
         }
 
-        // 3. Flagged / Star Column (Large GNOME symbolic star, 21.6px diameter)
+        // 3. Flagged / Star / Important Column
         if layout.show_flagged && layout.col_star_w() > 0.0 {
-            draw_cairo_star(
-                cr,
-                layout.col_star_x() + 14.0,
-                y + h / 2.0,
-                10.8,
-                row.is_flagged,
-                is_dark,
-                is_hovered,
-            );
+            let cx = layout.col_star_x() + layout.col_star_w() / 2.0;
+            let cy = y + h / 2.0;
+            if row.is_important {
+                let drawn = if let Some(surf) = get_icon("emblem-important-symbolic", 16) {
+                    draw_cairo_tinted_surface(cr, &surf, cx, cy, 0.88, 0.11, 0.14, 1.0);
+                    true
+                } else {
+                    false
+                };
+                if !drawn {
+                    cr.set_source_rgb(0.88, 0.11, 0.14);
+                    cr.arc(cx, cy, 7.0, 0.0, std::f64::consts::TAU);
+                    let _ = cr.fill();
+                    cr.set_source_rgb(1.0, 1.0, 1.0);
+                    cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+                    cr.set_font_size(10.0);
+                    cr.move_to(cx - 2.0, cy + 3.5);
+                    let _ = cr.show_text("!");
+                }
+            } else {
+                draw_cairo_star(
+                    cr,
+                    cx,
+                    cy,
+                    10.8,
+                    row.is_flagged,
+                    is_dark,
+                    is_hovered,
+                );
+            }
         }
 
         // 3b. Follow-up Column
@@ -5944,6 +6111,7 @@ mod imp {
         pub modern_actions_sep: RefCell<Option<gtk::Separator>>,
         pub sender_avatar_cache: RefCell<HashMap<String, Option<gtk::gdk::Texture>>>,
         pub sender_surface_cache: RefCell<HashMap<String, Option<gtk::cairo::ImageSurface>>>,
+        pub status_icon_surface_cache: RefCell<HashMap<String, Option<gtk::cairo::ImageSurface>>>,
         pub mail_subject_label: RefCell<Option<gtk::Label>>,
         pub is_compact_header: Cell<bool>,
         pub mail_subject_revealer: RefCell<Option<gtk::Revealer>>,
@@ -6528,9 +6696,7 @@ impl MailPage {
             btn.set_visible(show_triage);
         }
         if let Some(rev) = imp.modern_date_revealer.borrow().as_ref() {
-            if !imp.is_compact_header.get() {
-                rev.set_visible(show_date);
-            }
+            rev.set_visible(show_date);
         }
     }
 
@@ -7252,6 +7418,43 @@ impl MailPage {
         ).ok()
     }
 
+    fn render_symbolic_icon_to_surface(icon_name: &str, size: i32) -> Option<gtk::cairo::ImageSurface> {
+        let display = gtk::gdk::Display::default()?;
+        let theme = gtk::IconTheme::for_display(&display);
+        if !theme.has_icon(icon_name) {
+            return None;
+        }
+        let paintable = theme.lookup_icon(
+            icon_name,
+            &[],
+            size,
+            1,
+            gtk::TextDirection::None,
+            gtk::IconLookupFlags::empty(),
+        );
+        let snapshot = gtk::Snapshot::new();
+        paintable.snapshot(&snapshot, size as f64, size as f64);
+        let node = snapshot.to_node()?;
+        let renderer = gtk::gsk::CairoRenderer::new();
+        renderer.realize_for_display(&display).ok()?;
+        let texture = renderer.render_texture(&node, None);
+        renderer.unrealize();
+        Self::texture_to_cairo_surface(&texture)
+    }
+
+    pub(crate) fn get_status_icon_surface(&self, icon_name: &str, size: i32) -> Option<gtk::cairo::ImageSurface> {
+        let key = format!("{icon_name}:{size}");
+        if let Some(surf) = self.imp().status_icon_surface_cache.borrow().get(&key) {
+            return surf.clone();
+        }
+        let surface = Self::render_symbolic_icon_to_surface(icon_name, size);
+        self.imp()
+            .status_icon_surface_cache
+            .borrow_mut()
+            .insert(key, surface.clone());
+        surface
+    }
+
     fn find_contact_photo_for_email(&self, email: &str) -> Option<gtk::gdk::Texture> {
         self.find_contact_photo_for_sender(email, "")
     }
@@ -7377,6 +7580,7 @@ impl MailPage {
     pub(crate) fn refresh_sender_avatars(&self) {
         self.imp().sender_avatar_cache.borrow_mut().clear();
         self.imp().sender_surface_cache.borrow_mut().clear();
+        self.imp().status_icon_surface_cache.borrow_mut().clear();
         crate::services::avatar_cache_service::AvatarCacheService::global().clear_memory_cache();
         if let Some(msg) = self.selected_message() {
             self.populate_modern_header_card(&msg);
@@ -7406,8 +7610,8 @@ impl MailPage {
             rev.set_reveal_child(!compact);
         }
         if let Some(rev) = imp.modern_date_revealer.borrow().as_ref() {
-            rev.set_reveal_child(!compact);
-            rev.set_visible(!compact);
+            rev.set_reveal_child(true);
+            rev.set_visible(true);
         }
         if let Some(avatar) = imp.modern_sender_avatar.borrow().as_ref() {
             avatar.set_size(if compact { 26 } else { 38 });
@@ -7419,18 +7623,13 @@ impl MailPage {
                 card.set_margin_bottom(0);
             } else {
                 card.remove_css_class("is-compact");
-                card.set_margin_top(4);
-                card.set_margin_bottom(6);
+                card.set_margin_top(2);
+                card.set_margin_bottom(2);
             }
         }
         if let Some(bar) = imp.modern_actions_bar.borrow().as_ref() {
-            if compact {
-                bar.set_margin_top(0);
-                bar.set_margin_bottom(0);
-            } else {
-                bar.set_margin_top(2);
-                bar.set_margin_bottom(2);
-            }
+            bar.set_margin_top(0);
+            bar.set_margin_bottom(0);
         }
         if let Some(rev) = imp.classic_details_revealer.borrow().as_ref() {
             rev.set_reveal_child(!compact);
@@ -8207,6 +8406,19 @@ impl MailPage {
                     | MailSortField::FollowUpDue
             )
         };
+        self.imp().mail_sort_field.set(field);
+        self.imp().mail_sort_descending.set(descending);
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_mail_sort_field(field.setting_value());
+            settings.set_mail_sort_descending(descending);
+        }
+        self.refresh_mail_sort_controls();
+        self.resort_mail_preserving_selection();
+    }
+
+    pub fn reset_mail_sort_to_default(&self) {
+        let field = MailSortField::Date;
+        let descending = true;
         self.imp().mail_sort_field.set(field);
         self.imp().mail_sort_descending.set(descending);
         if let Some(settings) = AppSettings::try_new() {
@@ -12335,20 +12547,6 @@ impl MailPage {
         let Some(message) = self.selected_message() else {
             return Ok(false);
         };
-        if message
-            .backend_location()
-            .as_ref()
-            .is_some_and(|location| !is_graph_backend_location(Some(location)))
-        {
-            return Err(MailOperationError::Unsupported {
-                operation: if message.is_important() {
-                    crate::services::mail_operations_service::MailOperationKind::MarkNotImportant
-                } else {
-                    crate::services::mail_operations_service::MailOperationKind::MarkImportant
-                },
-                backend: "importance flag for this account (pending Linux signoff)",
-            });
-        }
         let next_important = !message.is_important();
         let command = message
             .backend_location()
@@ -13627,18 +13825,6 @@ impl MailPage {
     fn toggle_batch_important(&self) -> Result<(), MailOperationError> {
         self.clear_operation_error();
         let messages = self.selected_batch_messages();
-        if messages.iter().any(|message| {
-            message
-                .backend_location()
-                .as_ref()
-                .is_some_and(|location| !is_graph_backend_location(Some(location)))
-        }) {
-            return Err(MailOperationError::Unsupported {
-                operation:
-                    crate::services::mail_operations_service::MailOperationKind::MarkImportant,
-                backend: "importance flag for this account (pending Linux signoff)",
-            });
-        }
         let next_important = messages.iter().any(|message| !message.is_important());
         let commands = messages
             .iter()
@@ -18041,6 +18227,17 @@ impl MailPage {
         });
         content.append(&sort_reverse_btn);
 
+        let sort_reset_btn = make_popover_action_button("edit-undo-symbolic", &gettext("Reset sort order"));
+        let page_for_reset = page_weak.clone();
+        let popover_for_reset = popover.clone();
+        sort_reset_btn.connect_clicked(move |_| {
+            if let Some(page) = page_for_reset.upgrade() {
+                page.reset_mail_sort_to_default();
+            }
+            popover_for_reset.popdown();
+        });
+        content.append(&sort_reset_btn);
+
         let reorder_icon_name = themed_icon_name(&popover, "view-column-symbolic", "view-list-symbolic");
         let reorder_btn = make_popover_action_button(&reorder_icon_name, &gettext("Customize column order…"));
         let page_for_reorder = page_weak.clone();
@@ -18694,8 +18891,9 @@ impl MailPage {
             let subject = msg.subject();
             let snippet = msg.preview_snippet();
             let is_unread = msg.is_unread();
-            let markup_dark = format_mail_table_subject_markup(&subject, &snippet, is_unread, show_preview_text, true);
-            let markup_light = format_mail_table_subject_markup(&subject, &snippet, is_unread, show_preview_text, false);
+            let is_important = msg.is_important();
+            let markup_dark = format_mail_table_subject_markup(&subject, &snippet, is_unread, show_preview_text, true, is_important);
+            let markup_light = format_mail_table_subject_markup(&subject, &snippet, is_unread, show_preview_text, false, is_important);
 
             rows.push(PreparedMailTableRow {
                 model_index: i as usize,
@@ -18710,6 +18908,7 @@ impl MailPage {
                 is_important: msg.is_important(),
                 is_replied: msg.is_replied(),
                 is_forwarded: msg.is_forwarded(),
+                attachment_kind: msg.attachment_kind(),
                 has_attachments: msg.attachment_count() > 0,
                 sender: msg.sender_name(),
                 sender_email: msg.sender_email(),
@@ -19045,12 +19244,12 @@ impl MailPage {
             .css_classes(vec!["mail-column-header-cell", "icon-cell"])
             .build();
         let status_icon = gtk::Image::builder()
-            .icon_name("media-record-symbolic")
-            .pixel_size(14)
+            .icon_name("mail-unread-symbolic")
+            .pixel_size(16)
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
             .hexpand(true)
-            .css_classes(vec!["dim-label", "mail-status-header-icon"])
+            .css_classes(vec!["dim-label", "mail-status-header-icon", "mail-column-header-icon"])
             .build();
         status_column.append(&status_icon);
 
@@ -19067,7 +19266,7 @@ impl MailPage {
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
             .hexpand(true)
-            .css_classes(vec!["dim-label", "mail-avatar-header-icon"])
+            .css_classes(vec!["dim-label", "mail-avatar-header-icon", "mail-column-header-icon"])
             .build();
         avatar_column.append(&avatar_icon);
 
@@ -19186,11 +19385,11 @@ impl MailPage {
             .build();
         let attachment_icon = gtk::Image::builder()
             .icon_name("mail-attachment-symbolic")
-            .pixel_size(18)
+            .pixel_size(16)
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
             .hexpand(true)
-            .css_classes(vec!["dim-label"])
+            .css_classes(vec!["dim-label", "mail-column-header-icon"])
             .build();
         attachment_column.append(&attachment_icon);
 
@@ -19203,11 +19402,11 @@ impl MailPage {
             .build();
         let star_icon = gtk::Image::builder()
             .icon_name("starred-symbolic")
-            .pixel_size(18)
+            .pixel_size(16)
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
             .hexpand(true)
-            .css_classes(vec!["dim-label"])
+            .css_classes(vec!["dim-label", "mail-column-header-icon"])
             .build();
         star_column.append(&star_icon);
 
@@ -19220,11 +19419,11 @@ impl MailPage {
             .build();
         let follow_up_icon = gtk::Image::builder()
             .icon_name("emblem-important-symbolic")
-            .pixel_size(18)
+            .pixel_size(16)
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
             .hexpand(true)
-            .css_classes(vec!["dim-label"])
+            .css_classes(vec!["dim-label", "mail-column-header-icon"])
             .build();
         follow_up_column.append(&follow_up_icon);
 
@@ -19236,12 +19435,12 @@ impl MailPage {
             .css_classes(vec!["mail-column-header-cell", "icon-cell"])
             .build();
         let important_icon = gtk::Image::builder()
-            .icon_name("mail-mark-important-symbolic")
-            .pixel_size(18)
+            .icon_name("emblem-important-symbolic")
+            .pixel_size(14)
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
             .hexpand(true)
-            .css_classes(vec!["dim-label"])
+            .css_classes(vec!["dim-label", "mail-column-header-icon"])
             .build();
         important_column.append(&important_icon);
 
@@ -20103,7 +20302,7 @@ impl MailPage {
                 set_image_icon_with_fallback(
                     &status,
                     init_status_icon,
-                    "media-record-symbolic",
+                    "mail-unread-symbolic",
                 );
                 status.set_opacity(1.0);
             }
@@ -20193,7 +20392,7 @@ impl MailPage {
 
             let btn_important = gtk::Button::builder()
                 .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
-                .icon_name("mail-mark-important-symbolic")
+                .icon_name("emblem-important-symbolic")
                 .css_classes(vec!["flat", "circular", "mail-important"])
                 .valign(gtk::Align::Center)
                 .halign(gtk::Align::Center)
@@ -20202,7 +20401,7 @@ impl MailPage {
                 .build();
             set_button_icon_with_fallback(
                 &btn_important,
-                "mail-mark-important-symbolic",
+                "emblem-important-symbolic",
                 "dialog-warning-symbolic",
             );
             set_accessible_label(&btn_important, &gettext("Mark message as important"));
@@ -20369,35 +20568,20 @@ impl MailPage {
                 let Some(page) = page_for_important.upgrade() else {
                     return;
                 };
-                let result = if message
+                let command = message
                     .backend_location()
-                    .as_ref()
-                    .is_some_and(|location| !is_graph_backend_location(Some(location)))
-                {
-                    Err(MailOperationError::Unsupported {
-                        operation: if current {
-                            crate::services::mail_operations_service::MailOperationKind::MarkNotImportant
-                        } else {
-                            crate::services::mail_operations_service::MailOperationKind::MarkImportant
-                        },
-                        backend: "importance flag for this account (pending Linux signoff)",
+                    .map(|location| {
+                        MailCommand::set_important(
+                            message.id(),
+                            location,
+                            current,
+                            !current,
+                        )
                     })
-                } else {
-                    let command = message
-                        .backend_location()
-                        .map(|location| {
-                            MailCommand::set_important(
-                                message.id(),
-                                location,
-                                current,
-                                !current,
-                            )
-                        })
-                        .unwrap_or_else(|| {
-                            MailCommand::set_important_local(message.id(), current, !current)
-                        });
-                    page.execute_mail_command(command)
-                };
+                    .unwrap_or_else(|| {
+                        MailCommand::set_important_local(message.id(), current, !current)
+                    });
+                let result = page.execute_mail_command(command);
                 if let Err(error) = result {
                     page.show_toast(&gettext("Importance flag not possible: {error}").replace("{error}", &error.to_string()));
                 }
@@ -21023,7 +21207,7 @@ impl MailPage {
                     status.set_paintable(None::<&gdk::Paintable>);
                     status.set_opacity(0.0);
                 } else {
-                    set_image_icon_with_fallback(&status, icon_name, "media-record-symbolic");
+                    set_image_icon_with_fallback(&status, icon_name, "mail-unread-symbolic");
                     status.set_opacity(1.0);
                 }
                 status.set_tooltip_text(Some(&tooltip));
@@ -21039,7 +21223,6 @@ impl MailPage {
                     status.add_css_class("status-forwarded");
                 } else if msg.is_unread() {
                     status.add_css_class("accent");
-                    status.add_css_class("unread-dot");
                 } else {
                     status.add_css_class("dim-label");
                 }
@@ -21259,7 +21442,7 @@ impl MailPage {
                 btn_important.set_visible(false);
                 set_button_icon_with_fallback(
                     &btn_important,
-                    "mail-mark-important-symbolic",
+                    "emblem-important-symbolic",
                     "dialog-warning-symbolic",
                 );
                 btn_important.set_opacity(if msg.is_important() { 1.0 } else { 0.28 });
@@ -21439,6 +21622,11 @@ impl MailPage {
                 outer.add_css_class("unread");
             } else {
                 outer.remove_css_class("unread");
+            }
+            if msg.is_important() {
+                outer.add_css_class("mail-important");
+            } else {
+                outer.remove_css_class("mail-important");
             }
         });
 
@@ -21974,6 +22162,43 @@ impl MailPage {
                     }
                 }
             });
+
+            // --- Section: Sorting ---
+            let sec_sort_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(6)
+                .build();
+            sec_sort_box.append(&gtk::Label::builder()
+                .label(&gettext("Sort By"))
+                .halign(gtk::Align::Start)
+                .css_classes(vec!["dim-label", "caption"])
+                .build()
+            );
+            let sort_row = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(6)
+                .valign(gtk::Align::Center)
+                .build();
+            sort_selector.set_hexpand(true);
+            sort_row.append(&sort_selector);
+            sort_row.append(&direction_button);
+
+            let btn_reset_sort = gtk::Button::builder()
+                .icon_name("edit-undo-symbolic")
+                .tooltip_text(&gettext("Reset to default sort order (Date, newest first)"))
+                .css_classes(vec!["flat", "circular"])
+                .valign(gtk::Align::Center)
+                .build();
+            set_accessible_label(&btn_reset_sort, &gettext("Reset sort order"));
+            let page_weak_reset = self.downgrade();
+            btn_reset_sort.connect_clicked(move |_| {
+                if let Some(page) = page_weak_reset.upgrade() {
+                    page.reset_mail_sort_to_default();
+                }
+            });
+            sort_row.append(&btn_reset_sort);
+            sec_sort_box.append(&sort_row);
+            columns_popover_box.append(&sec_sort_box);
             
             // --- Separator between layout and feature switches ---
             columns_popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
@@ -22817,7 +23042,10 @@ impl MailPage {
             let get_avatar = |email: &str, sender_name: &str| -> Option<gtk::cairo::ImageSurface> {
                 page.find_contact_surface_for_sender(email, sender_name)
             };
-            draw_mail_table_canvas(cr, &layout, width as f64, height as f64, hovered, &is_row_selected, is_dark, scroll_y, &get_avatar);
+            let get_icon = |icon_name: &str, size: i32| -> Option<gtk::cairo::ImageSurface> {
+                page.get_status_icon_surface(icon_name, size)
+            };
+            draw_mail_table_canvas(cr, &layout, width as f64, height as f64, hovered, &is_row_selected, is_dark, scroll_y, &get_avatar, &get_icon);
         });
 
         let click_gesture = gtk::GestureClick::new();
@@ -23725,8 +23953,8 @@ impl MailPage {
             .orientation(gtk::Orientation::Vertical)
             .css_classes(vec!["mail-detail-header"])
             .spacing(0)
-            .margin_start(12)
-            .margin_end(12)
+            .margin_start(8)
+            .margin_end(8)
             .margin_top(8)
             .margin_bottom(0)
             .build();
@@ -23801,7 +24029,7 @@ impl MailPage {
         // Modern Webmail Header Card
         let modern_header_card = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(4)
+            .spacing(2)
             .margin_start(0)
             .margin_end(0)
             .margin_top(0)
@@ -23984,7 +24212,7 @@ impl MailPage {
             .label("")
             .halign(gtk::Align::End)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["caption", "dim-label", "mail-preview-date-label"])
+            .css_classes(vec!["mail-preview-date-label"])
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
             .single_line_mode(true)
@@ -24009,7 +24237,6 @@ impl MailPage {
             .hexpand(true)
             .build();
         modern_recipient_line.append(&modern_recipient_left_box);
-        modern_recipient_line.append(&modern_date_revealer);
 
         let modern_recipient_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideUp)
@@ -24057,7 +24284,7 @@ impl MailPage {
             let button = gtk::Button::builder()
                 .tooltip_text(tooltip)
                 .action_name(action_name)
-                .css_classes(vec!["mail-header-action-btn"])
+                .css_classes(vec!["flat", "mail-header-action-btn"])
                 .valign(gtk::Align::Center)
                 .build();
             let icon = gtk::Image::new();
@@ -24138,29 +24365,30 @@ impl MailPage {
             .icon_name("pan-down-symbolic")
             .menu_model(&m_more_menu)
             .tooltip_text(&str_more_tip)
-            .css_classes(vec!["mail-header-action-btn"])
+            .css_classes(vec!["flat", "mail-header-action-btn"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&m_more_btn, &str_more_tip);
 
-        // Convey-style linked button groups
+        // Action Pill 1: Hauptaktionen (Reply / communication actions)
         let modern_reply_group = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(0)
             .valign(gtk::Align::Center)
             .halign(gtk::Align::Start)
-            .css_classes(vec!["linked", "mail-header-actions-group"])
+            .css_classes(vec!["linked", "mail-header-actions-group", "action-pill", "mail-action-pill"])
             .build();
         modern_reply_group.append(&m_reply);
         modern_reply_group.append(&m_reply_all);
         modern_reply_group.append(&m_forward);
 
+        // Action Pill 2: Nebenaktionen (Triage / management actions)
         let modern_triage_group = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(0)
             .valign(gtk::Align::Center)
             .halign(gtk::Align::Start)
-            .css_classes(vec!["linked", "mail-header-actions-group"])
+            .css_classes(vec!["linked", "mail-header-actions-group", "action-pill", "mail-action-pill"])
             .build();
         modern_triage_group.append(&m_archive);
         modern_triage_group.append(&m_unread);
@@ -24215,13 +24443,14 @@ impl MailPage {
             .hexpand(true)
             .margin_start(0)
             .margin_end(0)
-            .margin_top(2)
-            .margin_bottom(2)
+            .margin_top(0)
+            .margin_bottom(0)
             .visible(false)
             .css_classes(vec!["sidebar-drawer-header", "mail-preview-actions-bar"])
             .build();
 
         modern_actions_bar.append(&modern_actions_group);
+        modern_actions_bar.append(&modern_date_revealer);
         self.imp().modern_actions_bar.replace(Some(modern_actions_bar.clone()));
 
         let modern_sender_row = gtk::Box::builder()
@@ -24590,8 +24819,8 @@ impl MailPage {
             .hexpand(true)
             .halign(gtk::Align::Fill)
             .valign(gtk::Align::Center)
-            .margin_start(8)
-            .margin_end(8)
+            .margin_start(0)
+            .margin_end(0)
             .margin_top(2)
             .margin_bottom(2)
             .visible(false)
@@ -24601,10 +24830,10 @@ impl MailPage {
         classic_header_box.append(&preview_actions_row);
         self.imp().classic_header_box.replace(Some(classic_header_box.clone()));
 
-        header_box.append(&modern_actions_bar);
         header_box.append(&mail_subject_revealer);
         header_box.append(&modern_header_card);
         header_box.append(&classic_header_box);
+        header_box.append(&modern_actions_bar);
 
         let header_separator = gtk::Separator::new(gtk::Orientation::Horizontal);
         header_separator.set_visible(false);
@@ -34317,7 +34546,7 @@ mod tests {
     fn mail_row_indicators_and_conversation_counts_stay_compact() {
         assert_eq!(
             mail_row_status_icon(true, false, false),
-            ("media-record-symbolic", gettext("Unread"))
+            ("mail-unread-symbolic", gettext("Unread"))
         );
         assert_eq!(
             mail_row_status_icon(false, false, false),
@@ -34329,7 +34558,7 @@ mod tests {
         );
         assert_eq!(
             mail_row_status_icon(false, false, true),
-            ("mail-forwarded-symbolic", gettext("Forwarded"))
+            ("mail-forward-symbolic", gettext("Forwarded"))
         );
         assert_eq!(
             mail_row_status_icon(false, true, true),
@@ -35238,6 +35467,7 @@ mod tests {
             true,
             true,
             false,
+            false,
         );
         assert!(markup.contains("Multi-line Subject with breaks"));
         assert!(markup.contains("weight=\"bold\""));
@@ -35249,6 +35479,7 @@ mod tests {
         let markup_no_snippet = format_mail_table_subject_markup(
             "Project Update",
             "Ignored snippet text",
+            false,
             false,
             false,
             false,
@@ -35264,6 +35495,7 @@ mod tests {
             false,
             true,
             false,
+            false,
         );
         assert!(markup_empty.contains(&gettext("(No Subject)")));
         assert!(markup_empty.contains("- Some preview"));
@@ -35274,6 +35506,7 @@ mod tests {
             "1 < 2 && 3 > 2",
             false,
             true,
+            false,
             false,
         );
         assert!(markup_escaped.contains("Alpha &amp; Beta &lt;Gamma&gt;"));
@@ -35286,10 +35519,32 @@ mod tests {
             false,
             true,
             false,
+            false,
         );
         assert!(markup_keine_nachricht.contains("Important Update"));
         assert!(!markup_keine_nachricht.contains("Keine Nachricht"));
         assert!(!markup_keine_nachricht.contains(" - "));
+
+        // Evolution signature red text for important messages
+        let markup_imp_light = format_mail_table_subject_markup(
+            "Urgent Server Alert",
+            "Please check immediately",
+            false,
+            true,
+            false,
+            true,
+        );
+        assert!(markup_imp_light.contains("foreground=\"#A7453E\""));
+
+        let markup_imp_dark = format_mail_table_subject_markup(
+            "Urgent Server Alert",
+            "Please check immediately",
+            true,
+            true,
+            true,
+            true,
+        );
+        assert!(markup_imp_dark.contains("foreground=\"#FF6B6B\""));
     }
 
     #[test]
@@ -36432,6 +36687,7 @@ mod tests {
                 is_important: false,
                 is_replied: false,
                 is_forwarded: false,
+                attachment_kind: MailAttachmentKind::File,
                 has_attachments: true,
                 sender: "Alice".to_string(),
                 sender_email: String::new(),
@@ -36462,6 +36718,7 @@ mod tests {
                 is_important: false,
                 is_replied: true,
                 is_forwarded: false,
+                attachment_kind: MailAttachmentKind::None,
                 has_attachments: false,
                 sender: "Bob".to_string(),
                 sender_email: String::new(),
@@ -36771,6 +37028,7 @@ mod tests {
                 is_important: false,
                 is_replied: false,
                 is_forwarded: false,
+                attachment_kind: MailAttachmentKind::None,
                 has_attachments: false,
                 sender: "Sender".to_string(),
                 sender_email: String::new(),
@@ -36825,6 +37083,7 @@ mod tests {
                 is_important: false,
                 is_replied: false,
                 is_forwarded: false,
+                attachment_kind: MailAttachmentKind::None,
                 has_attachments: false,
                 sender: "Sender".to_string(),
                 sender_email: String::new(),
@@ -36896,6 +37155,7 @@ mod tests {
                 is_important: true,
                 is_replied: false,
                 is_forwarded: false,
+                attachment_kind: MailAttachmentKind::File,
                 has_attachments: true,
                 sender: "Alice".to_string(),
                 sender_email: String::new(),
@@ -36926,6 +37186,7 @@ mod tests {
                 is_important: false,
                 is_replied: true,
                 is_forwarded: true,
+                attachment_kind: MailAttachmentKind::None,
                 has_attachments: false,
                 sender: "Bob".to_string(),
                 sender_email: String::new(),
@@ -36966,10 +37227,10 @@ mod tests {
         );
 
         // Draw light mode
-        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, Some(0), &|_| false, false, 0.0, &|_, _| None);
+        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, Some(0), &|_| false, false, 0.0, &|_, _| None, &|_, _| None);
 
         // Draw dark mode
-        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, Some(1), &|idx| idx == 1, true, 0.0, &|_, _| None);
+        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, Some(1), &|idx| idx == 1, true, 0.0, &|_, _| None, &|_, _| None);
 
         // Draw with real ImageSurface avatar
         let avatar_surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 48, 48).unwrap();
@@ -36984,7 +37245,7 @@ mod tests {
                 None
             }
         };
-        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, Some(0), &|_| false, false, 0.0, &get_test_avatar);
+        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, Some(0), &|_| false, false, 0.0, &get_test_avatar, &|_, _| None);
         assert_eq!(cr.status(), Ok(()));
 
         // Vector icon tests
@@ -37010,6 +37271,7 @@ mod tests {
                 is_important: false,
                 is_replied: false,
                 is_forwarded: false,
+                attachment_kind: MailAttachmentKind::None,
                 has_attachments: false,
                 sender: "Alice".to_string(),
                 sender_email: String::new(),
@@ -37040,6 +37302,7 @@ mod tests {
                 is_important: false,
                 is_replied: false,
                 is_forwarded: false,
+                attachment_kind: MailAttachmentKind::None,
                 has_attachments: false,
                 sender: "Bob".to_string(),
                 sender_email: String::new(),
@@ -37093,7 +37356,7 @@ mod tests {
         // Cairo headless draw with explicit selection: row 1 selected overrides cached row 0 selected
         let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 800, 100).unwrap();
         let cr = gtk::cairo::Context::new(&surface).unwrap();
-        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, None, &|idx| idx == 1, false, 0.0, &|_, _| None);
+        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, None, &|idx| idx == 1, false, 0.0, &|_, _| None, &|_, _| None);
     }
 
     #[test]
@@ -37112,6 +37375,7 @@ mod tests {
                 is_important: false,
                 is_replied: false,
                 is_forwarded: false,
+                attachment_kind: MailAttachmentKind::None,
                 has_attachments: false,
                 sender: "Alice".to_string(),
                 sender_email: String::new(),
@@ -37142,6 +37406,7 @@ mod tests {
                 is_important: false,
                 is_replied: false,
                 is_forwarded: false,
+                attachment_kind: MailAttachmentKind::File,
                 has_attachments: true,
                 sender: "Bob".to_string(),
                 sender_email: String::new(),
@@ -37185,13 +37450,13 @@ mod tests {
         let cr = gtk::cairo::Context::new(&surface).unwrap();
 
         // 1. None selected (initial state)
-        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, None, &|_| false, false, 0.0, &|_, _| None);
-        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, None, &|_| false, true, 0.0, &|_, _| None);
+        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, None, &|_| false, false, 0.0, &|_, _| None, &|_, _| None);
+        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, None, &|_| false, true, 0.0, &|_, _| None, &|_, _| None);
 
         // 2. Multi-selection: both row 0 and row 1 selected
         let multi_selected = |idx: usize| idx == 0 || idx == 1;
-        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, None, &multi_selected, false, 0.0, &|_, _| None);
-        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, Some(0), &multi_selected, true, 0.0, &|_, _| None);
+        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, None, &multi_selected, false, 0.0, &|_, _| None, &|_, _| None);
+        draw_mail_table_canvas(&cr, &layout, 800.0, 72.0, Some(0), &multi_selected, true, 0.0, &|_, _| None, &|_, _| None);
 
         // 3. Verify neither row has cached selection baked into layout
         assert!(!layout.rows[0].selected);
@@ -37214,6 +37479,7 @@ mod tests {
                 is_important: false,
                 is_replied: true,
                 is_forwarded: false,
+                attachment_kind: MailAttachmentKind::File,
                 has_attachments: true,
                 sender: "Wolfgang Fisher".to_string(),
                 sender_email: String::new(),
@@ -37244,6 +37510,7 @@ mod tests {
                 is_important: false,
                 is_replied: false,
                 is_forwarded: false,
+                attachment_kind: MailAttachmentKind::None,
                 has_attachments: false,
                 sender: "Peter Weber".to_string(),
                 sender_email: String::new(),
@@ -37301,8 +37568,8 @@ mod tests {
         // Headless Cairo render to verify no panics or drawing errors
         let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 420, 160).unwrap();
         let cr = gtk::cairo::Context::new(&surface).unwrap();
-        draw_mail_table_canvas(&cr, &layout, 420.0, 152.0, Some(0), &|idx| idx == 1, false, 0.0, &|_, _| None);
-        draw_mail_table_canvas(&cr, &layout, 420.0, 152.0, Some(0), &|idx| idx == 1, true, 0.0, &|_, _| None);
+        draw_mail_table_canvas(&cr, &layout, 420.0, 152.0, Some(0), &|idx| idx == 1, false, 0.0, &|_, _| None, &|_, _| None);
+        draw_mail_table_canvas(&cr, &layout, 420.0, 152.0, Some(0), &|idx| idx == 1, true, 0.0, &|_, _| None, &|_, _| None);
 
         // Initials test
         assert_eq!(extract_initials("Wolfgang Fisher"), "WF");
@@ -38175,8 +38442,9 @@ mod tests {
         };
         let page = MailPage::new();
         let viewer = page.imp().mail_viewer.borrow().clone().expect("mail viewer");
-        assert!(viewer.has_css_class("mail-preview-card"));
-        assert!(viewer.has_css_class("card"));
+        let card = viewer.first_child().expect("inner card container");
+        assert!(card.has_css_class("mail-preview-card"));
+        assert!(card.has_css_class("card"));
         assert_eq!(viewer.margin_start(), 8);
         assert_eq!(viewer.margin_end(), 8);
         assert_eq!(viewer.margin_bottom(), 8);
@@ -38412,9 +38680,9 @@ mod tests {
         assert!(date_revealer.is_visible(), "Date revealer must be visible in expanded mode");
         assert!(!compact_subject_revealer.reveals_child(), "Compact subject revealer must be unrevealed in expanded mode");
 
-        // 2. Compact header mode: date revealer is hidden so subject can expand without premature truncation
+        // 2. Compact header mode: date revealer remains visible in the dedicated actions bar
         page.set_header_compact(true);
-        assert!(!date_revealer.is_visible(), "Date revealer must be hidden in compact mode to reclaim space for subject");
+        assert!(date_revealer.is_visible(), "Date revealer remains visible in compact mode in actions bar");
         assert!(compact_subject_revealer.reveals_child(), "Compact subject revealer must be revealed in compact mode");
 
         // 3. Responsive collapse of extra action buttons
@@ -39497,8 +39765,8 @@ mod tests {
         // 1. Contract check on CSS: compact action buttons and bar height
         let css = include_str!("../style.css");
         assert!(css.contains(".mail-header-action-btn {"));
-        assert!(css.contains("min-width: 26px;"));
-        assert!(css.contains("min-height: 26px;"));
+        assert!(css.contains("min-width: 32px;"));
+        assert!(css.contains("min-height: 32px;"));
         assert!(css.contains(".mail-preview-actions-bar {"));
         assert!(css.contains("min-height: 28px;"));
         assert!(css.contains(".mail-preview-date-label"));
@@ -39585,6 +39853,236 @@ mod tests {
             assert_eq!(vl.ellipsize(), pango::EllipsizeMode::End);
             assert!(vl.is_single_line_mode());
         }
+    }
+
+    #[test]
+    fn test_mail_attachment_kinds_and_gnome_hig_status_indicators() {
+        use std::sync::{Arc, Mutex};
+        use crate::models::mail_message::{AttachmentInfo, MailAttachmentKind, MailMessageObject};
+
+        fn make_msg(id: &str, attachments: Vec<AttachmentInfo>) -> MailMessageObject {
+            MailMessageObject::new(
+                id,
+                "inbox",
+                "Sender",
+                "sender@test.com",
+                "recipient@test.com",
+                "",
+                "",
+                "",
+                "Subject",
+                None,
+                vec![],
+                vec![],
+                "thread-1",
+                1,
+                0,
+                "2026-09-28T14:00:00+02:00",
+                512,
+                "Snippet",
+                "Body",
+                false,
+                false,
+                false,
+                MailFollowUpState::None,
+                MailFollowUpMetadata::default(),
+                vec![],
+                None,
+                attachments,
+            )
+        }
+
+        // 1. Verify MailAttachmentKind resolution on MailMessageObject
+        let msg_none = make_msg("1", vec![]);
+        assert_eq!(msg_none.attachment_kind(), MailAttachmentKind::None);
+
+        let msg_cal = make_msg("2", vec![AttachmentInfo {
+            filename: "invite.ics".to_string(),
+            size_formatted: "10 KB".to_string(),
+            mime_type: "text/calendar".to_string(),
+            content_id: None,
+            content: Arc::from([]),
+        }]);
+        assert_eq!(msg_cal.attachment_kind(), MailAttachmentKind::Calendar);
+
+        let msg_vcf = make_msg("3", vec![AttachmentInfo {
+            filename: "contact.vcf".to_string(),
+            size_formatted: "2 KB".to_string(),
+            mime_type: "text/x-vcard".to_string(),
+            content_id: None,
+            content: Arc::from([]),
+        }]);
+        assert_eq!(msg_vcf.attachment_kind(), MailAttachmentKind::Contact);
+
+        let msg_file = make_msg("4", vec![AttachmentInfo {
+            filename: "invoice.pdf".to_string(),
+            size_formatted: "500 KB".to_string(),
+            mime_type: "application/pdf".to_string(),
+            content_id: None,
+            content: Arc::from([]),
+        }]);
+        assert_eq!(msg_file.attachment_kind(), MailAttachmentKind::File);
+
+        // 2. Verify status icons
+        assert_eq!(mail_row_status_icon(true, false, false).0, "mail-unread-symbolic");
+        assert_eq!(mail_row_status_icon(false, true, false).0, "mail-replied-symbolic");
+        assert_eq!(mail_row_status_icon(false, false, true).0, "mail-forward-symbolic");
+        assert_eq!(mail_row_status_icon(false, false, false).0, "");
+
+        // 3. Verify Cairo canvas requests appropriate HIG symbolic icons
+        let requested_icons = Arc::new(Mutex::new(Vec::<String>::new()));
+        let req_clone = requested_icons.clone();
+        let get_icon = move |icon: &str, _sz: i32| -> Option<gtk::cairo::ImageSurface> {
+            req_clone.lock().unwrap().push(icon.to_string());
+            None
+        };
+
+        let rows = vec![
+            PreparedMailTableRow {
+                model_index: 0,
+                id: "1".into(),
+                thread_id: "t1".into(),
+                depth: 0,
+                is_expandable: false,
+                is_expanded: false,
+                is_unread: true,
+                is_flagged: false,
+                follow_up_state: MailFollowUpState::None,
+                is_important: true,
+                is_replied: false,
+                is_forwarded: false,
+                attachment_kind: MailAttachmentKind::Calendar,
+                has_attachments: true,
+                sender: "Organizer".into(),
+                sender_email: "".into(),
+                recipient: "Me".into(),
+                subject: "Event".into(),
+                snippet: "".into(),
+                date: "12:00".into(),
+                size_str: "10 KB".into(),
+                selected: false,
+                y: 0.0,
+                height: 36.0,
+                markup_dark: "".into(),
+                markup_light: "".into(),
+                labels: vec![],
+                thread_size: 1,
+                account_color: None,
+            },
+            PreparedMailTableRow {
+                model_index: 1,
+                id: "2".into(),
+                thread_id: "t2".into(),
+                depth: 0,
+                is_expandable: false,
+                is_expanded: false,
+                is_unread: false,
+                is_flagged: false,
+                follow_up_state: MailFollowUpState::None,
+                is_important: false,
+                is_replied: true,
+                is_forwarded: false,
+                attachment_kind: MailAttachmentKind::Contact,
+                has_attachments: true,
+                sender: "Colleague".into(),
+                sender_email: "".into(),
+                recipient: "Me".into(),
+                subject: "VCard".into(),
+                snippet: "".into(),
+                date: "12:05".into(),
+                size_str: "10 KB".into(),
+                selected: false,
+                y: 36.0,
+                height: 36.0,
+                markup_dark: "".into(),
+                markup_light: "".into(),
+                labels: vec![],
+                thread_size: 1,
+                account_color: None,
+            },
+            PreparedMailTableRow {
+                model_index: 2,
+                id: "3".into(),
+                thread_id: "t3".into(),
+                depth: 0,
+                is_expandable: false,
+                is_expanded: false,
+                is_unread: false,
+                is_flagged: false,
+                follow_up_state: MailFollowUpState::None,
+                is_important: false,
+                is_replied: false,
+                is_forwarded: true,
+                attachment_kind: MailAttachmentKind::File,
+                has_attachments: true,
+                sender: "Client".into(),
+                sender_email: "".into(),
+                recipient: "Me".into(),
+                subject: "PDF".into(),
+                snippet: "".into(),
+                date: "12:10".into(),
+                size_str: "10 KB".into(),
+                selected: false,
+                y: 72.0,
+                height: 36.0,
+                markup_dark: "".into(),
+                markup_light: "".into(),
+                labels: vec![],
+                thread_size: 1,
+                account_color: None,
+            },
+            PreparedMailTableRow {
+                model_index: 3,
+                id: "4".into(),
+                thread_id: "t4".into(),
+                depth: 0,
+                is_expandable: false,
+                is_expanded: false,
+                is_unread: false,
+                is_flagged: false,
+                follow_up_state: MailFollowUpState::None,
+                is_important: false,
+                is_replied: false,
+                is_forwarded: false,
+                attachment_kind: MailAttachmentKind::None,
+                has_attachments: false,
+                sender: "Friend".into(),
+                sender_email: "".into(),
+                recipient: "Me".into(),
+                subject: "Read Email".into(),
+                snippet: "".into(),
+                date: "12:15".into(),
+                size_str: "10 KB".into(),
+                selected: false,
+                y: 108.0,
+                height: 36.0,
+                markup_dark: "".into(),
+                markup_light: "".into(),
+                labels: vec![],
+                thread_size: 1,
+                account_color: None,
+            },
+        ];
+
+        let layout = test_create_layout(
+            rows, 800.0, 144.0, 36.0, 180.0, 140.0, 110.0, 82.0, 6.0, 14.0, "Sans",
+            true, true, true, true, false, false,
+        );
+
+        let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 800, 200).unwrap();
+        let cr = gtk::cairo::Context::new(&surface).unwrap();
+
+        draw_mail_table_canvas(&cr, &layout, 800.0, 144.0, None, &|_| false, false, 0.0, &|_, _| None, &get_icon);
+
+        let icons = requested_icons.lock().unwrap().clone();
+        assert!(icons.contains(&"mail-unread-symbolic".to_string()), "missing mail-unread-symbolic request");
+        assert!(icons.contains(&"mail-replied-symbolic".to_string()), "missing mail-replied-symbolic request");
+        assert!(icons.contains(&"mail-forward-symbolic".to_string()), "missing mail-forward-symbolic request");
+        assert!(icons.contains(&"mail-read-symbolic".to_string()), "missing mail-read-symbolic request");
+        assert!(icons.contains(&"x-office-calendar-symbolic".to_string()), "missing x-office-calendar-symbolic request");
+        assert!(icons.contains(&"x-office-address-book-symbolic".to_string()), "missing x-office-address-book-symbolic request");
+        assert!(icons.contains(&"mail-attachment-symbolic".to_string()), "missing mail-attachment-symbolic request");
+        assert!(icons.contains(&"emblem-important-symbolic".to_string()), "missing emblem-important-symbolic request");
     }
 }
 
