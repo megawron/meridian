@@ -4254,7 +4254,6 @@ impl TasksPage {
             let page_weak = page_weak.clone();
             move || {
                 if let Some(page) = page_weak.upgrade() {
-                    let root_window = page.root().and_downcast::<gtk::Window>();
                     let dialog = crate::dialogs::SourcePropertiesDialog::new(
                         &uid_props,
                         &name_props,
