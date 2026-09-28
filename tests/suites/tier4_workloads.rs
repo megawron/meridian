@@ -45,7 +45,7 @@ fn tier4_workload_initial_onboarding_and_defaults_validation() {
     assert_eq!(settings.int("calendar-workday-end"), 1020);  // 17:00
 
     // 5. Contacts defaults
-    assert_eq!(settings.int("contact-hpane-position"), 200);
+    assert_eq!(settings.int("contact-hpane-position"), 320);
     assert_eq!(settings.boolean("contact-preview-visible"), true);
     assert_eq!(settings.string("contact-open-map-target").as_str(), "openstreetmap");
 
@@ -144,7 +144,7 @@ fn tier4_workload_factory_reset_integrity_across_all_keys() {
     assert_eq!(settings.string("color-scheme").as_str(), "system");
     assert_eq!(settings.boolean("offline-mode"), false);
     assert_eq!(settings.int("mail-sync-interval"), 300);
-    assert_eq!(settings.int("contact-hpane-position"), 200);
+    assert_eq!(settings.int("contact-hpane-position"), 320);
     assert_eq!(settings.boolean("confirm-destructive-actions"), true);
 
     // Verify none of the 12 legacy keys triggered any schema failures

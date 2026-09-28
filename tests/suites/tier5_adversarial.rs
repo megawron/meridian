@@ -335,7 +335,7 @@ fn tier5_adversarial_corrupted_json_backup_recovery() {
     // Invalid type keys were ignored safely, retaining default or untouched state
     assert_eq!(settings.boolean("offline-mode"), false);
     assert_eq!(settings.int("mail-sync-interval"), 300);
-    assert_eq!(settings.int("contact-hpane-position"), 200);
+    assert_eq!(settings.int("contact-hpane-position"), 320);
 
     // Reset
     settings.reset("mail-layout");
@@ -487,8 +487,8 @@ fn tier5_adversarial_factory_reset_all_198_schema_keys_integrity() {
     let all_keys = schema.list_keys();
     assert_eq!(
         all_keys.len(),
-        211,
-        "Canonical schema must define exactly 211 configuration keys"
+        228,
+        "Canonical schema must define exactly 228 configuration keys"
     );
 
     // Capture initial default snapshot

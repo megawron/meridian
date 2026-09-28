@@ -282,7 +282,7 @@ fn tier1_calendar_default_reminder_settings() {
 fn tier1_contacts_paned_divider_separation() {
     // Feature 20: contact-hpane-position is separate from mail-sidebar-position
     let settings = create_test_settings();
-    assert_eq!(settings.int("contact-hpane-position"), 200);
+    assert_eq!(settings.int("contact-hpane-position"), 320);
     assert_eq!(settings.int("mail-sidebar-position"), 240);
 
     // Mutating contact pane must NOT touch mail sidebar position

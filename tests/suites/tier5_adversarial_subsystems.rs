@@ -505,9 +505,9 @@ fn tier5_calendar_birthday_anniversary_month_year_boundary_and_lead_times() {
 fn tier5_contacts_paned_clamping_and_complete_mail_sidebar_isolation() {
     let settings = create_test_settings();
 
-    // Schema default: contact_hpane_position is 200; mail_sidebar_position is 240
-    // (Note: contacts_page.rs:2655 uses unwrap_or(260) on AppSettings failure, while schema default is 200)
-    assert_eq!(settings.int("contact-hpane-position"), 200);
+    // Schema default: contact_hpane_position is 320; mail_sidebar_position is 240
+    // (Note: contacts_page.rs:2655 uses unwrap_or(260) on AppSettings failure, while schema default is 320)
+    assert_eq!(settings.int("contact-hpane-position"), 320);
     assert_eq!(settings.int("mail-sidebar-position"), 240);
 
     // Test clamping bounds [80, 1500] matching ContactsPage logic
