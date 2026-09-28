@@ -172,6 +172,8 @@ fn disable_banner_animation(banner: &adw::Banner) {
     }
     fn make_shrinkable(widget: &gtk::Widget) {
         if let Some(lbl) = widget.downcast_ref::<gtk::Label>() {
+            lbl.set_wrap(false);
+            lbl.set_single_line_mode(true);
             lbl.set_ellipsize(gtk::pango::EllipsizeMode::End);
             lbl.set_width_chars(1);
         }
@@ -227,7 +229,7 @@ impl MailViewer {
 
         // ── 1. Privacy Banner for Remote Images ────────────────────────────
         let banner = adw::Banner::builder()
-            .title(&crate::i18n::gettext("Remote images blocked – embedded images remain visible"))
+            .title(&crate::i18n::gettext("Remote images blocked"))
             .button_label(&crate::i18n::gettext("Load Images"))
             .revealed(false)
             .visible(false)
@@ -4560,6 +4562,23 @@ mod tests {
                 .expect("Banner must have an internal GtkRevealer child");
             assert_eq!(revealer.transition_duration(), 0, "Banner animation duration must be 0ms");
             assert_eq!(revealer.transition_type(), gtk::RevealerTransitionType::None, "Banner transition type must be None");
+        }
+        assert_eq!(viewer.imp().banner.title().as_str(), "Remote images blocked");
+        fn find_labels(widget: &gtk::Widget, labels: &mut Vec<gtk::Label>) {
+            if let Some(lbl) = widget.downcast_ref::<gtk::Label>() {
+                labels.push(lbl.clone());
+            }
+            let mut child = widget.first_child();
+            while let Some(c) = child {
+                find_labels(&c, labels);
+                child = c.next_sibling();
+            }
+        }
+        let mut labels = Vec::new();
+        find_labels(viewer.imp().banner.upcast_ref(), &mut labels);
+        for lbl in &labels {
+            assert!(!lbl.wraps(), "Banner labels must not wrap");
+            assert!(lbl.is_single_line_mode(), "Banner labels must use single-line mode");
         }
     }
 

@@ -5936,6 +5936,7 @@ mod imp {
         pub modern_reply_all_button: RefCell<Option<gtk::Button>>,
         pub modern_forward_button: RefCell<Option<gtk::Button>>,
         pub modern_delete_button: RefCell<Option<gtk::Button>>,
+        pub modern_junk_button: RefCell<Option<gtk::Button>>,
         pub modern_actions_sep: RefCell<Option<gtk::Separator>>,
         pub sender_avatar_cache: RefCell<HashMap<String, Option<gtk::gdk::Texture>>>,
         pub sender_surface_cache: RefCell<HashMap<String, Option<gtk::cairo::ImageSurface>>>,
@@ -6494,10 +6495,11 @@ impl MailPage {
             }
         };
 
-        let show_extra_actions = preview_width >= 520 || preview_width <= 0;
+        let show_extra_actions = preview_width >= 360 || preview_width <= 0;
+        let show_junk = preview_width >= 340 || preview_width <= 0;
         let show_sep = preview_width >= 340 || preview_width <= 0;
-        let show_triage = preview_width >= 360 || preview_width <= 0;
-        let show_date = preview_width >= 260 || preview_width <= 0;
+        let show_triage = preview_width >= 300 || preview_width <= 0;
+        let show_date = preview_width >= 300 || preview_width <= 0;
 
         if let Some(btn) = imp.modern_reply_all_button.borrow().as_ref() {
             btn.set_visible(show_extra_actions);
@@ -6507,6 +6509,9 @@ impl MailPage {
         }
         if let Some(sep) = imp.modern_actions_sep.borrow().as_ref() {
             sep.set_visible(show_sep);
+        }
+        if let Some(btn) = imp.modern_junk_button.borrow().as_ref() {
+            btn.set_visible(show_junk);
         }
         if let Some(btn) = imp.modern_delete_button.borrow().as_ref() {
             btn.set_visible(show_triage);
@@ -7051,14 +7056,14 @@ impl MailPage {
 
         let is_mobile = self.imp().is_mobile.get();
         if let Some(bar) = self.imp().modern_actions_bar.borrow().as_ref() {
-            bar.set_visible(is_modern && !is_mobile && message.is_some() && !show_all);
+            bar.set_visible(!is_mobile && message.is_some() && !show_all);
         }
         if let Some(modern_actions) = self.imp().modern_actions_group.borrow().as_ref() {
-            modern_actions.set_visible(is_modern && !is_mobile && message.is_some() && !show_all);
+            modern_actions.set_visible(!is_mobile && message.is_some() && !show_all);
         }
-        let show_top_group = (!is_modern || is_mobile) && message.is_some();
+        let show_classic_actions_row = is_mobile && message.is_some();
         if let Some(group) = self.imp().preview_reply_group.borrow().as_ref() {
-            group.set_visible(show_top_group);
+            group.set_visible(show_classic_actions_row);
         }
 
         let remote_blocked = self
@@ -7076,7 +7081,7 @@ impl MailPage {
             btn.set_visible(false);
         }
         if let Some(row) = self.imp().preview_actions_row.borrow().as_ref() {
-            row.set_visible(show_top_group);
+            row.set_visible(show_classic_actions_row);
         }
         self.sync_preview_actions_labels();
 
@@ -7123,9 +7128,6 @@ impl MailPage {
             if let Some(card) = self.imp().modern_header_card.borrow().as_ref() {
                 card.set_visible(false);
             }
-            if let Some(bar) = self.imp().modern_actions_bar.borrow().as_ref() {
-                bar.set_visible(false);
-            }
             if let Some(classic_box) = self.imp().classic_header_box.borrow().as_ref() {
                 classic_box.set_visible(message.is_some() && !show_all);
             }
@@ -7137,6 +7139,22 @@ impl MailPage {
             };
 
             self.reset_header_to_full();
+
+            let date_str = message.date_str();
+            let is_flagged = message.is_flagged();
+            if let Some(date_lbl) = self.imp().modern_date_label.borrow().as_ref() {
+                let full_date = format_message_date(&date_str);
+                let smart_date = format_preview_header_date(&date_str);
+                date_lbl.set_text(&smart_date);
+                date_lbl.set_tooltip_text(Some(&full_date));
+            }
+            if let Some(star_btn) = self.imp().modern_star_button.borrow().as_ref() {
+                star_btn.set_icon_name(if is_flagged {
+                    "starred-symbolic"
+                } else {
+                    "non-starred-symbolic"
+                });
+            }
 
             let sender = if !message.sender_name().is_empty() {
                 message.sender_name()
@@ -7399,8 +7417,8 @@ impl MailPage {
                 bar.set_margin_top(0);
                 bar.set_margin_bottom(0);
             } else {
-                bar.set_margin_top(4);
-                bar.set_margin_bottom(6);
+                bar.set_margin_top(2);
+                bar.set_margin_bottom(2);
             }
         }
         if let Some(rev) = imp.classic_details_revealer.borrow().as_ref() {
@@ -7485,17 +7503,18 @@ impl MailPage {
             }
         }
         if let Some(grid) = imp.modern_details_grid.borrow().as_ref() {
-            grid.set_margin_start(if show_avatar { 48 } else { 0 });
+            grid.set_margin_start(4);
         }
 
         // 2. Sender Name & Address
         if let Some(name_lbl) = imp.modern_sender_name.borrow().as_ref() {
+            let str_unknown = gettext("Unknown Sender");
             let display_name = if !sender_name.trim().is_empty() {
                 &sender_name
             } else if !sender_email.trim().is_empty() {
                 &sender_email
             } else {
-                "Unbekannter Absender"
+                &str_unknown
             };
             name_lbl.set_text(display_name);
         }
@@ -7573,25 +7592,38 @@ impl MailPage {
             } else {
                 format!("{sender_name} <{sender_email}>")
             };
+            let str_from = gettext("From:");
+            let str_to = gettext("To:");
+            let str_cc = gettext("Cc:");
+            let str_date = gettext("Date:");
+            let str_me = gettext("me");
             let mut details = vec![
-                ("Von:", sender_full),
-                ("An:", if recipient_to.is_empty() { "mich".to_string() } else { recipient_to }),
+                (str_from, sender_full),
+                (str_to, if recipient_to.is_empty() { str_me } else { recipient_to }),
             ];
             if !recipient_cc.trim().is_empty() {
-                details.push(("Kopie:", recipient_cc));
+                details.push((str_cc, recipient_cc));
             }
-            details.push(("Datum:", format_message_date(&date_str)));
+            details.push((str_date, format_message_date(&date_str)));
 
             for (row, (label, val)) in details.into_iter().enumerate() {
                 let l = gtk::Label::builder()
-                    .label(label)
-                    .halign(gtk::Align::End)
+                    .label(&label)
+                    .halign(gtk::Align::Start)
                     .css_classes(vec!["dim-label"])
                     .build();
                 let v = gtk::Label::builder()
                     .label(&val)
-                    .halign(gtk::Align::Start)
+                    .halign(gtk::Align::Fill)
+                    .valign(gtk::Align::Center)
+                    .xalign(0.0)
+                    .hexpand(true)
                     .selectable(true)
+                    .wrap(false)
+                    .single_line_mode(true)
+                    .ellipsize(pango::EllipsizeMode::End)
+                    .tooltip_text(&val)
+                    .width_chars(1)
                     .build();
                 details_grid.attach(&l, 0, row as i32, 1, 1);
                 details_grid.attach(&v, 1, row as i32, 1, 1);
@@ -23941,7 +23973,7 @@ impl MailPage {
             .label("")
             .halign(gtk::Align::End)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(vec!["caption", "dim-label", "mail-preview-date-label"])
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
             .single_line_mode(true)
@@ -24017,6 +24049,7 @@ impl MailPage {
             let fallback = match icon_name {
                 "mail-reply-sender-symbolic" | "mail-reply-all-symbolic" => "go-previous-symbolic",
                 "mail-forward-symbolic" => "go-next-symbolic",
+                "mail-mark-junk-symbolic" => "dialog-warning-symbolic",
                 "user-trash-symbolic" => "edit-delete-symbolic",
                 _ => "image-missing-symbolic",
             };
@@ -24039,9 +24072,13 @@ impl MailPage {
         let str_m_reply = gettext("Reply (Ctrl+R)");
         let str_m_reply_all = gettext("Reply All (Ctrl+Shift+R)");
         let str_m_forward = gettext("Forward (Ctrl+L)");
+        let str_m_junk = gettext("Mark as Junk (Ctrl+J)");
+        let str_m_delete = gettext("Move message to Trash");
         let m_reply = make_header_action_btn("mail-reply-sender-symbolic", &str_m_reply, "win.reply");
         let m_reply_all = make_header_action_btn("mail-reply-all-symbolic", &str_m_reply_all, "win.reply-all");
         let m_forward = make_header_action_btn("mail-forward-symbolic", &str_m_forward, "win.forward");
+        let m_junk = make_header_action_btn("mail-mark-junk-symbolic", &str_m_junk, "win.mark-junk");
+        let m_delete = make_header_action_btn("user-trash-symbolic", &str_m_delete, "win.delete");
 
         let m_more_menu = gio::Menu::new();
 
@@ -24060,8 +24097,10 @@ impl MailPage {
         m_more_menu.append_section(None, &status_section);
 
         let triage_section = gio::Menu::new();
+        let str_junk = gettext("Mark as Junk");
         let str_trash = gettext("Move message to Trash");
         let str_flag = gettext("Toggle Star");
+        triage_section.append(Some(&str_junk), Some("win.mark-junk"));
         triage_section.append(Some(&str_trash), Some("win.delete"));
         triage_section.append(Some(&str_flag), Some("win.toggle-flag"));
         m_more_menu.append_section(None, &triage_section);
@@ -24087,9 +24126,6 @@ impl MailPage {
             .build();
         set_accessible_label(&m_more_btn, &str_more_tip);
 
-        let str_m_delete = gettext("Move message to Trash");
-        let m_delete = make_header_action_btn("user-trash-symbolic", &str_m_delete, "win.delete");
-
         modern_actions_group.append(&m_reply);
         modern_actions_group.append(&m_reply_all);
         modern_actions_group.append(&m_forward);
@@ -24099,12 +24135,14 @@ impl MailPage {
         modern_actions_sep.set_margin_end(4);
 
         modern_actions_group.append(&modern_actions_sep);
+        modern_actions_group.append(&m_junk);
         modern_actions_group.append(&m_delete);
         modern_actions_group.append(&modern_star_button);
         modern_actions_group.append(&m_more_btn);
 
         self.imp().modern_reply_all_button.replace(Some(m_reply_all.clone()));
         self.imp().modern_forward_button.replace(Some(m_forward.clone()));
+        self.imp().modern_junk_button.replace(Some(m_junk.clone()));
         self.imp().modern_delete_button.replace(Some(m_delete.clone()));
         self.imp().modern_actions_sep.replace(Some(modern_actions_sep.clone()));
 
@@ -24128,13 +24166,13 @@ impl MailPage {
 
         let modern_actions_bar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
+            .spacing(6)
             .valign(gtk::Align::Center)
             .hexpand(true)
             .margin_start(0)
             .margin_end(0)
-            .margin_top(4)
-            .margin_bottom(6)
+            .margin_top(2)
+            .margin_bottom(2)
             .visible(false)
             .css_classes(vec!["sidebar-drawer-header", "mail-preview-actions-bar"])
             .build();
@@ -24163,7 +24201,7 @@ impl MailPage {
         let modern_details_grid = gtk::Grid::builder()
             .row_spacing(2)
             .column_spacing(8)
-            .margin_start(48)
+            .margin_start(4)
             .margin_top(4)
             .margin_bottom(4)
             .css_classes(vec!["caption", "dim-label"])
@@ -24334,7 +24372,9 @@ impl MailPage {
         preview_more_menu.append_section(None, &prev_status_section);
 
         let prev_triage_section = gio::Menu::new();
+        let str_prev_junk = gettext("Mark as Junk");
         let str_prev_trash = gettext("Move message to Trash");
+        prev_triage_section.append(Some(&str_prev_junk), Some("win.mark-junk"));
         prev_triage_section.append(Some(&str_prev_trash), Some("win.delete"));
         preview_more_menu.append_section(None, &prev_triage_section);
 
@@ -36057,16 +36097,20 @@ mod tests {
         let compact_rev = page.imp().classic_compact_revealer.borrow().clone().expect("classic_compact_revealer");
         let compact_sender = page.imp().classic_compact_sender.borrow().clone().expect("classic_compact_sender");
         let compact_subject = page.imp().classic_compact_subject.borrow().clone().expect("classic_compact_subject");
+        let actions_bar = page.imp().modern_actions_bar.borrow().clone().expect("modern_actions_bar");
         let actions_row = page.imp().preview_actions_row.borrow().clone().expect("preview_actions_row");
         let subject_rev = page.imp().mail_subject_revealer.borrow().clone().expect("mail_subject_revealer");
+        let date_lbl = page.imp().modern_date_label.borrow().clone().expect("modern_date_label");
 
         // Initially in full mode
         assert!(classic_box.is_visible(), "Classic header box must be visible");
-        assert!(actions_row.is_visible(), "Actions row must be visible");
+        assert!(actions_bar.is_visible(), "Dedicated actions bar must be visible in classic mode on desktop");
+        assert!(!actions_row.is_visible(), "Old actions row inside header must be hidden on desktop");
         assert!(details_rev.reveals_child(), "Details revealer must be revealed initially");
         assert!(!compact_rev.reveals_child(), "Compact revealer must be hidden initially");
         assert!(subject_rev.reveals_child(), "Subject revealer must be revealed initially");
         assert!(!classic_box.has_css_class("is-compact"));
+        assert!(!date_lbl.text().is_empty(), "Actions bar date must be populated in classic mode");
 
         // Compact sender & subject should be populated
         assert!(compact_sender.text().contains("Bob Martin"));
@@ -36078,6 +36122,7 @@ mod tests {
         assert!(compact_rev.reveals_child(), "Compact revealer must reveal on scroll");
         assert!(!subject_rev.reveals_child(), "Subject revealer must collapse on scroll");
         assert!(classic_box.has_css_class("is-compact"));
+        assert!(actions_bar.is_visible(), "Actions bar remains visible when scrolled");
 
         // Simulate scrolling back to top < 15px
         page.handle_viewer_scroll_offset(5.0);
@@ -38318,6 +38363,7 @@ mod tests {
         let reply_all_btn = page.imp().modern_reply_all_button.borrow().clone().expect("reply all button");
         let forward_btn = page.imp().modern_forward_button.borrow().clone().expect("forward button");
         let actions_sep = page.imp().modern_actions_sep.borrow().clone().expect("actions separator");
+        let junk_btn = page.imp().modern_junk_button.borrow().clone().expect("junk button");
 
         // 1. Initial expanded header state
         assert!(date_revealer.is_visible(), "Date revealer must be visible in expanded mode");
@@ -38333,6 +38379,8 @@ mod tests {
         assert!(reply_all_btn.is_visible(), "Reply All button should be visible when wide");
         assert!(forward_btn.is_visible(), "Forward button should be visible when wide");
         assert!(actions_sep.is_visible(), "Actions separator should be visible when wide");
+        assert!(junk_btn.is_visible(), "Junk button should be visible when wide");
+        assert_eq!(junk_btn.action_name().as_deref(), Some("win.mark-junk"));
 
         // Back to full header
         page.set_header_compact(false);
@@ -38343,17 +38391,22 @@ mod tests {
         let recip_lbl = page.imp().modern_recipient_summary.borrow().clone().expect("recipient summary");
         let date_lbl = page.imp().modern_date_label.borrow().clone().expect("date label");
         let details_revealer = page.imp().modern_details_revealer.borrow().clone().expect("details revealer");
+        let details_grid = page.imp().modern_details_grid.borrow().clone().expect("details grid");
+
+        // Details grid has minimal start margin (4px) to maximize room for addresses
+        assert_eq!(details_grid.margin_start(), 4);
 
         // Recipient label is child of recipient details button (compact unified toggle)
         assert_eq!(recip_btn.child().as_ref(), Some(recip_lbl.upcast_ref::<gtk::Widget>()));
         assert!(recip_lbl.has_css_class("mail-details-recipient-label"));
         assert!(!recip_lbl.has_css_class("caption"));
         assert!(!recip_lbl.has_css_class("dim-label"));
-        assert!(recip_lbl.text().contains("an mich") || recip_lbl.text().contains("me@example.com"));
+        assert!(recip_lbl.text().contains("an mich") || recip_lbl.text().contains("me@example.com") || recip_lbl.text().contains("to me"));
         assert!(recip_lbl.text().ends_with('▾'));
 
         // Date label displays smart date and stores full date in tooltip
         assert!(date_lbl.tooltip_text().is_some());
+        assert!(date_lbl.has_css_class("mail-preview-date-label"));
 
         // Clicking recipient button expands details and flips arrow to ▴
         assert!(!details_revealer.reveals_child());
@@ -38522,7 +38575,9 @@ mod tests {
         settings.set_mail_header_style("classic");
         page.refresh_normal_headers_for_message(Some(&msg));
         viewer.notify_remote_images_blocked(true);
-        assert!(actions_row.is_visible(), "Actions row must be visible in classic mode for reply actions");
+        let actions_bar = page.imp().modern_actions_bar.borrow().clone().expect("actions_bar");
+        assert!(actions_bar.is_visible(), "Actions bar must be visible in classic mode on desktop");
+        assert!(!actions_row.is_visible(), "Old actions row inside header must be hidden on desktop");
         assert!(!classic_btn.is_visible(), "Classic button must stay hidden in header");
         assert!(!modern_btn.is_visible(), "Modern button must be hidden in classic mode");
 
@@ -39379,6 +39434,105 @@ mod tests {
         page.sync_preview_actions_labels();
         let del_btn = page.imp().modern_delete_button.borrow().clone().expect("delete button");
         assert!(del_btn.is_visible());
+        let junk_btn = page.imp().modern_junk_button.borrow().clone().expect("junk button");
+        assert!(junk_btn.is_visible());
+        assert_eq!(junk_btn.action_name().as_deref(), Some("win.mark-junk"));
+    }
+
+    #[test]
+    fn test_compact_actions_bar_spam_button_and_details_grid_optimization() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        // 1. Contract check on CSS: compact action buttons and bar height
+        let css = include_str!("../style.css");
+        assert!(css.contains(".mail-header-action-btn {"));
+        assert!(css.contains("min-width: 26px;"));
+        assert!(css.contains("min-height: 26px;"));
+        assert!(css.contains(".mail-preview-actions-bar {"));
+        assert!(css.contains("min-height: 28px;"));
+        assert!(css.contains(".mail-preview-date-label"));
+
+        let page = MailPage::new();
+        let settings = AppSettings::try_new().expect("app settings");
+        settings.set_mail_header_style("modern");
+        page.set_screen_mode(false, false);
+
+        let msg = MailMessageObject::new(
+            "msg-junk-test-1",
+            "inbox",
+            "Delivery Service",
+            "no-reply@connect.delivery-example.de",
+            "max.jensen1@gmail.com",
+            "",
+            "",
+            "",
+            "Food delivery",
+            None,
+            vec![],
+            vec![],
+            "thread-junk",
+            1,
+            0,
+            "2026-09-28T14:00:00+02:00",
+            512,
+            "Snippet",
+            "Body",
+            false,
+            false,
+            false,
+            MailFollowUpState::None,
+            MailFollowUpMetadata::default(),
+            vec![],
+            None,
+            vec![],
+        );
+
+        page.refresh_normal_headers_for_message(Some(&msg));
+
+        // 2. Action buttons: Reply, Reply All, Forward, Junk, Delete, Star, More
+        let junk_btn = page.imp().modern_junk_button.borrow().clone().expect("junk button");
+        let reply_all_btn = page.imp().modern_reply_all_button.borrow().clone().expect("reply all button");
+        let forward_btn = page.imp().modern_forward_button.borrow().clone().expect("forward button");
+        let delete_btn = page.imp().modern_delete_button.borrow().clone().expect("delete button");
+        let date_rev = page.imp().modern_date_revealer.borrow().clone().expect("date revealer");
+
+        assert_eq!(junk_btn.action_name().as_deref(), Some("win.mark-junk"));
+        assert!(junk_btn.has_css_class("mail-header-action-btn"));
+
+        // Responsive sync
+        page.sync_preview_actions_labels();
+        assert!(junk_btn.is_visible());
+        assert!(reply_all_btn.is_visible());
+        assert!(forward_btn.is_visible());
+        assert!(delete_btn.is_visible());
+        assert!(date_rev.is_visible());
+
+        // 3. Details grid optimization: margin_start is 4, labels are start-aligned, values ellipsize
+        let details_grid = page.imp().modern_details_grid.borrow().clone().expect("details grid");
+        assert_eq!(details_grid.margin_start(), 4);
+
+        // Check child labels in details grid
+        let mut labels = Vec::new();
+        let mut child = details_grid.first_child();
+        while let Some(c) = child {
+            if let Some(lbl) = c.downcast_ref::<gtk::Label>() {
+                labels.push(lbl.clone());
+            }
+            child = c.next_sibling();
+        }
+        assert!(!labels.is_empty(), "Details grid should have labels");
+        // Values in the second column should have ellipsize enabled
+        let value_labels: Vec<_> = labels.iter().filter(|l| l.text().contains("delivery-example.de") || l.text().contains("max.jensen1")).collect();
+        assert!(!value_labels.is_empty(), "Value labels should be present");
+        for vl in value_labels {
+            assert_eq!(vl.ellipsize(), pango::EllipsizeMode::End);
+            assert!(vl.is_single_line_mode());
+        }
     }
 }
 

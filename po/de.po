@@ -4916,8 +4916,8 @@ msgid "../style.css"
 msgstr ""
 
 #: src/views/mail_viewer.rs:178
-msgid "Remote images blocked – embedded images remain visible"
-msgstr ""
+msgid "Remote images blocked"
+msgstr "Externe Bilder blockiert"
 
 #: src/views/mail_viewer.rs:179
 msgid "Load Images"
