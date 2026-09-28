@@ -5933,8 +5933,12 @@ mod imp {
         pub modern_star_button: RefCell<Option<gtk::Button>>,
         pub modern_actions_bar: RefCell<Option<gtk::Box>>,
         pub modern_actions_group: RefCell<Option<gtk::Box>>,
+        pub modern_reply_group: RefCell<Option<gtk::Box>>,
+        pub modern_triage_group: RefCell<Option<gtk::Box>>,
         pub modern_reply_all_button: RefCell<Option<gtk::Button>>,
         pub modern_forward_button: RefCell<Option<gtk::Button>>,
+        pub modern_archive_button: RefCell<Option<gtk::Button>>,
+        pub modern_unread_button: RefCell<Option<gtk::Button>>,
         pub modern_delete_button: RefCell<Option<gtk::Button>>,
         pub modern_junk_button: RefCell<Option<gtk::Button>>,
         pub modern_actions_sep: RefCell<Option<gtk::Separator>>,
@@ -6496,9 +6500,10 @@ impl MailPage {
         };
 
         let show_extra_actions = preview_width >= 360 || preview_width <= 0;
+        let show_archive = preview_width >= 320 || preview_width <= 0;
         let show_junk = preview_width >= 340 || preview_width <= 0;
         let show_sep = preview_width >= 340 || preview_width <= 0;
-        let show_triage = preview_width >= 300 || preview_width <= 0;
+        let show_triage = preview_width >= 280 || preview_width <= 0;
         let show_date = preview_width >= 300 || preview_width <= 0;
 
         if let Some(btn) = imp.modern_reply_all_button.borrow().as_ref() {
@@ -6506,6 +6511,12 @@ impl MailPage {
         }
         if let Some(btn) = imp.modern_forward_button.borrow().as_ref() {
             btn.set_visible(show_extra_actions);
+        }
+        if let Some(btn) = imp.modern_archive_button.borrow().as_ref() {
+            btn.set_visible(show_archive);
+        }
+        if let Some(btn) = imp.modern_unread_button.borrow().as_ref() {
+            btn.set_visible(show_triage);
         }
         if let Some(sep) = imp.modern_actions_sep.borrow().as_ref() {
             sep.set_visible(show_sep);
@@ -23993,11 +24004,12 @@ impl MailPage {
 
         let modern_recipient_line = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(0)
+            .spacing(8)
             .valign(gtk::Align::Center)
             .hexpand(true)
             .build();
         modern_recipient_line.append(&modern_recipient_left_box);
+        modern_recipient_line.append(&modern_date_revealer);
 
         let modern_recipient_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideUp)
@@ -24013,7 +24025,7 @@ impl MailPage {
         let modern_star_button = gtk::Button::builder()
             .icon_name("non-starred-symbolic")
             .tooltip_text(&str_star_tip)
-            .css_classes(vec!["flat", "circular", "mail-header-action-btn"])
+            .css_classes(vec!["flat", "mail-header-action-btn"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&modern_star_button, &str_star_tip);
@@ -24034,6 +24046,9 @@ impl MailPage {
                 }
             }
         });
+        self.imp()
+            .modern_star_button
+            .replace(Some(modern_star_button.clone()));
 
         let make_header_action_btn = |icon_name: &'static str,
                                       tooltip: &str,
@@ -24042,7 +24057,7 @@ impl MailPage {
             let button = gtk::Button::builder()
                 .tooltip_text(tooltip)
                 .action_name(action_name)
-                .css_classes(vec!["flat", "circular", "mail-header-action-btn"])
+                .css_classes(vec!["flat", "mail-header-action-btn"])
                 .valign(gtk::Align::Center)
                 .build();
             let icon = gtk::Image::new();
@@ -24050,6 +24065,8 @@ impl MailPage {
                 "mail-reply-sender-symbolic" | "mail-reply-all-symbolic" => "go-previous-symbolic",
                 "mail-forward-symbolic" => "go-next-symbolic",
                 "mail-mark-junk-symbolic" => "dialog-warning-symbolic",
+                "mail-archive-symbolic" => "package-x-generic-symbolic",
+                "mail-mark-unread-symbolic" => "mail-unread-symbolic",
                 "user-trash-symbolic" => "edit-delete-symbolic",
                 _ => "image-missing-symbolic",
             };
@@ -24060,25 +24077,21 @@ impl MailPage {
             button
         };
 
-        let modern_actions_group = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(2)
-            .valign(gtk::Align::Center)
-            .halign(gtk::Align::Start)
-            .hexpand(true)
-            .css_classes(vec!["mail-header-actions-group"])
-            .build();
-
         let str_m_reply = gettext("Reply (Ctrl+R)");
         let str_m_reply_all = gettext("Reply All (Ctrl+Shift+R)");
         let str_m_forward = gettext("Forward (Ctrl+L)");
-        let str_m_junk = gettext("Mark as Junk (Ctrl+J)");
+        let str_m_archive = gettext("Archive message (Ctrl+Shift+A)");
+        let str_m_unread = gettext("Mark as unread (Ctrl+Shift+U)");
         let str_m_delete = gettext("Move message to Trash");
+        let str_m_junk = gettext("Mark as Junk (Ctrl+J)");
+
         let m_reply = make_header_action_btn("mail-reply-sender-symbolic", &str_m_reply, "win.reply");
         let m_reply_all = make_header_action_btn("mail-reply-all-symbolic", &str_m_reply_all, "win.reply-all");
         let m_forward = make_header_action_btn("mail-forward-symbolic", &str_m_forward, "win.forward");
-        let m_junk = make_header_action_btn("mail-mark-junk-symbolic", &str_m_junk, "win.mark-junk");
+        let m_archive = make_header_action_btn("mail-archive-symbolic", &str_m_archive, "win.archive");
+        let m_unread = make_header_action_btn("mail-mark-unread-symbolic", &str_m_unread, "win.mark-unread");
         let m_delete = make_header_action_btn("user-trash-symbolic", &str_m_delete, "win.delete");
+        let m_junk = make_header_action_btn("mail-mark-junk-symbolic", &str_m_junk, "win.mark-junk");
 
         let m_more_menu = gio::Menu::new();
 
@@ -24090,19 +24103,23 @@ impl MailPage {
         m_more_menu.append_section(None, &reply_section);
 
         let status_section = gio::Menu::new();
-        let str_mark_read = gettext("Mark Read");
-        let str_mark_unread = gettext("Mark Unread");
+        let str_mark_read = gettext("Mark as Read");
+        let str_mark_unread = gettext("Mark as Unread");
+        let str_star = gettext("Star");
+        let str_junk_toggle = gettext("Toggle as Junk");
         status_section.append(Some(&str_mark_read), Some("win.mark-read"));
         status_section.append(Some(&str_mark_unread), Some("win.mark-unread"));
+        status_section.append(Some(&str_star), Some("win.toggle-flag"));
+        status_section.append(Some(&str_junk_toggle), Some("win.mark-junk"));
         m_more_menu.append_section(None, &status_section);
 
         let triage_section = gio::Menu::new();
-        let str_junk = gettext("Mark as Junk");
+        let str_move = gettext("Move to Folder…");
+        let str_menu_archive = gettext("Archive");
         let str_trash = gettext("Move message to Trash");
-        let str_flag = gettext("Toggle Star");
-        triage_section.append(Some(&str_junk), Some("win.mark-junk"));
+        triage_section.append(Some(&str_move), Some("win.move-message"));
+        triage_section.append(Some(&str_menu_archive), Some("win.archive"));
         triage_section.append(Some(&str_trash), Some("win.delete"));
-        triage_section.append(Some(&str_flag), Some("win.toggle-flag"));
         m_more_menu.append_section(None, &triage_section);
 
         let tools_section = gio::Menu::new();
@@ -24118,33 +24135,61 @@ impl MailPage {
 
         let str_more_tip = gettext("More actions for this message");
         let m_more_btn = gtk::MenuButton::builder()
-            .icon_name("view-more-symbolic")
+            .icon_name("pan-down-symbolic")
             .menu_model(&m_more_menu)
             .tooltip_text(&str_more_tip)
-            .css_classes(vec!["flat", "circular", "mail-header-action-btn"])
+            .css_classes(vec!["flat", "mail-header-action-btn"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&m_more_btn, &str_more_tip);
 
-        modern_actions_group.append(&m_reply);
-        modern_actions_group.append(&m_reply_all);
-        modern_actions_group.append(&m_forward);
+        // Convey-style linked button groups
+        let modern_reply_group = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(0)
+            .valign(gtk::Align::Center)
+            .halign(gtk::Align::Start)
+            .css_classes(vec!["linked", "mail-header-actions-group"])
+            .build();
+        modern_reply_group.append(&m_reply);
+        modern_reply_group.append(&m_reply_all);
+        modern_reply_group.append(&m_forward);
+
+        let modern_triage_group = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(0)
+            .valign(gtk::Align::Center)
+            .halign(gtk::Align::Start)
+            .css_classes(vec!["linked", "mail-header-actions-group"])
+            .build();
+        modern_triage_group.append(&m_archive);
+        modern_triage_group.append(&m_unread);
+        modern_triage_group.append(&m_delete);
+        modern_triage_group.append(&m_more_btn);
+
+        let modern_actions_group = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .valign(gtk::Align::Center)
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .css_classes(vec!["mail-header-actions-group"])
+            .build();
+        modern_actions_group.append(&modern_reply_group);
+        modern_actions_group.append(&modern_triage_group);
 
         let modern_actions_sep = gtk::Separator::new(gtk::Orientation::Vertical);
-        modern_actions_sep.set_margin_start(4);
-        modern_actions_sep.set_margin_end(4);
-
-        modern_actions_group.append(&modern_actions_sep);
-        modern_actions_group.append(&m_junk);
-        modern_actions_group.append(&m_delete);
-        modern_actions_group.append(&modern_star_button);
-        modern_actions_group.append(&m_more_btn);
+        modern_actions_sep.set_visible(false);
 
         self.imp().modern_reply_all_button.replace(Some(m_reply_all.clone()));
         self.imp().modern_forward_button.replace(Some(m_forward.clone()));
-        self.imp().modern_junk_button.replace(Some(m_junk.clone()));
+        self.imp().modern_archive_button.replace(Some(m_archive.clone()));
+        self.imp().modern_unread_button.replace(Some(m_unread.clone()));
         self.imp().modern_delete_button.replace(Some(m_delete.clone()));
+        self.imp().modern_junk_button.replace(Some(m_junk.clone()));
         self.imp().modern_actions_sep.replace(Some(modern_actions_sep.clone()));
+        self.imp().modern_reply_group.replace(Some(modern_reply_group.clone()));
+        self.imp().modern_triage_group.replace(Some(modern_triage_group.clone()));
 
         let str_load_remote = gettext("Load images");
         let modern_load_remote_images_btn = gtk::Button::builder()
@@ -24161,12 +24206,11 @@ impl MailPage {
             .replace(Some(modern_load_remote_images_btn.clone()));
 
         modern_actions_group.append(&modern_load_remote_images_btn);
-
         self.imp().modern_actions_group.replace(Some(modern_actions_group.clone()));
 
         let modern_actions_bar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(6)
+            .spacing(8)
             .valign(gtk::Align::Center)
             .hexpand(true)
             .margin_start(0)
@@ -24178,7 +24222,6 @@ impl MailPage {
             .build();
 
         modern_actions_bar.append(&modern_actions_group);
-        modern_actions_bar.append(&modern_date_revealer);
         self.imp().modern_actions_bar.replace(Some(modern_actions_bar.clone()));
 
         let modern_sender_row = gtk::Box::builder()
@@ -36350,7 +36393,7 @@ mod tests {
         assert!(detail_fn.contains("preview_more_btn"));
         assert!(detail_fn.contains("m_more_btn"));
         assert!(detail_fn.contains("preview_reply_group.append(&preview_more_btn)"));
-        assert!(detail_fn.contains("modern_actions_group.append(&m_more_btn)"));
+        assert!(detail_fn.contains("modern_triage_group.append(&m_more_btn)"));
 
         // 2. Toolbar does NOT contain print preview, EML export, or 3-dots more menu
         let toolbar_fn = rust_function_body(source, "build_unified_mail_toolbar");
@@ -39406,7 +39449,7 @@ mod tests {
 
         page.refresh_normal_headers_for_message(Some(&msg));
 
-        // 1. Dedicated Action Bar is visible with actions on left and date on right
+        // 1. Dedicated Action Bar is visible with Convey linked groups
         let actions_bar = page.imp().modern_actions_bar.borrow().clone().expect("modern actions bar");
         assert!(actions_bar.is_visible(), "Actions bar must be visible for selected message");
         assert!(actions_bar.has_css_class("mail-preview-actions-bar"));
@@ -39416,7 +39459,10 @@ mod tests {
         let date_rev = page.imp().modern_date_revealer.borrow().clone().expect("date revealer");
         assert!(date_rev.is_visible());
         assert_eq!(actions_bar.first_child().as_ref(), Some(actions_group.upcast_ref::<gtk::Widget>()));
-        assert_eq!(actions_bar.last_child().as_ref(), Some(date_rev.upcast_ref::<gtk::Widget>()));
+        let reply_group = page.imp().modern_reply_group.borrow().clone().expect("reply group");
+        let triage_group = page.imp().modern_triage_group.borrow().clone().expect("triage group");
+        assert!(reply_group.has_css_class("linked"));
+        assert!(triage_group.has_css_class("linked"));
 
         // 2. Clean Header Card contains only sender info and recipient toggle
         let header_card = page.imp().modern_header_card.borrow().clone().expect("modern header card");
@@ -39494,18 +39540,24 @@ mod tests {
 
         page.refresh_normal_headers_for_message(Some(&msg));
 
-        // 2. Action buttons: Reply, Reply All, Forward, Junk, Delete, Star, More
+        // 2. Action buttons: Reply, Reply All, Forward, Archive, Mark Unread, Junk, Delete, Star, More
+        let archive_btn = page.imp().modern_archive_button.borrow().clone().expect("archive button");
+        let unread_btn = page.imp().modern_unread_button.borrow().clone().expect("unread button");
         let junk_btn = page.imp().modern_junk_button.borrow().clone().expect("junk button");
         let reply_all_btn = page.imp().modern_reply_all_button.borrow().clone().expect("reply all button");
         let forward_btn = page.imp().modern_forward_button.borrow().clone().expect("forward button");
         let delete_btn = page.imp().modern_delete_button.borrow().clone().expect("delete button");
         let date_rev = page.imp().modern_date_revealer.borrow().clone().expect("date revealer");
 
+        assert_eq!(archive_btn.action_name().as_deref(), Some("win.archive"));
+        assert_eq!(unread_btn.action_name().as_deref(), Some("win.mark-unread"));
         assert_eq!(junk_btn.action_name().as_deref(), Some("win.mark-junk"));
-        assert!(junk_btn.has_css_class("mail-header-action-btn"));
+        assert!(archive_btn.has_css_class("mail-header-action-btn"));
 
         // Responsive sync
         page.sync_preview_actions_labels();
+        assert!(archive_btn.is_visible());
+        assert!(unread_btn.is_visible());
         assert!(junk_btn.is_visible());
         assert!(reply_all_btn.is_visible());
         assert!(forward_btn.is_visible());

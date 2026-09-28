@@ -1264,13 +1264,13 @@ impl EvolutionWindow {
                                 .selected_message_subject()
                                 .unwrap_or_else(|| crate::i18n::gettext("Email"));
                             window_title.set_title(&subj);
-                            window_title.set_subtitle(&crate::i18n::gettext("Message"));
+                            window_title.set_subtitle("");
                         } else {
                             let folder = mail
                                 .selected_folder_display_name()
                                 .unwrap_or_else(|| crate::i18n::gettext("Inbox"));
                             window_title.set_title(&folder);
-                            window_title.set_subtitle(&crate::i18n::gettext("Messages"));
+                            window_title.set_subtitle("");
                         }
                     } else {
                         window_title.set_title("");
@@ -1440,11 +1440,8 @@ impl EvolutionWindow {
         }
 
         if let Some(switcher) = self.imp().view_switcher.borrow().as_ref() {
-            if is_tablet || is_mobile || self.imp().is_medium.get() {
-                switcher.set_policy(adw::ViewSwitcherPolicy::Narrow);
-            } else {
-                switcher.set_policy(adw::ViewSwitcherPolicy::Wide);
-            }
+            // Keep top switcher strictly wide to prevent height jumping across responsive sizes
+            switcher.set_policy(adw::ViewSwitcherPolicy::Wide);
         }
 
         if let Some(header_bar) = self.imp().header_bar.borrow().as_ref() {
@@ -7422,15 +7419,15 @@ mod tests {
         assert!(!switcher_bar.reveals(), "switcher_bar should not reveal on desktop");
         assert!(!back_btn.is_visible(), "back_button should be hidden initially");
 
-        // Switch to tablet mode: narrow policy for space-saving, switcher_bar revealed (Ansatz A)
+        // Switch to tablet mode: switcher_bar revealed, top switcher remains wide to preserve sleek 46px headerbar
         window.set_screen_mode(false, true);
-        assert_eq!(top_switcher.policy(), adw::ViewSwitcherPolicy::Narrow);
+        assert_eq!(top_switcher.policy(), adw::ViewSwitcherPolicy::Wide);
         assert!(switcher_bar.reveals(), "switcher_bar should reveal on tablet per GNOME HIG");
         assert!(!back_btn.is_visible(), "back_button should remain hidden on tablet without drilldown");
 
-        // Switch to mobile mode: narrow policy, bottom bar revealed
+        // Switch to mobile mode: bottom bar revealed, top switcher remains wide
         window.set_screen_mode(true, false);
-        assert_eq!(top_switcher.policy(), adw::ViewSwitcherPolicy::Narrow);
+        assert_eq!(top_switcher.policy(), adw::ViewSwitcherPolicy::Wide);
         assert!(switcher_bar.reveals(), "switcher_bar should reveal on mobile");
         assert!(!back_btn.is_visible(), "back_button should start hidden on mobile root");
 
