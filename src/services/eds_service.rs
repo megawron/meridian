@@ -354,7 +354,7 @@ async fn get_eds_managed_objects() -> Result<
     let mut last_err = None;
     for attempt in 0..4 {
         if attempt > 0 {
-            glib::timeout_future(Duration::from_millis(250)).await;
+            tokio::time::sleep(Duration::from_millis(250)).await;
         }
         match proxy.get_managed_objects().await {
             Ok(objs) => return Ok(objs),
