@@ -410,7 +410,7 @@ searchbar entry text {
 }
 
 .mail-preview-actions-bar {
-  min-height: 28px;
+  min-height: 36px;
   padding: 0;
   margin: 0;
   background-color: transparent;
@@ -2868,6 +2868,7 @@ scrollbar.mail-table-overlay-scrollbar slider:active {
 
 .mail-modern-header-card.is-compact {
   padding: 0;
+  min-height: 36px;
 }
 
 /* ── Classic Mail Header Collapsible & Responsive Layout ─────────────── */
@@ -2878,10 +2879,11 @@ scrollbar.mail-table-overlay-scrollbar slider:active {
 
 .mail-classic-header-box.is-compact {
   padding: 0;
+  min-height: 36px;
 }
 
 .mail-classic-compact-box {
-  min-height: 28px;
+  min-height: 36px;
 }
 
 .mail-classic-compact-sender {
@@ -2919,14 +2921,24 @@ scrollbar.mail-table-overlay-scrollbar slider:active {
 }
 
 .mail-details-toggle {
-  font-size: 0.88rem;
+  font-size: 0.96rem;
   padding: 2px 6px;
-  min-height: 22px;
+  min-height: 24px;
   min-width: 0;
   border-radius: 4px;
+  color: alpha(@window_fg_color, 0.78);
 }
 
-.mail-details-toggle > label {
+.mail-details-toggle:hover {
+  color: @window_fg_color;
+  background-color: alpha(@window_fg_color, 0.08);
+}
+
+.mail-details-recipient-label,
+.mail-details-toggle label {
+  font-size: 0.96rem;
+  font-weight: 500;
+  color: inherit;
   min-width: 0;
 }
 

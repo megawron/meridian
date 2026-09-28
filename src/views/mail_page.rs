@@ -1497,26 +1497,36 @@ fn format_modern_recipient_summary(
         user_emails.iter().any(|u| u.trim().to_lowercase() == lower)
     };
 
-    let user_in_recipients = to_list.iter().any(|(_, email)| is_user_email(email))
-        || cc_list.iter().any(|(_, email)| is_user_email(email));
+    let user_match = to_list
+        .iter()
+        .chain(cc_list.iter())
+        .find(|(_, email)| is_user_email(email));
 
-    let summary = if user_in_recipients {
-        if total_count == 1 {
-            "an mich".to_string()
+    let target_display = if let Some((_, email)) = user_match {
+        if !email.trim().is_empty() {
+            email.clone()
         } else {
-            format!("an mich, +{}", total_count - 1)
+            "mich".to_string()
         }
     } else {
-        let first_name = to_list
-            .first()
-            .or_else(|| cc_list.first())
-            .map(|(name, _)| name.as_str())
-            .unwrap_or("mich");
-        if total_count == 1 {
-            format!("an {first_name}")
+        let first = to_list.first().or_else(|| cc_list.first());
+        if let Some((name, email)) = first {
+            if !name.trim().is_empty() {
+                name.clone()
+            } else if !email.trim().is_empty() {
+                email.clone()
+            } else {
+                "mich".to_string()
+            }
         } else {
-            format!("an {first_name}, +{}", total_count - 1)
+            "mich".to_string()
         }
+    };
+
+    let summary = if total_count <= 1 {
+        format!("an {target_display}")
+    } else {
+        format!("an {target_display}, +{}", total_count - 1)
     };
 
     format!("{summary} {arrow}")
@@ -7376,8 +7386,21 @@ impl MailPage {
         if let Some(card) = imp.modern_header_card.borrow().as_ref() {
             if compact {
                 card.add_css_class("is-compact");
+                card.set_margin_top(0);
+                card.set_margin_bottom(0);
             } else {
                 card.remove_css_class("is-compact");
+                card.set_margin_top(4);
+                card.set_margin_bottom(6);
+            }
+        }
+        if let Some(bar) = imp.modern_actions_bar.borrow().as_ref() {
+            if compact {
+                bar.set_margin_top(0);
+                bar.set_margin_bottom(0);
+            } else {
+                bar.set_margin_top(4);
+                bar.set_margin_bottom(6);
             }
         }
         if let Some(rev) = imp.classic_details_revealer.borrow().as_ref() {
@@ -8184,6 +8207,10 @@ impl MailPage {
 
     pub fn search_bar(&self) -> Option<gtk::SearchBar> {
         self.imp().mail_search_bar.borrow().clone()
+    }
+
+    pub fn view_options_split_button(&self) -> Option<adw::SplitButton> {
+        self.imp().view_options_split_btn.borrow().clone()
     }
 
     pub fn is_search_active(&self) -> bool {
@@ -16980,10 +17007,7 @@ impl MailPage {
         self.update_drawer_header_with_selection(selection, None);
     }
 
-    fn build_unified_mail_toolbar(
-        &self,
-        columns_button: &adw::SplitButton,
-    ) -> gtk::Box {
+    fn build_unified_mail_toolbar(&self) -> gtk::Box {
         let toolbar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(4)
@@ -17307,8 +17331,6 @@ impl MailPage {
             "win.undo",
         );
 
-        // 5. View Configuration: Columns Button
-        columns_button.set_valign(gtk::Align::Center);
 
         let sidebar_visible = AppSettings::try_new()
             .map(|settings| settings.mail_show_sidebar())
@@ -17443,16 +17465,7 @@ impl MailPage {
             .hexpand(true)
             .build();
 
-        let pinned_right_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(4)
-            .valign(gtk::Align::Center)
-            .halign(gtk::Align::End)
-            .build();
-        pinned_right_box.append(columns_button);
-
         toolbar.append(&actions_scroll);
-        toolbar.append(&pinned_right_box);
 
         self.imp().mail_reply_button.replace(Some(reply_btn.clone()));
         self.imp().mail_reply_all_button.replace(Some(reply_all_btn.clone()));
@@ -22289,9 +22302,7 @@ impl MailPage {
             }
         });
 
-        let unified_toolbar = self.build_unified_mail_toolbar(
-            &columns_button,
-        );
+        let unified_toolbar = self.build_unified_mail_toolbar();
         let unified_toolbar_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Never)
@@ -23903,7 +23914,7 @@ impl MailPage {
             .label("")
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(vec!["mail-details-recipient-label"])
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
             .single_line_mode(true)
@@ -23911,7 +23922,7 @@ impl MailPage {
 
         let modern_details_button = gtk::Button::builder()
             .tooltip_text(&gettext("Show detailed headers"))
-            .css_classes(vec!["flat", "caption", "dim-label", "mail-details-toggle"])
+            .css_classes(vec!["flat", "mail-details-toggle"])
             .valign(gtk::Align::Center)
             .halign(gtk::Align::Start)
             .child(&modern_recipient_summary)
@@ -32911,7 +32922,7 @@ mod tests {
         assert!(toolbar.contains("package-x-generic-symbolic"), "missing archive icon");
         assert!(toolbar.contains("folder-symbolic"), "missing move icon");
         assert!(toolbar.contains("edit-copy-symbolic"), "missing copy icon");
-        assert!(toolbar.contains("columns_button"), "missing columns button");
+        assert!(source.contains("view_options_split_button"), "missing view options split button method");
         assert!(!toolbar.contains("actions_box.append(&sidebar_toggle)"), "sidebar toggle should not be in unified mail toolbar");
         assert!(!toolbar.contains("pinned_right_box.append(&preview_toggle)"), "preview toggle should not be in unified mail toolbar");
         assert!(source.contains("sidebar-show-symbolic"), "missing sidebar toggle definition");
@@ -38335,6 +38346,9 @@ mod tests {
 
         // Recipient label is child of recipient details button (compact unified toggle)
         assert_eq!(recip_btn.child().as_ref(), Some(recip_lbl.upcast_ref::<gtk::Widget>()));
+        assert!(recip_lbl.has_css_class("mail-details-recipient-label"));
+        assert!(!recip_lbl.has_css_class("caption"));
+        assert!(!recip_lbl.has_css_class("dim-label"));
         assert!(recip_lbl.text().contains("an mich") || recip_lbl.text().contains("me@example.com"));
         assert!(recip_lbl.text().ends_with('▾'));
 
@@ -38350,6 +38364,13 @@ mod tests {
         // Clicking again collapses details and flips arrow back to ▾
         recip_btn.emit_clicked();
         assert!(!details_revealer.reveals_child(), "Clicking recipient button again must collapse details grid");
+
+        // When compact, margins are set to 0 to align with toolbar height
+        page.set_header_compact(true);
+        let header_card = page.imp().modern_header_card.borrow().clone().expect("header card");
+        assert!(header_card.has_css_class("is-compact"));
+        assert_eq!(header_card.margin_top(), 0);
+        assert_eq!(header_card.margin_bottom(), 0);
         assert!(recip_lbl.text().ends_with('▾'), "Arrow must flip back to ▾ when details are collapsed");
     }
 
@@ -38394,32 +38415,32 @@ mod tests {
             "an mich ▾"
         );
 
-        // 2. User recipient -> "an mich ▾" (or "▴" if expanded)
+        // 2. User recipient -> "an max.jensen1@gmail.com ▾" (or "▴" if expanded)
         assert_eq!(
             format_modern_recipient_summary("max.jensen1@gmail.com", "", &user_emails, false),
-            "an mich ▾"
+            "an max.jensen1@gmail.com ▾"
         );
         assert_eq!(
             format_modern_recipient_summary("max.jensen1@gmail.com", "", &user_emails, true),
-            "an mich ▴"
+            "an max.jensen1@gmail.com ▴"
         );
 
-        // 3. User with display name -> "an mich ▾"
+        // 3. User with display name -> "an max.jensen1@gmail.com ▾"
         assert_eq!(
             format_modern_recipient_summary("Martin <max.jensen1@gmail.com>", "", &user_emails, false),
-            "an mich ▾"
+            "an max.jensen1@gmail.com ▾"
         );
 
-        // 4. Multiple recipients including user -> "an mich, +1 ▾"
+        // 4. Multiple recipients including user -> "an max.jensen1@gmail.com, +1 ▾"
         assert_eq!(
             format_modern_recipient_summary("max.jensen1@gmail.com, colleague@example.com", "", &user_emails, false),
-            "an mich, +1 ▾"
+            "an max.jensen1@gmail.com, +1 ▾"
         );
 
-        // 5. Multiple recipients including user in CC -> "an mich, +1 ▾"
+        // 5. Multiple recipients including user in CC -> "an max.jensen1@gmail.com, +1 ▾"
         assert_eq!(
             format_modern_recipient_summary("colleague@example.com", "max.jensen1@gmail.com", &user_emails, false),
-            "an mich, +1 ▾"
+            "an max.jensen1@gmail.com, +1 ▾"
         );
 
         // 6. Third party single recipient -> "an Alice ▾"

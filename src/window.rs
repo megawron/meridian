@@ -61,6 +61,7 @@ mod imp {
         pub sidebar_close_button: RefCell<Option<gtk::Button>>,
         pub restore_sidebar_button: RefCell<Option<gtk::Button>>,
         pub right_sidebar_toggle: RefCell<Option<gtk::ToggleButton>>,
+        pub mail_view_options_button: RefCell<Option<adw::SplitButton>>,
         pub sidebar_visible: Cell<bool>,
         pub sidebar_animation: RefCell<Option<adw::TimedAnimation>>,
         pub search_button: RefCell<Option<gtk::ToggleButton>>,
@@ -1102,6 +1103,10 @@ impl EvolutionWindow {
 
     pub fn view_switcher_bar(&self) -> Option<adw::ViewSwitcherBar> {
         self.imp().view_switcher_bar.borrow().clone()
+    }
+
+    pub fn mail_view_options_button(&self) -> Option<adw::SplitButton> {
+        self.imp().mail_view_options_button.borrow().clone()
     }
 
     pub(crate) fn can_navigate_back(&self) -> bool {
@@ -3061,12 +3066,7 @@ impl EvolutionWindow {
         );
 
         let memos_bin = Self::lazy_module_bin(&crate::i18n::gettext("Memos"));
-        view_stack.add_titled_with_icon(
-            &memos_bin,
-            Some("memos"),
-            &crate::i18n::gettext("Memos"),
-            "accessories-text-editor-symbolic",
-        );
+        view_stack.add_named(&memos_bin, Some("memos"));
 
         let ensure_module_loaded: Rc<dyn Fn(&str)> = {
             let calendar_bin = calendar_bin.clone();
@@ -3575,6 +3575,21 @@ impl EvolutionWindow {
 
         header_bar.pack_end(&menu_button);
         header_bar.pack_end(&right_sidebar_toggle);
+        if let Some(view_btn) = mail_page.view_options_split_button() {
+            let is_initially_mail = view_stack.visible_child_name().as_deref() == Some("mail");
+            view_btn.set_visible(is_initially_mail);
+            header_bar.pack_end(&view_btn);
+            self.imp()
+                .mail_view_options_button
+                .replace(Some(view_btn.clone()));
+            let btn_weak = view_btn.downgrade();
+            view_stack.connect_visible_child_name_notify(move |stack| {
+                if let Some(btn) = btn_weak.upgrade() {
+                    let is_mail = stack.visible_child_name().as_deref() == Some("mail");
+                    btn.set_visible(is_mail);
+                }
+            });
+        }
 
         if let Some(settings) = AppSettings::try_new() {
             let win_weak_right_sync = self.downgrade();
@@ -8277,6 +8292,57 @@ mod tests {
             let child = today_btn.child().expect("child");
             assert!(child.downcast::<gtk::Label>().is_ok(), "Today button should use text in non-compact mode");
         }
+    }
+
+    #[test]
+    fn test_mail_view_options_in_header_bar_and_memos_omitted_from_switcher() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+        let original_active_view = window.active_view_name();
+
+        // 1. Mail view options button is present in window header_bar
+        let view_btn = window
+            .mail_view_options_button()
+            .expect("mail_view_options_button should be registered on window");
+
+        // Explicitly switch to mail to verify visibility
+        window.set_active_view("mail");
+        assert!(view_btn.property::<bool>("visible"), "View options button must be visible in mail view");
+
+        // 2. Switching to calendar hides the mail view options button
+        window.set_active_view("calendar");
+        assert!(!view_btn.property::<bool>("visible"), "View options button must be hidden when switching away from mail");
+
+        // 3. Switching back to mail reveals the button again
+        window.set_active_view("mail");
+        assert!(view_btn.property::<bool>("visible"), "View options button must be restored when returning to mail");
+
+        // Restore original active view
+        window.set_active_view(&original_active_view);
+
+        // 4. ViewSwitcher pages: memos is not a titled tab, leaving exactly 4 core tabs
+        let stack = window.imp().view_stack.borrow().clone().expect("view_stack");
+        let pages = stack.pages();
+        let mut titled_pages_count = 0;
+        let mut page_titles = Vec::new();
+        for i in 0..pages.n_items() {
+            if let Some(p) = pages.item(i).and_downcast::<adw::ViewStackPage>() {
+                if let Some(title) = p.title() {
+                    if !title.is_empty() {
+                        titled_pages_count += 1;
+                        page_titles.push(title.to_string());
+                    }
+                }
+            }
+        }
+        assert_eq!(titled_pages_count, 4, "ViewSwitcher must only have 4 tabs, but got: {:?}", page_titles);
+        assert!(!page_titles.iter().any(|t| t.to_lowercase().contains("memo")), "Memos must be omitted from ViewSwitcher");
     }
 }
 
