@@ -1193,6 +1193,7 @@ mod imp {
         pub mini_calendar: RefCell<Option<gtk::Calendar>>,
         pub is_mobile: Cell<bool>,
         pub is_tablet: Cell<bool>,
+        pub is_medium: Cell<bool>,
         pub(crate) drill_down_previous_view: Cell<Option<CalendarView>>,
         pub mini_calendar_2: RefCell<Option<gtk::Calendar>>,
         pub mini_calendar_3: RefCell<Option<gtk::Calendar>>,
@@ -1330,6 +1331,7 @@ mod imp {
                 mini_calendar: RefCell::new(None),
                 is_mobile: Cell::new(false),
                 is_tablet: Cell::new(false),
+                is_medium: Cell::new(false),
                 drill_down_previous_view: Cell::new(None),
                 mini_calendar_2: RefCell::new(None),
                 mini_calendar_3: RefCell::new(None),
@@ -1544,6 +1546,15 @@ impl CalendarPage {
         }
     }
 
+    pub(crate) fn set_medium_mode(&self, is_medium: bool) {
+        if self.imp().is_medium.get() == is_medium {
+            return;
+        }
+        self.imp().is_medium.set(is_medium);
+        self.sync_calendar_layout_visibility();
+        self.sync_toolbar_button_labels();
+    }
+
     pub(crate) fn apply_toolbar_button_modes(&self, is_compact: bool) {
         let imp = self.imp();
         if let Some(btn) = imp.btn_availability.borrow().as_ref() {
@@ -1571,7 +1582,10 @@ impl CalendarPage {
     }
 
     pub(crate) fn sync_toolbar_button_labels(&self) {
-        let is_compact = self.imp().is_mobile.get() || (self.width() > 0 && self.width() < 820);
+        let is_compact = self.imp().is_mobile.get()
+            || self.imp().is_tablet.get()
+            || self.imp().is_medium.get()
+            || (self.width() > 0 && self.width() < 900);
         self.apply_toolbar_button_modes(is_compact);
     }
 
@@ -1678,13 +1692,14 @@ impl CalendarPage {
         if let Some(toolbar) = imp.toolbar.borrow().as_ref() {
             toolbar.set_visible(true);
         }
+        let use_dropdown = is_mobile || is_tablet || imp.is_medium.get();
         if let Some(buttons) = imp.calendar_view_buttons.borrow().as_ref() {
             if let Some(parent) = buttons.first().and_then(|b| b.parent()) {
-                parent.set_visible(!is_mobile);
+                parent.set_visible(!use_dropdown);
             }
         }
         if let Some(dropdown) = imp.calendar_view_dropdown.borrow().as_ref() {
-            dropdown.set_visible(is_mobile);
+            dropdown.set_visible(use_dropdown);
         }
         if let Some(btn_avail) = imp.btn_availability.borrow().as_ref() {
             btn_avail.set_visible(!is_mobile);
@@ -3657,7 +3672,7 @@ impl CalendarPage {
             .build();
 
         let view_toolbar_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Never)
             .propagate_natural_width(false)
             .min_content_width(0)

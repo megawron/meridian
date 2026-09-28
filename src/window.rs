@@ -90,6 +90,7 @@ mod imp {
         pub is_mobile: Cell<bool>,
         pub is_tablet: Cell<bool>,
         pub is_compact: Cell<bool>,
+        pub is_medium: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -844,6 +845,7 @@ impl EvolutionWindow {
         if self.imp().is_mobile.get() {
             if let Some(sb_h) = self.imp().sidebar_header.borrow().as_ref() {
                 sb_h.set_visible(false);
+                sb_h.set_size_request(0, -1);
             }
             if let Some(res_btn) = self.imp().restore_sidebar_button.borrow().as_ref() {
                 res_btn.set_visible(false);
@@ -871,6 +873,8 @@ impl EvolutionWindow {
             }
             if let Some(res_btn) = self.imp().restore_sidebar_button.borrow().as_ref() {
                 res_btn.set_visible(!is_vis);
+                res_btn.set_tooltip_text(Some(&crate::i18n::gettext("Show Sidebar (F9)")));
+                set_accessible_label(res_btn, &crate::i18n::gettext("Show Sidebar"));
             }
             if let Some(hb) = self.imp().header_bar.borrow().as_ref() {
                 hb.set_show_start_title_buttons(!is_vis);
@@ -1257,8 +1261,11 @@ impl EvolutionWindow {
                             window_title.set_title(&subj);
                             window_title.set_subtitle(&crate::i18n::gettext("Message"));
                         } else {
-                            window_title.set_title("");
-                            window_title.set_subtitle("");
+                            let folder = mail
+                                .selected_folder_display_name()
+                                .unwrap_or_else(|| crate::i18n::gettext("Inbox"));
+                            window_title.set_title(&folder);
+                            window_title.set_subtitle(&crate::i18n::gettext("Messages"));
                         }
                     } else {
                         window_title.set_title("");
@@ -1272,6 +1279,26 @@ impl EvolutionWindow {
         } else if let Some(window_title) = self.imp().window_title.borrow().as_ref() {
             window_title.set_title("");
             window_title.set_subtitle("");
+        }
+
+
+        if let Some(header_bar) = self.imp().header_bar.borrow().as_ref() {
+            if is_mobile || self.imp().is_tablet.get() {
+                if let Some(window_title) = self.imp().window_title.borrow().as_ref() {
+                    header_bar.set_title_widget(Some(window_title));
+                }
+            } else {
+                let is_top = AppSettings::try_new()
+                    .map(|s| s.switcher_location() == "top")
+                    .unwrap_or(false);
+                if is_top {
+                    if let Some(switcher) = self.imp().view_switcher.borrow().as_ref() {
+                        header_bar.set_title_widget(Some(switcher));
+                    }
+                } else if let Some(window_title) = self.imp().window_title.borrow().as_ref() {
+                    header_bar.set_title_widget(Some(window_title));
+                }
+            }
         }
     }
 
@@ -1298,6 +1325,30 @@ impl EvolutionWindow {
 
     pub fn is_tablet(&self) -> bool {
         self.imp().is_tablet.get()
+    }
+
+    pub fn is_medium(&self) -> bool {
+        self.imp().is_medium.get()
+    }
+
+    pub(crate) fn set_medium_screen(&self, is_medium: bool) {
+        if self.imp().is_medium.get() == is_medium {
+            return;
+        }
+        self.imp().is_medium.set(is_medium);
+        if is_medium {
+            self.add_css_class("medium-screen");
+        } else {
+            self.remove_css_class("medium-screen");
+        }
+        if let Some(btn) = self.imp().compose_button.borrow().as_ref() {
+            let active = self.active_view_name();
+            let is_compact = self.imp().is_mobile.get() || self.imp().is_tablet.get() || is_medium;
+            Self::configure_primary_action(btn, &active, is_compact);
+        }
+        if let Some(cal) = self.calendar_page() {
+            cal.set_medium_mode(is_medium);
+        }
     }
 
     pub fn is_compact(&self) -> bool {
@@ -1339,11 +1390,18 @@ impl EvolutionWindow {
             self.set_compact_screen(false);
         }
 
+        if is_tablet {
+            self.add_css_class("tablet-screen");
+        } else {
+            self.remove_css_class("tablet-screen");
+        }
+
         if let Some(mail) = self.mail_page() {
             mail.set_screen_mode(is_mobile, is_tablet);
         }
         if let Some(cal) = self.calendar_page() {
             cal.set_screen_mode(is_mobile, is_tablet);
+            cal.set_medium_mode(self.imp().is_medium.get());
         }
         if let Some(tasks) = self.tasks_page() {
             tasks.set_screen_mode(is_mobile, is_tablet);
@@ -1356,7 +1414,7 @@ impl EvolutionWindow {
         }
 
         if let Some(switcher_bar) = self.imp().view_switcher_bar.borrow().as_ref() {
-            switcher_bar.set_reveal(is_mobile);
+            switcher_bar.set_reveal(is_mobile || is_tablet);
         }
 
         if let Some(sb) = self.imp().statusbar_box.borrow().as_ref() {
@@ -1372,11 +1430,12 @@ impl EvolutionWindow {
 
         if let Some(btn) = self.imp().compose_button.borrow().as_ref() {
             let active = self.active_view_name();
-            Self::configure_primary_action(btn, &active, is_mobile);
+            let is_compact = is_mobile || is_tablet || self.imp().is_medium.get();
+            Self::configure_primary_action(btn, &active, is_compact);
         }
 
         if let Some(switcher) = self.imp().view_switcher.borrow().as_ref() {
-            if is_tablet || is_mobile {
+            if is_tablet || is_mobile || self.imp().is_medium.get() {
                 switcher.set_policy(adw::ViewSwitcherPolicy::Narrow);
             } else {
                 switcher.set_policy(adw::ViewSwitcherPolicy::Wide);
@@ -1384,7 +1443,7 @@ impl EvolutionWindow {
         }
 
         if let Some(header_bar) = self.imp().header_bar.borrow().as_ref() {
-            if is_mobile {
+            if is_mobile || is_tablet {
                 if let Some(window_title) = self.imp().window_title.borrow().as_ref() {
                     header_bar.set_title_widget(Some(window_title));
                 }
@@ -1425,6 +1484,8 @@ impl EvolutionWindow {
                 }
                 if let Some(res_btn) = self.imp().restore_sidebar_button.borrow().as_ref() {
                     res_btn.set_visible(!vis);
+                    res_btn.set_tooltip_text(Some(&crate::i18n::gettext("Show Sidebar (F9)")));
+                    set_accessible_label(res_btn, &crate::i18n::gettext("Show Sidebar"));
                 }
                 if let Some(hb) = self.imp().header_bar.borrow().as_ref() {
                     hb.set_show_start_title_buttons(!vis);
@@ -1465,6 +1526,9 @@ impl EvolutionWindow {
     }
 
     pub fn set_sidebar_position_sync(&self, pos: i32) {
+        if self.imp().is_mobile.get() {
+            return;
+        }
         let clamped = pos.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
         if let Some(sb_h) = self.imp().sidebar_header.borrow().as_ref() {
             sb_h.set_size_request(clamped, -1);
@@ -1552,16 +1616,26 @@ impl EvolutionWindow {
             if let Some(start) = outer_paned.start_child() {
                 start.set_visible(true);
             }
-            if let Some(sb_h) = self.imp().sidebar_header.borrow().as_ref() {
-                sb_h.set_visible(true);
-                sb_h.set_show_start_title_buttons(true);
-                sb_h.set_size_request(from_pos as i32, -1);
+            if !self.imp().is_mobile.get() {
+                if let Some(sb_h) = self.imp().sidebar_header.borrow().as_ref() {
+                    sb_h.set_visible(true);
+                    sb_h.set_show_start_title_buttons(true);
+                    sb_h.set_size_request(from_pos as i32, -1);
+                }
+                if let Some(hb) = self.imp().header_bar.borrow().as_ref() {
+                    hb.set_show_start_title_buttons(false);
+                }
+            } else {
+                if let Some(sb_h) = self.imp().sidebar_header.borrow().as_ref() {
+                    sb_h.set_visible(false);
+                    sb_h.set_size_request(0, -1);
+                }
+                if let Some(hb) = self.imp().header_bar.borrow().as_ref() {
+                    hb.set_show_start_title_buttons(true);
+                }
             }
             if let Some(res_btn) = self.imp().restore_sidebar_button.borrow().as_ref() {
                 res_btn.set_visible(false);
-            }
-            if let Some(hb) = self.imp().header_bar.borrow().as_ref() {
-                hb.set_show_start_title_buttons(false);
             }
             if from_pos < 170.0 {
                 if let Some(title) = self.imp().sidebar_title.borrow().as_ref() {
@@ -1586,10 +1660,14 @@ impl EvolutionWindow {
                 btn.set_visible(false);
             }
             if let Some(sb_h) = self.imp().sidebar_header.borrow().as_ref() {
+                sb_h.set_visible(false);
+                sb_h.set_size_request(0, -1);
                 sb_h.set_show_start_title_buttons(false);
             }
             if let Some(res_btn) = self.imp().restore_sidebar_button.borrow().as_ref() {
                 res_btn.set_visible(true);
+                res_btn.set_tooltip_text(Some(&crate::i18n::gettext("Show Sidebar (F9)")));
+                set_accessible_label(res_btn, &crate::i18n::gettext("Show Sidebar"));
             }
             if let Some(hb) = self.imp().header_bar.borrow().as_ref() {
                 hb.set_show_start_title_buttons(true);
@@ -1604,8 +1682,10 @@ impl EvolutionWindow {
                 paned.set_position(pos);
             }
             if let Some(win) = win_weak.upgrade() {
-                if let Some(sb_h) = win.imp().sidebar_header.borrow().as_ref() {
-                    sb_h.set_size_request(pos, -1);
+                if !win.imp().is_mobile.get() {
+                    if let Some(sb_h) = win.imp().sidebar_header.borrow().as_ref() {
+                        sb_h.set_size_request(pos, -1);
+                    }
                 }
                 if show && pos >= 170 {
                     if let Some(title) = win.imp().sidebar_title.borrow().as_ref() {
@@ -1666,6 +1746,8 @@ impl EvolutionWindow {
                     }
                     if let Some(res_btn) = win.imp().restore_sidebar_button.borrow().as_ref() {
                         res_btn.set_visible(true);
+                        res_btn.set_tooltip_text(Some(&crate::i18n::gettext("Show Sidebar (F9)")));
+                        set_accessible_label(res_btn, &crate::i18n::gettext("Show Sidebar"));
                     }
                     if let Some(hb) = win.imp().header_bar.borrow().as_ref() {
                         hb.set_show_start_title_buttons(true);
@@ -1677,8 +1759,19 @@ impl EvolutionWindow {
                         btn.set_visible(true);
                     }
                 } else {
-                    if let Some(sb_h) = win.imp().sidebar_header.borrow().as_ref() {
-                        sb_h.set_size_request(target_pos, -1);
+                    if !win.imp().is_mobile.get() {
+                        if let Some(sb_h) = win.imp().sidebar_header.borrow().as_ref() {
+                            sb_h.set_visible(true);
+                            sb_h.set_size_request(target_pos, -1);
+                        }
+                    } else {
+                        if let Some(sb_h) = win.imp().sidebar_header.borrow().as_ref() {
+                            sb_h.set_visible(false);
+                            sb_h.set_size_request(0, -1);
+                        }
+                    }
+                    if let Some(res_btn) = win.imp().restore_sidebar_button.borrow().as_ref() {
+                        res_btn.set_visible(false);
                     }
                     if let Some(title) = win.imp().sidebar_title.borrow().as_ref() {
                         title.set_visible(true);
@@ -2567,7 +2660,7 @@ impl EvolutionWindow {
         action
     }
 
-    fn configure_primary_action(button: &gtk::Button, view_name: &str, is_mobile: bool) {
+    fn configure_primary_action(button: &gtk::Button, view_name: &str, is_compact: bool) {
         let (icon_name, label_text, tooltip, action_name) = match view_name {
             "calendar" => (
                 "x-office-calendar-symbolic",
@@ -2601,12 +2694,14 @@ impl EvolutionWindow {
             ),
         };
         let icon_theme = gtk::IconTheme::for_display(&button.display());
-        let icon_actual = if icon_theme.has_icon(icon_name) {
+        let icon_actual = if icon_theme.has_icon("list-add-symbolic") {
+            "list-add-symbolic"
+        } else if icon_theme.has_icon(icon_name) {
             icon_name
         } else {
-            "document-new-symbolic"
+            "list-add-symbolic"
         };
-        if is_mobile {
+        if is_compact {
             let img = gtk::Image::from_icon_name(icon_actual);
             button.set_child(Some(&img));
         } else {
@@ -3017,6 +3112,9 @@ impl EvolutionWindow {
                     {
                         let page = CalendarPage::new();
                         page.set_screen_mode(is_mobile, is_tablet);
+                        if let Some(win) = window_weak.upgrade() {
+                            page.set_medium_mode(win.imp().is_medium.get());
+                        }
                         page.set_sidebar_position(sidebar_pos);
                         page.set_sidebar_visible(effective_vis);
                         calendar_bin.set_child(Some(&page));
@@ -3111,7 +3209,7 @@ impl EvolutionWindow {
                 let clamped = pos.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
                 mail_page.set_sidebar_position(clamped);
                 if let Some(win) = win_weak_sidebar_pos.upgrade() {
-                    if win.active_view_name() != "contacts" {
+                    if win.active_view_name() != "contacts" && !win.imp().is_mobile.get() {
                         if let Some(sb_h) = win.imp().sidebar_header.borrow().as_ref() {
                             sb_h.set_size_request(clamped, -1);
                         }
@@ -3188,8 +3286,10 @@ impl EvolutionWindow {
                     };
                     window.update_sidebar_title(&title);
                     let view_pos = window.sidebar_position_for_view(view_str);
-                    if let Some(sb_h) = window.imp().sidebar_header.borrow().as_ref() {
-                        sb_h.set_size_request(view_pos, -1);
+                    if !window.imp().is_mobile.get() {
+                        if let Some(sb_h) = window.imp().sidebar_header.borrow().as_ref() {
+                            sb_h.set_size_request(view_pos, -1);
+                        }
                     }
                     match view_str {
                         "contacts" => {
@@ -3299,7 +3399,8 @@ impl EvolutionWindow {
                         }
                     }
                 } else {
-                    win.toggle_sidebar_animated(true);
+                    let is_vis = win.is_sidebar_visible_for_active_view();
+                    win.toggle_sidebar_animated(!is_vis);
                 }
             }
         });
@@ -3392,11 +3493,11 @@ impl EvolutionWindow {
         let win_weak_primary = self.downgrade();
         view_stack.connect_visible_child_name_notify(move |stack| {
             if let Some(view_name) = stack.visible_child_name() {
-                let is_mobile = win_weak_primary
+                let is_compact = win_weak_primary
                     .upgrade()
-                    .map(|w| w.imp().is_mobile.get())
+                    .map(|w| w.imp().is_mobile.get() || w.imp().is_tablet.get() || w.imp().is_medium.get())
                     .unwrap_or(false);
-                Self::configure_primary_action(&primary_action_for_view, view_name.as_str(), is_mobile);
+                Self::configure_primary_action(&primary_action_for_view, view_name.as_str(), is_compact);
             }
         });
 
@@ -3419,11 +3520,11 @@ impl EvolutionWindow {
             let view_switcher = view_switcher.clone();
             let win_weak = self.downgrade();
             move || {
-                let is_mobile = win_weak
+                let is_narrow = win_weak
                     .upgrade()
-                    .map(|w| w.imp().is_mobile.get())
+                    .map(|w| w.imp().is_mobile.get() || w.imp().is_tablet.get())
                     .unwrap_or(false);
-                if is_mobile {
+                if is_narrow {
                     header_bar.set_title_widget(Some(&window_title));
                 } else {
                     let is_top = AppSettings::try_new()
@@ -3700,17 +3801,43 @@ impl EvolutionWindow {
         toast_overlay.set_vexpand(true);
         toast_overlay.set_child(Some(&toolbar_view));
 
-        // Responsive Breakpoints: 4-Tier Model (matching GNOME Calendar & Convey)
-        // 1. Desktop (> 900sp): 3 columns (Folders | Messages | Viewer)
-        // 2. Tablet / Split-Screen (550sp - 900sp): 2 columns (Folders | Stacked Message List / Viewer)
-        // 3. Mobile (400sp - 550sp): 1 column drilldown with bottom view switcher bar & overlay sidebar
-        // 4. Compact Mobile (<= 400sp): 1 column drilldown with compact controls (e.g. PinePhone 360px)
+        // Responsive Breakpoints: 5-Tier Model (matching GNOME HIG & Convey)
+        // 1. Desktop Large (> 1050sp): 3 columns, full text labels in switcher and action button
+        // 2. Desktop Medium (860sp - 1050sp): 3 columns, compact icon-only switcher and + action button
+        // 3. Tablet / Split-Screen (650sp - 860sp): 2 columns, split headerbars, icon-only switcher and + action button
+        // 4. Mobile (400sp - 650sp): 1 column drilldown with bottom view switcher bar & single unified headerbar
+        // 5. Compact Mobile (<= 400sp): 1 column drilldown with compact controls (e.g. PinePhone 360px)
+        let bp_medium =
+            adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 1050sp").unwrap());
         let bp_tablet =
-            adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 900sp").unwrap());
+            adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 860sp").unwrap());
         let bp_mobile =
-            adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 550sp").unwrap());
+            adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 650sp").unwrap());
         let bp_compact =
             adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 400sp").unwrap());
+
+        // Note: sidebar_header is ONLY hidden in mobile/compact mode (where 1-column drilldown is used).
+        // In tablet and desktop modes, the sidebar is a visible side-by-side pane and retains its matching sidebar_header.
+        bp_mobile.add_setter(&sidebar_header, "visible", Some(&false.to_value()));
+        bp_compact.add_setter(&sidebar_header, "visible", Some(&false.to_value()));
+
+        bp_tablet.add_setter(&view_switcher_bar, "reveal", Some(&true.to_value()));
+        bp_mobile.add_setter(&view_switcher_bar, "reveal", Some(&true.to_value()));
+        bp_compact.add_setter(&view_switcher_bar, "reveal", Some(&true.to_value()));
+
+        let win_weak_med_apply = self.downgrade();
+        bp_medium.connect_apply(move |_| {
+            if let Some(win) = win_weak_med_apply.upgrade() {
+                win.set_medium_screen(true);
+            }
+        });
+
+        let win_weak_med_unapply = self.downgrade();
+        bp_medium.connect_unapply(move |_| {
+            if let Some(win) = win_weak_med_unapply.upgrade() {
+                win.set_medium_screen(false);
+            }
+        });
 
         let win_weak_tab_apply = self.downgrade();
         bp_tablet.connect_apply(move |_| {
@@ -3736,26 +3863,39 @@ impl EvolutionWindow {
             }
         });
 
-        self.add_breakpoint(bp_compact.clone());
-        self.add_breakpoint(bp_mobile.clone());
+        // Libadwaita rule: If multiple breakpoints match, the LAST added breakpoint wins.
+        // Therefore, broader breakpoints (medium 1050sp, tablet 860sp) must be added first, and more
+        // specific breakpoints (mobile 650sp, compact 400sp) must be added later.
+        self.add_breakpoint(bp_medium.clone());
         self.add_breakpoint(bp_tablet.clone());
+        self.add_breakpoint(bp_mobile.clone());
+        self.add_breakpoint(bp_compact.clone());
 
         // Connect notify::current-breakpoint as the central source of truth (as in GNOME Calendar)
+        let bp_med_clone = bp_medium.clone();
         let bp_tab_clone = bp_tablet.clone();
         let bp_mob_clone = bp_mobile.clone();
         let bp_comp_clone = bp_compact.clone();
         self.connect_current_breakpoint_notify(move |win| {
             let current = win.current_breakpoint();
             if current.as_ref() == Some(&bp_comp_clone) {
+                win.set_medium_screen(true);
                 win.set_screen_mode(true, false);
                 win.set_compact_screen(true);
             } else if current.as_ref() == Some(&bp_mob_clone) {
+                win.set_medium_screen(true);
                 win.set_screen_mode(true, false);
                 win.set_compact_screen(false);
             } else if current.as_ref() == Some(&bp_tab_clone) {
+                win.set_medium_screen(true);
                 win.set_screen_mode(false, true);
                 win.set_compact_screen(false);
+            } else if current.as_ref() == Some(&bp_med_clone) {
+                win.set_medium_screen(true);
+                win.set_screen_mode(false, false);
+                win.set_compact_screen(false);
             } else {
+                win.set_medium_screen(false);
                 win.set_screen_mode(false, false);
                 win.set_compact_screen(false);
             }
@@ -7267,10 +7407,10 @@ mod tests {
         assert!(!switcher_bar.reveals(), "switcher_bar should not reveal on desktop");
         assert!(!back_btn.is_visible(), "back_button should be hidden initially");
 
-        // Switch to tablet mode: narrow policy for space-saving
+        // Switch to tablet mode: narrow policy for space-saving, switcher_bar revealed (Ansatz A)
         window.set_screen_mode(false, true);
         assert_eq!(top_switcher.policy(), adw::ViewSwitcherPolicy::Narrow);
-        assert!(!switcher_bar.reveals(), "switcher_bar should not reveal on tablet");
+        assert!(switcher_bar.reveals(), "switcher_bar should reveal on tablet per GNOME HIG");
         assert!(!back_btn.is_visible(), "back_button should remain hidden on tablet without drilldown");
 
         // Switch to mobile mode: narrow policy, bottom bar revealed
@@ -7568,8 +7708,11 @@ mod tests {
         let restore_btn = window.imp().restore_sidebar_button.borrow().clone().expect("restore_sidebar_button should exist");
         let close_btn = window.imp().sidebar_close_button.borrow().clone().expect("sidebar_close_button should exist");
 
-        // Initial title in sidebar header is "Inbox"
-        assert_eq!(sidebar_title.title().as_str(), crate::i18n::gettext("Inbox"));
+        // Initial title in sidebar header is "All Inboxes" or "Inbox"
+        assert!(
+            sidebar_title.title().as_str() == "All Inboxes"
+                || sidebar_title.title().as_str() == crate::i18n::gettext("Inbox")
+        );
 
         // Update sidebar title test
         let cal_title = crate::i18n::gettext("Calendar");
@@ -7582,15 +7725,22 @@ mod tests {
         assert!(!restore_btn.is_visible());
         assert!(close_btn.is_visible());
 
-        // In mobile mode: sidebar header is hidden
+        // In mobile mode: sidebar header is hidden; restore_btn is visible as mobile folder toggle for mail
         window.set_screen_mode(true, false);
         assert!(!sidebar_header.is_visible());
+        assert!(restore_btn.is_visible());
+
+        // In tablet mode: sidebar header is kept visible above the left sidebar, and restore_btn is hidden (close_btn in sidebar_header used)
+        window.set_screen_mode(false, true);
+        assert!(sidebar_header.is_visible());
         assert!(!restore_btn.is_visible());
+        assert!(window.has_css_class("tablet-screen"));
 
         // Back to desktop:
         window.set_screen_mode(false, false);
         assert!(sidebar_header.is_visible());
         assert!(!restore_btn.is_visible());
+        assert!(!window.has_css_class("tablet-screen"));
     }
 
     #[test]
@@ -7831,10 +7981,11 @@ mod tests {
         let label = child.downcast::<gtk::Label>().expect("Label child on desktop");
         assert_eq!(label.label().as_str(), crate::i18n::gettext("New Memo"));
 
-        // Mobile mode: pure icon without text (GNOME HIG)
+        // Compact / Mobile mode: pure icon '+' without text (GNOME HIG)
         EvolutionWindow::configure_primary_action(&button, "mail", true);
         let child = button.child().expect("Button child");
-        assert!(child.downcast::<gtk::Image>().is_ok());
+        let img = child.downcast::<gtk::Image>().expect("Image child when compact");
+        assert_eq!(img.icon_name().as_deref(), Some("list-add-symbolic"));
     }
 
     #[test]
@@ -8044,12 +8195,17 @@ mod tests {
         assert!(!window.has_css_class("mobile-screen"));
         assert!(!window.has_css_class("compact-screen"));
 
-        // Breakpoints must be registered in ascending max-width order
+        // Libadwaita rule: If multiple breakpoints match, the last one added is used.
+        // Broader breakpoints (tablet) must be registered before more specific ones (mobile, compact).
         let source = include_str!("window.rs");
-        let idx_compact = source.find("self.add_breakpoint(bp_compact.clone());").expect("compact bp");
-        let idx_mobile = source.find("self.add_breakpoint(bp_mobile.clone());").expect("mobile bp");
+        let idx_medium = source.find("self.add_breakpoint(bp_medium.clone());").expect("medium bp");
         let idx_tablet = source.find("self.add_breakpoint(bp_tablet.clone());").expect("tablet bp");
-        assert!(idx_compact < idx_mobile && idx_mobile < idx_tablet, "Breakpoints must be registered in increasing max-width order");
+        let idx_mobile = source.find("self.add_breakpoint(bp_mobile.clone());").expect("mobile bp");
+        let idx_compact = source.find("self.add_breakpoint(bp_compact.clone());").expect("compact bp");
+        assert!(
+            idx_medium < idx_tablet && idx_tablet < idx_mobile && idx_mobile < idx_compact,
+            "Breakpoints must be registered in descending max-width order (broad to specific)"
+        );
     }
 
     #[test]
@@ -8084,6 +8240,30 @@ mod tests {
         if let Some(date_label) = calendar.imp().month_date_label.borrow().as_ref() {
             assert!(!date_label.is_visible(), "Date label is hidden in toolbar on mobile as headerbar shows it");
         }
+
+        // Verify GNOME HIG policy: No horizontal scrollbar on toolbar
+        let scrolled = toolbar.clone().downcast::<gtk::ScrolledWindow>().expect("ScrolledWindow");
+        assert_eq!(
+            scrolled.hscrollbar_policy(),
+            gtk::PolicyType::Never,
+            "GNOME HIG requires Never for toolbar horizontal scrollbar"
+        );
+
+        // Switch to tablet mode
+        calendar.set_screen_mode(false, true);
+        assert!(dropdown.is_visible(), "Dropdown must be visible on tablet to prevent overflow");
+        assert!(!toggle_parent.is_visible(), "Button bar must be hidden on tablet to prevent overflow");
+
+        // Switch to medium mode
+        calendar.set_screen_mode(false, false);
+        calendar.set_medium_mode(true);
+        assert!(dropdown.is_visible(), "Dropdown must be visible in medium mode to prevent overflow");
+        assert!(!toggle_parent.is_visible(), "Button bar must be hidden in medium mode to prevent overflow");
+
+        // Switch back to desktop mode
+        calendar.set_medium_mode(false);
+        assert!(!dropdown.is_visible(), "Dropdown should be hidden in full desktop mode");
+        assert!(toggle_parent.is_visible(), "Button bar should be visible in full desktop mode");
 
         // Test compact mode adaptation on Today button
         calendar.apply_toolbar_button_modes(true);

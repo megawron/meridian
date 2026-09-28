@@ -1359,6 +1359,169 @@ fn format_message_date(value: &str) -> String {
     parsed.format(pattern).to_string()
 }
 
+fn format_preview_header_date(value: &str) -> String {
+    format_preview_header_date_with_now(value, chrono::Local::now().date_naive())
+}
+
+fn format_preview_header_date_with_now(value: &str, now_date: chrono::NaiveDate) -> String {
+    let Some(parsed) = parse_flexible_datetime(value) else {
+        return value.to_string();
+    };
+    let settings = AppSettings::try_new();
+    let time_format = settings
+        .as_ref()
+        .map(|s| s.time_format())
+        .unwrap_or_else(|| "24h".to_string());
+    let time_pattern = if time_format == "12h" { "%I:%M %p" } else { "%H:%M" };
+
+    let local_dt = parsed.with_timezone(&chrono::Local);
+    let msg_date = local_dt.date_naive();
+    let days_diff = (now_date - msg_date).num_days();
+
+    if msg_date == now_date {
+        local_dt.format(time_pattern).to_string()
+    } else if days_diff == 1 {
+        format!("{}, {}", crate::i18n::gettext("Yesterday"), local_dt.format(time_pattern))
+    } else if days_diff > 1 && days_diff < 7 {
+        format!("{}, {}", format_weekday_short(msg_date), local_dt.format(time_pattern))
+    } else if now_date.year() == msg_date.year() {
+        let month_name = format_month_short(msg_date.month());
+        format!("{}. {}", msg_date.day(), month_name)
+    } else {
+        msg_date.format("%d.%m.%Y").to_string()
+    }
+}
+
+fn parse_email_recipients(raw: &str) -> Vec<(String, String)> {
+    if raw.trim().is_empty() {
+        return Vec::new();
+    }
+    let mut recipients = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut in_angle = false;
+
+    for c in raw.chars() {
+        match c {
+            '"' => {
+                in_quotes = !in_quotes;
+                current.push(c);
+            }
+            '<' => {
+                in_angle = true;
+                current.push(c);
+            }
+            '>' => {
+                in_angle = false;
+                current.push(c);
+            }
+            ',' if !in_quotes && !in_angle => {
+                let trimmed = current.trim();
+                if !trimmed.is_empty() {
+                    recipients.push(parse_single_address(trimmed));
+                }
+                current.clear();
+            }
+            _ => {
+                current.push(c);
+            }
+        }
+    }
+    let trimmed = current.trim();
+    if !trimmed.is_empty() {
+        recipients.push(parse_single_address(trimmed));
+    }
+    recipients
+}
+
+fn parse_single_address(item: &str) -> (String, String) {
+    if let Some(start) = item.rfind('<') {
+        if let Some(end_offset) = item[start..].find('>') {
+            let end = start + end_offset;
+            let email = item[start + 1..end].trim().to_lowercase();
+            let name = item[..start].trim().trim_matches('"').trim().to_string();
+            return (if name.is_empty() { email.clone() } else { name }, email);
+        }
+    }
+    let email = item.trim().trim_matches('"').trim().to_lowercase();
+    (email.clone(), email)
+}
+
+fn extract_emails_from_text(text: &str) -> Vec<String> {
+    let mut emails = Vec::new();
+    for token in text.split(|c: char| {
+        c.is_whitespace()
+            || c == ','
+            || c == ';'
+            || c == '('
+            || c == ')'
+            || c == '<'
+            || c == '>'
+            || c == '"'
+            || c == '\''
+            || c == '['
+            || c == ']'
+    }) {
+        let trimmed = token.trim();
+        if trimmed.contains('@') && !trimmed.starts_with('@') && !trimmed.ends_with('@') {
+            let email = trimmed.to_lowercase();
+            if !emails.contains(&email) {
+                emails.push(email);
+            }
+        }
+    }
+    emails
+}
+
+fn format_modern_recipient_summary(
+    recipient_to: &str,
+    recipient_cc: &str,
+    user_emails: &[String],
+    expanded: bool,
+) -> String {
+    let to_list = parse_email_recipients(recipient_to);
+    let cc_list = parse_email_recipients(recipient_cc);
+    let total_count = to_list.len() + cc_list.len();
+
+    let arrow = if expanded { "▴" } else { "▾" };
+
+    if total_count == 0 {
+        return format!("an mich {arrow}");
+    }
+
+    let is_user_email = |email: &str| -> bool {
+        let lower = email.to_lowercase();
+        if lower == "me@example.com" {
+            return true;
+        }
+        user_emails.iter().any(|u| u.trim().to_lowercase() == lower)
+    };
+
+    let user_in_recipients = to_list.iter().any(|(_, email)| is_user_email(email))
+        || cc_list.iter().any(|(_, email)| is_user_email(email));
+
+    let summary = if user_in_recipients {
+        if total_count == 1 {
+            "an mich".to_string()
+        } else {
+            format!("an mich, +{}", total_count - 1)
+        }
+    } else {
+        let first_name = to_list
+            .first()
+            .or_else(|| cc_list.first())
+            .map(|(name, _)| name.as_str())
+            .unwrap_or("mich");
+        if total_count == 1 {
+            format!("an {first_name}")
+        } else {
+            format!("an {first_name}, +{}", total_count - 1)
+        }
+    };
+
+    format!("{summary} {arrow}")
+}
+
 fn format_mail_list_date(value: &str) -> String {
     let settings = AppSettings::try_new();
     let date_format = settings
@@ -2922,23 +3085,6 @@ pub(crate) fn draw_mail_table_canvas(
                     draw_cairo_reply_badge(cr, avatar_cx + 10.0, avatar_cy + 10.0, is_dark);
                 }
 
-                if let Some((ar, ag, ab)) = row.account_color {
-                    let pip_cx = avatar_cx + 12.0;
-                    let pip_cy = avatar_cy + 12.0;
-                    let pip_r = 4.0;
-                    cr.set_source_rgb(ar, ag, ab);
-                    cr.arc(pip_cx, pip_cy, pip_r, 0.0, std::f64::consts::TAU);
-                    let _ = cr.fill();
-
-                    if is_dark {
-                        cr.set_source_rgb(0.12, 0.12, 0.12);
-                    } else {
-                        cr.set_source_rgb(1.0, 1.0, 1.0);
-                    }
-                    cr.set_line_width(1.2);
-                    cr.arc(pip_cx, pip_cy, pip_r, 0.0, std::f64::consts::TAU);
-                    let _ = cr.stroke();
-                }
             }
 
             // 3. Text Block
@@ -3124,30 +3270,13 @@ pub(crate) fn draw_mail_table_canvas(
                 (av_r * 1.05).max(7.0),
                 is_dark,
             );
-            if let Some((ar, ag, ab)) = row.account_color {
-                let pip_cx = av_cx + av_r * 0.7;
-                let pip_cy = av_cy + av_r * 0.7;
-                cr.set_source_rgb(ar, ag, ab);
-                cr.arc(pip_cx, pip_cy, 2.5, 0.0, std::f64::consts::TAU);
-                let _ = cr.fill();
-            }
         }
 
         // 4. Sender Column
         if layout.show_sender && layout.col_sender_w() > 0.0 {
             let sender_x = layout.col_sender_x();
             let sender_w = layout.col_sender_w();
-            let (text_start, avail_sender_w) = if (!layout.show_avatar || layout.col_avatar_w() == 0.0) && row.account_color.is_some() {
-                let dot_x = sender_x + 6.0;
-                let dot_y = y + h / 2.0;
-                let (ar, ag, ab) = row.account_color.unwrap();
-                cr.set_source_rgb(ar, ag, ab);
-                cr.arc(dot_x, dot_y, 3.0, 0.0, std::f64::consts::TAU);
-                let _ = cr.fill();
-                (sender_x + 14.0, (sender_w - 20.0).max(0.0))
-            } else {
-                (sender_x + 6.0, (sender_w - 12.0).max(0.0))
-            };
+            let (text_start, avail_sender_w) = (sender_x + 6.0, (sender_w - 12.0).max(0.0));
             if avail_sender_w > 4.0 {
                 cr.set_source_rgb(r, g, b);
                 let desc = if row.is_unread { &primary_desc_bold } else { &primary_desc_normal };
@@ -5792,7 +5921,12 @@ mod imp {
         pub modern_details_button: RefCell<Option<gtk::Button>>,
         pub modern_date_label: RefCell<Option<gtk::Label>>,
         pub modern_star_button: RefCell<Option<gtk::Button>>,
+        pub modern_actions_bar: RefCell<Option<gtk::Box>>,
         pub modern_actions_group: RefCell<Option<gtk::Box>>,
+        pub modern_reply_all_button: RefCell<Option<gtk::Button>>,
+        pub modern_forward_button: RefCell<Option<gtk::Button>>,
+        pub modern_delete_button: RefCell<Option<gtk::Button>>,
+        pub modern_actions_sep: RefCell<Option<gtk::Separator>>,
         pub sender_avatar_cache: RefCell<HashMap<String, Option<gtk::gdk::Texture>>>,
         pub sender_surface_cache: RefCell<HashMap<String, Option<gtk::cairo::ImageSurface>>>,
         pub mail_subject_label: RefCell<Option<gtk::Label>>,
@@ -5862,6 +5996,7 @@ mod imp {
         pub mail_important_button: RefCell<Option<gtk::Button>>,
         pub mail_undo_button: RefCell<Option<gtk::Button>>,
         pub mail_source_button: RefCell<Option<gtk::Button>>,
+        pub mail_secondary_actions_box: RefCell<Option<gtk::Box>>,
         pub mail_status_group: RefCell<Option<gtk::Box>>,
         pub mail_status_separator: RefCell<Option<gtk::Separator>>,
         pub message_state: RefCell<Option<gtk::Label>>,
@@ -6184,6 +6319,11 @@ mod imp {
         fn realize(&self) {
             self.parent_realize();
         }
+
+        fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
+            self.parent_size_allocate(width, height, baseline);
+            self.obj().sync_preview_actions_labels();
+        }
     }
 }
 
@@ -6212,7 +6352,36 @@ impl MailPage {
             return emails;
         }
         let profiles = AccountConfigStore::default().load();
-        let emails: Vec<String> = profiles.into_iter().map(|p| p.email).collect();
+        let mut emails: Vec<String> = profiles
+            .into_iter()
+            .map(|p| p.email.trim().to_lowercase())
+            .filter(|e| !e.is_empty())
+            .collect();
+
+        if let Some(source_store) = self
+            .imp()
+            .source_selection
+            .borrow()
+            .as_ref()
+            .and_then(|s| s.model())
+            .and_downcast::<gio::ListStore>()
+        {
+            for i in 0..source_store.n_items() {
+                if let Some(source_obj) = source_store.item(i).and_downcast::<EdsSourceObject>() {
+                    for email in extract_emails_from_text(&source_obj.display_name()) {
+                        if !emails.contains(&email) {
+                            emails.push(email);
+                        }
+                    }
+                    for email in extract_emails_from_text(&source_obj.uid()) {
+                        if !emails.contains(&email) {
+                            emails.push(email);
+                        }
+                    }
+                }
+            }
+        }
+
         self.imp().cached_account_emails.replace(Some(emails.clone()));
         emails
     }
@@ -6260,6 +6429,13 @@ impl MailPage {
             if imp.outer_paned.position() < 180 {
                 imp.outer_paned.set_position(saved_sb_pos);
             }
+            let saved_prev_pos = AppSettings::try_new()
+                .map(|s| s.mail_preview_position(imp.mail_layout.get().setting_value()))
+                .unwrap_or(350)
+                .clamp(180, 1600);
+            if imp.inner_paned.position() < 180 {
+                imp.inner_paned.set_position(saved_prev_pos);
+            }
         }
         if was_mobile != is_mobile {
             imp.mail_table_layout.replace(None);
@@ -6290,6 +6466,45 @@ impl MailPage {
         };
         for label in imp.preview_reply_labels.borrow().iter() {
             label.set_visible(show_labels);
+        }
+
+        // Modern Header responsive actions:
+        let preview_width = if imp.drill_down_level.get() == MailDrillDownLevel::Viewer
+            || !imp.inner_paned.start_child().map(|w| w.is_visible()).unwrap_or(true)
+            || imp.mail_layout.get() == MailLayout::Horizontal
+        {
+            let w = imp.inner_paned.width();
+            if w > 0 { w } else { self.width() }
+        } else {
+            let w = imp.inner_paned.width();
+            if w > 0 {
+                w.saturating_sub(imp.inner_paned.position())
+            } else {
+                self.width().saturating_sub(350)
+            }
+        };
+
+        let show_extra_actions = preview_width >= 520 || preview_width <= 0;
+        let show_sep = preview_width >= 340 || preview_width <= 0;
+        let show_triage = preview_width >= 360 || preview_width <= 0;
+        let show_date = preview_width >= 260 || preview_width <= 0;
+
+        if let Some(btn) = imp.modern_reply_all_button.borrow().as_ref() {
+            btn.set_visible(show_extra_actions);
+        }
+        if let Some(btn) = imp.modern_forward_button.borrow().as_ref() {
+            btn.set_visible(show_extra_actions);
+        }
+        if let Some(sep) = imp.modern_actions_sep.borrow().as_ref() {
+            sep.set_visible(show_sep);
+        }
+        if let Some(btn) = imp.modern_delete_button.borrow().as_ref() {
+            btn.set_visible(show_triage);
+        }
+        if let Some(rev) = imp.modern_date_revealer.borrow().as_ref() {
+            if !imp.is_compact_header.get() {
+                rev.set_visible(show_date);
+            }
         }
     }
 
@@ -6375,9 +6590,23 @@ impl MailPage {
                 }
             }
         }
+
+        if let Some(sec) = imp.mail_secondary_actions_box.borrow().as_ref() {
+            let is_compact_tb = is_compact
+                || imp.is_mobile.get()
+                || imp.is_tablet.get()
+                || (self.width() > 0 && self.width() < 900);
+            sec.set_visible(!is_compact_tb);
+        }
     }
 
     pub(crate) fn sync_toolbar_button_labels(&self) {
+        let is_compact_tb = self.imp().is_mobile.get()
+            || self.imp().is_tablet.get()
+            || (self.width() > 0 && self.width() < 900);
+        if let Some(sec) = self.imp().mail_secondary_actions_box.borrow().as_ref() {
+            sec.set_visible(!is_compact_tb);
+        }
         self.apply_toolbar_button_modes(true);
     }
 
@@ -6485,6 +6714,8 @@ impl MailPage {
                     if let Some(tp) = todo_paned.as_ref() {
                         tp.set_visible(false);
                     }
+                    imp.outer_paned.set_resize_start_child(true);
+                    imp.outer_paned.set_resize_end_child(false);
                 }
                 MailDrillDownLevel::Messages => {
                     if let Some(sb) = sidebar.as_ref() {
@@ -6502,6 +6733,10 @@ impl MailPage {
                     if let Some(detail) = detail_view.as_ref() {
                         detail.set_visible(false);
                     }
+                    imp.outer_paned.set_resize_start_child(false);
+                    imp.outer_paned.set_resize_end_child(true);
+                    imp.inner_paned.set_resize_start_child(true);
+                    imp.inner_paned.set_resize_end_child(false);
                 }
                 MailDrillDownLevel::Viewer => {
                     if let Some(sb) = sidebar.as_ref() {
@@ -6519,6 +6754,10 @@ impl MailPage {
                     if let Some(detail) = detail_view.as_ref() {
                         detail.set_visible(true);
                     }
+                    imp.outer_paned.set_resize_start_child(false);
+                    imp.outer_paned.set_resize_end_child(true);
+                    imp.inner_paned.set_resize_start_child(false);
+                    imp.inner_paned.set_resize_end_child(true);
                 }
             }
         } else if is_tablet {
@@ -6538,6 +6777,9 @@ impl MailPage {
                 todo.set_visible(false);
             }
 
+            imp.outer_paned.set_resize_start_child(false);
+            imp.outer_paned.set_resize_end_child(true);
+
             match imp.drill_down_level.get() {
                 MailDrillDownLevel::Viewer => {
                     // In tablet/split-screen viewer mode: 2 columns [Folders | Viewer] (Message list stacked/hidden)
@@ -6555,6 +6797,8 @@ impl MailPage {
                         detail.set_size_request(0, -1);
                         detail.set_visible(true);
                     }
+                    imp.inner_paned.set_resize_start_child(false);
+                    imp.inner_paned.set_resize_end_child(true);
                 }
                 _ => {
                     // In tablet/split-screen browse mode (default): 2 columns [Folders | Messages] (Viewer stacked/hidden)
@@ -6572,10 +6816,12 @@ impl MailPage {
                         detail.set_size_request(0, -1);
                         detail.set_visible(false);
                     }
+                    imp.inner_paned.set_resize_start_child(true);
+                    imp.inner_paned.set_resize_end_child(false);
                 }
             }
         } else {
-            // Desktop (> 1000sp): All 3 columns preserved
+            // Desktop (> 860sp): All 3 columns preserved
             if let Some(cb) = content_box.as_ref() {
                 cb.set_visible(true);
             }
@@ -6608,6 +6854,15 @@ impl MailPage {
                     .unwrap_or(false);
                 todo.set_visible(todo_vis);
             }
+            imp.outer_paned.set_resize_start_child(false);
+            imp.outer_paned.set_resize_end_child(true);
+            imp.inner_paned.set_resize_start_child(false);
+            imp.inner_paned.set_resize_end_child(true);
+        }
+
+        let is_compact_tb = is_mobile || is_tablet || (self.width() > 0 && self.width() < 900);
+        if let Some(sec) = imp.mail_secondary_actions_box.borrow().as_ref() {
+            sec.set_visible(!is_compact_tb);
         }
     }
 
@@ -6785,8 +7040,11 @@ impl MailPage {
         let is_modern = header_style == "modern";
 
         let is_mobile = self.imp().is_mobile.get();
+        if let Some(bar) = self.imp().modern_actions_bar.borrow().as_ref() {
+            bar.set_visible(is_modern && !is_mobile && message.is_some() && !show_all);
+        }
         if let Some(modern_actions) = self.imp().modern_actions_group.borrow().as_ref() {
-            modern_actions.set_visible(is_modern && !is_mobile && message.is_some());
+            modern_actions.set_visible(is_modern && !is_mobile && message.is_some() && !show_all);
         }
         let show_top_group = (!is_modern || is_mobile) && message.is_some();
         if let Some(group) = self.imp().preview_reply_group.borrow().as_ref() {
@@ -6854,6 +7112,9 @@ impl MailPage {
         } else {
             if let Some(card) = self.imp().modern_header_card.borrow().as_ref() {
                 card.set_visible(false);
+            }
+            if let Some(bar) = self.imp().modern_actions_bar.borrow().as_ref() {
+                bar.set_visible(false);
             }
             if let Some(classic_box) = self.imp().classic_header_box.borrow().as_ref() {
                 classic_box.set_visible(message.is_some() && !show_all);
@@ -7107,6 +7368,7 @@ impl MailPage {
         }
         if let Some(rev) = imp.modern_date_revealer.borrow().as_ref() {
             rev.set_reveal_child(!compact);
+            rev.set_visible(!compact);
         }
         if let Some(avatar) = imp.modern_sender_avatar.borrow().as_ref() {
             avatar.set_size(if compact { 26 } else { 38 });
@@ -7234,19 +7496,39 @@ impl MailPage {
             subj_lbl.set_text(&display_subject);
         }
 
-        // 4. Recipient summary
+        // 4. Recipient summary & details toggle
+        let is_expanded = imp
+            .modern_details_revealer
+            .borrow()
+            .as_ref()
+            .map(|r| r.reveals_child())
+            .unwrap_or(false);
+
+        let user_emails = self.user_account_emails();
+        let recip_text = format_modern_recipient_summary(
+            &recipient_to,
+            &recipient_cc,
+            &user_emails,
+            is_expanded,
+        );
         if let Some(recip_lbl) = imp.modern_recipient_summary.borrow().as_ref() {
-            let recip_text = if recipient_to.trim().is_empty() {
-                "an mich".to_string()
-            } else {
-                format!("an {}", recipient_to.split(',').next().unwrap_or(&recipient_to).trim())
-            };
             recip_lbl.set_text(&recip_text);
+        }
+        if let Some(details_btn) = imp.modern_details_button.borrow().as_ref() {
+            let tip = if is_expanded {
+                gettext("Hide detailed headers")
+            } else {
+                gettext("Show detailed headers")
+            };
+            details_btn.set_tooltip_text(Some(&tip));
         }
 
         // 5. Date
         if let Some(date_lbl) = imp.modern_date_label.borrow().as_ref() {
-            date_lbl.set_text(&format_message_date(&date_str));
+            let full_date = format_message_date(&date_str);
+            let smart_date = format_preview_header_date(&date_str);
+            date_lbl.set_text(&smart_date);
+            date_lbl.set_tooltip_text(Some(&full_date));
         }
 
         // 6. Star Button
@@ -17124,13 +17406,19 @@ impl MailPage {
         actions_box.append(&comm_group);
         actions_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         actions_box.append(&triage_group);
-        actions_box.append(&status_separator);
-        actions_box.append(&status_group);
-        actions_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        actions_box.append(&nav_group);
-        actions_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        actions_box.append(&undo_btn);
-        actions_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+
+        let secondary_actions_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .build();
+
+        secondary_actions_box.append(&status_separator);
+        secondary_actions_box.append(&status_group);
+        secondary_actions_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        secondary_actions_box.append(&nav_group);
+        secondary_actions_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        secondary_actions_box.append(&undo_btn);
+        secondary_actions_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         let str_source_tip = crate::i18n::gettext("View message source (Ctrl+U)");
         let source_btn = make_button(
             "code-symbolic",
@@ -17139,12 +17427,15 @@ impl MailPage {
         );
         set_button_icon_with_fallback(&source_btn, "code-symbolic", "document-properties-symbolic");
 
-        actions_box.append(&print_btn);
-        actions_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        actions_box.append(&source_btn);
+        secondary_actions_box.append(&print_btn);
+        secondary_actions_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        secondary_actions_box.append(&source_btn);
+
+        actions_box.append(&secondary_actions_box);
+        self.imp().mail_secondary_actions_box.replace(Some(secondary_actions_box.clone()));
 
         let actions_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Never)
             .child(&actions_box)
             .propagate_natural_width(false)
@@ -18305,16 +18596,7 @@ impl MailPage {
         let now_date = chrono::Local::now().date_naive();
         let cache_key = format!("{date_format}:{date_custom_format}:{time_format}:{now_date}");
 
-        let is_unified = self.active_folder_selection().is_unified();
-        let show_account_pip = is_unified
-            && self
-                .imp()
-                .source_selection
-                .borrow()
-                .as_ref()
-                .and_then(|s| s.model())
-                .map(|m| m.n_items() > 1)
-                .unwrap_or(false);
+        let show_account_pip = false;
 
         let n = selection.n_items();
         let mut rows = Vec::with_capacity(n as usize);
@@ -22011,7 +22293,7 @@ impl MailPage {
             &columns_button,
         );
         let unified_toolbar_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Never)
             .child(&unified_toolbar)
             .propagate_natural_width(false)
@@ -22029,6 +22311,7 @@ impl MailPage {
         // Initialize toolbar button modes: strictly pure symbolic icons per GNOME HIG
         let is_compact_initial = true;
         self.apply_toolbar_button_modes(is_compact_initial);
+        self.sync_toolbar_button_labels();
 
         self.connect_root_notify(move |page| {
             if let Some(win) = page.root().and_downcast::<gtk::Window>() {
@@ -22636,12 +22919,24 @@ impl MailPage {
             if page.imp().is_mobile.get() || page.imp().is_tablet.get() {
                 let w = canvas_for_release.width().max(120) as f64;
                 let scroll_y = page.imp().list_vadjustment.borrow().as_ref().map(|a| a.value()).unwrap_or(0.0);
-                let layout = page.imp().mail_table_layout.borrow().clone();
-                if let Some(l) = layout {
-                    if (l.width - w).abs() < 2.0 {
-                        if let Some(MailTableHitAction::SelectRow(_, _)) = hit_test_mail_table(&l, x, y + scroll_y) {
-                            page.set_drill_down_level(MailDrillDownLevel::Viewer);
+                let thread_sel = page.imp().thread_selection.borrow();
+                if let Some(thread_sel) = thread_sel.as_ref() {
+                    let n_items = thread_sel.n_items() as usize;
+                    let layout = {
+                        let cached = page.imp().mail_table_layout.borrow().clone();
+                        if let Some(ref l) = cached {
+                            if page.is_mail_table_layout_cached_valid(l, w, n_items) {
+                                cached
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
                         }
+                    };
+                    let l = layout.unwrap_or_else(|| Rc::new(page.current_mail_table_layout(thread_sel, w)));
+                    if let Some(MailTableHitAction::SelectRow(_, _)) = hit_test_mail_table(&l, x, y + scroll_y) {
+                        page.set_drill_down_level(MailDrillDownLevel::Viewer);
                     }
                 }
             }
@@ -23457,6 +23752,7 @@ impl MailPage {
             .margin_end(0)
             .margin_top(0)
             .margin_bottom(0)
+            .hexpand(true)
             .css_classes(vec!["mail-modern-header-card"])
             .visible(false)
             .build();
@@ -23507,6 +23803,7 @@ impl MailPage {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(10)
             .valign(gtk::Align::Center)
+            .hexpand(true)
             .build();
 
         let modern_avatar = adw::Avatar::builder()
@@ -23527,6 +23824,7 @@ impl MailPage {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(6)
             .valign(gtk::Align::Center)
+            .hexpand(true)
             .build();
 
         let modern_sender_name = gtk::Label::builder()
@@ -23534,6 +23832,8 @@ impl MailPage {
             .halign(gtk::Align::Start)
             .css_classes(vec!["heading", "mail-modern-sender-name"])
             .ellipsize(pango::EllipsizeMode::End)
+            .width_chars(1)
+            .single_line_mode(true)
             .build();
 
         let modern_sender_address = gtk::Label::builder()
@@ -23541,6 +23841,8 @@ impl MailPage {
             .halign(gtk::Align::Start)
             .css_classes(vec!["caption", "dim-label"])
             .ellipsize(pango::EllipsizeMode::End)
+            .width_chars(1)
+            .single_line_mode(true)
             .build();
 
         let modern_sender_address_revealer = gtk::Revealer::builder()
@@ -23564,6 +23866,8 @@ impl MailPage {
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .hexpand(true)
+            .width_chars(1)
+            .single_line_mode(true)
             .css_classes(vec!["mail-compact-subject"])
             .ellipsize(pango::EllipsizeMode::End)
             .build();
@@ -23595,28 +23899,62 @@ impl MailPage {
         modern_sender_line.append(&modern_sender_address_revealer);
         modern_sender_line.append(&compact_subject_revealer);
 
-        let modern_recipient_line = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(6)
-            .valign(gtk::Align::Center)
-            .build();
-
         let modern_recipient_summary = gtk::Label::builder()
             .label("")
             .halign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
             .css_classes(vec!["caption", "dim-label"])
             .ellipsize(pango::EllipsizeMode::End)
+            .width_chars(1)
+            .single_line_mode(true)
             .build();
 
         let modern_details_button = gtk::Button::builder()
-            .label(&gettext("Details ▾"))
             .tooltip_text(&gettext("Show detailed headers"))
             .css_classes(vec!["flat", "caption", "dim-label", "mail-details-toggle"])
             .valign(gtk::Align::Center)
+            .halign(gtk::Align::Start)
+            .child(&modern_recipient_summary)
             .build();
 
-        modern_recipient_line.append(&modern_recipient_summary);
-        modern_recipient_line.append(&modern_details_button);
+        let modern_recipient_left_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .valign(gtk::Align::Center)
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .build();
+        modern_recipient_left_box.append(&modern_details_button);
+
+        let modern_date_label = gtk::Label::builder()
+            .label("")
+            .halign(gtk::Align::End)
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["caption", "dim-label"])
+            .ellipsize(pango::EllipsizeMode::End)
+            .width_chars(1)
+            .single_line_mode(true)
+            .build();
+
+        let modern_date_revealer = gtk::Revealer::builder()
+            .transition_type(gtk::RevealerTransitionType::SlideLeft)
+            .transition_duration(150)
+            .reveal_child(true)
+            .halign(gtk::Align::End)
+            .valign(gtk::Align::Center)
+            .child(&modern_date_label)
+            .build();
+        self.imp()
+            .modern_date_revealer
+            .replace(Some(modern_date_revealer.clone()));
+
+        let modern_recipient_line = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(0)
+            .valign(gtk::Align::Center)
+            .hexpand(true)
+            .build();
+        modern_recipient_line.append(&modern_recipient_left_box);
 
         let modern_recipient_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideUp)
@@ -23628,27 +23966,11 @@ impl MailPage {
             .modern_recipient_revealer
             .replace(Some(modern_recipient_revealer.clone()));
 
-        modern_sender_box.append(&modern_sender_line);
-        modern_sender_box.append(&modern_recipient_revealer);
-
-        let modern_meta_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .valign(gtk::Align::Center)
-            .halign(gtk::Align::End)
-            .build();
-
-        let modern_date_label = gtk::Label::builder()
-            .label("")
-            .halign(gtk::Align::End)
-            .css_classes(vec!["caption", "dim-label"])
-            .build();
-
         let str_star_tip = gettext("Star message");
         let modern_star_button = gtk::Button::builder()
             .icon_name("non-starred-symbolic")
             .tooltip_text(&str_star_tip)
-            .css_classes(vec!["flat", "circular"])
+            .css_classes(vec!["flat", "circular", "mail-header-action-btn"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&modern_star_button, &str_star_tip);
@@ -23684,6 +24006,7 @@ impl MailPage {
             let fallback = match icon_name {
                 "mail-reply-sender-symbolic" | "mail-reply-all-symbolic" => "go-previous-symbolic",
                 "mail-forward-symbolic" => "go-next-symbolic",
+                "user-trash-symbolic" => "edit-delete-symbolic",
                 _ => "image-missing-symbolic",
             };
             set_image_icon_with_fallback(&icon, icon_name, fallback);
@@ -23697,6 +24020,8 @@ impl MailPage {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(2)
             .valign(gtk::Align::Center)
+            .halign(gtk::Align::Start)
+            .hexpand(true)
             .css_classes(vec!["mail-header-actions-group"])
             .build();
 
@@ -23709,6 +24034,13 @@ impl MailPage {
 
         let m_more_menu = gio::Menu::new();
 
+        let reply_section = gio::Menu::new();
+        let str_menu_reply_all = gettext("Reply All");
+        let str_menu_forward = gettext("Forward");
+        reply_section.append(Some(&str_menu_reply_all), Some("win.reply-all"));
+        reply_section.append(Some(&str_menu_forward), Some("win.forward"));
+        m_more_menu.append_section(None, &reply_section);
+
         let status_section = gio::Menu::new();
         let str_mark_read = gettext("Mark Read");
         let str_mark_unread = gettext("Mark Unread");
@@ -23718,7 +24050,9 @@ impl MailPage {
 
         let triage_section = gio::Menu::new();
         let str_trash = gettext("Move message to Trash");
+        let str_flag = gettext("Toggle Star");
         triage_section.append(Some(&str_trash), Some("win.delete"));
+        triage_section.append(Some(&str_flag), Some("win.toggle-flag"));
         m_more_menu.append_section(None, &triage_section);
 
         let tools_section = gio::Menu::new();
@@ -23742,14 +24076,26 @@ impl MailPage {
             .build();
         set_accessible_label(&m_more_btn, &str_more_tip);
 
+        let str_m_delete = gettext("Move message to Trash");
+        let m_delete = make_header_action_btn("user-trash-symbolic", &str_m_delete, "win.delete");
+
         modern_actions_group.append(&m_reply);
         modern_actions_group.append(&m_reply_all);
         modern_actions_group.append(&m_forward);
-        modern_actions_group.append(&m_more_btn);
 
         let modern_actions_sep = gtk::Separator::new(gtk::Orientation::Vertical);
         modern_actions_sep.set_margin_start(4);
-        modern_actions_sep.set_margin_end(2);
+        modern_actions_sep.set_margin_end(4);
+
+        modern_actions_group.append(&modern_actions_sep);
+        modern_actions_group.append(&m_delete);
+        modern_actions_group.append(&modern_star_button);
+        modern_actions_group.append(&m_more_btn);
+
+        self.imp().modern_reply_all_button.replace(Some(m_reply_all.clone()));
+        self.imp().modern_forward_button.replace(Some(m_forward.clone()));
+        self.imp().modern_delete_button.replace(Some(m_delete.clone()));
+        self.imp().modern_actions_sep.replace(Some(modern_actions_sep.clone()));
 
         let str_load_remote = gettext("Load images");
         let modern_load_remote_images_btn = gtk::Button::builder()
@@ -23765,26 +24111,40 @@ impl MailPage {
             .modern_load_remote_images_btn
             .replace(Some(modern_load_remote_images_btn.clone()));
 
-        let modern_date_revealer = gtk::Revealer::builder()
-            .transition_type(gtk::RevealerTransitionType::Crossfade)
-            .transition_duration(150)
-            .reveal_child(true)
-            .child(&modern_date_label)
+        modern_actions_group.append(&modern_load_remote_images_btn);
+
+        self.imp().modern_actions_group.replace(Some(modern_actions_group.clone()));
+
+        let modern_actions_bar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .valign(gtk::Align::Center)
+            .hexpand(true)
+            .margin_start(0)
+            .margin_end(0)
+            .margin_top(4)
+            .margin_bottom(6)
+            .visible(false)
+            .css_classes(vec!["sidebar-drawer-header", "mail-preview-actions-bar"])
             .build();
-        self.imp()
-            .modern_date_revealer
-            .replace(Some(modern_date_revealer.clone()));
 
-        modern_meta_box.append(&modern_date_revealer);
-        modern_meta_box.append(&modern_star_button);
-        modern_meta_box.append(&modern_actions_sep);
-        modern_meta_box.append(&modern_actions_group);
+        modern_actions_bar.append(&modern_actions_group);
+        modern_actions_bar.append(&modern_date_revealer);
+        self.imp().modern_actions_bar.replace(Some(modern_actions_bar.clone()));
 
-        self.imp().modern_actions_group.replace(Some(modern_actions_group));
+        let modern_sender_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(0)
+            .valign(gtk::Align::Center)
+            .hexpand(true)
+            .build();
+        modern_sender_row.append(&modern_sender_line);
+
+        modern_sender_box.append(&modern_sender_row);
+        modern_sender_box.append(&modern_recipient_revealer);
 
         modern_top_row.append(&modern_avatar);
         modern_top_row.append(&modern_sender_box);
-        modern_top_row.append(&modern_meta_box);
 
         modern_header_card.append(&modern_top_row);
 
@@ -23807,10 +24167,35 @@ impl MailPage {
 
         let details_revealer_for_btn = modern_details_revealer.clone();
         let details_btn_for_click = modern_details_button.clone();
+        let recip_summary_for_click = modern_recipient_summary.clone();
         modern_details_button.connect_clicked(move |_| {
             let revealed = !details_revealer_for_btn.reveals_child();
             details_revealer_for_btn.set_reveal_child(revealed);
-            details_btn_for_click.set_label(if revealed { "Details ▴" } else { "Details ▾" });
+            let current_text = recip_summary_for_click.text().to_string();
+            let new_text = if revealed {
+                if current_text.contains('▾') {
+                    current_text.replace('▾', "▴")
+                } else if !current_text.contains('▴') {
+                    format!("{current_text} ▴")
+                } else {
+                    current_text
+                }
+            } else {
+                if current_text.contains('▴') {
+                    current_text.replace('▴', "▾")
+                } else if !current_text.contains('▾') {
+                    format!("{current_text} ▾")
+                } else {
+                    current_text
+                }
+            };
+            recip_summary_for_click.set_text(&new_text);
+            let tip = if revealed {
+                gettext("Hide detailed headers")
+            } else {
+                gettext("Show detailed headers")
+            };
+            details_btn_for_click.set_tooltip_text(Some(&tip));
         });
 
         modern_header_card.append(&modern_details_revealer);
@@ -24122,6 +24507,7 @@ impl MailPage {
         classic_header_box.append(&preview_actions_row);
         self.imp().classic_header_box.replace(Some(classic_header_box.clone()));
 
+        header_box.append(&modern_actions_bar);
         header_box.append(&mail_subject_revealer);
         header_box.append(&modern_header_card);
         header_box.append(&classic_header_box);
@@ -24142,7 +24528,8 @@ impl MailPage {
         let thread_context = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Never)
-            .propagate_natural_width(true)
+            .propagate_natural_width(false)
+            .min_content_width(0)
             .min_content_height(38)
             .max_content_height(48)
             .vexpand(false)
@@ -25875,6 +26262,9 @@ fn show_attachment_chip_context_menu(
         if let Some(left) = imp.drawer_header_box.borrow().as_ref() {
             header_group.add_widget(left);
         }
+        if let Some(bar) = imp.modern_actions_bar.borrow().as_ref() {
+            header_group.add_widget(bar);
+        }
         if let Some(mid) = imp.preview_actions_row.borrow().as_ref() {
             header_group.add_widget(mid);
         }
@@ -25918,6 +26308,9 @@ fn show_attachment_chip_context_menu(
                 }
                 if settings.mail_sidebar_position() != clamped {
                     settings.set_mail_sidebar_position(clamped);
+                }
+                if let Some(page) = page_weak_for_pos.upgrade() {
+                    page.sync_preview_actions_labels();
                 }
             });
         }
@@ -27761,6 +28154,7 @@ impl MailPage {
             }
 
             if let Some(page) = page_for_discovery.upgrade() {
+                page.imp().cached_account_emails.replace(None);
                 if let Some(folder_list) = page.imp().folder_list.borrow().as_ref() {
                     let remote_folders = page.imp().mail_folder_summaries.borrow().clone();
                     page.rebuild_camel_folder_rows_with_force(folder_list, &remote_folders, true);
@@ -37864,6 +38258,184 @@ mod tests {
     }
 
     #[test]
+    fn test_modern_header_compact_spacing_and_responsive_collapse() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let page = MailPage::new();
+        let settings = AppSettings::try_new().expect("app settings");
+        settings.set_mail_header_style("modern");
+        page.set_screen_mode(false, false);
+
+        let msg = MailMessageObject::new(
+            "msg-compact-test",
+            "inbox",
+            "Google Security",
+            "no-reply@accounts.google.com",
+            "me@example.com",
+            "",
+            "",
+            "",
+            "Sicherheitswarnung für Ihr verknüpftes Google-Konto",
+            None,
+            vec![],
+            vec![],
+            "thread-compact",
+            1,
+            0,
+            "13:47",
+            512,
+            "Snippet",
+            "Body",
+            false,
+            false,
+            false,
+            MailFollowUpState::None,
+            MailFollowUpMetadata::default(),
+            vec![],
+            None,
+            vec![],
+        );
+
+        page.refresh_normal_headers_for_message(Some(&msg));
+
+        let date_revealer = page.imp().modern_date_revealer.borrow().clone().expect("date revealer");
+        let compact_subject_revealer = page.imp().compact_subject_revealer.borrow().clone().expect("compact subject revealer");
+        let reply_all_btn = page.imp().modern_reply_all_button.borrow().clone().expect("reply all button");
+        let forward_btn = page.imp().modern_forward_button.borrow().clone().expect("forward button");
+        let actions_sep = page.imp().modern_actions_sep.borrow().clone().expect("actions separator");
+
+        // 1. Initial expanded header state
+        assert!(date_revealer.is_visible(), "Date revealer must be visible in expanded mode");
+        assert!(!compact_subject_revealer.reveals_child(), "Compact subject revealer must be unrevealed in expanded mode");
+
+        // 2. Compact header mode: date revealer is hidden so subject can expand without premature truncation
+        page.set_header_compact(true);
+        assert!(!date_revealer.is_visible(), "Date revealer must be hidden in compact mode to reclaim space for subject");
+        assert!(compact_subject_revealer.reveals_child(), "Compact subject revealer must be revealed in compact mode");
+
+        // 3. Responsive collapse of extra action buttons
+        page.sync_preview_actions_labels();
+        assert!(reply_all_btn.is_visible(), "Reply All button should be visible when wide");
+        assert!(forward_btn.is_visible(), "Forward button should be visible when wide");
+        assert!(actions_sep.is_visible(), "Actions separator should be visible when wide");
+
+        // Back to full header
+        page.set_header_compact(false);
+        assert!(date_revealer.is_visible(), "Date revealer must be restored to visible when returning to full header");
+
+        // 4. Line 2 streamlined widgets: recipient toggle button & smart date with tooltip
+        let recip_btn = page.imp().modern_details_button.borrow().clone().expect("details button");
+        let recip_lbl = page.imp().modern_recipient_summary.borrow().clone().expect("recipient summary");
+        let date_lbl = page.imp().modern_date_label.borrow().clone().expect("date label");
+        let details_revealer = page.imp().modern_details_revealer.borrow().clone().expect("details revealer");
+
+        // Recipient label is child of recipient details button (compact unified toggle)
+        assert_eq!(recip_btn.child().as_ref(), Some(recip_lbl.upcast_ref::<gtk::Widget>()));
+        assert!(recip_lbl.text().contains("an mich") || recip_lbl.text().contains("me@example.com"));
+        assert!(recip_lbl.text().ends_with('▾'));
+
+        // Date label displays smart date and stores full date in tooltip
+        assert!(date_lbl.tooltip_text().is_some());
+
+        // Clicking recipient button expands details and flips arrow to ▴
+        assert!(!details_revealer.reveals_child());
+        recip_btn.emit_clicked();
+        assert!(details_revealer.reveals_child(), "Clicking recipient button must expand details grid");
+        assert!(recip_lbl.text().ends_with('▴'), "Arrow must flip to ▴ when details are expanded");
+
+        // Clicking again collapses details and flips arrow back to ▾
+        recip_btn.emit_clicked();
+        assert!(!details_revealer.reveals_child(), "Clicking recipient button again must collapse details grid");
+        assert!(recip_lbl.text().ends_with('▾'), "Arrow must flip back to ▾ when details are collapsed");
+    }
+
+    #[test]
+    fn test_format_preview_header_smart_date() {
+        let base_date = chrono::NaiveDate::from_ymd_opt(2026, 9, 28).unwrap();
+
+        // 1. Same day -> time only
+        let same_day = "2026-09-28T14:30:00+02:00";
+        let res_same = format_preview_header_date_with_now(same_day, base_date);
+        assert_eq!(res_same, "14:30");
+
+        // 2. Yesterday -> "Yesterday, 14:30" (or translated)
+        let yesterday = "2026-09-27T14:30:00+02:00";
+        let res_yest = format_preview_header_date_with_now(yesterday, base_date);
+        assert!(res_yest.contains("14:30"));
+        assert!(res_yest.contains(&crate::i18n::gettext("Yesterday")));
+
+        // 3. Past 2-6 days -> weekday + time
+        let three_days_ago = "2026-09-25T14:30:00+02:00";
+        let res_3d = format_preview_header_date_with_now(three_days_ago, base_date);
+        assert!(res_3d.contains("14:30"));
+
+        // 4. Same year older -> day and month
+        let older_this_year = "2026-05-15T14:30:00+02:00";
+        let res_older = format_preview_header_date_with_now(older_this_year, base_date);
+        assert!(res_older.starts_with("15."));
+
+        // 5. Previous year -> full date
+        let prev_year = "2025-05-15T14:30:00+02:00";
+        let res_prev = format_preview_header_date_with_now(prev_year, base_date);
+        assert_eq!(res_prev, "15.05.2025");
+    }
+
+    #[test]
+    fn test_format_modern_recipient_summary() {
+        let user_emails = vec!["max.jensen1@gmail.com".to_string()];
+
+        // 1. Empty recipient -> "an mich ▾"
+        assert_eq!(
+            format_modern_recipient_summary("", "", &user_emails, false),
+            "an mich ▾"
+        );
+
+        // 2. User recipient -> "an mich ▾" (or "▴" if expanded)
+        assert_eq!(
+            format_modern_recipient_summary("max.jensen1@gmail.com", "", &user_emails, false),
+            "an mich ▾"
+        );
+        assert_eq!(
+            format_modern_recipient_summary("max.jensen1@gmail.com", "", &user_emails, true),
+            "an mich ▴"
+        );
+
+        // 3. User with display name -> "an mich ▾"
+        assert_eq!(
+            format_modern_recipient_summary("Martin <max.jensen1@gmail.com>", "", &user_emails, false),
+            "an mich ▾"
+        );
+
+        // 4. Multiple recipients including user -> "an mich, +1 ▾"
+        assert_eq!(
+            format_modern_recipient_summary("max.jensen1@gmail.com, colleague@example.com", "", &user_emails, false),
+            "an mich, +1 ▾"
+        );
+
+        // 5. Multiple recipients including user in CC -> "an mich, +1 ▾"
+        assert_eq!(
+            format_modern_recipient_summary("colleague@example.com", "max.jensen1@gmail.com", &user_emails, false),
+            "an mich, +1 ▾"
+        );
+
+        // 6. Third party single recipient -> "an Alice ▾"
+        assert_eq!(
+            format_modern_recipient_summary("Alice <alice@example.com>", "", &user_emails, false),
+            "an Alice ▾"
+        );
+
+        // 7. Third party multiple recipients -> "an Alice, +2 ▾"
+        assert_eq!(
+            format_modern_recipient_summary("Alice <alice@example.com>, Bob <bob@example.com>", "Charlie <charlie@example.com>", &user_emails, false),
+            "an Alice, +2 ▾"
+        );
+    }
+
+    #[test]
     fn test_load_remote_images_button_and_actions_row() {
         let _gtk_lock = crate::window::GTK_TEST_MUTEX
             .lock()
@@ -38080,6 +38652,22 @@ mod tests {
 
         let child = move_btn.child().expect("move button child");
         assert!(child.downcast::<gtk::Image>().is_ok());
+
+        let sec_box = page.imp().mail_secondary_actions_box.borrow().as_ref().cloned().unwrap();
+        assert!(!sec_box.is_visible(), "secondary actions should be hidden in compact mode");
+
+        // Desktop mode: secondary actions visible
+        page.apply_toolbar_button_modes(false);
+        assert!(sec_box.is_visible(), "secondary actions should be visible in desktop mode");
+
+        // Tablet mode: secondary actions collapsed
+        page.set_screen_mode(false, true);
+        assert!(!sec_box.is_visible(), "secondary actions should be hidden in tablet mode");
+
+        // Return to desktop screen mode
+        page.set_screen_mode(false, false);
+        page.apply_toolbar_button_modes(false);
+        assert!(sec_box.is_visible(), "secondary actions should be restored on desktop");
     }
 
     #[test]
@@ -38675,6 +39263,101 @@ mod tests {
         grid.set_margin_start(if show_avatar { 48 } else { 0 });
         assert!(avatar.is_visible());
         assert_eq!(grid.margin_start(), 48);
+    }
+
+    #[test]
+    fn test_extract_emails_from_text() {
+        assert_eq!(
+            extract_emails_from_text("Max Jensen <max.jensen1@gmail.com>"),
+            vec!["max.jensen1@gmail.com"]
+        );
+        assert_eq!(
+            extract_emails_from_text("Google (max.jensen1@gmail.com)"),
+            vec!["max.jensen1@gmail.com"]
+        );
+        assert_eq!(
+            extract_emails_from_text("alice@example.com; bob@example.com"),
+            vec!["alice@example.com", "bob@example.com"]
+        );
+        assert_eq!(
+            extract_emails_from_text("Keine E-Mail Adresse hier"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn test_option_1_dedicated_actions_bar_and_clean_header_card_contract() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let page = MailPage::new();
+        let settings = AppSettings::try_new().expect("app settings");
+        settings.set_mail_header_style("modern");
+        page.set_screen_mode(false, false);
+
+        let msg = MailMessageObject::new(
+            "msg-option1-test",
+            "inbox",
+            "Delivery Service",
+            "no-reply@connect.delivery-example.de",
+            "max.jensen1@gmail.com",
+            "",
+            "",
+            "",
+            "Deine Bestellung ist unterwegs!",
+            None,
+            vec![],
+            vec![],
+            "thread-opt1",
+            1,
+            0,
+            "14:30",
+            512,
+            "Snippet",
+            "Body",
+            false,
+            false,
+            false,
+            MailFollowUpState::None,
+            MailFollowUpMetadata::default(),
+            vec![],
+            None,
+            vec![],
+        );
+
+        page.refresh_normal_headers_for_message(Some(&msg));
+
+        // 1. Dedicated Action Bar is visible with actions on left and date on right
+        let actions_bar = page.imp().modern_actions_bar.borrow().clone().expect("modern actions bar");
+        assert!(actions_bar.is_visible(), "Actions bar must be visible for selected message");
+        assert!(actions_bar.has_css_class("mail-preview-actions-bar"));
+
+        let actions_group = page.imp().modern_actions_group.borrow().clone().expect("modern actions group");
+        assert!(actions_group.is_visible());
+        let date_rev = page.imp().modern_date_revealer.borrow().clone().expect("date revealer");
+        assert!(date_rev.is_visible());
+        assert_eq!(actions_bar.first_child().as_ref(), Some(actions_group.upcast_ref::<gtk::Widget>()));
+        assert_eq!(actions_bar.last_child().as_ref(), Some(date_rev.upcast_ref::<gtk::Widget>()));
+
+        // 2. Clean Header Card contains only sender info and recipient toggle
+        let header_card = page.imp().modern_header_card.borrow().clone().expect("modern header card");
+        assert!(header_card.is_visible());
+        let sender_name = page.imp().modern_sender_name.borrow().clone().expect("sender name");
+        assert_eq!(sender_name.text(), "Delivery Service");
+        let sender_addr = page.imp().modern_sender_address.borrow().clone().expect("sender address");
+        assert_eq!(sender_addr.text(), "<no-reply@connect.delivery-example.de>");
+        assert!(sender_addr.is_visible());
+
+        let recip_btn = page.imp().modern_details_button.borrow().clone().expect("details button");
+        assert!(recip_btn.has_css_class("mail-details-toggle"));
+
+        // 3. Responsive collapse thresholds
+        page.sync_preview_actions_labels();
+        let del_btn = page.imp().modern_delete_button.borrow().clone().expect("delete button");
+        assert!(del_btn.is_visible());
     }
 }
 

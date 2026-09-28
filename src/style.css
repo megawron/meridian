@@ -2919,9 +2919,15 @@ scrollbar.mail-table-overlay-scrollbar slider:active {
 }
 
 .mail-details-toggle {
-  font-size: 0.78rem;
-  padding: 1px 6px;
+  font-size: 0.88rem;
+  padding: 2px 6px;
+  min-height: 22px;
+  min-width: 0;
   border-radius: 4px;
+}
+
+.mail-details-toggle > label {
+  min-width: 0;
 }
 
 .mail-header-load-images-btn {
@@ -3028,7 +3034,26 @@ banner.mail-status-banner button,
 }
 
 .mail-header-actions-group {
-  margin-left: 4px;
+  margin-left: 0;
+}
+
+.mail-preview-date-label {
+  font-size: 0.85rem;
+  font-weight: 500;
+  opacity: 0.75;
+}
+
+/* Tablet & Medium Screen Responsive Styles (compact icon-only view switcher) */
+.tablet-screen headerbar viewswitcher button,
+.medium-screen headerbar viewswitcher button {
+  min-width: 36px;
+  min-height: 34px;
+  padding: 4px 8px;
+}
+
+.tablet-screen headerbar viewswitcher button label,
+.medium-screen headerbar viewswitcher button label {
+  display: none;
 }
 
 /* Mobile & Compact Screen Responsive Styles (gnome-calendar & convey inspired) */

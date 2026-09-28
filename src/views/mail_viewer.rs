@@ -170,6 +170,18 @@ fn disable_banner_animation(banner: &adw::Banner) {
         revealer.set_transition_duration(0);
         revealer.set_transition_type(gtk::RevealerTransitionType::None);
     }
+    fn make_shrinkable(widget: &gtk::Widget) {
+        if let Some(lbl) = widget.downcast_ref::<gtk::Label>() {
+            lbl.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            lbl.set_width_chars(1);
+        }
+        let mut child = widget.first_child();
+        while let Some(c) = child {
+            make_shrinkable(&c);
+            child = c.next_sibling();
+        }
+    }
+    make_shrinkable(banner.upcast_ref());
 }
 
 impl MailViewer {
