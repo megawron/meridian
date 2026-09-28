@@ -8063,7 +8063,7 @@ impl CalendarPage {
             .label(&crate::i18n::gettext("All Day"))
             .css_classes(vec!["calendar-allday-label"])
             .halign(gtk::Align::Center)
-            .valign(gtk::Align::Center)
+            .valign(gtk::Align::Fill)
             .width_request(52)
             .build();
         time_col_group.add_widget(&all_day_label);
@@ -8077,6 +8077,7 @@ impl CalendarPage {
                     "calendar-time-gutter-secondary",
                 ])
                 .width_request(52)
+                .valign(gtk::Align::Fill)
                 .build();
             sec_group.add_widget(&sec_allday_box);
             header_grid.attach(&sec_allday_box, 1, 1, 1, 1);
@@ -8219,6 +8220,7 @@ impl CalendarPage {
         }
 
         days_overlay.add_overlay(&allday_grid);
+        days_overlay.set_measure_overlay(&allday_grid, true);
         header_grid.attach(&days_overlay, day_column_offset, 1, days.len() as i32, 1);
 
         view.append(&header_grid);
@@ -23496,6 +23498,101 @@ mod tests {
         assert!(page.selected_time_slot().is_some());
         page.select_calendar_view(CalendarView::Month);
         assert_eq!(page.selected_time_slot(), None);
+    }
+
+    #[test]
+    fn test_multitrack_allday_overlay_measurement_in_week_view() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let page = CalendarPage::new();
+
+        let days = [
+            NaiveDate::from_ymd_opt(2026, 9, 28).unwrap(), // Mon (0)
+            NaiveDate::from_ymd_opt(2026, 9, 29).unwrap(), // Tue (1)
+            NaiveDate::from_ymd_opt(2026, 9, 30).unwrap(), // Wed (2)
+            NaiveDate::from_ymd_opt(2026, 10, 1).unwrap(), // Thu (3)
+            NaiveDate::from_ymd_opt(2026, 10, 2).unwrap(), // Fri (4)
+            NaiveDate::from_ymd_opt(2026, 10, 3).unwrap(), // Sat (5)
+            NaiveDate::from_ymd_opt(2026, 10, 4).unwrap(), // Sun (6)
+        ];
+
+        let event1 = CalendarEventRecord {
+            uid: "ev1".to_string(),
+            source_uid: "s1".to_string(),
+            source_display_name: "Personal".to_string(),
+            component: "BEGIN:VEVENT\r\nUID:ev1\r\nDTSTART;VALUE=DATE:20260928\r\nDTEND;VALUE=DATE:20261001\r\nSUMMARY:Vacation Part 1\r\nEND:VEVENT\r\n".to_string(),
+            summary: "Vacation Part 1".to_string(),
+            start: "2026-09-28".to_string(),
+            end: "2026-10-01".to_string(),
+            location: String::new(),
+            description: String::new(),
+            all_day: true,
+        };
+
+        let event2 = CalendarEventRecord {
+            uid: "ev2".to_string(),
+            source_uid: "s1".to_string(),
+            source_display_name: "Personal".to_string(),
+            component: "BEGIN:VEVENT\r\nUID:ev2\r\nDTSTART;VALUE=DATE:20260929\r\nDTEND;VALUE=DATE:20261002\r\nSUMMARY:Conference\r\nEND:VEVENT\r\n".to_string(),
+            summary: "Conference".to_string(),
+            start: "2026-09-29".to_string(),
+            end: "2026-10-02".to_string(),
+            location: String::new(),
+            description: String::new(),
+            all_day: true,
+        };
+
+        *page.imp().event_records.borrow_mut() = Some(Rc::new(RefCell::new(vec![event1, event2])));
+
+        let view = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        page.render_continuous_time_grid(&view, &days);
+
+        // Header grid is the first child of view
+        let header_grid = view
+            .first_child()
+            .and_then(|w| w.downcast::<gtk::Grid>().ok())
+            .expect("First child must be header_grid");
+
+        // all_day_label is at col 0, row 1
+        let all_day_label = header_grid
+            .child_at(0, 1)
+            .and_then(|w| w.downcast::<gtk::Label>().ok())
+            .expect("all_day_label must exist at (0, 1)");
+        assert_eq!(all_day_label.valign(), gtk::Align::Fill);
+
+        // days_overlay is at col 1, row 1 (when no secondary timezone)
+        let days_overlay = header_grid
+            .child_at(1, 1)
+            .and_then(|w| w.downcast::<gtk::Overlay>().ok())
+            .expect("days_overlay must exist at (1, 1)");
+
+        // Find the allday_grid inside days_overlay
+        let mut found_allday_grid = None;
+        let mut curr = days_overlay.first_child();
+        while let Some(w) = curr {
+            if let Ok(grid) = w.clone().downcast::<gtk::Grid>() {
+                found_allday_grid = Some(grid);
+                break;
+            }
+            curr = w.next_sibling();
+        }
+        let allday_grid = found_allday_grid.expect("allday_grid overlay must exist");
+
+        // Verify that measure_overlay is explicitly enabled!
+        assert!(
+            days_overlay.is_measure_overlay(&allday_grid),
+            "days_overlay must measure allday_grid so multiple tracks expand the row"
+        );
+
+        // Verify that both overlapping events were attached to separate rows (tracks)
+        let chip_track0 = allday_grid.child_at(0, 0);
+        let chip_track1 = allday_grid.child_at(1, 1);
+        assert!(chip_track0.is_some(), "Track 0 must contain event 1");
+        assert!(chip_track1.is_some(), "Track 1 must contain event 2");
     }
 }
 
