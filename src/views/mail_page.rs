@@ -24057,7 +24057,7 @@ impl MailPage {
             let button = gtk::Button::builder()
                 .tooltip_text(tooltip)
                 .action_name(action_name)
-                .css_classes(vec!["flat", "mail-header-action-btn"])
+                .css_classes(vec!["mail-header-action-btn"])
                 .valign(gtk::Align::Center)
                 .build();
             let icon = gtk::Image::new();
@@ -24138,7 +24138,7 @@ impl MailPage {
             .icon_name("pan-down-symbolic")
             .menu_model(&m_more_menu)
             .tooltip_text(&str_more_tip)
-            .css_classes(vec!["flat", "mail-header-action-btn"])
+            .css_classes(vec!["mail-header-action-btn"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&m_more_btn, &str_more_tip);
