@@ -27673,7 +27673,7 @@ impl MailPage {
                     } else if n_press == 2 {
                         page.dismiss_active_agenda_popover();
                         let dialog = crate::dialogs::EventDialog::new_for_edit(event);
-                        dialog.present(page.root().as_ref());
+                        dialog.present_adaptive(&page);
                     }
                 }
                 AgendaSidebarCanvasItem::TaskRow { task, completed, checkbox_rect, y: row_y, height: row_h, .. } => {
@@ -28408,7 +28408,7 @@ impl MailPage {
             }
             if let Some(page) = page_for_edit.upgrade() {
                 let dialog = crate::dialogs::EventDialog::new_for_edit(&ev_for_edit);
-                dialog.present(page.root().as_ref());
+                dialog.present_adaptive(&page);
             }
         });
         actions_box.append(&edit_btn);

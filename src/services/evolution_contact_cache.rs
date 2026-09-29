@@ -518,6 +518,7 @@ pub fn list_cached_address_book_sources() -> Vec<EdsSource> {
                 .backend_name
                 .unwrap_or_else(|| "sqlite-cache".to_string()),
             enabled: true,
+            writable: true,
             parent_name: target.parent_name,
             color: None,
             foreign_mail: None,

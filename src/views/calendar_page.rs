@@ -1519,7 +1519,7 @@ impl CalendarPage {
                 page.reload_calendar_data();
             }
         });
-        dialog.present(self.root().as_ref());
+        dialog.present_adaptive(self);
     }
 
     pub fn outer_paned(&self) -> Option<gtk::Paned> {
@@ -2672,7 +2672,7 @@ impl CalendarPage {
                             p.reload_calendar_data();
                         }
                     });
-                    dialog.present(page.root().as_ref());
+                    dialog.present_adaptive(&page);
                 }
             },
         );
@@ -6985,7 +6985,7 @@ impl CalendarPage {
                     &source.display_name,
                     &source.backend_name,
                     source.enabled,
-                    source.enabled,
+                    source.writable,
                 )
                 .with_color(color)
                 .with_group(group),
@@ -14064,7 +14064,7 @@ fn show_calendar_day_context_menu(
                     page.reload_calendar_data();
                 }
             });
-            dialog.present(page.root().as_ref());
+            dialog.present_adaptive(&page);
         }
     });
     menu_box.append(&new_btn);
@@ -14083,7 +14083,7 @@ fn show_calendar_day_context_menu(
                     page.reload_calendar_data();
                 }
             });
-            dialog.present(page.root().as_ref());
+            dialog.present_adaptive(&page);
         }
     });
     menu_box.append(&allday_btn);
@@ -17337,7 +17337,7 @@ fn open_event_editor_for_widget<W: IsA<gtk::Widget>>(widget: &W, event: &Calenda
             });
         }
     }
-    dialog.present(widget.root().as_ref());
+    dialog.present_adaptive(widget);
 }
 
 fn event_time_text(event: &CalendarEventRecord) -> String {
@@ -18734,7 +18734,7 @@ fn append_event_row(
                 });
             }
         }
-        dialog.present(edit_button_for_click.root().as_ref());
+        dialog.present_adaptive(&edit_button_for_click);
     });
 
     let event_for_print = event.clone();

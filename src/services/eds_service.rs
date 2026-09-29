@@ -31,6 +31,10 @@ use super::eds_source_cache_service::{
 const EDS_RETRY_MIN_SECONDS: u64 = 2;
 const EDS_RETRY_MAX_SECONDS: u64 = 300;
 
+fn default_true() -> bool {
+    true
+}
+
 /// Represents a data source registered in EDS (mail account, calendar, etc.)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EdsSource {
@@ -42,6 +46,9 @@ pub struct EdsSource {
     pub backend_name: String,
     /// Whether this source is enabled
     pub enabled: bool,
+    /// Whether this source is writable (not read-only)
+    #[serde(default = "default_true")]
+    pub writable: bool,
     /// Parent account or group name (e.g. "Auf diesem Computer", "Kontakte", "user@example.com")
     #[serde(default)]
     pub parent_name: Option<String>,
@@ -206,7 +213,7 @@ fn extract_source(
         std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
     >,
     kind: EdsSourceKind,
-) -> Option<(String, String, String, bool, Option<String>, Option<String>, Option<String>)> {
+) -> Option<(String, String, String, bool, bool, Option<String>, Option<String>, Option<String>)> {
     let uid = source_props
         .get("UID")
         .and_then(value_to_string)
@@ -228,6 +235,11 @@ fn extract_source(
         .and_then(value_to_bool)
         .unwrap_or(true);
 
+    let property_writable = source_props
+        .get("Writable")
+        .and_then(value_to_bool)
+        .unwrap_or(true);
+
     let property_parent = source_props
         .get("Parent")
         .and_then(value_to_string)
@@ -244,6 +256,7 @@ fn extract_source(
             property_display_name,
             property_backend_name,
             property_enabled,
+            property_writable,
             property_parent,
             property_color,
             None,
@@ -256,10 +269,12 @@ fn extract_source(
         property_display_name,
         property_backend_name,
         property_enabled,
+        property_writable,
         property_parent,
+        &uid,
     )
-    .map(|(display_name, backend_name, enabled, parent, color, foreign_mail)| {
-        (uid, display_name, backend_name, enabled, parent, color.or(property_color), foreign_mail)
+    .map(|(display_name, backend_name, enabled, writable, parent, color, foreign_mail)| {
+        (uid, display_name, backend_name, enabled, writable, parent, color.or(property_color), foreign_mail)
     })
 }
 
@@ -269,8 +284,10 @@ fn parse_source_data(
     fallback_display_name: String,
     fallback_backend_name: String,
     fallback_enabled: bool,
+    fallback_writable: bool,
     fallback_parent: Option<String>,
-) -> Option<(String, String, bool, Option<String>, Option<String>, Option<String>)> {
+    source_uid: &str,
+) -> Option<(String, String, bool, bool, Option<String>, Option<String>, Option<String>)> {
     let key_file = KeyFile::new();
     key_file.load_from_data(data, KeyFileFlags::NONE).ok()?;
 
@@ -298,6 +315,14 @@ fn parse_source_data(
     let enabled = key_file
         .boolean("Data Source", "Enabled")
         .unwrap_or(fallback_enabled);
+    let writable = key_file
+        .boolean(section, "Writable")
+        .ok()
+        .or_else(|| key_file.boolean("Calendar", "Writable").ok())
+        .or_else(|| key_file.boolean("Data Source", "Writable").ok())
+        .unwrap_or(fallback_writable)
+        && backend_name != "contacts"
+        && source_uid != "birthdays";
     let parent = key_file
         .string("Data Source", "Parent")
         .ok()
@@ -320,7 +345,7 @@ fn parse_source_data(
         .map(|value| value.to_string())
         .filter(|value| !value.trim().is_empty());
 
-    Some((display_name, backend_name, enabled, parent, color, foreign_mail))
+    Some((display_name, backend_name, enabled, writable, parent, color, foreign_mail))
 }
 
 fn sort_sources(sources: &mut [EdsSource]) {
@@ -838,7 +863,7 @@ pub async fn list_sources(kind: EdsSourceKind) -> Result<Vec<EdsSource>, EdsServ
             continue;
         };
 
-        let Some((uid, display_name, backend_name, enabled, parent, color, foreign_mail)) =
+        let Some((uid, display_name, backend_name, enabled, writable, parent, color, foreign_mail)) =
             extract_source(path, source_props, interfaces, kind)
         else {
             continue;
@@ -854,6 +879,10 @@ pub async fn list_sources(kind: EdsSourceKind) -> Result<Vec<EdsSource>, EdsServ
                     } else {
                         matching.email.clone()
                     })
+                } else if let Some(paren) = display_name.rfind('(').and_then(|open| {
+                    display_name.rfind(')').filter(|close| *close > open + 1).map(|close| &display_name[open + 1..close])
+                }) {
+                    Some(paren.trim().to_string())
                 } else {
                     Some(fm.to_string())
                 }
@@ -878,6 +907,7 @@ pub async fn list_sources(kind: EdsSourceKind) -> Result<Vec<EdsSource>, EdsServ
                 display_name,
                 backend_name,
                 enabled,
+                writable,
                 parent_name,
                 color: resolved_color,
                 foreign_mail,
@@ -939,6 +969,7 @@ async fn get_goa_mail_accounts() -> Result<Vec<EdsSource>, EdsServiceError> {
                     display_name: format!("{} ({})", identity, provider_name),
                     backend_name: provider_type,
                     enabled: true,
+                    writable: true,
                     parent_name: Some(identity),
                     color: None,
                     foreign_mail: None,
@@ -998,6 +1029,7 @@ async fn get_goa_calendar_accounts() -> Result<Vec<EdsSource>, EdsServiceError> 
                     display_name: format!("{} ({})", identity, provider_name),
                     backend_name: provider_type,
                     enabled: true,
+                    writable: true,
                     parent_name: Some(identity),
                     color: None,
                     foreign_mail: None,
@@ -1090,6 +1122,7 @@ async fn get_goa_contacts_accounts() -> Result<Vec<EdsSource>, EdsServiceError> 
                     display_name: format!("{} ({})", identity, provider_name),
                     backend_name: provider_type,
                     enabled: true,
+                    writable: true,
                     parent_name: Some(identity),
                     color: None,
                     foreign_mail: None,
@@ -1226,6 +1259,7 @@ pub async fn list_address_book_sources() -> Result<Vec<EdsSource>, EdsServiceErr
                 display_name: crate::i18n::gettext("Contacts"),
                 backend_name: collection.backend_name.clone(),
                 enabled: collection.enabled,
+                writable: true,
                 parent_name: Some(account_name),
                 color: None,
                 foreign_mail: None,
@@ -1413,6 +1447,7 @@ fn macos_configured_mail_sources(
             display_name: profile.display_name.clone(),
             backend_name: profile.protocol.as_str().to_string(),
             enabled: profile.enabled,
+            writable: true,
             parent_name: None,
             color: None,
             foreign_mail: None,
@@ -1638,6 +1673,7 @@ mod tests {
                 display_name: "Calendar".to_string(),
                 backend_name: "eventkit".to_string(),
                 enabled: true,
+                writable: true,
                 parent_name: None,
                 color: None,
                 foreign_mail: None,
@@ -1656,6 +1692,7 @@ mod tests {
             display_name: "Test Account".to_string(),
             backend_name: "imapx".to_string(),
             enabled: true,
+            writable: true,
             parent_name: None,
             color: None,
             foreign_mail: None,
@@ -1678,6 +1715,7 @@ mod tests {
                 display_name: "Work".to_string(),
                 backend_name: "imapx".to_string(),
                 enabled: true,
+                writable: true,
                 parent_name: None,
                 color: None,
                 foreign_mail: None,
@@ -1687,6 +1725,7 @@ mod tests {
                 display_name: "private".to_string(),
                 backend_name: "local".to_string(),
                 enabled: true,
+                writable: true,
                 parent_name: None,
                 color: None,
                 foreign_mail: None,
@@ -1696,6 +1735,7 @@ mod tests {
                 display_name: "Private".to_string(),
                 backend_name: "local".to_string(),
                 enabled: false,
+                writable: true,
                 parent_name: None,
                 color: None,
                 foreign_mail: None,
@@ -1724,11 +1764,14 @@ mod tests {
                 "fallback".to_string(),
                 "unknown".to_string(),
                 false,
+                true,
                 None,
+                "domain-account",
             ),
             Some((
                 "Domain Account".to_string(),
                 "imapx".to_string(),
+                true,
                 true,
                 None,
                 None,
@@ -1742,7 +1785,9 @@ mod tests {
                 "fallback".to_string(),
                 "unknown".to_string(),
                 false,
+                true,
                 None,
+                "domain-account",
             ),
             None
         );
@@ -1757,13 +1802,16 @@ mod tests {
             "fallback".to_string(),
             "unknown".to_string(),
             false,
+            true,
             None,
+            "shared-calendar",
         );
         assert_eq!(
             parsed,
             Some((
                 "Kalender (EDV)".to_string(),
                 "ews".to_string(),
+                true,
                 true,
                 Some("primary-account".to_string()),
                 Some("#e66100".to_string()),
@@ -1832,8 +1880,8 @@ mod tests {
         );
         for s in &cal_discovery.sources {
             println!(
-                "  [Cal] uid={}, name={}, backend={}, parent={:?}",
-                s.uid, s.display_name, s.backend_name, s.parent_name
+                "  [Cal] uid={}, name={}, backend={}, writable={}, parent={:?}",
+                s.uid, s.display_name, s.backend_name, s.writable, s.parent_name
             );
         }
 

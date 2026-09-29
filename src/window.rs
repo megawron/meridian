@@ -7614,7 +7614,7 @@ mod tests {
     }
 
     #[test]
-    fn test_event_dialog_is_modal_adw_dialog() {
+    fn test_event_dialog_modal_presentation_and_split() {
         let _gtk_lock = GTK_TEST_MUTEX
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -7626,9 +7626,30 @@ mod tests {
         window.set_visible(true);
 
         let dialog = crate::dialogs::EventDialog::new();
-        dialog.present(Some(&window));
+        // Initially not modal until presented modal
+        assert!(!dialog.is_modal());
+
+        // Test modal presentation
+        dialog.present_modal(&window);
+        assert!(dialog.is_modal());
         assert!(dialog.root().is_some());
         assert_eq!(dialog.root().as_ref(), window.root().as_ref());
+        let btn_open = dialog.imp().btn_open_in_new_window.borrow().clone();
+        assert!(btn_open.is_some());
+        assert!(btn_open.unwrap().is_visible());
+
+        // Test splitting to standalone window
+        dialog.split_to_standalone_window();
+        assert!(dialog.imp().close_confirmed.get());
+
+        // Test standalone presentation
+        let standalone = crate::dialogs::EventDialog::new();
+        assert!(!standalone.is_modal());
+        standalone.present_standalone();
+        assert!(!standalone.is_modal());
+        let btn_standalone = standalone.imp().btn_open_in_new_window.borrow().clone();
+        assert!(btn_standalone.is_some());
+        assert!(!btn_standalone.unwrap().is_visible());
     }
 
     #[test]

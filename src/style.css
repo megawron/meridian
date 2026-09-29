@@ -387,12 +387,12 @@ image.mail-column-header-icon {
 }
 
 .mail-detail-subject {
-  font-size: 1.15rem;
+  font-size: 1.30rem;
   font-weight: 700;
-  line-height: 1.35;
+  line-height: 1.30;
   color: @window_fg_color;
   margin-top: 0;
-  margin-bottom: 2px;
+  margin-bottom: 4px;
   padding: 0;
 }
 
@@ -485,42 +485,78 @@ image.mail-column-header-icon {
   min-width: 4px;
 }
 
-.mail-search-bar {
-  min-height: 34px;
-  margin-top: 4px;
-  margin-bottom: 4px;
+.mail-search-bar,
+searchbar {
+  min-height: 0;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
 }
 
-.mail-search-bar dropdown {
-  min-width: 80px;
-  min-height: 26px;
+.mail-search-bar > revealer > box,
+searchbar > revealer > box {
+  min-height: 44px;
+  background-color: @headerbar_bg_color;
+  border-bottom: 1px solid alpha(@borders, 0.45);
 }
 
-.mail-search-bar dropdown > button.combo {
-  min-height: 26px;
-  padding: 1px 6px;
-  font-size: 0.85rem;
-}
-
+/* All inputs, buttons, dropdowns, and pills inside searchbars share identical 34px height */
+searchbar entry,
+searchbar entry.search,
+searchbar .search-mode-button,
+searchbar .linked button,
+searchbar button,
+searchbar menubutton,
+searchbar menubutton > button,
+searchbar dropdown,
+searchbar dropdown > button.combo,
+.mail-search-bar entry,
+.mail-search-bar entry.search,
+.mail-search-bar .search-mode-button,
+.mail-search-bar .linked button,
 .mail-search-bar button,
-.mail-search-bar menubutton {
-  min-width: 24px;
-  min-height: 24px;
-  padding: 1px 4px;
+.mail-search-bar menubutton,
+.mail-search-bar menubutton > button,
+.mail-search-bar dropdown,
+.mail-search-bar dropdown > button.combo {
+  min-height: 34px;
 }
 
+/* Search mode switcher buttons [ Abc | *? | .* ] */
 .search-mode-button {
-  font-size: 0.80rem;
+  font-size: 0.82rem;
   font-weight: 600;
-  padding: 1px 7px;
-  min-height: 24px;
-  min-width: 28px;
+  padding: 0 10px;
+  min-height: 34px;
+  min-width: 34px;
 }
 
 .search-mode-button:checked {
   background-color: alpha(@accent_color, 0.18);
   color: @accent_color;
   font-weight: 700;
+}
+
+/* Icon action buttons in searchbars share identical 34px x 34px dimensions */
+searchbar button.circular,
+searchbar menubutton.circular > button,
+.mail-search-bar button.circular,
+.mail-search-bar menubutton.circular > button,
+.search-options-button,
+.search-options-button > button,
+.save-search-button {
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0;
+}
+
+/* Search bar dropdowns */
+searchbar dropdown > button.combo,
+.mail-search-bar dropdown > button.combo {
+  min-height: 34px;
+  padding: 0 8px;
+  font-size: 0.85rem;
 }
 
 .thread-context {
@@ -1624,10 +1660,6 @@ splitview > .sidebar {
   margin-right: 2px;
 }
 
-searchbar {
-  background-color: @headerbar_bg_color;
-  border-bottom: 1px solid alpha(@borders, 0.45);
-}
 
 .calendar-title-date {
   font-weight: 600;
@@ -1662,6 +1694,21 @@ searchbar {
 
 .itip-banner.itip-accepted {
   border-left-color: #2ec27e;
+}
+
+.itip-banner.is-compact {
+  padding: 6px 14px;
+  margin: 2px 16px 4px 16px;
+}
+
+.itip-banner.is-compact .title-3 {
+  font-size: 0.95rem;
+}
+
+.itip-banner.is-compact button {
+  min-height: 28px;
+  padding: 2px 10px;
+  font-size: 0.8rem;
 }
 
 .itip-status-badge {
@@ -3008,10 +3055,15 @@ scrollbar.mail-table-overlay-scrollbar slider:active {
   font-size: 1.05rem;
 }
 
+.mail-modern-sender-address {
+  font-size: 0.90rem;
+  line-height: 1.35;
+}
+
 .mail-details-toggle {
   font-size: 0.96rem;
-  padding: 2px 6px;
-  min-height: 24px;
+  padding: 1px 6px 2px 6px;
+  min-height: 26px;
   min-width: 0;
   border-radius: 4px;
   color: alpha(@window_fg_color, 0.78);
@@ -3028,6 +3080,7 @@ scrollbar.mail-table-overlay-scrollbar slider:active {
   font-weight: 500;
   color: inherit;
   min-width: 0;
+  line-height: 1.35;
 }
 
 .mail-header-load-images-btn {
@@ -3153,22 +3206,22 @@ menubutton.mail-header-action-btn > button image {
   -gtk-icon-size: 15px;
 }
 
-/* ── Convey-inspired Action Pills for Hauptaktionen & Nebenaktionen ── */
+/* ── Action Pills for Hauptaktionen & Nebenaktionen (GNOME HIG / Libadwaita compliant: borderless) ── */
 .mail-action-pill.linked,
 .mail-header-actions-group.linked {
-  background-color: alpha(@window_fg_color, 0.05);
-  border: 1px solid alpha(@borders, 0.55);
+  background-color: alpha(@window_fg_color, 0.06);
+  border: none;
   border-radius: 8px;
-  box-shadow: 0 1px 2px alpha(black, 0.03);
+  box-shadow: none;
   padding: 0;
 }
 
 @media (prefers-color-scheme: dark) {
   .mail-action-pill.linked,
   .mail-header-actions-group.linked {
-    background-color: alpha(@window_fg_color, 0.07);
-    border: 1px solid alpha(white, 0.12);
-    box-shadow: 0 1px 2px alpha(black, 0.15);
+    background-color: alpha(@window_fg_color, 0.08);
+    border: none;
+    box-shadow: none;
   }
 }
 
@@ -3195,12 +3248,12 @@ menubutton.mail-header-action-btn > button image {
   background: transparent;
 }
 
-/* Subtle vertical dividers between buttons inside the pill */
+/* Borderless dividers between buttons inside the pill per GNOME HIG */
 .mail-action-pill.linked > button.mail-header-action-btn:not(:last-child),
 .mail-action-pill.linked > menubutton.mail-header-action-btn:not(:last-child) > button,
 .mail-header-actions-group.linked > button.mail-header-action-btn:not(:last-child),
 .mail-header-actions-group.linked > menubutton.mail-header-action-btn:not(:last-child) > button {
-  border-right: 1px solid alpha(@borders, 0.35);
+  border-right: none;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -3208,7 +3261,7 @@ menubutton.mail-header-action-btn > button image {
   .mail-action-pill.linked > menubutton.mail-header-action-btn:not(:last-child) > button,
   .mail-header-actions-group.linked > button.mail-header-action-btn:not(:last-child),
   .mail-header-actions-group.linked > menubutton.mail-header-action-btn:not(:last-child) > button {
-    border-right: 1px solid alpha(white, 0.08);
+    border-right: none;
   }
 }
 
@@ -3278,9 +3331,9 @@ menubutton.mail-header-action-btn > button image {
 .sidebar-drawer-header.mail-preview-actions-bar label.mail-preview-date-label,
 .mail-preview-actions-bar .mail-preview-date-label,
 .mail-preview-date-label {
-  font-size: 0.85rem;
+  font-size: 0.94rem;
   font-weight: 500;
-  color: alpha(@window_fg_color, 0.72);
+  color: alpha(@window_fg_color, 0.85);
   margin-right: 2px;
 }
 
@@ -3452,5 +3505,28 @@ popover.menu.touch modelbutton {
 
 .calendar-overflow-item-btn:hover {
   background: alpha(@theme_fg_color, 0.08);
+}
+
+/* ── Calendar Picker Popover (Event Dialog) ────────────────────────────── */
+.calendar-picker-popover {
+  min-width: 220px;
+}
+
+.calendar-picker-group-label {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: @dim_label;
+}
+
+.calendar-picker-item-button {
+  padding: 4px 8px;
+  border-radius: 6px;
+  min-height: 32px;
+}
+
+.calendar-picker-color-chip {
+  min-width: 12px;
+  min-height: 12px;
+  border-radius: 2px;
 }
 

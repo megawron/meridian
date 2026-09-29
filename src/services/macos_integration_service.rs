@@ -41,6 +41,7 @@ impl MacosSystemSource {
         super::eds_service::EdsSource {
             uid: self.source_uid(), display_name: self.name.clone(),
             backend_name: self.backend.clone(), enabled: true,
+            writable: true,
             parent_name: Some(self.account_name.clone()),
             color: None,
             foreign_mail: None,

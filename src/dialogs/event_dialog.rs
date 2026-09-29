@@ -36,7 +36,7 @@ use crate::services::settings_service::AppSettings;
 mod imp {
     use super::*;
 
-    #[derive(Debug, Default)]
+    #[derive(Default)]
     pub struct EventDialog {
         pub edit_component: RefCell<Option<String>>,
         pub edit_uid: RefCell<Option<String>>,
@@ -46,6 +46,22 @@ mod imp {
         pub initial_end: RefCell<Option<String>>,
         pub initial_allday: Cell<bool>,
         pub initial_summary: RefCell<Option<String>>,
+        pub is_modal: Cell<bool>,
+        pub stored_parent: RefCell<Option<gtk::Widget>>,
+        pub btn_open_in_new_window: RefCell<Option<gtk::Button>>,
+        pub split_handler: RefCell<Option<Rc<dyn Fn()>>>,
+        pub close_confirmed: Cell<bool>,
+    }
+
+    impl std::fmt::Debug for EventDialog {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("EventDialog")
+                .field("edit_component", &self.edit_component)
+                .field("edit_uid", &self.edit_uid)
+                .field("edit_source_uid", &self.edit_source_uid)
+                .field("is_modal", &self.is_modal.get())
+                .finish()
+        }
     }
 
     #[glib::object_subclass]
@@ -223,6 +239,39 @@ fn split_datetime_for_entries(datetime_str: &str) -> (String, String) {
         (d.to_string(), time_part)
     } else {
         (s.to_string(), "09:00".to_string())
+    }
+}
+
+pub(crate) fn clean_calendar_display_name(display_name: &str, group: &str) -> String {
+    let trimmed = display_name.trim();
+    let group_trimmed = group.trim();
+    if !group_trimmed.is_empty() {
+        let suffix = format!(" ({group_trimmed})");
+        if let Some(stripped) = trimmed.strip_suffix(&suffix) {
+            return stripped.trim().to_string();
+        }
+        let prefix = format!("{group_trimmed} – ");
+        if let Some(stripped) = trimmed.strip_prefix(&prefix) {
+            return stripped.trim().to_string();
+        }
+    }
+    if let Some(idx) = trimmed.rfind(" (") {
+        if trimmed.ends_with(')') {
+            let inner = &trimmed[idx + 2..trimmed.len() - 1];
+            if inner.contains('@') || inner.eq_ignore_ascii_case(group_trimmed) {
+                return trimmed[..idx].trim().to_string();
+            }
+        }
+    }
+    trimmed.to_string()
+}
+
+pub(crate) fn calendar_group_sort_key(group: &str) -> (u8, &str) {
+    let lower = group.to_lowercase();
+    if lower == "on this computer" || lower == "auf diesem rechner" || lower == "lokal" {
+        (0, group)
+    } else {
+        (1, group)
     }
 }
 
@@ -976,6 +1025,69 @@ impl EventDialog {
             .build()
     }
 
+    pub fn set_transient_for<W: IsA<gtk::Window> + IsA<gtk::Widget>>(&self, parent: Option<&W>) {
+        if let Some(p) = parent {
+            self.imp().stored_parent.replace(Some(p.clone().upcast()));
+        } else {
+            self.imp().stored_parent.borrow_mut().take();
+        }
+    }
+
+    pub fn is_modal(&self) -> bool {
+        self.imp().is_modal.get()
+    }
+
+    pub fn present_modal(&self, parent: &impl IsA<gtk::Widget>) {
+        self.imp().is_modal.set(true);
+        self.imp().stored_parent.replace(Some(parent.upcast_ref::<gtk::Widget>().clone()));
+        if let Some(btn) = self.imp().btn_open_in_new_window.borrow().as_ref() {
+            btn.set_visible(true);
+        }
+        adw::prelude::AdwDialogExt::present(self, Some(parent));
+    }
+
+    pub fn present_standalone(&self) {
+        self.imp().is_modal.set(false);
+        if let Some(btn) = self.imp().btn_open_in_new_window.borrow().as_ref() {
+            btn.set_visible(false);
+        }
+        adw::prelude::AdwDialogExt::present(self, None::<&gtk::Widget>);
+    }
+
+    pub fn present_adaptive(&self, parent: &impl IsA<gtk::Widget>) {
+        if let Some(win) = crate::window::find_evolution_window(parent) {
+            self.set_transient_for(Some(&win));
+            if win.is_mobile() || win.is_tablet() {
+                self.present_modal(parent);
+                return;
+            }
+        }
+        self.present_standalone();
+    }
+
+    pub fn present(&self) {
+        if self.imp().is_modal.get() {
+            if let Some(parent) = self.imp().stored_parent.borrow().as_ref() {
+                self.present_modal(parent);
+                return;
+            }
+        }
+        self.present_standalone();
+    }
+
+    pub fn split_to_standalone_window(&self) {
+        if let Some(btn) = self.imp().btn_open_in_new_window.borrow().as_ref() {
+            btn.set_sensitive(false);
+        }
+        if let Some(handler) = self.imp().split_handler.borrow().as_ref() {
+            handler();
+        } else {
+            self.imp().close_confirmed.set(true);
+            self.close();
+            self.present_standalone();
+        }
+    }
+
     fn build_ui(&self) {
         let edit_component = self.imp().edit_component.borrow().clone();
         let edit_uid = self.imp().edit_uid.borrow().clone();
@@ -983,17 +1095,22 @@ impl EventDialog {
         let toolbar_view = adw::ToolbarView::new();
 
         let header_bar = adw::HeaderBar::new();
-        let btn_save_and_close = gtk::Button::builder()
-            .label("Speichern und schließen")
-            .css_classes(vec!["suggested-action"])
-            .build();
-        header_bar.pack_start(&btn_save_and_close);
 
-        let btn_save = gtk::Button::builder()
-            .icon_name("document-save-symbolic")
-            .tooltip_text("Speichern")
+        let btn_open_in_new_window = gtk::Button::builder()
+            .icon_name("window-new-symbolic")
+            .tooltip_text("In neuem Fenster öffnen")
+            .css_classes(vec!["flat"])
+            .visible(self.imp().is_modal.get())
             .build();
-        header_bar.pack_start(&btn_save);
+        btn_open_in_new_window.connect_clicked(glib::clone!(
+            #[weak(rename_to = dialog)]
+            self,
+            move |_| {
+                dialog.split_to_standalone_window();
+            }
+        ));
+        header_bar.pack_start(&btn_open_in_new_window);
+        self.imp().btn_open_in_new_window.replace(Some(btn_open_in_new_window));
 
         let btn_cancel = gtk::Button::builder()
             .label("Abbrechen")
@@ -1004,7 +1121,13 @@ impl EventDialog {
                 dialog.close();
             }
         });
-        header_bar.pack_end(&btn_cancel);
+        header_bar.pack_start(&btn_cancel);
+
+        let btn_save = gtk::Button::builder()
+            .label("Speichern")
+            .css_classes(vec!["suggested-action"])
+            .build();
+        header_bar.pack_end(&btn_save);
 
         let window_title = adw::WindowTitle::builder()
             .title(if edit_uid.is_some() {
@@ -1060,36 +1183,67 @@ impl EventDialog {
             .css_classes(vec!["appointment-color-badge"])
             .build();
 
-        let calendar_model = gtk::StringList::new(&["Kalender werden geladen…"]);
-        let calendar_source_uids = Rc::new(RefCell::new(Vec::<String>::new()));
-        let calendar_source_colors = Rc::new(RefCell::new(Vec::<String>::new()));
-        let row_calendar = gtk::DropDown::builder()
-            .model(&calendar_model)
+        let selected_source_uid = Rc::new(RefCell::new(String::new()));
+        let selected_source_color = Rc::new(RefCell::new(String::new()));
+        let selected_source_name = Rc::new(RefCell::new(String::new()));
+
+        let calendar_popover_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .margin_top(6)
+            .margin_bottom(6)
+            .margin_start(6)
+            .margin_end(6)
+            .build();
+
+        let calendar_scrolled = gtk::ScrolledWindow::builder()
+            .max_content_height(360)
+            .propagate_natural_height(true)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&calendar_popover_box)
+            .build();
+
+        let calendar_popover = gtk::Popover::builder()
+            .css_classes(vec!["calendar-picker-popover"])
+            .child(&calendar_scrolled)
+            .has_arrow(true)
+            .autohide(true)
+            .build();
+
+        let btn_calendar_chip = gtk::Box::builder()
+            .css_classes(vec!["calendar-picker-color-chip"])
             .valign(gtk::Align::Center)
             .build();
-        row_calendar.set_sensitive(edit_uid.is_none());
-        let settings_for_default_calendar = AppSettings::try_new();
-        let calendar_source_uids_for_selection = Rc::clone(&calendar_source_uids);
-        row_calendar.connect_selected_notify(move |row| {
-            let Some(settings) = settings_for_default_calendar.as_ref() else {
-                return;
-            };
-            let Some(source_uid) = calendar_source_uids_for_selection
-                .borrow()
-                .get(row.selected() as usize)
-                .cloned()
-            else {
-                return;
-            };
-            settings.set_default_calendar_source_uid(&source_uid);
-        });
+
+        let btn_calendar_label = gtk::Label::builder()
+            .label("Kalender werden geladen…")
+            .xalign(0.0)
+            .build();
+
+        let btn_calendar_arrow = gtk::Image::from_icon_name("pan-down-symbolic");
+
+        let btn_calendar_content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+        btn_calendar_content.append(&btn_calendar_chip);
+        btn_calendar_content.append(&btn_calendar_label);
+        btn_calendar_content.append(&btn_calendar_arrow);
+
+        let btn_calendar = gtk::MenuButton::builder()
+            .child(&btn_calendar_content)
+            .popover(&calendar_popover)
+            .valign(gtk::Align::Center)
+            .build();
+        btn_calendar.set_sensitive(edit_uid.is_none());
 
         let row_calendar_action = adw::ActionRow::builder()
             .title("Kalender")
-            .activatable_widget(&row_calendar)
+            .activatable_widget(&btn_calendar)
             .build();
         row_calendar_action.add_prefix(&color_badge);
-        row_calendar_action.add_suffix(&row_calendar);
+        row_calendar_action.add_suffix(&btn_calendar);
         group_basic.add(&row_calendar_action);
 
         let row_location = adw::EntryRow::builder()
@@ -1514,7 +1668,7 @@ impl EventDialog {
         // Timeline live updater
         let events_cache = Rc::new(RefCell::new(Vec::<CalendarEventRecord>::new()));
         let color_badge_provider = Rc::new(RefCell::new(None::<gtk::CssProvider>));
-        let calendar_source_colors_for_timeline = Rc::clone(&calendar_source_colors);
+        let selected_source_color_for_timeline = Rc::clone(&selected_source_color);
         let update_timeline = {
             let all_day_box = all_day_box.clone();
             let timeline_fixed = timeline_fixed.clone();
@@ -1526,12 +1680,11 @@ impl EventDialog {
             let row_allday = row_allday.clone();
             let entry_title = entry_title.clone();
             let edit_uid = edit_uid.clone();
-            let row_calendar = row_calendar.clone();
-            let calendar_source_colors = Rc::clone(&calendar_source_colors_for_timeline);
+            let selected_source_color = Rc::clone(&selected_source_color_for_timeline);
             let color_badge_provider = Rc::clone(&color_badge_provider);
             Rc::new(move || {
-                let selected_idx = row_calendar.selected() as usize;
-                let cal_color = calendar_source_colors.borrow().get(selected_idx).cloned();
+                let color_val = selected_source_color.borrow().clone();
+                let cal_color = if color_val.is_empty() { None } else { Some(color_val) };
 
                 if let Some(ref color) = cal_color {
                     if let Some(display) = gtk::gdk::Display::default() {
@@ -1568,8 +1721,6 @@ impl EventDialog {
             })
         };
 
-        let update_tl_cal = update_timeline.clone();
-        row_calendar.connect_selected_notify(move |_| update_tl_cal());
         update_timeline();
 
         let update_tl_sdate = update_timeline.clone();
@@ -1666,12 +1817,13 @@ impl EventDialog {
 
         if let Some(component) = edit_component.as_deref() {
             let summary = ical_property(component, "SUMMARY").unwrap_or_default();
-            entry_title.set_text(&summary);
             let trimmed = summary.trim();
             if trimmed.is_empty() {
+                entry_title.set_text("");
                 self.set_title("Termin — Keine Zusammenfassung");
                 window_title.set_subtitle("");
             } else {
+                entry_title.set_text(trimmed);
                 self.set_title(&format!("Termin — {trimmed}"));
                 window_title.set_subtitle(trimmed);
             }
@@ -1749,100 +1901,311 @@ impl EventDialog {
             }
         }
 
-        let calendar_source_uids_for_discovery = Rc::clone(&calendar_source_uids);
-        let calendar_source_colors_for_discovery = Rc::clone(&calendar_source_colors);
-        let row_calendar_for_discovery = row_calendar.clone();
+        let selected_source_uid_for_discovery = Rc::clone(&selected_source_uid);
+        let selected_source_color_for_discovery = Rc::clone(&selected_source_color);
+        let selected_source_name_for_discovery = Rc::clone(&selected_source_name);
+        let btn_calendar_label_for_discovery = btn_calendar_label.clone();
+        let btn_calendar_chip_for_discovery = btn_calendar_chip.clone();
+        let calendar_popover_for_discovery = calendar_popover.clone();
+        let calendar_popover_box_for_discovery = calendar_popover_box.clone();
+        let color_badge_provider_for_discovery = Rc::clone(&color_badge_provider);
         let edit_source_uid_for_discovery = edit_source_uid.clone();
         let update_timeline_for_discovery = update_timeline.clone();
         glib::spawn_future_local(async move {
             let discovery = eds_service::discover_sources(eds_service::EdsSourceKind::Calendar).await;
-            let mut active_sources: Vec<_> = discovery.sources.into_iter().filter(|s| s.enabled).collect();
-            active_sources.sort_by_cached_key(|source| {
-                (source.display_name.to_lowercase(), source.uid.clone())
-            });
+            let active_sources: Vec<_> = discovery
+                .sources
+                .into_iter()
+                .filter(|s| {
+                    let is_edit_target = edit_source_uid_for_discovery
+                        .as_deref()
+                        .map(|uid| uid == s.uid)
+                        .unwrap_or(false);
+                    (s.enabled && s.writable && s.backend_name != "contacts" && s.uid != "birthdays")
+                        || is_edit_target
+                })
+                .collect();
 
-            struct CalendarItem {
+            struct TempItem {
                 uid: String,
-                display_name: String,
+                clean_name: String,
+                group: String,
                 color: String,
             }
 
-            let mut items: Vec<CalendarItem> = Vec::new();
-            for source in active_sources {
+            let mut temp_items: Vec<TempItem> = Vec::new();
+            for source in &active_sources {
                 let color = crate::views::calendar_page::calendar_source_color(&source.uid, &source.display_name);
-                items.push(CalendarItem {
-                    uid: source.uid,
-                    display_name: source.display_name,
+                let group = if let Some(parent) = source.parent_name.as_deref().filter(|s| !s.trim().is_empty()) {
+                    parent.trim().to_string()
+                } else if source.uid == "system-calendar" || source.backend_name == "local" {
+                    "On This Computer".to_string()
+                } else {
+                    "Andere".to_string()
+                };
+                let clean_name = clean_calendar_display_name(&source.display_name, &group);
+                temp_items.push(TempItem {
+                    uid: source.uid.clone(),
+                    clean_name,
+                    group,
                     color,
                 });
             }
 
-            for collection in crate::services::eds_service::load_configured_account_collections() {
-                if !collection.calendar_enabled {
-                    continue;
-                }
-                let account_name = collection.display_name.clone();
-                let already_represented = items.iter().any(|item| {
-                    item.display_name == account_name
-                        || item.uid == collection.uid
-                        || item.uid == format!("account-calendar-{}", collection.uid)
-                });
-                if !already_represented {
+            if active_sources.is_empty() {
+                for collection in crate::services::eds_service::load_configured_account_collections() {
+                    if !collection.calendar_enabled {
+                        continue;
+                    }
+                    let account_name = collection.display_name.clone();
                     let cal_uid = format!("account-calendar-{}", collection.uid);
                     let color = crate::views::calendar_page::calendar_source_color(&collection.uid, &account_name);
-                    let display_name = if !account_name.is_empty() {
-                        format!("{account_name} – Kalender")
+                    let group = if !account_name.is_empty() {
+                        account_name
                     } else {
-                        "Kalender".to_string()
+                        "Konten".to_string()
                     };
-                    items.push(CalendarItem {
+                    temp_items.push(TempItem {
                         uid: cal_uid,
-                        display_name,
+                        clean_name: "Kalender".to_string(),
+                        group,
+                        color,
+                    });
+                }
+
+                if crate::services::calendar_store_service::CalendarStoreService::new().is_writable() {
+                    let color = crate::views::calendar_page::calendar_source_color("local-calendar", "Lokaler Kalender");
+                    temp_items.push(TempItem {
+                        uid: "local-calendar".to_string(),
+                        clean_name: "Lokaler Kalender".to_string(),
+                        group: "On This Computer".to_string(),
                         color,
                     });
                 }
             }
 
-            if crate::services::calendar_store_service::CalendarStoreService::new().is_writable() {
-                let color = crate::views::calendar_page::calendar_source_color("local-calendar", "Lokaler Kalender");
-                items.push(CalendarItem {
-                    uid: "local-calendar".to_string(),
-                    display_name: "Lokaler Kalender".to_string(),
-                    color,
-                });
+            let mut name_counts = std::collections::HashMap::new();
+            for it in &temp_items {
+                *name_counts.entry(it.clean_name.clone()).or_insert(0) += 1;
             }
 
-            let names: Vec<String> = items.iter().map(|it| it.display_name.clone()).collect();
-            let uids: Vec<String> = items.iter().map(|it| it.uid.clone()).collect();
-            let colors: Vec<String> = items.iter().map(|it| it.color.clone()).collect();
+            #[derive(Clone)]
+            struct CalendarPickerItem {
+                uid: String,
+                display_name: String,
+                picker_label: String,
+                group: String,
+                color: String,
+            }
 
-            let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
-            calendar_model.splice(0, calendar_model.n_items(), &name_refs);
-            calendar_source_uids_for_discovery.replace(uids.clone());
-            calendar_source_colors_for_discovery.replace(colors.clone());
+            let mut items: Vec<CalendarPickerItem> = temp_items
+                .into_iter()
+                .map(|it| {
+                    let picker_label = if name_counts.get(&it.clean_name).copied().unwrap_or(0) > 1 {
+                        format!("{} ({})", it.clean_name, it.group)
+                    } else {
+                        it.clean_name.clone()
+                    };
+                    CalendarPickerItem {
+                        uid: it.uid,
+                        display_name: it.clean_name,
+                        picker_label,
+                        group: it.group,
+                        color: it.color,
+                    }
+                })
+                .collect();
 
-            if let Some(edit_source_uid) = edit_source_uid_for_discovery.as_deref() {
-                if let Some(index) = uids.iter().position(|uid| uid == edit_source_uid) {
-                    row_calendar_for_discovery.set_selected(index as u32);
-                }
+            items.sort_by(|a, b| {
+                calendar_group_sort_key(&a.group)
+                    .cmp(&calendar_group_sort_key(&b.group))
+                    .then_with(|| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()))
+                    .then_with(|| a.uid.cmp(&b.uid))
+            });
+
+            let selected_idx = if let Some(edit_source_uid) = edit_source_uid_for_discovery.as_deref() {
+                items.iter().position(|it| it.uid == edit_source_uid).unwrap_or(0)
             } else if let Some(settings) = AppSettings::try_new() {
                 let default_uid = settings.default_calendar_source_uid();
                 if !default_uid.is_empty() {
-                    if let Some(index) = uids.iter().position(|uid| uid == &default_uid) {
-                        row_calendar_for_discovery.set_selected(index as u32);
+                    items.iter().position(|it| it.uid == default_uid).unwrap_or(0)
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+
+            if let Some(selected_item) = items.get(selected_idx).cloned() {
+                selected_source_uid_for_discovery.replace(selected_item.uid.clone());
+                selected_source_color_for_discovery.replace(selected_item.color.clone());
+                selected_source_name_for_discovery.replace(selected_item.picker_label.clone());
+                btn_calendar_label_for_discovery.set_text(&selected_item.picker_label);
+
+                let chip_css = format!(
+                    "box {{ background-color: {}; min-width: 12px; min-height: 12px; border-radius: 2px; }}",
+                    selected_item.color
+                );
+                let prov = gtk::CssProvider::new();
+                prov.load_from_string(&chip_css);
+                btn_calendar_chip_for_discovery.style_context().add_provider(&prov, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+
+                if let Some(display) = gtk::gdk::Display::default() {
+                    let mut prov_slot = color_badge_provider_for_discovery.borrow_mut();
+                    let css = format!(
+                        "box.appointment-color-badge {{ background-color: {}; min-width: 14px; min-height: 14px; border-radius: 9999px; margin-end: 6px; }}",
+                        selected_item.color
+                    );
+                    if let Some(ref p) = *prov_slot {
+                        p.load_from_string(&css);
+                    } else {
+                        let p = gtk::CssProvider::new();
+                        p.load_from_string(&css);
+                        gtk::style_context_add_provider_for_display(
+                            &display,
+                            &p,
+                            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                        );
+                        *prov_slot = Some(p);
                     }
                 }
             }
+
+            while let Some(child) = calendar_popover_box_for_discovery.first_child() {
+                calendar_popover_box_for_discovery.remove(&child);
+            }
+
+            let check_icons: Rc<RefCell<Vec<(String, gtk::Image)>>> = Rc::new(RefCell::new(Vec::new()));
+            let mut current_group = String::new();
+            let mut is_first_group = true;
+
+            for item in &items {
+                if item.group != current_group {
+                    current_group = item.group.clone();
+                    let header_label = gtk::Label::builder()
+                        .label(&current_group)
+                        .xalign(0.0)
+                        .css_classes(vec!["calendar-picker-group-label"])
+                        .margin_start(10)
+                        .margin_end(10)
+                        .margin_top(if is_first_group { 4 } else { 10 })
+                        .margin_bottom(2)
+                        .build();
+                    calendar_popover_box_for_discovery.append(&header_label);
+                    is_first_group = false;
+                }
+
+                let item_btn = gtk::Button::builder()
+                    .css_classes(vec!["flat", "calendar-picker-item-button"])
+                    .build();
+
+                let row_box = gtk::Box::builder()
+                    .orientation(gtk::Orientation::Horizontal)
+                    .spacing(8)
+                    .margin_start(4)
+                    .margin_end(4)
+                    .build();
+
+                let chip = gtk::Box::builder()
+                    .css_classes(vec!["calendar-picker-color-chip"])
+                    .valign(gtk::Align::Center)
+                    .build();
+                let prov = gtk::CssProvider::new();
+                prov.load_from_string(&format!(
+                    "box {{ background-color: {}; min-width: 12px; min-height: 12px; border-radius: 2px; }}",
+                    item.color
+                ));
+                chip.style_context().add_provider(&prov, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+                row_box.append(&chip);
+
+                let title_label = gtk::Label::builder()
+                    .label(&item.display_name)
+                    .xalign(0.0)
+                    .hexpand(true)
+                    .build();
+                row_box.append(&title_label);
+
+                let is_selected = selected_source_uid_for_discovery.borrow().as_str() == item.uid;
+                let check_icon = gtk::Image::builder()
+                    .icon_name("object-select-symbolic")
+                    .visible(is_selected)
+                    .build();
+                row_box.append(&check_icon);
+                check_icons.borrow_mut().push((item.uid.clone(), check_icon));
+
+                item_btn.set_child(Some(&row_box));
+
+                let item_uid = item.uid.clone();
+                let item_color = item.color.clone();
+                let item_picker_label = item.picker_label.clone();
+                let sel_uid = Rc::clone(&selected_source_uid_for_discovery);
+                let sel_color = Rc::clone(&selected_source_color_for_discovery);
+                let sel_name = Rc::clone(&selected_source_name_for_discovery);
+                let btn_lbl = btn_calendar_label_for_discovery.clone();
+                let btn_chip = btn_calendar_chip_for_discovery.clone();
+                let color_prov = Rc::clone(&color_badge_provider_for_discovery);
+                let icons_ref = Rc::clone(&check_icons);
+                let pop = calendar_popover_for_discovery.clone();
+                let update_tl = update_timeline_for_discovery.clone();
+
+                item_btn.connect_clicked(move |_| {
+                    sel_uid.replace(item_uid.clone());
+                    sel_color.replace(item_color.clone());
+                    sel_name.replace(item_picker_label.clone());
+                    btn_lbl.set_text(&item_picker_label);
+
+                    let chip_css = format!(
+                        "box {{ background-color: {}; min-width: 12px; min-height: 12px; border-radius: 2px; }}",
+                        item_color
+                    );
+                    let prov = gtk::CssProvider::new();
+                    prov.load_from_string(&chip_css);
+                    btn_chip.style_context().add_provider(&prov, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+
+                    if let Some(display) = gtk::gdk::Display::default() {
+                        let mut prov_slot = color_prov.borrow_mut();
+                        let css = format!(
+                            "box.appointment-color-badge {{ background-color: {}; min-width: 14px; min-height: 14px; border-radius: 9999px; margin-end: 6px; }}",
+                            item_color
+                        );
+                        if let Some(ref p) = *prov_slot {
+                            p.load_from_string(&css);
+                        } else {
+                            let p = gtk::CssProvider::new();
+                            p.load_from_string(&css);
+                            gtk::style_context_add_provider_for_display(
+                                &display,
+                                &p,
+                                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                            );
+                            *prov_slot = Some(p);
+                        }
+                    }
+
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_default_calendar_source_uid(&item_uid);
+                    }
+
+                    for (uid, icon) in icons_ref.borrow().iter() {
+                        icon.set_visible(uid == &item_uid);
+                    }
+
+                    update_tl();
+                    pop.popdown();
+                });
+
+                calendar_popover_box_for_discovery.append(&item_btn);
+            }
+
             update_timeline_for_discovery();
         });
 
         let perform_save = {
-            let calendar_source_uids = Rc::clone(&calendar_source_uids);
+            let selected_source_uid = Rc::clone(&selected_source_uid);
             let dialog_weak = self.downgrade();
             let entry_title = entry_title.clone();
             let row_location = row_location.clone();
             let row_conference = row_conference.clone();
-            let row_calendar = row_calendar.clone();
             let dropdown_status = dropdown_status.clone();
             let dropdown_transparency = dropdown_transparency.clone();
             let row_allday = row_allday.clone();
@@ -1866,15 +2229,14 @@ impl EventDialog {
                 };
                 let source_uid = if dialog.imp().edit_uid.borrow().is_some() {
                     dialog.imp().edit_source_uid.borrow().clone().unwrap_or_else(|| {
-                        let selected = row_calendar.selected() as usize;
-                        calendar_source_uids.borrow().get(selected).cloned().unwrap_or_default()
+                        selected_source_uid.borrow().clone()
                     })
                 } else {
-                    let selected = row_calendar.selected() as usize;
-                    let Some(source_uid) = calendar_source_uids.borrow().get(selected).cloned() else {
+                    let source_uid = selected_source_uid.borrow().clone();
+                    if source_uid.is_empty() {
                         dialog.show_toast("Kein aktiver Kalender ist ausgewählt");
                         return;
-                    };
+                    }
                     source_uid
                 };
 
@@ -2030,14 +2392,196 @@ impl EventDialog {
             })
         };
 
-        let save_close_fn = Rc::clone(&perform_save);
-        btn_save_and_close.connect_clicked(move |_| save_close_fn(true));
+        let save_fn = Rc::clone(&perform_save);
+        btn_save.connect_clicked(move |_| save_fn(true));
 
-        let save_quick_fn = Rc::clone(&perform_save);
-        btn_save.connect_clicked(move |_| save_quick_fn(false));
+        let split_dialog_weak = self.downgrade();
+        let split_entry_title = entry_title.clone();
+        let split_row_location = row_location.clone();
+        let split_row_conference = row_conference.clone();
+        let split_dropdown_status = dropdown_status.clone();
+        let split_dropdown_transparency = dropdown_transparency.clone();
+        let split_row_allday = row_allday.clone();
+        let split_entry_start_date = entry_start_date.clone();
+        let split_entry_start_time = entry_start_time.clone();
+        let split_entry_end_date = entry_end_date.clone();
+        let split_entry_end_time = entry_end_time.clone();
+        let split_text_desc = text_desc.clone();
+        let split_row_recurrence = row_recurrence.clone();
+        let split_row_rdates = row_rdates.clone();
+        let split_row_exdates = row_exdates.clone();
+        let split_row_attendees = row_attendees.clone();
+        let split_entry_categories = entry_categories.clone();
+        let split_alarm_editor = alarm_editor.clone();
+        let split_row_private = row_private.clone();
+        let split_entry_room = entry_room.clone();
+        let split_selected_source_uid = Rc::clone(&selected_source_uid);
+
+        let split_fn: Rc<dyn Fn()> = Rc::new(move || {
+            let Some(dialog) = split_dialog_weak.upgrade() else {
+                return;
+            };
+
+            let source_uid = if dialog.imp().edit_uid.borrow().is_some() {
+                dialog.imp().edit_source_uid.borrow().clone().unwrap_or_else(|| {
+                    split_selected_source_uid.borrow().clone()
+                })
+            } else {
+                split_selected_source_uid.borrow().clone()
+            };
+
+            let all_day = split_row_allday.is_active();
+            let start_date_iso = date_to_iso(&split_entry_start_date.text())
+                .unwrap_or_else(|| split_entry_start_date.text().to_string());
+            let end_date_iso = date_to_iso(&split_entry_end_date.text())
+                .unwrap_or_else(|| split_entry_end_date.text().to_string());
+            let (start_val, end_val) = if all_day {
+                (start_date_iso.clone(), end_date_iso.clone())
+            } else {
+                let s_time = split_entry_start_time.text();
+                let e_time = split_entry_end_time.text();
+                (
+                    format!("{start_date_iso} {}", s_time.trim()),
+                    format!("{end_date_iso} {}", e_time.trim()),
+                )
+            };
+
+            split_alarm_editor.set_summary(&split_entry_title.text());
+            let alarms = split_alarm_editor.alarms();
+            let status = match split_dropdown_status.selected() {
+                1 => "CONFIRMED",
+                2 => "TENTATIVE",
+                3 => "CANCELLED",
+                _ => "CONFIRMED",
+            };
+            let description = split_text_desc.buffer().text(
+                &split_text_desc.buffer().start_iter(),
+                &split_text_desc.buffer().end_iter(),
+                false,
+            );
+
+            let current_edit_component = dialog.imp().edit_component.borrow().clone();
+            let current_edit_uid = dialog.imp().edit_uid.borrow().clone();
+
+            let raw_title = split_entry_title.text();
+            let has_title = !raw_title.trim().is_empty();
+            let title_for_split = if has_title {
+                raw_title.as_str()
+            } else {
+                " "
+            };
+
+            let component_res = match (
+                current_edit_component.as_deref(),
+                current_edit_uid.as_deref(),
+            ) {
+                (Some(original), Some(uid)) => update_existing_event_component(
+                    original,
+                    uid,
+                    title_for_split,
+                    &split_row_location.text(),
+                    &split_row_conference.text(),
+                    status,
+                    split_dropdown_transparency.selected() == 1,
+                    all_day,
+                    &start_val,
+                    &end_val,
+                    &description,
+                    &split_row_recurrence.text(),
+                    &split_row_rdates.text(),
+                    &split_row_exdates.text(),
+                    &split_row_attendees.text(),
+                    &split_entry_categories.text(),
+                    "",
+                    &alarms,
+                    split_row_private.is_active(),
+                    &split_entry_room.text(),
+                ),
+                _ => build_event_component(
+                    title_for_split,
+                    &split_row_location.text(),
+                    &split_row_conference.text(),
+                    status,
+                    split_dropdown_transparency.selected() == 1,
+                    all_day,
+                    &start_val,
+                    &end_val,
+                    &description,
+                    &split_row_recurrence.text(),
+                    &split_row_rdates.text(),
+                    &split_row_exdates.text(),
+                    &split_row_attendees.text(),
+                    &split_entry_categories.text(),
+                    "",
+                    &alarms,
+                    split_row_private.is_active(),
+                    &split_entry_room.text(),
+                ),
+            };
+
+            let stored_parent = dialog.imp().stored_parent.borrow().clone();
+            dialog.imp().close_confirmed.set(true);
+            dialog.close();
+
+            let standalone: EventDialog = if let Ok(component) = component_res {
+                let summary = if has_title {
+                    raw_title.trim().to_string()
+                } else {
+                    "Keine Zusammenfassung".to_string()
+                };
+
+                let mut builder = glib::Object::builder()
+                    .property("title", format!("Termin — {summary}"))
+                    .property("content-width", 880)
+                    .property("content-height", 680)
+                    .property("edit-component", &component);
+                if !source_uid.is_empty() {
+                    builder = builder.property("edit-source-uid", &source_uid);
+                }
+                if let Some(uid) = current_edit_uid.as_deref() {
+                    builder = builder.property("edit-uid", uid);
+                }
+                builder.build()
+            } else {
+                let mut builder = glib::Object::builder()
+                    .property("title", "Termin — Keine Zusammenfassung")
+                    .property("content-width", 880)
+                    .property("content-height", 680)
+                    .property("initial-start", format!("{start_date_iso} {}", split_entry_start_time.text().trim()))
+                    .property("initial-end", format!("{end_date_iso} {}", split_entry_end_time.text().trim()))
+                    .property("initial-date", start_date_iso)
+                    .property("initial-allday", all_day);
+                if !source_uid.is_empty() {
+                    builder = builder.property("edit-source-uid", &source_uid);
+                }
+                builder.build()
+            };
+
+            if let Some(parent) = stored_parent.as_ref() {
+                if let Some(win) = crate::window::find_evolution_window(parent) {
+                    standalone.set_transient_for(Some(&win));
+                    let win_downgrade = win.downgrade();
+                    standalone.connect_closed(move |_| {
+                        if let Some(w) = win_downgrade.upgrade() {
+                            w.refresh_calendar_page();
+                        }
+                    });
+                }
+            }
+
+            standalone.present_standalone();
+        });
+
+        self.imp().split_handler.replace(Some(split_fn));
     }
 
     fn show_toast(&self, message: &str) {
+        if let Some(parent) = self.imp().stored_parent.borrow().as_ref() {
+            if let Some(win) = crate::window::find_evolution_window(parent) {
+                win.add_toast(&adw::Toast::new(message));
+                return;
+            }
+        }
         if let Some(window) = crate::window::find_evolution_window(self) {
             window.add_toast(&adw::Toast::new(message));
         } else {
@@ -4077,6 +4621,11 @@ mod tests {
         assert!(dialog_src.contains("\"Abbrechen\""));
         assert!(dialog_src.contains("\"Speichern\""));
         assert!(dialog_src.contains("appointment-timeline-container"));
+        assert!(dialog_src.contains("present_standalone"));
+        assert!(dialog_src.contains("present_modal"));
+        assert!(dialog_src.contains("present_adaptive"));
+        assert!(dialog_src.contains("split_to_standalone_window"));
+        assert!(dialog_src.contains("btn_open_in_new_window"));
     }
 
     #[test]
@@ -4134,7 +4683,11 @@ mod tests {
 
         // Layout elements presence
         let dialog_src = include_str!("event_dialog.rs");
-        assert!(dialog_src.contains("Speichern und schließen"));
+        let non_test_src = dialog_src.split("#[cfg(test)]").next().unwrap_or(dialog_src);
+        assert!(non_test_src.contains("\"Speichern\""));
+        assert!(!non_test_src.contains("Speichern und schließen"));
+        assert!(dialog_src.contains("calendar-picker-popover"));
+        assert!(dialog_src.contains("calendar-picker-item-button"));
         assert!(dialog_src.contains("appointment-timeline-container"));
         assert!(dialog_src.contains("appointment-form-grid"));
         assert!(dialog_src.contains("appointment-timeline-preview"));
@@ -4142,6 +4695,182 @@ mod tests {
         assert!(dialog_src.contains("create_date_picker_popover"));
         assert!(dialog_src.contains("create_time_picker_popover"));
         assert!(dialog_src.contains("update_day_schedule_timeline"));
+    }
+
+    #[test]
+    fn test_calendar_cleaning_and_grouping() {
+        assert_eq!(
+            clean_calendar_display_name("Kalender (EDV)", "EDV"),
+            "Kalender"
+        );
+        assert_eq!(
+            clean_calendar_display_name("Kalender (edv@acme-corp.example)", "EDV"),
+            "Kalender"
+        );
+        assert_eq!(
+            clean_calendar_display_name("EDV – Kalender", "EDV"),
+            "Kalender"
+        );
+        assert_eq!(
+            clean_calendar_display_name("Personal", "On This Computer"),
+            "Personal"
+        );
+        assert_eq!(
+            clean_calendar_display_name("Geburtstage", "mjensen@acme-corp.example"),
+            "Geburtstage"
+        );
+        assert_eq!(
+            clean_calendar_display_name("Kalender", "mjensen@acme-corp.example"),
+            "Kalender"
+        );
+
+        // Sorting: "On This Computer" first, then alphabetical
+        let groups = vec![
+            "mjensen@acme-corp.example",
+            "On This Computer",
+            "EDV",
+        ];
+        let mut sorted = groups.clone();
+        sorted.sort_by_key(|g| calendar_group_sort_key(g));
+        assert_eq!(
+            sorted,
+            vec!["On This Computer", "EDV", "mjensen@acme-corp.example"]
+        );
+    }
+
+    #[test]
+    fn test_event_dialog_calendar_picker_sources_filtering() {
+        use crate::services::eds_service::EdsSource;
+
+        let raw_sources = vec![
+            EdsSource {
+                uid: "birthdays".to_string(),
+                display_name: "Birthdays & Anniversaries".to_string(),
+                enabled: true,
+                writable: false,
+                backend_name: "contacts".to_string(),
+                parent_name: Some("Contacts".to_string()),
+                color: None,
+                foreign_mail: None,
+            },
+            EdsSource {
+                uid: "system-calendar".to_string(),
+                display_name: "Personal".to_string(),
+                enabled: true,
+                writable: true,
+                backend_name: "local".to_string(),
+                parent_name: Some("On This Computer".to_string()),
+                color: None,
+                foreign_mail: None,
+            },
+            EdsSource {
+                uid: "shared-calendar".to_string(),
+                display_name: "Kalender (EDV)".to_string(),
+                enabled: true,
+                writable: true,
+                backend_name: "ews".to_string(),
+                parent_name: Some("EDV".to_string()),
+                color: None,
+                foreign_mail: Some("edv@acme-corp.example".to_string()),
+            },
+            EdsSource {
+                uid: "c3357329b452452d6ff3a15da95d084318369067".to_string(),
+                display_name: "Kalender".to_string(),
+                enabled: true,
+                writable: true,
+                backend_name: "ews".to_string(),
+                parent_name: Some("mjensen@acme-corp.example".to_string()),
+                color: None,
+                foreign_mail: None,
+            },
+            EdsSource {
+                uid: "d2faf98d06319a88428c7716feb89a52bda451bf".to_string(),
+                display_name: "Geburtstage".to_string(),
+                enabled: true,
+                writable: true,
+                backend_name: "ews".to_string(),
+                parent_name: Some("mjensen@acme-corp.example".to_string()),
+                color: None,
+                foreign_mail: None,
+            },
+        ];
+
+        // 1. Filter: writable && non-contacts && not birthdays
+        let active_sources: Vec<_> = raw_sources
+            .into_iter()
+            .filter(|s| s.enabled && s.writable && s.backend_name != "contacts" && s.uid != "birthdays")
+            .collect();
+
+        assert_eq!(active_sources.len(), 4, "Should have exactly 4 writable calendars (matching Evolution)");
+
+        // 2. Clean names & grouping
+        struct TestItem {
+            uid: String,
+            clean_name: String,
+            group: String,
+        }
+
+        let mut temp_items: Vec<TestItem> = Vec::new();
+        for source in &active_sources {
+            let group = source.parent_name.clone().unwrap_or_else(|| "Andere".to_string());
+            let clean_name = clean_calendar_display_name(&source.display_name, &group);
+            temp_items.push(TestItem {
+                uid: source.uid.clone(),
+                clean_name,
+                group,
+            });
+        }
+
+        // Count duplicates
+        let mut name_counts = std::collections::HashMap::new();
+        for it in &temp_items {
+            *name_counts.entry(it.clean_name.clone()).or_insert(0) += 1;
+        }
+
+        // Build items
+        struct FinalItem {
+            display_name: String,
+            picker_label: String,
+            group: String,
+        }
+
+        let mut items: Vec<FinalItem> = temp_items
+            .into_iter()
+            .map(|it| {
+                let picker_label = if name_counts.get(&it.clean_name).copied().unwrap_or(0) > 1 {
+                    format!("{} ({})", it.clean_name, it.group)
+                } else {
+                    it.clean_name.clone()
+                };
+                FinalItem {
+                    display_name: it.clean_name,
+                    picker_label,
+                    group: it.group,
+                }
+            })
+            .collect();
+
+        items.sort_by(|a, b| {
+            calendar_group_sort_key(&a.group)
+                .cmp(&calendar_group_sort_key(&b.group))
+                .then_with(|| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()))
+        });
+
+        assert_eq!(items[0].group, "On This Computer");
+        assert_eq!(items[0].display_name, "Personal");
+        assert_eq!(items[0].picker_label, "Personal");
+
+        assert_eq!(items[1].group, "EDV");
+        assert_eq!(items[1].display_name, "Kalender");
+        assert_eq!(items[1].picker_label, "Kalender (EDV)");
+
+        assert_eq!(items[2].group, "mjensen@acme-corp.example");
+        assert_eq!(items[2].display_name, "Geburtstage");
+        assert_eq!(items[2].picker_label, "Geburtstage");
+
+        assert_eq!(items[3].group, "mjensen@acme-corp.example");
+        assert_eq!(items[3].display_name, "Kalender");
+        assert_eq!(items[3].picker_label, "Kalender (mjensen@acme-corp.example)");
     }
 
     #[test]
