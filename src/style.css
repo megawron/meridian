@@ -942,27 +942,40 @@ dropdown popover listview row check {
   -gtk-icon-size: 14px;
 }
 
-/* Popover Menus (GtkPopoverMenu / MenuButtons) */
+/* Popover Menus (GtkPopoverMenu / MenuButtons / Context Menus) */
 popover.menu {
-  padding: 3px;
+  padding: 4px;
 }
 
 popover.menu contents {
-  padding: 2px;
-  border-radius: 8px;
+  padding: 3px;
+  border-radius: 10px;
+}
+
+/* Ensure clean, consistent typography regardless of parent widget font weights */
+popover.menu,
+popover.menu contents,
+popover.menu modelbutton,
+popover.menu modelbutton label {
+  font-weight: 400;
+  font-size: 0.90rem;
+  letter-spacing: normal;
 }
 
 popover.menu modelbutton {
-  min-height: 32px;
-  padding: 6px 10px;
-  margin: 1px 2px;
+  min-height: 26px;
+  padding: 3px 8px;
+  margin: 1px 0;
   border-radius: 6px;
-  font-size: 1rem;
+  font-size: 0.90rem;
+  font-weight: 400;
 }
 
 popover.menu modelbutton label {
   min-height: 18px;
   padding: 0;
+  font-size: 0.90rem;
+  font-weight: 400;
 }
 
 popover.menu modelbutton arrow {
@@ -972,19 +985,38 @@ popover.menu modelbutton arrow {
   opacity: 0.7;
 }
 
+popover.menu modelbutton image {
+  min-width: 16px;
+  min-height: 16px;
+  -gtk-icon-size: 16px;
+}
+
 popover.menu accelerator,
 popover.menu label.accelerator,
 popover.menu .accelerator {
   min-height: 16px;
   padding: 0;
-  margin-left: 12px;
-  font-size: 0.88rem;
-  opacity: 0.65;
+  margin-left: 14px;
+  font-size: 0.80rem;
+  font-weight: 400;
+  opacity: 0.55;
 }
 
 popover.menu separator {
-  margin: 2px 2px;
+  margin: 3px 2px;
 }
+
+/* Prevent parent containers (headerbars, drawer headers, action pills) from leaking bold weights */
+.sidebar-drawer-header popover.menu modelbutton,
+.sidebar-drawer-header popover.menu modelbutton label,
+.mail-preview-actions-bar popover.menu modelbutton,
+.mail-preview-actions-bar popover.menu modelbutton label,
+.mail-header-actions-group popover.menu modelbutton,
+.mail-header-actions-group popover.menu modelbutton label {
+  font-weight: 400;
+  font-size: 0.90rem;
+}
+
 
 /* View Options Popover */
 .view-options-popover,
@@ -3296,21 +3328,24 @@ headerbar viewswitcher button {
   min-width: 32px;
 }
 
-/* Mobile & Touch Popover Menus */
+/* Mobile & Touch Popover Menus (GNOME HIG compact touch targets) */
 .mobile-screen popover.menu modelbutton,
 popover.menu.touch modelbutton {
-  min-height: 40px;
-  padding: 8px 12px;
-  margin: 2px 2px;
-  font-size: 1.05rem;
+  min-height: 28px;
+  padding: 4px 8px;
+  margin: 1px 0;
+  font-size: 0.90rem;
+  font-weight: 400;
 }
 
 .mobile-screen popover.menu modelbutton label {
-  min-height: 20px;
+  min-height: 18px;
+  font-size: 0.90rem;
+  font-weight: 400;
 }
 
 .mobile-screen popover.menu separator {
-  margin: 4px 2px;
+  margin: 3px 2px;
 }
 
 .view-options-popover checkbutton {
