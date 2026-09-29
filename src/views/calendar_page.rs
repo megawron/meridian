@@ -8097,7 +8097,7 @@ impl CalendarPage {
                 .orientation(gtk::Orientation::Vertical)
                 .css_classes(vec!["calendar-allday-cell"])
                 .hexpand(true)
-                .height_request(26)
+                .height_request(22)
                 .valign(gtk::Align::Fill)
                 .build();
             day_groups[day_index].add_widget(&bg_cell);
@@ -8112,8 +8112,8 @@ impl CalendarPage {
             .column_spacing(2)
             .hexpand(true)
             .valign(gtk::Align::Start)
-            .margin_top(2)
-            .margin_bottom(2)
+            .margin_top(1)
+            .margin_bottom(1)
             .margin_start(1)
             .margin_end(1)
             .build();
@@ -16950,18 +16950,14 @@ fn calendar_grid_event_chip(
             .valign(gtk::Align::Start)
             .hexpand(true)
             .vexpand(false)
-            .margin_start(1)
-            .margin_end(1)
-            .margin_top(1)
-            .margin_bottom(1)
-            .height_request(22)
+            .height_request(20)
             .css_classes(vec!["flat", "calendar-grid-event", "all-day-chip"])
             .build();
 
         let drawing_area = gtk::DrawingArea::builder()
             .hexpand(true)
             .vexpand(true)
-            .height_request(22)
+            .height_request(20)
             .build();
 
         let ev_draw = event.clone();
@@ -16984,7 +16980,7 @@ fn calendar_grid_event_chip(
             let (txt_r, txt_g, txt_b) =
                 parse_hex_color(&fg_hex).unwrap_or(if is_dark { (255, 255, 255) } else { (46, 52, 54) });
 
-            draw_month_event_bar(cr, 1.0, 1.0, w - 2.0, h - 2.0, 4.0, continues_left, continues_right);
+            draw_month_event_bar(cr, 0.0, 0.0, w, h, 3.5, continues_left, continues_right);
             cr.set_source_rgba(
                 bg_r as f64 / 255.0,
                 bg_g as f64 / 255.0,
@@ -16993,18 +16989,18 @@ fn calendar_grid_event_chip(
             );
             let _ = cr.fill();
 
-            let arrow_w = (h / 2.5).clamp(5.0, 7.0).min(w / 3.0);
-            let pad_left = if continues_left { arrow_w + 4.0 } else { 6.0 };
-            let pad_right = if continues_right { arrow_w + 4.0 } else { 6.0 };
-            let text_x = 1.0 + pad_left;
-            let max_text_w = (w - 2.0 - pad_left - pad_right).max(0.0);
+            let arrow_w = (h / 2.5).clamp(4.0, 6.0).min(w / 3.0);
+            let pad_left = if continues_left { arrow_w + 3.0 } else { 5.0 };
+            let pad_right = if continues_right { arrow_w + 3.0 } else { 5.0 };
+            let text_x = pad_left;
+            let max_text_w = (w - pad_left - pad_right).max(0.0);
 
             let _ = cr.save();
-            cr.rectangle(text_x, 1.0, max_text_w, h - 2.0);
+            cr.rectangle(text_x, 0.0, max_text_w, h);
             let _ = cr.clip();
 
             cr.set_source_rgba(txt_r as f64 / 255.0, txt_g as f64 / 255.0, txt_b as f64 / 255.0, 1.0);
-            cr.set_font_size(12.0);
+            cr.set_font_size(11.5);
             cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
 
             let untitled = crate::i18n::gettext("(Untitled)");
@@ -17015,7 +17011,7 @@ fn calendar_grid_event_chip(
             };
             let trunc = truncate_cairo_text(cr, summary_str, max_text_w);
             if let Ok(ext) = cr.text_extents(&trunc) {
-                let ty = 1.0 + (h - 2.0 - ext.height()) / 2.0 - ext.y_bearing();
+                let ty = (h - ext.height()) / 2.0 - ext.y_bearing();
                 cr.move_to(text_x, ty);
                 let _ = cr.show_text(&trunc);
             }
