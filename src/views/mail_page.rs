@@ -3132,12 +3132,6 @@ pub(crate) fn draw_mail_table_canvas(
                     12.0,
                     is_dark,
                 );
-
-                // Reply badge overlay
-                if row.is_replied {
-                    draw_cairo_reply_badge(cr, avatar_cx + 10.0, avatar_cy + 10.0, is_dark);
-                }
-
             }
 
             // 3. Text Block
@@ -3242,7 +3236,20 @@ pub(crate) fn draw_mail_table_canvas(
                 let _ = cr.show_text(&count_str);
             }
 
-            let subj_avail_w = (line2_right_x - content_x - 6.0).max(20.0);
+            let mut subj_x = content_x;
+            if row.is_replied {
+                if let Some(surf) = get_icon("mail-replied-symbolic", 14) {
+                    draw_cairo_tinted_surface(cr, &surf, subj_x + 7.0, y + 39.0, dim_r, dim_g, dim_b, 0.85);
+                    subj_x += 17.0;
+                }
+            } else if row.is_forwarded {
+                if let Some(surf) = get_icon("mail-forward-symbolic", 14) {
+                    draw_cairo_tinted_surface(cr, &surf, subj_x + 7.0, y + 39.0, dim_r, dim_g, dim_b, 0.85);
+                    subj_x += 17.0;
+                }
+            }
+
+            let subj_avail_w = (line2_right_x - subj_x - 6.0).max(20.0);
             let subj_desc = if row.is_unread { primary_desc_bold } else { primary_desc_normal };
             pango_layout.set_font_description(Some(subj_desc));
             pango_layout.set_text(&row.subject);
@@ -3260,7 +3267,7 @@ pub(crate) fn draw_mail_table_canvas(
             } else {
                 cr.set_source_rgb(0.12, 0.12, 0.12);
             }
-            cr.move_to(content_x, y + 30.0);
+            cr.move_to(subj_x, y + 30.0);
             pangocairo_ffi::update_layout(cr, &pango_layout);
             pangocairo_ffi::show_layout(cr, &pango_layout);
 
@@ -37589,7 +37596,7 @@ mod tests {
                 follow_up_state: MailFollowUpState::None,
                 is_important: false,
                 is_replied: false,
-                is_forwarded: false,
+                is_forwarded: true,
                 attachment_kind: MailAttachmentKind::None,
                 has_attachments: false,
                 sender: "Peter Weber".to_string(),
@@ -37650,6 +37657,18 @@ mod tests {
         let cr = gtk::cairo::Context::new(&surface).unwrap();
         draw_mail_table_canvas(&cr, &layout, 420.0, 152.0, Some(0), &|idx| idx == 1, false, 0.0, &|_, _| None, &|_, _| None);
         draw_mail_table_canvas(&cr, &layout, 420.0, 152.0, Some(0), &|idx| idx == 1, true, 0.0, &|_, _| None, &|_, _| None);
+
+        // Verify reply and forward indicators are requested in cards mode
+        let requested_icons = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let req_clone = requested_icons.clone();
+        let get_icon = move |icon_name: &str, _size: i32| -> Option<gtk::cairo::ImageSurface> {
+            req_clone.lock().unwrap().push(icon_name.to_string());
+            gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 14, 14).ok()
+        };
+        draw_mail_table_canvas(&cr, &layout, 420.0, 152.0, Some(0), &|idx| idx == 1, false, 0.0, &|_, _| None, &get_icon);
+        let icons = requested_icons.lock().unwrap().clone();
+        assert!(icons.contains(&"mail-replied-symbolic".to_string()), "cards mode must request mail-replied-symbolic for replied mail");
+        assert!(icons.contains(&"mail-forward-symbolic".to_string()), "cards mode must request mail-forward-symbolic for forwarded mail");
 
         // Initials test
         assert_eq!(extract_initials("Wolfgang Fisher"), "WF");
