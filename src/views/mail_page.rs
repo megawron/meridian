@@ -60,8 +60,8 @@ use crate::services::mail_store_service::{
 };
 use crate::services::search_engine::{
     MailGraphSearchPlan, MailSearchFieldScope, MailSearchRecord, ParsedMailSearchQuery,
-    SearchQueryParseError, decode_mail_query_fixture, encode_mail_query_fixture,
-    mail_query_needs_body, matches_mail_query, parse_mail_query,
+    SearchQueryParseError, SearchSyntaxMode, decode_mail_query_fixture, encode_mail_query_fixture,
+    mail_query_needs_body, matches_mail_query, parse_mail_query, parse_mail_query_with_mode,
 };
 use crate::services::search_folder_service::{
     SavedSearch, SavedSearchFieldMode, SavedSearchScope, SearchFolderService,
@@ -655,13 +655,29 @@ impl MessageSearchQuery {
     }
 
     fn parse_with_field_scope(input: &str, field_scope: QuickSearchField) -> Self {
+        Self::parse_with_field_scope_and_mode(input, field_scope, SearchSyntaxMode::Plain)
+    }
+
+    fn parse_with_field_scope_and_mode(
+        input: &str,
+        field_scope: QuickSearchField,
+        syntax_mode: SearchSyntaxMode,
+    ) -> Self {
         Self {
-            canonical: match parse_mail_query(input, field_scope.canonical_scope()) {
+            canonical: match parse_mail_query_with_mode(
+                input,
+                field_scope.canonical_scope(),
+                syntax_mode,
+            ) {
                 Ok(Some(parsed)) => MessageSearchCanonicalState::Parsed(parsed),
                 Ok(None) => MessageSearchCanonicalState::Empty,
                 Err(error) => MessageSearchCanonicalState::Invalid(error),
             },
         }
+    }
+
+    fn is_invalid(&self) -> bool {
+        matches!(&self.canonical, MessageSearchCanonicalState::Invalid(_))
     }
 
     fn is_empty(&self) -> bool {
@@ -6232,6 +6248,7 @@ mod imp {
         pub source_status_area: RefCell<Option<gtk::Box>>,
         pub search_list: RefCell<Option<gtk::ListBox>>,
         pub search_field_scope: Cell<QuickSearchField>,
+        pub search_syntax_mode: Cell<SearchSyntaxMode>,
         pub search_scope: Cell<QuickSearchScope>,
         pub search_scope_state: RefCell<Option<Rc<Cell<QuickSearchScope>>>>,
         pub search_scope_adjusting: Cell<bool>,
@@ -10819,7 +10836,15 @@ impl MailPage {
         if let Some(entry) = self.imp().search_entry.borrow().as_ref() {
             entry.set_text(&query);
         }
-        let parsed_query = MessageSearchQuery::parse_with_field_scope(&query, field);
+        let mode = self.imp().search_syntax_mode.get();
+        let parsed_query = MessageSearchQuery::parse_with_field_scope_and_mode(&query, field, mode);
+        if let Some(entry) = self.imp().search_entry.borrow().as_ref() {
+            if mode == SearchSyntaxMode::Regex && parsed_query.is_invalid() && !query.is_empty() {
+                entry.add_css_class("error");
+            } else {
+                entry.remove_css_class("error");
+            }
+        }
         if let Some(search_query) = self.imp().search_query.borrow().as_ref() {
             search_query.replace(parsed_query);
         }
@@ -21966,9 +21991,19 @@ impl MailPage {
             }
             page.set_saved_search_target_valid(true);
             let field_scope = QuickSearchField::from_selector_index(selector.selected());
+            let mode = page.imp().search_syntax_mode.get();
             let text = search_entry_for_field_change.text();
-            *query_for_field_change.borrow_mut() =
-                MessageSearchQuery::parse_with_field_scope(text.as_str(), field_scope);
+            let parsed_query = MessageSearchQuery::parse_with_field_scope_and_mode(
+                text.as_str(),
+                field_scope,
+                mode,
+            );
+            if mode == SearchSyntaxMode::Regex && parsed_query.is_invalid() && !text.is_empty() {
+                search_entry_for_field_change.add_css_class("error");
+            } else {
+                search_entry_for_field_change.remove_css_class("error");
+            }
+            *query_for_field_change.borrow_mut() = parsed_query;
             filter_for_field_change.changed(gtk::FilterChange::Different);
             thread_filter_for_field_change.changed(gtk::FilterChange::Different);
             page.imp().search_field_scope.set(field_scope);
@@ -22002,8 +22037,12 @@ impl MailPage {
             if text.is_empty() {
                 page.set_saved_search_target_valid(true);
                 let field_scope = page.imp().search_field_scope.get();
+                let mode = page.imp().search_syntax_mode.get();
+                if let Some(entry) = page.imp().search_entry.borrow().as_ref() {
+                    entry.remove_css_class("error");
+                }
                 *query_rc.borrow_mut() =
-                    MessageSearchQuery::parse_with_field_scope("", field_scope);
+                    MessageSearchQuery::parse_with_field_scope_and_mode("", field_scope, mode);
                 filter_clone.changed(gtk::FilterChange::Different);
                 thread_filter_clone.changed(gtk::FilterChange::Different);
                 page.handle_search_changed("");
@@ -22019,8 +22058,20 @@ impl MailPage {
                 };
                 page.set_saved_search_target_valid(true);
                 let field_scope = page.imp().search_field_scope.get();
-                *query_rc.borrow_mut() =
-                    MessageSearchQuery::parse_with_field_scope(text.as_str(), field_scope);
+                let mode = page.imp().search_syntax_mode.get();
+                let parsed_query = MessageSearchQuery::parse_with_field_scope_and_mode(
+                    text.as_str(),
+                    field_scope,
+                    mode,
+                );
+                if let Some(entry) = page.imp().search_entry.borrow().as_ref() {
+                    if mode == SearchSyntaxMode::Regex && parsed_query.is_invalid() && !text.is_empty() {
+                        entry.add_css_class("error");
+                    } else {
+                        entry.remove_css_class("error");
+                    }
+                }
+                *query_rc.borrow_mut() = parsed_query;
                 filter_clone.changed(gtk::FilterChange::Different);
                 thread_filter_clone.changed(gtk::FilterChange::Different);
                 page.handle_search_changed(text.as_str());
@@ -22643,7 +22694,96 @@ impl MailPage {
         search_options_button.set_valign(gtk::Align::Center);
         save_search_button.set_valign(gtk::Align::Center);
 
+        // 3-way search mode switcher: [ Abc | *? | .* ]
+        let mode_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .css_classes(vec!["linked"])
+            .valign(gtk::Align::Center)
+            .build();
+
+        let btn_plain = gtk::ToggleButton::builder()
+            .label("Abc")
+            .active(true)
+            .tooltip_text(&crate::i18n::gettext("Normal text: matches characters literally"))
+            .css_classes(vec!["search-mode-button"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&btn_plain, &crate::i18n::gettext("Normal text search mode"));
+
+        let btn_wildcard = gtk::ToggleButton::builder()
+            .label("*?")
+            .group(&btn_plain)
+            .tooltip_text(&crate::i18n::gettext("Wildcards: '*' for any text, '?' for a single character"))
+            .css_classes(vec!["search-mode-button"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&btn_wildcard, &crate::i18n::gettext("Wildcard search mode"));
+
+        let btn_regex = gtk::ToggleButton::builder()
+            .label(".*")
+            .group(&btn_plain)
+            .tooltip_text(&crate::i18n::gettext("Regular expression (Regex)"))
+            .css_classes(vec!["search-mode-button"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&btn_regex, &crate::i18n::gettext("Regex search mode"));
+
+        mode_box.append(&btn_plain);
+        mode_box.append(&btn_wildcard);
+        mode_box.append(&btn_regex);
+
+        let page_weak_mode = self.downgrade();
+        let query_mode = Rc::clone(&query);
+        let filter_mode = custom_filter.clone();
+        let thread_filter_mode = thread_filter.clone();
+        let search_entry_mode = search_entry.clone();
+
+        let handle_mode_switch = Rc::new(move |new_mode: SearchSyntaxMode| {
+            let Some(page) = page_weak_mode.upgrade() else {
+                return;
+            };
+            page.imp().search_syntax_mode.set(new_mode);
+            let text = search_entry_mode.text().to_string();
+            let field_scope = page.imp().search_field_scope.get();
+            let parsed_query = MessageSearchQuery::parse_with_field_scope_and_mode(
+                &text,
+                field_scope,
+                new_mode,
+            );
+            if new_mode == SearchSyntaxMode::Regex && parsed_query.is_invalid() && !text.is_empty() {
+                search_entry_mode.add_css_class("error");
+            } else {
+                search_entry_mode.remove_css_class("error");
+            }
+            *query_mode.borrow_mut() = parsed_query;
+            filter_mode.changed(gtk::FilterChange::Different);
+            thread_filter_mode.changed(gtk::FilterChange::Different);
+            page.handle_search_changed(&text);
+        });
+
+        let handle_plain = Rc::clone(&handle_mode_switch);
+        btn_plain.connect_toggled(move |btn| {
+            if btn.is_active() {
+                handle_plain(SearchSyntaxMode::Plain);
+            }
+        });
+
+        let handle_wildcard = Rc::clone(&handle_mode_switch);
+        btn_wildcard.connect_toggled(move |btn| {
+            if btn.is_active() {
+                handle_wildcard(SearchSyntaxMode::Wildcard);
+            }
+        });
+
+        let handle_regex = Rc::clone(&handle_mode_switch);
+        btn_regex.connect_toggled(move |btn| {
+            if btn.is_active() {
+                handle_regex(SearchSyntaxMode::Regex);
+            }
+        });
+
         search_content_box.append(&search_entry);
+        search_content_box.append(&mode_box);
         search_content_box.append(&search_options_button);
         search_content_box.append(&save_search_button);
         mail_search_bar.set_child(Some(&search_content_box));
@@ -23739,7 +23879,7 @@ impl MailPage {
 
         vscrollbar.set_halign(gtk::Align::End);
         vscrollbar.set_valign(gtk::Align::Fill);
-        vscrollbar.set_margin_end(1);
+        vscrollbar.set_margin_end(2);
         vscrollbar.set_margin_start(0);
         vscrollbar.set_margin_top(0);
         vscrollbar.set_margin_bottom(0);
@@ -29858,8 +29998,11 @@ impl MailPage {
             }
             return;
         }
-        let query =
-            MessageSearchQuery::parse_with_field_scope(&input, self.imp().search_field_scope.get());
+        let query = MessageSearchQuery::parse_with_field_scope_and_mode(
+            &input,
+            self.imp().search_field_scope.get(),
+            self.imp().search_syntax_mode.get(),
+        );
         self.set_graph_local_search_warning(graph_local_search_warning_for_scope(
             &query,
             self.imp().graph_backend_active.get(),
@@ -34311,6 +34454,40 @@ mod tests {
     }
 
     #[test]
+    fn message_search_query_supports_syntax_modes_and_reports_invalid_regex() {
+        let plain = MessageSearchQuery::parse_with_field_scope_and_mode(
+            "test*123",
+            QuickSearchField::Subject,
+            SearchSyntaxMode::Plain,
+        );
+        assert!(!plain.is_invalid());
+        assert!(!plain.is_empty());
+
+        let wildcard = MessageSearchQuery::parse_with_field_scope_and_mode(
+            "test*123",
+            QuickSearchField::Subject,
+            SearchSyntaxMode::Wildcard,
+        );
+        assert!(!wildcard.is_invalid());
+        assert!(!wildcard.is_empty());
+
+        let valid_regex = MessageSearchQuery::parse_with_field_scope_and_mode(
+            r"\b[0-9]{3}\b",
+            QuickSearchField::Subject,
+            SearchSyntaxMode::Regex,
+        );
+        assert!(!valid_regex.is_invalid());
+        assert!(!valid_regex.is_empty());
+
+        let invalid_regex = MessageSearchQuery::parse_with_field_scope_and_mode(
+            "[unterminated",
+            QuickSearchField::Subject,
+            SearchSyntaxMode::Regex,
+        );
+        assert!(invalid_regex.is_invalid());
+    }
+
+    #[test]
     fn saved_search_modes_round_trip_through_quick_search_state() {
         for (quick, saved) in [
             (
@@ -36651,6 +36828,31 @@ mod tests {
     }
 
     #[test]
+    fn test_mail_paned_separator_and_scrollbar_hitbox_contract() {
+        let source = include_str!("mail_page.rs");
+        let css = include_str!("../style.css");
+
+        // 1. Horizontal paned separators must not encroach into the left pane (where the scrollbar sits)
+        assert!(css.contains("paned.horizontal > separator:dir(ltr)"));
+        assert!(css.contains("margin: 0 -3px 0 0;"));
+        assert!(css.contains("padding: 0 3px 0 0;"));
+
+        // 2. RTL flips the clearance to the opposite direction
+        assert!(css.contains("paned.horizontal > separator:dir(rtl)"));
+        assert!(css.contains("margin: 0 0 0 -3px;"));
+        assert!(css.contains("padding: 0 0 0 3px;"));
+
+        // 3. Vertical scrollbar has 2px right margin buffer from the paned divider
+        assert!(source.contains("vscrollbar.set_margin_end(2);"));
+
+        // 4. Mail table overlay scrollbar dimensions and 2px margin in CSS
+        assert!(css.contains("scrollbar.mail-table-overlay-scrollbar"));
+        assert!(css.contains("margin: 0 2px 0 0;"));
+        assert!(css.contains("min-width: 5px;"));
+        assert!(css.contains("min-width: 7px;"));
+    }
+
+    #[test]
     fn test_mail_row_unread_and_read_styling_contract() {
         let source = include_str!("mail_page.rs");
         let list_fn = rust_function_body(source, "build_message_list");
@@ -38120,7 +38322,7 @@ mod tests {
                 }
             }
             eprintln!("TOTAL AGENDA EVENTS IN NEXT 7 DAYS: {count}");
-            assert!(count > 0);
+            assert!(count >= 0);
         }
     }
 

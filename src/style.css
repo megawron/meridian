@@ -36,6 +36,13 @@ searchbar entry text {
   margin-bottom: 0;
 }
 
+entry.error,
+searchentry.error,
+.search-entry.error {
+  outline: 1.5px solid @destructive_color;
+  border-color: @destructive_color;
+}
+
 /* ── Sidebar Typography (Identical to previous default) ────────────────── */
 .navigation-sidebar,
 .mail-sidebar,
@@ -500,6 +507,20 @@ image.mail-column-header-icon {
   min-width: 24px;
   min-height: 24px;
   padding: 1px 4px;
+}
+
+.search-mode-button {
+  font-size: 0.80rem;
+  font-weight: 600;
+  padding: 1px 7px;
+  min-height: 24px;
+  min-width: 28px;
+}
+
+.search-mode-button:checked {
+  background-color: alpha(@accent_color, 0.18);
+  color: @accent_color;
+  font-weight: 700;
 }
 
 .thread-context {
@@ -1145,20 +1166,31 @@ paned.vertical > separator.wide {
 }
 
 paned.horizontal > separator,
-paned.horizontal > separator:dir(ltr),
-paned.horizontal > separator:dir(rtl),
-paned.horizontal > separator.wide {
+paned.horizontal > separator.wide,
+paned:not(.vertical) > separator {
   min-width: 1px;
-  margin: 0 -3px;
-  padding: 0 3px;
+  margin: 0 -3px 0 0;
+  padding: 0 3px 0 0;
   box-shadow: none;
+}
+
+paned.horizontal > separator:dir(ltr),
+paned:not(.vertical) > separator:dir(ltr) {
+  margin: 0 -3px 0 0;
+  padding: 0 3px 0 0;
+}
+
+paned.horizontal > separator:dir(rtl),
+paned:not(.vertical) > separator:dir(rtl) {
+  margin: 0 0 0 -3px;
+  padding: 0 0 0 3px;
 }
 
 paned.vertical > separator,
 paned.vertical > separator.wide {
   min-height: 1px;
-  margin: -3px 0;
-  padding: 3px 0;
+  margin: 0 0 -3px 0;
+  padding: 0 0 3px 0;
   box-shadow: none;
 }
 
@@ -2867,13 +2899,13 @@ scrollbar.vertical.mail-table-overlay-scrollbar {
   border: none;
   box-shadow: none;
   padding: 0;
-  margin: 0 1px 0 0;
-  min-width: 4px;
+  margin: 0 2px 0 0;
+  min-width: 5px;
 }
 
 scrollbar.mail-table-overlay-scrollbar:hover,
 scrollbar.vertical.mail-table-overlay-scrollbar:hover {
-  min-width: 6px;
+  min-width: 7px;
 }
 
 scrollbar.mail-table-overlay-scrollbar trough,
@@ -2883,17 +2915,17 @@ scrollbar.vertical.mail-table-overlay-scrollbar trough {
   box-shadow: none;
   padding: 0;
   margin: 0;
-  min-width: 4px;
+  min-width: 5px;
 }
 
 scrollbar.mail-table-overlay-scrollbar:hover trough,
 scrollbar.vertical.mail-table-overlay-scrollbar:hover trough {
-  min-width: 6px;
+  min-width: 7px;
 }
 
 scrollbar.mail-table-overlay-scrollbar slider,
 scrollbar.vertical.mail-table-overlay-scrollbar slider {
-  min-width: 4px;
+  min-width: 5px;
   border-radius: 9999px;
   background-color: alpha(currentColor, 0.35);
   margin: 0;
@@ -2906,7 +2938,7 @@ scrollbar.mail-table-overlay-scrollbar:hover slider,
 scrollbar.mail-table-overlay-scrollbar slider:hover,
 scrollbar.mail-table-overlay-scrollbar:active slider,
 scrollbar.mail-table-overlay-scrollbar slider:active {
-  min-width: 6px;
+  min-width: 7px;
   background-color: alpha(currentColor, 0.7);
 }
 

@@ -36,6 +36,15 @@ impl Default for SearchDomain {
     }
 }
 
+/// Syntax mode controlling term matching behavior (plain substring, wildcards with * and ?, or regex).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SearchSyntaxMode {
+    #[default]
+    Plain,
+    Wildcard,
+    Regex,
+}
+
 /// Typed identity carried by a global-search result into the window router.
 /// Source UIDs are intentionally not normalized or encoded; an empty source
 /// UID is valid for read-only imported sources.
@@ -988,6 +997,8 @@ enum MailQueryFixtureMatcher {
     Exact,
     StartsWith,
     EndsWith,
+    Wildcard,
+    Regex,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -1448,6 +1459,8 @@ fn encode_mail_query_matcher(matcher: SearchMatchKind) -> MailQueryFixtureMatche
         SearchMatchKind::Exact => MailQueryFixtureMatcher::Exact,
         SearchMatchKind::StartsWith => MailQueryFixtureMatcher::StartsWith,
         SearchMatchKind::EndsWith => MailQueryFixtureMatcher::EndsWith,
+        SearchMatchKind::Wildcard => MailQueryFixtureMatcher::Wildcard,
+        SearchMatchKind::Regex => MailQueryFixtureMatcher::Regex,
     }
 }
 
@@ -1458,6 +1471,8 @@ fn decode_mail_query_matcher(matcher: MailQueryFixtureMatcher) -> SearchMatchKin
         MailQueryFixtureMatcher::Exact => SearchMatchKind::Exact,
         MailQueryFixtureMatcher::StartsWith => SearchMatchKind::StartsWith,
         MailQueryFixtureMatcher::EndsWith => SearchMatchKind::EndsWith,
+        MailQueryFixtureMatcher::Wildcard => SearchMatchKind::Wildcard,
+        MailQueryFixtureMatcher::Regex => SearchMatchKind::Regex,
     }
 }
 
@@ -1650,12 +1665,14 @@ enum SearchField {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SearchMatchKind {
+pub enum SearchMatchKind {
     Contains,
     HasWords,
     Exact,
     StartsWith,
     EndsWith,
+    Wildcard,
+    Regex,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1753,23 +1770,29 @@ fn parse_search_query(input: &str) -> Result<Option<SearchQuery>, SearchQueryPar
     parse_search_query_with_scope(input, None)
 }
 
-/// Parse a mail query while applying `default_field` only to bare terms.
-/// Explicit field/state/date operators always retain their canonical meaning.
 fn parse_search_query_with_scope(
     input: &str,
     default_field: Option<SearchField>,
+) -> Result<Option<SearchQuery>, SearchQueryParseError> {
+    parse_search_query_with_scope_and_mode(input, default_field, SearchSyntaxMode::Plain)
+}
+
+fn parse_search_query_with_scope_and_mode(
+    input: &str,
+    default_field: Option<SearchField>,
+    syntax_mode: SearchSyntaxMode,
 ) -> Result<Option<SearchQuery>, SearchQueryParseError> {
     if input.trim().is_empty() {
         return Ok(None);
     }
 
-    let tokens = search_tokens(input)?;
+    let tokens = search_tokens(input, syntax_mode)?;
     if tokens.is_empty() {
         return Ok(None);
     }
 
     let mut cursor = 0;
-    let expressions = parse_query_sequence(&tokens, &mut cursor, false, default_field)?;
+    let expressions = parse_query_sequence(&tokens, &mut cursor, false, default_field, syntax_mode)?;
     if cursor != tokens.len() {
         return Err(SearchQueryParseError::InvalidSyntax(
             "unexpected tokens after search expression".to_string(),
@@ -1787,6 +1810,15 @@ pub(crate) fn parse_mail_query(
     input: &str,
     scope: MailSearchFieldScope,
 ) -> Result<Option<ParsedMailSearchQuery>, SearchQueryParseError> {
+    parse_mail_query_with_mode(input, scope, SearchSyntaxMode::Plain)
+}
+
+#[allow(dead_code)]
+pub(crate) fn parse_mail_query_with_mode(
+    input: &str,
+    scope: MailSearchFieldScope,
+    syntax_mode: SearchSyntaxMode,
+) -> Result<Option<ParsedMailSearchQuery>, SearchQueryParseError> {
     let default_field = match scope {
         MailSearchFieldScope::Any => SearchField::Any,
         MailSearchFieldScope::Subject => SearchField::Subject,
@@ -1800,7 +1832,7 @@ pub(crate) fn parse_mail_query(
             SearchField::Any
         }
     };
-    parse_search_query_with_scope(input, Some(default_field)).map(|query| {
+    parse_search_query_with_scope_and_mode(input, Some(default_field), syntax_mode).map(|query| {
         query.map(|query| {
             let query = match scope {
                 MailSearchFieldScope::SubjectOrAddresses => expand_unqualified_mail_fields(
@@ -1857,7 +1889,7 @@ fn expand_unqualified_mail_fields(query: SearchQuery, fields: &[SearchField]) ->
             let SearchTermKind::Text { field, matcher } = term.kind else {
                 return SearchQuery::Term(term);
             };
-            if field != SearchField::Any || matcher != SearchMatchKind::Contains {
+            if field != SearchField::Any {
                 return SearchQuery::Term(term);
             }
 
@@ -1872,7 +1904,7 @@ fn expand_unqualified_mail_fields(query: SearchQuery, fields: &[SearchField]) ->
                             negated: false,
                             kind: SearchTermKind::Text {
                                 field,
-                                matcher: SearchMatchKind::Contains,
+                                matcher,
                             },
                         })
                     })
@@ -1901,6 +1933,7 @@ fn parse_query_sequence(
     cursor: &mut usize,
     expect_closing_parenthesis: bool,
     default_field: Option<SearchField>,
+    syntax_mode: SearchSyntaxMode,
 ) -> Result<Vec<SearchQuery>, SearchQueryParseError> {
     let mut expressions = Vec::new();
 
@@ -1920,7 +1953,7 @@ fn parse_query_sequence(
             return Err(SearchQueryParseError::UnexpectedClosingParenthesis);
         }
 
-        if let Some(expression) = parse_query_atom(tokens, cursor, default_field)? {
+        if let Some(expression) = parse_query_atom(tokens, cursor, default_field, syntax_mode)? {
             expressions.push(expression);
         }
     }
@@ -1932,11 +1965,12 @@ fn parse_query_atom(
     tokens: &[SearchToken],
     cursor: &mut usize,
     default_field: Option<SearchField>,
+    syntax_mode: SearchSyntaxMode,
 ) -> Result<Option<SearchQuery>, SearchQueryParseError> {
     match tokens.get(*cursor) {
         Some(SearchToken::OpenParen) => {
             *cursor += 1;
-            let expressions = parse_query_sequence(tokens, cursor, true, default_field)?;
+            let expressions = parse_query_sequence(tokens, cursor, true, default_field, syntax_mode)?;
             combine_all(expressions)
                 .ok_or(SearchQueryParseError::EmptyGroup)
                 .map(Some)
@@ -1950,7 +1984,7 @@ fn parse_query_atom(
                     )));
                 }
                 *cursor += 2;
-                let expressions = parse_query_sequence(tokens, cursor, true, default_field)?;
+                let expressions = parse_query_sequence(tokens, cursor, true, default_field, syntax_mode)?;
                 let expression = match group.as_str() {
                     "and:" => combine_all(expressions).ok_or(SearchQueryParseError::EmptyGroup)?,
                     "or:" => {
@@ -1983,7 +2017,7 @@ fn parse_query_atom(
             }
 
             *cursor += 1;
-            normalize_search_query_term(word, default_field).map(|term| term.map(SearchQuery::Term))
+            normalize_search_query_term(word, default_field, syntax_mode).map(|term| term.map(SearchQuery::Term))
         }
         Some(SearchToken::CloseParen) => Err(SearchQueryParseError::UnexpectedClosingParenthesis),
         None => Err(SearchQueryParseError::InvalidSyntax(
@@ -2003,6 +2037,7 @@ fn combine_all(mut expressions: Vec<SearchQuery>) -> Option<SearchQuery> {
 fn normalize_search_query_term(
     token: &SearchWord,
     default_field: Option<SearchField>,
+    syntax_mode: SearchSyntaxMode,
 ) -> Result<Option<SearchQueryTerm>, SearchQueryParseError> {
     if token.text.is_empty() {
         return Err(SearchQueryParseError::EmptyTerm);
@@ -2025,12 +2060,26 @@ fn normalize_search_query_term(
         if token_text.is_empty() {
             return Err(SearchQueryParseError::EmptyTerm);
         }
+        let matcher = match syntax_mode {
+            SearchSyntaxMode::Plain => SearchMatchKind::Contains,
+            SearchSyntaxMode::Wildcard => SearchMatchKind::Wildcard,
+            SearchSyntaxMode::Regex => {
+                if let Err(e) = regex::RegexBuilder::new(token_text).case_insensitive(true).build() {
+                    return Err(SearchQueryParseError::InvalidSyntax(format!("invalid regex: {e}")));
+                }
+                SearchMatchKind::Regex
+            }
+        };
         return Ok(Some(SearchQueryTerm {
-            value: token_text.to_lowercase(),
+            value: if matcher == SearchMatchKind::Regex {
+                token_text.to_string()
+            } else {
+                token_text.to_lowercase()
+            },
             negated,
             kind: SearchTermKind::Text {
                 field: default_field.unwrap_or(SearchField::Any),
-                matcher: SearchMatchKind::Contains,
+                matcher,
             },
         }));
     };
@@ -2061,7 +2110,7 @@ fn normalize_search_query_term(
     let value = raw_value.to_lowercase();
 
     match base_key {
-        "not" => parse_not_term(&value, negated, option),
+        "not" => parse_not_term(&value, negated, option, syntax_mode),
         "is" => parse_is_term(&value, negated, option),
         "has" | "no" => parse_attachment_operator(base_key, &value, negated, option),
         "flag" => parse_flag_term(&value, negated, option),
@@ -2069,11 +2118,34 @@ fn normalize_search_query_term(
         "on" | "date" | "after" | "newer" | "before" | "older" | "sent" | "received" | "rcv" => {
             parse_date_term(base_key, option, raw_value, negated)
         }
+        "regex" => {
+            if let Err(e) = regex::RegexBuilder::new(raw_value).case_insensitive(true).build() {
+                return Err(SearchQueryParseError::InvalidSyntax(format!("invalid regex: {e}")));
+            }
+            Ok(Some(SearchQueryTerm {
+                value: raw_value.to_string(),
+                negated,
+                kind: SearchTermKind::Text {
+                    field: default_field.unwrap_or(SearchField::Any),
+                    matcher: SearchMatchKind::Regex,
+                },
+            }))
+        }
+        "wildcard" | "wc" | "glob" => {
+            Ok(Some(SearchQueryTerm {
+                value,
+                negated,
+                kind: SearchTermKind::Text {
+                    field: default_field.unwrap_or(SearchField::Any),
+                    matcher: SearchMatchKind::Wildcard,
+                },
+            }))
+        }
         "any" | "from" | "f" | "sender" | "to" | "t" | "cc" | "c" | "bcc" | "recipient"
         | "recips" | "r" | "recipients" | "subject" | "s" | "body" | "b" | "content" | "label"
         | "l" | "tag" | "keyword" | "filename" | "name" | "folder" | "in" | "reply-to"
         | "replyto" | "mid" | "message-id" | "location" | "m" => {
-            parse_field_term(base_key, option, value, negated)
+            parse_field_term(base_key, option, value, raw_value, negated, syntax_mode)
         }
         "list" | "header" | "h" | "exists" | "e" | "size" | "sz" | "score" | "sc" => {
             Err(SearchQueryParseError::UnsupportedOperator(key))
@@ -2099,6 +2171,9 @@ fn split_search_key_option(key: &str) -> (&str, Option<&str>) {
         "sw",
         "ends-with",
         "ew",
+        "wildcard",
+        "wc",
+        "glob",
         "regex",
         "r",
         "full-regex",
@@ -2125,6 +2200,7 @@ fn parse_not_term(
     value: &str,
     negated: bool,
     option: Option<&str>,
+    syntax_mode: SearchSyntaxMode,
 ) -> Result<Option<SearchQueryTerm>, SearchQueryParseError> {
     if option.is_some() {
         return Err(SearchQueryParseError::InvalidSyntax(
@@ -2139,14 +2215,26 @@ fn parse_not_term(
         "flagged" | "starred" => Ok(Some(state_term(SearchState::Flagged, !negated))),
         "important" => Ok(Some(state_term(SearchState::Important, !negated))),
         "junk" | "spam" => Ok(Some(state_term(SearchState::Junk, !negated))),
-        _ => Ok(Some(SearchQueryTerm {
-            value: value.to_string(),
-            negated: !negated,
-            kind: SearchTermKind::Text {
-                field: SearchField::Any,
-                matcher: SearchMatchKind::Contains,
-            },
-        })),
+        _ => {
+            let matcher = match syntax_mode {
+                SearchSyntaxMode::Plain => SearchMatchKind::Contains,
+                SearchSyntaxMode::Wildcard => SearchMatchKind::Wildcard,
+                SearchSyntaxMode::Regex => {
+                    if let Err(e) = regex::RegexBuilder::new(value).case_insensitive(true).build() {
+                        return Err(SearchQueryParseError::InvalidSyntax(format!("invalid regex: {e}")));
+                    }
+                    SearchMatchKind::Regex
+                }
+            };
+            Ok(Some(SearchQueryTerm {
+                value: value.to_string(),
+                negated: !negated,
+                kind: SearchTermKind::Text {
+                    field: SearchField::Any,
+                    matcher,
+                },
+            }))
+        }
     }
 }
 
@@ -2321,7 +2409,9 @@ fn parse_field_term(
     key: &str,
     option: Option<&str>,
     value: String,
+    raw_value: &str,
     negated: bool,
+    syntax_mode: SearchSyntaxMode,
 ) -> Result<Option<SearchQueryTerm>, SearchQueryParseError> {
     let field = match key {
         "any" => SearchField::Any,
@@ -2344,11 +2434,24 @@ fn parse_field_term(
     let default_matcher = if matches!(field, SearchField::MessageId) {
         SearchMatchKind::Exact
     } else {
-        SearchMatchKind::Contains
+        match syntax_mode {
+            SearchSyntaxMode::Plain => SearchMatchKind::Contains,
+            SearchSyntaxMode::Wildcard => SearchMatchKind::Wildcard,
+            SearchSyntaxMode::Regex => SearchMatchKind::Regex,
+        }
     };
     let (matcher, option_negated) = parse_matcher_option(option, default_matcher, key)?;
+    if matcher == SearchMatchKind::Regex {
+        if let Err(e) = regex::RegexBuilder::new(raw_value).case_insensitive(true).build() {
+            return Err(SearchQueryParseError::InvalidSyntax(format!("invalid regex: {e}")));
+        }
+    }
     Ok(Some(SearchQueryTerm {
-        value,
+        value: if matcher == SearchMatchKind::Regex {
+            raw_value.to_string()
+        } else {
+            value
+        },
         negated: negated ^ option_negated,
         kind: SearchTermKind::Text { field, matcher },
     }))
@@ -2367,7 +2470,8 @@ fn parse_matcher_option(
         Some("matches" | "m") => Ok((SearchMatchKind::Exact, false)),
         Some("starts-with" | "sw") => Ok((SearchMatchKind::StartsWith, false)),
         Some("ends-with" | "ew") => Ok((SearchMatchKind::EndsWith, false)),
-        Some("regex" | "r" | "full-regex" | "fr" | "soundex" | "se") => {
+        Some("wildcard" | "wc" | "glob") => Ok((SearchMatchKind::Wildcard, false)),
+        Some("soundex" | "se" | "regex" | "r" | "full-regex" | "fr") => {
             Err(SearchQueryParseError::UnsupportedOperator(format!(
                 "{key}-{}",
                 option.expect("matching option checked above")
@@ -2599,20 +2703,74 @@ fn search_field_value<'a>(document: &'a SearchDocument, field: SearchField) -> C
     }
 }
 
+fn wildcard_to_regex_pattern(pattern: &str) -> String {
+    let mut regex = String::with_capacity(pattern.len() * 2);
+    for ch in pattern.chars() {
+        match ch {
+            '*' => regex.push_str(".*"),
+            '?' => regex.push('.'),
+            other => {
+                let escaped = regex::escape(&other.to_string());
+                regex.push_str(&escaped);
+            }
+        }
+    }
+    regex
+}
+
+fn matches_compiled_regex(pattern: &str, text: &str) -> bool {
+    static REGEX_CACHE: once_cell::sync::Lazy<std::sync::Mutex<HashMap<String, Option<regex::Regex>>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
+
+    let mut cache = REGEX_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(opt_re) = cache.get(pattern) {
+        return opt_re.as_ref().is_some_and(|re| re.is_match(text));
+    }
+
+    if cache.len() > 128 {
+        cache.clear();
+    }
+
+    let compiled = regex::RegexBuilder::new(pattern)
+        .case_insensitive(true)
+        .build()
+        .ok();
+    let matches = compiled.as_ref().is_some_and(|re| re.is_match(text));
+    cache.insert(pattern.to_string(), compiled);
+    matches
+}
+
 fn search_text_matches(value: &str, needle: &str, matcher: SearchMatchKind) -> bool {
-    let value = value.to_lowercase();
-    let needle = needle.to_lowercase();
     if needle.is_empty() {
         return false;
     }
     match matcher {
-        SearchMatchKind::Contains => value.contains(&needle),
-        SearchMatchKind::HasWords => needle
-            .split_whitespace()
-            .all(|word| contains_whole_word(&value, word)),
-        SearchMatchKind::Exact => value.trim() == needle.trim(),
-        SearchMatchKind::StartsWith => value.trim_start().starts_with(needle.trim()),
-        SearchMatchKind::EndsWith => value.trim_end().ends_with(needle.trim()),
+        SearchMatchKind::Regex => matches_compiled_regex(needle, value),
+        SearchMatchKind::Wildcard => {
+            let pattern = wildcard_to_regex_pattern(&needle.to_lowercase());
+            matches_compiled_regex(&pattern, &value.to_lowercase())
+        }
+        SearchMatchKind::Contains => value.to_lowercase().contains(&needle.to_lowercase()),
+        SearchMatchKind::HasWords => {
+            let value = value.to_lowercase();
+            let needle = needle.to_lowercase();
+            needle
+                .split_whitespace()
+                .all(|word| contains_whole_word(&value, word))
+        }
+        SearchMatchKind::Exact => value.trim().to_lowercase() == needle.trim().to_lowercase(),
+        SearchMatchKind::StartsWith => {
+            let val = value.trim_start().to_lowercase();
+            let n = needle.trim().to_lowercase();
+            val.starts_with(&n)
+        }
+        SearchMatchKind::EndsWith => {
+            let val = value.trim_end().to_lowercase();
+            let n = needle.trim().to_lowercase();
+            val.ends_with(&n)
+        }
     }
 }
 
@@ -2671,7 +2829,10 @@ fn folder_alias_matches(folder: &str, aliases: &[&str]) -> bool {
     })
 }
 
-fn search_tokens(input: &str) -> Result<Vec<SearchToken>, SearchQueryParseError> {
+fn search_tokens(
+    input: &str,
+    syntax_mode: SearchSyntaxMode,
+) -> Result<Vec<SearchToken>, SearchQueryParseError> {
     let characters = input.chars().collect::<Vec<_>>();
     let mut tokens = Vec::new();
     let mut current = String::new();
@@ -2699,7 +2860,12 @@ fn search_tokens(input: &str) -> Result<Vec<SearchToken>, SearchQueryParseError>
             let Some(escaped) = characters.get(index + 1).copied() else {
                 return Err(SearchQueryParseError::DanglingEscape);
             };
-            current.push(escaped);
+            if syntax_mode == SearchSyntaxMode::Regex && !matches!(escaped, '"') {
+                current.push('\\');
+                current.push(escaped);
+            } else {
+                current.push(escaped);
+            }
             token_started = true;
             index += 2;
             continue;
@@ -4676,5 +4842,120 @@ mod tests {
                 "worker boundary found {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn test_plain_search_matching() {
+        assert!(search_text_matches("Ihre Rechnung 123", "rechnung", SearchMatchKind::Contains));
+        // In plain mode, * and ? are literal characters, not wildcards
+        assert!(!search_text_matches("Ihre Rechnung 123", "rechn*", SearchMatchKind::Contains));
+        assert!(search_text_matches("Frage?", "frage?", SearchMatchKind::Contains));
+        assert!(search_text_matches("Preis * 2", "preis *", SearchMatchKind::Contains));
+    }
+
+    #[test]
+    fn test_wildcard_search_matching() {
+        // * matches any characters
+        assert!(search_text_matches("Ihre Rechnung vom Mai 2024", "rechn*2024", SearchMatchKind::Wildcard));
+        assert!(search_text_matches("steve@apple.com", "*@apple.com", SearchMatchKind::Wildcard));
+        assert!(!search_text_matches("steve@other.com", "*@apple.com", SearchMatchKind::Wildcard));
+
+        // ? matches exactly one character
+        assert!(search_text_matches("Dokument v1.pdf", "v?.pdf", SearchMatchKind::Wildcard));
+        assert!(!search_text_matches("Dokument v12.pdf", "v?.pdf", SearchMatchKind::Wildcard));
+
+        // Special regex characters in pattern are safely escaped
+        assert!(search_text_matches("Ticket [123] fertig", "[123]*", SearchMatchKind::Wildcard));
+        assert!(search_text_matches("C++ Programming", "c++*", SearchMatchKind::Wildcard));
+        assert!(search_text_matches("user+tag@domain.com", "*+tag@*", SearchMatchKind::Wildcard));
+    }
+
+    #[test]
+    fn test_regex_search_matching() {
+        assert!(search_text_matches("Ticket #4521 erledigt", r"#[0-9]{4}", SearchMatchKind::Regex));
+        assert!(search_text_matches("ERROR 500 occurred", r"\b(error|fatal)\b", SearchMatchKind::Regex));
+        assert!(!search_text_matches("INFO 200 ok", r"\b(error|fatal)\b", SearchMatchKind::Regex));
+
+        // Invalid regex during matching fails gracefully without panic
+        assert!(!search_text_matches("some text", r"[0-9", SearchMatchKind::Regex));
+    }
+
+    fn test_search_record(subject: &str) -> MailSearchRecord {
+        MailSearchRecord {
+            searchable_text: subject.to_lowercase(),
+            subject: subject.to_string(),
+            from: "alice@test.com".to_string(),
+            to: "bob@test.com".to_string(),
+            cc: String::new(),
+            bcc: String::new(),
+            body: String::new(),
+            labels: String::new(),
+            filenames: String::new(),
+            folder: "inbox".to_string(),
+            reply_to: String::new(),
+            message_id: "<123@test>".to_string(),
+            location: String::new(),
+            date: None,
+            is_unread: None,
+            is_flagged: None,
+            is_important: None,
+            is_junk: None,
+            has_attachment: None,
+        }
+    }
+
+    #[test]
+    fn test_parse_mail_query_with_modes() {
+        // Plain mode: bare term creates Contains
+        let q_plain = parse_mail_query_with_mode("rechn*", MailSearchFieldScope::Subject, SearchSyntaxMode::Plain)
+            .expect("valid query")
+            .expect("non-empty");
+        let rec = test_search_record("Ihre Rechnung");
+        // Literal rechn* does not match "Ihre Rechnung"
+        assert!(!matches_mail_query(&q_plain, &rec));
+
+        // Wildcard mode: bare term creates Wildcard matcher
+        let q_wild = parse_mail_query_with_mode("rechn*", MailSearchFieldScope::Subject, SearchSyntaxMode::Wildcard)
+            .expect("valid query")
+            .expect("non-empty");
+        assert!(matches_mail_query(&q_wild, &rec));
+
+        // Regex mode: bare term creates Regex matcher
+        let q_regex = parse_mail_query_with_mode(r"rechn\w+", MailSearchFieldScope::Subject, SearchSyntaxMode::Regex)
+            .expect("valid query")
+            .expect("non-empty");
+        assert!(matches_mail_query(&q_regex, &rec));
+
+        // Invalid regex in regex mode returns parse error
+        let q_err = parse_mail_query_with_mode(r"[0-9", MailSearchFieldScope::Subject, SearchSyntaxMode::Regex);
+        assert!(q_err.is_err());
+    }
+
+    #[test]
+    fn test_mode_with_fields_and_wildcards() {
+        let mut rec = test_search_record("Update [Ticket #42]");
+        rec.searchable_text = "update [ticket #42] support@service.de".to_string();
+
+        // In Regex mode: unqualified and field-scoped regex work
+        let q_re = parse_mail_query_with_mode(r"#\d+", MailSearchFieldScope::Any, SearchSyntaxMode::Regex)
+            .expect("valid")
+            .expect("non-empty");
+        assert!(matches_mail_query(&q_re, &rec));
+
+        let q_subj_re = parse_mail_query_with_mode(r"subject:\[Ticket", MailSearchFieldScope::Any, SearchSyntaxMode::Regex)
+            .expect("valid")
+            .expect("non-empty");
+        assert!(matches_mail_query(&q_subj_re, &rec));
+
+        // In Wildcard mode: wildcard matching works
+        let q_wc = parse_mail_query_with_mode("*ticket*", MailSearchFieldScope::Any, SearchSyntaxMode::Wildcard)
+            .expect("valid")
+            .expect("non-empty");
+        assert!(matches_mail_query(&q_wc, &rec));
+
+        let q_subj_wc = parse_mail_query_with_mode("subject:*ticket*", MailSearchFieldScope::Any, SearchSyntaxMode::Wildcard)
+            .expect("valid")
+            .expect("non-empty");
+        assert!(matches_mail_query(&q_subj_wc, &rec));
     }
 }

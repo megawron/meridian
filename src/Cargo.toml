@@ -30,6 +30,7 @@ chrono.workspace = true
 uuid.workspace = true
 reqwest.workspace = true
 gettext-rs.workspace = true
+regex.workspace = true
 
 [build-dependencies]
 pkg-config = "0.3"

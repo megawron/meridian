@@ -1235,6 +1235,7 @@ dependencies = [
  "once_cell",
  "pango",
  "pkg-config",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
