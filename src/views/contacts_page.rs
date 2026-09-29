@@ -685,6 +685,9 @@ mod imp {
         pub merge_button: RefCell<Option<gtk::Button>>,
         pub copy_to_book_button: RefCell<Option<gtk::Button>>,
         pub move_to_book_button: RefCell<Option<gtk::Button>>,
+        pub view_options_split_btn: RefCell<Option<adw::SplitButton>>,
+        pub contact_actions_pill: RefCell<Option<gtk::Box>>,
+        pub more_button: RefCell<Option<gtk::MenuButton>>,
     }
 
     #[glib::object_subclass]
@@ -1792,41 +1795,22 @@ impl ContactsPage {
         self.sync_toolbar_button_labels();
     }
 
-    pub(crate) fn apply_toolbar_button_modes(&self, is_compact: bool) {
+    pub(crate) fn apply_toolbar_button_modes(&self, _is_compact: bool) {
         let imp = self.imp();
         let edit_label = crate::i18n::gettext("Edit");
         let email_label = crate::i18n::gettext("Email");
         let delete_label = crate::i18n::gettext("Delete");
-        let print_label = crate::i18n::gettext("Print");
-        let print_list_label = crate::i18n::gettext("Print List");
-        let export_label = crate::i18n::gettext("Export");
-        let merge_label = crate::i18n::gettext("Merge");
-        let copy_label = crate::i18n::gettext("Copy…");
-        let move_label = crate::i18n::gettext("Move…");
-        let buttons: [(&RefCell<Option<gtk::Button>>, &str, &str); 9] = [
-            (&imp.edit_button, &edit_label, "document-edit-symbolic"),
-            (&imp.email_button, &email_label, "mail-message-new-symbolic"),
-            (&imp.delete_button, &delete_label, "user-trash-symbolic"),
-            (&imp.print_button, &print_label, "document-print-symbolic"),
-            (&imp.print_list_button, &print_list_label, "document-print-preview-symbolic"),
-            (&imp.export_button, &export_label, "document-save-symbolic"),
-            (&imp.merge_button, &merge_label, "object-select-symbolic"),
-            (&imp.copy_to_book_button, &copy_label, "edit-copy-symbolic"),
-            (&imp.move_to_book_button, &move_label, "folder-move-symbolic"),
-        ];
-
-        for (cell, text, icon) in buttons {
-            if let Some(btn) = cell.borrow().as_ref() {
-                if is_compact {
-                    btn.set_child(Some(&gtk::Image::from_icon_name(icon)));
-                } else {
-                    let label = gtk::Label::builder()
-                        .label(text)
-                        .valign(gtk::Align::Center)
-                        .build();
-                    btn.set_child(Some(&label));
-                }
-            }
+        if let Some(btn) = imp.edit_button.borrow().as_ref() {
+            btn.set_child(Some(&gtk::Image::from_icon_name("document-edit-symbolic")));
+            set_accessible_label(btn, &edit_label);
+        }
+        if let Some(btn) = imp.email_button.borrow().as_ref() {
+            btn.set_child(Some(&gtk::Image::from_icon_name("mail-message-new-symbolic")));
+            set_accessible_label(btn, &email_label);
+        }
+        if let Some(btn) = imp.delete_button.borrow().as_ref() {
+            btn.set_child(Some(&gtk::Image::from_icon_name("user-trash-symbolic")));
+            set_accessible_label(btn, &delete_label);
         }
     }
 
@@ -1966,6 +1950,46 @@ impl ContactsPage {
 
     pub fn contact_preview_toggle(&self) -> Option<gtk::ToggleButton> {
         self.imp().contact_preview_toggle.borrow().clone()
+    }
+
+    pub fn view_options_split_button(&self) -> Option<adw::SplitButton> {
+        self.imp().view_options_split_btn.borrow().clone()
+    }
+
+    pub fn current_view_mode(&self) -> ContactViewMode {
+        self.imp().current_view_mode.get()
+    }
+
+    pub fn set_view_mode(&self, mode: ContactViewMode) {
+        let imp = self.imp();
+        imp.current_view_mode.set(mode);
+        if let Some(stack) = imp.view_stack.borrow().as_ref() {
+            let (child_name, pos) = match mode {
+                ContactViewMode::Simple => ("simple", imp.simple_vpane_pos.get()),
+                ContactViewMode::Cards => ("cards", imp.cards_vpane_pos.get()),
+                ContactViewMode::Table => ("table", imp.table_vpane_pos.get()),
+            };
+            stack.set_visible_child_name(child_name);
+            if let Some(paned) = imp.contact_preview_paned.borrow().as_ref() {
+                paned.set_position(pos);
+            }
+        }
+        self.sync_view_split_button();
+    }
+
+    pub(crate) fn sync_view_split_button(&self) {
+        let Some(split_btn) = self.imp().view_options_split_btn.borrow().clone() else {
+            return;
+        };
+        let mode = self.imp().current_view_mode.get();
+        let (icon_name, tooltip_text) = match mode {
+            ContactViewMode::Simple => ("view-list-symbolic", crate::i18n::gettext("Simple List")),
+            ContactViewMode::Cards => ("view-grid-symbolic", crate::i18n::gettext("Card View")),
+            ContactViewMode::Table => ("x-office-spreadsheet-symbolic", crate::i18n::gettext("Table View")),
+        };
+        split_btn.set_icon_name(icon_name);
+        split_btn.set_tooltip_text(Some(&tooltip_text));
+        set_accessible_label(&split_btn, &tooltip_text);
     }
 
     pub fn set_sidebar_position(&self, pos: i32) {
@@ -3665,12 +3689,19 @@ impl ContactsPage {
         header_box.append(&detail_name);
         header_box.append(&detail_title);
 
-        let _actions_box = gtk::Box::builder()
+        let contact_actions_pill = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
+            .spacing(0)
+            .css_classes(vec!["linked", "mail-action-pill", "contact-header-actions"])
             .halign(gtk::Align::Center)
-            .margin_bottom(12)
+            .valign(gtk::Align::Center)
+            .margin_top(4)
+            .margin_bottom(6)
+            .visible(false)
             .build();
+        self.imp()
+            .contact_actions_pill
+            .replace(Some(contact_actions_pill.clone()));
 
         let email_row1 = adw::ActionRow::builder()
             .title(&crate::i18n::gettext("No email address"))
@@ -4839,25 +4870,94 @@ impl ContactsPage {
             }
         });
 
-        let left_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(4)
-            .halign(gtk::Align::Start)
+        // --- Setup modern contact action pill in header_box ---
+        email_btn.add_css_class("mail-header-action-btn");
+        edit_btn.add_css_class("mail-header-action-btn");
+        delete_btn.add_css_class("mail-header-action-btn");
+        email_btn.set_child(Some(&gtk::Image::from_icon_name("mail-message-new-symbolic")));
+        edit_btn.set_child(Some(&gtk::Image::from_icon_name("document-edit-symbolic")));
+        delete_btn.set_child(Some(&gtk::Image::from_icon_name("user-trash-symbolic")));
+
+        let more_popover = gtk::Popover::new();
+        let more_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .margin_start(4)
+            .margin_end(4)
+            .margin_top(4)
+            .margin_bottom(4)
+            .width_request(220)
             .build();
-        // 1. Primary actions: Edit, Email, Delete
-        left_box.append(&edit_btn);
-        left_box.append(&email_btn);
-        left_box.append(&delete_btn);
-        left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        // 2. Output actions: Print, Print List, Export
-        left_box.append(&print_btn);
-        left_box.append(&print_list_btn);
-        left_box.append(&export_btn);
-        left_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        // 3. Organization & Maintenance actions: Merge, Copy, Move
-        left_box.append(&merge_btn);
-        left_box.append(&copy_to_book_btn);
-        left_box.append(&move_to_book_btn);
+
+        let make_popover_item = |btn: &gtk::Button, icon: &'static str, label_text: &str| {
+            let item_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(10)
+                .margin_start(4)
+                .margin_end(4)
+                .build();
+            let img = gtk::Image::from_icon_name(icon);
+            let lbl = gtk::Label::builder()
+                .label(label_text)
+                .halign(gtk::Align::Start)
+                .hexpand(true)
+                .build();
+            item_box.append(&img);
+            item_box.append(&lbl);
+            btn.set_child(Some(&item_box));
+            btn.set_halign(gtk::Align::Fill);
+            btn.add_css_class("flat");
+            btn.remove_css_class("circular");
+        };
+
+        make_popover_item(&print_btn, "document-print-symbolic", &crate::i18n::gettext("Print Contact…"));
+        make_popover_item(&export_btn, "document-save-symbolic", &crate::i18n::gettext("Export Contact…"));
+        make_popover_item(&merge_btn, "object-select-symbolic", &crate::i18n::gettext("Merge Duplicates…"));
+        make_popover_item(&copy_to_book_btn, "edit-copy-symbolic", &crate::i18n::gettext("Copy to Address Book…"));
+        make_popover_item(&move_to_book_btn, "folder-move-symbolic", &crate::i18n::gettext("Move to Address Book…"));
+        make_popover_item(&print_list_btn, "document-print-preview-symbolic", &crate::i18n::gettext("Print Contact List…"));
+
+        let popover_weak = more_popover.downgrade();
+        let connect_popdown = |btn: &gtk::Button, pop_weak: glib::WeakRef<gtk::Popover>| {
+            btn.connect_clicked(move |_| {
+                if let Some(pop) = pop_weak.upgrade() {
+                    pop.popdown();
+                }
+            });
+        };
+        connect_popdown(&print_btn, popover_weak.clone());
+        connect_popdown(&export_btn, popover_weak.clone());
+        connect_popdown(&merge_btn, popover_weak.clone());
+        connect_popdown(&copy_to_book_btn, popover_weak.clone());
+        connect_popdown(&move_to_book_btn, popover_weak.clone());
+        connect_popdown(&print_list_btn, popover_weak.clone());
+
+        more_box.append(&print_btn);
+        more_box.append(&export_btn);
+        more_box.append(&merge_btn);
+        more_box.append(&copy_to_book_btn);
+        more_box.append(&move_to_book_btn);
+        more_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        more_box.append(&print_list_btn);
+
+        more_popover.set_child(Some(&more_box));
+
+        let str_more_actions = crate::i18n::gettext("More actions for this contact");
+        let more_btn = gtk::MenuButton::builder()
+            .icon_name("view-more-symbolic")
+            .popover(&more_popover)
+            .tooltip_text(&str_more_actions)
+            .css_classes(vec!["flat", "mail-header-action-btn"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&more_btn, &str_more_actions);
+        self.imp().more_button.replace(Some(more_btn.clone()));
+
+        contact_actions_pill.append(&email_btn);
+        contact_actions_pill.append(&edit_btn);
+        contact_actions_pill.append(&delete_btn);
+        contact_actions_pill.append(&more_btn);
+        header_box.append(&contact_actions_pill);
 
         let contacts_search_bar = gtk::SearchBar::builder()
             .search_mode_enabled(false)
@@ -4914,136 +5014,204 @@ impl ContactsPage {
             bar_for_stop.set_search_mode(false);
         });
 
-        let right_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(2)
-            .halign(gtk::Align::End)
-            .build();
-        let view_switcher_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["linked"])
-            .valign(gtk::Align::Center)
-            .margin_start(4)
-            .margin_end(4)
+        let popover_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(10)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(12)
+            .margin_bottom(12)
+            .width_request(260)
             .build();
 
-        let simple_view_btn = gtk::ToggleButton::builder()
+        // 1. View Mode Section
+        let sec_view_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .build();
+        sec_view_box.append(&gtk::Label::builder()
+            .label(&crate::i18n::gettext("View"))
+            .halign(gtk::Align::Start)
+            .css_classes(vec!["dim-label", "caption"])
+            .build()
+        );
+
+        let view_mode_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(0)
+            .homogeneous(true)
+            .css_classes(vec!["linked"])
+            .build();
+
+        let btn_simple = gtk::ToggleButton::builder()
             .icon_name("view-list-symbolic")
             .tooltip_text(&crate::i18n::gettext("Simple List"))
             .active(true)
-            .css_classes(vec!["flat"])
             .build();
+        set_accessible_label(&btn_simple, &crate::i18n::gettext("Simple List"));
 
-        let card_view_btn = gtk::ToggleButton::builder()
+        let btn_cards = gtk::ToggleButton::builder()
             .icon_name("view-grid-symbolic")
             .tooltip_text(&crate::i18n::gettext("Card View"))
-            .group(&simple_view_btn)
-            .css_classes(vec!["flat"])
+            .group(&btn_simple)
             .build();
+        set_accessible_label(&btn_cards, &crate::i18n::gettext("Card View"));
 
-        let table_view_btn = gtk::ToggleButton::builder()
+        let btn_table = gtk::ToggleButton::builder()
             .icon_name("x-office-spreadsheet-symbolic")
             .tooltip_text(&crate::i18n::gettext("Table View"))
-            .group(&simple_view_btn)
-            .css_classes(vec!["flat"])
+            .group(&btn_simple)
             .build();
+        set_accessible_label(&btn_table, &crate::i18n::gettext("Table View"));
 
-        let view_stack_for_simple = view_stack.clone();
-        let page_weak_for_simple = self.downgrade();
-        simple_view_btn.connect_toggled(glib::clone!(
-            #[weak]
-            view_stack_for_simple,
-            move |btn| {
-                if btn.is_active() {
-                    view_stack_for_simple.set_visible_child_name("simple");
-                    if let Some(page) = page_weak_for_simple.upgrade() {
-                        page.imp().current_view_mode.set(ContactViewMode::Simple);
-                        if let Some(paned) = page.imp().contact_preview_paned.borrow().as_ref() {
-                            paned.set_position(page.imp().simple_vpane_pos.get());
-                        }
-                    }
+        view_mode_box.append(&btn_simple);
+        view_mode_box.append(&btn_cards);
+        view_mode_box.append(&btn_table);
+        sec_view_box.append(&view_mode_box);
+        popover_box.append(&sec_view_box);
+
+        let page_weak_s = self.downgrade();
+        btn_simple.connect_toggled(move |btn| {
+            if btn.is_active() {
+                if let Some(page) = page_weak_s.upgrade() {
+                    page.set_view_mode(ContactViewMode::Simple);
                 }
             }
-        ));
+        });
 
-        let view_stack_for_card = view_stack.clone();
-        let page_weak_for_card = self.downgrade();
-        card_view_btn.connect_toggled(glib::clone!(
-            #[weak]
-            view_stack_for_card,
-            move |btn| {
-                if btn.is_active() {
-                    view_stack_for_card.set_visible_child_name("cards");
-                    if let Some(page) = page_weak_for_card.upgrade() {
-                        page.imp().current_view_mode.set(ContactViewMode::Cards);
-                        if let Some(paned) = page.imp().contact_preview_paned.borrow().as_ref() {
-                            paned.set_position(page.imp().cards_vpane_pos.get());
-                        }
-                    }
+        let page_weak_c = self.downgrade();
+        btn_cards.connect_toggled(move |btn| {
+            if btn.is_active() {
+                if let Some(page) = page_weak_c.upgrade() {
+                    page.set_view_mode(ContactViewMode::Cards);
                 }
             }
-        ));
+        });
 
-        let view_stack_for_table = view_stack.clone();
-        let page_weak_for_table = self.downgrade();
-        table_view_btn.connect_toggled(glib::clone!(
-            #[weak]
-            view_stack_for_table,
-            move |btn| {
-                if btn.is_active() {
-                    view_stack_for_table.set_visible_child_name("table");
-                    if let Some(page) = page_weak_for_table.upgrade() {
-                        page.imp().current_view_mode.set(ContactViewMode::Table);
-                        if let Some(paned) = page.imp().contact_preview_paned.borrow().as_ref() {
-                            paned.set_position(page.imp().table_vpane_pos.get());
-                        }
-                    }
+        let page_weak_t = self.downgrade();
+        btn_table.connect_toggled(move |btn| {
+            if btn.is_active() {
+                if let Some(page) = page_weak_t.upgrade() {
+                    page.set_view_mode(ContactViewMode::Table);
                 }
             }
-        ));
+        });
 
-        view_switcher_box.append(&simple_view_btn);
-        view_switcher_box.append(&card_view_btn);
-        view_switcher_box.append(&table_view_btn);
-
-        right_box.append(&view_switcher_box);
-
-        let table_cols_btn = gtk::Button::builder()
+        // 2. Column Customization Section
+        popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        let btn_cols = gtk::Button::builder()
             .icon_name("view-column-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Customize Column Order"))
+            .label(&crate::i18n::gettext("Customize Column Order…"))
             .css_classes(vec!["flat"])
-            .valign(gtk::Align::Center)
-            .margin_start(4)
+            .halign(gtk::Align::Fill)
             .build();
-        set_accessible_label(&table_cols_btn, &crate::i18n::gettext("Customize Column Order"));
-        let page_for_cols_btn = self.downgrade();
-        table_cols_btn.connect_clicked(move |_| {
-            if let Some(page) = page_for_cols_btn.upgrade() {
+        set_accessible_label(&btn_cols, &crate::i18n::gettext("Customize Column Order"));
+
+        let options_popover = gtk::Popover::builder().child(&popover_box).build();
+        options_popover.add_css_class("view-options-popover");
+
+        let page_for_cols = self.downgrade();
+        let pop_for_cols = options_popover.clone();
+        btn_cols.connect_clicked(move |_| {
+            pop_for_cols.popdown();
+            if let Some(page) = page_for_cols.upgrade() {
                 page.open_contact_column_order_dialog();
             }
         });
-        right_box.append(&table_cols_btn);
+        popover_box.append(&btn_cols);
 
-        let spacer = gtk::Box::builder().hexpand(true).build();
-        contacts_toolbar.append(&left_box);
-        contacts_toolbar.append(&spacer);
-        contacts_toolbar.append(&right_box);
-
-        let contacts_toolbar_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Automatic)
-            .vscrollbar_policy(gtk::PolicyType::Never)
-            .propagate_natural_width(false)
-            .min_content_width(0)
-            .child(&contacts_toolbar)
+        // 3. Preview Pane Switch
+        popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        let listbox = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(vec!["view-options-list"])
             .build();
-        contacts_toolbar_scroll.set_visible(
-            AppSettings::try_new()
-                .map(|settings| settings.contact_show_toolbar())
-                .unwrap_or(true),
-        );
+
+        let row_preview = adw::ActionRow::builder()
+            .title(&crate::i18n::gettext("Contact Preview"))
+            .subtitle(&crate::i18n::gettext("Show contact details pane"))
+            .activatable(true)
+            .build();
+        let initial_preview_vis = AppSettings::try_new()
+            .map(|s| s.contact_preview_visible())
+            .unwrap_or(true);
+        let switch_preview = gtk::Switch::builder()
+            .valign(gtk::Align::Center)
+            .active(initial_preview_vis)
+            .build();
+        row_preview.add_suffix(&switch_preview);
+        row_preview.set_activatable_widget(Some(&switch_preview));
+
+        let preview_toggle_weak = preview_toggle.downgrade();
+        switch_preview.connect_state_set(move |_, state| {
+            if let Some(settings) = AppSettings::try_new() {
+                if settings.contact_preview_visible() != state {
+                    settings.set_contact_preview_visible(state);
+                }
+            }
+            if let Some(toggle) = preview_toggle_weak.upgrade() {
+                if toggle.is_active() != state {
+                    toggle.set_active(state);
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        listbox.append(&row_preview);
+        popover_box.append(&listbox);
+
+        // Sync popover toggles on show
+        let btn_s = btn_simple.clone();
+        let btn_c = btn_cards.clone();
+        let btn_t = btn_table.clone();
+        let sw_prev = switch_preview.clone();
+        let page_weak_pop = self.downgrade();
+        options_popover.connect_show(move |_| {
+            if let Some(page) = page_weak_pop.upgrade() {
+                match page.imp().current_view_mode.get() {
+                    ContactViewMode::Simple => btn_s.set_active(true),
+                    ContactViewMode::Cards => btn_c.set_active(true),
+                    ContactViewMode::Table => btn_t.set_active(true),
+                }
+                sw_prev.set_active(page.is_preview_visible());
+            }
+        });
+
+        // Build SplitButton
+        let str_view_opts = crate::i18n::gettext("View options");
+        let split_btn = adw::SplitButton::builder()
+            .icon_name("view-list-symbolic")
+            .tooltip_text(&crate::i18n::gettext("Simple List"))
+            .dropdown_tooltip(&str_view_opts)
+            .popover(&options_popover)
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&split_btn, &str_view_opts);
+        self.imp().view_options_split_btn.replace(Some(split_btn.clone()));
+
+        let page_weak_split = self.downgrade();
+        split_btn.connect_clicked(move |_| {
+            if let Some(page) = page_weak_split.upgrade() {
+                let current = page.imp().current_view_mode.get();
+                let next = match current {
+                    ContactViewMode::Simple => ContactViewMode::Cards,
+                    ContactViewMode::Cards => ContactViewMode::Table,
+                    ContactViewMode::Table => ContactViewMode::Simple,
+                };
+                page.set_view_mode(next);
+            }
+        });
+
+        self.sync_view_split_button();
+
+        let contacts_toolbar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .visible(false)
+            .build();
         self.imp()
             .toolbar
-            .replace(Some(contacts_toolbar_scroll.clone().upcast()));
+            .replace(Some(contacts_toolbar.upcast()));
 
         detail_box.append(&header_box);
         detail_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
@@ -5472,7 +5640,6 @@ impl ContactsPage {
             .vexpand(true)
             .hexpand(true)
             .build();
-        content_box.append(&contacts_toolbar_scroll);
         content_box.append(&contacts_search_bar);
         content_box.append(&preview_paned);
 
@@ -7441,6 +7608,9 @@ fn sync_contact_selection(
                 email_row,
             );
             page.update_contact_address_and_map(None);
+            if let Some(pill) = page.imp().contact_actions_pill.borrow().as_ref() {
+                pill.set_visible(false);
+            }
             apply_contact_selection_action_state(
                 ContactSelectionActionState {
                     selection_count: 0,
@@ -7546,6 +7716,9 @@ fn sync_contact_selection(
         }
     }
     page.queue_contacts_table_draw();
+    if let Some(pill) = page.imp().contact_actions_pill.borrow().as_ref() {
+        pill.set_visible(!selected.is_empty());
+    }
     apply_contact_selection_action_state(
         state,
         email_button,
@@ -7566,6 +7739,9 @@ fn clear_contact_selection(page: &ContactsPage, contact_list: &gtk::ListBox) {
         flow.unselect_all();
     }
     page.imp().selected_identity.replace(None);
+    if let Some(pill) = page.imp().contact_actions_pill.borrow().as_ref() {
+        pill.set_visible(false);
+    }
     if let Some(layout) = page.imp().contact_table_layout.borrow_mut().as_mut() {
         for row in layout.rows.iter_mut() {
             row.selected = false;
@@ -10383,10 +10559,12 @@ mod tests {
         assert!(source.contains("pub(crate) fn is_search_active"));
         assert!(source.contains("pub(crate) fn close_search"));
         assert!(source.contains("pub(crate) fn search_bar"));
-        // Toolbar should not contain search_entry in center_box
+        // Toolbar should not contain search_entry in center_box, nor contacts_toolbar_scroll in content_box
         let legacy_center_append = ["contacts_toolbar", ".append(&center", "_box)"].concat();
         assert!(!source.contains(&legacy_center_append));
         assert!(source.contains("content_box.append(&contacts_search_bar)"));
+        let legacy_toolbar_scroll_append = ["content_box", ".append(&contacts_toolbar", "_scroll)"].concat();
+        assert!(!source.contains(&legacy_toolbar_scroll_append));
 
         // Ensure redundant toolbar buttons are removed
         let call_btn_decl = ["let ", "call_btn", " ="].concat();
@@ -10410,55 +10588,41 @@ mod tests {
         assert!(page.search_bar().is_some());
         assert!(!page.is_search_active());
 
-        // Test HIG toolbar button modes in desktop mode (pure text, no icon)
+        // View options split button is exposed for window header bar
+        let split_btn = page
+            .view_options_split_button()
+            .expect("view_options_split_button exists");
+        assert_eq!(
+            split_btn.icon_name(),
+            Some(glib::GString::from("view-list-symbolic"))
+        );
+
+        // Contact action pill is created and initially hidden (no contact selected)
+        let pill = page
+            .imp()
+            .contact_actions_pill
+            .borrow()
+            .clone()
+            .expect("contact_actions_pill exists");
+        assert!(
+            !pill.is_visible(),
+            "contact_actions_pill must be hidden when no contact is selected"
+        );
+        assert!(pill.has_css_class("contact-header-actions"));
+        assert!(pill.has_css_class("mail-action-pill"));
+
+        // Header action buttons use symbolic icons matching the mail action pill pattern
         let edit_btn = page.imp().edit_button.borrow().clone().expect("edit button exists");
         let email_btn = page.imp().email_button.borrow().clone().expect("email button exists");
         let delete_btn = page.imp().delete_button.borrow().clone().expect("delete button exists");
-        let print_btn = page.imp().print_button.borrow().clone().expect("print button exists");
-        let print_list_btn = page.imp().print_list_button.borrow().clone().expect("print_list button exists");
-        let export_btn = page.imp().export_button.borrow().clone().expect("export button exists");
-        let merge_btn = page.imp().merge_button.borrow().clone().expect("merge button exists");
-        let copy_btn = page.imp().copy_to_book_button.borrow().clone().expect("copy button exists");
-        let move_btn = page.imp().move_to_book_button.borrow().clone().expect("move button exists");
 
-        let get_label_text = |btn: &gtk::Button| {
-            btn.child().and_downcast::<gtk::Label>().map(|l| l.text().to_string())
-        };
         let get_image_icon = |btn: &gtk::Button| {
             btn.child().and_downcast::<gtk::Image>().and_then(|img| img.icon_name().map(|s| s.to_string()))
         };
 
-        // Desktop: All buttons have text labels, NO icons
-        assert_eq!(get_label_text(&edit_btn).as_deref(), Some(crate::i18n::gettext("Edit").as_str()));
-        assert_eq!(get_label_text(&email_btn).as_deref(), Some(crate::i18n::gettext("Email").as_str()));
-        assert_eq!(get_label_text(&delete_btn).as_deref(), Some(crate::i18n::gettext("Delete").as_str()));
-        assert_eq!(get_label_text(&print_btn).as_deref(), Some(crate::i18n::gettext("Print").as_str()));
-        assert_eq!(get_label_text(&print_list_btn).as_deref(), Some(crate::i18n::gettext("Print List").as_str()));
-        assert_eq!(get_label_text(&export_btn).as_deref(), Some(crate::i18n::gettext("Export").as_str()));
-        assert_eq!(get_label_text(&merge_btn).as_deref(), Some(crate::i18n::gettext("Merge").as_str()));
-        assert_eq!(get_label_text(&copy_btn).as_deref(), Some(crate::i18n::gettext("Copy…").as_str()));
-        assert_eq!(get_label_text(&move_btn).as_deref(), Some(crate::i18n::gettext("Move…").as_str()));
-        assert_eq!(get_image_icon(&edit_btn), None);
-
-        // Mobile / Compact mode: All buttons switch to pure icons, NO text
-        page.set_screen_mode(true, false);
-        assert_eq!(get_label_text(&edit_btn), None);
         assert_eq!(get_image_icon(&edit_btn), Some("document-edit-symbolic".to_string()));
         assert_eq!(get_image_icon(&email_btn), Some("mail-message-new-symbolic".to_string()));
         assert_eq!(get_image_icon(&delete_btn), Some("user-trash-symbolic".to_string()));
-        assert_eq!(get_image_icon(&print_btn), Some("document-print-symbolic".to_string()));
-        assert_eq!(get_image_icon(&print_list_btn), Some("document-print-preview-symbolic".to_string()));
-        assert_eq!(get_image_icon(&export_btn), Some("document-save-symbolic".to_string()));
-        assert_eq!(get_image_icon(&merge_btn), Some("object-select-symbolic".to_string()));
-        assert_eq!(get_image_icon(&copy_btn), Some("edit-copy-symbolic".to_string()));
-        assert_eq!(get_image_icon(&move_btn), Some("folder-move-symbolic".to_string()));
-
-        // Restoring desktop mode restores pure text
-        page.set_screen_mode(false, false);
-        assert_eq!(get_label_text(&edit_btn).as_deref(), Some(crate::i18n::gettext("Edit").as_str()));
-        assert_eq!(get_label_text(&email_btn).as_deref(), Some(crate::i18n::gettext("Email").as_str()));
-        assert_eq!(get_label_text(&delete_btn).as_deref(), Some(crate::i18n::gettext("Delete").as_str()));
-        assert_eq!(get_image_icon(&edit_btn), None);
 
         page.focus_search();
         assert!(page.is_search_active());

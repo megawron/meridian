@@ -62,6 +62,7 @@ mod imp {
         pub restore_sidebar_button: RefCell<Option<gtk::Button>>,
         pub right_sidebar_toggle: RefCell<Option<gtk::ToggleButton>>,
         pub mail_view_options_button: RefCell<Option<adw::SplitButton>>,
+        pub contacts_view_options_button: RefCell<Option<adw::SplitButton>>,
         pub sidebar_visible: Cell<bool>,
         pub sidebar_animation: RefCell<Option<adw::TimedAnimation>>,
         pub search_button: RefCell<Option<gtk::ToggleButton>>,
@@ -1107,6 +1108,41 @@ impl EvolutionWindow {
 
     pub fn mail_view_options_button(&self) -> Option<adw::SplitButton> {
         self.imp().mail_view_options_button.borrow().clone()
+    }
+
+    pub fn contacts_view_options_button(&self) -> Option<adw::SplitButton> {
+        self.imp().contacts_view_options_button.borrow().clone()
+    }
+
+    pub fn attach_contacts_view_options_button(&self, page: &ContactsPage) {
+        if self.imp().contacts_view_options_button.borrow().is_some() {
+            return;
+        }
+        let Some(header_bar) = self.imp().header_bar.borrow().clone() else {
+            return;
+        };
+        if let Some(view_btn) = page.view_options_split_button() {
+            let view_stack = self.imp().view_stack.borrow().clone();
+            let is_initially_contacts = view_stack
+                .as_ref()
+                .and_then(|vs| vs.visible_child_name())
+                .as_deref()
+                == Some("contacts");
+            view_btn.set_visible(is_initially_contacts);
+            header_bar.pack_end(&view_btn);
+            self.imp()
+                .contacts_view_options_button
+                .replace(Some(view_btn.clone()));
+            if let Some(stack) = view_stack.as_ref() {
+                let btn_weak = view_btn.downgrade();
+                stack.connect_visible_child_name_notify(move |stack| {
+                    if let Some(btn) = btn_weak.upgrade() {
+                        let is_contacts = stack.visible_child_name().as_deref() == Some("contacts");
+                        btn.set_visible(is_contacts);
+                    }
+                });
+            }
+        }
     }
 
     pub(crate) fn can_navigate_back(&self) -> bool {
@@ -3139,6 +3175,9 @@ impl EvolutionWindow {
                                 }
                             }
                         }
+                        if let Some(win) = window_weak.upgrade() {
+                            win.attach_contacts_view_options_button(&page);
+                        }
                         contacts_bin.set_child(Some(&page));
                     }
                     "tasks"
@@ -3586,6 +3625,10 @@ impl EvolutionWindow {
                     btn.set_visible(is_mail);
                 }
             });
+        }
+
+        if let Some(contacts) = self.contacts_page() {
+            self.attach_contacts_view_options_button(&contacts);
         }
 
         if let Some(settings) = AppSettings::try_new() {
@@ -8340,6 +8383,50 @@ mod tests {
         }
         assert_eq!(titled_pages_count, 4, "ViewSwitcher must only have 4 tabs, but got: {:?}", page_titles);
         assert!(!page_titles.iter().any(|t| t.to_lowercase().contains("memo")), "Memos must be omitted from ViewSwitcher");
+    }
+
+    #[test]
+    fn test_contacts_view_options_in_header_bar() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = EvolutionApplication::new();
+        let window = EvolutionWindow::new(&app);
+        let original_active_view = window.active_view_name();
+
+        let mail_btn = window
+            .mail_view_options_button()
+            .expect("mail_view_options_button should be registered");
+
+        // 1. Switching to contacts initializes contacts and attaches the contacts view options button
+        window.set_active_view("contacts");
+        let contacts_btn = window
+            .contacts_view_options_button()
+            .expect("contacts_view_options_button should be registered once contacts module loads");
+
+        // In contacts view: contacts_btn is visible, mail_btn is hidden
+        assert!(contacts_btn.property::<bool>("visible"), "Contacts view options button must be visible in contacts view");
+        assert!(!mail_btn.property::<bool>("visible"), "Mail view options button must be hidden in contacts view");
+
+        // 2. Switching to mail: mail_btn is visible, contacts_btn is hidden
+        window.set_active_view("mail");
+        assert!(mail_btn.property::<bool>("visible"), "Mail view options button must be visible in mail view");
+        assert!(!contacts_btn.property::<bool>("visible"), "Contacts view options button must be hidden in mail view");
+
+        // 3. Switching to calendar: both are hidden
+        window.set_active_view("calendar");
+        assert!(!mail_btn.property::<bool>("visible"), "Mail view options button must be hidden in calendar view");
+        assert!(!contacts_btn.property::<bool>("visible"), "Contacts view options button must be hidden in calendar view");
+
+        // 4. Switching back to contacts: contacts_btn is visible again
+        window.set_active_view("contacts");
+        assert!(contacts_btn.property::<bool>("visible"), "Contacts view options button must be restored in contacts view");
+        assert!(!mail_btn.property::<bool>("visible"), "Mail view options button must be hidden in contacts view");
+
+        window.set_active_view(&original_active_view);
     }
 }
 
