@@ -124,6 +124,7 @@ const COMPOSER_ACTION_SHORTCUTS: &[(&str, &str)] = &[
 const COMPOSER_OPERATION_ACTIONS: &[&str] = &[
     "send",
     "save-draft",
+    "discard",
     "save-as-eml",
     "print",
     "print-preview",
@@ -196,6 +197,7 @@ mod imp {
         pub close_confirmed: Cell<bool>,
         pub close_prompt_open: Cell<bool>,
         pub close_after_save: Cell<bool>,
+        pub draft_discarded: Cell<bool>,
         pub autosave_source: RefCell<Option<glib::SourceId>>,
         pub autosave_setting_handler: RefCell<Option<glib::SignalHandlerId>>,
         pub autosave_in_progress: Cell<bool>,
@@ -206,6 +208,7 @@ mod imp {
         pub transport_started: Cell<bool>,
         pub send_button: RefCell<Option<gtk::Button>>,
         pub save_draft_button: RefCell<Option<gtk::Button>>,
+        pub btn_discard: RefCell<Option<gtk::Button>>,
         pub cancel_operation_button: RefCell<Option<gtk::Button>>,
         pub operation_row: RefCell<Option<gtk::Box>>,
         pub operation_spinner: RefCell<Option<gtk::Spinner>>,
@@ -972,6 +975,14 @@ impl ComposeDialog {
         ));
         header_bar.pack_start(&btn_attach);
 
+        let btn_discard = gtk::Button::builder()
+            .icon_name("user-trash-symbolic")
+            .tooltip_text("Entwurf verwerfen")
+            .css_classes(vec!["flat"])
+            .build();
+        header_bar.pack_start(&btn_discard);
+        self.imp().btn_discard.replace(Some(btn_discard.clone()));
+
         let menu_button = gtk::MenuButton::builder()
             .icon_name("open-menu-symbolic")
             .tooltip_text("Composer-Menü")
@@ -1506,6 +1517,7 @@ impl ComposeDialog {
         self.imp().attachment_list.replace(Some(attachment_list));
         self.imp().compose_controls.replace(vec![
             btn_close.clone().upcast(),
+            btn_discard.clone().upcast(),
             btn_attach.clone().upcast(),
             btn_insert_template.clone().upcast(),
             btn_save_template.clone().upcast(),
@@ -2576,6 +2588,23 @@ impl ComposeDialog {
                         smime: smime_options.clone(),
                     }),
                 };
+                    if !draft_has_user_content(&draft) {
+                        let draft_id = dialog.imp().draft_id.borrow().clone();
+                        if !draft_id.is_empty() {
+                            let _ = DraftStoreService::default().delete(&draft_id);
+                        }
+                        dialog.imp().local_draft_persisted.set(false);
+                        let close = dialog.imp().close_after_save.replace(false);
+                        dialog.finish_operation(operation_id);
+                        if close {
+                            dialog.imp().close_confirmed.set(true);
+                            dialog.set_can_close(true);
+                            dialog.close();
+                        } else {
+                            dialog.show_toast("Leere Nachricht wird nicht als Entwurf gespeichert");
+                        }
+                        return;
+                    }
                     let outgoing = OutgoingMessage {
                         source_uid: source_uid.clone(),
                         from,
@@ -2694,6 +2723,12 @@ impl ComposeDialog {
                                     dialog.imp().local_draft_persisted.set(true);
                                     dialog.imp().persisted_draft.replace(Some(saved_draft));
                                     dialog.mark_saved();
+                                    if dialog.imp().close_after_save.replace(false) {
+                                        dialog.show_toast("Entwurf gespeichert");
+                                        dialog.imp().close_confirmed.set(true);
+                                        dialog.set_can_close(true);
+                                        dialog.close();
+                                    }
                                 }
                                 DraftWorkerEvent::Cancelled => {
                                     dialog.imp().close_after_save.set(false);
@@ -2707,21 +2742,25 @@ impl ComposeDialog {
                                     dialog.finish_operation(operation_id);
                                     match result {
                                         Ok(true) => {
-                                            dialog.show_toast(
-                                                "Entwurf lokal und im synchronisierten Ordner gespeichert",
-                                            );
                                             if dialog.imp().close_after_save.replace(false) {
+                                                dialog.show_toast("Entwurf gespeichert");
                                                 dialog.imp().close_confirmed.set(true);
                                                 dialog.set_can_close(true);
                                                 dialog.close();
+                                            } else {
+                                                dialog.show_toast(
+                                                    "Entwurf lokal und im synchronisierten Ordner gespeichert",
+                                                );
                                             }
                                         }
                                         Ok(false) => {
-                                            dialog.show_toast("Entwurf lokal gespeichert");
                                             if dialog.imp().close_after_save.replace(false) {
+                                                dialog.show_toast("Entwurf gespeichert");
                                                 dialog.imp().close_confirmed.set(true);
                                                 dialog.set_can_close(true);
                                                 dialog.close();
+                                            } else {
+                                                dialog.show_toast("Entwurf lokal gespeichert");
                                             }
                                         }
                                         Err(error) => {
@@ -2745,6 +2784,7 @@ impl ComposeDialog {
             &btn_close,
             &btn_send,
             &btn_save_draft,
+            &btn_discard,
             &btn_attach,
             &btn_plain_text,
             &btn_request_read_receipt,
@@ -2769,6 +2809,7 @@ impl ComposeDialog {
         btn_close: &gtk::Button,
         btn_send: &gtk::Button,
         btn_save_draft: &gtk::Button,
+        btn_discard: &gtk::Button,
         btn_attach: &gtk::Button,
         btn_plain_text: &gtk::ToggleButton,
         btn_request_read_receipt: &gtk::ToggleButton,
@@ -2798,6 +2839,16 @@ impl ComposeDialog {
             }
         });
         group.add_action(&action_save_draft);
+
+        let action_discard = gio::SimpleAction::new("discard", None);
+        let dialog_for_discard = self.downgrade();
+        action_discard.connect_activate(move |_, _| {
+            if let Some(dialog) = dialog_for_discard.upgrade() {
+                dialog.discard_and_close();
+            }
+        });
+        group.add_action(&action_discard);
+        btn_discard.set_action_name(Some("compose.discard"));
 
         let action_save_as_eml = gio::SimpleAction::new("save-as-eml", None);
         let dialog_for_save_as = self.downgrade();
@@ -3086,6 +3137,7 @@ impl ComposeDialog {
         let file_menu = gio::Menu::new();
         file_menu.append(Some("Senden"), Some("compose.send"));
         file_menu.append(Some("Entwurf speichern"), Some("compose.save-draft"));
+        file_menu.append(Some("Entwurf verwerfen"), Some("compose.discard"));
         file_menu.append(Some("Als Vorlage speichern…"), Some("compose.save-template"));
         file_menu.append(Some("Als Textbaustein speichern…"), Some("compose.save-snippet"));
         file_menu.append(Some("Als EML speichern…"), Some("compose.save-as-eml"));
@@ -3206,10 +3258,34 @@ impl ComposeDialog {
         self.imp().dirty_revision.get() != self.imp().saved_revision.get()
     }
 
+    fn discard_and_close(&self) {
+        if self.imp().operation.get() == ComposeOperation::Sending {
+            self.show_toast(
+                "Nachricht wird bereits gesendet; Verwerfen ist nicht mehr möglich",
+            );
+            return;
+        }
+        self.imp().draft_discarded.set(true);
+        if self.imp().operation.get() != ComposeOperation::Idle {
+            self.request_operation_cancel();
+        }
+        if let Some(source) = self.imp().autosave_source.borrow_mut().take() {
+            let _ = unsafe { glib::ffi::g_source_remove(source.as_raw()) };
+        }
+        let draft_id = self.imp().draft_id.borrow().clone();
+        if !draft_id.is_empty() {
+            let _ = DraftStoreService::default().delete(&draft_id);
+        }
+        self.imp().local_draft_persisted.set(false);
+        self.imp().close_confirmed.set(true);
+        self.set_can_close(true);
+        self.close();
+        self.show_toast("Entwurf verworfen");
+    }
+
     fn handle_close_request(&self) -> bool {
-        if self.imp().autosave_in_progress.get() {
-            self.show_toast("Automatisches Speichern läuft noch; bitte kurz warten");
-            return true;
+        if self.imp().close_confirmed.replace(false) {
+            return false;
         }
         if self.imp().print_state.get().is_running() {
             self.show_toast(
@@ -3217,61 +3293,42 @@ impl ComposeDialog {
             );
             return true;
         }
-        if self.imp().close_confirmed.replace(false) {
-            return false;
+        if self.imp().autosave_in_progress.get() {
+            self.imp().close_after_save.set(true);
+            return true;
+        }
+        if self.imp().operation.get() == ComposeOperation::SavingDraft {
+            self.imp().close_after_save.set(true);
+            return true;
         }
         match close_request_decision(
             self.is_dirty(),
             self.imp().operation.get(),
-            self.imp().close_prompt_open.get(),
         ) {
-            CloseRequestDecision::Allow => return false,
+            CloseRequestDecision::Allow => {
+                let draft_id = self.imp().draft_id.borrow().clone();
+                if !draft_id.is_empty() && !self.imp().local_draft_persisted.get() {
+                    let _ = DraftStoreService::default().delete(&draft_id);
+                }
+                false
+            }
             CloseRequestDecision::BlockOperation => {
                 self.show_toast(
                     "Der Composer verarbeitet noch einen Vorgang; bitte warten oder abbrechen",
                 );
-                return true;
+                true
             }
-            CloseRequestDecision::KeepPrompt => return true,
-            CloseRequestDecision::Prompt => self.imp().close_prompt_open.set(true),
+            CloseRequestDecision::AutoSave => {
+                self.imp().close_after_save.set(true);
+                if let Some(button) = self.imp().save_draft_button.borrow().as_ref() {
+                    button.emit_clicked();
+                } else {
+                    self.imp().close_after_save.set(false);
+                    return false;
+                }
+                true
+            }
         }
-
-        let confirmation = adw::AlertDialog::new(
-            Some("Ungespeicherte Änderungen"),
-            Some("Die Nachricht wurde seit dem letzten Speichern geändert."),
-        );
-        confirmation.add_responses(&[
-            ("cancel", "Abbrechen"),
-            ("save", "Entwurf speichern"),
-            ("discard", "Verwerfen"),
-        ]);
-        confirmation.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
-        let dialog_weak = self.downgrade();
-        confirmation.connect_response(None, move |alert, response| {
-            alert.close();
-            let Some(dialog) = dialog_weak.upgrade() else {
-                return;
-            };
-            dialog.imp().close_prompt_open.set(false);
-            match response {
-                "discard" => {
-                    dialog.imp().close_confirmed.set(true);
-                    dialog.set_can_close(true);
-                    dialog.close();
-                }
-                "save" => {
-                    dialog.imp().close_after_save.set(true);
-                    if let Some(button) = dialog.imp().save_draft_button.borrow().as_ref() {
-                        button.emit_clicked();
-                    } else {
-                        dialog.imp().close_after_save.set(false);
-                    }
-                }
-                _ => {}
-            }
-        });
-        confirmation.present(Some(self));
-        true
     }
 
     fn current_outgoing_message(
@@ -4197,10 +4254,19 @@ impl ComposeDialog {
                     smime: smime_options,
                 }),
             };
-            if !draft_has_user_content(&draft)
-                && !dialog.imp().local_draft_persisted.get()
-            {
+            if !draft_has_user_content(&draft) {
+                if dialog.imp().local_draft_persisted.replace(false) {
+                    let draft_id = dialog.imp().draft_id.borrow().clone();
+                    if !draft_id.is_empty() {
+                        let _ = DraftStoreService::default().delete(&draft_id);
+                    }
+                }
                 dialog.imp().autosave_in_progress.set(false);
+                if dialog.imp().close_after_save.replace(false) {
+                    dialog.imp().close_confirmed.set(true);
+                    dialog.set_can_close(true);
+                    dialog.close();
+                }
                 return;
             }
 
@@ -4224,6 +4290,13 @@ impl ComposeDialog {
                     return;
                 };
                 dialog.imp().autosave_in_progress.set(false);
+                if dialog.imp().draft_discarded.get() {
+                    let draft_id = dialog.imp().draft_id.borrow().clone();
+                    if !draft_id.is_empty() {
+                        let _ = DraftStoreService::default().delete(&draft_id);
+                    }
+                    return;
+                }
                 match result {
                     Ok(Ok(saved_draft)) => {
                         dialog.imp().local_draft_persisted.set(true);
@@ -4233,6 +4306,12 @@ impl ComposeDialog {
                         }
                         dialog.imp().autosave_error_shown.set(false);
                         tracing::debug!("Local draft autosaved");
+                        if dialog.imp().close_after_save.replace(false) {
+                            dialog.show_toast("Entwurf gespeichert");
+                            dialog.imp().close_confirmed.set(true);
+                            dialog.set_can_close(true);
+                            dialog.close();
+                        }
                     }
                     Ok(Err(error)) => {
                         if !dialog.imp().autosave_error_shown.get() {
@@ -6032,25 +6111,53 @@ fn composer_print_snapshot(message_key: &str, message: &OutgoingMessage) -> Mail
     }
 }
 
+fn editor_body_has_user_content(body: &str) -> bool {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.contains("<img") || trimmed.contains("<svg") || trimmed.contains("<table") {
+        return true;
+    }
+
+    let content_without_sig = if let Some(sig_start) = trimmed.find("<div id=\"_evolution_signature_\"") {
+        if let Some(sig_end) = trimmed[sig_start..].find("</div>") {
+            format!("{}{}", &trimmed[..sig_start], &trimmed[sig_start + sig_end + 6..])
+        } else {
+            trimmed[..sig_start].to_string()
+        }
+    } else if let Some(sig_pos) = trimmed.find("\n-- \n").or_else(|| trimmed.find("\n--\n")) {
+        trimmed[..sig_pos].to_string()
+    } else if trimmed.starts_with("-- \n") || trimmed.starts_with("--\n") {
+        String::new()
+    } else {
+        trimmed.to_string()
+    };
+
+    let mut in_tag = false;
+    let mut text = String::with_capacity(content_without_sig.len());
+    for ch in content_without_sig.chars() {
+        if ch == '<' {
+            in_tag = true;
+        } else if ch == '>' {
+            in_tag = false;
+        } else if !in_tag {
+            text.push(ch);
+        }
+    }
+    let text = text.replace("&nbsp;", " ").replace("&#160;", " ");
+    !text.trim().is_empty()
+}
+
 fn draft_has_user_content(draft: &DraftMessage) -> bool {
-    draft.from.trim().chars().next().is_some()
-        || draft.source_uid.trim().chars().next().is_some()
-        || draft.to.trim().chars().next().is_some()
+    draft.to.trim().chars().next().is_some()
         || draft.cc.trim().chars().next().is_some()
         || draft.bcc.trim().chars().next().is_some()
         || draft.subject.trim().chars().next().is_some()
-        || draft.html_body.trim().chars().next().is_some()
         || !draft.attachments.is_empty()
         || draft.calendar_method.is_some()
         || draft.calendar_component.is_some()
-        || draft.pgp_sign
-        || draft.pgp_encrypt
-        || draft.smime_options.as_ref().is_some_and(|options| {
-            options.request_read_receipt
-                || options.priority
-                || options.charset != "UTF-8"
-                || options.smime.is_some()
-        })
+        || editor_body_has_user_content(&draft.html_body)
 }
 
 fn compose_operation_can_start(operation: ComposeOperation) -> bool {
@@ -6060,24 +6167,20 @@ fn compose_operation_can_start(operation: ComposeOperation) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CloseRequestDecision {
     Allow,
-    Prompt,
-    KeepPrompt,
+    AutoSave,
     BlockOperation,
 }
 
 fn close_request_decision(
     dirty: bool,
     operation: ComposeOperation,
-    prompt_open: bool,
 ) -> CloseRequestDecision {
     if operation != ComposeOperation::Idle {
         CloseRequestDecision::BlockOperation
     } else if !dirty {
         CloseRequestDecision::Allow
-    } else if prompt_open {
-        CloseRequestDecision::KeepPrompt
     } else {
-        CloseRequestDecision::Prompt
+        CloseRequestDecision::AutoSave
     }
 }
 
@@ -6096,21 +6199,35 @@ mod tests {
     #[test]
     fn dirty_guard_allows_clean_closes_and_blocks_busy_or_repeated_prompts() {
         assert_eq!(
-            close_request_decision(false, ComposeOperation::Idle, false),
+            close_request_decision(false, ComposeOperation::Idle),
             CloseRequestDecision::Allow
         );
         assert_eq!(
-            close_request_decision(true, ComposeOperation::Idle, false),
-            CloseRequestDecision::Prompt
+            close_request_decision(true, ComposeOperation::Idle),
+            CloseRequestDecision::AutoSave
         );
         assert_eq!(
-            close_request_decision(true, ComposeOperation::Idle, true),
-            CloseRequestDecision::KeepPrompt
-        );
-        assert_eq!(
-            close_request_decision(true, ComposeOperation::Sending, false),
+            close_request_decision(false, ComposeOperation::Sending),
             CloseRequestDecision::BlockOperation
         );
+        assert_eq!(
+            close_request_decision(true, ComposeOperation::Sending),
+            CloseRequestDecision::BlockOperation
+        );
+    }
+
+    #[test]
+    fn editor_body_has_user_content_filters_empty_markup_and_signatures() {
+        assert!(!editor_body_has_user_content(""));
+        assert!(!editor_body_has_user_content("   \n\t  "));
+        assert!(!editor_body_has_user_content("<p><br></p>"));
+        assert!(!editor_body_has_user_content("<div><br></div>"));
+        assert!(!editor_body_has_user_content("<p><br></p><div id=\"_evolution_signature_\" class=\"evolution-signature\"><p>-- <br>Martin</p></div>"));
+        assert!(!editor_body_has_user_content("\n-- \nMartin"));
+        assert!(editor_body_has_user_content("<p>Hallo Welt</p>"));
+        assert!(editor_body_has_user_content("<p>Hallo</p><div id=\"_evolution_signature_\" class=\"evolution-signature\"><p>-- <br>Martin</p></div>"));
+        assert!(editor_body_has_user_content("Hallo\n-- \nMartin"));
+        assert!(editor_body_has_user_content("<p><img src=\"data:image/png;base64,abc\"></p>"));
     }
 
     #[test]
@@ -6180,6 +6297,7 @@ mod tests {
         for action in [
             "send",
             "save-draft",
+            "discard",
             "save-as-eml",
             "close",
             "new-message",
@@ -6220,6 +6338,21 @@ mod tests {
             smime_options: None,
         };
         assert!(!draft_has_user_content(&draft));
+
+        let with_account_only = DraftMessage {
+            from: "Martin <martin@example.org>".to_string(),
+            source_uid: "acc-1".to_string(),
+            ..draft.clone()
+        };
+        assert!(!draft_has_user_content(&with_account_only));
+
+        let with_signature_only = DraftMessage {
+            from: "Martin <martin@example.org>".to_string(),
+            source_uid: "acc-1".to_string(),
+            html_body: "<p><br></p><div id=\"_evolution_signature_\" class=\"evolution-signature\"><p>-- <br>Martin</p></div>".to_string(),
+            ..draft.clone()
+        };
+        assert!(!draft_has_user_content(&with_signature_only));
 
         let mut with_subject = draft;
         with_subject.subject = "Recovery".to_string();
