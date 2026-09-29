@@ -292,6 +292,10 @@ impl EvolutionApplication {
                 include_str!("../data/icons/hicolor/scalable/actions/mail-sync-symbolic.svg"),
             ),
             (
+                "mail-flag-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/mail-flag-symbolic.svg"),
+            ),
+            (
                 "evolution-tasks-symbolic.svg",
                 include_str!("../data/icons/hicolor/scalable/actions/evolution-tasks-symbolic.svg"),
             ),

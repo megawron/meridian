@@ -1604,6 +1604,10 @@ pub(crate) fn themed_icon_name<W: IsA<gtk::Widget>>(
         preferred.to_string()
     } else if preferred == "mail-forwarded-symbolic" && theme.has_icon("mail-forward-symbolic") {
         "mail-forward-symbolic".to_string()
+    } else if (preferred == "mail-flag-symbolic" || preferred == "flag-symbolic")
+        && theme.has_icon("emoji-flags-symbolic")
+    {
+        "emoji-flags-symbolic".to_string()
     } else if theme.has_icon(fallback) {
         fallback.to_string()
     } else if theme.has_icon("emblem-important-symbolic") {
@@ -3104,7 +3108,7 @@ pub(crate) fn draw_mail_table_canvas(
         }
 
         if layout.is_cards_mode {
-            let right_pad = 12.0;
+            let right_pad = 16.0;
 
             // 1. Unread indicator dot & flag
             if layout.show_status && row.is_unread {
@@ -3571,7 +3575,9 @@ pub(crate) fn draw_mail_table_canvas(
         if layout.show_date && layout.col_date_w() > 0.0 {
             let date_x = layout.col_date_x();
             let date_w = layout.col_date_w();
-            let avail_date_w = (date_w - 12.0).max(0.0);
+            let pad_left = 6.0;
+            let pad_right = 16.0;
+            let avail_date_w = (date_w - pad_left - pad_right).max(0.0);
             if avail_date_w > 4.0 {
                 cr.set_source_rgb(dim_r, dim_g, dim_b);
                 pango_layout.set_attributes(None);
@@ -3586,7 +3592,7 @@ pub(crate) fn draw_mail_table_canvas(
                     pango_layout.set_alignment(gtk::pango::Alignment::Right);
                 }
                 let text_y = y + secondary_text_offset;
-                let text_x = date_x + 6.0;
+                let text_x = date_x + pad_left;
                 cr.move_to(text_x, text_y);
                 pangocairo_ffi::update_layout(cr, &pango_layout);
                 pangocairo_ffi::show_layout(cr, &pango_layout);
@@ -3597,7 +3603,9 @@ pub(crate) fn draw_mail_table_canvas(
         if layout.show_size && layout.col_size_w() > 0.0 && !row.size_str.is_empty() {
             let size_x = layout.col_size_x();
             let size_w = layout.col_size_w();
-            let avail_size_w = (size_w - 12.0).max(0.0);
+            let pad_left = 6.0;
+            let pad_right = 16.0;
+            let avail_size_w = (size_w - pad_left - pad_right).max(0.0);
             if avail_size_w > 4.0 {
                 cr.set_source_rgb(dim_r, dim_g, dim_b);
                 pango_layout.set_attributes(None);
@@ -3608,7 +3616,7 @@ pub(crate) fn draw_mail_table_canvas(
                 pango_layout.set_width((avail_size_w * gtk::pango::SCALE as f64) as i32);
                 pango_layout.set_alignment(gtk::pango::Alignment::Right);
                 let text_y = y + secondary_text_offset;
-                let text_x = size_x + 6.0;
+                let text_x = size_x + pad_left;
                 cr.move_to(text_x, text_y);
                 pangocairo_ffi::update_layout(cr, &pango_layout);
                 pangocairo_ffi::show_layout(cr, &pango_layout);
@@ -6751,7 +6759,7 @@ impl MailPage {
             btn.set_visible(show_extra_actions);
         }
         if let Some(btn) = imp.modern_archive_button.borrow().as_ref() {
-            btn.set_visible(show_archive);
+            btn.set_visible(false);
         }
         if let Some(btn) = imp.modern_unread_button.borrow().as_ref() {
             btn.set_visible(show_triage);
@@ -17249,11 +17257,13 @@ impl MailPage {
                             if is_match {
                                 if !row.is_expanded() {
                                     row.set_expanded(true);
-                                    self.imp()
-                                        .dynamic_folder_expanded
-                                        .borrow_mut()
-                                        .insert(folder.id());
-                                    newly_expanded = true;
+                                    if row.depth() == 0 {
+                                        self.imp()
+                                            .dynamic_folder_expanded
+                                            .borrow_mut()
+                                            .insert(folder.id());
+                                        newly_expanded = true;
+                                    }
                                 }
                                 break;
                             }
@@ -19331,7 +19341,7 @@ impl MailPage {
             .css_classes(vec!["mail-column-header-cell", "icon-cell"])
             .build();
         let avatar_icon = gtk::Image::builder()
-            .icon_name("face-smile-symbolic")
+            .icon_name("avatar-default-symbolic")
             .pixel_size(16)
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
@@ -19488,13 +19498,18 @@ impl MailPage {
             .css_classes(vec!["mail-column-header-cell", "icon-cell"])
             .build();
         let follow_up_icon = gtk::Image::builder()
-            .icon_name("emblem-important-symbolic")
+            .icon_name("mail-flag-symbolic")
             .pixel_size(16)
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
             .hexpand(true)
             .css_classes(vec!["dim-label", "mail-column-header-icon"])
             .build();
+        set_image_icon_with_fallback(
+            &follow_up_icon,
+            "mail-flag-symbolic",
+            "emoji-flags-symbolic",
+        );
         follow_up_column.append(&follow_up_icon);
 
         let important_column = gtk::Box::builder()
@@ -20402,7 +20417,7 @@ impl MailPage {
 
             let btn_follow_up = gtk::Button::builder()
                 .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
-                .icon_name("emblem-important-symbolic")
+                .icon_name("mail-flag-symbolic")
                 .css_classes(vec!["flat", "circular", "mail-follow-up"])
                 .valign(gtk::Align::Center)
                 .halign(gtk::Align::Center)
@@ -20411,8 +20426,8 @@ impl MailPage {
                 .build();
             set_button_icon_with_fallback(
                 &btn_follow_up,
-                "emblem-important-symbolic",
-                "bookmark-symbolic",
+                "mail-flag-symbolic",
+                "emoji-flags-symbolic",
             );
             btn_follow_up.set_opacity(0.24);
             set_accessible_label(&btn_follow_up, &gettext("Set follow-up"));
@@ -20585,8 +20600,8 @@ impl MailPage {
                     MailFollowUpState::None => {
                         set_button_icon_with_fallback(
                             &btn_follow_up_clone,
-                            "emblem-important-symbolic",
-                            "bookmark-symbolic",
+                            "mail-flag-symbolic",
+                            "emoji-flags-symbolic",
                         );
                         btn_follow_up_clone.set_opacity(0.24);
                         btn_follow_up_clone.set_tooltip_text(Some(&gettext("Set follow-up (right-click for options)")));
@@ -20595,8 +20610,8 @@ impl MailPage {
                     MailFollowUpState::FollowUp => {
                         set_button_icon_with_fallback(
                             &btn_follow_up_clone,
-                            "emblem-important-symbolic",
-                            "bookmark-symbolic",
+                            "mail-flag-symbolic",
+                            "emoji-flags-symbolic",
                         );
                         btn_follow_up_clone.set_opacity(1.0);
                         btn_follow_up_clone.add_css_class("follow-up-pending");
@@ -21425,8 +21440,8 @@ impl MailPage {
                     MailFollowUpState::None => {
                         set_button_icon_with_fallback(
                             &button,
-                            "emblem-important-symbolic",
-                            "bookmark-symbolic",
+                            "mail-flag-symbolic",
+                            "emoji-flags-symbolic",
                         );
                         button.set_opacity(0.24);
                         let str_fu = gettext("Set follow-up (right-click for options)");
@@ -21436,8 +21451,8 @@ impl MailPage {
                     MailFollowUpState::FollowUp => {
                         set_button_icon_with_fallback(
                             &button,
-                            "emblem-important-symbolic",
-                            "bookmark-symbolic",
+                            "mail-flag-symbolic",
+                            "emoji-flags-symbolic",
                         );
                         button.set_opacity(1.0);
                         button.add_css_class("follow-up-pending");
@@ -24392,32 +24407,21 @@ impl MailPage {
 
         let m_more_menu = gio::Menu::new();
 
-        let reply_section = gio::Menu::new();
-        let str_menu_reply_all = gettext("Reply All");
-        let str_menu_forward = gettext("Forward");
-        reply_section.append(Some(&str_menu_reply_all), Some("win.reply-all"));
-        reply_section.append(Some(&str_menu_forward), Some("win.forward"));
-        m_more_menu.append_section(None, &reply_section);
+        let triage_section = gio::Menu::new();
+        let str_menu_archive = gettext("Archive");
+        let str_move = gettext("Move to Folder…");
+        triage_section.append(Some(&str_menu_archive), Some("win.archive"));
+        triage_section.append(Some(&str_move), Some("win.move-message"));
+        m_more_menu.append_section(None, &triage_section);
 
         let status_section = gio::Menu::new();
         let str_mark_read = gettext("Mark as Read");
-        let str_mark_unread = gettext("Mark as Unread");
-        let str_star = gettext("Star");
-        let str_junk_toggle = gettext("Toggle as Junk");
+        let str_mark_junk = gettext("Mark as Junk");
+        let str_mark_not_junk = gettext("Mark as Not Junk");
         status_section.append(Some(&str_mark_read), Some("win.mark-read"));
-        status_section.append(Some(&str_mark_unread), Some("win.mark-unread"));
-        status_section.append(Some(&str_star), Some("win.toggle-flag"));
-        status_section.append(Some(&str_junk_toggle), Some("win.mark-junk"));
+        status_section.append(Some(&str_mark_junk), Some("win.mark-junk"));
+        status_section.append(Some(&str_mark_not_junk), Some("win.mark-not-junk"));
         m_more_menu.append_section(None, &status_section);
-
-        let triage_section = gio::Menu::new();
-        let str_move = gettext("Move to Folder…");
-        let str_menu_archive = gettext("Archive");
-        let str_trash = gettext("Move message to Trash");
-        triage_section.append(Some(&str_move), Some("win.move-message"));
-        triage_section.append(Some(&str_menu_archive), Some("win.archive"));
-        triage_section.append(Some(&str_trash), Some("win.delete"));
-        m_more_menu.append_section(None, &triage_section);
 
         let tools_section = gio::Menu::new();
         let str_print = gettext("Print…");
@@ -24460,7 +24464,6 @@ impl MailPage {
             .halign(gtk::Align::Start)
             .css_classes(vec!["linked", "mail-header-actions-group", "action-pill", "mail-action-pill"])
             .build();
-        modern_triage_group.append(&m_archive);
         modern_triage_group.append(&m_unread);
         modern_triage_group.append(&m_delete);
         modern_triage_group.append(&m_more_btn);
@@ -24714,9 +24717,13 @@ impl MailPage {
         preview_more_menu.append_section(None, &prev_status_section);
 
         let prev_triage_section = gio::Menu::new();
+        let str_prev_archive = gettext("Archive");
         let str_prev_junk = gettext("Mark as Junk");
+        let str_prev_not_junk = gettext("Mark as Not Junk");
         let str_prev_trash = gettext("Move message to Trash");
+        prev_triage_section.append(Some(&str_prev_archive), Some("win.archive"));
         prev_triage_section.append(Some(&str_prev_junk), Some("win.mark-junk"));
+        prev_triage_section.append(Some(&str_prev_not_junk), Some("win.mark-not-junk"));
         prev_triage_section.append(Some(&str_prev_trash), Some("win.delete"));
         preview_more_menu.append_section(None, &prev_triage_section);
 
@@ -36626,6 +36633,24 @@ mod tests {
     }
 
     #[test]
+    fn test_mail_date_column_scrollbar_clearance_contract() {
+        let source = include_str!("mail_page.rs");
+        let css = include_str!("../style.css");
+
+        // Header CSS provides 16px right breathing room for the vertical scrollbar
+        assert!(css.contains(".mail-column-header-cell.date-cell"));
+        assert!(css.contains("padding: 2px 16px 2px 6px;"));
+
+        // Canvas table rendering allocates pad_right = 16.0 for date and size columns
+        assert!(source.contains("let pad_right = 16.0;"));
+        assert!(source.contains("let avail_date_w = (date_w - pad_left - pad_right).max(0.0);"));
+        assert!(source.contains("let avail_size_w = (size_w - pad_left - pad_right).max(0.0);"));
+
+        // Cards mode also reserves 16.0px right padding
+        assert!(source.contains("if layout.is_cards_mode {\n            let right_pad = 16.0;"));
+    }
+
+    #[test]
     fn test_mail_row_unread_and_read_styling_contract() {
         let source = include_str!("mail_page.rs");
         let list_fn = rust_function_body(source, "build_message_list");
@@ -36736,6 +36761,9 @@ mod tests {
         assert!(detail_fn.contains("m_more_btn"));
         assert!(detail_fn.contains("preview_reply_group.append(&preview_more_btn)"));
         assert!(detail_fn.contains("modern_triage_group.append(&m_more_btn)"));
+        // Action bar dropdown menu does not duplicate primary action buttons (Reply, Unread, Delete)
+        assert!(!detail_fn.contains("reply_section"));
+        assert!(!detail_fn.contains("triage_section.append(Some(&str_trash), Some(\"win.delete\"));"));
 
         // 2. Toolbar does NOT contain print preview, EML export, or 3-dots more menu
         let toolbar_fn = rust_function_body(source, "build_unified_mail_toolbar");
@@ -37011,8 +37039,10 @@ mod tests {
         let source = include_str!("mail_page.rs");
         let header_fn = rust_function_body(source, "build_mail_column_header");
         assert!(header_fn.contains("avatar_column"));
-        assert!(header_fn.contains("\"face-smile-symbolic\""));
+        assert!(header_fn.contains("\"avatar-default-symbolic\""));
         assert!(header_fn.contains("avatar_size_group"));
+        assert!(header_fn.contains("follow_up_column"));
+        assert!(header_fn.contains("\"mail-flag-symbolic\""));
 
         let default_order: Vec<String> = crate::services::settings_service::MAIL_LIST_COLUMN_IDS
             .iter()
@@ -39923,7 +39953,8 @@ mod tests {
 
         // Responsive sync
         page.sync_preview_actions_labels();
-        assert!(archive_btn.is_visible());
+        assert!(!archive_btn.is_visible(), "archive button should not be on primary pill (moved to More menu per GNOME HIG)");
+        assert!(archive_btn.parent().is_none(), "archive button should not be attached to triage group");
         assert!(unread_btn.is_visible());
         assert!(junk_btn.is_visible());
         assert!(reply_all_btn.is_visible());
