@@ -289,6 +289,7 @@ impl MailViewer {
             .hexpand(true)
             .vexpand(true)
             .build();
+        #[cfg(not(target_os = "linux"))]
         fallback_view
             .buffer()
             .set_text(&crate::i18n::gettext("No message selected."));
@@ -354,6 +355,14 @@ impl MailViewer {
             error_state.append(&error_label);
             error_state.append(&fallback_scroll);
 
+            let load_error = adw::StatusPage::builder()
+                .title(&crate::i18n::gettext("Unable to load message"))
+                .description(&crate::i18n::gettext("The message content could not be retrieved from the mail server."))
+                .icon_name("dialog-error-symbolic")
+                .hexpand(true)
+                .vexpand(true)
+                .build();
+
             let renderer_stack = gtk::Stack::builder()
                 .hexpand(true)
                 .vexpand(true)
@@ -364,6 +373,7 @@ impl MailViewer {
             renderer_stack.add_named(&placeholder, Some("placeholder"));
             renderer_stack.add_named(&loading, Some("loading"));
             renderer_stack.add_named(&error_state, Some("error"));
+            renderer_stack.add_named(&load_error, Some("load_error"));
             renderer_stack.set_visible_child_name("placeholder");
             box_container.append(&renderer_stack);
             self.imp().renderer_stack.replace(Some(renderer_stack));
@@ -589,6 +599,9 @@ impl MailViewer {
         #[cfg(target_os = "linux")]
         {
             self.imp().webview_ready.set(false);
+            if let Some(label) = self.imp().renderer_error_label.borrow().as_ref() {
+                label.set_visible(false);
+            }
             if let Some(webview) = self.imp().webview.borrow().as_ref() {
                 webview.set_height_request(-1);
                 webview.set_opacity(0.0);
@@ -598,11 +611,8 @@ impl MailViewer {
             }
         }
 
-        #[cfg(not(target_os = "linux"))]
-        {
-            if let Some(view) = self.imp().fallback_view.borrow().as_ref() {
-                view.buffer().set_text("");
-            }
+        if let Some(view) = self.imp().fallback_view.borrow().as_ref() {
+            view.buffer().set_text("");
         }
         self.notify_scroll_offset(0.0);
     }
@@ -641,17 +651,24 @@ impl MailViewer {
         #[cfg(target_os = "linux")]
         {
             self.imp().webview_ready.set(false);
+            if let Some(label) = self.imp().renderer_error_label.borrow().as_ref() {
+                label.set_visible(false);
+            }
             if let Some(webview) = self.imp().webview.borrow().as_ref() {
                 webview.set_height_request(-1);
                 webview.set_opacity(0.0);
             }
+            if let Some(stack) = self.imp().renderer_stack.borrow().as_ref() {
+                if message_id.is_some() {
+                    stack.set_visible_child_name("loading");
+                } else {
+                    stack.set_visible_child_name("placeholder");
+                }
+            }
         }
 
-        #[cfg(not(target_os = "linux"))]
-        {
-            if let Some(view) = self.imp().fallback_view.borrow().as_ref() {
-                view.buffer().set_text("");
-            }
+        if let Some(view) = self.imp().fallback_view.borrow().as_ref() {
+            view.buffer().set_text("");
         }
     }
 
@@ -2310,6 +2327,16 @@ impl MailViewer {
 
     #[cfg(target_os = "linux")]
     pub(crate) fn show_renderer_error(&self) {
+        if self.imp().current_message_id.borrow().is_none() {
+            if let Some(label) = self.imp().renderer_error_label.borrow().as_ref() {
+                label.set_visible(false);
+            }
+            if let Some(stack) = self.imp().renderer_stack.borrow().as_ref() {
+                stack.set_visible_child_name("placeholder");
+            }
+            return;
+        }
+
         self.imp().webview_ready.set(false);
         self.imp().last_render_key.take();
         if let Some(webview) = self.imp().webview.borrow().as_ref() {
@@ -2317,6 +2344,22 @@ impl MailViewer {
         }
         if let Some(label) = self.imp().renderer_error_label.borrow().as_ref() {
             label.set_visible(true);
+        }
+        if let Some(view) = self.imp().fallback_view.borrow().as_ref() {
+            let buffer = view.buffer();
+            let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+            if text.is_empty() || text.as_str() == crate::i18n::gettext("No message selected.") {
+                let fallback = self.imp().current_fallback_text.borrow();
+                if let Some(ref fb) = *fallback {
+                    if !fb.is_empty() {
+                        buffer.set_text(fb);
+                    } else {
+                        buffer.set_text(&crate::i18n::gettext("No plain text version available for this message."));
+                    }
+                } else {
+                    buffer.set_text(&crate::i18n::gettext("Unable to display message content."));
+                }
+            }
         }
         if let Some(stack) = self.imp().renderer_stack.borrow().as_ref() {
             stack.set_visible_child_name("error");
@@ -2327,6 +2370,37 @@ impl MailViewer {
     pub(crate) fn show_renderer_error(&self) {
         if let Some(view) = self.imp().fallback_view.borrow().as_ref() {
             view.buffer().set_text(&crate::i18n::gettext("Failed to load message."));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn show_message_load_error(&self) {
+        if self.imp().current_message_id.borrow().is_none() {
+            if let Some(label) = self.imp().renderer_error_label.borrow().as_ref() {
+                label.set_visible(false);
+            }
+            if let Some(stack) = self.imp().renderer_stack.borrow().as_ref() {
+                stack.set_visible_child_name("placeholder");
+            }
+            return;
+        }
+        self.imp().webview_ready.set(false);
+        self.imp().last_render_key.take();
+        if let Some(webview) = self.imp().webview.borrow().as_ref() {
+            webview.set_opacity(0.0);
+        }
+        if let Some(label) = self.imp().renderer_error_label.borrow().as_ref() {
+            label.set_visible(false);
+        }
+        if let Some(stack) = self.imp().renderer_stack.borrow().as_ref() {
+            stack.set_visible_child_name("load_error");
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(crate) fn show_message_load_error(&self) {
+        if let Some(view) = self.imp().fallback_view.borrow().as_ref() {
+            view.buffer().set_text(&crate::i18n::gettext("Unable to retrieve message content from mail server."));
         }
     }
 }
@@ -4400,6 +4474,68 @@ mod tests {
         #[cfg(target_os = "linux")]
         {
             assert!(!viewer.imp().webview_ready.get());
+        }
+    }
+
+    #[test]
+    fn test_mail_viewer_error_handling_empty_state_and_load_error() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let viewer = super::MailViewer::new();
+
+        // 1. Calling show_renderer_error when NO message is selected must not show the error state or label
+        viewer.clear();
+        viewer.show_renderer_error();
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(stack) = viewer.imp().renderer_stack.borrow().as_ref() {
+                assert_eq!(stack.visible_child_name().as_deref(), Some("placeholder"));
+            }
+            if let Some(label) = viewer.imp().renderer_error_label.borrow().as_ref() {
+                assert!(!label.is_visible(), "Error label must not be visible on empty state");
+            }
+        }
+
+        // 2. When message is selected and show_renderer_error is called, error state is activated
+        viewer.prepare_for_loading(Some("msg-err"));
+        viewer.show_renderer_error();
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(stack) = viewer.imp().renderer_stack.borrow().as_ref() {
+                assert_eq!(stack.visible_child_name().as_deref(), Some("error"));
+            }
+            if let Some(label) = viewer.imp().renderer_error_label.borrow().as_ref() {
+                assert!(label.is_visible(), "Error label should be visible for render error");
+            }
+        }
+
+        // 3. Clear must reset error label and stack to placeholder
+        viewer.clear();
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(stack) = viewer.imp().renderer_stack.borrow().as_ref() {
+                assert_eq!(stack.visible_child_name().as_deref(), Some("placeholder"));
+            }
+            if let Some(label) = viewer.imp().renderer_error_label.borrow().as_ref() {
+                assert!(!label.is_visible(), "Error label must be hidden after clear()");
+            }
+        }
+
+        // 4. show_message_load_error shows load_error status page and hides HTML error label
+        viewer.prepare_for_loading(Some("msg-load-fail"));
+        viewer.show_message_load_error();
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(stack) = viewer.imp().renderer_stack.borrow().as_ref() {
+                assert_eq!(stack.visible_child_name().as_deref(), Some("load_error"));
+            }
+            if let Some(label) = viewer.imp().renderer_error_label.borrow().as_ref() {
+                assert!(!label.is_visible(), "Error label must not be visible on load_error");
+            }
         }
     }
 

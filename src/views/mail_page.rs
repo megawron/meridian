@@ -5773,6 +5773,58 @@ fn load_mail_backend(
         return MailPageLoadResult::Error(gettext("Mail loading was cancelled."));
     }
 
+    let try_cached_sqlite = || -> Option<MailPageLoadResult> {
+        let hint = request.source_uid.as_deref();
+        if let Some(cache) = crate::services::evolution_summary_cache::find_evolution_account_cache(hint) {
+            let effective_source = hint.unwrap_or(&cache.source_uid);
+            let folder_to_load = request
+                .folder_name
+                .as_deref()
+                .unwrap_or("");
+            let sqlite_folders = crate::services::evolution_summary_cache::load_folders_from_sqlite(
+                &cache.folders_db,
+                &cache.source_uid,
+                &cache.display_name,
+            )
+            .unwrap_or_default();
+            let page_limit = request
+                .max_messages_per_folder
+                .max(1) as usize;
+            let sqlite_msgs = crate::services::evolution_summary_cache::load_folder_messages_from_sqlite(
+                &cache.folders_db,
+                effective_source,
+                folder_to_load,
+                Some(page_limit),
+            )
+            .unwrap_or_default();
+
+            if !sqlite_folders.is_empty() || !sqlite_msgs.is_empty() {
+                let fast_load = camel_mail_service::CamelMailLoad {
+                    messages: sqlite_msgs,
+                    folders: sqlite_folders,
+                    configured_sources: 1,
+                    successful_sources: 0,
+                    failed_sources: 1,
+                    warning: Some(format!("{} · {}", gettext("Offline"), gettext("Showing cached messages"))),
+                    is_graph: false,
+                    search_query: None,
+                    graph_next_links: HashMap::new(),
+                    graph_search_next_cursor: None,
+                };
+                return Some(prepared_camel_result(fast_load, cancelled));
+            }
+        }
+
+        if let Some(mut cached) = camel_mail_service::load_mail_load_cache() {
+            if !cached.folders.is_empty() || !cached.messages.is_empty() {
+                cached.failed_sources = 1;
+                cached.warning = Some(format!("{} · {}", gettext("Offline"), gettext("Showing cached messages")));
+                return Some(prepared_camel_result(cached, cancelled));
+            }
+        }
+        None
+    };
+
     if request.is_remote_or_paged() {
         return match camel_result {
             Ok(camel) => prepared_camel_result(camel, cancelled),
@@ -5785,11 +5837,16 @@ fn load_mail_backend(
                 cancelled,
             ) {
                 Ok(graph) => prepared_camel_result(graph, cancelled),
-                Err(graph_error) => MailPageLoadResult::Error(format!(
-                    "{}: {error}; {}: {graph_error}",
-                    gettext("Mail account synchronization unavailable"),
-                    gettext("online search also unavailable")
-                )),
+                Err(graph_error) => {
+                    if let Some(cached_res) = try_cached_sqlite() {
+                        return cached_res;
+                    }
+                    MailPageLoadResult::Error(format!(
+                        "{}: {error}; {}: {graph_error}",
+                        gettext("Mail account synchronization unavailable"),
+                        gettext("online search also unavailable")
+                    ))
+                }
             },
         };
     }
@@ -5844,6 +5901,9 @@ fn load_mail_backend(
             ) {
                 return prepared_camel_result(graph, cancelled);
             }
+            if let Some(cached_res) = try_cached_sqlite() {
+                return cached_res;
+            }
             let store = crate::services::MailStoreService::new_worker_safe(store_config.clone());
             let (messages, local_deleted_ids) =
                 store.load_local_records_with_deleted_cancelable(cancelled, show_deleted);
@@ -5869,6 +5929,9 @@ fn load_mail_backend(
                 cancelled,
             ) {
                 return prepared_camel_result(graph, cancelled);
+            }
+            if let Some(cached_res) = try_cached_sqlite() {
+                return cached_res;
             }
             let store = crate::services::MailStoreService::new_worker_safe(store_config);
             let (messages, local_deleted_ids) =
@@ -25678,7 +25741,7 @@ impl MailPage {
                                     }
                                     Err(err) => {
                                         tracing::warn!(%err, "Background raw message load failed");
-                                        viewer_for_body.show_renderer_error();
+                                        viewer_for_body.show_message_load_error();
                                     }
                                 }
                             });
@@ -30359,7 +30422,18 @@ impl MailPage {
         }
 
         if pending.result_kind == "local" {
-            self.imp().mail_folder_summaries.replace(Vec::new());
+            if self.imp().mail_folder_summaries.borrow().is_empty() {
+                if let Some(cache) = crate::services::evolution_summary_cache::find_evolution_account_cache(None) {
+                    let sqlite_folders = crate::services::evolution_summary_cache::load_folders_from_sqlite(
+                        &cache.folders_db,
+                        &cache.source_uid,
+                        &cache.display_name,
+                    ).unwrap_or_default();
+                    if !sqlite_folders.is_empty() {
+                        self.imp().mail_folder_summaries.replace(sqlite_folders);
+                    }
+                }
+            }
             self.imp().graph_search_state.replace(None);
         } else {
             let mut folder_map = HashMap::<(String, String), camel_mail_service::CamelFolderSummary>::new();
@@ -30444,7 +30518,13 @@ impl MailPage {
             self.imp().remote_search_applied.set(false);
             self.imp().mail_has_more.set(false);
             if let Some(folder_list) = self.imp().folder_list.borrow().as_ref() {
-                self.rebuild_camel_folder_rows(folder_list, &[]);
+                let existing_folders = self.imp().mail_folder_summaries.borrow().clone();
+                if !existing_folders.is_empty() {
+                    self.rebuild_camel_folder_rows(folder_list, &existing_folders);
+                }
+            }
+            if let Some(section) = self.imp().folder_section.borrow().as_ref() {
+                section.set_visible(true);
             }
             if let Some(state) = self.imp().source_state.borrow().as_ref() {
                 state.set_label(pending.local_reason.as_deref().unwrap_or_default());
@@ -40083,6 +40163,66 @@ mod tests {
         assert!(icons.contains(&"x-office-address-book-symbolic".to_string()), "missing x-office-address-book-symbolic request");
         assert!(icons.contains(&"mail-attachment-symbolic".to_string()), "missing mail-attachment-symbolic request");
         assert!(icons.contains(&"emblem-important-symbolic".to_string()), "missing emblem-important-symbolic request");
+    }
+
+    #[test]
+    fn test_offline_fallback_preserves_folder_summaries_and_never_wipes_tree() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let page = MailPage::new();
+
+        let initial_folders = vec![
+            crate::services::camel_mail_service::CamelFolderSummary {
+                source_uid: "test-src".to_string(),
+                source_display_name: "Test Account".to_string(),
+                folder_name: "INBOX".to_string(),
+                folder_id: "test-src:INBOX".to_string(),
+                display_name: "Inbox".to_string(),
+                unread_count: 5,
+                total_count: 20,
+                is_selectable: true,
+            },
+            crate::services::camel_mail_service::CamelFolderSummary {
+                source_uid: "test-src".to_string(),
+                source_display_name: "Test Account".to_string(),
+                folder_name: "Sent".to_string(),
+                folder_id: "test-src:Sent".to_string(),
+                display_name: "Sent".to_string(),
+                unread_count: 0,
+                total_count: 10,
+                is_selectable: true,
+            },
+        ];
+        page.imp().mail_folder_summaries.replace(initial_folders.clone());
+
+        let req = MailLoadRequest {
+            source_uid: Some("test-src".to_string()),
+            folder_name: Some("INBOX".to_string()),
+            offset: 0,
+            max_messages_per_folder: 50,
+            graph_cursors: HashMap::new(),
+        };
+
+        let local_result = MailPageLoadResult::Local {
+            reason: "Offline fallback".to_string(),
+            messages: vec![],
+            local_deleted_ids: HashSet::new(),
+            local_folders: HashSet::new(),
+            searchable_body_texts: HashMap::new(),
+        };
+
+        page.apply_mail_load(req, local_result, true);
+
+        let preserved = page.imp().mail_folder_summaries.borrow().clone();
+        assert!(!preserved.is_empty(), "Folder summaries must be preserved during local/offline fallback");
+
+        if let Some(section) = page.imp().folder_section.borrow().as_ref() {
+            assert!(section.is_visible(), "Folder section must remain visible");
+        }
     }
 }
 
