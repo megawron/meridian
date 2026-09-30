@@ -384,6 +384,21 @@ impl HtmlEditor {
         dropdown_format.set_valign(gtk::Align::Center);
         set_accessible_label(&dropdown_format, &gettext("Paragraph format"));
 
+        let font_size_labels = [
+            gettext("Standardgröße"),
+            gettext("10 px (Sehr klein)"),
+            gettext("12 px (Klein)"),
+            gettext("14 px (Normal)"),
+            gettext("16 px (Mittel)"),
+            gettext("18 px (Groß)"),
+            gettext("24 px (Sehr groß)"),
+            gettext("32 px (Riesig)"),
+        ];
+        let font_size_strs: Vec<&str> = font_size_labels.iter().map(|s| s.as_str()).collect();
+        let dropdown_font_size = gtk::DropDown::from_strings(&font_size_strs);
+        dropdown_font_size.set_valign(gtk::Align::Center);
+        set_accessible_label(&dropdown_font_size, &gettext("Font size"));
+
         let btn_list = gtk::Button::builder()
             .icon_name("view-list-bullet-symbolic")
             .tooltip_text(&gettext("Bullet list"))
@@ -482,6 +497,7 @@ impl HtmlEditor {
         set_accessible_label(&btn_redo, &gettext("Redo"));
 
         toolbar.append(&dropdown_format);
+        toolbar.append(&dropdown_font_size);
         toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         toolbar.append(&btn_bold);
         toolbar.append(&btn_italic);
@@ -566,6 +582,17 @@ impl HtmlEditor {
             settings.set_sans_serif_font_family(&desktop_font);
             settings.set_enable_javascript(true);
             settings.set_auto_load_images(true);
+            settings.set_enable_developer_extras(false);
+            settings.set_allow_file_access_from_file_urls(false);
+            settings.set_allow_universal_access_from_file_urls(false);
+            settings.set_enable_webgl(false);
+            settings.set_enable_webrtc(false);
+            settings.set_enable_mediasource(false);
+            settings.set_enable_media_stream(false);
+            settings.set_enable_mock_capture_devices(false);
+            settings.set_enable_html5_local_storage(false);
+            settings.set_enable_html5_database(false);
+            settings.set_enable_offline_web_application_cache(false);
         }
 
         let font_family_raw = AppSettings::try_new()
@@ -803,6 +830,48 @@ impl HtmlEditor {
                     _ => "p",
                 };
                 let script = format!("document.execCommand('formatBlock', false, '{tag}');");
+                web_view.evaluate_javascript(
+                    &script,
+                    None,
+                    None,
+                    None::<&gio::Cancellable>,
+                    |_| {},
+                );
+            }
+        ));
+
+        dropdown_font_size.connect_selected_notify(glib::clone!(
+            #[weak]
+            web_view,
+            move |dropdown| {
+                let size = match dropdown.selected() {
+                    1 => 10,
+                    2 => 12,
+                    3 => 14,
+                    4 => 16,
+                    5 => 18,
+                    6 => 24,
+                    7 => 32,
+                    _ => 0,
+                };
+                let script = if size == 0 {
+                    "document.execCommand('styleWithCSS', false, true); document.execCommand('fontSize', false, '3');".to_string()
+                } else {
+                    format!(
+                        concat!(
+                            "document.execCommand('styleWithCSS', false, true);",
+                            "document.execCommand('fontSize', false, '7');",
+                            "(function() {{",
+                            "    var spans = document.querySelectorAll('span[style*=\"-webkit-xxx-large\"], font[size=\"7\"]');",
+                            "    for (var i = 0; i < spans.length; i++) {{",
+                            "        spans[i].removeAttribute('size');",
+                            "        spans[i].style.fontSize = '{size}px';",
+                            "    }}",
+                            "}})();"
+                        ),
+                        size = size
+                    )
+                };
                 web_view.evaluate_javascript(
                     &script,
                     None,

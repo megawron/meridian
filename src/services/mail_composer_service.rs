@@ -6,6 +6,7 @@
 
 use super::crypto_service::SmimeOptions;
 use super::draft_store_service::DraftAttachment;
+use super::settings_service::AppSettings;
 
 use chrono::Utc;
 use std::fs;
@@ -405,86 +406,103 @@ fn build_rfc822_parts(
         validate_export_attachment(attachment)?;
     }
 
-    let plain_body = if plain_text {
-        normalize_body(html_body)
+    let (processed_html, extracted_inline) = if plain_text {
+        (html_body.to_string(), Vec::new())
     } else {
-        normalize_body(&html_to_plain_text(html_body))
+        extract_inline_data_images(html_body)
     };
-    let html_body = (!plain_text).then(|| normalize_body(html_body));
-    let has_alternative = html_body.is_some() || calendar_component.is_some();
 
-    if attachments.is_empty() {
-        if has_alternative {
-            let boundary = new_boundary();
-            append_multipart_header(&mut raw, "alternative", &boundary);
-            append_text_part(
+    let mut all_attachments = attachments.to_vec();
+    all_attachments.extend(extracted_inline);
+
+    let (inline_attachments, regular_attachments): (Vec<_>, Vec<_>) = all_attachments
+        .into_iter()
+        .partition(|att| att.content_id.is_some());
+
+    let (font_family, font_size) = AppSettings::try_new()
+        .map(|s| (s.mail_font_family(), s.mail_font_size()))
+        .unwrap_or_else(|| {
+            (
+                "system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
+                    .to_string(),
+                14,
+            )
+        });
+
+    let plain_body = if plain_text {
+        normalize_body(&processed_html)
+    } else {
+        normalize_body(&html_to_plain_text(&processed_html))
+    };
+    let html_body = (!plain_text).then(|| {
+        let wrapped = wrap_html_with_typography(&processed_html, &font_family, font_size);
+        normalize_body(&wrapped)
+    });
+
+    if inline_attachments.is_empty() {
+        if regular_attachments.is_empty() {
+            append_alternative_or_single_part(
                 &mut raw,
-                &boundary,
-                &format!("text/plain; charset={charset}"),
+                None,
                 &plain_body,
+                html_body.as_deref(),
                 &charset,
+                calendar_method,
+                calendar_component,
             )?;
-            if let Some(html_body) = html_body.as_deref() {
-                append_text_part(
-                    &mut raw,
-                    &boundary,
-                    &format!("text/html; charset={charset}"),
-                    html_body,
-                    &charset,
-                )?;
-            }
-            if let (Some(method), Some(component)) = (calendar_method, calendar_component) {
-                append_calendar_part(&mut raw, &boundary, method, component)?;
-            }
-            close_multipart(&mut raw, &boundary);
         } else {
-            append_leaf_part(
+            let mixed_boundary = new_boundary();
+            append_multipart_header(&mut raw, "mixed", &mixed_boundary);
+            append_alternative_or_single_part(
                 &mut raw,
-                &format!("text/plain; charset={charset}"),
+                Some(&mixed_boundary),
                 &plain_body,
+                html_body.as_deref(),
                 &charset,
+                calendar_method,
+                calendar_component,
             )?;
+            for attachment in &regular_attachments {
+                append_attachment_part(&mut raw, &mixed_boundary, attachment)?;
+            }
+            close_multipart(&mut raw, &mixed_boundary);
         }
+    } else if regular_attachments.is_empty() {
+        let related_boundary = new_boundary();
+        append_multipart_related_header(&mut raw, &related_boundary);
+        append_alternative_or_single_part(
+            &mut raw,
+            Some(&related_boundary),
+            &plain_body,
+            html_body.as_deref(),
+            &charset,
+            calendar_method,
+            calendar_component,
+        )?;
+        for attachment in &inline_attachments {
+            append_attachment_part(&mut raw, &related_boundary, attachment)?;
+        }
+        close_multipart(&mut raw, &related_boundary);
     } else {
         let mixed_boundary = new_boundary();
+        let related_boundary = new_boundary();
         append_multipart_header(&mut raw, "mixed", &mixed_boundary);
-        if has_alternative {
-            let alternative_boundary = new_boundary();
-            raw.push_str("--");
-            raw.push_str(&mixed_boundary);
-            raw.push_str("\r\nContent-Type: multipart/alternative; boundary=\"");
-            raw.push_str(&alternative_boundary);
-            raw.push_str("\"\r\n\r\n");
-            append_text_part(
-                &mut raw,
-                &alternative_boundary,
-                &format!("text/plain; charset={charset}"),
-                &plain_body,
-                &charset,
-            )?;
-            if let Some(html_body) = html_body.as_deref() {
-                append_text_part(
-                    &mut raw,
-                    &alternative_boundary,
-                    &format!("text/html; charset={charset}"),
-                    html_body,
-                    &charset,
-                )?;
-            }
-            if let (Some(method), Some(component)) = (calendar_method, calendar_component) {
-                append_calendar_part(&mut raw, &alternative_boundary, method, component)?;
-            }
-            close_multipart(&mut raw, &alternative_boundary);
-        } else {
-            append_text_part(
-                &mut raw,
-                &mixed_boundary,
-                &format!("text/plain; charset={charset}"),
-                &plain_body,
-                &charset,
-            )?;
+        append_multipart_related_part_header(&mut raw, &mixed_boundary, &related_boundary);
+        append_alternative_or_single_part(
+            &mut raw,
+            Some(&related_boundary),
+            &plain_body,
+            html_body.as_deref(),
+            &charset,
+            calendar_method,
+            calendar_component,
+        )?;
+        for attachment in &inline_attachments {
+            append_attachment_part(&mut raw, &related_boundary, attachment)?;
         }
-        for attachment in attachments {
+        close_multipart(&mut raw, &related_boundary);
+
+        for attachment in &regular_attachments {
             append_attachment_part(&mut raw, &mixed_boundary, attachment)?;
         }
         close_multipart(&mut raw, &mixed_boundary);
@@ -782,6 +800,28 @@ fn append_multipart_header(raw: &mut String, kind: &str, boundary: &str) {
     raw.push_str("\"\r\n\r\n");
 }
 
+fn append_multipart_related_header(raw: &mut String, boundary: &str) {
+    raw.push_str("Content-Type: multipart/related; type=\"text/html\"; boundary=\"");
+    raw.push_str(boundary);
+    raw.push_str("\"\r\n\r\n");
+}
+
+fn append_multipart_related_part_header(raw: &mut String, parent_boundary: &str, boundary: &str) {
+    raw.push_str("--");
+    raw.push_str(parent_boundary);
+    raw.push_str("\r\nContent-Type: multipart/related; type=\"text/html\"; boundary=\"");
+    raw.push_str(boundary);
+    raw.push_str("\"\r\n\r\n");
+}
+
+fn append_multipart_alternative_part_header(raw: &mut String, parent_boundary: &str, boundary: &str) {
+    raw.push_str("--");
+    raw.push_str(parent_boundary);
+    raw.push_str("\r\nContent-Type: multipart/alternative; boundary=\"");
+    raw.push_str(boundary);
+    raw.push_str("\"\r\n\r\n");
+}
+
 fn append_leaf_part(
     raw: &mut String,
     content_type: &str,
@@ -819,6 +859,83 @@ fn close_multipart(raw: &mut String, boundary: &str) {
     raw.push_str("--");
     raw.push_str(boundary);
     raw.push_str("--\r\n");
+}
+
+fn append_alternative_or_single_part(
+    raw: &mut String,
+    parent_boundary: Option<&str>,
+    plain_body: &str,
+    html_body: Option<&str>,
+    charset: &str,
+    calendar_method: Option<&str>,
+    calendar_component: Option<&str>,
+) -> Result<(), String> {
+    let has_alternative = html_body.is_some() || calendar_component.is_some();
+    if let Some(parent) = parent_boundary {
+        if has_alternative {
+            let alt_boundary = new_boundary();
+            append_multipart_alternative_part_header(raw, parent, &alt_boundary);
+            append_text_part(
+                raw,
+                &alt_boundary,
+                &format!("text/plain; charset={charset}"),
+                plain_body,
+                charset,
+            )?;
+            if let Some(html) = html_body {
+                append_text_part(
+                    raw,
+                    &alt_boundary,
+                    &format!("text/html; charset={charset}"),
+                    html,
+                    charset,
+                )?;
+            }
+            if let (Some(method), Some(component)) = (calendar_method, calendar_component) {
+                append_calendar_part(raw, &alt_boundary, method, component)?;
+            }
+            close_multipart(raw, &alt_boundary);
+        } else {
+            append_text_part(
+                raw,
+                parent,
+                &format!("text/plain; charset={charset}"),
+                plain_body,
+                charset,
+            )?;
+        }
+    } else if has_alternative {
+        let alt_boundary = new_boundary();
+        append_multipart_header(raw, "alternative", &alt_boundary);
+        append_text_part(
+            raw,
+            &alt_boundary,
+            &format!("text/plain; charset={charset}"),
+            plain_body,
+            charset,
+        )?;
+        if let Some(html) = html_body {
+            append_text_part(
+                raw,
+                &alt_boundary,
+                &format!("text/html; charset={charset}"),
+                html,
+                charset,
+            )?;
+        }
+        if let (Some(method), Some(component)) = (calendar_method, calendar_component) {
+            append_calendar_part(raw, &alt_boundary, method, component)?;
+        }
+        close_multipart(raw, &alt_boundary);
+    } else {
+        append_leaf_part(
+            raw,
+            &format!("text/plain; charset={charset}"),
+            plain_body,
+            charset,
+        )?;
+    }
+    Ok(())
 }
 
 fn append_attachment_part(
@@ -1270,6 +1387,123 @@ fn normalize_body(value: &str) -> String {
 /// still contain HTML, so this remains the final MIME-layer invariant.
 fn html_to_plain_text(value: &str) -> String {
     crate::services::html_sanitizer::html_to_plain_text(value)
+}
+
+pub(crate) fn wrap_html_with_typography(html: &str, font_family: &str, font_size: u32) -> String {
+    let trimmed = html.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("<!doctype") || lower.starts_with("<html") {
+        return html.to_string();
+    }
+
+    let safe_font_family = if font_family.trim().is_empty() {
+        "system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
+    } else {
+        font_family.trim()
+    };
+    let safe_size = if font_size < 8 || font_size > 72 {
+        14
+    } else {
+        font_size
+    };
+
+    format!(
+        "<!DOCTYPE html>\r\n<html>\r\n<head>\r\n<meta charset=\"utf-8\">\r\n<style type=\"text/css\">\r\nbody, p, div {{\r\n  font-family: {safe_font_family};\r\n  font-size: {safe_size}px;\r\n  line-height: 1.5;\r\n  color: #222222;\r\n}}\r\nimg {{\r\n  max-width: 100%;\r\n  height: auto;\r\n}}\r\n</style>\r\n</head>\r\n<body style=\"font-family: {safe_font_family}; font-size: {safe_size}px; line-height: 1.5; color: #222222;\">\r\n{trimmed}\r\n</body>\r\n</html>"
+    )
+}
+
+pub(crate) fn extract_inline_data_images(html: &str) -> (String, Vec<ExportAttachment>) {
+    let mut output = String::with_capacity(html.len());
+    let mut attachments = Vec::new();
+    let mut cursor = 0;
+    let mut counter = 1usize;
+
+    while cursor < html.len() {
+        let remaining = &html[cursor..];
+        let Some(tag_start) = remaining.find('<') else {
+            output.push_str(remaining);
+            break;
+        };
+        let tag_start_idx = cursor + tag_start;
+        output.push_str(&html[cursor..tag_start_idx]);
+        cursor = tag_start_idx;
+
+        let Some(tag_end_rel) = html[cursor..].find('>') else {
+            output.push_str(&html[cursor..]);
+            break;
+        };
+        let tag_end_idx = cursor + tag_end_rel;
+        let tag_str = &html[cursor..=tag_end_idx];
+
+        let tag_lower = tag_str.to_ascii_lowercase();
+        if !tag_lower.starts_with("<img") && !tag_lower.starts_with("<source") {
+            output.push_str(tag_str);
+            cursor = tag_end_idx + 1;
+            continue;
+        }
+
+        if let Some(data_pos) = tag_str.find("data:image/") {
+            let before = &tag_str[..data_pos];
+            if let Some(quote_idx) = before.rfind(['"', '\'']) {
+                let quote = tag_str.as_bytes()[quote_idx];
+                let before_quote = before[..quote_idx].trim_end();
+                if before_quote.ends_with('=') {
+                    let before_eq = before_quote[..before_quote.len() - 1].trim_end();
+                    if before_eq.to_ascii_lowercase().ends_with("src") {
+                        if let Some(end_quote_rel) = tag_str[data_pos..].find(quote as char) {
+                            let end_quote_idx = data_pos + end_quote_rel;
+                            let data_uri = &tag_str[data_pos..end_quote_idx];
+                            if let Some(rest) = data_uri.strip_prefix("data:image/") {
+                                if let Some(b64_pos) = rest.find(";base64,") {
+                                    let mime_sub = &rest[..b64_pos];
+                                    let b64_payload = &rest[b64_pos + 8..];
+                                    let cleaned: String = b64_payload.chars().filter(|c| !c.is_whitespace()).collect();
+                                    if let Ok(bytes) = decode_embedded_attachment(&cleaned) {
+                                        if !bytes.is_empty() {
+                                            let mime_type = format!("image/{mime_sub}");
+                                            let ext = match mime_sub.to_ascii_lowercase().as_str() {
+                                                "png" => "png",
+                                                "jpeg" | "jpg" => "jpg",
+                                                "gif" => "gif",
+                                                "webp" => "webp",
+                                                "svg+xml" => "svg",
+                                                _ => "png",
+                                            };
+                                            let cid_uuid = uuid::Uuid::new_v4().simple().to_string();
+                                            let cid = format!("img-{cid_uuid}@meridian.local");
+                                            let filename = format!("image-{counter}.{ext}");
+                                            counter += 1;
+
+                                            attachments.push(ExportAttachment {
+                                                filename,
+                                                mime_type,
+                                                content_id: Some(format!("<{cid}>")),
+                                                content: bytes.into(),
+                                            });
+
+                                            output.push_str(&tag_str[..data_pos]);
+                                            output.push_str(&format!("cid:{cid}"));
+                                            output.push_str(&tag_str[end_quote_idx..]);
+                                            cursor = tag_end_idx + 1;
+                                            continue;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        output.push_str(tag_str);
+        cursor = tag_end_idx + 1;
+    }
+
+    (output, attachments)
 }
 
 fn ensure_crlf(value: &mut String) {
@@ -2015,5 +2249,91 @@ mod tests {
             pgp_key: String::new(),
             smime_options: None,
         }
+    }
+
+    #[test]
+    fn extracts_inline_data_image_and_replaces_with_cid() {
+        let sample_html = r#"<p>Hello</p><p><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" alt="test"></p>"#;
+        let (processed, inline_attachments) = extract_inline_data_images(sample_html);
+        assert_eq!(inline_attachments.len(), 1);
+        let att = &inline_attachments[0];
+        assert_eq!(att.mime_type, "image/png");
+        assert!(att.filename.ends_with(".png"));
+        let cid = att.content_id.as_ref().expect("must have content_id");
+        assert!(cid.starts_with("<img-"));
+        assert!(cid.ends_with("@meridian.local>"));
+
+        let inner_cid = cid.trim_matches(['<', '>']);
+        assert!(processed.contains(&format!("src=\"cid:{inner_cid}\"")));
+        assert!(!processed.contains("data:image/png"));
+    }
+
+    #[test]
+    fn wrap_html_with_typography_preserves_full_documents_and_styles_fragments() {
+        let fragment = "<p>Message content</p>";
+        let wrapped = wrap_html_with_typography(fragment, "Cantarell", 16);
+        assert!(wrapped.starts_with("<!DOCTYPE html>"));
+        assert!(wrapped.contains("font-family: Cantarell;"));
+        assert!(wrapped.contains("font-size: 16px;"));
+        assert!(wrapped.contains("<p>Message content</p>"));
+
+        let full_doc = "<!DOCTYPE html><html><body>Already complete</body></html>";
+        assert_eq!(wrap_html_with_typography(full_doc, "Cantarell", 16), full_doc);
+    }
+
+    #[test]
+    fn builds_rfc822_with_inline_image_creates_multipart_related() {
+        let mut msg = outgoing_with_attachments(Vec::new());
+        msg.from = "sender@example.org".to_string();
+        msg.html_body = r#"<p>Hi</p><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==">"#.to_string();
+
+        let raw = build_rfc822(&msg).expect("message with inline image should build");
+        let text = String::from_utf8(raw).expect("UTF-8 string");
+        assert!(text.contains("Content-Type: multipart/related; type=\"text/html\"; boundary=\""));
+        assert!(text.contains("Content-Type: multipart/alternative; boundary=\""));
+        assert!(text.contains("Content-Type: image/png; name=\"image-1.png\""));
+        assert!(text.contains("Content-Disposition: inline; filename=\"image-1.png\""));
+        assert!(text.contains("Content-ID: <img-"));
+        assert!(text.contains("cid:img-"));
+        assert!(!text.contains("data:image/png;base64"));
+    }
+
+    #[test]
+    fn builds_rfc822_with_inline_image_and_regular_attachment() {
+        let temp_dir = std::env::temp_dir().join(format!("meridian-test-{}", uuid::Uuid::new_v4()));
+        let _ = fs::create_dir_all(&temp_dir);
+        let pdf_path = temp_dir.join("document.pdf");
+        fs::write(&pdf_path, b"%PDF-1.4").expect("write temp pdf");
+
+        let draft_att = DraftAttachment {
+            filename: "document.pdf".to_string(),
+            mime_type: "application/pdf".to_string(),
+            size: 8,
+            path: pdf_path.to_string_lossy().to_string(),
+            content_id: None,
+            embedded_content_base64: String::new(),
+        };
+
+        let mut msg = outgoing_with_attachments(vec![draft_att]);
+        msg.from = "sender@example.org".to_string();
+        msg.html_body = r#"<p>Check attachment and logo:</p><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==">"#.to_string();
+
+        let raw = build_rfc822(&msg).expect("message should build");
+        let text = String::from_utf8(raw).expect("UTF-8 string");
+
+        // Root must be multipart/mixed
+        assert!(text.contains("Content-Type: multipart/mixed; boundary=\""));
+        // Child must be multipart/related
+        assert!(text.contains("Content-Type: multipart/related; type=\"text/html\"; boundary=\""));
+        // Inner child must be multipart/alternative
+        assert!(text.contains("Content-Type: multipart/alternative; boundary=\""));
+        // Inline image must have disposition inline and Content-ID
+        assert!(text.contains("Content-Disposition: inline; filename=\"image-1.png\""));
+        assert!(text.contains("Content-ID: <img-"));
+        // Regular attachment must have disposition attachment
+        assert!(text.contains("Content-Disposition: attachment; filename=\"document.pdf\""));
+
+        let _ = fs::remove_file(&pdf_path);
+        let _ = fs::remove_dir(&temp_dir);
     }
 }

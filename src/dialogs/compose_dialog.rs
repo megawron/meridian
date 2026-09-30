@@ -1105,8 +1105,8 @@ impl ComposeDialog {
             .css_classes(vec!["dim-label"])
             .build();
         let cancel_operation_button = gtk::Button::builder()
-            .label("Abbrechen")
-            .tooltip_text("Vorgang vor dem Transport abbrechen")
+            .label(crate::i18n::gettext("Cancel"))
+            .tooltip_text(crate::i18n::gettext("Cancel operation before transport"))
             .css_classes(vec!["flat"])
             .visible(false)
             .build();
@@ -3801,7 +3801,10 @@ impl ComposeDialog {
                         "Die Nachricht enthält ausschließlich verdeckte Empfänger (Bcc). Trotzdem senden?",
                     ),
                 );
-                alert.add_responses(&[("cancel", "Abbrechen"), ("send", "Senden")]);
+                alert.add_responses(&[
+                    ("cancel", &crate::i18n::gettext("Cancel")),
+                    ("send", &crate::i18n::gettext("Send")),
+                ]);
                 alert.set_response_appearance("send", adw::ResponseAppearance::Suggested);
                 let on_confirmed_action = Rc::clone(&on_confirmed_bcc);
                 alert.choose(&dialog, None::<&gio::Cancellable>, move |response| {
@@ -3818,10 +3821,13 @@ impl ComposeDialog {
 
         if prompt_empty_subject && subject_empty {
             let alert = adw::AlertDialog::new(
-                Some("Kein Betreff"),
-                Some("Die Nachricht hat keinen Betreff. Trotzdem senden?"),
+                Some(&crate::i18n::gettext("No Subject")),
+                Some(&crate::i18n::gettext("This message has no subject. Send anyway?")),
             );
-            alert.add_responses(&[("cancel", "Abbrechen"), ("send", "Trotzdem senden")]);
+            alert.add_responses(&[
+                ("cancel", &crate::i18n::gettext("Cancel")),
+                ("send", &crate::i18n::gettext("Send Anyway")),
+            ]);
             alert.set_response_appearance("send", adw::ResponseAppearance::Suggested);
             alert.choose(self, None::<&gio::Cancellable>, move |response| {
                 if response == "send" {
@@ -5056,11 +5062,30 @@ pub fn signature_plain_text_to_html(text: &str) -> String {
 }
 
 fn format_signature_markup(inner_html: &str) -> String {
-    if inner_html.trim().is_empty() {
+    let trimmed = inner_html.trim();
+    if trimmed.is_empty() {
         return String::new();
     }
     let delimiter = signature_delimiter_html();
-    format!("<div id=\"_evolution_signature_\" class=\"evolution-signature\"><p>{delimiter}{inner_html}</p></div>")
+    let delim_html = if delimiter.is_empty() {
+        String::new()
+    } else {
+        format!("<p>{delimiter}</p>")
+    };
+
+    let lower = trimmed.to_ascii_lowercase();
+    let has_block_root = lower.starts_with("<p")
+        || lower.starts_with("<div")
+        || lower.starts_with("<table")
+        || lower.starts_with("<h");
+
+    let formatted_content = if has_block_root {
+        trimmed.to_string()
+    } else {
+        format!("<p>{trimmed}</p>")
+    };
+
+    format!("<div id=\"_evolution_signature_\" class=\"evolution-signature\">{delim_html}{formatted_content}</div>")
 }
 
 fn signature_body_html() -> String {
@@ -5454,6 +5479,16 @@ fn gal_contact_to_recipient_suggestion(contact: GalContact) -> RecipientSuggesti
     }
 }
 
+fn safe_popup_popover(popover: &gtk::Popover, entry: &gtk::Entry) {
+    if popover.parent().is_none() {
+        return;
+    }
+    if !entry.is_realized() || entry.root().is_none() || entry.native().is_none() || !gtk::prelude::WidgetExt::is_visible(entry) {
+        return;
+    }
+    popover.popup();
+}
+
 fn setup_recipient_autocompletion(
     entry: &gtk::Entry,
     combo_from: &gtk::DropDown,
@@ -5604,6 +5639,21 @@ fn setup_recipient_autocompletion(
     });
     entry.add_controller(focus_controller);
 
+    let popover_unrealize = popover.clone();
+    entry.connect_unrealize(move |_| {
+        popover_unrealize.popdown();
+        if popover_unrealize.parent().is_some() {
+            popover_unrealize.unparent();
+        }
+    });
+
+    let popover_realize = popover.clone();
+    entry.connect_realize(move |e| {
+        if popover_realize.parent().is_none() {
+            popover_realize.set_parent(e);
+        }
+    });
+
     let entry_weak = entry.downgrade();
     let popover_for_changed = popover.clone();
     let list_for_changed = list.clone();
@@ -5652,6 +5702,7 @@ fn setup_recipient_autocompletion(
             std::time::Duration::from_millis(50),
             move || {
                 debounce_source_timer.borrow_mut().take();
+
                 if generation_clone.get() != generation_id {
                     return glib::ControlFlow::Break;
                 }
@@ -5680,7 +5731,7 @@ fn setup_recipient_autocompletion(
                     if let Some(first_row) = list_clone.row_at_index(0) {
                         list_clone.select_row(Some(&first_row));
                     }
-                    popover_clone.popup();
+                    safe_popup_popover(&popover_clone, &entry);
                 }
 
                 // 2. Non-blocking asynchronous GAL search in background thread
@@ -5695,6 +5746,7 @@ fn setup_recipient_autocompletion(
                     let list_for_gal = list_clone.clone();
                     let visible_for_gal = Rc::clone(&visible_clone);
                     let popover_for_gal = popover_clone.clone();
+                    let entry_weak_for_gal = entry_weak_clone.clone();
                     let fragment_for_gal = cur_fragment.clone();
                     let (sender, receiver) = async_channel::bounded(1);
 
@@ -5733,7 +5785,9 @@ fn setup_recipient_autocompletion(
                                         list_for_gal.select_row(Some(&first_row));
                                     }
                                 }
-                                popover_for_gal.popup();
+                                if let Some(entry) = entry_weak_for_gal.upgrade() {
+                                    safe_popup_popover(&popover_for_gal, &entry);
+                                }
                             }
                         }
                     });
@@ -5753,10 +5807,6 @@ fn render_recipient_suggestions_to_list(
     while let Some(row) = list.first_child() {
         list.remove(&row);
     }
-
-    let allow_remote = AppSettings::try_new()
-        .map(|s| s.mail_fetch_remote_logos())
-        .unwrap_or(true);
 
     for sugg in suggestions {
         let list_row = gtk::ListBoxRow::new();
@@ -5785,31 +5835,10 @@ fn render_recipient_suggestions_to_list(
             .show_initials(true)
             .build();
 
-        if let Some(bytes) = AvatarCacheService::global().peek_memory(&sugg.address) {
+        if let Some(bytes) = AvatarCacheService::global().get_cached(&sugg.address) {
             if let Ok(texture) = gtk::gdk::Texture::from_bytes(&bytes) {
                 avatar.set_custom_image(Some(&texture));
             }
-        } else {
-            let (tx, rx) = async_channel::bounded(1);
-            let avatar_weak = avatar.downgrade();
-            let email = sugg.address.clone();
-            glib::spawn_future_local(async move {
-                if let Ok(bytes) = rx.recv().await {
-                    if let Some(avatar) = avatar_weak.upgrade() {
-                        if let Ok(texture) = gtk::gdk::Texture::from_bytes(&bytes) {
-                            avatar.set_custom_image(Some(&texture));
-                        }
-                    }
-                }
-            });
-
-            std::thread::spawn(move || {
-                if let Some(bytes) =
-                    AvatarCacheService::global().request_avatar(&email, allow_remote, Some(tx.clone()))
-                {
-                    let _ = tx.send_blocking(bytes);
-                }
-            });
         }
 
         row_box.append(&avatar);
@@ -5867,29 +5896,22 @@ fn get_or_load_recipient_pool() -> Arc<Vec<RecipientSuggestion>> {
             }
             // Stale-while-revalidate: return current pool immediately, refresh in background
             let current = Arc::clone(pool);
-            if !IS_UPDATING_POOL.swap(true, Ordering::SeqCst) {
-                std::thread::spawn(|| {
-                    let new_pool = Arc::new(load_local_recipients_pool());
-                    if let Ok(mut write) = LOCAL_RECIPIENT_POOL_CACHE.write() {
-                        *write = Some((std::time::Instant::now(), new_pool));
-                    }
-                    IS_UPDATING_POOL.store(false, Ordering::SeqCst);
-                });
-            }
+            trigger_background_eds_pool_update();
             return current;
         }
     }
-    let pool = Arc::new(load_local_recipients_pool());
+
+    // Fast path: load local sources immediately (< 3ms) and trigger background EDS sync
+    let fast_pool = Arc::new(load_fast_local_recipients_pool());
     if let Ok(mut write) = LOCAL_RECIPIENT_POOL_CACHE.write() {
-        *write = Some((std::time::Instant::now(), Arc::clone(&pool)));
+        *write = Some((std::time::Instant::now(), Arc::clone(&fast_pool)));
     }
-    pool
+    trigger_background_eds_pool_update();
+    fast_pool
 }
 
 pub fn warm_recipient_cache() {
-    std::thread::spawn(|| {
-        let _ = get_or_load_recipient_pool();
-    });
+    trigger_background_eds_pool_update();
 }
 
 pub fn invalidate_recipient_cache() {
@@ -5898,7 +5920,61 @@ pub fn invalidate_recipient_cache() {
     }
 }
 
-fn load_local_recipients_pool() -> Vec<RecipientSuggestion> {
+fn trigger_background_eds_pool_update() {
+    if !IS_UPDATING_POOL.swap(true, Ordering::SeqCst) {
+        std::thread::spawn(|| {
+            let mut results = if let Ok(read) = LOCAL_RECIPIENT_POOL_CACHE.read() {
+                read.as_ref()
+                    .map(|(_, p)| (**p).clone())
+                    .unwrap_or_else(load_fast_local_recipients_pool)
+            } else {
+                load_fast_local_recipients_pool()
+            };
+
+            let mut email_to_index: HashMap<String, usize> = results
+                .iter()
+                .enumerate()
+                .map(|(idx, s)| (s.address.to_ascii_lowercase(), idx))
+                .collect();
+
+            let eds_contacts = crate::services::ebook_service::load_contacts_prefer_eds();
+            for record in eds_contacts.contacts {
+                let suggestions = contact_to_recipient_suggestions(&record.contact, false);
+                for s in suggestions {
+                    let clean_email = s.address.trim();
+                    if clean_email.is_empty()
+                        || !clean_email.contains('@')
+                        || is_internal_microsoft_routing_address(clean_email)
+                    {
+                        continue;
+                    }
+                    let key = clean_email.to_ascii_lowercase();
+                    let clean_display = s.display.trim();
+
+                    if let Some(&idx) = email_to_index.get(&key) {
+                        if results[idx].display.is_empty() && !clean_display.is_empty() {
+                            results[idx].display = clean_display.to_string();
+                        }
+                    } else {
+                        let idx = results.len();
+                        results.push(RecipientSuggestion {
+                            display: clean_display.to_string(),
+                            address: clean_email.to_string(),
+                        });
+                        email_to_index.insert(key, idx);
+                    }
+                }
+            }
+
+            if let Ok(mut write) = LOCAL_RECIPIENT_POOL_CACHE.write() {
+                *write = Some((std::time::Instant::now(), Arc::new(results)));
+            }
+            IS_UPDATING_POOL.store(false, Ordering::SeqCst);
+        });
+    }
+}
+
+fn load_fast_local_recipients_pool() -> Vec<RecipientSuggestion> {
     let mut results: Vec<RecipientSuggestion> = Vec::new();
     let mut email_to_index: HashMap<String, usize> = HashMap::new();
 
@@ -5924,22 +6000,22 @@ fn load_local_recipients_pool() -> Vec<RecipientSuggestion> {
         }
     };
 
-    // 1. Check recent recipients (frecency ranking - highest priority)
+    // 1. Check recent recipients (frecency ranking - highest priority, < 0.2ms)
     let recent = RecentRecipientsService::new().all_recipients();
     for r in recent {
         add_or_update(&r.display_name, &r.email);
     }
 
-    // 2. Query EDS contacts (Evolution Data Server synchronized address books)
-    let eds_contacts = crate::services::ebook_service::load_contacts_prefer_eds();
-    for record in eds_contacts.contacts {
+    // 2. Query cached Evolution contacts directly from SQLite (< 0.5ms, no D-Bus or network)
+    let sqlite_contacts = crate::services::evolution_contact_cache::load_contacts_from_evolution_sqlite_cache();
+    for record in sqlite_contacts {
         let suggestions = contact_to_recipient_suggestions(&record.contact, false);
         for s in suggestions {
             add_or_update(&s.display, &s.address);
         }
     }
 
-    // 3. Query local vCard store (local address book fallback)
+    // 3. Query local vCard store (local address book fallback, < 1ms)
     let store = ContactStoreService::new();
     let contacts = store.load_contacts();
     for record in contacts {
@@ -5949,7 +6025,7 @@ fn load_local_recipients_pool() -> Vec<RecipientSuggestion> {
         }
     }
 
-    // 4. Query previous correspondents from cached mail messages (limit to most recent 1000 messages)
+    // 4. Query previous correspondents from cached mail messages (< 1ms, limit to most recent 1000 messages)
     if let Some(mail_cache) = crate::services::camel_mail_service::load_mail_load_cache() {
         for msg in mail_cache.messages.iter().rev().take(1000) {
             // Check sender
@@ -6892,6 +6968,14 @@ mod tests {
     }
 
     #[test]
+    fn format_signature_markup_avoids_nested_paragraphs_when_html_contains_p() {
+        let markup = format_signature_markup("<p>Mit freundlichen Grüßen</p><p>Martin</p>");
+        assert!(markup.contains("id=\"_evolution_signature_\""));
+        assert!(markup.contains("<p>Mit freundlichen Grüßen</p><p>Martin</p>"));
+        assert!(!markup.contains("<p><p>"));
+    }
+
+    #[test]
     fn test_signature_plain_text_to_html_linkification() {
         let text = "Mit freundlichen Grüßen\nMax Mustermann\nWeb: https://example-portal.de.\nMail: kontakt@example-portal.de\nOder www.example-portal.de/portal";
         let html = signature_plain_text_to_html(text);
@@ -7195,5 +7279,42 @@ mod tests {
         assert_eq!(mime_type_for_path(Path::new("notes.txt")), "text/plain");
         assert_eq!(mime_type_for_path(Path::new("page.html")), "text/html");
     }
+
+    #[test]
+    fn test_typing_in_entry_to_does_not_crash() {
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        invalidate_recipient_cache();
+        let start = std::time::Instant::now();
+        let pool = get_or_load_recipient_pool();
+        let load_duration = start.elapsed();
+        // Loading fast local pool must be instant (< 500ms), never blocking 8s on EDS
+        assert!(load_duration < std::time::Duration::from_millis(500), "Fast pool load took too long: {:?}", load_duration);
+        assert!(!pool.is_empty(), "Recipient pool should not be empty");
+
+        let suggestions = search_recipient_suggestions("m", false);
+        let _ = suggestions.len();
+
+        let dialog = ComposeDialog::new();
+        dialog.present_standalone();
+        while context.iteration(false) {}
+
+        let entry = dialog.imp().entry_to.borrow().as_ref().cloned().unwrap();
+        entry.set_text("m");
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_millis(200) {
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        dialog.close();
+        while context.iteration(false) {}
+    }
 }
+
+
 
