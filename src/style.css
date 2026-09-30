@@ -49,7 +49,7 @@ searchentry.error,
 .calendar-sidebar,
 .tasks-sidebar,
 .contacts-sidebar,
-.evolution-sidebar-drawer {
+.meridian-sidebar-drawer, .evolution-sidebar-drawer {
   font-family: "Adwaita Sans", Cantarell, -apple-system, sans-serif;
 }
 
@@ -1193,7 +1193,7 @@ paned.horizontal > separator:dir(rtl),
 paned.horizontal > separator.wide,
 paned.vertical > separator,
 paned.vertical > separator.wide {
-  background-color: color-mix(in srgb, currentColor 15%, transparent);
+  background-color: color-mix(in srgb, var(--sidebar-fg-color, @sidebar_fg_color) 8%, var(--sidebar-bg-color, @sidebar_bg_color));
   background-clip: content-box;
   border: none;
   box-shadow: none;
@@ -1238,32 +1238,43 @@ paned.vertical > separator:hover {
 }
 
 /* ── Unified Left Sidebar Drawer ───────────────────────────────────────── */
+.meridian-sidebar-drawer,
 .evolution-sidebar-drawer,
 splitview > sidebar,
 splitview > .sidebar {
-  background-color: @sidebar_bg_color;
-  color: @sidebar_fg_color;
+  background-color: var(--sidebar-bg-color, @sidebar_bg_color);
+  color: var(--sidebar-fg-color, @sidebar_fg_color);
 }
 
+.meridian-sidebar-drawer list,
 .evolution-sidebar-drawer list,
+.meridian-sidebar-drawer listview,
 .evolution-sidebar-drawer listview,
+.meridian-sidebar-drawer listbox,
 .evolution-sidebar-drawer listbox,
+.meridian-sidebar-drawer .navigation-sidebar,
 .evolution-sidebar-drawer .navigation-sidebar,
+.meridian-sidebar-drawer scrolledwindow,
 .evolution-sidebar-drawer scrolledwindow,
+.meridian-sidebar-drawer scrolledwindow > viewport,
 .evolution-sidebar-drawer scrolledwindow > viewport,
+.meridian-sidebar-drawer > box,
 .evolution-sidebar-drawer > box,
+.meridian-sidebar-drawer calendar,
 .evolution-sidebar-drawer calendar {
   background-color: transparent;
   color: inherit;
 }
 
+.meridian-sidebar-drawer,
 .evolution-sidebar-drawer {
-  background-color: @sidebar_bg_color;
-  color: @sidebar_fg_color;
+  background-color: var(--sidebar-bg-color, @sidebar_bg_color);
+  color: var(--sidebar-fg-color, @sidebar_fg_color);
   border: none;
   box-shadow: none;
 }
 
+.meridian-sidebar-drawer:dir(rtl),
 .evolution-sidebar-drawer:dir(rtl) {
   border: none;
 }
@@ -1388,6 +1399,7 @@ splitview > .sidebar {
   border-radius: 8px;
 }
 
+.meridian-sidebar-drawer .navigation-sidebar,
 .evolution-sidebar-drawer .navigation-sidebar {
   background-color: transparent;
 }
@@ -1568,12 +1580,14 @@ splitview > .sidebar {
   margin-end: 2px;
 }
 
+.meridian-module-switcher,
 .evolution-module-switcher {
-  border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--sidebar-fg-color, @sidebar_fg_color) 8%, var(--sidebar-bg-color, @sidebar_bg_color));
   background-color: transparent;
   padding: 4px;
 }
 
+.meridian-module-switcher button,
 .evolution-module-switcher button {
   min-width: 0;
   min-height: 28px;
@@ -2922,17 +2936,17 @@ viewswitcherbar viewswitcher button image {
 }
 
 headerbar.sidebar-header {
-  background-color: @sidebar_bg_color;
+  background-color: var(--sidebar-bg-color, @sidebar_bg_color);
   background-image: none;
   border-bottom: none;
-  border-right: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+  border-right: 1px solid color-mix(in srgb, var(--sidebar-fg-color, @sidebar_fg_color) 8%, var(--sidebar-bg-color, @sidebar_bg_color));
   box-shadow: none;
   min-width: 0;
 }
 
 headerbar.sidebar-header:dir(rtl) {
   border-right: none;
-  border-left: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+  border-left: 1px solid color-mix(in srgb, var(--sidebar-fg-color, @sidebar_fg_color) 8%, var(--sidebar-bg-color, @sidebar_bg_color));
 }
 
 .window-header-box {
