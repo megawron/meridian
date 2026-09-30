@@ -3543,4 +3543,50 @@ popover.menu.touch modelbutton {
   }
 }
 
+/* ── GNOME HIG Recipient Completion Dropdown ────────────────────────────── */
+popover.recipient-completion-popover {
+  padding: 6px;
+}
 
+popover.recipient-completion-popover contents {
+  padding: 0;
+  border-radius: 12px;
+}
+
+popover.recipient-completion-popover scrolledwindow {
+  background: transparent;
+}
+
+popover.recipient-completion-popover list {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  outline: none;
+}
+
+row.recipient-suggestion-row {
+  padding: 6px 10px;
+  border-radius: 8px;
+  margin: 1px 2px;
+  border: none;
+  background: transparent;
+  outline: none;
+  transition: background-color 80ms ease-in-out;
+}
+
+row.recipient-suggestion-row:hover {
+  background-color: alpha(@theme_fg_color, 0.07);
+}
+
+row.recipient-suggestion-row:selected {
+  background-color: alpha(@accent_color, 0.16);
+  color: inherit;
+}
+
+row.recipient-suggestion-row:selected:hover {
+  background-color: alpha(@accent_color, 0.22);
+}
+
+row.recipient-suggestion-row:focus {
+  outline: none;
+}
