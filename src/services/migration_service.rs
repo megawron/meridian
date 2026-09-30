@@ -585,13 +585,20 @@ fn import_evolution_sources_inner(
                 .unwrap_or_else(|| {
                     format!("Importierte Evolution-Signatur {}", signature_index + 1)
                 });
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            list_path.to_string_lossy().hash(&mut hasher);
-            signature_index.hash(&mut hasher);
-            relative_path.hash(&mut hasher);
-            name.hash(&mut hasher);
+            let sig_key = format!(
+                "{}:{}:{}:{}",
+                list_path.to_string_lossy(),
+                signature_index,
+                relative_path,
+                name
+            );
+            let mut hasher: u64 = 0xcbf29ce484222325;
+            for byte in sig_key.as_bytes() {
+                hasher ^= *byte as u64;
+                hasher = hasher.wrapping_mul(0x100000001b3);
+            }
             let signature = SignatureProfile {
-                id: format!("evolution-signature-{:016x}", hasher.finish()),
+                id: format!("evolution-signature-{:016x}", hasher),
                 name,
                 text: text.trim_end().to_string(),
                 format: if format.is_empty() {

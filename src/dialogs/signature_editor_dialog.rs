@@ -28,6 +28,7 @@ mod imp {
         pub entry_name: RefCell<Option<adw::EntryRow>>,
         pub editor: RefCell<Option<HtmlEditor>>,
         pub title_widget: RefCell<Option<adw::WindowTitle>>,
+        pub toast_overlay: RefCell<Option<adw::ToastOverlay>>,
     }
 
     impl std::fmt::Debug for SignatureEditorDialog {
@@ -192,22 +193,25 @@ impl SignatureEditorDialog {
             .vexpand(true)
             .build();
 
-        // 1. Signature Name
+        // 1. Signature Name (Native Libadwaita Boxed List)
         let group_name = adw::PreferencesGroup::new();
         let entry_name = adw::EntryRow::builder()
             .title(&gettext("Signaturname"))
             .text(edit_profile.as_ref().map(|p| p.name.as_str()).unwrap_or(""))
+            .show_apply_button(false)
             .build();
+        entry_name.connect_changed(move |row| {
+            row.remove_css_class("error");
+        });
+        let btn_save_for_apply = btn_save.clone();
+        entry_name.connect_apply(move |_| {
+            btn_save_for_apply.emit_clicked();
+        });
         self.imp().entry_name.replace(Some(entry_name.clone()));
         group_name.add(&entry_name);
         content_box.append(&group_name);
 
-        // 2. Signature Content (WYSIWYG Editor)
-        let group_editor = adw::PreferencesGroup::builder()
-            .title(&gettext("Signatur-Inhalt"))
-            .vexpand(true)
-            .build();
-
+        // 2. Signature Editor (.card frame directly below, no redundant header title)
         let editor = HtmlEditor::new();
         editor.set_vexpand(true);
         editor.set_hexpand(true);
@@ -225,12 +229,9 @@ impl SignatureEditorDialog {
             .css_classes(vec!["card"])
             .vexpand(true)
             .hexpand(true)
-            .height_request(450)
             .child(&editor)
             .build();
-
-        group_editor.add(&editor_frame);
-        content_box.append(&group_editor);
+        content_box.append(&editor_frame);
 
         // Save Action wiring
         let dialog_weak = self.downgrade();
@@ -255,11 +256,20 @@ impl SignatureEditorDialog {
                 name_raw
             };
 
-            let sig_id = dialog
-                .imp()
-                .existing_id
-                .borrow()
-                .clone()
+            let existing_id_opt = dialog.imp().existing_id.borrow().clone();
+            let store = SignatureStore::from_environment();
+
+            if store.has_name(&name, existing_id_opt.as_deref()) {
+                entry_name.add_css_class("error");
+                if let Some(overlay) = dialog.imp().toast_overlay.borrow().as_ref() {
+                    overlay.add_toast(adw::Toast::new(&gettext(
+                        "Eine Signatur mit diesem Namen existiert bereits.",
+                    )));
+                }
+                return;
+            }
+
+            let sig_id = existing_id_opt
                 .unwrap_or_else(|| format!("sig-{}", uuid::Uuid::new_v4()));
 
             editor.read_content(glib::clone!(
@@ -300,7 +310,11 @@ impl SignatureEditorDialog {
         });
 
         toolbar_view.set_content(Some(&content_box));
-        self.set_child(Some(&toolbar_view));
+
+        let toast_overlay = adw::ToastOverlay::new();
+        toast_overlay.set_child(Some(&toolbar_view));
+        self.imp().toast_overlay.replace(Some(toast_overlay.clone()));
+        self.set_child(Some(&toast_overlay));
     }
 }
 

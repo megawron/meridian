@@ -77,7 +77,18 @@ impl SignatureStore {
     }
 
     pub fn load(&self) -> Vec<SignatureProfile> {
-        self.load_file().signatures
+        let signatures = self.load_file().signatures;
+        let mut unique: Vec<SignatureProfile> = Vec::with_capacity(signatures.len());
+        let mut seen_ids = std::collections::HashSet::new();
+        let mut seen_names = std::collections::HashSet::new();
+        for sig in signatures {
+            let id = sig.id.trim().to_string();
+            let name_norm = sig.name.trim().to_lowercase();
+            if !id.is_empty() && seen_ids.insert(id) && seen_names.insert(name_norm) {
+                unique.push(sig);
+            }
+        }
+        unique
     }
 
     pub fn active_id(&self) -> Option<String> {
@@ -87,9 +98,25 @@ impl SignatureStore {
     pub fn active(&self) -> Option<SignatureProfile> {
         let file = self.load_file();
         let active_id = file.active_id.as_deref()?;
-        file.signatures
+        self.load()
             .into_iter()
             .find(|signature| signature.id == active_id)
+    }
+
+    /// Check if a signature with the given name already exists, optionally excluding a specific ID.
+    pub fn has_name(&self, name: &str, exclude_id: Option<&str>) -> bool {
+        let norm = name.trim().to_lowercase();
+        if norm.is_empty() {
+            return false;
+        }
+        self.load().iter().any(|sig| {
+            if let Some(ex_id) = exclude_id {
+                if sig.id == ex_id {
+                    return false;
+                }
+            }
+            sig.name.trim().to_lowercase() == norm
+        })
     }
 
     pub fn upsert(&self, signature: SignatureProfile) -> io::Result<()> {
@@ -99,16 +126,34 @@ impl SignatureStore {
                 "Eine Signatur benötigt ID und Inhalt",
             ));
         }
+        let norm_name = signature.name.trim().to_lowercase();
         let mut file = self.load_file();
-        if let Some(existing) = file
-            .signatures
-            .iter_mut()
-            .find(|existing| existing.id == signature.id)
-        {
+
+        // Check if an existing signature matches by ID OR by name
+        if let Some(existing) = file.signatures.iter_mut().find(|existing| {
+            existing.id == signature.id || existing.name.trim().to_lowercase() == norm_name
+        }) {
+            let orig_id = existing.id.clone();
             *existing = signature;
+            // Preserve the original ID so existing associations don't break
+            existing.id = orig_id;
         } else {
             file.signatures.push(signature);
         }
+
+        // Deduplicate entire list by ID and normalized name
+        let mut unique: Vec<SignatureProfile> = Vec::with_capacity(file.signatures.len());
+        let mut seen_ids = std::collections::HashSet::new();
+        let mut seen_names = std::collections::HashSet::new();
+        for sig in file.signatures {
+            let id = sig.id.trim().to_string();
+            let name_norm = sig.name.trim().to_lowercase();
+            if !id.is_empty() && seen_ids.insert(id) && seen_names.insert(name_norm) {
+                unique.push(sig);
+            }
+        }
+        file.signatures = unique;
+
         if file.active_id.is_none() {
             file.active_id = file
                 .signatures
@@ -251,6 +296,41 @@ mod tests {
         let path = root.join("signatures.json");
         fs::write(&path, b"not-json").expect("invalid fixture should be written");
         assert!(SignatureStore::new(path).load().is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn signature_name_uniqueness_and_deduplication() {
+        let root = temporary_directory("signature-uniqueness");
+        let store = SignatureStore::new(root.join("signatures.json"));
+
+        let initial = SignatureProfile {
+            id: "sig-1".to_string(),
+            name: "Standard".to_string(),
+            text: "<p>Original Text</p>".to_string(),
+            format: "html".to_string(),
+        };
+        store.upsert(initial).expect("must save initial");
+
+        assert!(store.has_name("Standard", None));
+        assert!(store.has_name("standard", None));
+        assert!(!store.has_name("Standard", Some("sig-1")));
+        assert!(!store.has_name("Anders", None));
+
+        // Inserting a signature with the SAME name but a different ID updates existing and avoids duplicate
+        let duplicate_name = SignatureProfile {
+            id: "sig-2-new-id".to_string(),
+            name: " standard ".to_string(),
+            text: "<p>Updated Text</p>".to_string(),
+            format: "html".to_string(),
+        };
+        store.upsert(duplicate_name).expect("must upsert with same name");
+
+        let loaded = store.load();
+        assert_eq!(loaded.len(), 1, "Must have exactly 1 signature (no duplicates)");
+        assert_eq!(loaded[0].id, "sig-1", "Original ID must be preserved");
+        assert_eq!(loaded[0].text, "<p>Updated Text</p>");
+
         let _ = fs::remove_dir_all(root);
     }
 

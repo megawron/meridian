@@ -11,7 +11,6 @@
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
-use webkit6::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::fs;
 use std::io;
@@ -386,7 +385,12 @@ impl PreferencesDialog {
                 let result = AccountConfigStore::default().move_profile(&profile_id, -1);
                 if let Some(page) = page.upgrade() {
                     match result {
-                        Ok(true) => page.refresh_local_profile_rows(),
+                        Ok(true) => {
+                            page.refresh_local_profile_rows();
+                            if let Some(window) = crate::window::find_meridian_window(&page) {
+                                window.reorder_account_roots();
+                            }
+                        }
                         Ok(false) => page.show_toast("Account profile not found"),
                         Err(error) => page.show_toast(&format!(
                             "Could not save account order: {error}"
@@ -409,7 +413,12 @@ impl PreferencesDialog {
                 let result = AccountConfigStore::default().move_profile(&profile_id, 1);
                 if let Some(page) = page.upgrade() {
                     match result {
-                        Ok(true) => page.refresh_local_profile_rows(),
+                        Ok(true) => {
+                            page.refresh_local_profile_rows();
+                            if let Some(window) = crate::window::find_meridian_window(&page) {
+                                window.reorder_account_roots();
+                            }
+                        }
                         Ok(false) => page.show_toast("Account profile not found"),
                         Err(error) => page.show_toast(&format!(
                             "Could not save account order: {error}"
@@ -5090,25 +5099,6 @@ impl PreferencesDialog {
 
         page_signatures.add(&group_signature_options);
 
-        let group_signature_preview = adw::PreferencesGroup::builder()
-            .title(&gettext("Vorschau der aktiven Signatur"))
-            .description(&gettext("Live-Vorschau der Signatur mit Grafiken und Formatierung"))
-            .build();
-
-        let preview_webview = webkit6::WebView::new();
-        preview_webview.set_height_request(160);
-        preview_webview.set_hexpand(true);
-        if let Some(w_settings) = webkit6::prelude::WebViewExt::settings(&preview_webview) {
-            w_settings.set_auto_load_images(true);
-            w_settings.set_enable_javascript(false);
-        }
-        let preview_frame = gtk::Frame::builder()
-            .css_classes(vec!["card"])
-            .child(&preview_webview)
-            .build();
-        group_signature_preview.add(&preview_frame);
-        page_signatures.add(&group_signature_preview);
-
         let signatures_detail_box = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
@@ -5117,127 +5107,120 @@ impl PreferencesDialog {
             .vexpand(true)
             .build();
 
-        // Reactive signature list & preview updater
+        // Reactive signature list & selection updater
         let dialog_weak = self.downgrade();
         let signatures_list_box_weak = signatures_list_box.downgrade();
         let signature_row_weak = signature_row.downgrade();
-        let preview_webview_weak = preview_webview.downgrade();
 
-        let rebuild_signatures_rc: Rc<RefCell<Option<Box<dyn Fn()>>>> = Rc::new(RefCell::new(None));
-        let rebuild_weak = Rc::downgrade(&rebuild_signatures_rc);
+        let rebuild_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
 
-        *rebuild_signatures_rc.borrow_mut() = Some(Box::new(move || {
-            let Some(list_box) = signatures_list_box_weak.upgrade() else { return };
-            let Some(combo) = signature_row_weak.upgrade() else { return };
-            let Some(webview) = preview_webview_weak.upgrade() else { return };
-            let Some(dialog) = dialog_weak.upgrade() else { return };
+        let rebuild_fn: Rc<dyn Fn()> = {
+            let rebuild_holder_for_rebuild = rebuild_holder.clone();
+            Rc::new(move || {
+                let Some(list_box) = signatures_list_box_weak.upgrade() else { return };
+                let Some(combo) = signature_row_weak.upgrade() else { return };
+                let Some(dialog) = dialog_weak.upgrade() else { return };
 
-            while let Some(child) = list_box.first_child() {
-                list_box.remove(&child);
-            }
+                while let Some(child) = list_box.first_child() {
+                    list_box.remove(&child);
+                }
 
-            let store = SignatureStore::from_environment();
-            let signatures = store.load();
+                let store = SignatureStore::from_environment();
+                let signatures = store.load();
 
-            if signatures.is_empty() {
-                let empty_row = adw::ActionRow::builder()
-                    .title(&gettext("Noch keine Signaturen vorhanden"))
-                    .subtitle(&gettext("Erstellen Sie eine neue Signatur, um formatierten Text oder Logos anzulegen."))
-                    .build();
-                list_box.append(&empty_row);
-            }
+                if signatures.is_empty() {
+                    let empty_row = adw::ActionRow::builder()
+                        .title(&gettext("Noch keine Signaturen vorhanden"))
+                        .subtitle(&gettext("Erstellen Sie eine neue Signatur, um formatierten Text oder Logos anzulegen."))
+                        .build();
+                    list_box.append(&empty_row);
+                }
 
-            for sig in &signatures {
-                let sig_clone = sig.clone();
-                let sig_id = sig.id.clone();
-                let row = adw::ActionRow::builder()
-                    .title(&sig.name)
-                    .subtitle(if sig.is_html() {
-                        gettext("HTML-Format (unterstützt Bilder und Logos)")
-                    } else {
-                        gettext("Nur-Text")
-                    })
-                    .build();
-                row.add_prefix(&gtk::Image::from_icon_name("document-edit-symbolic"));
+                for sig in &signatures {
+                    let sig_clone = sig.clone();
+                    let sig_id = sig.id.clone();
+                    let row = adw::ActionRow::builder()
+                        .title(&sig.name)
+                        .subtitle(if sig.is_html() {
+                            gettext("HTML-Format (unterstützt Bilder und Logos)")
+                        } else {
+                            gettext("Nur-Text")
+                        })
+                        .build();
+                    row.add_prefix(&gtk::Image::from_icon_name("document-edit-symbolic"));
 
-                let badge = gtk::Label::builder()
-                    .label(if sig.is_html() { "HTML & Bilder" } else { "Text" })
-                    .css_classes(vec!["dim-label", "caption"])
-                    .valign(gtk::Align::Center)
-                    .build();
-                row.add_suffix(&badge);
+                    let badge = gtk::Label::builder()
+                        .label(if sig.is_html() { "HTML & Bilder" } else { "Text" })
+                        .css_classes(vec!["dim-label", "caption"])
+                        .valign(gtk::Align::Center)
+                        .build();
+                    row.add_suffix(&badge);
 
-                let btn_edit = gtk::Button::builder()
-                    .icon_name("document-edit-symbolic")
-                    .tooltip_text(&gettext("Signatur im visuellen Editor bearbeiten"))
-                    .css_classes(vec!["flat"])
-                    .valign(gtk::Align::Center)
-                    .build();
-                let dialog_for_edit = dialog.clone();
-                let rebuild_for_edit = rebuild_weak.clone();
-                btn_edit.connect_clicked(move |_| {
-                    let rebuild_cb = rebuild_for_edit.clone();
-                    let editor = SignatureEditorDialog::new_for_edit(&sig_clone, Some(move |_| {
-                        if let Some(rc) = rebuild_cb.upgrade() {
-                            if let Some(f) = rc.borrow().as_ref() {
+                    let btn_edit = gtk::Button::builder()
+                        .icon_name("document-edit-symbolic")
+                        .tooltip_text(&gettext("Signatur im visuellen Editor bearbeiten"))
+                        .css_classes(vec!["flat"])
+                        .valign(gtk::Align::Center)
+                        .build();
+                    let dialog_for_edit = dialog.clone();
+                    let rebuild_cb = rebuild_holder_for_rebuild.borrow().as_ref().cloned();
+                    btn_edit.connect_clicked(move |_| {
+                        let cb = rebuild_cb.clone();
+                        let editor = SignatureEditorDialog::new_for_edit(&sig_clone, Some(move |_| {
+                            if let Some(f) = cb.as_ref() {
                                 f();
                             }
-                        }
-                    }));
-                    editor.present(Some(&dialog_for_edit));
-                });
-                row.add_suffix(&btn_edit);
+                        }));
+                        editor.present(Some(&dialog_for_edit));
+                    });
+                    row.add_suffix(&btn_edit);
 
-                let btn_delete = gtk::Button::builder()
-                    .icon_name("user-trash-symbolic")
-                    .tooltip_text(&gettext("Signatur löschen"))
-                    .css_classes(vec!["flat", "error"])
+                    let btn_delete = gtk::Button::builder()
+                        .icon_name("user-trash-symbolic")
+                        .tooltip_text(&gettext("Signatur löschen"))
+                        .css_classes(vec!["flat", "error"])
+                        .valign(gtk::Align::Center)
+                        .build();
+                    let rebuild_cb_del = rebuild_holder_for_rebuild.borrow().as_ref().cloned();
+                    let id_for_del = sig_id.clone();
+                    btn_delete.connect_clicked(move |_| {
+                        let store = SignatureStore::from_environment();
+                        let _ = store.remove(&id_for_del);
+                        if let Some(f) = rebuild_cb_del.as_ref() {
+                            f();
+                        }
+                    });
+                    row.add_suffix(&btn_delete);
+
+                    list_box.append(&row);
+                }
+
+                let row_add = adw::ActionRow::builder()
+                    .title(&gettext("Neue Signatur erstellen…"))
+                    .activatable(true)
+                    .build();
+                let btn_add = gtk::Button::builder()
+                    .icon_name("list-add-symbolic")
+                    .css_classes(vec!["suggested-action", "flat"])
                     .valign(gtk::Align::Center)
                     .build();
-                let rebuild_for_del = rebuild_weak.clone();
-                let id_for_del = sig_id.clone();
-                btn_delete.connect_clicked(move |_| {
-                    let store = SignatureStore::from_environment();
-                    let _ = store.remove(&id_for_del);
-                    if let Some(rc) = rebuild_for_del.upgrade() {
-                        if let Some(f) = rc.borrow().as_ref() {
+                let dialog_for_add = dialog.clone();
+                let rebuild_cb_add = rebuild_holder_for_rebuild.borrow().as_ref().cloned();
+                let open_create = move || {
+                    let cb = rebuild_cb_add.clone();
+                    let editor = SignatureEditorDialog::new_for_create(Some(move |_| {
+                        if let Some(f) = cb.as_ref() {
                             f();
                         }
-                    }
-                });
-                row.add_suffix(&btn_delete);
-
-                list_box.append(&row);
-            }
-
-            let row_add = adw::ActionRow::builder()
-                .title(&gettext("Neue Signatur erstellen…"))
-                .activatable(true)
-                .build();
-            let btn_add = gtk::Button::builder()
-                .icon_name("list-add-symbolic")
-                .css_classes(vec!["suggested-action", "flat"])
-                .valign(gtk::Align::Center)
-                .build();
-            let dialog_for_add = dialog.clone();
-            let rebuild_for_add = rebuild_weak.clone();
-            let open_create = move || {
-                let rebuild_cb = rebuild_for_add.clone();
-                let editor = SignatureEditorDialog::new_for_create(Some(move |_| {
-                    if let Some(rc) = rebuild_cb.upgrade() {
-                        if let Some(f) = rc.borrow().as_ref() {
-                            f();
-                        }
-                    }
-                }));
-                editor.present(Some(&dialog_for_add));
-            };
-            let open_create_rc = Rc::new(open_create);
-            let open_create_for_btn = open_create_rc.clone();
-            btn_add.connect_clicked(move |_| open_create_for_btn());
-            row_add.connect_activated(move |_| open_create_rc());
-            row_add.add_suffix(&btn_add);
-            list_box.append(&row_add);
+                    }));
+                    editor.present(Some(&dialog_for_add));
+                };
+                let open_create_rc = Rc::new(open_create);
+                let open_create_for_btn = open_create_rc.clone();
+                btn_add.connect_clicked(move |_| open_create_for_btn());
+                row_add.connect_activated(move |_| open_create_rc());
+                row_add.add_suffix(&btn_add);
+                list_box.append(&row_add);
 
             let names: Vec<&str> = signatures.iter().map(|s| s.name.as_str()).collect();
             let model = gtk::StringList::new(&names);
@@ -5247,28 +5230,12 @@ impl PreferencesDialog {
                     combo.set_selected(pos as u32);
                 }
             }
+            })
+        };
 
-            let active = store.active();
-            let raw_content = if let Some(sig) = active {
-                if sig.is_html() {
-                    sig.text
-                } else {
-                    escape_html(&sig.text).replace('\n', "<br>")
-                }
-            } else {
-                format!("<p style='color: #888; font-style: italic;'>{}</p>", gettext("Keine aktive Signatur ausgewählt"))
-            };
-            let preview_html = format!(
-                "<!DOCTYPE html><html><head><style>body {{ font-family: system-ui, sans-serif; font-size: 13px; line-height: 1.4; color: #222; margin: 12px; }} img {{ max-width: 100%; height: auto; }} @media (prefers-color-scheme: dark) {{ body {{ color: #eee; background-color: #1e1e1e; }} }}</style></head><body>{raw_content}</body></html>"
-            );
-            webview.load_html(&preview_html, None);
-        }));
+        *rebuild_holder.borrow_mut() = Some(rebuild_fn.clone());
+        rebuild_fn();
 
-        if let Some(f) = rebuild_signatures_rc.borrow().as_ref() {
-            f();
-        }
-
-        let webview_for_select = preview_webview.clone();
         let settings_for_select = settings.clone();
         let combo_weak = signature_row.downgrade();
         signature_row.connect_selected_notify(move |_| {
@@ -5281,15 +5248,6 @@ impl PreferencesDialog {
                 if let Some(settings) = settings_for_select.as_ref() {
                     settings.set_signature_text(&sig.text);
                 }
-                let raw_content = if sig.is_html() {
-                    sig.text.clone()
-                } else {
-                    escape_html(&sig.text).replace('\n', "<br>")
-                };
-                let preview_html = format!(
-                    "<!DOCTYPE html><html><head><style>body {{ font-family: system-ui, sans-serif; font-size: 13px; line-height: 1.4; color: #222; margin: 12px; }} img {{ max-width: 100%; height: auto; }} @media (prefers-color-scheme: dark) {{ body {{ color: #eee; background-color: #1e1e1e; }} }}</style></head><body>{raw_content}</body></html>"
-                );
-                webview_for_select.load_html(&preview_html, None);
             }
         });
 
