@@ -4,6 +4,7 @@
 gschemas.compiled
 data/gschemas.compiled
 data/locale/
+*.mo
 
 # Cargo
 **/*.rs.bk
