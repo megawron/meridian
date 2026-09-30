@@ -1,4 +1,4 @@
-# Evolution GTK4 — Technical Roadmap & Architecture Plan
+# Meridian — Technical Roadmap & Architecture Plan
 
 Vollständige Architektur-Spezifikation, Feature-Mapping und Entwicklungs-Roadmap für einen modernen Mail- & Groupware-Client als GTK4/libadwaita-Frontend für den Evolution Data Server (EDS).
 

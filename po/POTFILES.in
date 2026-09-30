@@ -32,7 +32,6 @@ src/services/migration_service.rs
 src/views/calendar_page.rs
 src/views/contacts_page.rs
 src/views/html_editor.rs
-src/views/html_editor_fallback.rs
 src/views/itip_banner.rs
 src/views/mail_page.rs
 src/views/mail_viewer.rs

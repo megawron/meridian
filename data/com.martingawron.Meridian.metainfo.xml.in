@@ -20,8 +20,8 @@
   </description>
 
   <launchable type="desktop-id">com.martingawron.Meridian.desktop</launchable>
-  <url type="homepage">https://gitlab.gnome.org/GNOME/evolution-gtk4</url>
-  <url type="bugtracker">https://gitlab.gnome.org/GNOME/evolution-gtk4/-/issues</url>
+  <url type="homepage">https://gitlab.gnome.org/GNOME/meridian</url>
+  <url type="bugtracker">https://gitlab.gnome.org/GNOME/meridian/-/issues</url>
   <developer_name>megawron &amp; GNOME Community</developer_name>
 
   <releases>

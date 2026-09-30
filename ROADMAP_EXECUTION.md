@@ -1,4 +1,4 @@
-# Evolution GTK4 — ausführbare Entwicklungsroadmap
+# Meridian — ausführbare Entwicklungsroadmap
 
 Diese Datei ist die operative Warteschlange für Menschen und LLM-Agenten.
 Die vollständige Produktspezifikation und der belegte Ist-Stand bleiben in

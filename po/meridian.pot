@@ -1,12 +1,12 @@
-# Translation template for evolution-gtk4.
+# Translation template for Meridian.
 # Copyright (C) 2026 megawron
-# This file is distributed under the same license as the evolution-gtk4 package.
+# This file is distributed under the same license as the Meridian package.
 # FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
 #
 #, fuzzy
 msgid ""
 msgstr ""
-"Project-Id-Version: evolution-gtk4 0.1.0\n"
+"Project-Id-Version: meridian 0.1.0\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-09-20 02:40+0200\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
@@ -462,7 +462,7 @@ msgid "Keyboard Shortcuts"
 msgstr ""
 
 #: src/action_contract.rs:268
-msgid "About Evolution"
+msgid "About Meridian"
 msgstr ""
 
 #: src/action_contract.rs:272
@@ -662,7 +662,7 @@ msgid "Free/Busy"
 msgstr ""
 
 #: src/views/calendar_page.rs:1768 src/views/calendar_page.rs:5732
-msgid "Connect Apple Calendar: Would you like to view your macOS calendars and appointments in Evolution?"
+msgid "Connect Apple Calendar: Would you like to view your macOS calendars and appointments in Meridian?"
 msgstr ""
 
 #: src/views/calendar_page.rs:1769 src/views/calendar_page.rs:5733
@@ -1778,7 +1778,7 @@ msgid "Categories"
 msgstr ""
 
 #: src/views/contacts_page.rs:775 src/views/contacts_page.rs:4581
-msgid "Connect Apple Contacts: Would you like to view your macOS contacts in Evolution?"
+msgid "Connect Apple Contacts: Would you like to view your macOS contacts in Meridian?"
 msgstr ""
 
 #: src/views/contacts_page.rs:776 src/views/contacts_page.rs:4582
@@ -2998,11 +2998,11 @@ msgid "Local Folders"
 msgstr ""
 
 #: src/views/mail_page.rs:4635
-msgid "No active mail accounts; local Evolution storage"
+msgid "No active mail accounts; local Meridian storage"
 msgstr ""
 
 #: src/views/mail_page.rs:4663
-msgid "Mail account synchronization unavailable ({error}); local Evolution storage"
+msgid "Mail account synchronization unavailable ({error}); local Meridian storage"
 msgstr ""
 
 #: src/views/mail_page.rs:4676
@@ -6914,7 +6914,7 @@ msgid "Choose File…"
 msgstr ""
 
 #: src/views/tasks_page.rs:12948
-msgid "Evolution may update the iCalendar file"
+msgid "Meridian may update the iCalendar file"
 msgstr ""
 
 #: src/views/tasks_page.rs:12953
@@ -7038,7 +7038,7 @@ msgid "“{name}” and its tasks will be permanently deleted from the provider.
 msgstr ""
 
 #: src/views/tasks_page.rs:13442
-msgid "“{name}” will be removed from Evolution. This action cannot be undone."
+msgid "“{name}” will be removed from Meridian. This action cannot be undone."
 msgstr ""
 
 #: src/views/tasks_page.rs:13467
