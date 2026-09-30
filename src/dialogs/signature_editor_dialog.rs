@@ -24,12 +24,17 @@ mod imp {
     pub struct SignatureEditorDialog {
         pub edit_signature_json: RefCell<Option<String>>,
         pub on_saved: RefCell<Option<Rc<dyn Fn(SignatureProfile)>>>,
+        pub existing_id: RefCell<Option<String>>,
+        pub entry_name: RefCell<Option<adw::EntryRow>>,
+        pub editor: RefCell<Option<HtmlEditor>>,
+        pub title_widget: RefCell<Option<adw::WindowTitle>>,
     }
 
     impl std::fmt::Debug for SignatureEditorDialog {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.debug_struct("SignatureEditorDialog")
                 .field("edit_signature_json", &self.edit_signature_json)
+                .field("existing_id", &self.existing_id)
                 .finish()
         }
     }
@@ -46,7 +51,9 @@ mod imp {
             use std::sync::OnceLock;
             static PROPERTIES: OnceLock<Vec<glib::ParamSpec>> = OnceLock::new();
             PROPERTIES.get_or_init(|| {
-                vec![glib::ParamSpecString::builder("edit-signature-json").build()]
+                vec![glib::ParamSpecString::builder("edit-signature-json")
+                    .construct()
+                    .build()]
             })
         }
 
@@ -109,7 +116,25 @@ impl SignatureEditorDialog {
         if let Some(cb) = on_saved {
             *obj.imp().on_saved.borrow_mut() = Some(Rc::new(cb));
         }
+        obj.load_profile(profile);
         obj
+    }
+
+    pub fn load_profile(&self, profile: &SignatureProfile) {
+        *self.imp().existing_id.borrow_mut() = Some(profile.id.clone());
+        if let Some(title) = self.imp().title_widget.borrow().as_ref() {
+            title.set_title(&gettext("Signatur bearbeiten"));
+        }
+        if let Some(entry) = self.imp().entry_name.borrow().as_ref() {
+            entry.set_text(&profile.name);
+        }
+        if let Some(editor) = self.imp().editor.borrow().as_ref() {
+            if profile.is_html() {
+                editor.set_html(&profile.text);
+            } else {
+                editor.set_text(&profile.text);
+            }
+        }
     }
 
     fn build_ui(&self) {
@@ -120,6 +145,10 @@ impl SignatureEditorDialog {
             .as_deref()
             .and_then(|raw| serde_json::from_str::<SignatureProfile>(raw).ok());
 
+        if let Some(profile) = &edit_profile {
+            *self.imp().existing_id.borrow_mut() = Some(profile.id.clone());
+        }
+
         let toolbar_view = adw::ToolbarView::new();
 
         let header_bar = adw::HeaderBar::new();
@@ -129,6 +158,7 @@ impl SignatureEditorDialog {
             gettext("Neue Signatur")
         };
         let title_widget = adw::WindowTitle::new(&title_str, "");
+        self.imp().title_widget.replace(Some(title_widget.clone()));
         header_bar.set_title_widget(Some(&title_widget));
 
         let btn_cancel = gtk::Button::builder()
@@ -166,6 +196,7 @@ impl SignatureEditorDialog {
             .title(&gettext("Signaturname"))
             .text(edit_profile.as_ref().map(|p| p.name.as_str()).unwrap_or(""))
             .build();
+        self.imp().entry_name.replace(Some(entry_name.clone()));
         group_name.add(&entry_name);
         content_box.append(&group_name);
 
@@ -181,6 +212,7 @@ impl SignatureEditorDialog {
         let editor = HtmlEditor::new();
         editor.set_vexpand(true);
         editor.set_hexpand(true);
+        self.imp().editor.replace(Some(editor.clone()));
 
         if let Some(profile) = &edit_profile {
             if profile.is_html() {
@@ -202,7 +234,6 @@ impl SignatureEditorDialog {
         content_box.append(&group_editor);
 
         // Save Action wiring
-        let existing_id = edit_profile.as_ref().map(|p| p.id.clone());
         let dialog_weak = self.downgrade();
         let entry_name_weak = entry_name.downgrade();
         let editor_weak = editor.downgrade();
@@ -225,7 +256,10 @@ impl SignatureEditorDialog {
                 name_raw
             };
 
-            let sig_id = existing_id
+            let sig_id = dialog
+                .imp()
+                .existing_id
+                .borrow()
                 .clone()
                 .unwrap_or_else(|| format!("sig-{}", uuid::Uuid::new_v4()));
 
