@@ -11,6 +11,7 @@
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
+use webkit6::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::fs;
 use std::io;
@@ -40,6 +41,7 @@ use crate::services::settings_service::{
     normalize_composer_forward_style, normalize_composer_reply_style,
     MailLabelDefinition, ReminderDurationUnit, validate_mail_normal_header_name,
 };
+use crate::dialogs::SignatureEditorDialog;
 use crate::services::signature_store_service::SignatureStore;
 
 /// Owned, framework-neutral inputs for one manual filter worker.
@@ -2754,7 +2756,7 @@ impl PreferencesDialog {
 
         let row_append_signature = adw::SwitchRow::builder()
             .title("Automatically insert signature")
-            .subtitle("Inserted as plain text at end of new messages")
+            .subtitle("Inserted as plain text or HTML with images at end of new messages")
             .active(false)
             .build();
         if let Some(settings) = settings.clone() {
@@ -2763,88 +2765,14 @@ impl PreferencesDialog {
                 settings.set_append_signature(row.is_active());
             });
         }
-        group_composer.add(&row_append_signature);
 
-        let signature_store = SignatureStore::default();
-        let imported_signatures = signature_store.load();
-        let signature_view = gtk::TextView::builder()
-            .wrap_mode(gtk::WrapMode::WordChar)
-            .top_margin(8)
-            .bottom_margin(8)
-            .left_margin(12)
-            .right_margin(12)
-            .height_request(90)
+        let row_manage_signatures = adw::ActionRow::builder()
+            .title(&gettext("Signaturen verwalten…"))
+            .subtitle(&gettext("Formatierte Signaturen mit Logos, Links und Bildern bearbeiten"))
+            .activatable(true)
             .build();
-        let signature_buffer = signature_view.buffer();
-        if let Some(settings) = settings.clone() {
-            let initial_signature = signature_store
-                .active()
-                .map(|signature| signature.text)
-                .unwrap_or_else(|| settings.signature_text());
-            signature_buffer.set_text(&initial_signature);
-            let signature_store_for_edit = signature_store.clone();
-            signature_buffer.connect_changed(move |buffer| {
-                let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
-                settings.set_signature_text(text.as_str());
-                let Some(active_id) = signature_store_for_edit.active_id() else {
-                    return;
-                };
-                let Some(mut signature) = signature_store_for_edit
-                    .load()
-                    .into_iter()
-                    .find(|signature| signature.id == active_id)
-                else {
-                    return;
-                };
-                signature.text = text.to_string();
-                if let Err(error) = signature_store_for_edit.upsert(signature) {
-                    tracing::warn!(%error, "Could not update imported signature");
-                }
-            });
-        }
-
-        if !imported_signatures.is_empty() {
-            let names = imported_signatures
-                .iter()
-                .map(|signature| signature.name.as_str())
-                .collect::<Vec<_>>();
-            let model = gtk::StringList::new(&names);
-            let signature_row = adw::ComboRow::builder()
-                .title(&crate::i18n::gettext("Active Signature"))
-                .subtitle(&crate::i18n::gettext(
-                    "Select imported Evolution signatures",
-                ))
-                .model(&model)
-                .build();
-            if let Some(active_id) = signature_store.active_id() {
-                if let Some(index) = imported_signatures
-                    .iter()
-                    .position(|signature| signature.id == active_id)
-                {
-                    signature_row.set_selected(index as u32);
-                }
-            }
-            let signature_store_for_selection = signature_store.clone();
-            let signature_buffer_for_selection = signature_buffer.clone();
-            let settings_for_selection = settings.clone();
-            signature_row.connect_selected_notify(move |row| {
-                let Some(signature) = imported_signatures.get(row.selected() as usize) else {
-                    return;
-                };
-                if !signature_store_for_selection
-                    .set_active(Some(&signature.id))
-                    .unwrap_or(false)
-                {
-                    return;
-                }
-                signature_buffer_for_selection.set_text(&signature.text);
-                if let Some(settings) = settings_for_selection.as_ref() {
-                    settings.set_signature_text(&signature.text);
-                    settings.set_append_signature(true);
-                }
-            });
-            group_composer.add(&signature_row);
-        }
+        row_manage_signatures.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+        group_composer.add(&row_manage_signatures);
 
         let group_composer_headers = adw::PreferencesGroup::builder()
             .title("Headers Visible by Default")
@@ -2932,6 +2860,27 @@ impl PreferencesDialog {
             .title(&crate::i18n::gettext("Signature Options"))
             .description(&crate::i18n::gettext("Signature Placement and Formatting"))
             .build();
+
+        let signature_store = SignatureStore::from_environment();
+        let initial_signatures = signature_store.load();
+        let initial_sig_names: Vec<&str> = initial_signatures.iter().map(|s| s.name.as_str()).collect();
+        let signature_model = gtk::StringList::new(&initial_sig_names);
+        let signature_row = adw::ComboRow::builder()
+            .title(&crate::i18n::gettext("Active Signature"))
+            .subtitle(&crate::i18n::gettext("Standard-Signatur für ausgehende Nachrichten"))
+            .model(&signature_model)
+            .build();
+        if let Some(active_id) = signature_store.active_id() {
+            if let Some(index) = initial_signatures
+                .iter()
+                .position(|signature| signature.id == active_id)
+            {
+                signature_row.set_selected(index as u32);
+            }
+        }
+        group_signature_options.add(&signature_row);
+        group_signature_options.add(&row_append_signature);
+
         let row_top_signature = adw::SwitchRow::builder()
             .title("Insert signature above quote")
             .subtitle("Place signature above quoted text on replies and forwards (top posting)")
@@ -2957,29 +2906,6 @@ impl PreferencesDialog {
             });
         }
         group_signature_options.add(&row_signature_outline);
-
-        let group_signature_editor = adw::PreferencesGroup::builder()
-            .title("Signature Text and Content")
-            .description("The signature content automatically inserted when creating new messages")
-            .build();
-
-        let signature_frame = gtk::Frame::builder()
-            .css_classes(vec!["card"])
-            .margin_top(4)
-            .margin_bottom(4)
-            .build();
-
-        let signature_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .min_content_height(120)
-            .max_content_height(220)
-            .propagate_natural_height(true)
-            .child(&signature_view)
-            .build();
-
-        signature_frame.set_child(Some(&signature_scroll));
-        group_signature_editor.add(&signature_frame);
 
         let group_reply = adw::PreferencesGroup::builder()
             .title("Replying and Forwarding")
@@ -5096,20 +5022,8 @@ impl PreferencesDialog {
             Some("layout"),
             "Listenansicht",
         );
-        if let Ok(sub) = std::env::var("MERIDIAN_PREF_SUBPAGE").or_else(|_| std::env::var("EVOLUTION_PREF_SUBPAGE")) {
-            mail_sub_stack.set_visible_child_name(&sub);
-        }
 
-        let mail_detail_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(4)
-            .hexpand(true)
-            .vexpand(true)
-            .build();
-        mail_detail_box.append(&mail_sub_switcher);
-        mail_detail_box.append(&mail_sub_stack);
-
-        // Sub-Stack for Composer Preferences (General, Signatures, Replies)
+        // Sub-Stack for Composer Preferences (General, Replies)
         let composer_sub_stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::SlideLeftRight)
             .hexpand(true)
@@ -5126,14 +5040,10 @@ impl PreferencesDialog {
         page_composer_general.add(&group_composer);
         page_composer_general.add(&group_composer_headers);
         page_composer_general.add(&group_composer_prompts);
-        let page_composer_signatures = adw::PreferencesPage::builder().title("Signatures").build();
-        page_composer_signatures.add(&group_signature_editor);
-        page_composer_signatures.add(&group_signature_options);
         let page_composer_replies = adw::PreferencesPage::builder().title("Replies").build();
         page_composer_replies.add(&group_reply);
 
         composer_sub_stack.add_titled(&page_composer_general, Some("general"), "General");
-        composer_sub_stack.add_titled(&page_composer_signatures, Some("signatures"), "Signatures");
         composer_sub_stack.add_titled(&page_composer_replies, Some("replies"), "Replies");
 
         let composer_detail_box = gtk::Box::builder()
@@ -5144,6 +5054,244 @@ impl PreferencesDialog {
             .build();
         composer_detail_box.append(&composer_sub_switcher);
         composer_detail_box.append(&composer_sub_stack);
+
+        mail_sub_stack.add_titled(&composer_detail_box, Some("composer"), "Verfassen");
+
+        if let Ok(sub) = std::env::var("MERIDIAN_PREF_SUBPAGE").or_else(|_| std::env::var("EVOLUTION_PREF_SUBPAGE")) {
+            mail_sub_stack.set_visible_child_name(&sub);
+        }
+
+        let mail_detail_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        mail_detail_box.append(&mail_sub_switcher);
+        mail_detail_box.append(&mail_sub_stack);
+
+        // ── Signatures Detail Box (GNOME HIG Dedicated Page) ────────────────
+        let page_signatures = adw::PreferencesPage::builder()
+            .title(&gettext("Signaturen"))
+            .description(&gettext("Verwalten Sie Ihre E-Mail-Signaturen mit formatiertem Text und Bildern"))
+            .build();
+
+        let group_signatures_list = adw::PreferencesGroup::builder()
+            .title(&gettext("Meine Signaturen"))
+            .description(&gettext("Signaturen für ausgehende E-Mails. Bilder (Logos) werden direkt eingebettet."))
+            .build();
+
+        let signatures_list_box = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(vec!["boxed-list"])
+            .build();
+        group_signatures_list.add(&signatures_list_box);
+        page_signatures.add(&group_signatures_list);
+
+        page_signatures.add(&group_signature_options);
+
+        let group_signature_preview = adw::PreferencesGroup::builder()
+            .title(&gettext("Vorschau der aktiven Signatur"))
+            .description(&gettext("Live-Vorschau der Signatur mit Grafiken und Formatierung"))
+            .build();
+
+        let preview_webview = webkit6::WebView::new();
+        preview_webview.set_height_request(160);
+        preview_webview.set_hexpand(true);
+        if let Some(w_settings) = webkit6::prelude::WebViewExt::settings(&preview_webview) {
+            w_settings.set_auto_load_images(true);
+            w_settings.set_enable_javascript(false);
+        }
+        let preview_frame = gtk::Frame::builder()
+            .css_classes(vec!["card"])
+            .child(&preview_webview)
+            .build();
+        group_signature_preview.add(&preview_frame);
+        page_signatures.add(&group_signature_preview);
+
+        let signatures_detail_box = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&page_signatures)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+
+        // Reactive signature list & preview updater
+        let dialog_weak = self.downgrade();
+        let signatures_list_box_weak = signatures_list_box.downgrade();
+        let signature_row_weak = signature_row.downgrade();
+        let preview_webview_weak = preview_webview.downgrade();
+
+        let rebuild_signatures_rc: Rc<RefCell<Option<Box<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+        let rebuild_weak = Rc::downgrade(&rebuild_signatures_rc);
+
+        *rebuild_signatures_rc.borrow_mut() = Some(Box::new(move || {
+            let Some(list_box) = signatures_list_box_weak.upgrade() else { return };
+            let Some(combo) = signature_row_weak.upgrade() else { return };
+            let Some(webview) = preview_webview_weak.upgrade() else { return };
+            let Some(dialog) = dialog_weak.upgrade() else { return };
+
+            while let Some(child) = list_box.first_child() {
+                list_box.remove(&child);
+            }
+
+            let store = SignatureStore::from_environment();
+            let signatures = store.load();
+
+            if signatures.is_empty() {
+                let empty_row = adw::ActionRow::builder()
+                    .title(&gettext("Noch keine Signaturen vorhanden"))
+                    .subtitle(&gettext("Erstellen Sie eine neue Signatur, um formatierten Text oder Logos anzulegen."))
+                    .build();
+                list_box.append(&empty_row);
+            }
+
+            for sig in &signatures {
+                let sig_clone = sig.clone();
+                let sig_id = sig.id.clone();
+                let row = adw::ActionRow::builder()
+                    .title(&sig.name)
+                    .subtitle(if sig.is_html() {
+                        gettext("HTML-Format (unterstützt Bilder und Logos)")
+                    } else {
+                        gettext("Nur-Text")
+                    })
+                    .build();
+                row.add_prefix(&gtk::Image::from_icon_name("document-edit-symbolic"));
+
+                let badge = gtk::Label::builder()
+                    .label(if sig.is_html() { "HTML & Bilder" } else { "Text" })
+                    .css_classes(vec!["dim-label", "caption"])
+                    .valign(gtk::Align::Center)
+                    .build();
+                row.add_suffix(&badge);
+
+                let btn_edit = gtk::Button::builder()
+                    .icon_name("document-edit-symbolic")
+                    .tooltip_text(&gettext("Signatur im visuellen Editor bearbeiten"))
+                    .css_classes(vec!["flat"])
+                    .valign(gtk::Align::Center)
+                    .build();
+                let dialog_for_edit = dialog.clone();
+                let rebuild_for_edit = rebuild_weak.clone();
+                btn_edit.connect_clicked(move |_| {
+                    let rebuild_cb = rebuild_for_edit.clone();
+                    let editor = SignatureEditorDialog::new_for_edit(&sig_clone, Some(move |_| {
+                        if let Some(rc) = rebuild_cb.upgrade() {
+                            if let Some(f) = rc.borrow().as_ref() {
+                                f();
+                            }
+                        }
+                    }));
+                    editor.present(Some(&dialog_for_edit));
+                });
+                row.add_suffix(&btn_edit);
+
+                let btn_delete = gtk::Button::builder()
+                    .icon_name("user-trash-symbolic")
+                    .tooltip_text(&gettext("Signatur löschen"))
+                    .css_classes(vec!["flat", "error"])
+                    .valign(gtk::Align::Center)
+                    .build();
+                let rebuild_for_del = rebuild_weak.clone();
+                let id_for_del = sig_id.clone();
+                btn_delete.connect_clicked(move |_| {
+                    let store = SignatureStore::from_environment();
+                    let _ = store.remove(&id_for_del);
+                    if let Some(rc) = rebuild_for_del.upgrade() {
+                        if let Some(f) = rc.borrow().as_ref() {
+                            f();
+                        }
+                    }
+                });
+                row.add_suffix(&btn_delete);
+
+                list_box.append(&row);
+            }
+
+            let row_add = adw::ActionRow::builder()
+                .title(&gettext("Neue Signatur erstellen…"))
+                .activatable(true)
+                .build();
+            let btn_add = gtk::Button::builder()
+                .icon_name("list-add-symbolic")
+                .css_classes(vec!["suggested-action", "flat"])
+                .valign(gtk::Align::Center)
+                .build();
+            let dialog_for_add = dialog.clone();
+            let rebuild_for_add = rebuild_weak.clone();
+            let open_create = move || {
+                let rebuild_cb = rebuild_for_add.clone();
+                let editor = SignatureEditorDialog::new_for_create(Some(move |_| {
+                    if let Some(rc) = rebuild_cb.upgrade() {
+                        if let Some(f) = rc.borrow().as_ref() {
+                            f();
+                        }
+                    }
+                }));
+                editor.present(Some(&dialog_for_add));
+            };
+            let open_create_rc = Rc::new(open_create);
+            let open_create_for_btn = open_create_rc.clone();
+            btn_add.connect_clicked(move |_| open_create_for_btn());
+            row_add.connect_activated(move |_| open_create_rc());
+            row_add.add_suffix(&btn_add);
+            list_box.append(&row_add);
+
+            let names: Vec<&str> = signatures.iter().map(|s| s.name.as_str()).collect();
+            let model = gtk::StringList::new(&names);
+            combo.set_model(Some(&model));
+            if let Some(active_id) = store.active_id() {
+                if let Some(pos) = signatures.iter().position(|s| s.id == active_id) {
+                    combo.set_selected(pos as u32);
+                }
+            }
+
+            let active = store.active();
+            let raw_content = if let Some(sig) = active {
+                if sig.is_html() {
+                    sig.text
+                } else {
+                    escape_html(&sig.text).replace('\n', "<br>")
+                }
+            } else {
+                format!("<p style='color: #888; font-style: italic;'>{}</p>", gettext("Keine aktive Signatur ausgewählt"))
+            };
+            let preview_html = format!(
+                "<!DOCTYPE html><html><head><style>body {{ font-family: system-ui, sans-serif; font-size: 13px; line-height: 1.4; color: #222; margin: 12px; }} img {{ max-width: 100%; height: auto; }} @media (prefers-color-scheme: dark) {{ body {{ color: #eee; background-color: #1e1e1e; }} }}</style></head><body>{raw_content}</body></html>"
+            );
+            webview.load_html(&preview_html, None);
+        }));
+
+        if let Some(f) = rebuild_signatures_rc.borrow().as_ref() {
+            f();
+        }
+
+        let webview_for_select = preview_webview.clone();
+        let settings_for_select = settings.clone();
+        let combo_weak = signature_row.downgrade();
+        signature_row.connect_selected_notify(move |_| {
+            let Some(combo) = combo_weak.upgrade() else { return };
+            let store = SignatureStore::from_environment();
+            let signatures = store.load();
+            let idx = combo.selected() as usize;
+            if let Some(sig) = signatures.get(idx) {
+                let _ = store.set_active(Some(&sig.id));
+                if let Some(settings) = settings_for_select.as_ref() {
+                    settings.set_signature_text(&sig.text);
+                }
+                let raw_content = if sig.is_html() {
+                    sig.text.clone()
+                } else {
+                    escape_html(&sig.text).replace('\n', "<br>")
+                };
+                let preview_html = format!(
+                    "<!DOCTYPE html><html><head><style>body {{ font-family: system-ui, sans-serif; font-size: 13px; line-height: 1.4; color: #222; margin: 12px; }} img {{ max-width: 100%; height: auto; }} @media (prefers-color-scheme: dark) {{ body {{ color: #eee; background-color: #1e1e1e; }} }}</style></head><body>{raw_content}</body></html>"
+                );
+                webview_for_select.load_html(&preview_html, None);
+            }
+        });
 
         // Sub-Stack for Calendar and Tasks (General, Display & Formats)
         let calendar_sub_stack = gtk::Stack::builder()
@@ -5172,7 +5320,6 @@ impl PreferencesDialog {
         page_calendar_display.add(&group_categories);
         page_calendar_display.add(&group_task_memo_lists);
 
-
         calendar_sub_stack.add_titled(&page_calendar_general, Some("general"), "General");
         calendar_sub_stack.add_titled(&page_calendar_display, Some("display"), "Display and Formats");
 
@@ -5185,7 +5332,7 @@ impl PreferencesDialog {
         calendar_detail_box.append(&calendar_sub_switcher);
         calendar_detail_box.append(&calendar_sub_stack);
 
-        // ── Construct Modern Libadwaita 4-Category Layout ───────────────────
+        // ── Construct Modern Libadwaita 6-Category Layout ───────────────────
 
         // 1. Accounts & Identities detail box (Mail Accounts, Contacts)
         let accounts_sub_stack = gtk::Stack::builder()
@@ -5211,30 +5358,14 @@ impl PreferencesDialog {
         accounts_detail_box.append(&accounts_sub_switcher);
         accounts_detail_box.append(&accounts_sub_stack);
 
-        // 2. Appearance detail box (Theme & General, Mail Views, Composer)
-        let appearance_sub_stack = gtk::Stack::builder()
-            .transition_type(gtk::StackTransitionType::SlideLeftRight)
+        // 2. Appearance detail box (Theme & General)
+        let appearance_detail_box = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&page_appearance)
             .hexpand(true)
             .vexpand(true)
             .build();
-        let appearance_sub_switcher = gtk::StackSwitcher::builder()
-            .stack(&appearance_sub_stack)
-            .halign(gtk::Align::Center)
-            .margin_top(4)
-            .margin_bottom(8)
-            .build();
-        appearance_sub_stack.add_titled(&page_appearance, Some("appearance_general"), &gettext("General"));
-        appearance_sub_stack.add_titled(&mail_detail_box, Some("mail"), &gettext("Mail View"));
-        appearance_sub_stack.add_titled(&composer_detail_box, Some("composer"), &gettext("Composer"));
-
-        let appearance_detail_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(4)
-            .hexpand(true)
-            .vexpand(true)
-            .build();
-        appearance_detail_box.append(&appearance_sub_switcher);
-        appearance_detail_box.append(&appearance_sub_stack);
 
         // 3. Calendar & Tasks is already in calendar_detail_box
 
@@ -5264,7 +5395,7 @@ impl PreferencesDialog {
         security_detail_box.append(&security_sub_switcher);
         security_detail_box.append(&security_sub_stack);
 
-        // Sidebar Category List (Left Column) - 4 Canonical GNOME HIG Categories
+        // Sidebar Category List (Left Column) - 6 GNOME HIG Categories
         let sidebar_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
             .css_classes(vec!["navigation-sidebar"])
@@ -5272,8 +5403,10 @@ impl PreferencesDialog {
 
         for (title, icon_name) in [
             ("Accounts & Identities", "avatar-default-symbolic"),
-            ("Appearance", "display-brightness-symbolic"),
+            ("Mail", "mail-inbox-symbolic"),
+            ("Signatures", "document-edit-symbolic"),
             ("Calendar and Tasks", "x-office-calendar-symbolic"),
+            ("Appearance", "display-brightness-symbolic"),
             ("Security & Maintenance", "security-high-symbolic"),
         ] {
             let row = adw::ActionRow::builder()
@@ -5305,9 +5438,24 @@ impl PreferencesDialog {
             .build();
 
         detail_stack.add_titled(&accounts_detail_box, Some("accounts"), "Accounts & Identities");
-        detail_stack.add_titled(&appearance_detail_box, Some("appearance"), "Appearance");
+        detail_stack.add_titled(&mail_detail_box, Some("mail"), "Mail");
+        detail_stack.add_titled(&signatures_detail_box, Some("signatures"), "Signatures");
         detail_stack.add_titled(&calendar_detail_box, Some("calendar"), "Calendar and Tasks");
+        detail_stack.add_titled(&appearance_detail_box, Some("appearance"), "Appearance");
         detail_stack.add_titled(&security_detail_box, Some("security"), "Security & Maintenance");
+
+        let sidebar_for_nav = sidebar_list.downgrade();
+        let stack_for_nav = detail_stack.downgrade();
+        row_manage_signatures.connect_activated(move |_| {
+            if let Some(sidebar) = sidebar_for_nav.upgrade() {
+                if let Some(row) = sidebar.row_at_index(2) {
+                    sidebar.select_row(Some(&row));
+                }
+            }
+            if let Some(stack) = stack_for_nav.upgrade() {
+                stack.set_visible_child_name("signatures");
+            }
+        });
 
         let detail_stack_weak = detail_stack.downgrade();
         sidebar_list.connect_row_selected(move |_, row| {
@@ -5317,15 +5465,17 @@ impl PreferencesDialog {
             };
             let name = match row.index() {
                 0 => "accounts",
-                1 => "appearance",
-                2 => "calendar",
-                3 => "security",
+                1 => "mail",
+                2 => "signatures",
+                3 => "calendar",
+                4 => "appearance",
+                5 => "security",
                 _ => "accounts",
             };
             stack.set_visible_child_name(name);
         });
 
-        // Select default preferences page (Appearance / Mail by default, or overridden via env)
+        // Select default preferences page (Mail by default, or overridden via env)
         let default_idx = if let Ok(page_name) = std::env::var("MERIDIAN_PREF_PAGE").or_else(|_| std::env::var("EVOLUTION_PREF_PAGE")) {
             match page_name.as_str() {
                 "accounts" => {
@@ -5336,34 +5486,32 @@ impl PreferencesDialog {
                     accounts_sub_stack.set_visible_child_name("contacts");
                     0
                 }
-                "appearance" => {
-                    appearance_sub_stack.set_visible_child_name("appearance_general");
-                    1
-                }
                 "mail" => {
-                    appearance_sub_stack.set_visible_child_name("mail");
+                    mail_sub_stack.set_visible_child_name("general");
                     1
                 }
                 "composer" => {
-                    appearance_sub_stack.set_visible_child_name("composer");
+                    mail_sub_stack.set_visible_child_name("composer");
                     1
                 }
-                "calendar" => 2,
+                "signatures" => 2,
+                "calendar" => 3,
+                "appearance" => 4,
                 "certificates" => {
                     security_sub_stack.set_visible_child_name("certificates");
-                    3
+                    5
                 }
                 "junk" => {
                     security_sub_stack.set_visible_child_name("junk");
-                    3
+                    5
                 }
                 "network" => {
                     security_sub_stack.set_visible_child_name("network");
-                    3
+                    5
                 }
                 "backup" | "security" => {
                     security_sub_stack.set_visible_child_name("backup");
-                    3
+                    5
                 }
                 _ => 1,
             }
@@ -6988,6 +7136,15 @@ fn filter_operator_label(operator: FilterOperator) -> &'static str {
 
 fn filter_action_label(action: &FilterAction) -> String {
     action.description()
+}
+
+fn escape_html(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 impl Default for PreferencesDialog {
