@@ -197,24 +197,19 @@ pub fn sanitize_html_with_options(input: &str, allow_remote_resources: bool) -> 
 
 /// SVG Data URI representing a minimalist, Libadwaita-inspired vector placeholder icon.
 pub const PLACEHOLDER_IMAGE_DATA_URI: &str =
-    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiIgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiBmaWxsPSJub25lIiBzdHJva2U9InJnYigxMzYsMTM2LDEzNikiIHN0cm9rZS13aWR0aD0iMS44IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxyZWN0IHg9IjQiIHk9IjUiIHdpZHRoPSIyNCIgaGVpZ2h0PSIyMiIgcng9IjQiIHN0cm9rZT0icmdiKDEzNiwxMzYsMTM2KSIgc3Ryb2tlLW9wYWNpdHk9IjAuNTUiLz48Y2lyY2xlIGN4PSIxMSIgY3k9IjEyIiByPSIyLjIiIGZpbGw9InJnYigxMzYsMTM2LDEzNikiIGZpbGwtb3BhY2l0eT0iMC41NSIgc3Ryb2tlPSJub25lIi8+PHBhdGggZD0iTTI4IDIybC03LTctOSA5IiBzdHJva2U9InJnYigxMzYsMTM2LDEzNikiIHN0cm9rZS1vcGFjaXR5PSIwLjU1Ii8+PHBhdGggZD0iTTE2IDIwbC0zLTMtOSA5IiBzdHJva2U9InJnYigxMzYsMTM2LDEzNikiIHN0cm9rZS1vcGFjaXR5PSIwLjU1Ii8+PC9zdmc=";
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiIgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiBmaWxsPSJub25lIiBzdHJva2U9InJnYigxMzYsMTM2LDEzNikiIHN0cm9rZS13aWR0aD0iMS44IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxyZWN0IHg9IjQiIHk9IjUiIHdpZHRoPSIyNCIgaGVpZ2h0PSIyMiIgcng9IjQiIHN0cm9rZT0icmdiKDEzNiwxMzYsMTM2KSIgc3Ryb2tlLW9wYWNpdHk9IjAuNTUiLz48Y2lyY2xlIGN4PSIxMSIgY3k9IjEyIiByPSIyLjIiIGZpbGw9InJnYigxMzYsMTM2LDEzNikiIGZpbGwtb3BhY2l0eT0iMC41NSIgc3Ryb2tlPSJub25lIi8+PHBhdGggZD0iTTI4IDIybC03LTctOSA5IiBzdHJva2U9InJnYigxMzYsMTM2LDEzNikiIHN0cm9rZS1vcGFjaXR5PSIwLjU1Ii8+PHBhdGggZD0iTTE2IDIwbC0zLTMtOSA5IiBzdHJva2U9InJnYigxMzYsMTM2LDEzNikiIHN0cm9rZS1vcGFjaXR5PSIwLjU1Ii8+PC9zdmc+";
+
+/// 1x1 Transparent GIF Data URI for invisible layout spacers.
+pub const TRANSPARENT_PIXEL_DATA_URI: &str =
+    "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+
+fn parse_dimension(val: &str) -> Option<u32> {
+    let trimmed = val.trim().trim_end_matches("px").trim();
+    trimmed.parse::<u32>().ok()
+}
 
 fn is_tracking_pixel(raw_tag: &str) -> bool {
-    let check_dim = |val: &str| -> bool {
-        let trimmed = val.trim().trim_end_matches("px").trim();
-        if let Ok(num) = trimmed.parse::<u32>() {
-            num <= 1
-        } else {
-            false
-        }
-    };
-
-    if image_attribute(raw_tag, "width").is_some_and(|w| check_dim(&w))
-        || image_attribute(raw_tag, "height").is_some_and(|h| check_dim(&h))
-    {
-        return true;
-    }
-
+    // 1. Hidden via style
     if let Some(style) = image_attribute(raw_tag, "style") {
         let style_lower = style.to_ascii_lowercase();
         if style_lower.contains("display:none")
@@ -223,18 +218,152 @@ fn is_tracking_pixel(raw_tag: &str) -> bool {
             || style_lower.contains("visibility: hidden")
             || style_lower.contains("width:0")
             || style_lower.contains("width: 0")
-            || style_lower.contains("width:1px")
-            || style_lower.contains("width: 1px")
             || style_lower.contains("height:0")
             || style_lower.contains("height: 0")
-            || style_lower.contains("height:1px")
-            || style_lower.contains("height: 1px")
         {
             return true;
         }
     }
 
+    // 2. Known tracking keywords in src
+    if let Some(src) = image_attribute(raw_tag, "src") {
+        let src_lower = src.to_ascii_lowercase();
+        if src_lower.contains("track")
+            || src_lower.contains("beacon")
+            || src_lower.contains("open.php")
+            || src_lower.contains("pixel.gif")
+            || src_lower.contains("1x1")
+            || src_lower.contains("tr.gif")
+            || src_lower.contains("stat.php")
+        {
+            return true;
+        }
+    }
+
+    let width = image_attribute(raw_tag, "width").and_then(|w| parse_dimension(&w));
+    let height = image_attribute(raw_tag, "height").and_then(|h| parse_dimension(&h));
+
+    // 3. Dimension checks:
+    // If either dimension is 0
+    if width == Some(0) || height == Some(0) {
+        return true;
+    }
+
+    // If both dimensions are specified and <= 3, it's a tracking pixel
+    if let (Some(w), Some(h)) = (width, height) {
+        if w <= 3 && h <= 3 {
+            return true;
+        }
+    } else {
+        // If only one dimension is specified and <= 1, it's a 1px tracking beacon
+        if width.is_some_and(|w| w <= 1) || height.is_some_and(|h| h <= 1) {
+            return true;
+        }
+    }
+
     false
+}
+
+fn is_spacer_image(raw_tag: &str) -> bool {
+    // 1. Check URI / Filename for common spacer and blank image names
+    if let Some(src) = image_attribute(raw_tag, "src") {
+        let src_lower = src.to_ascii_lowercase();
+        let filename = src_lower.split('?').next().unwrap_or(&src_lower);
+        let name = filename.rsplit('/').next().unwrap_or(filename);
+        if name.contains("spacer")
+            || name.contains("blank")
+            || name.contains("transparent")
+            || name.contains("cleardot")
+            || name.contains("shim")
+            || name.contains("dot.gif")
+            || name.contains("dot.png")
+            || name.contains("empty")
+            || name.contains("space.gif")
+            || name.contains("trans.gif")
+            || name.contains("trans.png")
+            || name.contains("whitespace")
+        {
+            return true;
+        }
+    }
+
+    // 2. Check class names
+    if let Some(class) = image_attribute(raw_tag, "class") {
+        let class_lower = class.to_ascii_lowercase();
+        if class_lower.contains("spacer") || class_lower.contains("blank") {
+            return true;
+        }
+    }
+
+    // 3. Check alt text
+    let alt = image_attribute(raw_tag, "alt");
+    let has_meaningful_alt = alt.as_ref().is_some_and(|a| {
+        let t = a.trim();
+        !t.is_empty() && !t.eq_ignore_ascii_case("spacer") && !t.eq_ignore_ascii_case("blank")
+    });
+
+    let width = image_attribute(raw_tag, "width").and_then(|w| parse_dimension(&w));
+    let height = image_attribute(raw_tag, "height").and_then(|h| parse_dimension(&h));
+
+    // 4. Dimension-based heuristics for layout spacers:
+    // If either dimension is very small (<= 4px), it is a divider or spacer line
+    if width.is_some_and(|w| w <= 4) || height.is_some_and(|h| h <= 4) {
+        return true;
+    }
+
+    // 5. Narrow margin columns or table cell padders without meaningful alt text
+    if !has_meaningful_alt {
+        if let (Some(w), Some(h)) = (width, height) {
+            // Small cell spacer (<= 20x20)
+            if w <= 20 && h <= 20 {
+                return true;
+            }
+            // Vertical margin spacers (e.g. width <= 20px, any height)
+            if w <= 20 {
+                return true;
+            }
+            // Horizontal divider spacers (e.g. height <= 20px, any width)
+            if h <= 20 {
+                return true;
+            }
+        }
+    }
+
+    // 6. role="presentation" or aria-hidden="true" with small dimensions
+    if let Some(role) = image_attribute(raw_tag, "role") {
+        if role.trim().eq_ignore_ascii_case("presentation") {
+            if width.is_some_and(|w| w <= 32) || height.is_some_and(|h| h <= 32) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn build_transparent_spacer_tag(raw_tag: &str) -> String {
+    let (parsed_attributes, self_closing) =
+        parse_attributes(raw_tag).unwrap_or_else(|| (Vec::new(), false));
+    let mut attributes = Vec::new();
+    attributes.push(format!(" src=\"{TRANSPARENT_PIXEL_DATA_URI}\""));
+
+    for attribute in parsed_attributes {
+        let name_lower = attribute.name.to_ascii_lowercase();
+        if matches!(
+            name_lower.as_str(),
+            "src" | "srcset" | "imagesrcset" | "xlink:href" | "data-meridian-placeholder"
+        ) {
+            continue;
+        }
+        if let Some(val) = attribute.value {
+            attributes.push(format!(" {}=\"{}\"", attribute.name, escape_attribute(&val)));
+        } else {
+            attributes.push(format!(" {}", attribute.name));
+        }
+    }
+
+    let suffix = if self_closing { "/>" } else { ">" };
+    format!("<img{}{suffix}", attributes.concat())
 }
 
 fn build_placeholder_tag(raw_tag: &str) -> String {
@@ -295,8 +424,8 @@ pub fn block_remote_images(input: &str) -> String {
 ///
 /// When `use_placeholders` is true, remote `<img>` tags are converted to lightweight
 /// placeholders that preserve original width/height/alt while preventing any remote
-/// network requests. Tracking pixels (<= 1px) and remote `<source>` candidates in
-/// `<picture>` are still stripped.
+/// network requests. Tracking pixels (<= 3px) and remote `<source>` candidates in
+/// `<picture>` are stripped, while spacer/layout images are converted to transparent pixels.
 pub fn block_remote_images_with_options(input: &str, use_placeholders: bool) -> String {
     let mut output = String::with_capacity(input.len());
     let mut cursor = 0;
@@ -324,8 +453,17 @@ pub fn block_remote_images_with_options(input: &str, use_placeholders: bool) -> 
 
         if is_remote_image {
             let is_img = name_info.as_ref().is_some_and(|(_, tag)| tag == "img");
-            if use_placeholders && is_img && !is_tracking_pixel(raw_tag) {
-                output.push_str(&build_placeholder_tag(raw_tag));
+            if use_placeholders && is_img {
+                if is_tracking_pixel(raw_tag) {
+                    // Tracking pixels are completely stripped
+                } else if is_spacer_image(raw_tag) {
+                    // Layout and spacer images are replaced with an invisible transparent pixel
+                    // without any placeholder frame, preserving the email's table geometry!
+                    output.push_str(&build_transparent_spacer_tag(raw_tag));
+                } else {
+                    // True content images get the GNOME native placeholder frame
+                    output.push_str(&build_placeholder_tag(raw_tag));
+                }
             }
         } else {
             output.push_str(raw_tag);
@@ -2507,6 +2645,51 @@ Content-Type: text/html; charset=utf-8
         let html = r#"<img src="https://cdn.example/pic.jpg" width="100">"#;
         let blocked = block_remote_images_with_options(html, false);
         assert_eq!(blocked, "");
+    }
+
+    #[test]
+    fn test_placeholder_image_data_uri_is_valid_svg() {
+        assert!(PLACEHOLDER_IMAGE_DATA_URI.starts_with("data:image/svg+xml;base64,"));
+        let b64 = &PLACEHOLDER_IMAGE_DATA_URI["data:image/svg+xml;base64,".len()..];
+        let bytes = glib::Bytes::from_owned(glib::base64_decode(b64));
+        let decoded_str = std::str::from_utf8(&bytes).expect("Valid UTF-8 SVG string");
+        assert!(decoded_str.starts_with("<svg "), "Must start with <svg tag");
+        assert!(decoded_str.ends_with("</svg>"), "Must be closed with </svg> closing tag");
+    }
+
+    #[test]
+    fn test_block_remote_images_handles_spacers_and_layout_images() {
+        // 1. Classic spacer.gif with dimensions: must become transparent pixel without placeholder styling
+        let spacer_html = r#"<img src="https://cdn.example/images/spacer.gif" width="15" height="25">"#;
+        let spacer_blocked = block_remote_images_with_options(spacer_html, true);
+        assert!(spacer_blocked.contains(TRANSPARENT_PIXEL_DATA_URI), "Spacer must use transparent GIF");
+        assert!(!spacer_blocked.contains("data-meridian-placeholder"), "Spacer must NOT have placeholder attribute");
+        assert!(spacer_blocked.contains("width=\"15\""), "Spacer must keep width");
+        assert!(spacer_blocked.contains("height=\"25\""), "Spacer must keep height");
+
+        // 2. Vertical margin spacer table column: width <= 20 without alt text
+        let margin_html = r#"<img src="https://cdn.example/col_pad.png" width="12" height="80">"#;
+        let margin_blocked = block_remote_images_with_options(margin_html, true);
+        assert!(margin_blocked.contains(TRANSPARENT_PIXEL_DATA_URI));
+        assert!(!margin_blocked.contains("data-meridian-placeholder"));
+
+        // 3. Thin horizontal divider line: height <= 4
+        let line_html = r#"<img src="https://cdn.example/rule.png" width="500" height="2">"#;
+        let line_blocked = block_remote_images_with_options(line_html, true);
+        assert!(line_blocked.contains(TRANSPARENT_PIXEL_DATA_URI));
+        assert!(!line_blocked.contains("data-meridian-placeholder"));
+
+        // 4. Tracking pixel with width/height <= 3: must be completely stripped
+        let track_html = r#"<img src="https://tracker.example/pixel" width="2" height="2">"#;
+        let track_blocked = block_remote_images_with_options(track_html, true);
+        assert_eq!(track_blocked, "");
+
+        // 5. True content image: must have data-meridian-placeholder and SVG placeholder
+        let content_html = r#"<img src="https://cdn.example/asus_laptop.jpg" width="350" height="250" alt="ASUS Laptop">"#;
+        let content_blocked = block_remote_images_with_options(content_html, true);
+        assert!(content_blocked.contains("data-meridian-placeholder=\"true\""));
+        assert!(content_blocked.contains(PLACEHOLDER_IMAGE_DATA_URI));
+        assert!(content_blocked.contains("alt=\"ASUS Laptop\""));
     }
 }
 

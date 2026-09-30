@@ -3001,10 +3001,24 @@ img[data-meridian-placeholder]:not([width]):not([style*="width"]) {
   min-width: 32px;
   min-height: 32px;
 }
+img[data-meridian-placeholder][width="0"],
+img[data-meridian-placeholder][height="0"],
 img[data-meridian-placeholder][width="1"],
 img[data-meridian-placeholder][height="1"],
-img[data-meridian-placeholder][width="0"],
-img[data-meridian-placeholder][height="0"] {
+img[data-meridian-placeholder][width="2"],
+img[data-meridian-placeholder][height="2"],
+img[data-meridian-placeholder][width="3"],
+img[data-meridian-placeholder][height="3"],
+img[data-meridian-placeholder][width="4"],
+img[data-meridian-placeholder][height="4"],
+img[data-meridian-placeholder][width="5"],
+img[data-meridian-placeholder][height="5"],
+img[data-meridian-placeholder][width="6"],
+img[data-meridian-placeholder][height="6"],
+img[data-meridian-placeholder][width="7"],
+img[data-meridian-placeholder][height="7"],
+img[data-meridian-placeholder][width="8"],
+img[data-meridian-placeholder][height="8"] {
   display: none !important;
   width: 0 !important;
   height: 0 !important;
