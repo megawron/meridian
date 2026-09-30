@@ -26,7 +26,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for DraftsDialog {
-        const NAME: &'static str = "EvolutionDraftsDialog";
+        const NAME: &'static str = "MeridianDraftsDialog";
         type Type = super::DraftsDialog;
         type ParentType = adw::Dialog;
     }
@@ -244,7 +244,7 @@ impl DraftsDialog {
     }
 
     fn show_parent_toast(&self, message: &str) {
-        if let Some(window) = self.root().and_downcast::<crate::window::EvolutionWindow>() {
+        if let Some(window) = self.root().and_downcast::<crate::window::MeridianWindow>() {
             window.add_toast(&adw::Toast::new(message));
             return;
         }

@@ -35,7 +35,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for ContactDialog {
-        const NAME: &'static str = "EvolutionContactDialog";
+        const NAME: &'static str = "MeridianContactDialog";
         type Type = super::ContactDialog;
         type ParentType = adw::Dialog;
     }
@@ -1435,7 +1435,7 @@ impl ContactDialog {
     }
 
     fn show_toast(&self, message: &str) {
-        if let Some(window) = crate::window::find_evolution_window(self) {
+        if let Some(window) = crate::window::find_meridian_window(self) {
             window.add_toast(&adw::Toast::new(message));
         } else {
             tracing::warn!(%message, "EBook dialog result");
@@ -1762,7 +1762,7 @@ fn build_vcard_with_fields(
     let uid = uid
         .filter(|uid| !uid.trim().is_empty())
         .map(ToOwned::to_owned)
-        .unwrap_or_else(|| format!("evolution-gtk4-{}", uuid::Uuid::new_v4()));
+        .unwrap_or_else(|| format!("meridian-{}", uuid::Uuid::new_v4()));
     let mut lines = vec![
         "BEGIN:VCARD".to_string(),
         "VERSION:3.0".to_string(),

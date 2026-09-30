@@ -28,7 +28,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for FilterEditorDialog {
-        const NAME: &'static str = "EvolutionFilterEditorDialog";
+        const NAME: &'static str = "MeridianFilterEditorDialog";
         type Type = super::FilterEditorDialog;
         type ParentType = adw::Dialog;
     }
@@ -790,7 +790,7 @@ impl FilterEditorDialog {
     }
 
     fn show_toast(&self, message: &str) {
-        if let Some(window) = crate::window::find_evolution_window(self) {
+        if let Some(window) = crate::window::find_meridian_window(self) {
             window.add_toast(&adw::Toast::new(message));
         }
     }

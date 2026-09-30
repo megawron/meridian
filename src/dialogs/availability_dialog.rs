@@ -24,7 +24,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for AvailabilityDialog {
-        const NAME: &'static str = "EvolutionAvailabilityDialog";
+        const NAME: &'static str = "MeridianAvailabilityDialog";
         type Type = super::AvailabilityDialog;
         type ParentType = adw::Dialog;
     }

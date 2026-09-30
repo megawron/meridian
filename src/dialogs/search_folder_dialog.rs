@@ -155,7 +155,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for SearchFolderDialog {
-        const NAME: &'static str = "EvolutionSearchFolderDialog";
+        const NAME: &'static str = "MeridianSearchFolderDialog";
         type Type = super::SearchFolderDialog;
         type ParentType = adw::Dialog;
     }
@@ -473,7 +473,7 @@ impl SearchFolderDialog {
     }
 
     fn show_toast(&self, message: &str) {
-        if let Some(window) = crate::window::find_evolution_window(self) {
+        if let Some(window) = crate::window::find_meridian_window(self) {
             window.add_toast(&adw::Toast::new(message));
             return;
         }

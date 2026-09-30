@@ -49,7 +49,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for AccountSetupDialog {
-        const NAME: &'static str = "EvolutionAccountSetupDialog";
+        const NAME: &'static str = "MeridianAccountSetupDialog";
         type Type = super::AccountSetupDialog;
         type ParentType = adw::Dialog;
     }
@@ -152,7 +152,7 @@ impl AccountSetupDialog {
     pub fn add_toast(&self, toast: &adw::Toast) {
         if let Some(overlay) = self.imp().toast_overlay.borrow().as_ref() {
             overlay.add_toast(toast.clone());
-        } else if let Some(window) = crate::window::find_evolution_window(self) {
+        } else if let Some(window) = crate::window::find_meridian_window(self) {
             window.add_toast(toast);
         }
     }
@@ -195,21 +195,12 @@ impl AccountSetupDialog {
         // ─────────────────────────────────────────────────────────────────────
 
         // 1a. Account Type & Identity
-        let protocol_labels = if cfg!(target_os = "macos") {
-            [
-                "IMAP und SMTP (Standard)",
-                "Microsoft Exchange (EWS)",
-                "macOS Internetaccounts (Kalender, Erinnerungen & Kontakte)",
-                "POP3 und SMTP",
-            ]
-        } else {
-            [
-                "IMAP und SMTP (Standard)",
-                "Microsoft Exchange (EWS)",
-                "GNOME-Onlinekonto (GOA)",
-                "POP3 und SMTP",
-            ]
-        };
+        let protocol_labels = [
+            "IMAP und SMTP (Standard)",
+            "Microsoft Exchange (EWS)",
+            "GNOME-Onlinekonto (GOA)",
+            "POP3 und SMTP",
+        ];
 
         let combo_type = adw::ComboRow::builder()
             .title("Kontotyp")
@@ -269,13 +260,7 @@ impl AccountSetupDialog {
             move |idx: u32| {
                 let text = match idx {
                     1 => "Microsoft Exchange (EWS)",
-                    2 => {
-                        if cfg!(target_os = "macos") {
-                            "macOS Internetaccounts"
-                        } else {
-                            "GNOME-Onlinekonto (GOA)"
-                        }
-                    }
+                    2 => "GNOME-Onlinekonto (GOA)",
                     3 => "POP3 und SMTP",
                     _ => "IMAP und SMTP (Standard)",
                 };
@@ -307,29 +292,6 @@ impl AccountSetupDialog {
             .description("Wählen Sie das gewünschte Verbindungsprotokoll aus")
             .build();
         group_type.add(&combo_type);
-
-        #[cfg(target_os = "macos")]
-        {
-            let internet_accounts = adw::ActionRow::builder()
-                .title("macOS Internetaccounts verwalten…")
-                .subtitle(
-                    "Kalender, Erinnerungen und Kontakte werden als native Systemquellen verwendet. Mail benötigt eine eigene Anmeldung in dieser App.",
-                )
-                .activatable(true)
-                .build();
-            let open_button = gtk::Button::builder()
-                .label("Systemeinstellungen öffnen")
-                .valign(gtk::Align::Center)
-                .build();
-            open_button.connect_clicked(|_| {
-                crate::services::MacosIntegrationService::new().open_internet_accounts();
-            });
-            internet_accounts.connect_activated(|_| {
-                crate::services::MacosIntegrationService::new().open_internet_accounts();
-            });
-            internet_accounts.add_suffix(&open_button);
-            group_type.add(&internet_accounts);
-        }
 
         let group_user = adw::PreferencesGroup::builder()
             .title("Benutzerinformationen")
@@ -1150,11 +1112,7 @@ impl AccountSetupDialog {
                 row_smtp_port.set_visible(has_manual_smtp);
                 row_smtp_auth_info.set_visible(has_manual_smtp);
 
-                if is_goa && cfg!(target_os = "macos") {
-                    group_smtp.set_description(Some(
-                        "macOS Internetaccounts stellt Kalender, Erinnerungen und Kontakte als Systemquellen bereit. E-Mail benötigt eine eigene Anmeldung in dieser App.",
-                    ));
-                } else if is_goa {
+                if is_goa {
                     group_smtp.set_description(Some(
                         "Der E-Mail-Versand wird automatisch über das GNOME-Onlinekonto verwaltet.",
                     ));
@@ -1185,10 +1143,6 @@ impl AccountSetupDialog {
                 if is_exchange {
                     row_username.set_tooltip_text(Some(
                         "z. B. DOMÄNE\\Benutzername oder E-Mail-Adresse",
-                    ));
-                } else if is_goa && cfg!(target_os = "macos") {
-                    row_username.set_tooltip_text(Some(
-                        "macOS Internetaccounts übergibt keine allgemeinen Mail-Zugangsdaten; für E-Mail bitte ein eigenes Konto hinzufügen",
                     ));
                 } else if is_goa {
                     row_username.set_tooltip_text(Some(
@@ -1511,13 +1465,6 @@ impl AccountSetupDialog {
                     return false;
                 };
 
-                #[cfg(target_os = "macos")]
-                if combo_type.selected() == 2 {
-                    dialog.add_toast(&adw::Toast::new(
-                        "macOS Internetaccounts verwaltet nur native Kalender-, Erinnerungs- und Kontaktquellen. Für E-Mail bitte IMAP, Exchange oder POP3 einrichten.",
-                    ));
-                    return false;
-                }
                 let mut email = row_email.text().trim().to_string();
                 let mut display_name = row_fullname.text().trim().to_string();
                 let username = row_username.text().trim().to_string();
@@ -1691,7 +1638,7 @@ impl AccountSetupDialog {
                         };
                         let _ = crate::services::account_config_service::sync_profile_to_eds(&profile, pwd_opt);
 
-                        if let Some(window) = crate::window::find_evolution_window(&dialog) {
+                        if let Some(window) = crate::window::find_meridian_window(&dialog) {
                             window.reload_accounts();
                             window.add_toast(&adw::Toast::new(if is_editing {
                                 "Kontoeinstellungen gespeichert"

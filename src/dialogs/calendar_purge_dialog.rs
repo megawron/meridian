@@ -68,7 +68,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for CalendarPurgeDialog {
-        const NAME: &'static str = "EvolutionCalendarPurgeDialog";
+        const NAME: &'static str = "MeridianCalendarPurgeDialog";
         type Type = super::CalendarPurgeDialog;
         type ParentType = adw::Dialog;
     }

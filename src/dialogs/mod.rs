@@ -41,10 +41,7 @@ pub use account_setup_dialog::AccountSetupDialog;
 pub use advanced_search_dialog::AdvancedSearchDialog;
 pub use availability_dialog::AvailabilityDialog;
 pub use calendar_purge_dialog::CalendarPurgeDialog;
-pub use certificate_manager_dialog::{
-    CertificateDetailsDialog, CertificateManagerDialog, CertificateTrustDialog,
-    PassphrasePromptDialog,
-};
+pub use certificate_manager_dialog::CertificateManagerDialog;
 pub use compose_dialog::ComposeDialog;
 pub use contact_dialog::ContactDialog;
 pub use contact_search_dialog::ContactSearchDialog;
@@ -62,9 +59,6 @@ pub use manage_groups_dialog::ManageGroupsDialog;
 pub use name_selector_dialog::NameSelectorDialog;
 pub use oof_dialog::OutOfOfficeDialog;
 pub use preferences_dialog::PreferencesDialog;
-pub use quick_add_popover::{
-    present_quick_add_popover, QuickAddCalendarItem, QuickAddEventDraft,
-};
 pub use reminder_dialog::{ReminderDialog, ReminderDialogAction};
 pub use search_folder_dialog::SearchFolderDialog;
 pub use shortcuts_dialog::show_shortcuts_dialog;

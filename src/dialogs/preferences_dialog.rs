@@ -80,7 +80,7 @@ impl ManualFilterSnapshotError {
 
 fn manual_filter_snapshot_path() -> PathBuf {
     std::env::temp_dir().join(format!(
-        "evolution-gtk4-manual-filter-{}.json",
+        "meridian-manual-filter-{}.json",
         uuid::Uuid::new_v4()
     ))
 }
@@ -215,7 +215,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for PreferencesDialog {
-        const NAME: &'static str = "EvolutionPreferencesDialog";
+        const NAME: &'static str = "MeridianPreferencesDialog";
         type Type = super::PreferencesDialog;
         type ParentType = adw::Dialog;
     }
@@ -227,7 +227,7 @@ mod imp {
             self.obj().set_content_height(720);
             self.obj().build_ui();
             self.obj().connect_closed(|dialog| {
-                if let Some(window) = crate::window::find_evolution_window(dialog) {
+                if let Some(window) = crate::window::find_meridian_window(dialog) {
                     window.reload_accounts();
                 }
             });
@@ -255,7 +255,7 @@ impl PreferencesDialog {
             if let Some(page) = page.upgrade() {
                 page.refresh_managed_account_rows();
                 page.refresh_local_profile_rows();
-                if let Some(window) = crate::window::find_evolution_window(&page) {
+                if let Some(window) = crate::window::find_meridian_window(&page) {
                     window.reload_accounts();
                 }
             }
@@ -433,7 +433,7 @@ impl PreferencesDialog {
                             page.reconcile_local_default(&profile_id);
                             page.refresh_managed_account_rows();
                             page.refresh_local_profile_rows();
-                            if let Some(window) = crate::window::find_evolution_window(&page) {
+                            if let Some(window) = crate::window::find_meridian_window(&page) {
                                 window.reload_accounts();
                             }
                         }
@@ -501,7 +501,7 @@ impl PreferencesDialog {
                             page_for_action.refresh_managed_account_rows();
                             page_for_action.refresh_local_profile_rows();
                             page_for_action.show_toast("Local account profile removed");
-                            if let Some(window) = crate::window::find_evolution_window(&page_for_action) {
+                            if let Some(window) = crate::window::find_meridian_window(&page_for_action) {
                                 window.reload_accounts();
                             }
                         }
@@ -523,602 +523,6 @@ impl PreferencesDialog {
         }
     }
 
-    #[cfg(target_os = "macos")]
-    fn build_macos_group(&self) -> adw::PreferencesGroup {
-        let macos_service = crate::services::MacosIntegrationService::new();
-        let group = adw::PreferencesGroup::builder()
-            .title("macOS Internetaccounts")
-            .description(
-                "Native calendar, reminder, and contact sources from macOS. In Evolution they are currently read-only.",
-            )
-            .build();
-
-        // 1. Calendar
-        let row_cal = adw::ActionRow::builder()
-            .title("Apple Calendar (EventKit)")
-            .subtitle(
-                macos_service
-                    .check_permission(crate::services::MacosPermissionKind::Calendar)
-                    .display_label(),
-            )
-            .build();
-        let cal_status = macos_service.check_permission(crate::services::MacosPermissionKind::Calendar);
-        let btn_cal_label = match cal_status {
-            crate::services::MacosPermissionStatus::Authorized => "Jetzt synchronisieren",
-            crate::services::MacosPermissionStatus::Denied => "Open Settings",
-            crate::services::MacosPermissionStatus::NotDetermined => "Berechtigung anfordern",
-            _ => "Check Status",
-        };
-        let btn_cal = gtk::Button::builder()
-            .label(btn_cal_label)
-            .valign(gtk::Align::Center)
-            .css_classes(vec!["suggested-action"])
-            .build();
-        let row_cal_clone = row_cal.clone();
-        let btn_cal_clone = btn_cal.clone();
-        let dialog_cal = self.downgrade();
-        btn_cal.connect_clicked(move |_| {
-            let srv = crate::services::MacosIntegrationService::new();
-            let row = row_cal_clone.clone();
-            let btn = btn_cal_clone.clone();
-            let dlg = dialog_cal.clone();
-            let current = srv.check_permission(crate::services::MacosPermissionKind::Calendar);
-            match current {
-                crate::services::MacosPermissionStatus::Denied => {
-                    srv.open_privacy_settings(crate::services::MacosPermissionKind::Calendar);
-                }
-                crate::services::MacosPermissionStatus::Authorized => {
-                    let cal_store = crate::services::CalendarStoreService::new();
-                    let count = srv.sync_apple_calendar_to_store(&cal_store).unwrap_or(0);
-                    if let Some(dialog) = dlg.upgrade() {
-                        dialog.show_toast(&format!("Apple Calendar synchronized: {} events loaded", count));
-                    }
-                }
-                crate::services::MacosPermissionStatus::NotDetermined => {
-                    let srv_cb = srv.clone();
-                    srv.request_permission(
-                        crate::services::MacosPermissionKind::Calendar,
-                        move |_granted| {
-                            let status = srv_cb.check_permission(crate::services::MacosPermissionKind::Calendar);
-                            row.set_subtitle(status.display_label());
-                            match status {
-                                crate::services::MacosPermissionStatus::Authorized => {
-                                    btn.set_label("Jetzt synchronisieren");
-                                    let cal_store = crate::services::CalendarStoreService::new();
-                                    let count = srv_cb.sync_apple_calendar_to_store(&cal_store).unwrap_or(0);
-                                    if let Some(dialog) = dlg.upgrade() {
-                                        dialog.show_toast(&format!("Apple Calendar connected: {} events synchronized", count));
-                                    }
-                                }
-                                crate::services::MacosPermissionStatus::Denied => {
-                                    btn.set_label("Open Settings");
-                                    if let Some(dialog) = dlg.upgrade() {
-                                        dialog.show_toast("Calendar access was denied. Please enable in macOS System Settings.");
-                                    }
-                                }
-                                _ => {}
-                            }
-                        },
-                    );
-                }
-                _ => {
-                    srv.open_privacy_settings(crate::services::MacosPermissionKind::Calendar);
-                }
-            }
-        });
-        row_cal.add_suffix(&btn_cal);
-        group.add(&row_cal);
-
-        // 2. Contacts
-        let row_contacts = adw::ActionRow::builder()
-            .title("Apple Contacts (Contacts.framework)")
-            .subtitle(
-                macos_service
-                    .check_permission(crate::services::MacosPermissionKind::Contacts)
-                    .display_label(),
-            )
-            .build();
-        let con_status = macos_service.check_permission(crate::services::MacosPermissionKind::Contacts);
-        let btn_contacts_label = match con_status {
-            crate::services::MacosPermissionStatus::Authorized => "Jetzt synchronisieren",
-            crate::services::MacosPermissionStatus::Denied => "Open Settings",
-            crate::services::MacosPermissionStatus::NotDetermined => "Berechtigung anfordern",
-            _ => "Check Status",
-        };
-        let btn_contacts = gtk::Button::builder()
-            .label(btn_contacts_label)
-            .valign(gtk::Align::Center)
-            .css_classes(vec!["suggested-action"])
-            .build();
-        let row_contacts_clone = row_contacts.clone();
-        let btn_contacts_clone = btn_contacts.clone();
-        let dialog_contacts = self.downgrade();
-        btn_contacts.connect_clicked(move |_| {
-            let srv = crate::services::MacosIntegrationService::new();
-            let row = row_contacts_clone.clone();
-            let btn = btn_contacts_clone.clone();
-            let dlg = dialog_contacts.clone();
-            let current = srv.check_permission(crate::services::MacosPermissionKind::Contacts);
-            match current {
-                crate::services::MacosPermissionStatus::Denied => {
-                    srv.open_privacy_settings(crate::services::MacosPermissionKind::Contacts);
-                }
-                crate::services::MacosPermissionStatus::Authorized => {
-                    let contact_store = crate::services::ContactStoreService::new();
-                    let count = srv.sync_apple_contacts_to_store(&contact_store).unwrap_or(0);
-                    if let Some(dialog) = dlg.upgrade() {
-                        dialog.show_toast(&format!("Apple Contacts synchronized: {} contacts loaded", count));
-                    }
-                }
-                crate::services::MacosPermissionStatus::NotDetermined => {
-                    let srv_cb = srv.clone();
-                    srv.request_permission(
-                        crate::services::MacosPermissionKind::Contacts,
-                        move |_granted| {
-                            let status = srv_cb.check_permission(crate::services::MacosPermissionKind::Contacts);
-                            row.set_subtitle(status.display_label());
-                            match status {
-                                crate::services::MacosPermissionStatus::Authorized => {
-                                    btn.set_label("Jetzt synchronisieren");
-                                    let contact_store = crate::services::ContactStoreService::new();
-                                    let count = srv_cb.sync_apple_contacts_to_store(&contact_store).unwrap_or(0);
-                                    if let Some(dialog) = dlg.upgrade() {
-                                        dialog.show_toast(&format!("Apple Contacts connected: {} contacts synchronized", count));
-                                    }
-                                }
-                                crate::services::MacosPermissionStatus::Denied => {
-                                    btn.set_label("Open Settings");
-                                    if let Some(dialog) = dlg.upgrade() {
-                                        dialog.show_toast("Contact access was denied. Please enable in macOS System Settings.");
-                                    }
-                                }
-                                _ => {}
-                            }
-                        },
-                    );
-                }
-                _ => {
-                    srv.open_privacy_settings(crate::services::MacosPermissionKind::Contacts);
-                }
-            }
-        });
-        row_contacts.add_suffix(&btn_contacts);
-        group.add(&row_contacts);
-
-        // 3. Reminders
-        let row_reminders = adw::ActionRow::builder()
-            .title("Apple Erinnerungen (EventKit)")
-            .subtitle(
-                macos_service
-                    .check_permission(crate::services::MacosPermissionKind::Reminders)
-                    .display_label(),
-            )
-            .build();
-        let rem_status = macos_service.check_permission(crate::services::MacosPermissionKind::Reminders);
-        let btn_rem_label = match rem_status {
-            crate::services::MacosPermissionStatus::Authorized => "Jetzt synchronisieren",
-            crate::services::MacosPermissionStatus::Denied => "Open Settings",
-            crate::services::MacosPermissionStatus::NotDetermined => "Berechtigung anfordern",
-            _ => "Check Status",
-        };
-        let btn_reminders = gtk::Button::builder()
-            .label(btn_rem_label)
-            .valign(gtk::Align::Center)
-            .css_classes(vec!["suggested-action"])
-            .build();
-        let row_reminders_clone = row_reminders.clone();
-        let btn_reminders_clone = btn_reminders.clone();
-        let dialog_reminders = self.downgrade();
-        btn_reminders.connect_clicked(move |_| {
-            let srv = crate::services::MacosIntegrationService::new();
-            let row = row_reminders_clone.clone();
-            let btn = btn_reminders_clone.clone();
-            let dlg = dialog_reminders.clone();
-            let current = srv.check_permission(crate::services::MacosPermissionKind::Reminders);
-            match current {
-                crate::services::MacosPermissionStatus::Denied => {
-                    srv.open_privacy_settings(crate::services::MacosPermissionKind::Reminders);
-                }
-                crate::services::MacosPermissionStatus::Authorized => {
-                    let cal_store = crate::services::CalendarStoreService::new();
-                    let count = srv.sync_apple_reminders_to_store(&cal_store).unwrap_or(0);
-                    if let Some(dialog) = dlg.upgrade() {
-                        dialog.show_toast(&format!("Apple Reminders synchronized: {} tasks loaded", count));
-                    }
-                }
-                crate::services::MacosPermissionStatus::NotDetermined => {
-                    let srv_cb = srv.clone();
-                    srv.request_permission(
-                        crate::services::MacosPermissionKind::Reminders,
-                        move |_granted| {
-                            let status = srv_cb.check_permission(crate::services::MacosPermissionKind::Reminders);
-                            row.set_subtitle(status.display_label());
-                            match status {
-                                crate::services::MacosPermissionStatus::Authorized => {
-                                    btn.set_label("Jetzt synchronisieren");
-                                    let cal_store = crate::services::CalendarStoreService::new();
-                                    let count = srv_cb.sync_apple_reminders_to_store(&cal_store).unwrap_or(0);
-                                    if let Some(dialog) = dlg.upgrade() {
-                                        dialog.show_toast(&format!("Apple Reminders connected: {} tasks synchronized", count));
-                                    }
-                                }
-                                crate::services::MacosPermissionStatus::Denied => {
-                                    btn.set_label("Open Settings");
-                                    if let Some(dialog) = dlg.upgrade() {
-                                        dialog.show_toast("Reminder access was denied. Please enable in macOS System Settings.");
-                                    }
-                                }
-                                _ => {}
-                            }
-                        },
-                    );
-                }
-                _ => {
-                    srv.open_privacy_settings(crate::services::MacosPermissionKind::Reminders);
-                }
-            }
-        });
-        row_reminders.add_suffix(&btn_reminders);
-        group.add(&row_reminders);
-
-        // 4. Native system-source refresh. This only reads the public EventKit
-        // and Contacts containers; it never imports copies into app-owned stores.
-        let row_sources = adw::ActionRow::builder()
-            .title("Native Systemquellen")
-            .subtitle("Loading system sources…")
-            .build();
-        let sources_spinner = gtk::Spinner::builder().visible(false).build();
-        let btn_sources = gtk::Button::builder()
-            .label("Aktualisieren")
-            .icon_name("emblem-synchronizing-symbolic")
-            .valign(gtk::Align::Center)
-            .css_classes(vec!["suggested-action"])
-            .build();
-        row_sources.add_suffix(&sources_spinner);
-        row_sources.add_suffix(&btn_sources);
-        let dialog_sources = self.downgrade();
-        let refresh_sources: Rc<dyn Fn()> = {
-            let row_sources = row_sources.clone();
-            let sources_spinner = sources_spinner.clone();
-            let btn_sources = btn_sources.clone();
-            Rc::new(move || {
-                row_sources.set_subtitle("Loading native system sources…");
-                sources_spinner.set_visible(true);
-                sources_spinner.start();
-                btn_sources.set_sensitive(false);
-                crate::services::MacosIntegrationService::invalidate_system_snapshot();
-
-                let (sender, receiver) = async_channel::bounded(1);
-                std::thread::spawn(move || {
-                    let result = crate::services::MacosIntegrationService::new().system_sources();
-                    let _ = sender.send_blocking(result);
-                });
-
-                let row_sources = row_sources.clone();
-                let sources_spinner = sources_spinner.clone();
-                let btn_sources = btn_sources.clone();
-                let dialog_sources = dialog_sources.clone();
-                glib::spawn_future_local(async move {
-                    let Ok(result) = receiver.recv().await else {
-                        return;
-                    };
-                    sources_spinner.stop();
-                    sources_spinner.set_visible(false);
-                    btn_sources.set_sensitive(true);
-                    match result {
-                        Ok(snapshot) => {
-                            let mut entries = snapshot
-                                .sources
-                                .iter()
-                                .take(6)
-                                .map(|source| {
-                                    format!(
-                                        "{} · {} · {} · read-only in Evolution",
-                                        source.name,
-                                        source.kind.display_name(),
-                                        source.account_name,
-                                    )
-                                })
-                                .collect::<Vec<_>>();
-                            if snapshot.sources.len() > entries.len() {
-                                entries.push(format!("+{} weitere", snapshot.sources.len() - entries.len()));
-                            }
-                            let subtitle = if entries.is_empty() {
-                                "No accessible native system sources found".to_string()
-                            } else {
-                                entries.join("  |  ")
-                            };
-                            row_sources.set_subtitle(&subtitle);
-                            if !snapshot.errors.is_empty() {
-                                if let Some(dialog) = dialog_sources.upgrade() {
-                                    dialog.show_toast(&format!(
-                                        "Some macOS system sources could not be loaded: {}",
-                                        snapshot.errors.join("; ")
-                                    ));
-                                }
-                            }
-                        }
-                        Err(error) => {
-                            row_sources.set_subtitle("System sources could not be loaded");
-                            if let Some(dialog) = dialog_sources.upgrade() {
-                                dialog.show_toast(&format!(
-                                    "Could not load macOS system sources: {error}"
-                                ));
-                            }
-                        }
-                    }
-                });
-            })
-        };
-        let refresh_sources_for_button = Rc::clone(&refresh_sources);
-        btn_sources.connect_clicked(move |_| refresh_sources_for_button());
-        refresh_sources();
-        group.add(&row_sources);
-
-        // 5. Open the public Internet Accounts settings; credentials stay in
-        // macOS and are never copied into an Evolution profile.
-        let row_sys = adw::ActionRow::builder()
-            .title("Manage macOS Internet Accounts…")
-            .subtitle("Manage calendar, reminders, and contacts in System Settings. Email requires a separate account in this app.")
-            .activatable(true)
-            .build();
-        let icon_sys = gtk::Image::from_icon_name("emblem-system-symbolic");
-        row_sys.add_prefix(&icon_sys);
-        row_sys.connect_activated(|_| {
-            crate::services::MacosIntegrationService::new().open_internet_accounts();
-        });
-        group.add(&row_sys);
-
-        group
-    }
-
-    #[cfg(target_os = "macos")]
-    fn build_macos_contacts_group(&self) -> adw::PreferencesGroup {
-        let macos_service = crate::services::MacosIntegrationService::new();
-        let group = adw::PreferencesGroup::builder()
-            .title("Apple Contacts (macOS)")
-            .description("Native contacts from the macOS Address Book (Contacts.framework)")
-            .build();
-
-        let row_contacts = adw::ActionRow::builder()
-            .title("Synchronize Apple Contacts")
-            .subtitle(
-                macos_service
-                    .check_permission(crate::services::MacosPermissionKind::Contacts)
-                    .display_label(),
-            )
-            .build();
-        let con_status = macos_service.check_permission(crate::services::MacosPermissionKind::Contacts);
-        let btn_contacts_label = match con_status {
-            crate::services::MacosPermissionStatus::Authorized => "Sync Now",
-            crate::services::MacosPermissionStatus::Denied => "Open Settings",
-            crate::services::MacosPermissionStatus::NotDetermined => "Connect",
-            _ => "Check Status",
-        };
-        let btn_contacts = gtk::Button::builder()
-            .label(btn_contacts_label)
-            .valign(gtk::Align::Center)
-            .css_classes(vec!["suggested-action"])
-            .build();
-        let row_contacts_clone = row_contacts.clone();
-        let btn_contacts_clone = btn_contacts.clone();
-        let dialog_contacts = self.downgrade();
-        btn_contacts.connect_clicked(move |_| {
-            let srv = crate::services::MacosIntegrationService::new();
-            let row = row_contacts_clone.clone();
-            let btn = btn_contacts_clone.clone();
-            let dlg = dialog_contacts.clone();
-            let current = srv.check_permission(crate::services::MacosPermissionKind::Contacts);
-            match current {
-                crate::services::MacosPermissionStatus::Denied => {
-                    srv.open_privacy_settings(crate::services::MacosPermissionKind::Contacts);
-                }
-                crate::services::MacosPermissionStatus::Authorized => {
-                    let contact_store = crate::services::ContactStoreService::new();
-                    let count = srv.sync_apple_contacts_to_store(&contact_store).unwrap_or(0);
-                    if let Some(dialog) = dlg.upgrade() {
-                        dialog.show_toast(&format!("Apple Contacts synchronized: {} contacts loaded", count));
-                    }
-                }
-                crate::services::MacosPermissionStatus::NotDetermined => {
-                    let srv_cb = srv.clone();
-                    srv.request_permission(
-                        crate::services::MacosPermissionKind::Contacts,
-                        move |_granted| {
-                            let status = srv_cb.check_permission(crate::services::MacosPermissionKind::Contacts);
-                            row.set_subtitle(status.display_label());
-                            match status {
-                                crate::services::MacosPermissionStatus::Authorized => {
-                                    btn.set_label("Sync Now");
-                                    let contact_store = crate::services::ContactStoreService::new();
-                                    let count = srv_cb.sync_apple_contacts_to_store(&contact_store).unwrap_or(0);
-                                    if let Some(dialog) = dlg.upgrade() {
-                                        dialog.show_toast(&format!("Apple Contacts connected: {} contacts synchronized", count));
-                                    }
-                                }
-                                crate::services::MacosPermissionStatus::Denied => {
-                                    btn.set_label("Open Settings");
-                                    if let Some(dialog) = dlg.upgrade() {
-                                        dialog.show_toast("Contact access was denied. Please enable in macOS System Settings.");
-                                    }
-                                }
-                                _ => {}
-                            }
-                        },
-                    );
-                }
-                _ => {
-                    srv.open_privacy_settings(crate::services::MacosPermissionKind::Contacts);
-                }
-            }
-        });
-        row_contacts.add_suffix(&btn_contacts);
-        group.add(&row_contacts);
-        group
-    }
-
-    #[cfg(target_os = "macos")]
-    fn build_macos_calendar_group(&self) -> adw::PreferencesGroup {
-        let macos_service = crate::services::MacosIntegrationService::new();
-        let group = adw::PreferencesGroup::builder()
-            .title("Apple Calendar & Reminders (macOS)")
-            .description("Native calendars and reminders from EventKit")
-            .build();
-
-        // 1. Calendar
-        let row_cal = adw::ActionRow::builder()
-            .title("Apple Calendar (EventKit)")
-            .subtitle(
-                macos_service
-                    .check_permission(crate::services::MacosPermissionKind::Calendar)
-                    .display_label(),
-            )
-            .build();
-        let cal_status = macos_service.check_permission(crate::services::MacosPermissionKind::Calendar);
-        let btn_cal_label = match cal_status {
-            crate::services::MacosPermissionStatus::Authorized => "Sync Now",
-            crate::services::MacosPermissionStatus::Denied => "Open Settings",
-            crate::services::MacosPermissionStatus::NotDetermined => "Connect",
-            _ => "Check Status",
-        };
-        let btn_cal = gtk::Button::builder()
-            .label(btn_cal_label)
-            .valign(gtk::Align::Center)
-            .css_classes(vec!["suggested-action"])
-            .build();
-        let row_cal_clone = row_cal.clone();
-        let btn_cal_clone = btn_cal.clone();
-        let dialog_cal = self.downgrade();
-        btn_cal.connect_clicked(move |_| {
-            let srv = crate::services::MacosIntegrationService::new();
-            let row = row_cal_clone.clone();
-            let btn = btn_cal_clone.clone();
-            let dlg = dialog_cal.clone();
-            let current = srv.check_permission(crate::services::MacosPermissionKind::Calendar);
-            match current {
-                crate::services::MacosPermissionStatus::Denied => {
-                    srv.open_privacy_settings(crate::services::MacosPermissionKind::Calendar);
-                }
-                crate::services::MacosPermissionStatus::Authorized => {
-                    let cal_store = crate::services::CalendarStoreService::new();
-                    let count = srv.sync_apple_calendar_to_store(&cal_store).unwrap_or(0);
-                    if let Some(dialog) = dlg.upgrade() {
-                        dialog.show_toast(&format!("Apple Calendar synchronized: {} events loaded", count));
-                    }
-                }
-                crate::services::MacosPermissionStatus::NotDetermined => {
-                    let srv_cb = srv.clone();
-                    srv.request_permission(
-                        crate::services::MacosPermissionKind::Calendar,
-                        move |_granted| {
-                            let status = srv_cb.check_permission(crate::services::MacosPermissionKind::Calendar);
-                            row.set_subtitle(status.display_label());
-                            match status {
-                                crate::services::MacosPermissionStatus::Authorized => {
-                                    btn.set_label("Sync Now");
-                                    let cal_store = crate::services::CalendarStoreService::new();
-                                    let count = srv_cb.sync_apple_calendar_to_store(&cal_store).unwrap_or(0);
-                                    if let Some(dialog) = dlg.upgrade() {
-                                        dialog.show_toast(&format!("Apple Calendar connected: {} events synchronized", count));
-                                    }
-                                }
-                                crate::services::MacosPermissionStatus::Denied => {
-                                    btn.set_label("Open Settings");
-                                    if let Some(dialog) = dlg.upgrade() {
-                                        dialog.show_toast("Calendar access was denied. Please enable in macOS System Settings.");
-                                    }
-                                }
-                                _ => {}
-                            }
-                        },
-                    );
-                }
-                _ => {
-                    srv.open_privacy_settings(crate::services::MacosPermissionKind::Calendar);
-                }
-            }
-        });
-        row_cal.add_suffix(&btn_cal);
-        group.add(&row_cal);
-
-        // 2. Reminders
-        let row_reminders = adw::ActionRow::builder()
-            .title("Apple Reminders (EventKit)")
-            .subtitle(
-                macos_service
-                    .check_permission(crate::services::MacosPermissionKind::Reminders)
-                    .display_label(),
-            )
-            .build();
-        let rem_status = macos_service.check_permission(crate::services::MacosPermissionKind::Reminders);
-        let btn_rem_label = match rem_status {
-            crate::services::MacosPermissionStatus::Authorized => "Sync Now",
-            crate::services::MacosPermissionStatus::Denied => "Open Settings",
-            crate::services::MacosPermissionStatus::NotDetermined => "Connect",
-            _ => "Check Status",
-        };
-        let btn_reminders = gtk::Button::builder()
-            .label(btn_rem_label)
-            .valign(gtk::Align::Center)
-            .css_classes(vec!["suggested-action"])
-            .build();
-        let row_reminders_clone = row_reminders.clone();
-        let btn_reminders_clone = btn_reminders.clone();
-        let dialog_reminders = self.downgrade();
-        btn_reminders.connect_clicked(move |_| {
-            let srv = crate::services::MacosIntegrationService::new();
-            let row = row_reminders_clone.clone();
-            let btn = btn_reminders_clone.clone();
-            let dlg = dialog_reminders.clone();
-            let current = srv.check_permission(crate::services::MacosPermissionKind::Reminders);
-            match current {
-                crate::services::MacosPermissionStatus::Denied => {
-                    srv.open_privacy_settings(crate::services::MacosPermissionKind::Reminders);
-                }
-                crate::services::MacosPermissionStatus::Authorized => {
-                    let cal_store = crate::services::CalendarStoreService::new();
-                    let count = srv.sync_apple_reminders_to_store(&cal_store).unwrap_or(0);
-                    if let Some(dialog) = dlg.upgrade() {
-                        dialog.show_toast(&format!("Apple Reminders synchronized: {} tasks loaded", count));
-                    }
-                }
-                crate::services::MacosPermissionStatus::NotDetermined => {
-                    let srv_cb = srv.clone();
-                    srv.request_permission(
-                        crate::services::MacosPermissionKind::Reminders,
-                        move |_granted| {
-                            let status = srv_cb.check_permission(crate::services::MacosPermissionKind::Reminders);
-                            row.set_subtitle(status.display_label());
-                            match status {
-                                crate::services::MacosPermissionStatus::Authorized => {
-                                    btn.set_label("Sync Now");
-                                    let cal_store = crate::services::CalendarStoreService::new();
-                                    let count = srv_cb.sync_apple_reminders_to_store(&cal_store).unwrap_or(0);
-                                    if let Some(dialog) = dlg.upgrade() {
-                                        dialog.show_toast(&format!("Apple Reminders connected: {} tasks synchronized", count));
-                                    }
-                                }
-                                crate::services::MacosPermissionStatus::Denied => {
-                                    btn.set_label("Open Settings");
-                                    if let Some(dialog) = dlg.upgrade() {
-                                        dialog.show_toast("Reminder access was denied. Please enable in macOS System Settings.");
-                                    }
-                                }
-                                _ => {}
-                            }
-                        },
-                    );
-                }
-                _ => {
-                    srv.open_privacy_settings(crate::services::MacosPermissionKind::Reminders);
-                }
-            }
-        });
-        row_reminders.add_suffix(&btn_reminders);
-        group.add(&row_reminders);
-
-        group
-    }
 
     fn refresh_managed_account_rows(&self) {
         let Some(group) = self.imp().managed_accounts_group.borrow().as_ref().cloned() else {
@@ -1337,7 +741,7 @@ impl PreferencesDialog {
                             page_for_action.refresh_managed_account_rows();
                             page_for_action.refresh_local_profile_rows();
                             page_for_action.show_toast("Shared mailbox removed");
-                            if let Some(window) = crate::window::find_evolution_window(&page_for_action) {
+                            if let Some(window) = crate::window::find_meridian_window(&page_for_action) {
                                 window.reload_accounts();
                             }
                         }
@@ -1589,7 +993,7 @@ impl PreferencesDialog {
                 page.refresh_managed_account_rows();
                 page.refresh_local_profile_rows();
                 page.show_toast(&format!("Shared mailbox “{display_name}” added"));
-                if let Some(window) = crate::window::find_evolution_window(&page) {
+                if let Some(window) = crate::window::find_meridian_window(&page) {
                     window.reload_accounts();
                 }
             }
@@ -1702,11 +1106,6 @@ impl PreferencesDialog {
         self.refresh_local_profile_rows();
         page_accounts.add(&group_profiles);
 
-        #[cfg(target_os = "macos")]
-        {
-            let group_macos = self.build_macos_group();
-            page_accounts.add(&group_macos);
-        }
 
         // Filter Rules Section
         let group_filters = adw::PreferencesGroup::builder()
@@ -1977,7 +1376,7 @@ impl PreferencesDialog {
                     if matches!(&result, Ok(Ok(Some(_)))) {
                         if let Some(window) = dialog
                             .root()
-                            .and_downcast::<crate::window::EvolutionWindow>()
+                            .and_downcast::<crate::window::MeridianWindow>()
                         {
                             window.refresh_mail_page();
                         }
@@ -2110,7 +1509,7 @@ impl PreferencesDialog {
                 if let Some(dialog) = dialog_for_offline.upgrade() {
                     if let Some(window) = dialog
                         .root()
-                        .and_downcast::<crate::window::EvolutionWindow>()
+                        .and_downcast::<crate::window::MeridianWindow>()
                     {
                         window.refresh_mail_page();
                     }
@@ -2363,10 +1762,6 @@ impl PreferencesDialog {
         group_contacts_local.add(&row_import_contacts);
         page_contacts.add(&group_contacts_local);
 
-        #[cfg(target_os = "macos")]
-        {
-            page_contacts.add(&self.build_macos_contacts_group());
-        }
 
         let group_default_address_book = adw::PreferencesGroup::builder()
             .title("Standardadressbuch")
@@ -2753,7 +2148,7 @@ impl PreferencesDialog {
                 };
                 let file_dialog = gtk::FileDialog::builder()
                     .title("Save Diagnostic Bundle")
-                    .initial_name("evolution-gtk4-diagnostic.json")
+                    .initial_name("meridian-diagnostic.json")
                     .modal(true)
                     .build();
                 let dialog_for_result = dialog.downgrade();
@@ -2999,7 +2394,7 @@ impl PreferencesDialog {
                                     ));
                                     if let Some(window) = dialog
                                         .root()
-                                        .and_downcast::<crate::window::EvolutionWindow>()
+                                        .and_downcast::<crate::window::MeridianWindow>()
                                     {
                                         window.refresh_mail_page();
                                     }
@@ -5701,7 +5096,7 @@ impl PreferencesDialog {
             Some("layout"),
             "Listenansicht",
         );
-        if let Ok(sub) = std::env::var("EVOLUTION_PREF_SUBPAGE") {
+        if let Ok(sub) = std::env::var("MERIDIAN_PREF_SUBPAGE").or_else(|_| std::env::var("EVOLUTION_PREF_SUBPAGE")) {
             mail_sub_stack.set_visible_child_name(&sub);
         }
 
@@ -5777,10 +5172,6 @@ impl PreferencesDialog {
         page_calendar_display.add(&group_categories);
         page_calendar_display.add(&group_task_memo_lists);
 
-        #[cfg(target_os = "macos")]
-        {
-            page_calendar_display.add(&self.build_macos_calendar_group());
-        }
 
         calendar_sub_stack.add_titled(&page_calendar_general, Some("general"), "General");
         calendar_sub_stack.add_titled(&page_calendar_display, Some("display"), "Display and Formats");
@@ -5935,7 +5326,7 @@ impl PreferencesDialog {
         });
 
         // Select default preferences page (Appearance / Mail by default, or overridden via env)
-        let default_idx = if let Ok(page_name) = std::env::var("EVOLUTION_PREF_PAGE") {
+        let default_idx = if let Ok(page_name) = std::env::var("MERIDIAN_PREF_PAGE").or_else(|_| std::env::var("EVOLUTION_PREF_PAGE")) {
             match page_name.as_str() {
                 "accounts" => {
                     accounts_sub_stack.set_visible_child_name("mail_accounts");
@@ -6009,7 +5400,7 @@ impl PreferencesDialog {
 
     fn show_toast(&self, message: &str) {
         if let Some(root) = self.root() {
-            if let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() {
+            if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
                 window.add_toast(&adw::Toast::new(message));
                 return;
             }
@@ -6840,7 +6231,7 @@ fn append_category_editor_row(
 fn refresh_open_category_views(parent: &PreferencesDialog) {
     if let Some(window) = parent
         .root()
-        .and_downcast::<crate::window::EvolutionWindow>()
+        .and_downcast::<crate::window::MeridianWindow>()
     {
         window.refresh_category_presentation();
     }
@@ -6849,7 +6240,7 @@ fn refresh_open_category_views(parent: &PreferencesDialog) {
 fn refresh_open_mail_views(parent: &PreferencesDialog) {
     if let Some(window) = parent
         .root()
-        .and_downcast::<crate::window::EvolutionWindow>()
+        .and_downcast::<crate::window::MeridianWindow>()
     {
         window.refresh_mail_page();
     }
@@ -7609,7 +7000,6 @@ impl Default for PreferencesDialog {
 mod tests {
     use gtk::prelude::*;
     use adw::prelude::*;
-    use crate::services::settings_service::AppSettings;
     use super::{
         ManualFilterRunSnapshot, ManualFilterSnapshotError, default_mail_normal_headers_for_editor,
         manual_filter_result_toast, validate_new_mail_normal_header,
@@ -7629,7 +7019,7 @@ mod tests {
 
     fn temporary_directory(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "evolution-gtk4-preferences-{label}-{}",
+            "meridian-preferences-{label}-{}",
             uuid::Uuid::new_v4()
         ))
     }
@@ -8022,9 +7412,6 @@ mod tests {
         // Filter group reconnected
         assert!(source.contains("page_accounts.add(&group_filters)"));
 
-        // macOS group on page_accounts instead of page_backup
-        assert!(source.contains("page_accounts.add(&group_macos)"));
-        assert!(!source.contains("page_backup.add(&group_macos)"));
 
         // Local sources domain split
         assert!(source.contains("page_contacts.add(&group_contacts_local)"));
@@ -8206,7 +7593,6 @@ mod tests {
     #[test]
     fn test_preferences_dialog_instantiation_and_theme_composer_groups() {
         use adw::prelude::*;
-        use gtk::prelude::*;
         use crate::services::AppSettings;
 
         let _lock = crate::window::GTK_TEST_MUTEX
@@ -8345,7 +7731,6 @@ mod tests {
     #[test]
     fn test_feature_19_preferences_dialog_reply_and_forward_and_autosave_sync() {
         use adw::prelude::*;
-        use gtk::prelude::WidgetExt;
         use crate::services::AppSettings;
 
         let _lock = crate::window::GTK_TEST_MUTEX

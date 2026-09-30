@@ -4,7 +4,6 @@
 // and creating/deleting custom source groups (upstream e_source_selector_manage_groups parity).
 
 use adw::prelude::*;
-use gtk::glib;
 use std::cell::RefCell;
 use std::rc::Rc;
 

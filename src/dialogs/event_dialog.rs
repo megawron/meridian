@@ -12,7 +12,6 @@
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, Timelike, Utc};
-use gtk::prelude::*;
 use gtk::{gio, glib};
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -66,7 +65,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for EventDialog {
-        const NAME: &'static str = "EvolutionEventDialog";
+        const NAME: &'static str = "MeridianEventDialog";
         type Type = super::EventDialog;
         type ParentType = adw::Dialog;
     }
@@ -1055,7 +1054,7 @@ impl EventDialog {
     }
 
     pub fn present_adaptive(&self, parent: &impl IsA<gtk::Widget>) {
-        if let Some(win) = crate::window::find_evolution_window(parent) {
+        if let Some(win) = crate::window::find_meridian_window(parent) {
             self.set_transient_for(Some(&win));
             if win.is_mobile() || win.is_tablet() {
                 self.present_modal(parent);
@@ -2048,6 +2047,7 @@ impl EventDialog {
                 );
                 let prov = gtk::CssProvider::new();
                 prov.load_from_string(&chip_css);
+                #[allow(deprecated)]
                 btn_calendar_chip_for_discovery.style_context().add_provider(&prov, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
 
                 if let Some(display) = gtk::gdk::Display::default() {
@@ -2115,6 +2115,7 @@ impl EventDialog {
                     "box {{ background-color: {}; min-width: 12px; min-height: 12px; border-radius: 2px; }}",
                     item.color
                 ));
+                #[allow(deprecated)]
                 chip.style_context().add_provider(&prov, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
                 row_box.append(&chip);
 
@@ -2160,6 +2161,7 @@ impl EventDialog {
                     );
                     let prov = gtk::CssProvider::new();
                     prov.load_from_string(&chip_css);
+                    #[allow(deprecated)]
                     btn_chip.style_context().add_provider(&prov, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
 
                     if let Some(display) = gtk::gdk::Display::default() {
@@ -2558,7 +2560,7 @@ impl EventDialog {
             };
 
             if let Some(parent) = stored_parent.as_ref() {
-                if let Some(win) = crate::window::find_evolution_window(parent) {
+                if let Some(win) = crate::window::find_meridian_window(parent) {
                     standalone.set_transient_for(Some(&win));
                     let win_downgrade = win.downgrade();
                     standalone.connect_closed(move |_| {
@@ -2577,12 +2579,12 @@ impl EventDialog {
 
     fn show_toast(&self, message: &str) {
         if let Some(parent) = self.imp().stored_parent.borrow().as_ref() {
-            if let Some(win) = crate::window::find_evolution_window(parent) {
+            if let Some(win) = crate::window::find_meridian_window(parent) {
                 win.add_toast(&adw::Toast::new(message));
                 return;
             }
         }
-        if let Some(window) = crate::window::find_evolution_window(self) {
+        if let Some(window) = crate::window::find_meridian_window(self) {
             window.add_toast(&adw::Toast::new(message));
         } else {
             tracing::warn!(%message, "ECal dialog result");
@@ -3433,7 +3435,7 @@ pub(crate) fn build_event_component(
         }
     }
 
-    let uid = format!("evolution-gtk4-{}", uuid::Uuid::new_v4());
+    let uid = format!("meridian-{}", uuid::Uuid::new_v4());
     let stamp = Utc::now().format("%Y%m%dT%H%M%SZ");
     let (start_line, end_line) = if all_day {
         (

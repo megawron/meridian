@@ -59,7 +59,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for ContactSearchDialog {
-        const NAME: &'static str = "EvolutionContactSearchDialog";
+        const NAME: &'static str = "MeridianContactSearchDialog";
         type Type = super::ContactSearchDialog;
         type ParentType = adw::Dialog;
     }

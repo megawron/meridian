@@ -25,7 +25,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for OutOfOfficeDialog {
-        const NAME: &'static str = "EvolutionOutOfOfficeDialog";
+        const NAME: &'static str = "MeridianOutOfOfficeDialog";
         type Type = super::OutOfOfficeDialog;
         type ParentType = adw::Dialog;
     }
@@ -376,7 +376,7 @@ fn load_graph_settings(
 
 fn show_dialog_toast(dialog: &OutOfOfficeDialog, message: &str) {
     let toast = adw::Toast::new(message);
-    if let Some(window) = dialog.root().and_downcast::<crate::window::EvolutionWindow>() {
+    if let Some(window) = dialog.root().and_downcast::<crate::window::MeridianWindow>() {
         window.add_toast(&toast);
         return;
     }

@@ -140,7 +140,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for NameSelectorDialog {
-        const NAME: &'static str = "EvolutionNameSelectorDialog";
+        const NAME: &'static str = "MeridianNameSelectorDialog";
         type Type = super::NameSelectorDialog;
         type ParentType = adw::Dialog;
     }

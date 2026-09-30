@@ -34,7 +34,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for ImportDialog {
-        const NAME: &'static str = "EvolutionImportDialog";
+        const NAME: &'static str = "MeridianImportDialog";
         type Type = super::ImportDialog;
         type ParentType = adw::Dialog;
     }
@@ -88,7 +88,7 @@ impl ImportDialog {
         main_box.append(&icon);
 
         let title = gtk::Label::builder()
-            .label("Evolution Import-Assistent")
+            .label("Meridian Import-Assistent")
             .css_classes(vec!["title-2"])
             .halign(gtk::Align::Center)
             .build();

@@ -32,7 +32,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for SourcePropertiesDialog {
-        const NAME: &'static str = "EvolutionSourcePropertiesDialog";
+        const NAME: &'static str = "MeridianSourcePropertiesDialog";
         type Type = super::SourcePropertiesDialog;
         type ParentType = adw::Dialog;
     }

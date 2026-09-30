@@ -238,7 +238,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for ComposeDialog {
-        const NAME: &'static str = "EvolutionComposeDialog";
+        const NAME: &'static str = "MeridianComposeDialog";
         type Type = super::ComposeDialog;
         type ParentType = adw::Dialog;
     }
@@ -2039,48 +2039,6 @@ impl ComposeDialog {
             popover.popup();
         });
 
-        let local_recipient_suggestions =
-            std::rc::Rc::new(std::cell::RefCell::new(Vec::<RecipientSuggestion>::new()));
-        let (recipient_sender, recipient_receiver) = async_channel::bounded(1);
-        std::thread::spawn(move || {
-            let mut suggestions = ContactStoreService::new()
-                .load_contacts()
-                .into_iter()
-                .flat_map(|record| {
-                    let display = record.contact.fn_name.trim().to_string();
-                    let addresses = if record.contact.emails.is_empty() {
-                        vec![record.contact.email.clone()]
-                    } else {
-                        record.contact.emails.clone()
-                    };
-                    addresses
-                        .into_iter()
-                        .map(move |address| RecipientSuggestion {
-                            display: display.clone(),
-                            address: address.trim().to_string(),
-                        })
-                        .filter(|suggestion| !suggestion.address.is_empty())
-                })
-                .collect::<Vec<_>>();
-            suggestions.sort_by_key(|suggestion| suggestion.address.to_ascii_lowercase());
-            suggestions.dedup_by(|left, right| left.address.eq_ignore_ascii_case(&right.address));
-            if let Err(error) = recipient_sender.send_blocking(suggestions) {
-                tracing::debug!(%error, "Recipient suggestion result was dropped");
-            }
-        });
-        let suggestions_for_load = std::rc::Rc::clone(&local_recipient_suggestions);
-        glib::spawn_future_local(async move {
-            if let Ok(suggestions) = recipient_receiver.recv().await {
-                suggestions_for_load.replace(suggestions);
-            }
-        });
-        for entry in [&entry_to, &entry_reply_to, &entry_cc, &entry_bcc] {
-            setup_local_recipient_completion(
-                entry,
-                std::rc::Rc::clone(&local_recipient_suggestions),
-            );
-        }
-
         let dialog_weak_for_send = self.downgrade();
         let html_editor_for_send = html_editor.clone();
         let entry_to_for_send = entry_to.clone();
@@ -3385,11 +3343,7 @@ impl ComposeDialog {
             self.show_toast("Ein anderer Composer-Vorgang läuft bereits");
             return false;
         }
-        #[cfg(not(target_os = "linux"))]
-        if matches!(action, MailPrintAction::Print) {
-            self.show_toast(MailViewer::native_print_unavailable());
-            return false;
-        }
+
         let Some(editor) = self.imp().html_editor.borrow().as_ref().cloned() else {
             self.show_toast("Drucken nicht möglich: Nachrichtentext ist nicht verfügbar");
             return false;
@@ -3643,41 +3597,33 @@ impl ComposeDialog {
         }
         self.imp().print_cancellation.borrow_mut().take();
         self.set_print_state(MailPrintJobState::Printing, "Druckdialog wird geöffnet…");
-        #[cfg(target_os = "linux")]
-        {
-            let viewer = MailViewer::new();
-            self.imp().print_viewer.replace(Some(viewer.clone()));
-            let dialog = self.downgrade();
-            let parent_window = self.root().and_downcast::<gtk::Window>();
-            if let Some(parent) = parent_window {
-                viewer.print_document(&document, &parent, move |result| {
-                    let Some(dialog) = dialog.upgrade() else {
-                        return;
-                    };
-                    dialog.imp().print_viewer.borrow_mut().take();
-                    match result {
-                        Ok(crate::views::MailPrintDialogResult::Printed) => dialog.finish_print_state(
+        let viewer = MailViewer::new();
+        self.imp().print_viewer.replace(Some(viewer.clone()));
+        let dialog = self.downgrade();
+        let parent_window = self.root().and_downcast::<gtk::Window>();
+        if let Some(parent) = parent_window {
+            viewer.print_document(&document, &parent, move |result| {
+                let Some(dialog) = dialog.upgrade() else {
+                    return;
+                };
+                dialog.imp().print_viewer.borrow_mut().take();
+                match result {
+                    Ok(crate::views::MailPrintDialogResult::Printed) => dialog.finish_print_state(
+                        generation,
+                        MailPrintJobState::Idle,
+                        "Druckauftrag wurde an das System übergeben",
+                    ),
+                    Ok(crate::views::MailPrintDialogResult::Cancelled) => dialog
+                        .finish_print_state(
                             generation,
-                            MailPrintJobState::Idle,
-                            "Druckauftrag wurde an das System übergeben",
+                            MailPrintJobState::Cancelled,
+                            "Druckdialog abgebrochen",
                         ),
-                        Ok(crate::views::MailPrintDialogResult::Cancelled) => dialog
-                            .finish_print_state(
-                                generation,
-                                MailPrintJobState::Cancelled,
-                                "Druckdialog abgebrochen",
-                            ),
-                        Err(error) => dialog.finish_print_error(generation, error),
-                    }
-                });
-            } else {
-                self.finish_print_error(generation, "Kein übergeordnetes Fenster für Druckdialog".to_string());
-            }
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = document;
-            self.finish_print_error(generation, MailViewer::native_print_unavailable());
+                    Err(error) => dialog.finish_print_error(generation, error),
+                }
+            });
+        } else {
+            self.finish_print_error(generation, "Kein übergeordnetes Fenster für Druckdialog".to_string());
         }
     }
 
@@ -4551,7 +4497,7 @@ impl ComposeDialog {
     }
 
     fn show_toast(&self, message: &str) {
-        if let Some(window) = crate::window::find_evolution_window(self) {
+        if let Some(window) = crate::window::find_meridian_window(self) {
             window.add_toast(&adw::Toast::new(message));
         } else {
             tracing::warn!(%message, "Composer result");
@@ -5169,95 +5115,6 @@ fn split_recipient_list(value: &str) -> Vec<String> {
     recipients
 }
 
-fn setup_local_recipient_completion(
-    entry: &gtk::Entry,
-    suggestions: std::rc::Rc<std::cell::RefCell<Vec<RecipientSuggestion>>>,
-) {
-    let popover = gtk::Popover::new();
-    popover.set_autohide(true);
-    popover.set_position(gtk::PositionType::Bottom);
-    popover.set_parent(entry);
-
-    let list = gtk::ListBox::builder()
-        .selection_mode(gtk::SelectionMode::Single)
-        .width_request(360)
-        .build();
-    popover.set_child(Some(&list));
-
-    let visible_addresses = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
-    let entry_for_activation = entry.downgrade();
-    let popover_for_activation = popover.clone();
-    let visible_addresses_for_activation = std::rc::Rc::clone(&visible_addresses);
-    list.connect_row_activated(move |_list, row| {
-        let Some(address) = visible_addresses_for_activation
-            .borrow()
-            .get(row.index().max(0) as usize)
-            .cloned()
-        else {
-            return;
-        };
-        let Some(entry) = entry_for_activation.upgrade() else {
-            return;
-        };
-        entry.set_text(&replace_current_recipient(&entry.text(), &address));
-        entry.set_position(-1);
-        popover_for_activation.popdown();
-    });
-
-    let visible_addresses_for_change = std::rc::Rc::clone(&visible_addresses);
-    let popover_for_change = popover.clone();
-    entry.connect_changed(move |entry| {
-        let entry_text = entry.text();
-        let query = current_recipient_fragment(&entry_text);
-        while let Some(child) = list.first_child() {
-            list.remove(&child);
-        }
-        let matches = if query.len() < 2 {
-            Vec::new()
-        } else {
-            let query = query.to_ascii_lowercase();
-            suggestions
-                .borrow()
-                .iter()
-                .filter(|suggestion| {
-                    suggestion.address.to_ascii_lowercase().contains(&query)
-                        || suggestion.display.to_ascii_lowercase().contains(&query)
-                })
-                .cloned()
-                .collect::<Vec<_>>()
-        };
-        visible_addresses_for_change.replace(
-            matches
-                .iter()
-                .map(|suggestion| suggestion.address.clone())
-                .collect(),
-        );
-        for suggestion in &matches {
-            let label = if suggestion.display.is_empty() {
-                suggestion.address.clone()
-            } else {
-                format!("{} <{}>", suggestion.display, suggestion.address)
-            };
-            let row = gtk::ListBoxRow::new();
-            let label = gtk::Label::builder()
-                .label(&label)
-                .xalign(0.0)
-                .margin_start(12)
-                .margin_end(12)
-                .margin_top(8)
-                .margin_bottom(8)
-                .build();
-            row.set_child(Some(&label));
-            list.append(&row);
-        }
-        if matches.is_empty() {
-            popover_for_change.popdown();
-        } else {
-            popover_for_change.popup();
-        }
-    });
-}
-
 fn recipient_directory_button() -> gtk::Button {
     gtk::Button::builder()
         .icon_name("system-search-symbolic")
@@ -5557,6 +5414,7 @@ fn setup_recipient_autocompletion(
         let formatted = recipient_suggestion_label(suggestion);
         entry.set_text(&replace_current_recipient(&entry.text(), &formatted));
         entry.set_position(-1);
+        entry.grab_focus();
         popover_for_activate.popdown();
         if let Some(dialog) = dialog_weak_for_activate.upgrade() {
             dialog.mark_changed();
@@ -5624,7 +5482,12 @@ fn setup_recipient_autocompletion(
     let popover_for_focus = popover.clone();
     let focus_controller = gtk::EventControllerFocus::new();
     focus_controller.connect_leave(move |_| {
-        popover_for_focus.popdown();
+        let pop = popover_for_focus.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
+            if !pop.has_focus() {
+                pop.popdown();
+            }
+        });
     });
     entry.add_controller(focus_controller);
 
@@ -5633,6 +5496,7 @@ fn setup_recipient_autocompletion(
     let list_for_changed = list.clone();
     let combo_from_clone = combo_from.clone();
     let dialog_weak_for_changed = dialog_weak.clone();
+    let accept_selection_for_click = Rc::clone(&accept_selection_for_row);
     entry.connect_changed(move |e| {
         let text = e.text().to_string();
         let fragment = current_recipient_fragment(&text).to_string();
@@ -5644,9 +5508,11 @@ fn setup_recipient_autocompletion(
                     s.contact_completion_show_address(),
                 )
             })
-            .unwrap_or((3, false));
+            .unwrap_or((1, false));
 
-        if fragment.chars().count() < min_len {
+        let effective_min_len = if min_len <= 3 { 1 } else { min_len };
+
+        if fragment.trim().is_empty() || fragment.chars().count() < effective_min_len {
             if let Some(source_id) = debounce_source.borrow_mut().take() {
                 let _ = unsafe { glib::ffi::g_source_remove(source_id.as_raw()) };
             }
@@ -5669,9 +5535,10 @@ fn setup_recipient_autocompletion(
         let combo_from_source = combo_from_clone.clone();
         let dialog_weak_source = dialog_weak_for_changed.clone();
         let debounce_source_timer = Rc::clone(&debounce_source);
+        let accept_for_row = Rc::clone(&accept_selection_for_click);
 
         let source_id = glib::timeout_add_local(
-            std::time::Duration::from_millis(333),
+            std::time::Duration::from_millis(150),
             move || {
                 debounce_source_timer.borrow_mut().take();
                 if generation_clone.get() != generation_id {
@@ -5681,7 +5548,7 @@ fn setup_recipient_autocompletion(
                     return glib::ControlFlow::Break;
                 };
                 let cur_fragment = current_recipient_fragment(&entry.text()).to_string();
-                if cur_fragment.chars().count() < min_len {
+                if cur_fragment.chars().count() < effective_min_len {
                     popover_clone.popdown();
                     return glib::ControlFlow::Break;
                 }
@@ -5724,7 +5591,7 @@ fn setup_recipient_autocompletion(
                     return glib::ControlFlow::Break;
                 }
 
-                for sugg in &suggestions {
+                for (idx, sugg) in suggestions.iter().enumerate() {
                     let row = gtk::Box::builder()
                         .orientation(gtk::Orientation::Horizontal)
                         .spacing(8)
@@ -5794,6 +5661,14 @@ fn setup_recipient_autocompletion(
                     }
 
                     row.append(&text_box);
+
+                    let click = gtk::GestureClick::new();
+                    let accept_click = Rc::clone(&accept_for_row);
+                    click.connect_released(move |_, _, _, _| {
+                        accept_click(idx);
+                    });
+                    row.add_controller(click);
+
                     list_clone.append(&row);
                 }
 
@@ -5817,7 +5692,7 @@ fn search_recipient_suggestions(query: &str, show_address: bool) -> Vec<Recipien
     }
     let mut results = Vec::new();
 
-    // 1. Check recent recipients (frecency ranking)
+    // 1. Check recent recipients (frecency ranking - highest priority)
     let recent = RecentRecipientsService::new().search_recent(query);
     for r in recent {
         if !r.email.is_empty() {
@@ -5828,10 +5703,27 @@ fn search_recipient_suggestions(query: &str, show_address: bool) -> Vec<Recipien
         }
     }
 
-    // 2. Query local EDS contacts
+    // 2. Query EDS contacts (Evolution Data Server synchronized address books)
+    let eds_contacts = crate::services::ebook_service::load_contacts_prefer_eds();
+    for record in eds_contacts.contacts {
+        let c = &record.contact;
+        if contact_matches_query(c, &query_norm) {
+            let suggestions = contact_to_recipient_suggestions(c, show_address);
+            for s in suggestions {
+                if let Some(existing) = results.iter_mut().find(|r| r.address.eq_ignore_ascii_case(&s.address)) {
+                    if existing.display.is_empty() && !s.display.is_empty() {
+                        existing.display = s.display;
+                    }
+                } else {
+                    results.push(s);
+                }
+            }
+        }
+    }
+
+    // 3. Query local vCard store (local address book fallback)
     let store = ContactStoreService::new();
     let contacts = store.load_contacts();
-
     for record in contacts {
         let c = &record.contact;
         if contact_matches_query(c, &query_norm) {
@@ -5847,6 +5739,60 @@ fn search_recipient_suggestions(query: &str, show_address: bool) -> Vec<Recipien
             }
         }
     }
+
+    // 4. Query previous correspondents from cached mail messages
+    if let Some(mail_cache) = crate::services::camel_mail_service::load_mail_load_cache() {
+        for msg in &mail_cache.messages {
+            // Check sender
+            let s_email = msg.sender_email.trim();
+            let s_name = msg.sender_name.trim();
+            if !s_email.is_empty() && s_email.contains('@') {
+                if s_email.to_lowercase().contains(&query_norm) || s_name.to_lowercase().contains(&query_norm) {
+                    if let Some(existing) = results.iter_mut().find(|r| r.address.eq_ignore_ascii_case(s_email)) {
+                        if existing.display.is_empty() && !s_name.is_empty() {
+                            existing.display = s_name.to_string();
+                        }
+                    } else {
+                        results.push(RecipientSuggestion {
+                            display: s_name.to_string(),
+                            address: s_email.to_string(),
+                        });
+                    }
+                }
+            }
+
+            // Check recipients in To / Cc
+            for recipient_header in [&msg.recipient_to, &msg.recipient_cc] {
+                if !recipient_header.is_empty() && recipient_header.to_lowercase().contains(&query_norm) {
+                    for (name, email) in RecentRecipientsService::parse_recipients(recipient_header) {
+                        let email_trim = email.trim();
+                        if !email_trim.is_empty() && email_trim.contains('@') {
+                            if email_trim.to_lowercase().contains(&query_norm) || name.to_lowercase().contains(&query_norm) {
+                                if let Some(existing) = results.iter_mut().find(|r| r.address.eq_ignore_ascii_case(email_trim)) {
+                                    if existing.display.is_empty() && !name.is_empty() {
+                                        existing.display = name;
+                                    }
+                                } else {
+                                    results.push(RecipientSuggestion {
+                                        display: name,
+                                        address: email_trim.to_string(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Rank prefix matches first
+    results.sort_by(|a, b| {
+        let a_starts = a.display.to_lowercase().starts_with(&query_norm) || a.address.to_lowercase().starts_with(&query_norm);
+        let b_starts = b.display.to_lowercase().starts_with(&query_norm) || b.address.to_lowercase().starts_with(&query_norm);
+        b_starts.cmp(&a_starts)
+    });
+
     results
 }
 
@@ -6426,6 +6372,31 @@ mod tests {
         assert_eq!(suggestions[0].address, "ada@example.org");
         assert_eq!(suggestions[0].display, "Ada Lovelace");
         assert_eq!(suggestions[1].address, "ada.second@example.org");
+    }
+
+    #[test]
+    fn test_search_recipient_suggestions_ranking_and_sources() {
+        assert!(search_recipient_suggestions("", false).is_empty());
+        assert!(search_recipient_suggestions("   ", false).is_empty());
+
+        let recent_srv = RecentRecipientsService::new();
+        recent_srv.record_recipient("Alexander Test", "alexander.test@example.com");
+
+        let results = search_recipient_suggestions("alexander", false);
+        assert!(!results.is_empty(), "Expected suggestions for 'alexander'");
+        let found = results.iter().find(|s| s.address == "alexander.test@example.com");
+        assert!(found.is_some(), "Recorded recipient should be found");
+        assert_eq!(found.unwrap().display, "Alexander Test");
+
+        recent_srv.record_recipient("Sub User", "someone@notest.com");
+        recent_srv.record_recipient("Prefix User", "test@prefix.com");
+
+        let test_results = search_recipient_suggestions("test", false);
+        let prefix_idx = test_results.iter().position(|s| s.address == "test@prefix.com");
+        let sub_idx = test_results.iter().position(|s| s.address == "someone@notest.com");
+        if let (Some(p_idx), Some(s_idx)) = (prefix_idx, sub_idx) {
+            assert!(p_idx < s_idx, "Prefix matches must be ranked before non-prefix matches");
+        }
     }
 
     #[test]

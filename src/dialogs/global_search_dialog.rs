@@ -33,7 +33,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for GlobalSearchDialog {
-        const NAME: &'static str = "EvolutionGlobalSearchDialog";
+        const NAME: &'static str = "MeridianGlobalSearchDialog";
         type Type = super::GlobalSearchDialog;
         type ParentType = adw::Dialog;
     }
@@ -307,12 +307,12 @@ impl GlobalSearchDialog {
                 move |_| {
                     let parent = dialog
                         .root()
-                        .and_downcast::<crate::window::EvolutionWindow>()
+                        .and_downcast::<crate::window::MeridianWindow>()
                         .or_else(|| {
                             gio::Application::default()
                                 .and_then(|app| app.downcast::<adw::Application>().ok())
                                 .and_then(|app| app.active_window())
-                                .and_then(|win| win.downcast::<crate::window::EvolutionWindow>().ok())
+                                .and_then(|win| win.downcast::<crate::window::MeridianWindow>().ok())
                         });
                     let Some(parent) = parent else {
                         return;

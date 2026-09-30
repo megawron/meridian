@@ -6,7 +6,6 @@
 use adw::prelude::*;
 use chrono::{Datelike, NaiveDate, NaiveDateTime, Timelike, Weekday};
 use gtk::glib;
-use gtk::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 

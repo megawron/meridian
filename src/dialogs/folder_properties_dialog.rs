@@ -32,7 +32,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for FolderPropertiesDialog {
-        const NAME: &'static str = "EvolutionFolderPropertiesDialog";
+        const NAME: &'static str = "MeridianFolderPropertiesDialog";
         type Type = super::FolderPropertiesDialog;
         type ParentType = adw::Dialog;
     }
@@ -420,7 +420,7 @@ impl FolderPropertiesDialog {
     }
 
     fn show_toast(&self, message: &str) {
-        if let Some(window) = crate::window::find_evolution_window(self) {
+        if let Some(window) = crate::window::find_meridian_window(self) {
             window.add_toast(&adw::Toast::new(message));
             return;
         }
