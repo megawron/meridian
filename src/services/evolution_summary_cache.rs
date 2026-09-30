@@ -48,14 +48,16 @@ unsafe extern "C" {
     fn sqlite3_errmsg(db: *mut Sqlite3) -> *const c_char;
 }
 
-/// Evolution mail cache account descriptor.
+/// Meridian mail cache account descriptor.
 #[derive(Debug, Clone)]
-pub struct EvolutionAccountCache {
+pub struct MeridianAccountCache {
     pub source_uid: String,
     pub display_name: String,
     pub folders_db: PathBuf,
     pub cache_dir: PathBuf,
 }
+
+pub type EvolutionAccountCache = MeridianAccountCache;
 
 /// Helper to extract `DisplayName` from an EDS `.source` file or AccountConfigStore.
 fn resolve_source_display_name(source_uid: &str, home: &Path) -> Option<String> {
@@ -102,8 +104,8 @@ fn resolve_source_display_name(source_uid: &str, home: &Path) -> Option<String> 
     None
 }
 
-/// Discover all local Evolution mail cache directories containing `folders.db`.
-pub fn discover_evolution_mail_caches() -> Vec<EvolutionAccountCache> {
+/// Discover all local mail cache directories containing `folders.db`.
+pub fn discover_meridian_mail_caches() -> Vec<MeridianAccountCache> {
     let mut results = Vec::new();
     let home = match std::env::var_os("HOME") {
         Some(h) => PathBuf::from(h),
@@ -134,10 +136,10 @@ pub fn discover_evolution_mail_caches() -> Vec<EvolutionAccountCache> {
                 let db_path = path.join("folders.db");
                 if db_path.is_file() {
                     let source_uid = entry.file_name().to_string_lossy().to_string();
-                    if !results.iter().any(|r: &EvolutionAccountCache| r.source_uid == source_uid) {
+                    if !results.iter().any(|r: &MeridianAccountCache| r.source_uid == source_uid) {
                         let display_name = resolve_source_display_name(&source_uid, &home)
                             .unwrap_or_else(|| "E-Mail-Konto".to_string());
-                        results.push(EvolutionAccountCache {
+                        results.push(MeridianAccountCache {
                             source_uid,
                             display_name,
                             folders_db: db_path,
@@ -152,9 +154,12 @@ pub fn discover_evolution_mail_caches() -> Vec<EvolutionAccountCache> {
     results
 }
 
+#[allow(unused_imports)]
+pub use discover_meridian_mail_caches as discover_evolution_mail_caches;
+
 /// Find the cache for a specific account UID, or the default account cache.
-pub fn find_evolution_account_cache(source_uid_hint: Option<&str>) -> Option<EvolutionAccountCache> {
-    let caches = discover_evolution_mail_caches();
+pub fn find_meridian_account_cache(source_uid_hint: Option<&str>) -> Option<MeridianAccountCache> {
+    let caches = discover_meridian_mail_caches();
     if caches.is_empty() {
         return None;
     }
@@ -211,6 +216,8 @@ pub fn find_evolution_account_cache(source_uid_hint: Option<&str>) -> Option<Evo
     // Default to the first discovered account cache
     caches.into_iter().next()
 }
+
+pub use find_meridian_account_cache as find_evolution_account_cache;
 
 /// Helper struct wrapping an open read-only SQLite database.
 struct SqliteDb {
@@ -466,6 +473,198 @@ fn parse_address(raw: &str) -> (String, String) {
     (email.clone(), email)
 }
 
+/// Helper to determine if an email is a calendar invitation from its subject and preview snippet.
+pub fn is_calendar_invitation_subject_or_preview(subject: &str, preview: &str) -> bool {
+    let p_lower = preview.to_lowercase();
+    if p_lower.contains("begin:vcalendar")
+        || p_lower.contains("method:request")
+        || p_lower.contains("method:reply")
+        || p_lower.contains("method:cancel")
+        || p_lower.contains("vcalendar")
+    {
+        return true;
+    }
+
+    let s_lower = subject.to_lowercase();
+    // Strip common Re/Aw/Fwd/Wg prefixes iteratively
+    let mut stripped_subj = s_lower.trim();
+    loop {
+        let prev = stripped_subj;
+        for prefix in &["re:", "aw:", "fwd:", "wg:", "fw:"] {
+            if let Some(rest) = stripped_subj.strip_prefix(prefix) {
+                stripped_subj = rest.trim();
+            }
+        }
+        if stripped_subj == prev {
+            break;
+        }
+    }
+
+    let is_cal_prefix = stripped_subj.starts_with("einladung:")
+        || stripped_subj.starts_with("invitation:")
+        || stripped_subj.starts_with("aktualisiert:")
+        || stripped_subj.starts_with("updated:")
+        || stripped_subj.starts_with("abgesagt:")
+        || stripped_subj.starts_with("canceled:")
+        || stripped_subj.starts_with("cancelled:")
+        || stripped_subj.starts_with("angenommen:")
+        || stripped_subj.starts_with("accepted:")
+        || stripped_subj.starts_with("abgelehnt:")
+        || stripped_subj.starts_with("declined:")
+        || stripped_subj.starts_with("vorbehaltlich:")
+        || stripped_subj.starts_with("tentative:");
+
+    if is_cal_prefix {
+        return true;
+    }
+
+    if (stripped_subj.contains("termin:") || stripped_subj.contains("meeting:"))
+        && (p_lower.contains("wann:")
+            || p_lower.contains("when:")
+            || p_lower.contains("wo:")
+            || p_lower.contains("where:")
+            || p_lower.contains("zeit:")
+            || p_lower.contains("ort:"))
+    {
+        return true;
+    }
+
+    false
+}
+
+/// Parse Evolution's Camel usertags composite string into follow-up state and metadata.
+///
+/// Format in Camel: `<count> <len>-<key> <len>-<val> ...`
+/// where each string token is preceded by its byte length and a hyphen `-`.
+pub fn parse_evolution_usertags_bytes(raw: &[u8]) -> (MailFollowUpState, MailFollowUpMetadata) {
+    let mut bytes = raw;
+
+    // Skip leading whitespace
+    while let Some((&b, rest)) = bytes.split_first() {
+        if b.is_ascii_whitespace() {
+            bytes = rest;
+        } else {
+            break;
+        }
+    }
+
+    if bytes.is_empty() || (bytes.starts_with(b"0") && (bytes.len() == 1 || bytes[1].is_ascii_whitespace())) {
+        return (MailFollowUpState::None, MailFollowUpMetadata::default());
+    }
+
+    // Read count of key-value pairs
+    let mut count: usize = 0;
+    let mut has_count = false;
+    while let Some((&b, rest)) = bytes.split_first() {
+        if b.is_ascii_digit() {
+            count = count.saturating_mul(10).saturating_add((b - b'0') as usize);
+            has_count = true;
+            bytes = rest;
+        } else {
+            break;
+        }
+    }
+
+    if !has_count || count == 0 {
+        return (MailFollowUpState::None, MailFollowUpMetadata::default());
+    }
+
+    let mut follow_up: Option<String> = None;
+    let mut completed_on: Option<String> = None;
+    let mut due_by: Option<String> = None;
+
+    let read_string = |bytes: &mut &[u8]| -> Option<String> {
+        // Skip whitespace
+        while let Some((&b, rest)) = bytes.split_first() {
+            if b.is_ascii_whitespace() {
+                *bytes = rest;
+            } else {
+                break;
+            }
+        }
+
+        // Read length digits
+        let mut len: usize = 0;
+        let mut has_len = false;
+        while let Some((&b, rest)) = bytes.split_first() {
+            if b.is_ascii_digit() {
+                len = len.saturating_mul(10).saturating_add((b - b'0') as usize);
+                has_len = true;
+                *bytes = rest;
+            } else {
+                break;
+            }
+        }
+
+        if !has_len {
+            return None;
+        }
+
+        // Must be followed by '-'
+        if let Some((&b'-', rest)) = bytes.split_first() {
+            *bytes = rest;
+        } else {
+            return None;
+        }
+
+        // Extract `len` bytes
+        let slice_len = len.min(bytes.len());
+        let (val_bytes, rest) = bytes.split_at(slice_len);
+        *bytes = rest;
+
+        let s = String::from_utf8_lossy(val_bytes).to_string();
+        Some(s)
+    };
+
+    for _ in 0..count {
+        let key = match read_string(&mut bytes) {
+            Some(k) => k,
+            None => break,
+        };
+        let val = match read_string(&mut bytes) {
+            Some(v) => v,
+            None => break,
+        };
+
+        if key.eq_ignore_ascii_case("follow-up") {
+            if !val.trim().is_empty() {
+                follow_up = Some(val);
+            }
+        } else if key.eq_ignore_ascii_case("completed-on") {
+            if !val.trim().is_empty() {
+                completed_on = Some(val);
+            }
+        } else if key.eq_ignore_ascii_case("due-by") {
+            if !val.trim().is_empty() {
+                due_by = Some(val);
+            }
+        }
+    }
+
+    let state = if follow_up.is_none() {
+        MailFollowUpState::None
+    } else if completed_on.is_some() {
+        MailFollowUpState::Completed
+    } else {
+        MailFollowUpState::FollowUp
+    };
+
+    let metadata = MailFollowUpMetadata {
+        state,
+        text: follow_up,
+        due_by,
+        completed_on,
+    }
+    .normalized();
+
+    (metadata.state, metadata)
+}
+
+/// Convenience wrapper for str input.
+pub fn parse_evolution_usertags(raw: &str) -> (MailFollowUpState, MailFollowUpMetadata) {
+    parse_evolution_usertags_bytes(raw.as_bytes())
+}
+
 /// Keyset cursor for pagination in Evolution SQLite mail summaries: (dreceived, dsent).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MessageCursor {
@@ -506,7 +705,7 @@ pub fn load_folder_messages_page_from_sqlite(
     };
 
     let sql_str = format!(
-        "SELECT uid, flags, size, dsent, dreceived, subject, mail_from, mail_to, preview, labels \
+        "SELECT uid, flags, size, dsent, dreceived, subject, mail_from, mail_to, preview, labels, bdata, usertags \
          FROM {table_name}{where_clause} ORDER BY dreceived DESC, dsent DESC{limit_clause};"
     );
 
@@ -576,18 +775,37 @@ pub fn load_folder_messages_page_from_sqlite(
                 String::new()
             };
 
-            // Flags mapping:
+            let usertags_ptr = sqlite3_column_text(stmt, 11);
+            let (follow_up_state, follow_up) = if !usertags_ptr.is_null() {
+                let raw_bytes = CStr::from_ptr(usertags_ptr).to_bytes();
+                parse_evolution_usertags_bytes(raw_bytes)
+            } else {
+                (MailFollowUpState::None, MailFollowUpMetadata::default())
+            };
+
+            // Flags mapping according to Camel message summary flags:
             // 16 = CAMEL_MESSAGE_SEEN
             // 8  = CAMEL_MESSAGE_FLAGGED
             // 1  = CAMEL_MESSAGE_ANSWERED, 64 = CAMEL_MESSAGE_ANSWERED_ALL
             // 128 = CAMEL_MESSAGE_FORWARDED
             // 32 = CAMEL_MESSAGE_ATTACHMENTS
+            // Note: bdata stores provider private metadata (e.g. sync state/change tokens), NOT Camel message flags.
             let is_unread = (flags & 16) == 0;
-            let is_flagged = (flags & 8) != 0;
+            let is_flagged = (flags & 8) != 0 || labels.contains("$Flagged");
+            let is_important = labels.contains("$Important")
+                || labels.contains("Important")
+                || labels.contains("Wichtig")
+                || labels.contains("wichtig");
             let is_replied = (flags & (1 | 64)) != 0 || labels.contains("$Answered");
             let is_forwarded = (flags & 128) != 0 || labels.contains("$Forwarded");
-            let has_cal = labels.contains("$has_cal");
+            let has_cal = labels.contains("$has_cal")
+                || is_calendar_invitation_subject_or_preview(&subject, &preview);
             let has_attachments = (flags & 32) != 0 || has_cal;
+            let parsed_labels = labels
+                .split_whitespace()
+                .filter(|s| !s.starts_with('$'))
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>();
 
             // Date resolution
             let effective_ts = if dreceived > 0 { dreceived } else { dsent };
@@ -643,6 +861,7 @@ pub fn load_folder_messages_page_from_sqlite(
                     size_formatted: String::new(),
                     mime_type: "text/calendar".to_string(),
                     content_id: None,
+                    is_inline: false,
                     content: std::sync::Arc::from([]),
                 }]
             } else if has_attachments {
@@ -651,6 +870,7 @@ pub fn load_folder_messages_page_from_sqlite(
                     size_formatted: String::new(),
                     mime_type: "application/octet-stream".to_string(),
                     content_id: None,
+                    is_inline: false,
                     content: std::sync::Arc::from([]),
                 }]
             } else {
@@ -685,12 +905,12 @@ pub fn load_folder_messages_page_from_sqlite(
                 raw_mime: None,
                 is_unread,
                 is_flagged,
-                is_important: false,
+                is_important,
                 is_replied,
                 is_forwarded,
-                follow_up_state: MailFollowUpState::None,
-                follow_up: MailFollowUpMetadata::default(),
-                labels: Vec::new(),
+                follow_up_state,
+                follow_up,
+                labels: parsed_labels,
                 attachments,
                 is_preview_only: true,
             });
@@ -745,6 +965,9 @@ pub fn find_cached_raw_message_file(
         candidates.push(folders_root.join("INBOX").join("cur"));
     }
 
+    let uid_hash = glib::compute_checksum_for_string(glib::ChecksumType::Sha256, uid)
+        .map(|s| s.to_string());
+
     for cur_dir in candidates {
         if !cur_dir.is_dir() {
             continue;
@@ -759,6 +982,12 @@ pub fn find_cached_raw_message_file(
                 let target = path.join(uid);
                 if target.is_file() {
                     return Some(target);
+                }
+                if let Some(ref hash) = uid_hash {
+                    let target_hash = path.join(hash);
+                    if target_hash.is_file() {
+                        return Some(target_hash);
+                    }
                 }
             }
         }
@@ -889,5 +1118,113 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_is_calendar_invitation_detection() {
+        // German subjects
+        assert!(is_calendar_invitation_subject_or_preview("Einladung: Team-Meeting", ""));
+        assert!(is_calendar_invitation_subject_or_preview("Aw: Einladung: Sprint Planning", ""));
+        assert!(is_calendar_invitation_subject_or_preview("WG: Aktualisiert: Architektur Sync", ""));
+        assert!(is_calendar_invitation_subject_or_preview("Abgesagt: Jour Fixe", ""));
+        assert!(is_calendar_invitation_subject_or_preview("Angenommen: Weekly", ""));
+        assert!(is_calendar_invitation_subject_or_preview("Abgelehnt: Workshop", ""));
+        assert!(is_calendar_invitation_subject_or_preview("Vorbehaltlich: Review", ""));
+
+        // English subjects
+        assert!(is_calendar_invitation_subject_or_preview("Invitation: 1-on-1 Catchup", ""));
+        assert!(is_calendar_invitation_subject_or_preview("Re: Updated: Release sync", ""));
+        assert!(is_calendar_invitation_subject_or_preview("Canceled: Standup", ""));
+        assert!(is_calendar_invitation_subject_or_preview("Accepted: Interview", ""));
+        assert!(is_calendar_invitation_subject_or_preview("Declined: Lunch", ""));
+        assert!(is_calendar_invitation_subject_or_preview("Tentative: Strategy Meeting", ""));
+
+        // Preview content
+        assert!(is_calendar_invitation_subject_or_preview("Kein Betreff", "BEGIN:VCALENDAR\nMETHOD:REQUEST\n..."));
+        assert!(is_calendar_invitation_subject_or_preview("Hallo", "BEGIN:VCALENDAR..."));
+        assert!(is_calendar_invitation_subject_or_preview("Termin: Kundengespräch", "Wann: Montag, 14:00 Uhr\nWo: Konferenzraum"));
+        assert!(is_calendar_invitation_subject_or_preview("Meeting: Product Review", "When: Tuesday 10am\nWhere: Room 3"));
+
+        // Normal messages should not match
+        assert!(!is_calendar_invitation_subject_or_preview("Rechnung für März", "Hallo Herr Müller, anbei die Rechnung."));
+        assert!(!is_calendar_invitation_subject_or_preview("Projektstatus Bericht", "Hier ist der wöchentliche Bericht."));
+    }
+
+    #[test]
+    fn test_find_cached_raw_message_sha256() {
+        let temp_dir = std::env::temp_dir().join(format!("meridian_test_cache_{}", glib::uuid_string_random()));
+        let cur_dir = temp_dir.join("folders").join("Posteingang").join("cur").join("1d");
+        std::fs::create_dir_all(&cur_dir).unwrap();
+
+        let uid = "AAMkADRlMWRiOWI0LWM0YTUtNDFmZC1iMzU2LWQzYmU4MzJjMWQyZABGAAA=";
+        let sha256_hash = glib::compute_checksum_for_string(glib::ChecksumType::Sha256, uid).unwrap();
+        let file_path = cur_dir.join(sha256_hash.as_str());
+        std::fs::write(&file_path, b"From: test@example.com\r\nSubject: Test\r\n\r\nHello").unwrap();
+
+        let found = find_cached_raw_message_file(&temp_dir, "Posteingang", uid);
+        assert_eq!(found, Some(file_path));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_edv_sqlite_flags_accurate() {
+        if let Some(cache) = find_evolution_account_cache(Some("account:edv@acme-corp.example")) {
+            let msgs = load_folder_messages_from_sqlite(&cache.folders_db, "account:edv@acme-corp.example", "Posteingang", Some(50)).unwrap();
+            assert!(!msgs.is_empty(), "EDV Posteingang should contain messages in cache");
+            
+            // Check that not all messages have attachments (previously all had attachments due to bdata bug)
+            let without_attachments = msgs.iter().filter(|m| m.attachments.is_empty()).count();
+            let with_attachments = msgs.iter().filter(|m| !m.attachments.is_empty()).count();
+            assert!(without_attachments > 0, "Messages without attachments must not have attachments populated");
+            assert!(with_attachments > 0, "Messages with attachments must still have attachments");
+
+            // Check that flagged messages are correctly recognized from flags
+            let flagged = msgs.iter().filter(|m| m.is_flagged).count();
+            assert!(flagged > 0, "Flagged messages must be identified from flags bitmask");
+
+            // Check that follow-up messages are correctly identified with their follow-up state
+            let follow_ups = msgs.iter().filter(|m| m.follow_up_state != MailFollowUpState::None).count();
+            assert!(follow_ups > 0, "Follow-up messages in EDV Posteingang must be extracted from SQLite usertags");
+        }
+    }
+
+    #[test]
+    fn test_parse_evolution_usertags() {
+        // Empty / Zero cases
+        assert_eq!(parse_evolution_usertags("").0, MailFollowUpState::None);
+        assert_eq!(parse_evolution_usertags("0").0, MailFollowUpState::None);
+        assert_eq!(parse_evolution_usertags("   0   ").0, MailFollowUpState::None);
+
+        // Active follow-up with due date
+        let raw_active = "2 9-follow-up 18-Zur Nachverfolgung 6-due-by 31-Fri, 03 Jul 2026 15:00:00 +0000";
+        let (state_active, meta_active) = parse_evolution_usertags(raw_active);
+        assert_eq!(state_active, MailFollowUpState::FollowUp);
+        assert_eq!(meta_active.text.as_deref(), Some("Zur Nachverfolgung"));
+        assert_eq!(meta_active.due_by.as_deref(), Some("Fri, 03 Jul 2026 15:00:00 +0000"));
+        assert_eq!(meta_active.completed_on, None);
+
+        // Completed follow-up (matches user's real Evolution data)
+        let raw_completed = "2 9-follow-up 18-Zur Nachverfolgung 12-completed-on 31-Mon, 29 Jun 2026 05:45:00 +0000";
+        let (state_completed, meta_completed) = parse_evolution_usertags(raw_completed);
+        assert_eq!(state_completed, MailFollowUpState::Completed);
+        assert_eq!(meta_completed.text.as_deref(), Some("Zur Nachverfolgung"));
+        assert_eq!(meta_completed.completed_on.as_deref(), Some("Mon, 29 Jun 2026 05:45:00 +0000"));
+
+        // Unrelated user tags
+        let raw_other = "1 11-custom-flag 5-hello";
+        let (state_other, _) = parse_evolution_usertags(raw_other);
+        assert_eq!(state_other, MailFollowUpState::None);
+    }
+
+    #[test]
+    fn test_rfc822_priority_detection_for_important() {
+        let raw = b"From: boss@example.com\r\nSubject: Urgent Meeting\r\nImportance: High\r\n\r\nPlease attend.";
+        let parsed = crate::services::mail_store_service::parse_rfc822_bytes("test-1", "INBOX", raw, true).unwrap();
+        assert!(parsed.is_important, "Message with Importance: High must be marked is_important");
+
+        let raw_priority = b"From: server@example.com\r\nSubject: Alert\r\nX-Priority: 1 (Highest)\r\n\r\nCPU alert.";
+        let parsed2 = crate::services::mail_store_service::parse_rfc822_bytes("test-2", "INBOX", raw_priority, true).unwrap();
+        assert!(parsed2.is_important, "Message with X-Priority: 1 must be marked is_important");
     }
 }

@@ -344,7 +344,7 @@ pub(crate) fn mail_cache_path() -> std::path::PathBuf {
 /// filter-rule loading and therefore uses the same explicit environment/data
 /// root policy as the other framework-neutral service paths.
 fn worker_mail_store_service() -> crate::services::mail_store_service::MailStoreService {
-    let mail_dir = std::env::var_os("EVOLUTION_GTK4_MAIL_DIR")
+    let mail_dir = std::env::var_os("MERIDIAN_MAIL_DIR").or_else(|| std::env::var_os("EVOLUTION_GTK4_MAIL_DIR"))
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| crate::services::app_data_dir().join("mail"));
     crate::services::mail_store_service::MailStoreService::with_mail_dir(mail_dir)
@@ -1351,7 +1351,7 @@ mod ffi {
     use std::ffi::{c_char, c_void};
 
     #[repr(C)]
-    pub(super) struct EvolutionEdsCamelMessage {
+    pub(super) struct MeridianEdsCamelMessage {
         pub(super) source_uid: *mut c_char,
         pub(super) folder_name: *mut c_char,
         pub(super) folder_id: *mut c_char,
@@ -1369,7 +1369,7 @@ mod ffi {
     }
 
     #[repr(C)]
-    pub(super) struct EvolutionEdsCamelFolder {
+    pub(super) struct MeridianEdsCamelFolder {
         pub(super) source_uid: *mut c_char,
         pub(super) source_display_name: *mut c_char,
         pub(super) folder_name: *mut c_char,
@@ -1382,7 +1382,7 @@ mod ffi {
 
     #[repr(C)]
     #[allow(dead_code)]
-    pub(super) struct EvolutionEdsCamelSubscriptionFolder {
+    pub(super) struct MeridianEdsCamelSubscriptionFolder {
         pub(super) source_uid: *mut c_char,
         pub(super) source_display_name: *mut c_char,
         pub(super) folder_name: *mut c_char,
@@ -1396,7 +1396,7 @@ mod ffi {
 
     #[repr(C)]
     #[allow(dead_code)]
-    pub(super) struct EvolutionEdsCamelFolderMutationCapabilities {
+    pub(super) struct MeridianEdsCamelFolderMutationCapabilities {
         pub(super) can_create_child: i32,
         pub(super) can_rename: i32,
         pub(super) can_delete: i32,
@@ -1406,7 +1406,7 @@ mod ffi {
     }
 
     #[repr(C)]
-    pub(super) struct EvolutionEdsCamelOperation {
+    pub(super) struct MeridianEdsCamelOperation {
         pub(super) kind: i32,
         pub(super) source_uid: *const c_char,
         pub(super) folder_name: *const c_char,
@@ -1422,7 +1422,7 @@ mod ffi {
     }
 
     #[repr(C)]
-    pub(super) struct EvolutionEdsCamelSyncProgress {
+    pub(super) struct MeridianEdsCamelSyncProgress {
         pub(super) phase: i32,
         pub(super) source_uid: *const c_char,
         pub(super) source_display_name: *const c_char,
@@ -1436,7 +1436,7 @@ mod ffi {
     }
 
     #[repr(C)]
-    pub(super) struct EvolutionEdsCamelChangeEvent {
+    pub(super) struct MeridianEdsCamelChangeEvent {
         pub(super) kind: i32,
         pub(super) source_uid: *mut c_char,
         pub(super) folder_name: *mut c_char,
@@ -1456,112 +1456,112 @@ mod ffi {
         pub(super) recent_uid_count: usize,
     }
 
-    pub(super) type EvolutionEdsCamelProgressCallback = unsafe extern "C" fn(
-        progress: *const EvolutionEdsCamelSyncProgress,
+    pub(super) type MeridianEdsCamelProgressCallback = unsafe extern "C" fn(
+        progress: *const MeridianEdsCamelSyncProgress,
         user_data: *mut c_void,
     );
 
-    pub(super) type EvolutionEdsCamelCancellationCallback =
+    pub(super) type MeridianEdsCamelCancellationCallback =
         unsafe extern "C" fn(user_data: *mut c_void) -> i32;
 
     unsafe extern "C" {
-        pub(super) fn evolution_eds_camel_load_messages(
+        pub(super) fn meridian_eds_camel_load_messages(
             source_uid: *const c_char,
             folder_name: *const c_char,
             message_offset: i32,
             max_messages_per_folder: i32,
-            out_messages: *mut *mut EvolutionEdsCamelMessage,
+            out_messages: *mut *mut MeridianEdsCamelMessage,
             out_count: *mut usize,
-            out_folders: *mut *mut EvolutionEdsCamelFolder,
+            out_folders: *mut *mut MeridianEdsCamelFolder,
             out_folder_count: *mut usize,
             out_configured_sources: *mut usize,
             out_successful_sources: *mut usize,
             out_failed_sources: *mut usize,
             out_error: *mut *mut c_char,
-            progress_callback: Option<EvolutionEdsCamelProgressCallback>,
+            progress_callback: Option<MeridianEdsCamelProgressCallback>,
             progress_user_data: *mut c_void,
-            cancellation_callback: Option<EvolutionEdsCamelCancellationCallback>,
+            cancellation_callback: Option<MeridianEdsCamelCancellationCallback>,
             cancellation_user_data: *mut c_void,
         ) -> i32;
 
-        pub(super) fn evolution_eds_camel_load_messages_by_uid(
+        pub(super) fn meridian_eds_camel_load_messages_by_uid(
             source_uid: *const c_char,
             folder_name: *const c_char,
             message_uids: *const *const c_char,
             message_uid_count: usize,
-            out_messages: *mut *mut EvolutionEdsCamelMessage,
+            out_messages: *mut *mut MeridianEdsCamelMessage,
             out_count: *mut usize,
             out_error: *mut *mut c_char,
-            cancellation_callback: Option<EvolutionEdsCamelCancellationCallback>,
+            cancellation_callback: Option<MeridianEdsCamelCancellationCallback>,
             cancellation_user_data: *mut c_void,
         ) -> i32;
 
-        pub(super) fn evolution_eds_camel_free_messages(
-            messages: *mut EvolutionEdsCamelMessage,
+        pub(super) fn meridian_eds_camel_free_messages(
+            messages: *mut MeridianEdsCamelMessage,
             count: usize,
         );
 
-        pub(super) fn evolution_eds_camel_free_folders(
-            folders: *mut EvolutionEdsCamelFolder,
+        pub(super) fn meridian_eds_camel_free_folders(
+            folders: *mut MeridianEdsCamelFolder,
             count: usize,
         );
 
         #[allow(dead_code)]
-        pub(super) fn evolution_eds_camel_load_subscription_folders(
+        pub(super) fn meridian_eds_camel_load_subscription_folders(
             source_uid: *const c_char,
-            out_folders: *mut *mut EvolutionEdsCamelSubscriptionFolder,
+            out_folders: *mut *mut MeridianEdsCamelSubscriptionFolder,
             out_folder_count: *mut usize,
             out_is_subscribable: *mut i32,
             out_error: *mut *mut c_char,
-            cancellation_callback: Option<EvolutionEdsCamelCancellationCallback>,
+            cancellation_callback: Option<MeridianEdsCamelCancellationCallback>,
             cancellation_user_data: *mut c_void,
         ) -> i32;
 
         #[allow(dead_code)]
-        pub(super) fn evolution_eds_camel_free_subscription_folders(
-            folders: *mut EvolutionEdsCamelSubscriptionFolder,
+        pub(super) fn meridian_eds_camel_free_subscription_folders(
+            folders: *mut MeridianEdsCamelSubscriptionFolder,
             count: usize,
         );
 
         #[allow(dead_code)]
-        pub(super) fn evolution_eds_camel_set_folder_subscription(
+        pub(super) fn meridian_eds_camel_set_folder_subscription(
             source_uid: *const c_char,
             folder_name: *const c_char,
             subscribed: i32,
             out_error: *mut *mut c_char,
-            cancellation_callback: Option<EvolutionEdsCamelCancellationCallback>,
+            cancellation_callback: Option<MeridianEdsCamelCancellationCallback>,
             cancellation_user_data: *mut c_void,
         ) -> i32;
 
         #[allow(dead_code)]
-        pub(super) fn evolution_eds_camel_get_folder_mutation_capabilities(
+        pub(super) fn meridian_eds_camel_get_folder_mutation_capabilities(
             source_uid: *const c_char,
             folder_name: *const c_char,
-            out_capabilities: *mut EvolutionEdsCamelFolderMutationCapabilities,
+            out_capabilities: *mut MeridianEdsCamelFolderMutationCapabilities,
             out_error: *mut *mut c_char,
-            cancellation_callback: Option<EvolutionEdsCamelCancellationCallback>,
+            cancellation_callback: Option<MeridianEdsCamelCancellationCallback>,
             cancellation_user_data: *mut c_void,
         ) -> i32;
 
         #[allow(dead_code)]
-        pub(super) fn evolution_eds_camel_apply_folder_mutation(
+        pub(super) fn meridian_eds_camel_apply_folder_mutation(
             kind: i32,
             source_uid: *const c_char,
             folder_name: *const c_char,
             target_name: *const c_char,
             out_error: *mut *mut c_char,
-            cancellation_callback: Option<EvolutionEdsCamelCancellationCallback>,
+            cancellation_callback: Option<MeridianEdsCamelCancellationCallback>,
             cancellation_user_data: *mut c_void,
         ) -> i32;
 
-        pub(super) fn evolution_eds_camel_apply_operation(
-            operation: *const EvolutionEdsCamelOperation,
+        pub(super) fn meridian_eds_camel_apply_operation(
+            operation: *const MeridianEdsCamelOperation,
             out_error: *mut *mut c_char,
-            cancellation_callback: Option<EvolutionEdsCamelCancellationCallback>,
+            cancellation_callback: Option<MeridianEdsCamelCancellationCallback>,
             cancellation_user_data: *mut c_void,
         ) -> i32;
 
-        pub(super) fn evolution_eds_camel_send_message(
+        pub(super) fn meridian_eds_camel_send_message(
             source_uid: *const c_char,
             raw_message: *const u8,
             raw_message_len: usize,
@@ -1569,7 +1569,7 @@ mod ffi {
             out_error: *mut *mut c_char,
         ) -> i32;
 
-        pub(super) fn evolution_eds_camel_save_message(
+        pub(super) fn meridian_eds_camel_save_message(
             source_uid: *const c_char,
             raw_message: *const u8,
             raw_message_len: usize,
@@ -1577,7 +1577,7 @@ mod ffi {
             out_error: *mut *mut c_char,
         ) -> i32;
 
-        pub(super) fn evolution_eds_camel_watcher_new(
+        pub(super) fn meridian_eds_camel_watcher_new(
             source_uid: *const c_char,
             out_watcher: *mut *mut c_void,
             out_configured_sources: *mut usize,
@@ -1586,38 +1586,38 @@ mod ffi {
             out_error: *mut *mut c_char,
         ) -> i32;
 
-        pub(super) fn evolution_eds_camel_watcher_next_event(
+        pub(super) fn meridian_eds_camel_watcher_next_event(
             watcher: *mut c_void,
             timeout_milliseconds: i32,
-            out_event: *mut EvolutionEdsCamelChangeEvent,
+            out_event: *mut MeridianEdsCamelChangeEvent,
         ) -> i32;
 
-        pub(super) fn evolution_eds_camel_free_change_event(
-            event: *mut EvolutionEdsCamelChangeEvent,
+        pub(super) fn meridian_eds_camel_free_change_event(
+            event: *mut MeridianEdsCamelChangeEvent,
         );
 
-        pub(super) fn evolution_eds_camel_watcher_free(watcher: *mut c_void);
+        pub(super) fn meridian_eds_camel_watcher_free(watcher: *mut c_void);
 
-        pub(super) fn evolution_eds_camel_free_error(error_message: *mut c_char);
+        pub(super) fn meridian_eds_camel_free_error(error_message: *mut c_char);
 
-        pub(super) fn evolution_eds_camel_store_password(
+        pub(super) fn meridian_eds_camel_store_password(
             source_uid: *const c_char,
             password: *const c_char,
             out_error: *mut *mut c_char,
         ) -> i32;
 
-        pub(super) fn evolution_eds_camel_search_folder(
+        pub(super) fn meridian_eds_camel_search_folder(
             source_uid: *const c_char,
             folder_name: *const c_char,
             query_sexpr: *const c_char,
             out_uids: *mut *mut *mut c_char,
             out_count: *mut usize,
             out_error: *mut *mut c_char,
-            cancellation_callback: Option<EvolutionEdsCamelCancellationCallback>,
+            cancellation_callback: Option<MeridianEdsCamelCancellationCallback>,
             cancellation_user_data: *mut c_void,
         ) -> i32;
 
-        pub(super) fn evolution_eds_camel_free_uids(
+        pub(super) fn meridian_eds_camel_free_uids(
             uids: *mut *mut c_char,
             count: usize,
         );
@@ -1635,7 +1635,7 @@ pub fn store_source_password(source_uid: &str, password: &str) -> Result<(), Str
         let mut out_error: *mut std::os::raw::c_char = std::ptr::null_mut();
 
         let ok = unsafe {
-            ffi::evolution_eds_camel_store_password(
+            ffi::meridian_eds_camel_store_password(
                 source_uid_c.as_ptr(),
                 password_c.as_ptr(),
                 &mut out_error,
@@ -1649,7 +1649,7 @@ pub fn store_source_password(source_uid: &str, password: &str) -> Result<(), Str
                         .to_string_lossy()
                         .into_owned()
                 };
-                unsafe { ffi::evolution_eds_camel_free_error(out_error) };
+                unsafe { ffi::meridian_eds_camel_free_error(out_error) };
                 err_str
             } else {
                 "Passwort konnte nicht im Schlüsselbund hinterlegt werden".to_string()
@@ -1658,23 +1658,13 @@ pub fn store_source_password(source_uid: &str, password: &str) -> Result<(), Str
         }
         Ok(())
     }
-    #[cfg(target_os = "macos")]
-    {
-        crate::services::credential_service::CredentialService::set_password(source_uid, password)
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        let _ = (source_uid, password);
-        Ok(())
-    }
 }
 
 /// Load enabled remote EDS mail accounts through the original Camel
-/// providers.  macOS builds intentionally omit this Linux-only adapter; the
-/// Linux build script requires the EDS development packages before enabling
-/// the same code path.
+/// providers. The Linux build script requires the EDS development packages
+/// before enabling the same code path.
 pub(crate) fn default_page_limit() -> i32 {
-    std::env::var("EVOLUTION_GTK4_CAMEL_MESSAGES_PER_FOLDER")
+    std::env::var("MERIDIAN_CAMEL_MESSAGES_PER_FOLDER").or_else(|_| std::env::var("EVOLUTION_GTK4_CAMEL_MESSAGES_PER_FOLDER"))
         .ok()
         .and_then(|value| value.parse::<i32>().ok())
         .filter(|value| *value > 0)
@@ -1788,29 +1778,15 @@ pub(crate) fn load_messages_page_with_progress_and_cancellation(
 
     #[cfg(not(eds_camel_bridge))]
     {
-        #[cfg(target_os = "macos")]
-        {
-            crate::services::portable_mail_engine::load_messages_page(
-                source_uid,
-                folder_name,
-                message_offset,
-                max_messages_per_folder,
-                cancelled,
-                progress_sender,
-            )
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = (
-                source_uid,
-                folder_name,
-                message_offset,
-                max_messages_per_folder,
-                cancelled,
-                progress_sender,
-            );
-            Err("native EDS/Camel adapter is not available in this build".to_string())
-        }
+        let _ = (
+            source_uid,
+            folder_name,
+            message_offset,
+            max_messages_per_folder,
+            cancelled,
+            progress_sender,
+        );
+        Err("native EDS/Camel adapter is not available in this build".to_string())
     }
 }
 
@@ -1832,7 +1808,7 @@ fn load_messages_native(
     }
 
     unsafe extern "C" fn progress_callback(
-        progress: *const ffi::EvolutionEdsCamelSyncProgress,
+        progress: *const ffi::MeridianEdsCamelSyncProgress,
         user_data: *mut c_void,
     ) {
         if progress.is_null() || user_data.is_null() {
@@ -1931,12 +1907,12 @@ fn load_messages_native(
         });
     let progress_callback = progress_context
         .as_ref()
-        .map(|_| progress_callback as ffi::EvolutionEdsCamelProgressCallback);
+        .map(|_| progress_callback as ffi::MeridianEdsCamelProgressCallback);
     let cancellation_user_data = cancelled.map_or(std::ptr::null_mut(), |cancelled| {
         cancelled as *const AtomicBool as *mut c_void
     });
     let cancellation_callback =
-        cancelled.map(|_| cancellation_callback as ffi::EvolutionEdsCamelCancellationCallback);
+        cancelled.map(|_| cancellation_callback as ffi::MeridianEdsCamelCancellationCallback);
 
     // Passing null filters asks the adapter to load every enabled EDS mail
     // account and selectable folder.  The GTK view supplies source/folder
@@ -1945,7 +1921,7 @@ fn load_messages_native(
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     let success = unsafe {
-        ffi::evolution_eds_camel_load_messages(
+        ffi::meridian_eds_camel_load_messages(
             source_uid_ptr,
             folder_name_ptr,
             message_offset,
@@ -1967,16 +1943,16 @@ fn load_messages_native(
 
     let warning = (!error_message.is_null()).then(|| unsafe {
         let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
-        ffi::evolution_eds_camel_free_error(error_message);
+        ffi::meridian_eds_camel_free_error(error_message);
         message
     });
 
     if !success {
         if !records.is_null() {
-            unsafe { ffi::evolution_eds_camel_free_messages(records, record_count) };
+            unsafe { ffi::meridian_eds_camel_free_messages(records, record_count) };
         }
         if !folders.is_null() {
-            unsafe { ffi::evolution_eds_camel_free_folders(folders, folder_count) };
+            unsafe { ffi::meridian_eds_camel_free_folders(folders, folder_count) };
         }
         return Err(warning.unwrap_or_else(|| "EDS/Camel mail loading failed".to_string()));
     }
@@ -2061,12 +2037,12 @@ fn load_messages_native(
                 is_selectable: folder.is_selectable != 0,
             });
         }
-        unsafe { ffi::evolution_eds_camel_free_folders(folders, folder_count) };
+        unsafe { ffi::meridian_eds_camel_free_folders(folders, folder_count) };
     }
 
     let messages = parse_native_messages(records, record_count, cancelled);
     if !records.is_null() {
-        unsafe { ffi::evolution_eds_camel_free_messages(records, record_count) };
+        unsafe { ffi::meridian_eds_camel_free_messages(records, record_count) };
     }
     let mut messages = messages?;
 
@@ -2154,12 +2130,12 @@ pub(crate) fn load_subscription_folders_with_cancellation(
             cancelled as *const AtomicBool as *mut c_void
         });
         let cancellation_callback =
-            cancelled.map(|_| cancellation_callback as ffi::EvolutionEdsCamelCancellationCallback);
+            cancelled.map(|_| cancellation_callback as ffi::MeridianEdsCamelCancellationCallback);
         let _native_lock = CAMEL_NATIVE_LOCK
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let success = unsafe {
-            ffi::evolution_eds_camel_load_subscription_folders(
+            ffi::meridian_eds_camel_load_subscription_folders(
                 source_uid_c.as_ptr(),
                 &mut records,
                 &mut record_count,
@@ -2171,14 +2147,14 @@ pub(crate) fn load_subscription_folders_with_cancellation(
         };
         let error = (!error_message.is_null()).then(|| unsafe {
             let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
-            ffi::evolution_eds_camel_free_error(error_message);
+            ffi::meridian_eds_camel_free_error(error_message);
             message
         });
 
         if !success {
             if !records.is_null() {
                 unsafe {
-                    ffi::evolution_eds_camel_free_subscription_folders(records, record_count)
+                    ffi::meridian_eds_camel_free_subscription_folders(records, record_count)
                 };
             }
             return Err(error.unwrap_or_else(|| {
@@ -2202,7 +2178,7 @@ pub(crate) fn load_subscription_folders_with_cancellation(
                     is_subscribed: record.is_subscribed != 0,
                 });
             }
-            unsafe { ffi::evolution_eds_camel_free_subscription_folders(records, record_count) };
+            unsafe { ffi::meridian_eds_camel_free_subscription_folders(records, record_count) };
         }
         if let Some(cancelled) = cancelled {
             cancellation_error(cancelled, "Camel-Abonnementsliste")?;
@@ -2212,15 +2188,8 @@ pub(crate) fn load_subscription_folders_with_cancellation(
 
     #[cfg(not(eds_camel_bridge))]
     {
-        #[cfg(target_os = "macos")]
-        {
-            crate::services::portable_mail_engine::load_subscription_folders(source_uid, cancelled)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = cancelled;
-            Err("native EDS/Camel adapter is not available in this build".to_string())
-        }
+        let _ = (source_uid, cancelled);
+        Err("native EDS/Camel adapter is not available in this build".to_string())
     }
 }
 
@@ -2270,12 +2239,12 @@ pub(crate) fn set_folder_subscription_with_cancellation(
             cancelled as *const AtomicBool as *mut c_void
         });
         let cancellation_callback =
-            cancelled.map(|_| cancellation_callback as ffi::EvolutionEdsCamelCancellationCallback);
+            cancelled.map(|_| cancellation_callback as ffi::MeridianEdsCamelCancellationCallback);
         let _native_lock = CAMEL_NATIVE_LOCK
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let success = unsafe {
-            ffi::evolution_eds_camel_set_folder_subscription(
+            ffi::meridian_eds_camel_set_folder_subscription(
                 source_uid.as_ptr(),
                 folder_name.as_ptr(),
                 subscribed as i32,
@@ -2286,7 +2255,7 @@ pub(crate) fn set_folder_subscription_with_cancellation(
         };
         let error = (!error_message.is_null()).then(|| unsafe {
             let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
-            ffi::evolution_eds_camel_free_error(error_message);
+            ffi::meridian_eds_camel_free_error(error_message);
             message
         });
         if success {
@@ -2300,20 +2269,8 @@ pub(crate) fn set_folder_subscription_with_cancellation(
 
     #[cfg(not(eds_camel_bridge))]
     {
-        #[cfg(target_os = "macos")]
-        {
-            crate::services::portable_mail_engine::set_folder_subscription(
-                source_uid,
-                folder_name,
-                subscribed,
-                cancelled,
-            )
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = (subscribed, cancelled);
-            Err("native EDS/Camel adapter is not available in this build".to_string())
-        }
+        let _ = (source_uid, folder_name, subscribed, cancelled);
+        Err("native EDS/Camel adapter is not available in this build".to_string())
     }
 }
 
@@ -2356,7 +2313,7 @@ pub(crate) fn folder_mutation_capabilities_with_cancellation(
             .map_err(|_| "EDS-Quellen-ID enthält ein ungültiges NUL-Byte".to_string())?;
         let folder_name = CString::new(folder_name)
             .map_err(|_| "Camel-Ordnername enthält ein ungültiges NUL-Byte".to_string())?;
-        let mut capabilities = ffi::EvolutionEdsCamelFolderMutationCapabilities {
+        let mut capabilities = ffi::MeridianEdsCamelFolderMutationCapabilities {
             can_create_child: 0,
             can_rename: 0,
             can_delete: 0,
@@ -2369,12 +2326,12 @@ pub(crate) fn folder_mutation_capabilities_with_cancellation(
             cancelled as *const AtomicBool as *mut c_void
         });
         let cancellation_callback =
-            cancelled.map(|_| cancellation_callback as ffi::EvolutionEdsCamelCancellationCallback);
+            cancelled.map(|_| cancellation_callback as ffi::MeridianEdsCamelCancellationCallback);
         let _native_lock = CAMEL_NATIVE_LOCK
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let success = unsafe {
-            ffi::evolution_eds_camel_get_folder_mutation_capabilities(
+            ffi::meridian_eds_camel_get_folder_mutation_capabilities(
                 source_uid.as_ptr(),
                 folder_name.as_ptr(),
                 &mut capabilities,
@@ -2385,7 +2342,7 @@ pub(crate) fn folder_mutation_capabilities_with_cancellation(
         };
         let error = (!error_message.is_null()).then(|| unsafe {
             let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
-            ffi::evolution_eds_camel_free_error(error_message);
+            ffi::meridian_eds_camel_free_error(error_message);
             message
         });
         if !success {
@@ -2410,19 +2367,8 @@ pub(crate) fn folder_mutation_capabilities_with_cancellation(
 
     #[cfg(not(eds_camel_bridge))]
     {
-        #[cfg(target_os = "macos")]
-        {
-            let _ = cancelled;
-            crate::services::portable_mail_engine::folder_mutation_capabilities(
-                source_uid,
-                folder_name,
-            )
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = cancelled;
-            Err("native EDS/Camel adapter is not available in this build".to_string())
-        }
+        let _ = (source_uid, folder_name, cancelled);
+        Err("native EDS/Camel adapter is not available in this build".to_string())
     }
 }
 
@@ -2486,12 +2432,12 @@ pub(crate) fn apply_folder_mutation_with_cancellation(
             cancelled as *const AtomicBool as *mut c_void
         });
         let cancellation_callback =
-            cancelled.map(|_| cancellation_callback as ffi::EvolutionEdsCamelCancellationCallback);
+            cancelled.map(|_| cancellation_callback as ffi::MeridianEdsCamelCancellationCallback);
         let _native_lock = CAMEL_NATIVE_LOCK
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let success = unsafe {
-            ffi::evolution_eds_camel_apply_folder_mutation(
+            ffi::meridian_eds_camel_apply_folder_mutation(
                 kind.ffi_code(),
                 source_uid.as_ptr(),
                 folder_name.as_ptr(),
@@ -2505,7 +2451,7 @@ pub(crate) fn apply_folder_mutation_with_cancellation(
         };
         let error = (!error_message.is_null()).then(|| unsafe {
             let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
-            ffi::evolution_eds_camel_free_error(error_message);
+            ffi::meridian_eds_camel_free_error(error_message);
             message
         });
         if success {
@@ -2521,21 +2467,8 @@ pub(crate) fn apply_folder_mutation_with_cancellation(
 
     #[cfg(not(eds_camel_bridge))]
     {
-        #[cfg(target_os = "macos")]
-        {
-            crate::services::portable_mail_engine::apply_folder_mutation(
-                kind,
-                source_uid,
-                folder_name,
-                target_name,
-                cancelled,
-            )
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = (kind, target_name, cancelled);
-            Err("native EDS/Camel adapter is not available in this build".to_string())
-        }
+        let _ = (kind, source_uid, folder_name, target_name, cancelled);
+        Err("native EDS/Camel adapter is not available in this build".to_string())
     }
 }
 
@@ -2579,7 +2512,7 @@ fn follow_up_metadata_from_native(
 
 #[cfg(eds_camel_bridge)]
 fn parse_native_messages(
-    records: *const ffi::EvolutionEdsCamelMessage,
+    records: *const ffi::MeridianEdsCamelMessage,
     record_count: usize,
     cancelled: Option<&AtomicBool>,
 ) -> Result<Vec<ParsedMail>, String> {
@@ -2720,7 +2653,7 @@ fn load_raw_message_uncached(
         return Ok(source);
     }
 
-    // Check if the message is already cached locally on disk in Evolution's cache (<1ms, no Camel lock):
+    // Check if the message is already cached locally on disk in summary cache (<1ms, no Camel lock):
     if let Some(cache) = crate::services::evolution_summary_cache::find_evolution_account_cache(Some(&location.source_uid)) {
         if let Some(raw) = crate::services::evolution_summary_cache::read_cached_raw_message_direct(
             &cache.cache_dir,
@@ -2739,15 +2672,8 @@ fn load_raw_message_uncached(
 
     #[cfg(not(eds_camel_bridge))]
     {
-        #[cfg(target_os = "macos")]
-        {
-            crate::services::portable_mail_engine::load_raw_message(location, cancelled)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = (location, cancelled);
-            Err("native EDS/Camel adapter is not available in this build".to_string())
-        }
+        let _ = (location, cancelled);
+        Err("native EDS/Camel adapter is not available in this build".to_string())
     }
 }
 
@@ -2787,7 +2713,7 @@ fn load_raw_message_native(
     // Do not make the obsolete request connect or touch the provider.
     cancellation_error(cancelled, "Nachrichtenquelle laden")?;
     let success = unsafe {
-        ffi::evolution_eds_camel_load_messages_by_uid(
+        ffi::meridian_eds_camel_load_messages_by_uid(
             source_uid.as_ptr(),
             folder_name.as_ptr(),
             message_uids.as_ptr(),
@@ -2795,18 +2721,18 @@ fn load_raw_message_native(
             &mut records,
             &mut record_count,
             &mut error_message,
-            Some(cancellation_callback as ffi::EvolutionEdsCamelCancellationCallback),
+            Some(cancellation_callback as ffi::MeridianEdsCamelCancellationCallback),
             cancelled as *const AtomicBool as *mut c_void,
         ) != 0
     };
     let warning = (!error_message.is_null()).then(|| unsafe {
         let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
-        ffi::evolution_eds_camel_free_error(error_message);
+        ffi::meridian_eds_camel_free_error(error_message);
         message
     });
     if !success {
         if !records.is_null() {
-            unsafe { ffi::evolution_eds_camel_free_messages(records, record_count) };
+            unsafe { ffi::meridian_eds_camel_free_messages(records, record_count) };
         }
         return Err(warning.unwrap_or_else(|| {
             "Die originale EDS/Camel-Nachrichtenquelle konnte nicht geladen werden".to_string()
@@ -2824,7 +2750,7 @@ fn load_raw_message_native(
         })
     };
     if !records.is_null() {
-        unsafe { ffi::evolution_eds_camel_free_messages(records, record_count) };
+        unsafe { ffi::meridian_eds_camel_free_messages(records, record_count) };
     }
     cancellation_error(cancelled, "Nachrichtenquelle laden")?;
     raw.ok_or_else(|| "EDS/Camel lieferte keine originale Nachrichtenquelle".to_string())
@@ -2875,7 +2801,7 @@ fn load_messages_for_uids_native(
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     let success = unsafe {
-        ffi::evolution_eds_camel_load_messages_by_uid(
+        ffi::meridian_eds_camel_load_messages_by_uid(
             source_uid.as_ptr(),
             folder_name.as_ptr(),
             message_uid_ptrs.as_ptr(),
@@ -2883,19 +2809,19 @@ fn load_messages_for_uids_native(
             &mut records,
             &mut record_count,
             &mut error_message,
-            Some(cancellation_callback as ffi::EvolutionEdsCamelCancellationCallback),
+            Some(cancellation_callback as ffi::MeridianEdsCamelCancellationCallback),
             cancellation_user_data,
         ) != 0
     };
     let warning = (!error_message.is_null()).then(|| unsafe {
         let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
-        ffi::evolution_eds_camel_free_error(error_message);
+        ffi::meridian_eds_camel_free_error(error_message);
         message
     });
 
     if !success {
         if !records.is_null() {
-            unsafe { ffi::evolution_eds_camel_free_messages(records, record_count) };
+            unsafe { ffi::meridian_eds_camel_free_messages(records, record_count) };
         }
         return Err(warning
             .unwrap_or_else(|| "Inkrementelles EDS/Camel-Laden ist fehlgeschlagen".to_string()));
@@ -2903,7 +2829,7 @@ fn load_messages_for_uids_native(
 
     let messages = parse_native_messages(records, record_count, Some(cancelled));
     if !records.is_null() {
-        unsafe { ffi::evolution_eds_camel_free_messages(records, record_count) };
+        unsafe { ffi::meridian_eds_camel_free_messages(records, record_count) };
     }
     let messages = messages?;
     cancellation_error(cancelled, "Inkrementelles Camel-Laden")?;
@@ -2940,7 +2866,7 @@ pub(crate) fn search_folder_sync(
             cancelled as *const AtomicBool as *mut c_void
         });
         let cancellation_callback =
-            cancelled.map(|_| cancellation_callback as ffi::EvolutionEdsCamelCancellationCallback);
+            cancelled.map(|_| cancellation_callback as ffi::MeridianEdsCamelCancellationCallback);
 
         let mut out_uids: *mut *mut c_char = std::ptr::null_mut();
         let mut out_count: usize = 0;
@@ -2951,7 +2877,7 @@ pub(crate) fn search_folder_sync(
             .unwrap_or_else(|poison| poison.into_inner());
 
         let success = unsafe {
-            ffi::evolution_eds_camel_search_folder(
+            ffi::meridian_eds_camel_search_folder(
                 source_uid_c.as_ptr(),
                 folder_name_c.as_ptr(),
                 query_sexpr_c.as_ptr(),
@@ -2965,7 +2891,7 @@ pub(crate) fn search_folder_sync(
 
         let warning = (!error_message.is_null()).then(|| unsafe {
             let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
-            ffi::evolution_eds_camel_free_error(error_message);
+            ffi::meridian_eds_camel_free_error(error_message);
             message
         });
 
@@ -2982,7 +2908,7 @@ pub(crate) fn search_folder_sync(
                     uids.push(uid);
                 }
             }
-            unsafe { ffi::evolution_eds_camel_free_uids(out_uids, out_count) };
+            unsafe { ffi::meridian_eds_camel_free_uids(out_uids, out_count) };
         }
 
         Ok(uids)
@@ -3041,7 +2967,7 @@ pub(crate) fn start_change_monitor()
             let mut failed_sources = 0usize;
             let mut error_message: *mut c_char = std::ptr::null_mut();
             let result = unsafe {
-                ffi::evolution_eds_camel_watcher_new(
+                ffi::meridian_eds_camel_watcher_new(
                     std::ptr::null(),
                     &mut watcher,
                     &mut configured_sources,
@@ -3053,7 +2979,7 @@ pub(crate) fn start_change_monitor()
 
             let warning = (!error_message.is_null()).then(|| unsafe {
                 let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
-                ffi::evolution_eds_camel_free_error(error_message);
+                ffi::meridian_eds_camel_free_error(error_message);
                 message
             });
 
@@ -3078,14 +3004,14 @@ pub(crate) fn start_change_monitor()
                     warning,
                 }),
             ) {
-                unsafe { ffi::evolution_eds_camel_watcher_free(watcher) };
+                unsafe { ffi::meridian_eds_camel_watcher_free(watcher) };
                 return;
             }
 
             let mut normalizer = CamelChangeNormalizer::default();
 
             while !cancellation.load(Ordering::Relaxed) {
-                let mut raw_event = ffi::EvolutionEdsCamelChangeEvent {
+                let mut raw_event = ffi::MeridianEdsCamelChangeEvent {
                     kind: 0,
                     source_uid: std::ptr::null_mut(),
                     folder_name: std::ptr::null_mut(),
@@ -3105,7 +3031,7 @@ pub(crate) fn start_change_monitor()
                     recent_uid_count: 0,
                 };
                 let next = unsafe {
-                    ffi::evolution_eds_camel_watcher_next_event(watcher, 1000, &mut raw_event)
+                    ffi::meridian_eds_camel_watcher_next_event(watcher, 1000, &mut raw_event)
                 };
                 if next < 0 {
                     let _ = send_watcher_event(
@@ -3133,7 +3059,7 @@ pub(crate) fn start_change_monitor()
                     _ => None,
                 }) else {
                     let unknown_kind = raw_event.kind;
-                    unsafe { ffi::evolution_eds_camel_free_change_event(&mut raw_event) };
+                    unsafe { ffi::meridian_eds_camel_free_change_event(&mut raw_event) };
                     if !send_watcher_event(
                         &sender,
                         &cancellation,
@@ -3168,7 +3094,7 @@ pub(crate) fn start_change_monitor()
                     changed_uids: c_strings(raw_event.changed_uids, raw_event.changed_uid_count),
                     recent_uids: c_strings(raw_event.recent_uids, raw_event.recent_uid_count),
                 };
-                unsafe { ffi::evolution_eds_camel_free_change_event(&mut raw_event) };
+                unsafe { ffi::meridian_eds_camel_free_change_event(&mut raw_event) };
                 let event = match normalizer.normalize(event) {
                     Ok(event) => CamelSyncEvent::Change(event),
                     Err(reason) => CamelSyncEvent::ResyncRequired(reason),
@@ -3178,7 +3104,7 @@ pub(crate) fn start_change_monitor()
                 }
             }
 
-            unsafe { ffi::evolution_eds_camel_watcher_free(watcher) };
+            unsafe { ffi::meridian_eds_camel_watcher_free(watcher) };
         });
 
         Some((cancelled, receiver))
@@ -3340,9 +3266,9 @@ mod tests {
             assert!(header.contains(field), "header misses {field}");
         }
         for symbol in [
-            "evolution_eds_camel_load_subscription_folders",
-            "evolution_eds_camel_set_folder_subscription",
-            "evolution_eds_camel_free_subscription_folders",
+            "meridian_eds_camel_load_subscription_folders",
+            "meridian_eds_camel_set_folder_subscription",
+            "meridian_eds_camel_free_subscription_folders",
         ] {
             assert!(header.contains(symbol), "header misses {symbol}");
             assert!(rust.contains(symbol), "Rust FFI misses {symbol}");
@@ -3412,10 +3338,10 @@ mod tests {
         let rust = include_str!("camel_mail_service.rs");
 
         for symbol in [
-            "evolution_eds_camel_get_folder_mutation_capabilities",
-            "evolution_eds_camel_apply_folder_mutation",
-            "EVOLUTION_EDS_CAMEL_FOLDER_CREATE_CHILD",
-            "EVOLUTION_EDS_CAMEL_FOLDER_REFRESH",
+            "meridian_eds_camel_get_folder_mutation_capabilities",
+            "meridian_eds_camel_apply_folder_mutation",
+            "MERIDIAN_EDS_CAMEL_FOLDER_CREATE_CHILD",
+            "MERIDIAN_EDS_CAMEL_FOLDER_REFRESH",
         ] {
             assert!(header.contains(symbol), "header misses {symbol}");
             assert!(rust.contains(symbol), "Rust FFI misses {symbol}");
@@ -4072,7 +3998,7 @@ fn apply_operation_with_cancellation(
             .as_ref()
             .map_or(std::ptr::null(), |value| value.as_ptr());
         let mut error_message: *mut c_char = std::ptr::null_mut();
-        let ffi_operation = ffi::EvolutionEdsCamelOperation {
+        let ffi_operation = ffi::MeridianEdsCamelOperation {
             kind,
             source_uid: source_uid.as_ptr(),
             folder_name: folder_name.as_ptr(),
@@ -4091,13 +4017,13 @@ fn apply_operation_with_cancellation(
             cancelled as *const AtomicBool as *mut c_void
         });
         let cancellation_callback =
-            cancelled.map(|_| cancellation_callback as ffi::EvolutionEdsCamelCancellationCallback);
+            cancelled.map(|_| cancellation_callback as ffi::MeridianEdsCamelCancellationCallback);
 
         let _native_lock = CAMEL_NATIVE_LOCK
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let result = unsafe {
-            ffi::evolution_eds_camel_apply_operation(
+            ffi::meridian_eds_camel_apply_operation(
                 &ffi_operation,
                 &mut error_message,
                 cancellation_callback,
@@ -4106,7 +4032,7 @@ fn apply_operation_with_cancellation(
         };
         let error = (!error_message.is_null()).then(|| unsafe {
             let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
-            ffi::evolution_eds_camel_free_error(error_message);
+            ffi::meridian_eds_camel_free_error(error_message);
             message
         });
 
@@ -4133,16 +4059,8 @@ fn apply_operation_with_cancellation(
 
     #[cfg(not(eds_camel_bridge))]
     {
-        #[cfg(target_os = "macos")]
-        {
-            crate::services::portable_mail_engine::apply_operation(&operation, cancelled)
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = (operation, cancelled);
-            Err("native EDS/Camel adapter is not available in this build".to_string())
-        }
+        let _ = (operation, cancelled);
+        Err("native EDS/Camel adapter is not available in this build".to_string())
     }
 }
 
@@ -4404,7 +4322,7 @@ pub(crate) fn send_message_with_cancellation(
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let result = unsafe {
-            ffi::evolution_eds_camel_send_message(
+            ffi::meridian_eds_camel_send_message(
                 source_uid.as_ptr(),
                 raw_message.as_ptr(),
                 raw_message.len(),
@@ -4414,7 +4332,7 @@ pub(crate) fn send_message_with_cancellation(
         };
         let error = (!error_message.is_null()).then(|| unsafe {
             let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
-            ffi::evolution_eds_camel_free_error(error_message);
+            ffi::meridian_eds_camel_free_error(error_message);
             message
         });
 
@@ -4427,20 +4345,8 @@ pub(crate) fn send_message_with_cancellation(
 
     #[cfg(not(eds_camel_bridge))]
     {
-        #[cfg(target_os = "macos")]
-        {
-            crate::services::portable_mail_engine::send_message(
-                source_uid,
-                raw_message,
-                cancelled.as_ref(),
-            )
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = (source_uid, raw_message, cancelled);
-            Err("native EDS/Camel adapter is not available in this build".to_string())
-        }
+        let _ = (source_uid, raw_message, cancelled);
+        Err("native EDS/Camel adapter is not available in this build".to_string())
     }
 }
 
@@ -4482,7 +4388,7 @@ pub(crate) fn save_message(
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner());
             let result = unsafe {
-                ffi::evolution_eds_camel_save_message(
+                ffi::meridian_eds_camel_save_message(
                     source_uid.as_ptr(),
                     raw_message.as_ptr(),
                     raw_message.len(),
@@ -4492,7 +4398,7 @@ pub(crate) fn save_message(
             };
             let error = (!error_message.is_null()).then(|| unsafe {
                 let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
-                ffi::evolution_eds_camel_free_error(error_message);
+                ffi::meridian_eds_camel_free_error(error_message);
                 message
             });
 
@@ -4512,7 +4418,7 @@ pub(crate) fn save_message(
 }
 
 pub(crate) const fn native_adapter_available() -> bool {
-    cfg!(any(eds_camel_bridge, target_os = "macos"))
+    cfg!(eds_camel_bridge)
 }
 
 #[cfg(eds_camel_bridge)]

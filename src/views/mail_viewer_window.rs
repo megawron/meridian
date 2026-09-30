@@ -88,7 +88,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for MailViewerWindow {
-        const NAME: &'static str = "EvolutionMailViewerWindow";
+        const NAME: &'static str = "MeridianMailViewerWindow";
         type Type = super::MailViewerWindow;
         type ParentType = adw::ApplicationWindow;
     }
@@ -981,7 +981,7 @@ impl MailViewerWindow {
             return;
         }
 
-        let attachments = message.attachments();
+        let attachments = message.user_attachments();
         if attachments.is_empty() {
             scroll.set_visible(false);
             return;
@@ -1063,7 +1063,7 @@ impl MailViewerWindow {
             let fname = att.filename.clone();
             let content = att.content.clone();
             btn_open.connect_clicked(move |_| {
-                let temp_dir = std::env::temp_dir().join("evolution4-attachments");
+                let temp_dir = std::env::temp_dir().join("meridian-attachments");
                 let _ = fs::create_dir_all(&temp_dir);
                 let path = temp_dir.join(&fname);
                 if fs::write(&path, content.as_ref()).is_ok() {
@@ -1516,29 +1516,21 @@ impl MailViewerWindow {
 
             match res {
                 Ok(doc) => {
-                    #[cfg(target_os = "linux")]
-                    {
-                        if let Some(viewer) = win.imp().mail_viewer.borrow().as_ref() {
-                            let win_weak2 = win.downgrade();
-                            viewer.print_document(&doc, win.upcast_ref(), move |result| {
-                                if let Some(win) = win_weak2.upgrade() {
-                                    match result {
-                                        Ok(crate::views::mail_viewer::MailPrintDialogResult::Printed) => {
-                                            win.show_toast(&gettext("Print job sent to system"));
-                                        }
-                                        Ok(crate::views::mail_viewer::MailPrintDialogResult::Cancelled) => {
-                                            win.show_toast(&gettext("Printing cancelled"));
-                                        }
-                                        Err(err) => win.show_toast(&format!("{}: {err}", gettext("Print error"))),
+                    if let Some(viewer) = win.imp().mail_viewer.borrow().as_ref() {
+                        let win_weak2 = win.downgrade();
+                        viewer.print_document(&doc, win.upcast_ref(), move |result| {
+                            if let Some(win) = win_weak2.upgrade() {
+                                match result {
+                                    Ok(crate::views::mail_viewer::MailPrintDialogResult::Printed) => {
+                                        win.show_toast(&gettext("Print job sent to system"));
                                     }
+                                    Ok(crate::views::mail_viewer::MailPrintDialogResult::Cancelled) => {
+                                        win.show_toast(&gettext("Printing cancelled"));
+                                    }
+                                    Err(err) => win.show_toast(&format!("{}: {err}", gettext("Print error"))),
                                 }
-                            });
-                        }
-                    }
-                    #[cfg(not(target_os = "linux"))]
-                    {
-                        let _ = doc;
-                        win.show_toast(MailViewer::native_print_unavailable());
+                            }
+                        });
                     }
                 }
                 Err(_) => {

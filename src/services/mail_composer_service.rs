@@ -367,7 +367,7 @@ fn build_rfc822_parts(
         .filter(|value| !value.trim().is_empty())
         .map(|value| format_message_id("Message-ID", value))
         .transpose()?
-        .unwrap_or_else(|| format!("<{}@evolution-gtk4.local>", uuid::Uuid::new_v4().simple()));
+        .unwrap_or_else(|| format!("<{}@meridian.local>", uuid::Uuid::new_v4().simple()));
 
     let mut raw = String::new();
     append_header_line(&mut raw, "Date", &date_value);
@@ -771,7 +771,7 @@ fn encode_text_body(body: &str, charset: &str) -> Result<Vec<u8>, String> {
 }
 
 fn new_boundary() -> String {
-    format!("=_EvolutionGTK4_{}", uuid::Uuid::new_v4().simple())
+    format!("=_Meridian_{}", uuid::Uuid::new_v4().simple())
 }
 
 fn append_multipart_header(raw: &mut String, kind: &str, boundary: &str) {
@@ -1392,7 +1392,7 @@ mod tests {
     #[test]
     fn atomic_eml_save_can_be_cancelled_without_touching_the_destination() {
         let root = std::env::temp_dir().join(format!(
-            "evolution-gtk4-atomic-cancel-{}-{}",
+            "meridian-atomic-cancel-{}-{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
@@ -1423,7 +1423,7 @@ mod tests {
     #[test]
     fn atomic_eml_save_replaces_the_destination_only_after_commit() {
         let root = std::env::temp_dir().join(format!(
-            "evolution-gtk4-atomic-save-{}-{}",
+            "meridian-atomic-save-{}-{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
@@ -1905,7 +1905,7 @@ mod tests {
     #[test]
     fn rejects_directories_as_attachments() {
         let path = std::env::temp_dir().join(format!(
-            "evolution-gtk4-attachment-directory-{}-{}",
+            "meridian-attachment-directory-{}-{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
@@ -1985,7 +1985,7 @@ mod tests {
 
     fn temporary_file(label: &str, contents: &[u8]) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "evolution-gtk4-{label}-{}-{}.bin",
+            "meridian-{label}-{}-{}.bin",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));

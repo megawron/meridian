@@ -107,7 +107,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for MailViewer {
-        const NAME: &'static str = "EvolutionMailViewer";
+        const NAME: &'static str = "MeridianMailViewer";
         type Type = super::MailViewer;
         type ParentType = gtk::Widget;
 
@@ -289,10 +289,7 @@ impl MailViewer {
             .hexpand(true)
             .vexpand(true)
             .build();
-        #[cfg(not(target_os = "linux"))]
-        fallback_view
-            .buffer()
-            .set_text(&crate::i18n::gettext("No message selected."));
+
         let fallback_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
@@ -312,81 +309,63 @@ impl MailViewer {
             .fallback_scroll
             .replace(Some(fallback_scroll.clone()));
 
-        #[cfg(target_os = "linux")]
-        {
-            // WebKitGTK is the production renderer on Linux. It is kept
-            // behind the target gate because WebKitGTK 6.0 is not shipped by
-            // macOS package managers; the GTK text view remains a local
-            // development and load-failure fallback. Creating the WebKit
-            // process is deliberately deferred until a message really needs
-            // HTML rendering, so a cold EDS start does not compete with the
-            // first GTK frame.
-            let placeholder = adw::StatusPage::builder()
-                .title(&crate::i18n::gettext("No message selected"))
-                .description(&crate::i18n::gettext("The secure message viewer will load when opened."))
-                .icon_name("mail-read-symbolic")
-                .hexpand(true)
-                .vexpand(true)
-                .build();
-            let loading = adw::StatusPage::builder()
-                .title(&crate::i18n::gettext("Loading message…"))
-                .description(&crate::i18n::gettext("Preparing secure view."))
-                .icon_name("view-refresh-symbolic")
-                .hexpand(true)
-                .vexpand(true)
-                .build();
-            let error_label = gtk::Label::builder()
-                .label(&crate::i18n::gettext("HTML rendering failed. A safe plain text view is displayed."))
-                .wrap(true)
-                .xalign(0.0)
-                .css_classes(vec!["error"])
-                .margin_top(8)
-                .margin_start(12)
-                .margin_end(12)
-                .margin_bottom(4)
-                .visible(false)
-                .build();
-            let error_state = gtk::Box::builder()
-                .orientation(gtk::Orientation::Vertical)
-                .spacing(4)
-                .hexpand(true)
-                .vexpand(true)
-                .build();
-            error_state.append(&error_label);
-            error_state.append(&fallback_scroll);
+        let placeholder = adw::StatusPage::builder()
+            .title(&crate::i18n::gettext("No message selected"))
+            .description(&crate::i18n::gettext("The secure message viewer will load when opened."))
+            .icon_name("mail-read-symbolic")
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        let loading = adw::StatusPage::builder()
+            .title(&crate::i18n::gettext("Loading message…"))
+            .description(&crate::i18n::gettext("Preparing secure view."))
+            .icon_name("view-refresh-symbolic")
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        let error_label = gtk::Label::builder()
+            .label(&crate::i18n::gettext("HTML rendering failed. A safe plain text view is displayed."))
+            .wrap(true)
+            .xalign(0.0)
+            .css_classes(vec!["error"])
+            .margin_top(8)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_bottom(4)
+            .visible(false)
+            .build();
+        let error_state = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        error_state.append(&error_label);
+        error_state.append(&fallback_scroll);
 
-            let load_error = adw::StatusPage::builder()
-                .title(&crate::i18n::gettext("Unable to load message"))
-                .description(&crate::i18n::gettext("The message content could not be retrieved from the mail server."))
-                .icon_name("dialog-error-symbolic")
-                .hexpand(true)
-                .vexpand(true)
-                .build();
+        let load_error = adw::StatusPage::builder()
+            .title(&crate::i18n::gettext("Unable to load message"))
+            .description(&crate::i18n::gettext("The message content could not be retrieved from the mail server."))
+            .icon_name("dialog-error-symbolic")
+            .hexpand(true)
+            .vexpand(true)
+            .build();
 
-            let renderer_stack = gtk::Stack::builder()
-                .hexpand(true)
-                .vexpand(true)
-                .hhomogeneous(false)
-                .vhomogeneous(false)
-                .transition_type(gtk::StackTransitionType::Crossfade)
-                .build();
-            renderer_stack.add_named(&placeholder, Some("placeholder"));
-            renderer_stack.add_named(&loading, Some("loading"));
-            renderer_stack.add_named(&error_state, Some("error"));
-            renderer_stack.add_named(&load_error, Some("load_error"));
-            renderer_stack.set_visible_child_name("placeholder");
-            box_container.append(&renderer_stack);
-            self.imp().renderer_stack.replace(Some(renderer_stack));
-            self.imp().renderer_error_label.replace(Some(error_label));
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            // WebKitGTK is intentionally not emulated on macOS. The plain
-            // text view keeps the GTK/libadwaita shell testable while Linux
-            // remains the platform for the production HTML renderer.
-            box_container.append(&fallback_scroll);
-        }
+        let renderer_stack = gtk::Stack::builder()
+            .hexpand(true)
+            .vexpand(true)
+            .hhomogeneous(false)
+            .vhomogeneous(false)
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .build();
+        renderer_stack.add_named(&placeholder, Some("placeholder"));
+        renderer_stack.add_named(&loading, Some("loading"));
+        renderer_stack.add_named(&error_state, Some("error"));
+        renderer_stack.add_named(&load_error, Some("load_error"));
+        renderer_stack.set_visible_child_name("placeholder");
+        box_container.append(&renderer_stack);
+        self.imp().renderer_stack.replace(Some(renderer_stack));
+        self.imp().renderer_error_label.replace(Some(error_label));
 
 
         self.imp().fallback_view.replace(Some(fallback_view));
@@ -1044,14 +1023,7 @@ impl MailViewer {
             );
         }
 
-        #[cfg(not(target_os = "linux"))]
-        {
-            // The non-Linux fallback is intentionally plain text. It uses
-            // the same sanitized/fallback decision as Linux.
-            if let Some(view) = self.imp().fallback_view.borrow().as_ref() {
-                view.buffer().set_text(&render_plan.visible_text);
-            }
-        }
+
     }
 
     fn reload_current(&self) {
@@ -1098,40 +1070,22 @@ impl MailViewer {
         self.imp().banner.set_revealed(false);
         self.set_fallback_text(&document.plain_text);
 
-        #[cfg(target_os = "linux")]
-        {
-            self.imp().webview_ready.set(false);
-            let Some(webview) = self.ensure_webkit() else {
-                self.show_renderer_error();
-                return Err("WebKit-Druckdarsteller ist nicht verfügbar".to_string());
-            };
-            let content_uri = renderer_content_uri(render_generation);
-            self.imp().active_webview_generation.set(render_generation);
-            self.imp()
-                .active_webview_uri
-                .replace(Some(content_uri.clone()));
-            webview.load_alternate_html(&document.html, &content_uri, None);
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            let fallback_view = self.imp().fallback_view.borrow();
-            let Some(view) = fallback_view.as_ref() else {
-                return Err("Keine Druckdarstellung ist verfügbar".to_string());
-            };
-            view.buffer().set_text(&document.plain_text);
-        }
+        self.imp().webview_ready.set(false);
+        let Some(webview) = self.ensure_webkit() else {
+            self.show_renderer_error();
+            return Err("WebKit-Druckdarsteller ist nicht verfügbar".to_string());
+        };
+        let content_uri = renderer_content_uri(render_generation);
+        self.imp().active_webview_generation.set(render_generation);
+        self.imp()
+            .active_webview_uri
+            .replace(Some(content_uri.clone()));
+        webview.load_alternate_html(&document.html, &content_uri, None);
 
         Ok(render_generation)
     }
 
-    /// Open the native GTK/WebKit print dialog for a worker-prepared
-    /// document.  The Linux implementation mirrors Evolution's
-    /// `e-mail-printer.c` flow: wait for a fully loaded isolated WebKit view,
-    /// then hand that view to `WebKitPrintOperation`.  Non-Linux builds keep a
-    /// real, explicit capability error instead of presenting a button that
-    /// silently does nothing.
-    #[cfg(target_os = "linux")]
+    /// Open the native GTK/WebKit print dialog for a worker-prepared document.
     pub(crate) fn print_document<F>(
         &self,
         document: &MailPrintDocument,
@@ -1245,10 +1199,6 @@ impl MailViewer {
         });
     }
 
-    #[cfg(not(target_os = "linux"))]
-    pub(crate) fn native_print_unavailable() -> &'static str {
-        "Natives GTK/WebKit-Drucken ist in diesem Build nur unter Linux verfügbar"
-    }
 
     /// Increase text/content zoom level in the viewer.
     pub fn zoom_in(&self) {
@@ -1721,8 +1671,6 @@ impl MailViewer {
                     return self.search_displayed_message(&query);
                 }
             }
-            #[cfg(not(target_os = "linux"))]
-            Some(MessageSearchBackend::WebKit) => {}
             None => {}
         }
 
@@ -1778,7 +1726,7 @@ impl MailViewer {
             return Some(tag.clone());
         }
         let tag = gtk::TextTag::builder()
-            .name("evolution-mail-search-match")
+            .name("meridian-mail-search-match")
             .background("yellow")
             .foreground("black")
             .build();
@@ -1904,7 +1852,7 @@ impl MailViewer {
                 tag.clone()
             } else {
                 let tag = gtk::TextTag::builder()
-                    .name("evolution-mail-zoom")
+                    .name("meridian-mail-zoom")
                     .scale(level)
                     .build();
                 if buffer.tag_table().add(&tag) {
@@ -2325,7 +2273,6 @@ impl MailViewer {
         }
     }
 
-    #[cfg(target_os = "linux")]
     pub(crate) fn show_renderer_error(&self) {
         if self.imp().current_message_id.borrow().is_none() {
             if let Some(label) = self.imp().renderer_error_label.borrow().as_ref() {
@@ -2366,14 +2313,6 @@ impl MailViewer {
         }
     }
 
-    #[cfg(not(target_os = "linux"))]
-    pub(crate) fn show_renderer_error(&self) {
-        if let Some(view) = self.imp().fallback_view.borrow().as_ref() {
-            view.buffer().set_text(&crate::i18n::gettext("Failed to load message."));
-        }
-    }
-
-    #[cfg(target_os = "linux")]
     pub(crate) fn show_message_load_error(&self) {
         if self.imp().current_message_id.borrow().is_none() {
             if let Some(label) = self.imp().renderer_error_label.borrow().as_ref() {
@@ -2396,16 +2335,8 @@ impl MailViewer {
             stack.set_visible_child_name("load_error");
         }
     }
-
-    #[cfg(not(target_os = "linux"))]
-    pub(crate) fn show_message_load_error(&self) {
-        if let Some(view) = self.imp().fallback_view.borrow().as_ref() {
-            view.buffer().set_text(&crate::i18n::gettext("Unable to retrieve message content from mail server."));
-        }
-    }
 }
 
-#[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MailPrintDialogResult {
     Printed,
@@ -2827,7 +2758,6 @@ fn effective_mail_base_uri(base_uri: Option<&str>, remote_images_allowed: bool) 
     (lower.starts_with("http://") || lower.starts_with("https://")).then_some(base_uri)
 }
 
-#[cfg(target_os = "linux")]
 pub(crate) fn detect_desktop_font_family() -> String {
     if gio::SettingsSchemaSource::default()
         .and_then(|s| s.lookup("org.gnome.desktop.interface", true))
@@ -2845,11 +2775,6 @@ pub(crate) fn detect_desktop_font_family() -> String {
             return font_name.trim().to_string();
         }
     }
-    "Cantarell".to_string()
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn detect_desktop_font_family() -> String {
     "Cantarell".to_string()
 }
 
@@ -2888,13 +2813,13 @@ fn redact_renderer_uri(value: &str) -> &'static str {
 
 #[cfg(target_os = "linux")]
 fn renderer_content_uri(generation: u64) -> String {
-    format!("about:blank#evolution-mail-render-{generation}")
+    format!("about:blank#meridian-mail-render-{generation}")
 }
 
 #[cfg(target_os = "linux")]
 fn is_internal_renderer_uri(value: &str) -> bool {
     value.eq_ignore_ascii_case("about:blank")
-        || value.starts_with("about:blank#evolution-mail-render-")
+        || value.starts_with("about:blank#meridian-mail-render-")
 }
 
 pub fn extract_email_address(raw: &str) -> String {
@@ -3033,9 +2958,12 @@ table, div, p, span, a, td, th, center, article, section, header, footer {
   overflow-wrap: anywhere !important;
   word-break: break-word !important;
 }
+h1, h2, h3, h4, h5, h6 {
+  line-height: 1.25 !important;
+}
 img, video, iframe, canvas, svg {
-  max-width: 100% !important;
-  height: auto !important;
+  max-width: 100%;
+  height: auto;
 }
 table {
   border-collapse: collapse !important;
@@ -3091,7 +3019,7 @@ center > table {
   html, body {
     padding: 4px !important;
   }
-  table, tbody, tr, td, th, div, p, span, a, img {
+  table, tbody, tr, td, th, div, p, span, a {
     max-width: 100% !important;
     overflow-wrap: anywhere !important;
     word-break: break-word !important;
@@ -4079,7 +4007,7 @@ mod tests {
 
     #[test]
     fn webview_load_requires_the_exact_current_internal_uri() {
-        let uri = "about:blank#evolution-mail-render-7";
+        let uri = "about:blank#meridian-mail-render-7";
         assert!(webview_load_is_current(7, 7, Some(uri), Some(uri)));
         assert!(!webview_load_is_current(7, 7, Some(uri), None));
         assert!(!webview_load_is_current(6, 7, Some(uri), Some(uri)));
@@ -4087,7 +4015,7 @@ mod tests {
             7,
             7,
             Some(uri),
-            Some("about:blank#evolution-mail-render-6")
+            Some("about:blank#meridian-mail-render-6")
         ));
     }
 
@@ -4683,6 +4611,33 @@ mod tests {
     }
 
     #[test]
+    fn test_karr_dump() {
+        let path = std::path::Path::new("/tmp/meridian-test/fixture-d.eml");
+        if let Ok(bytes) = std::fs::read(&path) {
+            let parsed = crate::services::mail_store_service::parse_rfc822_bytes("test", "inbox", &bytes, false).unwrap();
+            let plan = super::prepare_mail_body(&parsed.html_body, None, true, true);
+            let colors = [
+                "#729FCF".to_string(),
+                "#AD7FA8".to_string(),
+                "#8AE234".to_string(),
+                "#FCAF3E".to_string(),
+                "#E9B96E".to_string(),
+            ];
+            let doc = super::compose_sanitized_mail_document(
+                &plan.body,
+                true,
+                false,
+                true,
+                "system-ui, sans-serif",
+                16,
+                true,
+                &colors,
+            );
+            std::fs::write("/tmp/karr_rendered.html", &doc).unwrap();
+        }
+    }
+
+    #[test]
     fn test_mail_viewer_banner_animations_are_disabled() {
         let _gtk_lock = crate::window::GTK_TEST_MUTEX
             .lock()
@@ -4768,6 +4723,56 @@ mod tests {
             assert!(
                 doc.contains("width=\"24\"") && doc.contains("width=\"120\""),
                 "brevo.eml document must retain fixed-width container tables for eye icon and logo"
+            );
+        }
+    }
+
+    #[test]
+    fn test_karr_eml_renders_without_oversized_images() {
+        assert!(
+            !super::USER_MAIL_OVERRIDE_CSS.contains("img, video, iframe, canvas, svg {\n  max-width: 100% !important;"),
+            "USER_MAIL_OVERRIDE_CSS must not force max-width: 100% !important on images as it overrides author inline max-width"
+        );
+        assert!(
+            super::USER_MAIL_OVERRIDE_CSS.contains("h1, h2, h3, h4, h5, h6 {\n  line-height: 1.25 !important;\n}"),
+            "USER_MAIL_OVERRIDE_CSS must ensure headings line-height is 1.25"
+        );
+
+        let karr_path = std::path::Path::new("/tmp/meridian-test/fixture-d.eml");
+        if let Ok(bytes) = std::fs::read(karr_path) {
+            let parsed = crate::services::mail_store_service::parse_rfc822_bytes(
+                "karr-test",
+                "inbox",
+                &bytes,
+                false,
+            );
+            assert!(parsed.is_some(), "karr.eml must parse successfully");
+            let parsed = parsed.unwrap();
+            assert!(!parsed.html_body.is_empty(), "karr.eml must have an HTML body");
+
+            let plan = super::prepare_mail_body(&parsed.html_body, None, true, true);
+            assert!(!plan.used_fallback, "karr.eml must not fall back to plain text");
+            assert!(!plan.body.is_empty(), "karr.eml sanitized body must not be empty");
+
+            let doc = super::compose_sanitized_mail_document(
+                &plan.body,
+                true,
+                true,
+                false,
+                "system-ui, sans-serif",
+                16,
+                true,
+                &[
+                    "#729FCF".to_string(),
+                    "#AD7FA8".to_string(),
+                    "#8AE234".to_string(),
+                    "#FCAF3E".to_string(),
+                    "#E9B96E".to_string(),
+                ],
+            );
+            assert!(
+                doc.contains("max-width: 126.69px") || doc.contains("max-width: 127.6px") || doc.contains("width=\"126.69\"") || doc.contains("width=\"127\""),
+                "karr.eml document must retain author inline max-width constraints on images"
             );
         }
     }

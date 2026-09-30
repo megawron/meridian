@@ -49,33 +49,20 @@ pub mod signature_store_service;
 pub mod snippet_store_service;
 pub mod template_store_service;
 pub mod vcard_service;
-pub mod macos_integration_service;
 pub mod autodiscover_service;
 pub mod certificate_service;
 pub mod credential_service;
-pub mod portable_mail_engine;
 pub mod evolution_summary_cache;
 pub mod evolution_contact_cache;
 pub mod avatar_cache_service;
 pub mod recent_recipients_service;
 
 pub use avatar_cache_service::AvatarCacheService;
-pub use recent_recipients_service::{RecentRecipient, RecentRecipientsService};
+pub use recent_recipients_service::RecentRecipientsService;
 
-pub use autodiscover_service::{
-    AutodiscoverService, DiscoveredAccountConfig, DiscoveryTier, ServerConfig, TlsMode,
-};
-pub use certificate_service::{
-    CertCategory, CertExportFormat, CertFormat, CertType, CertificateRecord, CertificateService,
-    CertificateStore, KeyUsageFlags, OpenPgpKeyRecord, TrustLevel, X509Parser,
-};
 pub use calendar_store_service::CalendarStoreService;
 pub use contact_store_service::ContactStoreService;
 pub use mail_store_service::MailStoreService;
-pub use macos_integration_service::{
-    MacosIntegrationService, MacosPermissionKind, MacosPermissionStatus, MacosSyncSummary,
-};
-pub use credential_service::CredentialService;
 pub use settings_service::AppSettings;
 
 fn non_empty_env_path(name: &str) -> Option<std::path::PathBuf> {
@@ -106,12 +93,10 @@ pub(crate) fn app_data_dir() -> std::path::PathBuf {
         return path;
     }
 
-    #[cfg(target_os = "macos")]
-    let base = home_dir().join("Library/Application Support");
     #[cfg(target_os = "windows")]
     let base =
         non_empty_env_path("LOCALAPPDATA").unwrap_or_else(|| home_dir().join("AppData/Local"));
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(target_os = "windows"))]
     let base =
         non_empty_env_path("XDG_DATA_HOME").unwrap_or_else(|| home_dir().join(".local/share"));
 
@@ -128,12 +113,10 @@ pub(crate) fn app_cache_dir() -> std::path::PathBuf {
         return path;
     }
 
-    #[cfg(target_os = "macos")]
-    let base = home_dir().join("Library/Caches");
     #[cfg(target_os = "windows")]
     let base =
         non_empty_env_path("LOCALAPPDATA").unwrap_or_else(|| home_dir().join("AppData/Local"));
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(target_os = "windows"))]
     let base = non_empty_env_path("XDG_CACHE_HOME").unwrap_or_else(|| home_dir().join(".cache"));
 
     base.join("meridian")
@@ -160,7 +143,7 @@ mod tests {
             "{}-external",
             root.file_name()
                 .and_then(|name| name.to_str())
-                .unwrap_or("evolution-gtk4")
+                .unwrap_or("meridian")
         ));
         assert!(!is_app_owned_store_path(&sibling.join("ical")));
     }

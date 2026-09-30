@@ -28,11 +28,22 @@ pub struct AttachmentInfo {
     pub mime_type: String,
     /// MIME Content-ID used by `cid:` references in an HTML body.
     pub content_id: Option<String>,
+    /// Whether this part is an inline body resource (such as an embedded image).
+    #[serde(default)]
+    pub is_inline: bool,
     /// Decoded attachment bytes.  Keeping the payload with the parsed local
     /// message lets the UI offer a real “Save as…” operation without making
     /// assumptions about the lifetime of the source EML file.
     #[serde(skip, default = "empty_arc_bytes")]
     pub content: Arc<[u8]>,
+}
+
+impl AttachmentInfo {
+    /// Returns true if this is a user-facing file attachment rather than an
+    /// inline body resource (such as a signature logo or embedded CID image).
+    pub fn is_user_attachment(&self) -> bool {
+        !self.is_inline && self.content_id.is_none()
+    }
 }
 
 fn empty_arc_bytes() -> Arc<[u8]> {
@@ -138,7 +149,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for MailMessageObject {
-        const NAME: &'static str = "EvolutionMailMessageObject";
+        const NAME: &'static str = "MeridianMailMessageObject";
         type Type = super::MailMessageObject;
         type ParentType = glib::Object;
     }
@@ -508,16 +519,32 @@ impl MailMessageObject {
         self.imp().attachments.borrow().clone()
     }
 
+    pub fn user_attachments(&self) -> Vec<AttachmentInfo> {
+        self.imp()
+            .attachments
+            .borrow()
+            .iter()
+            .filter(|att| att.is_user_attachment())
+            .cloned()
+            .collect()
+    }
+
     pub fn attachment_count(&self) -> usize {
-        self.imp().attachments.borrow().len()
+        self.imp()
+            .attachments
+            .borrow()
+            .iter()
+            .filter(|att| att.is_user_attachment())
+            .count()
     }
 
     pub fn attachment_kind(&self) -> MailAttachmentKind {
         let atts = self.imp().attachments.borrow();
-        if atts.is_empty() {
+        let user_atts: Vec<_> = atts.iter().filter(|att| att.is_user_attachment()).collect();
+        if user_atts.is_empty() {
             return MailAttachmentKind::None;
         }
-        for att in atts.iter() {
+        for att in user_atts {
             let mime = att.mime_type.to_ascii_lowercase();
             let filename = att.filename.to_ascii_lowercase();
             if mime.contains("calendar") || filename.ends_with(".ics") || filename.ends_with(".ical") {

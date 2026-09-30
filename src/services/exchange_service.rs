@@ -23,7 +23,7 @@ use super::out_of_office_service::OutOfOfficeSettings;
 pub use super::mail_metadata_service::MailFollowUpState as ExchangeMailFollowUpState;
 
 const GRAPH_DEFAULT_URL: &str = "https://graph.microsoft.com/v1.0";
-const GRAPH_USER_AGENT: &str = "EvolutionGTK4/0.1";
+const GRAPH_USER_AGENT: &str = "Meridian/0.1";
 const MAX_QUERY_LENGTH: usize = 256;
 const MAX_GRAPH_ITEMS: usize = 5_000;
 const MAX_GRAPH_PAGES: usize = 256;
@@ -250,6 +250,7 @@ impl ExchangeMailMessage {
                         attachment.content_type
                     },
                     content_id: attachment.content_id,
+                    is_inline: attachment.is_inline,
                     content: attachment.content.into(),
                 })
                 .collect(),
@@ -1241,7 +1242,7 @@ impl ExchangeService {
     /// included in diagnostics.  Linux EDS/GOA remains the production
     /// credential provider and does not depend on this override.
     pub fn from_environment(username: &str) -> Option<Self> {
-        let token = std::env::var("EVOLUTION_GTK4_GRAPH_ACCESS_TOKEN").ok()?;
+        let token = std::env::var("MERIDIAN_GRAPH_ACCESS_TOKEN").or_else(|_| std::env::var("EVOLUTION_GTK4_GRAPH_ACCESS_TOKEN")).ok()?;
         let token = token.trim();
         (!token.is_empty()).then(|| Self::graph(username, token))
     }
@@ -3514,7 +3515,7 @@ mod tests {
             "size": 4096,
             "internetMessageHeaders": [
                 {"name": "Subject", "value": "Roadmap"},
-                {"name": "X-Project", "value": "Evolution GTK4"}
+                {"name": "X-Project", "value": "Meridian"}
             ]
         }))
         .expect("Graph message shape should parse");
@@ -3524,7 +3525,7 @@ mod tests {
 
         assert_eq!(
             parsed.raw_headers.as_deref(),
-            Some(b"Subject: Roadmap\r\nX-Project: Evolution GTK4\r\n".as_slice())
+            Some(b"Subject: Roadmap\r\nX-Project: Meridian\r\n".as_slice())
         );
         assert_eq!(parsed.message_size, 4096);
     }

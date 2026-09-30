@@ -29,7 +29,6 @@ use crate::services::camel_mail_service::{
     self, CamelFolderMutationCapabilities, CamelFolderMutationKind, CamelFolderSummary,
     CamelMailLoad,
 };
-use crate::services::contact_store_service::ContactStoreService;
 use crate::services::crypto_service::{self, CryptoProtocol, EncryptionStatus, SignatureStatus};
 use crate::services::draft_store_service::{DraftMessage, DraftStoreService};
 use crate::services::ecal_service::{ECalComponentType, ECalService};
@@ -61,7 +60,7 @@ use crate::services::mail_store_service::{
 use crate::services::search_engine::{
     MailGraphSearchPlan, MailSearchFieldScope, MailSearchRecord, ParsedMailSearchQuery,
     SearchQueryParseError, SearchSyntaxMode, decode_mail_query_fixture, encode_mail_query_fixture,
-    mail_query_needs_body, matches_mail_query, parse_mail_query, parse_mail_query_with_mode,
+    mail_query_needs_body, matches_mail_query, parse_mail_query_with_mode,
 };
 use crate::services::search_folder_service::{
     SavedSearch, SavedSearchFieldMode, SavedSearchScope, SearchFolderService,
@@ -1594,10 +1593,11 @@ fn mail_row_status_icon(
 fn mail_row_attachment_info(
     attachments: &[crate::models::mail_message::AttachmentInfo],
 ) -> Option<(&'static str, String)> {
-    if attachments.is_empty() {
+    let regular: Vec<_> = attachments.iter().filter(|att| att.is_user_attachment()).collect();
+    if regular.is_empty() {
         return None;
     }
-    for att in attachments {
+    for att in &regular {
         let mime = att.mime_type.to_ascii_lowercase();
         let filename = att.filename.to_ascii_lowercase();
         if mime.contains("calendar") || filename.ends_with(".ics") {
@@ -5471,9 +5471,9 @@ struct PendingMailCompletion {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-struct MailSelectionAnchor {
-    id: Option<String>,
-    index: Option<u32>,
+pub(crate) struct MailSelectionAnchor {
+    pub(crate) id: Option<String>,
+    pub(crate) index: Option<u32>,
 }
 
 fn fallback_selection_index(item_count: u32, previous_index: Option<u32>) -> Option<u32> {
@@ -5766,7 +5766,7 @@ fn load_mail_backend(
             Err(error) => return MailPageLoadResult::Error(error),
         };
         return MailPageLoadResult::Local {
-            reason: "Offline-Modus: lokaler Evolution-Speicher".to_string(),
+            reason: "Offline-Modus: lokaler Meridian-Speicher".to_string(),
             messages,
             local_deleted_ids,
             local_folders: store.local_folder_definitions(),
@@ -5943,7 +5943,7 @@ fn load_mail_backend(
                 Err(error) => return MailPageLoadResult::Error(error),
             };
             MailPageLoadResult::Local {
-                reason: gettext("No active mail accounts; local Evolution storage"),
+                reason: gettext("No active mail accounts; local Meridian storage"),
                 messages,
                 local_deleted_ids,
                 local_folders: store.local_folder_definitions(),
@@ -5974,7 +5974,7 @@ fn load_mail_backend(
                 }
             };
             MailPageLoadResult::Local {
-                reason: gettext("Mail account synchronization unavailable ({error}); local Evolution storage")
+                reason: gettext("Mail account synchronization unavailable ({error}); local Meridian storage")
                     .replace("{error}", &error.to_string()),
                 messages,
                 local_deleted_ids,
@@ -6143,7 +6143,7 @@ mod imp {
         pub mail_selection_anchor: Cell<Option<u32>>,
         pub is_mouse_selecting: Cell<bool>,
         pub is_auto_selecting: Cell<bool>,
-        pub folder_last_selected_mail: RefCell<HashMap<String, MailSelectionAnchor>>,
+        pub(crate) folder_last_selected_mail: RefCell<HashMap<String, MailSelectionAnchor>>,
         pub thread_root_store: RefCell<Option<gio::ListStore>>,
         pub thread_filter: RefCell<Option<gtk::CustomFilter>>,
         pub thread_members: RefCell<Option<Rc<RefCell<HashMap<String, Vec<MailMessageObject>>>>>>,
@@ -6333,19 +6333,19 @@ mod imp {
         pub todo_count_badge: RefCell<Option<gtk::Label>>,
         pub active_agenda_popover: RefCell<Option<gtk::Popover>>,
         pub agenda_canvas: RefCell<Option<gtk::DrawingArea>>,
-        pub agenda_canvas_items: RefCell<Vec<AgendaSidebarCanvasItem>>,
+        pub(crate) agenda_canvas_items: RefCell<Vec<AgendaSidebarCanvasItem>>,
         pub agenda_canvas_hovered_row: Cell<Option<usize>>,
         pub agenda_canvas_selected_row: Cell<Option<usize>>,
         pub agenda_canvas_collapsed_days: RefCell<HashSet<chrono::NaiveDate>>,
         pub agenda_canvas_collapsed_tasks: Cell<bool>,
         pub agenda_canvas_cached_data: RefCell<Option<(Vec<crate::services::calendar_store_service::CalendarEventRecord>, Vec<crate::services::calendar_store_service::TaskRecord>)>>,
-        pub agenda_canvas_grouped_data: RefCell<Option<AgendaGroupedData>>,
+        pub(crate) agenda_canvas_grouped_data: RefCell<Option<AgendaGroupedData>>,
         pub agenda_refresh_in_flight: Cell<bool>,
         pub mail_column_header: RefCell<Option<gtk::Box>>,
         pub mail_list_view: RefCell<Option<gtk::ListView>>,
         pub mail_list_factory: RefCell<Option<gtk::SignalListItemFactory>>,
         pub mail_table_canvas: RefCell<Option<gtk::DrawingArea>>,
-        pub mail_table_layout: RefCell<Option<Rc<PreparedMailTableLayout>>>,
+        pub(crate) mail_table_layout: RefCell<Option<Rc<PreparedMailTableLayout>>>,
         pub mail_table_hovered_row: Cell<Option<usize>>,
         pub search_entry: RefCell<Option<gtk::SearchEntry>>,
         pub mail_search_bar: RefCell<Option<gtk::SearchBar>>,
@@ -6377,7 +6377,7 @@ mod imp {
         pub date_separator: RefCell<Option<gtk::Box>>,
         pub is_mobile: Cell<bool>,
         pub is_tablet: Cell<bool>,
-        pub drill_down_level: Cell<MailDrillDownLevel>,
+        pub(crate) drill_down_level: Cell<MailDrillDownLevel>,
         pub column_header_scroll: RefCell<Option<gtk::ScrolledWindow>>,
         pub column_header_scrollbar_spacer: RefCell<Option<gtk::Box>>,
         pub list_vscrollbar: RefCell<Option<gtk::Scrollbar>>,
@@ -6386,7 +6386,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for MailPage {
-        const NAME: &'static str = "EvolutionMailPage";
+        const NAME: &'static str = "MeridianMailPage";
         type Type = super::MailPage;
         type ParentType = gtk::Widget;
 
@@ -6724,7 +6724,7 @@ impl MailPage {
         self.sync_mail_layout_visibility();
         self.sync_preview_actions_labels();
         self.sync_toolbar_button_labels();
-        if let Some(win) = crate::window::find_evolution_window(self) {
+        if let Some(win) = crate::window::find_meridian_window(self) {
             win.sync_back_button();
         }
     }
@@ -6763,7 +6763,6 @@ impl MailPage {
         };
 
         let show_extra_actions = preview_width >= 360 || preview_width <= 0;
-        let show_archive = preview_width >= 320 || preview_width <= 0;
         let show_junk = preview_width >= 340 || preview_width <= 0;
         let show_sep = preview_width >= 340 || preview_width <= 0;
         let show_triage = preview_width >= 280 || preview_width <= 0;
@@ -6953,7 +6952,7 @@ impl MailPage {
         let imp = self.imp();
         imp.drill_down_level.set(level);
         self.sync_mail_layout_visibility();
-        if let Some(win) = crate::window::find_evolution_window(self) {
+        if let Some(win) = crate::window::find_meridian_window(self) {
             win.sync_back_button();
         }
     }
@@ -7337,14 +7336,6 @@ impl MailPage {
         if let Some(group) = self.imp().preview_reply_group.borrow().as_ref() {
             group.set_visible(show_classic_actions_row);
         }
-
-        let remote_blocked = self
-            .imp()
-            .mail_viewer
-            .borrow()
-            .as_ref()
-            .map(|v| v.is_remote_images_blocked())
-            .unwrap_or(false);
 
         if let Some(btn) = self.imp().modern_load_remote_images_btn.borrow().as_ref() {
             btn.set_visible(false);
@@ -7746,6 +7737,9 @@ impl MailPage {
                 gtk::Align::Start
             });
         }
+        if let Some(banner) = imp.itip_banner.borrow().as_ref() {
+            banner.set_compact(compact);
+        }
     }
 
     pub(crate) fn reset_header_to_full(&self) {
@@ -7767,6 +7761,13 @@ impl MailPage {
                 .borrow()
                 .as_ref()
                 .map(|b| b.is_visible())
+                .unwrap_or(false)
+            || self
+                .imp()
+                .itip_banner
+                .borrow()
+                .as_ref()
+                .map(|b| b.widget().is_visible())
                 .unwrap_or(false);
         if !has_header {
             return;
@@ -8576,6 +8577,21 @@ impl MailPage {
         if let Some(bar) = self.imp().mail_search_bar.borrow().as_ref() {
             bar.set_search_mode(false);
         }
+        if let Some(entry) = self.imp().search_entry.borrow().as_ref() {
+            if !entry.text().is_empty() {
+                entry.set_text("");
+            }
+        }
+        if let Some(canvas) = self.imp().mail_table_canvas.borrow().as_ref() {
+            canvas.grab_focus();
+        }
+        if let Some(win) = crate::window::find_meridian_window(self) {
+            if let Some(btn) = win.search_button() {
+                if btn.is_active() {
+                    btn.set_active(false);
+                }
+            }
+        }
     }
 
     pub fn toggle_search(&self) {
@@ -9224,7 +9240,7 @@ impl MailPage {
             }
         }
 
-        if let Some(window) = self.root().and_downcast::<crate::window::EvolutionWindow>() {
+        if let Some(window) = self.root().and_downcast::<crate::window::MeridianWindow>() {
             window.update_message_actions_for_current_view();
             window.update_folder_properties_action_for_current_view();
             window.update_folder_subscriptions_action_for_current_view();
@@ -9492,7 +9508,7 @@ impl MailPage {
         if let Some(cancel_button) = self.imp().print_cancel_button.borrow().as_ref() {
             cancel_button.set_visible(state.is_cancellable());
         }
-        if let Some(root) = self.root().and_downcast::<crate::window::EvolutionWindow>() {
+        if let Some(root) = self.root().and_downcast::<crate::window::MeridianWindow>() {
             root.update_mail_print_actions();
         }
     }
@@ -9592,45 +9608,36 @@ impl MailPage {
         self.imp().print_cancellation.borrow_mut().take();
         self.set_print_state(MailPrintJobState::Printing, &gettext("Opening print dialog…"));
 
-        #[cfg(target_os = "linux")]
-        {
-            let Some(parent) = self.root().and_downcast::<gtk::Window>() else {
-                self.finish_print_error(generation, gettext("No window available for print dialog"));
+        let Some(parent) = self.root().and_downcast::<gtk::Window>() else {
+            self.finish_print_error(generation, gettext("No window available for print dialog"));
+            return;
+        };
+        let print_viewer = MailViewer::new();
+        self.imp().print_viewer.replace(Some(print_viewer.clone()));
+        let page = self.downgrade();
+        print_viewer.print_document(&document, &parent, move |result| {
+            let Some(page) = page.upgrade() else {
                 return;
             };
-            let print_viewer = MailViewer::new();
-            self.imp().print_viewer.replace(Some(print_viewer.clone()));
-            let page = self.downgrade();
-            print_viewer.print_document(&document, &parent, move |result| {
-                let Some(page) = page.upgrade() else {
-                    return;
-                };
-                page.imp().print_viewer.borrow_mut().take();
-                match result {
-                    Ok(crate::views::mail_viewer::MailPrintDialogResult::Printed) => {
-                        page.finish_print_state(
-                            generation,
-                            MailPrintJobState::Idle,
-                            &gettext("Print job sent to system"),
-                        );
-                    }
-                    Ok(crate::views::mail_viewer::MailPrintDialogResult::Cancelled) => {
-                        page.finish_print_state(
-                            generation,
-                            MailPrintJobState::Cancelled,
-                            &gettext("Print dialog cancelled"),
-                        );
-                    }
-                    Err(error) => page.finish_print_error(generation, error),
+            page.imp().print_viewer.borrow_mut().take();
+            match result {
+                Ok(crate::views::mail_viewer::MailPrintDialogResult::Printed) => {
+                    page.finish_print_state(
+                        generation,
+                        MailPrintJobState::Idle,
+                        &gettext("Print job sent to system"),
+                    );
                 }
-            });
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = document;
-            self.finish_print_error(generation, MailViewer::native_print_unavailable());
-        }
+                Ok(crate::views::mail_viewer::MailPrintDialogResult::Cancelled) => {
+                    page.finish_print_state(
+                        generation,
+                        MailPrintJobState::Cancelled,
+                        &gettext("Print dialog cancelled"),
+                    );
+                }
+                Err(error) => page.finish_print_error(generation, error),
+            }
+        });
     }
 
     /// Export the selected message as a complete RFC822/EML file.  This is a
@@ -10124,7 +10131,7 @@ impl MailPage {
 
     fn show_toast(&self, message: &str) {
         if let Some(root) = self.root() {
-            if let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() {
+            if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
                 window.add_toast(&adw::Toast::new(message));
                 return;
             }
@@ -10141,7 +10148,7 @@ impl MailPage {
             .unwrap_or_default()
     }
 
-    pub(crate) fn anchor_for_folder(&self, folder: &FolderSelection) -> MailSelectionAnchor {
+    fn anchor_for_folder(&self, folder: &FolderSelection) -> MailSelectionAnchor {
         let key = folder.selection_key();
         self.imp()
             .folder_last_selected_mail
@@ -10151,7 +10158,7 @@ impl MailPage {
             .unwrap_or_default()
     }
 
-    pub(crate) fn save_anchor_for_folder(&self, folder: &FolderSelection, anchor: MailSelectionAnchor) {
+    fn save_anchor_for_folder(&self, folder: &FolderSelection, anchor: MailSelectionAnchor) {
         let key = folder.selection_key();
         self.imp()
             .folder_last_selected_mail
@@ -10298,7 +10305,7 @@ impl MailPage {
             return;
         }
         self.rebuild_folder_rows_after_sort_order_change();
-        if let Some(root) = self.root().and_downcast::<crate::window::EvolutionWindow>() {
+        if let Some(root) = self.root().and_downcast::<crate::window::MeridianWindow>() {
             root.update_folder_sort_order_action_for_current_view();
         }
     }
@@ -10502,7 +10509,7 @@ impl MailPage {
         }
 
         self.rebuild_folder_rows_after_sort_order_change();
-        if let Some(root) = self.root().and_downcast::<crate::window::EvolutionWindow>() {
+        if let Some(root) = self.root().and_downcast::<crate::window::MeridianWindow>() {
             root.update_folder_sort_order_action_for_current_view();
         }
         self.show_toast(&gettext("Folder “{name}” reordered").replace("{name}", dragged_name));
@@ -10534,7 +10541,7 @@ impl MailPage {
             let Ok(json) = serde_json::to_string(&payload) else {
                 return None;
             };
-            let content_string = format!("evolution-folder:{json}");
+            let content_string = format!("meridian-folder:{json}");
             Some(gtk::gdk::ContentProvider::for_value(
                 &content_string.to_value(),
             ))
@@ -10592,7 +10599,10 @@ impl MailPage {
             };
 
             // Handle dropped message
-            if let Some(msg_ids_str) = payload_str.strip_prefix("evolution-message:") {
+            if let Some(msg_ids_str) = payload_str
+                .strip_prefix("meridian-message:")
+                .or_else(|| payload_str.strip_prefix("evolution-message:"))
+            {
                 let drop_action = target
                     .current_drop()
                     .map(|d| d.actions())
@@ -10626,7 +10636,10 @@ impl MailPage {
             }
 
             // Handle dropped folder reordering
-            let Some(json) = payload_str.strip_prefix("evolution-folder:") else {
+            let Some(json) = payload_str
+                .strip_prefix("meridian-folder:")
+                .or_else(|| payload_str.strip_prefix("evolution-folder:"))
+            else {
                 return false;
             };
             let Ok(dragged) = serde_json::from_str::<FolderDragPayload>(json) else {
@@ -10719,7 +10732,7 @@ impl MailPage {
         };
         let target_has_properties_snapshot = self.folder_properties_snapshot(&target).is_some();
         let generation = self.set_popup_folder_target(target);
-        if let Some(root) = self.root().and_downcast::<crate::window::EvolutionWindow>() {
+        if let Some(root) = self.root().and_downcast::<crate::window::MeridianWindow>() {
             root.set_folder_properties_action_enabled(target_has_properties_snapshot);
         }
         let popover = gtk::PopoverMenu::builder()
@@ -10735,7 +10748,7 @@ impl MailPage {
             glib::idle_add_local_once(move || {
                 if let Some(page) = page.upgrade() {
                     page.clear_popup_folder_target(generation);
-                    if let Some(root) = page.root().and_downcast::<crate::window::EvolutionWindow>()
+                    if let Some(root) = page.root().and_downcast::<crate::window::MeridianWindow>()
                     {
                         root.update_folder_properties_action_for_current_view();
                     }
@@ -11220,7 +11233,7 @@ impl MailPage {
     }
 
     fn update_undelete_action(&self) {
-        if let Some(window) = self.root().and_downcast::<crate::window::EvolutionWindow>() {
+        if let Some(window) = self.root().and_downcast::<crate::window::MeridianWindow>() {
             window.update_mail_undelete_action_for_current_view();
         }
     }
@@ -14429,7 +14442,7 @@ impl MailPage {
                     if let Some(filter) = page.imp().message_filter.borrow().as_ref() {
                         filter.changed(gtk::FilterChange::Different);
                     }
-                    if let Some(root) = page.root().and_downcast::<crate::window::EvolutionWindow>()
+                    if let Some(root) = page.root().and_downcast::<crate::window::MeridianWindow>()
                     {
                         root.update_folder_subscriptions_action_for_current_view();
                     }
@@ -14769,7 +14782,7 @@ impl MailPage {
                 let Ok(json) = serde_json::to_string(&payload) else {
                     return None;
                 };
-                let content_string = format!("evolution-folder:{json}");
+                let content_string = format!("meridian-folder:{json}");
                 Some(gtk::gdk::ContentProvider::for_value(
                     &content_string.to_value(),
                 ))
@@ -14837,7 +14850,10 @@ impl MailPage {
                 };
 
                 // Handle dropped message
-                if let Some(msg_ids_str) = payload_str.strip_prefix("evolution-message:") {
+                if let Some(msg_ids_str) = payload_str
+                    .strip_prefix("meridian-message:")
+                    .or_else(|| payload_str.strip_prefix("evolution-message:"))
+                {
                     if !target_folder.selectable() {
                         page.show_toast(&gettext("Messages cannot be placed in this folder"));
                         return false;
@@ -14883,7 +14899,10 @@ impl MailPage {
                 }
 
                 // Handle dropped folder reordering
-                let Some(json) = payload_str.strip_prefix("evolution-folder:") else {
+                let Some(json) = payload_str
+                    .strip_prefix("meridian-folder:")
+                    .or_else(|| payload_str.strip_prefix("evolution-folder:"))
+                else {
                     return false;
                 };
                 let Ok(dragged) = serde_json::from_str::<FolderDragPayload>(json) else {
@@ -15201,7 +15220,7 @@ impl MailPage {
             if let Some(filter) = page.imp().thread_filter.borrow().as_ref() {
                 filter.changed(gtk::FilterChange::Different);
             }
-            if let Some(root) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
+            if let Some(root) = page.root().and_downcast::<crate::window::MeridianWindow>() {
                 root.update_folder_sort_order_action_for_current_view();
                 root.update_folder_properties_action_for_current_view();
                 root.update_folder_subscriptions_action_for_current_view();
@@ -15526,7 +15545,7 @@ impl MailPage {
             .build();
         let sidebar_content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .css_classes(vec!["evolution-sidebar-drawer"])
+            .css_classes(vec!["meridian-sidebar-drawer"])
             .build();
         sidebar_scroll.set_vexpand(true);
         self.imp()
@@ -16627,7 +16646,7 @@ impl MailPage {
                 })
         });
 
-        let mut roots = source_roots.values().cloned().collect::<Vec<_>>();
+        let roots = source_roots.values().cloned().collect::<Vec<_>>();
         if roots.is_empty() && root_store.n_items() == 0 {
             self.imp().updating_folder_rows.set(was_updating);
             return;
@@ -17020,7 +17039,7 @@ impl MailPage {
         }
     }
 
-    pub(crate) fn format_drawer_folder_tooltip(
+    fn format_drawer_folder_tooltip(
         selection: &FolderSelection,
         display_title: &str,
         unread: u32,
@@ -17122,7 +17141,7 @@ impl MailPage {
     ) {
         let (raw_title, icon) = selection.title_and_icon();
         let display_title = Self::clean_folder_display_title(&raw_title);
-        if let Some(win) = crate::window::find_evolution_window(self) {
+        if let Some(win) = crate::window::find_meridian_window(self) {
             win.update_sidebar_title(&display_title);
         }
         if let Some(title_lbl) = self.imp().drawer_header_title.borrow().as_ref() {
@@ -17685,7 +17704,7 @@ impl MailPage {
         sidebar_toggle.connect_toggled(move |btn| {
             if let Some(page) = page_weak_for_sidebar.upgrade() {
                 let is_active = btn.is_active();
-                if let Some(win) = crate::window::find_evolution_window(&page) {
+                if let Some(win) = crate::window::find_meridian_window(&page) {
                     if win.is_sidebar_visible_for_active_view() != is_active {
                         win.toggle_sidebar_animated(is_active);
                         return;
@@ -21105,10 +21124,10 @@ impl MailPage {
 
                 let ids: Vec<String> = messages_to_drag.iter().map(|m| m.id()).collect();
                 let provider_internal = gtk::gdk::ContentProvider::for_value(
-                    &format!("evolution-message:{}", ids.join(",")).to_value(),
+                    &format!("meridian-message:{}", ids.join(",")).to_value(),
                 );
 
-                let drag_dir = std::env::temp_dir().join("evolution-gtk4-drag");
+                let drag_dir = std::env::temp_dir().join("meridian-drag");
                 let _ = std::fs::create_dir_all(&drag_dir);
                 let mut uri_list = String::new();
                 let mut first_file = None;
@@ -21859,7 +21878,8 @@ impl MailPage {
         let save_search_button = gtk::Button::builder()
             .icon_name("document-save-symbolic")
             .tooltip_text(&crate::i18n::gettext("Save current search as search folder"))
-            .css_classes(vec!["flat", "circular"])
+            .css_classes(vec!["flat", "circular", "save-search-button"])
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(
             &save_search_button,
@@ -22628,7 +22648,7 @@ impl MailPage {
                 .icon_name("preferences-system-search-symbolic")
                 .tooltip_text(&search_options_label)
                 .popover(&search_options_popover)
-                .css_classes(vec!["flat", "search-options-button"])
+                .css_classes(vec!["flat", "circular", "search-options-button"])
                 .valign(gtk::Align::Center)
                 .build();
             set_accessible_label(&search_options_button, &search_options_label);
@@ -22655,20 +22675,37 @@ impl MailPage {
         quick_filter.connect_selected_notify(move |_| ind_filter());
         let search_key_controller = gtk::EventControllerKey::new();
         let search_entry_for_keys = search_entry.clone();
+        let page_weak_for_keys = self.downgrade();
         search_key_controller.connect_key_pressed(move |_, key, _, modifier| {
             if modifier.contains(gdk::ModifierType::CONTROL_MASK) && (key == gdk::Key::a || key == gdk::Key::A) {
                 search_entry_for_keys.select_region(0, -1);
+                return glib::Propagation::Stop;
+            }
+            if key == gdk::Key::Escape {
+                if let Some(page) = page_weak_for_keys.upgrade() {
+                    page.close_search();
+                } else {
+                    search_entry_for_keys.set_text("");
+                }
                 return glib::Propagation::Stop;
             }
             glib::Propagation::Proceed
         });
         search_entry.add_controller(search_key_controller);
 
+        let page_weak_for_stop = self.downgrade();
+        search_entry.connect_stop_search(move |_| {
+            if let Some(page) = page_weak_for_stop.upgrade() {
+                page.close_search();
+            }
+        });
+
         self.imp().search_entry.replace(Some(search_entry.clone()));
 
         let mail_search_bar = gtk::SearchBar::builder()
             .search_mode_enabled(false)
             .key_capture_widget(self)
+            .css_classes(vec!["mail-search-bar"])
             .build();
         mail_search_bar.connect_entry(&search_entry);
         self.imp()
@@ -22697,6 +22734,7 @@ impl MailPage {
         // 3-way search mode switcher: [ Abc | *? | .* ]
         let mode_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
+            .homogeneous(true)
             .css_classes(vec!["linked"])
             .valign(gtk::Align::Center)
             .build();
@@ -22706,7 +22744,7 @@ impl MailPage {
             .active(true)
             .tooltip_text(&crate::i18n::gettext("Normal text: matches characters literally"))
             .css_classes(vec!["search-mode-button"])
-            .valign(gtk::Align::Center)
+            .valign(gtk::Align::Fill)
             .build();
         set_accessible_label(&btn_plain, &crate::i18n::gettext("Normal text search mode"));
 
@@ -22715,7 +22753,7 @@ impl MailPage {
             .group(&btn_plain)
             .tooltip_text(&crate::i18n::gettext("Wildcards: '*' for any text, '?' for a single character"))
             .css_classes(vec!["search-mode-button"])
-            .valign(gtk::Align::Center)
+            .valign(gtk::Align::Fill)
             .build();
         set_accessible_label(&btn_wildcard, &crate::i18n::gettext("Wildcard search mode"));
 
@@ -22724,7 +22762,7 @@ impl MailPage {
             .group(&btn_plain)
             .tooltip_text(&crate::i18n::gettext("Regular expression (Regex)"))
             .css_classes(vec!["search-mode-button"])
-            .valign(gtk::Align::Center)
+            .valign(gtk::Align::Fill)
             .build();
         set_accessible_label(&btn_regex, &crate::i18n::gettext("Regex search mode"));
 
@@ -22789,9 +22827,22 @@ impl MailPage {
         mail_search_bar.set_child(Some(&search_content_box));
 
         let entry_for_search_mode = search_entry.clone();
+        let page_weak_search_mode = self.downgrade();
         mail_search_bar.connect_notify_local(Some("search-mode-enabled"), move |bar, _| {
-            if !bar.is_search_mode() && !entry_for_search_mode.text().is_empty() {
-                entry_for_search_mode.set_text("");
+            let is_mode = bar.is_search_mode();
+            if !is_mode {
+                if !entry_for_search_mode.text().is_empty() {
+                    entry_for_search_mode.set_text("");
+                }
+                if let Some(page) = page_weak_search_mode.upgrade() {
+                    if let Some(win) = crate::window::find_meridian_window(&page) {
+                        if let Some(btn) = win.search_button() {
+                            if btn.is_active() {
+                                btn.set_active(false);
+                            }
+                        }
+                    }
+                }
             }
         });
 
@@ -23638,7 +23689,7 @@ impl MailPage {
                 return None;
             }
             let ids: Vec<String> = msgs.iter().map(|m| m.id()).collect();
-            let payload = format!("evolution-message:{}", ids.join(","));
+            let payload = format!("meridian-message:{}", ids.join(","));
 
             let icon_paintable = gtk::IconTheme::for_display(&canvas_for_drag.display())
                 .lookup_icon("mail-unread-symbolic", &[], 32, 1, gtk::TextDirection::None, gtk::IconLookupFlags::empty());
@@ -23689,6 +23740,15 @@ impl MailPage {
         let thread_sel_for_key = thread_selection.clone();
         let canvas_for_key = mail_table_canvas.clone();
         key_controller.connect_key_pressed(move |_, keyval, _, state| {
+            if keyval == gtk::gdk::Key::Escape {
+                if let Some(page) = page_for_key.upgrade() {
+                    if page.is_search_active() {
+                        page.close_search();
+                        return glib::Propagation::Stop;
+                    }
+                }
+            }
+
             let n = thread_sel_for_key.n_items();
             if n == 0 {
                 return glib::Propagation::Proceed;
@@ -23958,7 +24018,7 @@ impl MailPage {
                 quick_filter.set_selected(0);
             }
             page.update_drawer_header_with_selection(&selection, None);
-            if let Some(root) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
+            if let Some(root) = page.root().and_downcast::<crate::window::MeridianWindow>() {
                 root.update_folder_sort_order_action_for_current_view();
                 root.update_folder_properties_action_for_current_view();
                 root.update_folder_subscriptions_action_for_current_view();
@@ -24089,7 +24149,7 @@ impl MailPage {
                     quick_filter.set_selected(0);
                 }
                 page.update_drawer_header_with_selection(&selection, None);
-                if let Some(root) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
+                if let Some(root) = page.root().and_downcast::<crate::window::MeridianWindow>() {
                     root.update_folder_sort_order_action_for_current_view();
                     root.update_folder_properties_action_for_current_view();
                     root.update_folder_subscriptions_action_for_current_view();
@@ -24346,7 +24406,7 @@ impl MailPage {
         let modern_sender_address = gtk::Label::builder()
             .label("")
             .halign(gtk::Align::Start)
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(vec!["caption", "dim-label", "mail-modern-sender-address"])
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
             .single_line_mode(true)
@@ -25462,7 +25522,7 @@ impl MailPage {
         itip_banner.connect_calendar_navigate(move |date| {
             if let Some(detail) = detail_for_cal.upgrade() {
                 if let Some(root) = detail.root() {
-                    if let Ok(win) = root.downcast::<crate::window::EvolutionWindow>() {
+                    if let Ok(win) = root.downcast::<crate::window::MeridianWindow>() {
                         win.show_calendar_date(date);
                     }
                 }
@@ -26018,18 +26078,22 @@ impl MailPage {
         let is_junk = message_is_junk(message);
         mail_viewer.set_trash_banner_visible(is_trash);
         mail_viewer.set_junk_banner_visible(!is_trash && is_junk);
-        if attachments.is_empty() {
+        let user_attachments: Vec<_> = attachments
+            .into_iter()
+            .filter(|att| att.is_user_attachment())
+            .collect();
+        if user_attachments.is_empty() {
             attachment_bar.set_visible(false);
         } else {
             attachment_bar.set_visible(true);
-            if attachments.len() > 1 {
+            if user_attachments.len() > 1 {
                 let btn_save_all = gtk::Button::builder()
                     .label(&gettext("Save all…"))
                     .icon_name("document-save-symbolic")
                     .css_classes(vec!["flat", "suggested-action"])
                     .valign(gtk::Align::Center)
                     .build();
-                let attachments_for_all = attachments.clone();
+                let attachments_for_all = user_attachments.clone();
                 let parent = attachment_bar.root().and_downcast::<gtk::Window>();
                 btn_save_all.connect_clicked(move |_| {
                     let Some(parent) = parent.as_ref() else {
@@ -26058,7 +26122,7 @@ impl MailPage {
                 attachment_bar.append(&btn_save_all);
             }
 
-            for attachment in attachments {
+            for attachment in user_attachments {
                 let chip = gtk::Box::builder()
                     .orientation(gtk::Orientation::Horizontal)
                     .spacing(6)
@@ -26097,7 +26161,7 @@ impl MailPage {
                 let filename_for_open = attachment.filename.clone();
                 let content_for_open = attachment.content.clone();
                 btn_open.connect_clicked(move |_| {
-                    let temp_dir = std::env::temp_dir().join("evolution4-attachments");
+                    let temp_dir = std::env::temp_dir().join("meridian-attachments");
                     let _ = fs::create_dir_all(&temp_dir);
                     let temp_path = temp_dir.join(&filename_for_open);
                     if fs::write(&temp_path, content_for_open.as_ref()).is_ok() {
@@ -26259,7 +26323,7 @@ fn show_attachment_chip_context_menu(
     let cont_open = content.clone();
     btn_open.connect_clicked(move |_| {
         pop_open.popdown();
-        let temp_dir = std::env::temp_dir().join("evolution4-attachments");
+        let temp_dir = std::env::temp_dir().join("meridian-attachments");
         let _ = fs::create_dir_all(&temp_dir);
         let temp_path = temp_dir.join(&fname_open);
         if fs::write(&temp_path, cont_open.as_ref()).is_ok() {
@@ -26843,7 +26907,7 @@ fn show_attachment_chip_context_menu(
                 if position != clamped {
                     paned.set_position(clamped);
                 }
-                if let Some(win) = crate::window::find_evolution_window(paned) {
+                if let Some(win) = crate::window::find_meridian_window(paned) {
                     win.set_sidebar_position_sync(clamped);
                 }
                 if settings.mail_sidebar_position() != clamped {
@@ -27548,7 +27612,7 @@ impl MailPage {
             .orientation(gtk::Orientation::Vertical)
             .spacing(0)
             .width_request(220)
-            .css_classes(vec!["sidebar", "todo-sidebar", "evolution-sidebar-drawer"])
+            .css_classes(vec!["sidebar", "todo-sidebar", "meridian-sidebar-drawer"])
             .build();
 
         // Header bar: minimal, matching left sidebar drawer header
@@ -28386,7 +28450,7 @@ impl MailPage {
             }
             if let Some(page) = page_for_cal.upgrade() {
                 if let Some(target) = ev_target_day {
-                    if let Some(root) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
+                    if let Some(root) = page.root().and_downcast::<crate::window::MeridianWindow>() {
                         root.show_calendar_date(target);
                     }
                 }
@@ -28576,7 +28640,7 @@ impl MailPage {
                 pop.popdown();
             }
             if let Some(page) = page_for_tasks.upgrade() {
-                if let Some(root) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
+                if let Some(root) = page.root().and_downcast::<crate::window::MeridianWindow>() {
                     if let Some(view_stack) = root.imp().view_stack.borrow().as_ref() {
                         view_stack.set_visible_child_name("tasks");
                     }
@@ -28704,7 +28768,8 @@ impl MailPage {
             if let Some(selection) = source_selection_for_load.as_ref() {
                 let preferred_index = preferred_account_id.as_deref().and_then(|pref_id| {
                     let preferred_uid = pref_id
-                        .strip_prefix("evolution-source:")
+                        .strip_prefix("meridian-source:")
+                        .or_else(|| pref_id.strip_prefix("evolution-source:"))
                         .unwrap_or(pref_id);
                     (0..source_store_for_load.n_items()).find(|index| {
                         source_store_for_load
@@ -28908,7 +28973,7 @@ impl MailPage {
         if settings.offline_mode() || !settings.flush_outbox() {
             return;
         }
-        if let Some(window) = self.root().and_downcast::<crate::window::EvolutionWindow>() {
+        if let Some(window) = self.root().and_downcast::<crate::window::MeridianWindow>() {
             window.drain_transport_queue();
         } else {
             let _ = crate::services::mail_transport_service::MailTransportService::shared()
@@ -29573,7 +29638,7 @@ impl MailPage {
             ),
         };
         state.set_label(&label);
-        if let Some(window) = self.root().and_downcast::<crate::window::EvolutionWindow>() {
+        if let Some(window) = self.root().and_downcast::<crate::window::MeridianWindow>() {
             window.update_mail_status(&label);
         }
     }
@@ -31288,7 +31353,7 @@ impl MailPage {
         }
 
         self.refresh_unread_counters();
-        if let Some(root) = self.root().and_downcast::<crate::window::EvolutionWindow>() {
+        if let Some(root) = self.root().and_downcast::<crate::window::MeridianWindow>() {
             root.update_folder_properties_action_for_current_view();
             root.update_folder_subscriptions_action_for_current_view();
         }
@@ -31873,7 +31938,7 @@ fn save_itip_reply_draft(
 
 fn show_mail_toast_for_widget<W: IsA<gtk::Widget>>(widget: &W, message: &str) {
     if let Some(root) = widget.root() {
-        if let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() {
+        if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
             window.add_toast(&adw::Toast::new(message));
             return;
         }
@@ -34846,6 +34911,7 @@ mod tests {
             size_formatted: "1 KB".to_string(),
             mime_type: "text/calendar".to_string(),
             content_id: None,
+            is_inline: false,
             content: std::sync::Arc::from([]),
         };
         assert_eq!(
@@ -34858,6 +34924,7 @@ mod tests {
             size_formatted: "500 B".to_string(),
             mime_type: "text/vcard".to_string(),
             content_id: None,
+            is_inline: false,
             content: std::sync::Arc::from([]),
         };
         assert_eq!(
@@ -34870,6 +34937,7 @@ mod tests {
             size_formatted: "2 MB".to_string(),
             mime_type: "application/pdf".to_string(),
             content_id: None,
+            is_inline: false,
             content: std::sync::Arc::from([]),
         };
         assert_eq!(
@@ -36184,8 +36252,8 @@ mod tests {
         while context.iteration(false) {}
 
         // Part 4: Window-parented execution
-        let app = crate::application::EvolutionApplication::new();
-        let window = crate::window::EvolutionWindow::new(&app);
+        let app = crate::application::MeridianApplication::new();
+        let window = crate::window::MeridianWindow::new(&app);
         window.drain_transport_queue();
 
         for _ in 0..20 {
@@ -38338,7 +38406,7 @@ mod tests {
         let sidebar = page.build_today_todo_sidebar();
 
         assert_eq!(sidebar.width_request(), 220);
-        assert!(sidebar.has_css_class("evolution-sidebar-drawer"));
+        assert!(sidebar.has_css_class("meridian-sidebar-drawer"));
         assert!(sidebar.has_css_class("todo-sidebar"));
 
         // Verify popover dismissal helper
@@ -40233,6 +40301,7 @@ mod tests {
             size_formatted: "10 KB".to_string(),
             mime_type: "text/calendar".to_string(),
             content_id: None,
+            is_inline: false,
             content: Arc::from([]),
         }]);
         assert_eq!(msg_cal.attachment_kind(), MailAttachmentKind::Calendar);
@@ -40242,6 +40311,7 @@ mod tests {
             size_formatted: "2 KB".to_string(),
             mime_type: "text/x-vcard".to_string(),
             content_id: None,
+            is_inline: false,
             content: Arc::from([]),
         }]);
         assert_eq!(msg_vcf.attachment_kind(), MailAttachmentKind::Contact);
@@ -40251,6 +40321,7 @@ mod tests {
             size_formatted: "500 KB".to_string(),
             mime_type: "application/pdf".to_string(),
             content_id: None,
+            is_inline: false,
             content: Arc::from([]),
         }]);
         assert_eq!(msg_file.attachment_kind(), MailAttachmentKind::File);
@@ -40475,6 +40546,62 @@ mod tests {
         if let Some(section) = page.imp().folder_section.borrow().as_ref() {
             assert!(section.is_visible(), "Folder section must remain visible");
         }
+    }
+
+    #[test]
+    fn test_mail_search_bar_elements_unified_dimensions_contract() {
+        let css = include_str!("../style.css");
+
+        // Verify CSS contracts for search bar collapsible 0px outer height and 44px inner revealed height
+        assert!(css.contains(".mail-search-bar,\nsearchbar {\n  min-height: 0;\n  background: none;\n  border: none;\n  padding: 0;\n  margin: 0;\n}"));
+        assert!(css.contains(".mail-search-bar > revealer > box,\nsearchbar > revealer > box {\n  min-height: 44px;\n  background-color: @headerbar_bg_color;\n  border-bottom: 1px solid alpha(@borders, 0.45);\n}"));
+        assert!(css.contains("searchbar .search-mode-button"));
+        assert!(css.contains("min-height: 34px;"));
+        assert!(css.contains(".search-mode-button {\n  font-size: 0.82rem;\n  font-weight: 600;\n  padding: 0 10px;\n  min-height: 34px;\n  min-width: 34px;\n}"));
+        assert!(css.contains(".search-options-button,\n.search-options-button > button,\n.save-search-button {\n  min-width: 34px;\n  min-height: 34px;\n  padding: 0;\n}"));
+
+        let source = include_str!("mail_page.rs");
+        // Verify programmatic setup in mail_page.rs
+        assert!(source.contains(".css_classes(vec![\"mail-search-bar\"])"));
+        assert!(source.contains(".css_classes(vec![\"flat\", \"circular\", \"search-options-button\"])"));
+        assert!(source.contains(".css_classes(vec![\"flat\", \"circular\", \"save-search-button\"])"));
+        assert!(source.contains("mode_box = gtk::Box::builder()\n            .orientation(gtk::Orientation::Horizontal)\n            .homogeneous(true)\n            .css_classes(vec![\"linked\"])"));
+    }
+
+    #[test]
+    fn test_action_pills_borderless_gnome_hig_contract() {
+        let css = include_str!("../style.css");
+
+        // Verify action pills have no border and no box-shadow per GNOME HIG / Libadwaita
+        assert!(css.contains(".mail-action-pill.linked,\n.mail-header-actions-group.linked {\n  background-color: alpha(@window_fg_color, 0.06);\n  border: none;\n  border-radius: 8px;\n  box-shadow: none;\n  padding: 0;\n}"));
+        assert!(css.contains("border-right: none;"));
+
+        let mail_source = include_str!("mail_page.rs");
+        assert!(mail_source.contains(".css_classes(vec![\"linked\", \"mail-header-actions-group\", \"action-pill\", \"mail-action-pill\"])"));
+
+        let contacts_source = include_str!("contacts_page.rs");
+        assert!(contacts_source.contains(".css_classes(vec![\"linked\", \"mail-action-pill\", \"contact-header-actions\"])"));
+    }
+
+    #[test]
+    fn test_mail_header_typography_and_clipping_clearance_contract() {
+        let css = include_str!("../style.css");
+
+        // 1. Email title / subject has prominent typography
+        assert!(css.contains(".mail-detail-subject {\n  font-size: 1.30rem;\n  font-weight: 700;"));
+
+        // 2. Sender address has dedicated class with clean 0.90rem size
+        assert!(css.contains(".mail-modern-sender-address {\n  font-size: 0.90rem;\n  line-height: 1.35;\n}"));
+
+        // 3. Date / time label has increased 0.94rem size and 0.85 contrast
+        assert!(css.contains("font-size: 0.94rem;\n  font-weight: 500;\n  color: alpha(@window_fg_color, 0.85);"));
+
+        // 4. Details toggle has 26px min-height to prevent @ glyph clipping
+        assert!(css.contains(".mail-details-toggle {\n  font-size: 0.96rem;\n  padding: 1px 6px 2px 6px;\n  min-height: 26px;"));
+
+        // 5. Code setup in mail_page.rs
+        let mail_source = include_str!("mail_page.rs");
+        assert!(mail_source.contains(".css_classes(vec![\"caption\", \"dim-label\", \"mail-modern-sender-address\"])"));
     }
 }
 

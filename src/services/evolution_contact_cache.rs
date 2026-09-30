@@ -453,8 +453,8 @@ pub fn discover_address_book_dbs() -> Vec<AddressBookDbTarget> {
     targets
 }
 
-/// Load contacts directly from the local Evolution SQLite databases, with an optional limit.
-pub fn load_contacts_from_evolution_sqlite_cache_limited(limit: Option<usize>) -> Vec<EBookContactRecord> {
+/// Load contacts directly from the local SQLite databases, with an optional limit.
+pub fn load_contacts_from_meridian_sqlite_cache_limited(limit: Option<usize>) -> Vec<EBookContactRecord> {
     let targets = discover_address_book_dbs();
     let mut records = Vec::new();
     let mut seen_contact_identities: HashSet<String> = HashSet::new();
@@ -501,10 +501,13 @@ pub fn load_contacts_from_evolution_sqlite_cache_limited(limit: Option<usize>) -
     records
 }
 
-/// Load all contacts directly from the local Evolution SQLite databases.
-pub fn load_contacts_from_evolution_sqlite_cache() -> Vec<EBookContactRecord> {
-    load_contacts_from_evolution_sqlite_cache_limited(None)
+/// Load all contacts directly from local SQLite databases.
+pub fn load_contacts_from_meridian_sqlite_cache() -> Vec<EBookContactRecord> {
+    load_contacts_from_meridian_sqlite_cache_limited(None)
 }
+
+#[allow(unused_imports)]
+pub use load_contacts_from_meridian_sqlite_cache as load_contacts_from_evolution_sqlite_cache;
 
 /// List all address book sources discovered in Evolution caches, formatted as `EdsSource`.
 pub fn list_cached_address_book_sources() -> Vec<EdsSource> {

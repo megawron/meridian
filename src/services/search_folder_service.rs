@@ -415,7 +415,7 @@ impl SearchFolderService {
     }
 
     pub fn from_environment() -> Self {
-        let path = std::env::var_os("EVOLUTION_GTK4_SEARCH_FILE")
+        let path = std::env::var_os("MERIDIAN_SEARCH_FILE").or_else(|| std::env::var_os("EVOLUTION_GTK4_SEARCH_FILE"))
             .map(PathBuf::from)
             .unwrap_or_else(|| crate::services::app_data_dir().join("search-folders.json"));
         Self::new(path)
@@ -648,7 +648,7 @@ mod tests {
 
     fn test_root(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "evolution-gtk4-search-folders-{label}-{}-{}",
+            "meridian-search-folders-{label}-{}-{}",
             std::process::id(),
             Uuid::new_v4()
         ))

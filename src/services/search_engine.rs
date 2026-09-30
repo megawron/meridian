@@ -866,7 +866,7 @@ pub(crate) struct ParsedMailSearchQuery(SearchQuery);
 /// saved-search consumers persist the fixture as a typed AST and must reject
 /// a future wire shape instead of attempting a lossy best-effort migration.
 pub(crate) const MAIL_QUERY_FIXTURE_VERSION: u32 = 1;
-const MAIL_QUERY_FIXTURE_FORMAT: &str = "evolution-mail-search-query";
+const MAIL_QUERY_FIXTURE_FORMAT: &str = "meridian-mail-search-query";
 const MAIL_QUERY_FIXTURE_MAX_BYTES: usize = 256 * 1024;
 const MAIL_QUERY_FIXTURE_MAX_DEPTH: usize = 64;
 const MAIL_QUERY_FIXTURE_MAX_NODES: usize = 1024;
@@ -3151,7 +3151,7 @@ mod tests {
 
     fn temporary_directory(label: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "evolution-gtk4-search-{label}-{}",
+            "meridian-search-{label}-{}",
             uuid::Uuid::new_v4()
         ));
         fs::create_dir_all(&path).expect("temporary search directory should be created");
@@ -3181,6 +3181,7 @@ mod tests {
                     size_formatted: "1 KiB".to_string(),
                     mime_type: "application/octet-stream".to_string(),
                     content_id: None,
+                    is_inline: false,
                     content: Vec::new().into(),
                 }]
             })

@@ -236,9 +236,9 @@ pub(crate) struct MailStoreWorkerConfig {
 impl MailStoreWorkerConfig {
     pub(crate) fn capture(local_mail_directory: Option<String>) -> Self {
         Self {
-            mail_dir_override: std::env::var_os("EVOLUTION_GTK4_MAIL_DIR").map(PathBuf::from),
+            mail_dir_override: std::env::var_os("MERIDIAN_MAIL_DIR").or_else(|| std::env::var_os("EVOLUTION_GTK4_MAIL_DIR")).map(PathBuf::from),
             local_mail_directory,
-            metadata_path_override: std::env::var_os("EVOLUTION_GTK4_MAIL_STATE_FILE")
+            metadata_path_override: std::env::var_os("MERIDIAN_MAIL_STATE_FILE").or_else(|| std::env::var_os("EVOLUTION_GTK4_MAIL_STATE_FILE"))
                 .map(PathBuf::from),
             app_data_directory: crate::services::app_data_dir(),
         }
@@ -254,7 +254,7 @@ impl MailStoreService {
     /// no sample data is written.  The optional `EVOLUTION_GTK4_MAIL_DIR`
     /// override is useful for tests and for inspecting another mailbox.
     pub fn new() -> Self {
-        let mail_dir_override = std::env::var_os("EVOLUTION_GTK4_MAIL_DIR").map(PathBuf::from);
+        let mail_dir_override = std::env::var_os("MERIDIAN_MAIL_DIR").or_else(|| std::env::var_os("EVOLUTION_GTK4_MAIL_DIR")).map(PathBuf::from);
         let local_mail_directory = if mail_dir_override.is_none() {
             crate::services::settings_service::AppSettings::try_new()
                 .map(|settings| settings.local_mail_directory())
@@ -264,7 +264,7 @@ impl MailStoreService {
         let config = MailStoreWorkerConfig {
             mail_dir_override,
             local_mail_directory,
-            metadata_path_override: std::env::var_os("EVOLUTION_GTK4_MAIL_STATE_FILE")
+            metadata_path_override: std::env::var_os("MERIDIAN_MAIL_STATE_FILE").or_else(|| std::env::var_os("EVOLUTION_GTK4_MAIL_STATE_FILE"))
                 .map(PathBuf::from),
             app_data_directory: crate::services::app_data_dir(),
         };
@@ -341,20 +341,18 @@ impl MailStoreService {
 To: Benutzer <user@local>\r\n\
 Subject: Willkommen bei Evolution\r\n\
 Date: Sun, 06 Sep 2026 12:00:00 +0200\r\n\
-Message-ID: <welcome-evolution-gtk4@gnome.org>\r\n\
+Message-ID: <welcome-meridian@gnome.org>\r\n\
 MIME-Version: 1.0\r\n\
 Content-Type: text/plain; charset=UTF-8\r\n\
 \r\n\
 Herzlich willkommen bei Evolution!\r\n\
-\r\n\
-Evolution ist dein moderner E-Mail-, Kalender- und Kontakt-Client auf macOS und Linux.\r\n\
+Meridian ist dein moderner E-Mail-, Kalender- und Kontakt-Client für Linux.\r\n\
 \r\n\
 Erste Schritte:\r\n\
 • Neues E-Mail-Konto einrichten: Klicke oben auf 'Konto einrichten' oder oeffne das Menue oben rechts, um dein IMAP-, POP3- oder Exchange/M365-Konto zu verbinden.\r\n\
-• macOS System-Integration: In den Einstellungen (Einstellungen -> macOS System-Integration) kannst du deine Apple Kalender, Erinnerungen und Kontakte nahtlos synchronisieren.\r\n\
 • Ordner & Suche: Alle Ordner unterstuetzen Volltextsuche, Filter und Schnellsortierung.\r\n\
 \r\n\
-Viel Freude mit Evolution!\r\n";
+Viel Freude mit Meridian!\r\n";
             let _ = fs::write(&welcome_file, welcome_content);
         }
     }
@@ -363,7 +361,11 @@ Viel Freude mit Evolution!\r\n";
     #[allow(dead_code)]
     pub fn with_mail_dir<P: Into<PathBuf>>(mail_dir: P) -> Self {
         let mail_dir = mail_dir.into();
-        let metadata_path = mail_dir.join(".evolution-gtk4-state.json");
+        let metadata_path = if mail_dir.join(".meridian-state.json").is_file() || !mail_dir.join(".evolution-gtk4-state.json").is_file() {
+            mail_dir.join(".meridian-state.json")
+        } else {
+            mail_dir.join(".evolution-gtk4-state.json")
+        };
         Self {
             mail_dir,
             metadata: MailMetadataStore::new(metadata_path),
@@ -388,8 +390,13 @@ Viel Freude mit Evolution!\r\n";
     #[cfg(test)]
     fn with_read_only_mail_dir(mail_dir: impl Into<PathBuf>) -> Self {
         let mail_dir = mail_dir.into();
+        let metadata_path = if mail_dir.join(".meridian-state.json").is_file() || !mail_dir.join(".evolution-gtk4-state.json").is_file() {
+            mail_dir.join(".meridian-state.json")
+        } else {
+            mail_dir.join(".evolution-gtk4-state.json")
+        };
         Self {
-            metadata: MailMetadataStore::new(mail_dir.join(".evolution-gtk4-state.json")),
+            metadata: MailMetadataStore::new(metadata_path),
             mail_dir,
             writable: false,
         }
@@ -2428,6 +2435,24 @@ pub(crate) fn parse_rfc822_bytes(
     extract_mime_content(&headers, body, &mut extracted);
 
     let is_preview_only = headers.get("x-evolution-preview-only").is_some();
+    let has_cal_header = headers.get("x-evolution-has-calendar").map(|v| v.trim() == "1").unwrap_or(false);
+    let has_att_header = headers.get("x-evolution-has-attachments").map(|v| v.trim() == "1").unwrap_or(false);
+    let is_important = headers
+        .get("importance")
+        .map(|v| v.trim().eq_ignore_ascii_case("high"))
+        .unwrap_or(false)
+        || headers
+            .get("x-priority")
+            .map(|v| v.trim().starts_with('1') || v.trim().starts_with('2'))
+            .unwrap_or(false)
+        || headers
+            .get("priority")
+            .map(|v| v.trim().eq_ignore_ascii_case("urgent"))
+            .unwrap_or(false)
+        || headers
+            .get("x-msmail-priority")
+            .map(|v| v.trim().eq_ignore_ascii_case("high"))
+            .unwrap_or(false);
     let plain_body = extracted.plain_body.unwrap_or_default();
     let mut preview = if !plain_body.trim().is_empty() {
         crate::services::html_sanitizer::clean_mail_snippet(plain_body.as_str())
@@ -2465,6 +2490,31 @@ pub(crate) fn parse_rfc822_bytes(
     ))
     .then(|| raw.to_vec());
 
+    let mut attachments = extracted.attachments;
+    if attachments.is_empty() {
+        let is_cal = has_cal_header
+            || crate::services::evolution_summary_cache::is_calendar_invitation_subject_or_preview(&subject, &preview);
+        if is_cal {
+            attachments.push(AttachmentInfo {
+                filename: "invite.ics".to_string(),
+                size_formatted: String::new(),
+                mime_type: "text/calendar".to_string(),
+                content_id: None,
+                is_inline: false,
+                content: std::sync::Arc::from([]),
+            });
+        } else if has_att_header {
+            attachments.push(AttachmentInfo {
+                filename: "Anhang".to_string(),
+                size_formatted: String::new(),
+                mime_type: "application/octet-stream".to_string(),
+                content_id: None,
+                is_inline: false,
+                content: std::sync::Arc::from([]),
+            });
+        }
+    }
+
     Some(ParsedMail {
         id: id.to_string(),
         folder_id: folder_id.to_string(),
@@ -2491,13 +2541,13 @@ pub(crate) fn parse_rfc822_bytes(
         raw_mime,
         is_unread: unread,
         is_flagged: false,
-        is_important: false,
+        is_important,
         is_replied: false,
         is_forwarded: false,
         follow_up_state: MailFollowUpState::None,
         follow_up: MailFollowUpMetadata::default(),
         labels: Vec::new(),
-        attachments: extracted.attachments,
+        attachments,
         is_preview_only,
     })
 }
@@ -2802,13 +2852,17 @@ fn extract_mime_content(
         mime_parameter(disposition, "filename").or_else(|| mime_parameter(content_type, "name"));
 
     let is_explicit_attachment = disposition.to_ascii_lowercase().contains("attachment");
-    if is_explicit_attachment || (!media_type.starts_with("text/") && filename.is_some()) {
-        let filename = filename.unwrap_or_else(|| "attachment".to_string());
+    let is_explicit_inline = disposition.to_ascii_lowercase().contains("inline");
+    let is_inline = is_explicit_inline || content_id.is_some();
+    if is_explicit_attachment || (!media_type.starts_with("text/") && filename.is_some()) || media_type == "text/calendar" {
+        let default_name = if media_type == "text/calendar" { "invite.ics" } else { "attachment" };
+        let filename = filename.unwrap_or_else(|| default_name.to_string());
         extracted.attachments.push(AttachmentInfo {
             filename: decode_mime_header(&filename),
             size_formatted: format_size(decoded.len()),
             mime_type: media_type,
             content_id,
+            is_inline,
             content: decoded.into(),
         });
         return;
@@ -2828,11 +2882,15 @@ fn extract_mime_content(
         _ => {
             // A non-text part without a filename is still useful to expose as
             // an attachment, but use a stable fallback name for the UI.
+            let default_name = if media_type == "text/calendar" { "invite.ics" } else { "attachment" };
+            let is_explicit_inline = disposition.to_ascii_lowercase().contains("inline");
+            let is_inline = is_explicit_inline || content_id.is_some();
             extracted.attachments.push(AttachmentInfo {
-                filename: "attachment".to_string(),
+                filename: default_name.to_string(),
                 size_formatted: format_size(decoded.len()),
                 mime_type: media_type,
                 content_id,
+                is_inline,
                 content: decoded.into(),
             });
         }
@@ -3784,7 +3842,7 @@ mod tests {
     #[test]
     fn missing_mailbox_does_not_create_demo_data() {
         let service = MailStoreService::with_mail_dir(
-            std::env::temp_dir().join("evolution-gtk4-nonexistent-mailbox"),
+            std::env::temp_dir().join("meridian-nonexistent-mailbox"),
         );
         assert!(service.load_local_messages().is_empty());
     }
@@ -3795,7 +3853,7 @@ mod tests {
         let env_mail_dir = root.join("env-mail");
         let app_data = crate::services::app_data_dir();
         let external_settings_dir = app_data
-            .with_file_name("evolution-gtk4-external")
+            .with_file_name("meridian-external")
             .join("mail");
         let app_owned_settings_dir = app_data.join("worker-safe-owned");
         let state_path = root.join("mail-state.json");
@@ -3875,7 +3933,7 @@ mod tests {
     #[test]
     fn imports_mail_files_without_overwriting_existing_files() {
         let root = std::env::temp_dir().join(format!(
-            "evolution-gtk4-import-mail-{}",
+            "meridian-import-mail-{}",
             uuid::Uuid::new_v4()
         ));
         let source_dir = root.join("source");
@@ -4254,6 +4312,7 @@ mod tests {
             size_formatted: "1 KiB".to_string(),
             mime_type: "application/pdf".to_string(),
             content_id: None,
+            is_inline: false,
             content: vec![1, 2, 3].into(),
         });
 
@@ -5055,7 +5114,7 @@ mod tests {
     #[test]
     fn cancelled_load_stops_before_reading_mail_files() {
         let root = std::env::temp_dir().join(format!(
-            "evolution-gtk4-cancelled-load-{}",
+            "meridian-cancelled-load-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
@@ -5356,7 +5415,7 @@ mod tests {
             match_all: true,
         };
 
-        let mut mail = test_parsed_mail("msg-1", "Urgent: review needed", "Boss");
+        let mail = test_parsed_mail("msg-1", "Urgent: review needed", "Boss");
 
         let report = simulate_filters_on_messages(&[rule], &[mail.clone()]);
         assert_eq!(report.total_messages_evaluated, 1);
@@ -5434,9 +5493,63 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn test_parse_rfc822_calendar_attachments() {
+        use crate::models::mail_message::MailAttachmentKind;
+
+        // 1. Preview message with X-Evolution-Has-Calendar
+        let rfc822_preview = b"Message-ID: <123@eds>\r\n\
+X-Evolution-Preview-Only: 1\r\n\
+X-Evolution-Has-Calendar: 1\r\n\
+Subject: Status Meeting\r\n\
+From: alice@example.com\r\n\
+\r\n\
+Please attend";
+        let parsed = parse_rfc822_bytes("msg-1", "folder-1", rfc822_preview, true).unwrap();
+        let obj = parsed.into_object();
+        assert_eq!(obj.attachment_kind(), MailAttachmentKind::Calendar);
+        assert_eq!(obj.attachment_count(), 1);
+
+        // 2. Full MIME message with multipart/alternative containing text/calendar
+        let rfc822_full = b"Content-Type: multipart/alternative; boundary=\"boundary42\"\r\n\
+Subject: Einladung: Architecture Review\r\n\
+From: bob@example.com\r\n\
+\r\n\
+--boundary42\r\n\
+Content-Type: text/plain; charset=utf-8\r\n\
+\r\n\
+Meeting details\r\n\
+--boundary42\r\n\
+Content-Type: text/calendar; method=REQUEST; charset=utf-8\r\n\
+\r\n\
+BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+METHOD:REQUEST\r\n\
+BEGIN:VEVENT\r\n\
+SUMMARY:Architecture Review\r\n\
+END:VEVENT\r\n\
+END:VCALENDAR\r\n\
+--boundary42--\r\n";
+        let parsed_full = parse_rfc822_bytes("msg-2", "folder-1", rfc822_full, false).unwrap();
+        let obj_full = parsed_full.into_object();
+        assert_eq!(obj_full.attachment_kind(), MailAttachmentKind::Calendar);
+        assert_eq!(obj_full.attachment_count(), 1);
+
+        // 3. Preview message with calendar subject fallback
+        let rfc822_subj_preview = b"Message-ID: <456@eds>\r\n\
+X-Evolution-Preview-Only: 1\r\n\
+Subject: Einladung: Quarterly Planning\r\n\
+From: charlie@example.com\r\n\
+\r\n\
+Quarterly planning notes";
+        let parsed_subj = parse_rfc822_bytes("msg-3", "folder-1", rfc822_subj_preview, false).unwrap();
+        let obj_subj = parsed_subj.into_object();
+        assert_eq!(obj_subj.attachment_kind(), MailAttachmentKind::Calendar);
+    }
+
     fn temporary_directory(label: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "evolution-gtk4-mail-store-{label}-{}",
+            "meridian-mail-store-{label}-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&path);
