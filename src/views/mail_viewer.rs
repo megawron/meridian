@@ -2984,12 +2984,18 @@ img, video, iframe, canvas, svg {
 }
 img[data-meridian-placeholder] {
   box-sizing: border-box !important;
-  background-color: rgba(127, 127, 127, 0.08) !important;
-  border: 1px dashed rgba(127, 127, 127, 0.28) !important;
-  border-radius: 6px !important;
+  background-color: rgba(127, 127, 127, 0.06) !important;
+  border: 1px solid rgba(127, 127, 127, 0.22) !important;
+  border-radius: 8px !important;
   object-fit: scale-down !important;
   object-position: center !important;
   vertical-align: middle !important;
+}
+@media (prefers-color-scheme: dark) {
+  img[data-meridian-placeholder] {
+    background-color: rgba(255, 255, 255, 0.05) !important;
+    border: 1px solid rgba(255, 255, 255, 0.18) !important;
+  }
 }
 img[data-meridian-placeholder]:not([width]):not([style*="width"]) {
   min-width: 32px;
