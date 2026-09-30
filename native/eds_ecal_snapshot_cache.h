@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-#ifndef EVOLUTION_EDS_ECAL_SNAPSHOT_CACHE_H
-#define EVOLUTION_EDS_ECAL_SNAPSHOT_CACHE_H
+#ifndef MERIDIAN_EDS_ECAL_SNAPSHOT_CACHE_H
+#define MERIDIAN_EDS_ECAL_SNAPSHOT_CACHE_H
 
 /* ESource/ECalClient types and source accessors are supplied by the bridge.
  * The isolated lifetime/cache contract is also exercised with GObject test doubles. */
@@ -8,7 +8,7 @@ typedef struct {
     gchar *key;
     gchar *source_uid;
     gchar *source_configuration;
-    EvolutionEdsECalSourceType source_type;
+    MeridianEdsECalSourceType source_type;
     ECalClient *client;
     gulong backend_died_handler_id;
     GCancellable *backend_dead;
@@ -78,7 +78,7 @@ ecal_snapshot_dead_token_unref (gpointer token, GClosure *closure)
 
 static gchar *
 ecal_snapshot_client_key (ESource *source,
-                          EvolutionEdsECalSourceType source_type)
+                          MeridianEdsECalSourceType source_type)
 {
     return g_strdup_printf (
         "%d:%s", (int) source_type, e_source_get_uid (source));
@@ -86,7 +86,7 @@ ecal_snapshot_client_key (ESource *source,
 
 static ECalClient *
 ecal_ref_cached_snapshot_client (ESource *source,
-                                 EvolutionEdsECalSourceType source_type)
+                                 MeridianEdsECalSourceType source_type)
 {
     ECalSnapshotClient *entry;
     ECalSnapshotClient *stale_entry = NULL;
@@ -114,7 +114,7 @@ ecal_ref_cached_snapshot_client (ESource *source,
 
 static void
 ecal_evict_snapshot_client (ESource *source,
-                            EvolutionEdsECalSourceType source_type,
+                            MeridianEdsECalSourceType source_type,
                             ECalClient *expected_client)
 {
     ECalSnapshotClient *entry;
@@ -132,7 +132,7 @@ ecal_evict_snapshot_client (ESource *source,
  * and changed serialized source configurations before reusing any client. */
 static void
 ecal_prune_snapshot_clients (GList *sources,
-                             EvolutionEdsECalSourceType source_type)
+                             MeridianEdsECalSourceType source_type)
 {
     GHashTable *current_sources;
     GHashTable *stale_keys;
@@ -198,7 +198,7 @@ ecal_prune_snapshot_clients (GList *sources,
  * reference.  A concurrent opener loses its redundant client safely. */
 static ECalClient *
 ecal_cache_snapshot_client (ESource *source,
-                            EvolutionEdsECalSourceType source_type,
+                            MeridianEdsECalSourceType source_type,
                             ECalClient *client)
 {
     ECalSnapshotClient *entry;

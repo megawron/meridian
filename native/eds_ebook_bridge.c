@@ -11,7 +11,7 @@
 #include <string.h>
 
 typedef struct {
-    EvolutionEdsEBookContact *contacts;
+    MeridianEdsEBookContact *contacts;
     size_t count;
     size_t capacity;
     size_t configured_sources;
@@ -40,7 +40,7 @@ append_contact (EBookLoadContext *context,
                 ESource *source,
                 EContact *contact)
 {
-    EvolutionEdsEBookContact *slot;
+    MeridianEdsEBookContact *slot;
     const gchar *uid;
     const gchar *display_name;
     gchar *vcard;
@@ -58,7 +58,7 @@ append_contact (EBookLoadContext *context,
         size_t next_capacity = context->capacity == 0
             ? 32
             : context->capacity * 2;
-        EvolutionEdsEBookContact *next = g_realloc_n (
+        MeridianEdsEBookContact *next = g_realloc_n (
             context->contacts, next_capacity, sizeof (*next));
         if (!next) {
             g_free (vcard);
@@ -80,7 +80,7 @@ append_contact (EBookLoadContext *context,
 
 typedef struct {
     ESource *source;
-    EvolutionEdsEBookContact *contacts;
+    MeridianEdsEBookContact *contacts;
     size_t count;
     size_t capacity;
     gboolean success;
@@ -130,7 +130,7 @@ load_source_worker (gpointer data)
         }
         if (res->count == res->capacity) {
             size_t next_cap = res->capacity == 0 ? 32 : res->capacity * 2;
-            EvolutionEdsEBookContact *next = g_realloc_n (res->contacts, next_cap, sizeof (*next));
+            MeridianEdsEBookContact *next = g_realloc_n (res->contacts, next_cap, sizeof (*next));
             if (!next) {
                 g_free (vcard);
                 continue;
@@ -138,7 +138,7 @@ load_source_worker (gpointer data)
             res->contacts = next;
             res->capacity = next_cap;
         }
-        EvolutionEdsEBookContact *slot = &res->contacts[res->count++];
+        MeridianEdsEBookContact *slot = &res->contacts[res->count++];
         const gchar *uid = e_contact_get_const (contact, E_CONTACT_UID);
         slot->source_uid = g_strdup (e_source_get_uid (res->source));
         slot->source_display_name = g_strdup (display_name ? display_name : "");
@@ -151,8 +151,8 @@ load_source_worker (gpointer data)
 }
 
 int
-evolution_eds_ebook_load_contacts (
-    EvolutionEdsEBookContact **out_contacts,
+meridian_eds_ebook_load_contacts (
+    MeridianEdsEBookContact **out_contacts,
     size_t *out_count,
     size_t *out_configured_sources,
     size_t *out_successful_sources,
@@ -208,7 +208,7 @@ evolution_eds_ebook_load_contacts (
                         context.capacity = new_total + 64;
                         context.contacts = g_realloc_n (context.contacts, context.capacity, sizeof (*context.contacts));
                     }
-                    memcpy (&context.contacts[context.count], results[i].contacts, results[i].count * sizeof (EvolutionEdsEBookContact));
+                    memcpy (&context.contacts[context.count], results[i].contacts, results[i].count * sizeof (MeridianEdsEBookContact));
                     context.count = new_total;
                     g_free (results[i].contacts);
                 }
@@ -248,7 +248,7 @@ evolution_eds_ebook_load_contacts (
     g_list_free_full (sources, g_object_unref);
     g_clear_object (&registry);
     g_free (context.first_error);
-    evolution_eds_ebook_free_contacts (context.contacts, context.count);
+    meridian_eds_ebook_free_contacts (context.contacts, context.count);
     return 1;
 }
 
@@ -296,9 +296,9 @@ return_operation_error (GError **error,
 }
 
 int
-evolution_eds_ebook_apply_operation (
+meridian_eds_ebook_apply_operation (
     const char *source_uid,
-    EvolutionEdsEBookOperationKind operation,
+    MeridianEdsEBookOperationKind operation,
     const char *vcard,
     const char *contact_uid,
     char **out_uid,
@@ -329,24 +329,24 @@ evolution_eds_ebook_apply_operation (
             "EBook-Mutation benötigt eine Quell-UID");
         return return_operation_error (&error, out_error);
     }
-    if (operation != EVOLUTION_EDS_EBOOK_CREATE &&
-        operation != EVOLUTION_EDS_EBOOK_MODIFY &&
-        operation != EVOLUTION_EDS_EBOOK_REMOVE) {
+    if (operation != MERIDIAN_EDS_EBOOK_CREATE &&
+        operation != MERIDIAN_EDS_EBOOK_MODIFY &&
+        operation != MERIDIAN_EDS_EBOOK_REMOVE) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
             "Unbekannte EBook-Mutation");
         return return_operation_error (&error, out_error);
     }
-    if ((operation == EVOLUTION_EDS_EBOOK_CREATE ||
-         operation == EVOLUTION_EDS_EBOOK_MODIFY) &&
+    if ((operation == MERIDIAN_EDS_EBOOK_CREATE ||
+         operation == MERIDIAN_EDS_EBOOK_MODIFY) &&
         (!vcard || !*vcard)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
             "EBook-Mutation benötigt eine vCard");
         return return_operation_error (&error, out_error);
     }
-    if ((operation == EVOLUTION_EDS_EBOOK_MODIFY ||
-         operation == EVOLUTION_EDS_EBOOK_REMOVE) &&
+    if ((operation == MERIDIAN_EDS_EBOOK_MODIFY ||
+         operation == MERIDIAN_EDS_EBOOK_REMOVE) &&
         (!contact_uid || !*contact_uid)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
@@ -375,9 +375,9 @@ evolution_eds_ebook_apply_operation (
     if (!client)
         goto finish;
 
-    if (operation == EVOLUTION_EDS_EBOOK_CREATE ||
-        operation == EVOLUTION_EDS_EBOOK_MODIFY) {
-        if (operation == EVOLUTION_EDS_EBOOK_CREATE)
+    if (operation == MERIDIAN_EDS_EBOOK_CREATE ||
+        operation == MERIDIAN_EDS_EBOOK_MODIFY) {
+        if (operation == MERIDIAN_EDS_EBOOK_CREATE)
             contact = e_contact_new_from_vcard (vcard);
         else
             contact = e_contact_new_from_vcard_with_uid (vcard, contact_uid);
@@ -387,7 +387,7 @@ evolution_eds_ebook_apply_operation (
                 "Ungültige vCard");
             goto finish;
         }
-        if (operation == EVOLUTION_EDS_EBOOK_CREATE) {
+        if (operation == MERIDIAN_EDS_EBOOK_CREATE) {
             if (!e_book_client_add_contact_sync (
                     client, contact, E_BOOK_OPERATION_FLAG_CONFLICT_FAIL,
                     &added_uid, NULL, &error))
@@ -437,8 +437,8 @@ finish:
 }
 
 void
-evolution_eds_ebook_free_contacts (
-    EvolutionEdsEBookContact *contacts,
+meridian_eds_ebook_free_contacts (
+    MeridianEdsEBookContact *contacts,
     size_t count)
 {
     size_t ii;
@@ -455,13 +455,13 @@ evolution_eds_ebook_free_contacts (
 }
 
 void
-evolution_eds_ebook_free_error (char *error_message)
+meridian_eds_ebook_free_error (char *error_message)
 {
     g_free (error_message);
 }
 
 typedef struct {
-    EvolutionEdsEBookWatcher *watcher;
+    MeridianEdsEBookWatcher *watcher;
     EBookClient *client;
     EBookClientView *view;
     gulong objects_added_id;
@@ -473,10 +473,10 @@ typedef struct {
 } EBookWatcherView;
 
 typedef struct {
-    EvolutionEdsEBookWatcherEvent event;
+    MeridianEdsEBookWatcherEvent event;
 } EBookWatcherQueuedEvent;
 
-struct _EvolutionEdsEBookWatcher {
+struct _MeridianEdsEBookWatcher {
     GMutex lock;
     GCond condition;
     gboolean stopping;
@@ -512,7 +512,7 @@ free_ebook_watcher_event (EBookWatcherQueuedEvent *queued_event)
 static gboolean
 ebook_watcher_callback_begin (EBookWatcherView *watch_view)
 {
-    EvolutionEdsEBookWatcher *watcher = watch_view->watcher;
+    MeridianEdsEBookWatcher *watcher = watch_view->watcher;
     gboolean active;
 
     g_mutex_lock (&watcher->lock);
@@ -527,7 +527,7 @@ ebook_watcher_callback_begin (EBookWatcherView *watch_view)
 static void
 ebook_watcher_callback_end (EBookWatcherView *watch_view)
 {
-    EvolutionEdsEBookWatcher *watcher = watch_view->watcher;
+    MeridianEdsEBookWatcher *watcher = watch_view->watcher;
 
     g_mutex_lock (&watcher->lock);
     if (watcher->callback_count > 0)
@@ -539,12 +539,12 @@ ebook_watcher_callback_end (EBookWatcherView *watch_view)
 
 static void
 queue_ebook_watcher_event (EBookWatcherView *watch_view,
-                           EvolutionEdsEBookWatcherEventKind kind,
+                           MeridianEdsEBookWatcherEventKind kind,
                            const gchar *contact_uid,
                            const gchar *vcard,
                            const gchar *error_message)
 {
-    EvolutionEdsEBookWatcher *watcher = watch_view->watcher;
+    MeridianEdsEBookWatcher *watcher = watch_view->watcher;
     EBookWatcherQueuedEvent *queued_event;
 
     g_mutex_lock (&watcher->lock);
@@ -570,7 +570,7 @@ static void
 ebook_watcher_objects_changed_cb (EBookClientView *view,
                                   const GSList *contacts,
                                   gpointer user_data,
-                                  EvolutionEdsEBookWatcherEventKind kind)
+                                  MeridianEdsEBookWatcherEventKind kind)
 {
     EBookWatcherView *watch_view = user_data;
     const GSList *link;
@@ -606,7 +606,7 @@ ebook_watcher_objects_added_cb (EBookClientView *view,
                                 gpointer user_data)
 {
     ebook_watcher_objects_changed_cb (
-        view, contacts, user_data, EVOLUTION_EDS_EBOOK_OBJECT_ADDED);
+        view, contacts, user_data, MERIDIAN_EDS_EBOOK_OBJECT_ADDED);
 }
 
 static void
@@ -615,7 +615,7 @@ ebook_watcher_objects_modified_cb (EBookClientView *view,
                                    gpointer user_data)
 {
     ebook_watcher_objects_changed_cb (
-        view, contacts, user_data, EVOLUTION_EDS_EBOOK_OBJECT_MODIFIED);
+        view, contacts, user_data, MERIDIAN_EDS_EBOOK_OBJECT_MODIFIED);
 }
 
 static void
@@ -632,7 +632,7 @@ ebook_watcher_objects_removed_cb (EBookClientView *view,
 
     for (link = ids; link != NULL; link = link->next)
         queue_ebook_watcher_event (
-            watch_view, EVOLUTION_EDS_EBOOK_OBJECT_REMOVED,
+            watch_view, MERIDIAN_EDS_EBOOK_OBJECT_REMOVED,
             link->data, NULL, NULL);
 
     ebook_watcher_callback_end (watch_view);
@@ -651,7 +651,7 @@ ebook_watcher_complete_cb (EBookClientView *view,
 
     if (error)
         queue_ebook_watcher_event (
-            watch_view, EVOLUTION_EDS_EBOOK_WATCHER_ERROR,
+            watch_view, MERIDIAN_EDS_EBOOK_WATCHER_ERROR,
             NULL, NULL, error->message);
 
     ebook_watcher_callback_end (watch_view);
@@ -699,7 +699,7 @@ ebook_watcher_remember_error (gchar **first_error,
 }
 
 static gboolean
-ebook_watcher_add_source (EvolutionEdsEBookWatcher *watcher,
+ebook_watcher_add_source (MeridianEdsEBookWatcher *watcher,
                           ESource *source,
                           gchar **first_error)
 {
@@ -765,14 +765,14 @@ failed:
 }
 
 int
-evolution_eds_ebook_watcher_new (
-    EvolutionEdsEBookWatcher **out_watcher,
+meridian_eds_ebook_watcher_new (
+    MeridianEdsEBookWatcher **out_watcher,
     size_t *out_configured_sources,
     size_t *out_active_sources,
     size_t *out_failed_sources,
     char **out_error)
 {
-    EvolutionEdsEBookWatcher *watcher;
+    MeridianEdsEBookWatcher *watcher;
     GList *sources = NULL;
     GList *link;
     gchar *first_error = NULL;
@@ -794,7 +794,7 @@ evolution_eds_ebook_watcher_new (
     if (!out_watcher)
         return 0;
 
-    watcher = g_new0 (EvolutionEdsEBookWatcher, 1);
+    watcher = g_new0 (MeridianEdsEBookWatcher, 1);
     g_mutex_init (&watcher->lock);
     g_cond_init (&watcher->condition);
     watcher->events = g_queue_new ();
@@ -829,7 +829,7 @@ evolution_eds_ebook_watcher_new (
             *out_error = g_strdup (error->message);
         g_clear_error (&error);
         g_list_free_full (sources, g_object_unref);
-        evolution_eds_ebook_watcher_free (watcher);
+        meridian_eds_ebook_watcher_free (watcher);
         return 0;
     }
 
@@ -850,10 +850,10 @@ evolution_eds_ebook_watcher_new (
 }
 
 int
-evolution_eds_ebook_watcher_next_event (
-    EvolutionEdsEBookWatcher *watcher,
+meridian_eds_ebook_watcher_next_event (
+    MeridianEdsEBookWatcher *watcher,
     int timeout_milliseconds,
-    EvolutionEdsEBookWatcherEvent *out_event)
+    MeridianEdsEBookWatcherEvent *out_event)
 {
     EBookWatcherQueuedEvent *queued_event = NULL;
     gint64 deadline;
@@ -893,8 +893,8 @@ evolution_eds_ebook_watcher_next_event (
 }
 
 void
-evolution_eds_ebook_free_watcher_event (
-    EvolutionEdsEBookWatcherEvent *event)
+meridian_eds_ebook_free_watcher_event (
+    MeridianEdsEBookWatcherEvent *event)
 {
     if (!event)
         return;
@@ -908,7 +908,7 @@ evolution_eds_ebook_free_watcher_event (
 }
 
 void
-evolution_eds_ebook_watcher_free (EvolutionEdsEBookWatcher *watcher)
+meridian_eds_ebook_watcher_free (MeridianEdsEBookWatcher *watcher)
 {
     if (!watcher)
         return;

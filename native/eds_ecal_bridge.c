@@ -12,7 +12,7 @@
 #include "eds_ecal_snapshot_cache.h"
 
 typedef struct {
-    EvolutionEdsECalComponent *components;
+    MeridianEdsECalComponent *components;
     size_t count;
     size_t capacity;
     size_t configured_sources;
@@ -42,7 +42,7 @@ append_component (ECalLoadContext *context,
                   ECalComponent *component)
 {
     gchar *component_string;
-    EvolutionEdsECalComponent *slot;
+    MeridianEdsECalComponent *slot;
     const gchar *uid;
     const gchar *display_name;
 
@@ -59,7 +59,7 @@ append_component (ECalLoadContext *context,
         size_t next_capacity = context->capacity == 0
             ? 32
             : context->capacity * 2;
-        EvolutionEdsECalComponent *next = g_realloc_n (
+        MeridianEdsECalComponent *next = g_realloc_n (
             context->components, next_capacity, sizeof (*next));
         if (!next) {
             g_free (component_string);
@@ -116,7 +116,7 @@ ecal_stop_cancellation_timer (GSource *source)
 static void
 load_source (ECalLoadContext *context,
              ESource *source,
-             EvolutionEdsECalSourceType source_type)
+             MeridianEdsECalSourceType source_type)
 {
     ECalClient *client = NULL;
     GSList *components = NULL;
@@ -126,11 +126,11 @@ load_source (ECalLoadContext *context,
     const gchar *extension_name = NULL;
     gchar *query = NULL;
 
-    if (source_type == EVOLUTION_EDS_ECAL_EVENTS)
+    if (source_type == MERIDIAN_EDS_ECAL_EVENTS)
         extension_name = E_SOURCE_EXTENSION_CALENDAR;
-    else if (source_type == EVOLUTION_EDS_ECAL_TASKS)
+    else if (source_type == MERIDIAN_EDS_ECAL_TASKS)
         extension_name = E_SOURCE_EXTENSION_TASK_LIST;
-    else if (source_type == EVOLUTION_EDS_ECAL_MEMOS)
+    else if (source_type == MERIDIAN_EDS_ECAL_MEMOS)
         extension_name = E_SOURCE_EXTENSION_MEMO_LIST;
 
     if (!extension_name || !e_source_has_extension (source, extension_name))
@@ -181,7 +181,7 @@ load_source (ECalLoadContext *context,
         return;
     }
 
-    if (source_type == EVOLUTION_EDS_ECAL_EVENTS) {
+    if (source_type == MERIDIAN_EDS_ECAL_EVENTS) {
         GDateTime *now = g_date_time_new_now_utc ();
         GDateTime *start = g_date_time_add_months (now, -6);
         GDateTime *end = g_date_time_add_months (now, 12);
@@ -258,9 +258,9 @@ ecal_get_source_registry_with_retry (GCancellable *cancellable, GError **error)
 }
 
 int
-evolution_eds_ecal_load_components (
-    EvolutionEdsECalSourceType source_type,
-    EvolutionEdsECalComponent **out_components,
+meridian_eds_ecal_load_components (
+    MeridianEdsECalSourceType source_type,
+    MeridianEdsECalComponent **out_components,
     size_t *out_count,
     size_t *out_configured_sources,
     size_t *out_successful_sources,
@@ -289,11 +289,11 @@ evolution_eds_ecal_load_components (
     if (out_error)
         *out_error = NULL;
 
-    if (source_type == EVOLUTION_EDS_ECAL_EVENTS)
+    if (source_type == MERIDIAN_EDS_ECAL_EVENTS)
         extension_name = E_SOURCE_EXTENSION_CALENDAR;
-    else if (source_type == EVOLUTION_EDS_ECAL_TASKS)
+    else if (source_type == MERIDIAN_EDS_ECAL_TASKS)
         extension_name = E_SOURCE_EXTENSION_TASK_LIST;
-    else if (source_type == EVOLUTION_EDS_ECAL_MEMOS)
+    else if (source_type == MERIDIAN_EDS_ECAL_MEMOS)
         extension_name = E_SOURCE_EXTENSION_MEMO_LIST;
     else {
         if (out_error)
@@ -357,7 +357,7 @@ evolution_eds_ecal_load_components (
         g_object_unref (credentials_provider);
     g_object_unref (registry);
     g_free (context.first_error);
-    evolution_eds_ecal_free_components (context.components, context.count);
+    meridian_eds_ecal_free_components (context.components, context.count);
     return result;
 }
 
@@ -416,10 +416,10 @@ set_component_uid_if_missing (ICalComponent *component,
 }
 
 int
-evolution_eds_ecal_apply_operation (
+meridian_eds_ecal_apply_operation (
     const char *source_uid,
-    EvolutionEdsECalSourceType source_type,
-    EvolutionEdsECalOperationKind operation,
+    MeridianEdsECalSourceType source_type,
+    MeridianEdsECalOperationKind operation,
     const char *component_string,
     const char *component_uid,
     char **out_uid,
@@ -450,32 +450,32 @@ evolution_eds_ecal_apply_operation (
             "ECal-Mutation benötigt eine Quell-UID");
         return return_operation_error (&error, out_error);
     }
-    if (source_type != EVOLUTION_EDS_ECAL_EVENTS &&
-        source_type != EVOLUTION_EDS_ECAL_TASKS &&
-        source_type != EVOLUTION_EDS_ECAL_MEMOS) {
+    if (source_type != MERIDIAN_EDS_ECAL_EVENTS &&
+        source_type != MERIDIAN_EDS_ECAL_TASKS &&
+        source_type != MERIDIAN_EDS_ECAL_MEMOS) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
             "Unbekannter ECal-Quellentyp");
         return return_operation_error (&error, out_error);
     }
-    if (operation != EVOLUTION_EDS_ECAL_CREATE &&
-        operation != EVOLUTION_EDS_ECAL_MODIFY &&
-        operation != EVOLUTION_EDS_ECAL_REMOVE) {
+    if (operation != MERIDIAN_EDS_ECAL_CREATE &&
+        operation != MERIDIAN_EDS_ECAL_MODIFY &&
+        operation != MERIDIAN_EDS_ECAL_REMOVE) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
             "Unbekannte ECal-Mutation");
         return return_operation_error (&error, out_error);
     }
-    if ((operation == EVOLUTION_EDS_ECAL_CREATE ||
-         operation == EVOLUTION_EDS_ECAL_MODIFY) &&
+    if ((operation == MERIDIAN_EDS_ECAL_CREATE ||
+         operation == MERIDIAN_EDS_ECAL_MODIFY) &&
         (!component_string || !*component_string)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
             "ECal-Mutation benötigt eine iCalendar-Komponente");
         return return_operation_error (&error, out_error);
     }
-    if ((operation == EVOLUTION_EDS_ECAL_MODIFY ||
-         operation == EVOLUTION_EDS_ECAL_REMOVE) &&
+    if ((operation == MERIDIAN_EDS_ECAL_MODIFY ||
+         operation == MERIDIAN_EDS_ECAL_REMOVE) &&
         (!component_uid || !*component_uid)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
@@ -506,8 +506,8 @@ evolution_eds_ecal_apply_operation (
     if (!client)
         goto finish;
 
-    if (operation == EVOLUTION_EDS_ECAL_CREATE ||
-        operation == EVOLUTION_EDS_ECAL_MODIFY) {
+    if (operation == MERIDIAN_EDS_ECAL_CREATE ||
+        operation == MERIDIAN_EDS_ECAL_MODIFY) {
         component = i_cal_component_new_from_string (component_string);
         if (!component) {
             g_set_error_literal (
@@ -518,7 +518,7 @@ evolution_eds_ecal_apply_operation (
         if (!uid || !*uid)
             uid = i_cal_component_get_uid (component);
         set_component_uid_if_missing (component, uid);
-        if (operation == EVOLUTION_EDS_ECAL_CREATE) {
+        if (operation == MERIDIAN_EDS_ECAL_CREATE) {
             if (!e_cal_client_create_object_sync (
                     client, component, E_CAL_OPERATION_FLAG_CONFLICT_FAIL,
                     &created_uid, NULL, &error))
@@ -573,14 +573,14 @@ finish:
 }
 
 static const gchar *
-source_extension_name_for_type (EvolutionEdsECalSourceType source_type)
+source_extension_name_for_type (MeridianEdsECalSourceType source_type)
 {
     switch (source_type) {
-    case EVOLUTION_EDS_ECAL_EVENTS:
+    case MERIDIAN_EDS_ECAL_EVENTS:
         return E_SOURCE_EXTENSION_CALENDAR;
-    case EVOLUTION_EDS_ECAL_TASKS:
+    case MERIDIAN_EDS_ECAL_TASKS:
         return E_SOURCE_EXTENSION_TASK_LIST;
-    case EVOLUTION_EDS_ECAL_MEMOS:
+    case MERIDIAN_EDS_ECAL_MEMOS:
         return E_SOURCE_EXTENSION_MEMO_LIST;
     default:
         return NULL;
@@ -588,17 +588,17 @@ source_extension_name_for_type (EvolutionEdsECalSourceType source_type)
 }
 
 static gboolean
-append_source_capability (EvolutionEdsECalSourceCapability **sources,
+append_source_capability (MeridianEdsECalSourceCapability **sources,
                           size_t *count,
                           size_t *capacity,
                           ESourceRegistry *registry,
                           ESource *source,
                           ECalClient *client,
-                          EvolutionEdsECalSourceType source_type)
+                          MeridianEdsECalSourceType source_type)
 {
     ESource *collection;
-    EvolutionEdsECalSourceCapability *slot;
-    EvolutionEdsECalSourceCapability *next;
+    MeridianEdsECalSourceCapability *slot;
+    MeridianEdsECalSourceCapability *next;
 
     if (*count == *capacity) {
         size_t next_capacity = *capacity == 0 ? 8 : *capacity * 2;
@@ -621,7 +621,7 @@ append_source_capability (EvolutionEdsECalSourceCapability **sources,
     collection = e_source_registry_find_extension (
         registry, source, E_SOURCE_EXTENSION_COLLECTION);
     slot->in_collection = collection != NULL;
-    slot->task_assignment_supported = source_type == EVOLUTION_EDS_ECAL_TASKS &&
+    slot->task_assignment_supported = source_type == MERIDIAN_EDS_ECAL_TASKS &&
         client && !e_client_check_capability (
             E_CLIENT (client), E_CAL_STATIC_CAPABILITY_NO_TASK_ASSIGNMENT);
     slot->task_assignment_conversion_supported =
@@ -632,16 +632,16 @@ append_source_capability (EvolutionEdsECalSourceCapability **sources,
 }
 
 int
-evolution_eds_ecal_list_source_capabilities (
-    EvolutionEdsECalSourceType source_type,
-    EvolutionEdsECalSourceCapability **out_sources,
+meridian_eds_ecal_list_source_capabilities (
+    MeridianEdsECalSourceType source_type,
+    MeridianEdsECalSourceCapability **out_sources,
     size_t *out_count,
     char **out_error)
 {
     ESourceRegistry *registry = NULL;
     GList *sources = NULL;
     GList *link;
-    EvolutionEdsECalSourceCapability *capabilities = NULL;
+    MeridianEdsECalSourceCapability *capabilities = NULL;
     size_t count = 0;
     size_t capacity = 0;
     GError *error = NULL;
@@ -716,14 +716,14 @@ finish:
         if (out_count)
             *out_count = count;
     }
-    evolution_eds_ecal_free_source_capabilities (capabilities, count);
+    meridian_eds_ecal_free_source_capabilities (capabilities, count);
     return result;
 }
 
 int
-evolution_eds_ecal_refresh_source (
+meridian_eds_ecal_refresh_source (
     const char *source_uid,
-    EvolutionEdsECalSourceType source_type,
+    MeridianEdsECalSourceType source_type,
     char **out_error)
 {
     ESourceRegistry *registry = NULL;
@@ -826,7 +826,7 @@ source_is_in_collection (ESourceRegistry *registry,
 static gboolean
 resolve_source_for_management (ESourceRegistry *registry,
                                const gchar *source_uid,
-                               EvolutionEdsECalSourceType source_type,
+                               MeridianEdsECalSourceType source_type,
                                ESource **out_source,
                                GError **error)
 {
@@ -864,9 +864,9 @@ resolve_source_for_management (ESourceRegistry *registry,
 }
 
 int
-evolution_eds_ecal_rename_source (
+meridian_eds_ecal_rename_source (
     const char *source_uid,
-    EvolutionEdsECalSourceType source_type,
+    MeridianEdsECalSourceType source_type,
     const char *display_name,
     char **out_error)
 {
@@ -931,9 +931,9 @@ finish:
 }
 
 int
-evolution_eds_ecal_delete_source (
+meridian_eds_ecal_delete_source (
     const char *source_uid,
-    EvolutionEdsECalSourceType source_type,
+    MeridianEdsECalSourceType source_type,
     char **out_error)
 {
     ESourceRegistry *registry = NULL;
@@ -1020,10 +1020,10 @@ free_ical_component_list (GSList *components)
 }
 
 int
-evolution_eds_ecal_copy_source (
+meridian_eds_ecal_copy_source (
     const char *from_source_uid,
     const char *to_source_uid,
-    EvolutionEdsECalSourceType source_type,
+    MeridianEdsECalSourceType source_type,
     size_t *out_copied_count,
     size_t *out_updated_count,
     char **out_error)
@@ -1199,10 +1199,10 @@ is_valid_source_color (const gchar *color)
 }
 
 int
-evolution_eds_ecal_create_local_source (
+meridian_eds_ecal_create_local_source (
     const char *display_name,
     const char *color,
-    EvolutionEdsECalSourceType source_type,
+    MeridianEdsECalSourceType source_type,
     char **out_source_uid,
     char **out_warning,
     char **out_error)
@@ -1346,14 +1346,14 @@ finish:
 
 static ESource *
 ref_builtin_source_for_type (ESourceRegistry *registry,
-                             EvolutionEdsECalSourceType source_type)
+                             MeridianEdsECalSourceType source_type)
 {
     switch (source_type) {
-    case EVOLUTION_EDS_ECAL_EVENTS:
+    case MERIDIAN_EDS_ECAL_EVENTS:
         return e_source_registry_ref_builtin_calendar (registry);
-    case EVOLUTION_EDS_ECAL_TASKS:
+    case MERIDIAN_EDS_ECAL_TASKS:
         return e_source_registry_ref_builtin_task_list (registry);
-    case EVOLUTION_EDS_ECAL_MEMOS:
+    case MERIDIAN_EDS_ECAL_MEMOS:
         return e_source_registry_ref_builtin_memo_list (registry);
     default:
         return NULL;
@@ -1365,7 +1365,7 @@ ref_builtin_source_for_type (ESourceRegistry *registry,
 static int
 resolve_local_source_for_properties (ESourceRegistry *registry,
                                      const gchar *source_uid,
-                                     EvolutionEdsECalSourceType source_type,
+                                     MeridianEdsECalSourceType source_type,
                                      ESource **out_source,
                                      ESourceExtension **out_component_extension,
                                      ESourceLocal **out_local_extension,
@@ -1408,8 +1408,8 @@ resolve_local_source_for_properties (ESourceRegistry *registry,
 }
 
 void
-evolution_eds_ecal_clear_local_source_properties (
-    EvolutionEdsECalLocalSourceProperties *properties)
+meridian_eds_ecal_clear_local_source_properties (
+    MeridianEdsECalLocalSourceProperties *properties)
 {
     if (!properties)
         return;
@@ -1422,10 +1422,10 @@ evolution_eds_ecal_clear_local_source_properties (
 }
 
 int
-evolution_eds_ecal_get_local_source_properties (
+meridian_eds_ecal_get_local_source_properties (
     const char *source_uid,
-    EvolutionEdsECalSourceType source_type,
-    EvolutionEdsECalLocalSourceProperties *out_properties,
+    MeridianEdsECalSourceType source_type,
+    MeridianEdsECalLocalSourceProperties *out_properties,
     char **out_error)
 {
     ESourceRegistry *registry = NULL;
@@ -1487,7 +1487,7 @@ evolution_eds_ecal_get_local_source_properties (
 
 finish:
     if (result == 0) {
-        evolution_eds_ecal_clear_local_source_properties (out_properties);
+        meridian_eds_ecal_clear_local_source_properties (out_properties);
         if (out_error) {
             *out_error = g_strdup (
                 error && error->message ? error->message :
@@ -1502,9 +1502,9 @@ finish:
 }
 
 int
-evolution_eds_ecal_update_local_source_properties (
+meridian_eds_ecal_update_local_source_properties (
     const char *source_uid,
-    EvolutionEdsECalSourceType source_type,
+    MeridianEdsECalSourceType source_type,
     const char *display_name,
     const char *color,
     const char *custom_file_uri,
@@ -1676,8 +1676,8 @@ finish:
 }
 
 void
-evolution_eds_ecal_free_components (
-    EvolutionEdsECalComponent *components,
+meridian_eds_ecal_free_components (
+    MeridianEdsECalComponent *components,
     size_t count)
 {
     size_t ii;
@@ -1693,8 +1693,8 @@ evolution_eds_ecal_free_components (
 }
 
 void
-evolution_eds_ecal_free_source_capabilities (
-    EvolutionEdsECalSourceCapability *sources,
+meridian_eds_ecal_free_source_capabilities (
+    MeridianEdsECalSourceCapability *sources,
     size_t count)
 {
     size_t ii;
@@ -1709,29 +1709,29 @@ evolution_eds_ecal_free_source_capabilities (
 }
 
 void
-evolution_eds_ecal_free_error (char *error_message)
+meridian_eds_ecal_free_error (char *error_message)
 {
     g_free (error_message);
 }
 
 typedef struct {
-    EvolutionEdsECalWatcher *watcher;
+    MeridianEdsECalWatcher *watcher;
     ECalClient *client;
     ECalClientView *view;
     gulong objects_added_id;
     gulong objects_modified_id;
     gulong objects_removed_id;
     gulong complete_id;
-    EvolutionEdsECalSourceType source_type;
+    MeridianEdsECalSourceType source_type;
     gchar *source_uid;
     gchar *source_display_name;
 } ECalWatcherView;
 
 typedef struct {
-    EvolutionEdsECalWatcherEvent event;
+    MeridianEdsECalWatcherEvent event;
 } ECalWatcherQueuedEvent;
 
-struct _EvolutionEdsECalWatcher {
+struct _MeridianEdsECalWatcher {
     GMutex lock;
     GCond condition;
     gboolean stopping;
@@ -1767,7 +1767,7 @@ free_ecal_watcher_event (ECalWatcherQueuedEvent *queued_event)
 static gboolean
 ecal_watcher_callback_begin (ECalWatcherView *watch_view)
 {
-    EvolutionEdsECalWatcher *watcher = watch_view->watcher;
+    MeridianEdsECalWatcher *watcher = watch_view->watcher;
     gboolean active;
 
     g_mutex_lock (&watcher->lock);
@@ -1782,7 +1782,7 @@ ecal_watcher_callback_begin (ECalWatcherView *watch_view)
 static void
 ecal_watcher_callback_end (ECalWatcherView *watch_view)
 {
-    EvolutionEdsECalWatcher *watcher = watch_view->watcher;
+    MeridianEdsECalWatcher *watcher = watch_view->watcher;
 
     g_mutex_lock (&watcher->lock);
     if (watcher->callback_count > 0)
@@ -1794,12 +1794,12 @@ ecal_watcher_callback_end (ECalWatcherView *watch_view)
 
 static void
 queue_ecal_watcher_event (ECalWatcherView *watch_view,
-                          EvolutionEdsECalWatcherEventKind kind,
+                          MeridianEdsECalWatcherEventKind kind,
                           const gchar *uid,
                           const gchar *component,
                           const gchar *error_message)
 {
-    EvolutionEdsECalWatcher *watcher = watch_view->watcher;
+    MeridianEdsECalWatcher *watcher = watch_view->watcher;
     ECalWatcherQueuedEvent *queued_event;
 
     g_mutex_lock (&watcher->lock);
@@ -1826,7 +1826,7 @@ static void
 ecal_watcher_objects_changed_cb (ECalClientView *view,
                                  const GSList *objects,
                                  gpointer user_data,
-                                 EvolutionEdsECalWatcherEventKind kind)
+                                 MeridianEdsECalWatcherEventKind kind)
 {
     ECalWatcherView *watch_view = user_data;
     const GSList *link;
@@ -1861,7 +1861,7 @@ ecal_watcher_objects_added_cb (ECalClientView *view,
                                gpointer user_data)
 {
     ecal_watcher_objects_changed_cb (
-        view, objects, user_data, EVOLUTION_EDS_ECAL_OBJECT_ADDED);
+        view, objects, user_data, MERIDIAN_EDS_ECAL_OBJECT_ADDED);
 }
 
 static void
@@ -1870,7 +1870,7 @@ ecal_watcher_objects_modified_cb (ECalClientView *view,
                                   gpointer user_data)
 {
     ecal_watcher_objects_changed_cb (
-        view, objects, user_data, EVOLUTION_EDS_ECAL_OBJECT_MODIFIED);
+        view, objects, user_data, MERIDIAN_EDS_ECAL_OBJECT_MODIFIED);
 }
 
 static void
@@ -1890,7 +1890,7 @@ ecal_watcher_objects_removed_cb (ECalClientView *view,
 
         if (id) {
             queue_ecal_watcher_event (
-                watch_view, EVOLUTION_EDS_ECAL_OBJECT_REMOVED,
+                watch_view, MERIDIAN_EDS_ECAL_OBJECT_REMOVED,
                 e_cal_component_id_get_uid (id), NULL, NULL);
         }
     }
@@ -1911,7 +1911,7 @@ ecal_watcher_complete_cb (ECalClientView *view,
 
     if (error) {
         queue_ecal_watcher_event (
-            watch_view, EVOLUTION_EDS_ECAL_WATCHER_ERROR,
+            watch_view, MERIDIAN_EDS_ECAL_WATCHER_ERROR,
             NULL, NULL, error->message);
     }
 
@@ -1960,9 +1960,9 @@ ecal_watcher_remember_error (gchar **first_error,
 }
 
 static gboolean
-ecal_watcher_add_source (EvolutionEdsECalWatcher *watcher,
+ecal_watcher_add_source (MeridianEdsECalWatcher *watcher,
                          ESource *source,
-                         EvolutionEdsECalSourceType source_type,
+                         MeridianEdsECalSourceType source_type,
                          gchar **first_error)
 {
     ECalWatcherView *watch_view = NULL;
@@ -2025,14 +2025,14 @@ ecal_watcher_add_source (EvolutionEdsECalWatcher *watcher,
 }
 
 int
-evolution_eds_ecal_watcher_new (
-    EvolutionEdsECalWatcher **out_watcher,
+meridian_eds_ecal_watcher_new (
+    MeridianEdsECalWatcher **out_watcher,
     size_t *out_configured_sources,
     size_t *out_active_sources,
     size_t *out_failed_sources,
     char **out_error)
 {
-    EvolutionEdsECalWatcher *watcher;
+    MeridianEdsECalWatcher *watcher;
     GList *sources = NULL;
     GList *link;
     gchar *first_error = NULL;
@@ -2054,7 +2054,7 @@ evolution_eds_ecal_watcher_new (
     if (!out_watcher)
         return 0;
 
-    watcher = g_new0 (EvolutionEdsECalWatcher, 1);
+    watcher = g_new0 (MeridianEdsECalWatcher, 1);
     g_mutex_init (&watcher->lock);
     g_cond_init (&watcher->condition);
     watcher->events = g_queue_new ();
@@ -2073,20 +2073,20 @@ evolution_eds_ecal_watcher_new (
         if (out_error && error)
             *out_error = g_strdup (error->message);
         g_clear_error (&error);
-        evolution_eds_ecal_watcher_free (watcher);
+        meridian_eds_ecal_watcher_free (watcher);
         return 0;
     }
 
     g_main_context_push_thread_default (watcher->context);
-    for (EvolutionEdsECalSourceType source_type =
-             EVOLUTION_EDS_ECAL_EVENTS;
-         source_type <= EVOLUTION_EDS_ECAL_MEMOS;
+    for (MeridianEdsECalSourceType source_type =
+             MERIDIAN_EDS_ECAL_EVENTS;
+         source_type <= MERIDIAN_EDS_ECAL_MEMOS;
          source_type++) {
         const gchar *extension_name;
 
-        if (source_type == EVOLUTION_EDS_ECAL_EVENTS)
+        if (source_type == MERIDIAN_EDS_ECAL_EVENTS)
             extension_name = E_SOURCE_EXTENSION_CALENDAR;
-        else if (source_type == EVOLUTION_EDS_ECAL_TASKS)
+        else if (source_type == MERIDIAN_EDS_ECAL_TASKS)
             extension_name = E_SOURCE_EXTENSION_TASK_LIST;
         else
             extension_name = E_SOURCE_EXTENSION_MEMO_LIST;
@@ -2125,10 +2125,10 @@ evolution_eds_ecal_watcher_new (
 }
 
 int
-evolution_eds_ecal_watcher_next_event (
-    EvolutionEdsECalWatcher *watcher,
+meridian_eds_ecal_watcher_next_event (
+    MeridianEdsECalWatcher *watcher,
     int timeout_milliseconds,
-    EvolutionEdsECalWatcherEvent *out_event)
+    MeridianEdsECalWatcherEvent *out_event)
 {
     ECalWatcherQueuedEvent *queued_event = NULL;
     gint64 deadline;
@@ -2169,8 +2169,8 @@ evolution_eds_ecal_watcher_next_event (
 }
 
 void
-evolution_eds_ecal_free_watcher_event (
-    EvolutionEdsECalWatcherEvent *event)
+meridian_eds_ecal_free_watcher_event (
+    MeridianEdsECalWatcherEvent *event)
 {
     if (!event)
         return;
@@ -2184,7 +2184,7 @@ evolution_eds_ecal_free_watcher_event (
 }
 
 void
-evolution_eds_ecal_watcher_free (EvolutionEdsECalWatcher *watcher)
+meridian_eds_ecal_watcher_free (MeridianEdsECalWatcher *watcher)
 {
     if (!watcher)
         return;

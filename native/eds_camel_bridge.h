@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
-#ifndef EVOLUTION_EDS_CAMEL_BRIDGE_H
-#define EVOLUTION_EDS_CAMEL_BRIDGE_H
+#ifndef MERIDIAN_EDS_CAMEL_BRIDGE_H
+#define MERIDIAN_EDS_CAMEL_BRIDGE_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -27,7 +27,7 @@ typedef struct {
     char *due_by;
     int is_replied;
     int is_forwarded;
-} EvolutionEdsCamelMessage;
+} MeridianEdsCamelMessage;
 
 typedef struct {
     char *source_uid;
@@ -38,12 +38,12 @@ typedef struct {
     uint32_t unread_count;
     uint32_t total_count;
     int is_selectable;
-} EvolutionEdsCamelFolder;
+} MeridianEdsCamelFolder;
 
 /*
  * A subscription-list snapshot for one exact Camel store.  The entries are
  * owned by the caller and must be released with
- * evolution_eds_camel_free_subscription_folders().  `parent_folder_name` is
+ * meridian_eds_camel_free_subscription_folders().  `parent_folder_name` is
  * NULL for a root entry; `is_subscribed` reflects Camel's authoritative
  * CAMEL_FOLDER_SUBSCRIBED flag from a SUBSCRIPTION_LIST refresh.
  */
@@ -57,22 +57,22 @@ typedef struct {
     uint32_t total_count;
     int is_selectable;
     int is_subscribed;
-} EvolutionEdsCamelSubscriptionFolder;
+} MeridianEdsCamelSubscriptionFolder;
 
 typedef enum {
-    EVOLUTION_EDS_CAMEL_SET_MESSAGE_STATE = 1,
-    EVOLUTION_EDS_CAMEL_DELETE_MESSAGE = 2,
-    EVOLUTION_EDS_CAMEL_MOVE_MESSAGE = 3,
-    EVOLUTION_EDS_CAMEL_ARCHIVE_MESSAGE = 4,
-    EVOLUTION_EDS_CAMEL_SET_JUNK = 5,
-    EVOLUTION_EDS_CAMEL_SET_IMPORTANT = 6,
-    EVOLUTION_EDS_CAMEL_RESTORE_DELETED = 7,
-    EVOLUTION_EDS_CAMEL_RESTORE_ARCHIVED = 8,
-    EVOLUTION_EDS_CAMEL_SET_FOLLOW_UP = 9,
-} EvolutionEdsCamelOperationKind;
+    MERIDIAN_EDS_CAMEL_SET_MESSAGE_STATE = 1,
+    MERIDIAN_EDS_CAMEL_DELETE_MESSAGE = 2,
+    MERIDIAN_EDS_CAMEL_MOVE_MESSAGE = 3,
+    MERIDIAN_EDS_CAMEL_ARCHIVE_MESSAGE = 4,
+    MERIDIAN_EDS_CAMEL_SET_JUNK = 5,
+    MERIDIAN_EDS_CAMEL_SET_IMPORTANT = 6,
+    MERIDIAN_EDS_CAMEL_RESTORE_DELETED = 7,
+    MERIDIAN_EDS_CAMEL_RESTORE_ARCHIVED = 8,
+    MERIDIAN_EDS_CAMEL_SET_FOLLOW_UP = 9,
+} MeridianEdsCamelOperationKind;
 
 typedef struct {
-    EvolutionEdsCamelOperationKind kind;
+    MeridianEdsCamelOperationKind kind;
     const char *source_uid;
     const char *folder_name;
     const char *message_uid;
@@ -84,25 +84,25 @@ typedef struct {
     int is_important;
     int follow_up_status;
     const char *due_by;
-} EvolutionEdsCamelOperation;
+} MeridianEdsCamelOperation;
 
 typedef enum {
-    EVOLUTION_EDS_CAMEL_SAVE_DRAFT = 1,
-    EVOLUTION_EDS_CAMEL_SAVE_SENT = 2,
-} EvolutionEdsCamelSaveFolder;
+    MERIDIAN_EDS_CAMEL_SAVE_DRAFT = 1,
+    MERIDIAN_EDS_CAMEL_SAVE_SENT = 2,
+} MeridianEdsCamelSaveFolder;
 
 typedef enum {
-    EVOLUTION_EDS_CAMEL_SYNC_DISCOVERING = 1,
-    EVOLUTION_EDS_CAMEL_SYNC_CONNECTING = 2,
-    EVOLUTION_EDS_CAMEL_SYNC_LOADING_FOLDERS = 3,
-    EVOLUTION_EDS_CAMEL_SYNC_LOADING_MESSAGES = 4,
-    EVOLUTION_EDS_CAMEL_SYNC_SOURCE_COMPLETE = 5,
-    EVOLUTION_EDS_CAMEL_SYNC_COMPLETE = 6,
-    EVOLUTION_EDS_CAMEL_SYNC_FAILED = 7,
-} EvolutionEdsCamelSyncPhase;
+    MERIDIAN_EDS_CAMEL_SYNC_DISCOVERING = 1,
+    MERIDIAN_EDS_CAMEL_SYNC_CONNECTING = 2,
+    MERIDIAN_EDS_CAMEL_SYNC_LOADING_FOLDERS = 3,
+    MERIDIAN_EDS_CAMEL_SYNC_LOADING_MESSAGES = 4,
+    MERIDIAN_EDS_CAMEL_SYNC_SOURCE_COMPLETE = 5,
+    MERIDIAN_EDS_CAMEL_SYNC_COMPLETE = 6,
+    MERIDIAN_EDS_CAMEL_SYNC_FAILED = 7,
+} MeridianEdsCamelSyncPhase;
 
 typedef struct {
-    EvolutionEdsCamelSyncPhase phase;
+    MeridianEdsCamelSyncPhase phase;
     const char *source_uid;
     const char *source_display_name;
     const char *folder_name;
@@ -112,28 +112,28 @@ typedef struct {
     size_t failed_sources;
     size_t folders_seen;
     size_t messages_loaded;
-} EvolutionEdsCamelSyncProgress;
+} MeridianEdsCamelSyncProgress;
 
-typedef void (*EvolutionEdsCamelProgressCallback) (
-    const EvolutionEdsCamelSyncProgress *progress,
+typedef void (*MeridianEdsCamelProgressCallback) (
+    const MeridianEdsCamelSyncProgress *progress,
     void *user_data);
 
-typedef int (*EvolutionEdsCamelCancellationCallback) (
+typedef int (*MeridianEdsCamelCancellationCallback) (
     void *user_data);
 
 typedef enum {
-    EVOLUTION_EDS_CAMEL_CHANGE = 1,
-    EVOLUTION_EDS_CAMEL_FOLDER_DELETED = 2,
-    EVOLUTION_EDS_CAMEL_FOLDER_RENAMED = 3,
-    EVOLUTION_EDS_CAMEL_SOURCE_ADDED = 4,
-    EVOLUTION_EDS_CAMEL_SOURCE_REMOVED = 5,
-    EVOLUTION_EDS_CAMEL_SOURCE_ENABLED = 6,
-    EVOLUTION_EDS_CAMEL_SOURCE_DISABLED = 7,
-    EVOLUTION_EDS_CAMEL_SOURCE_CHANGED = 8,
-} EvolutionEdsCamelChangeKind;
+    MERIDIAN_EDS_CAMEL_CHANGE = 1,
+    MERIDIAN_EDS_CAMEL_FOLDER_DELETED = 2,
+    MERIDIAN_EDS_CAMEL_FOLDER_RENAMED = 3,
+    MERIDIAN_EDS_CAMEL_SOURCE_ADDED = 4,
+    MERIDIAN_EDS_CAMEL_SOURCE_REMOVED = 5,
+    MERIDIAN_EDS_CAMEL_SOURCE_ENABLED = 6,
+    MERIDIAN_EDS_CAMEL_SOURCE_DISABLED = 7,
+    MERIDIAN_EDS_CAMEL_SOURCE_CHANGED = 8,
+} MeridianEdsCamelChangeKind;
 
 typedef struct {
-    EvolutionEdsCamelChangeKind kind;
+    MeridianEdsCamelChangeKind kind;
     char *source_uid;
     char *folder_name;
     char *old_folder_name;
@@ -150,57 +150,57 @@ typedef struct {
     size_t changed_uid_count;
     char **recent_uids;
     size_t recent_uid_count;
-} EvolutionEdsCamelChangeEvent;
+} MeridianEdsCamelChangeEvent;
 
-typedef struct _EvolutionEdsCamelWatcher EvolutionEdsCamelWatcher;
+typedef struct _MeridianEdsCamelWatcher MeridianEdsCamelWatcher;
 
 /*
  * Load messages from the enabled EDS mail-account sources.  The returned
  * records contain owned RFC 822 bytes and must be released with
- * evolution_eds_camel_free_messages().
+ * meridian_eds_camel_free_messages().
  *
  * source_uid may be NULL to load every enabled mail-account source.
  * folder_name may be NULL to load every selectable folder for the selected
  * source(s); otherwise only that exact Camel folder receives message data.
  * max_messages_per_folder <= 0 means the implementation default.
  */
-int evolution_eds_camel_load_messages(
+int meridian_eds_camel_load_messages(
     const char *source_uid,
     const char *folder_name,
     int message_offset,
     int max_messages_per_folder,
-    EvolutionEdsCamelMessage **out_messages,
+    MeridianEdsCamelMessage **out_messages,
     size_t *out_count,
-    EvolutionEdsCamelFolder **out_folders,
+    MeridianEdsCamelFolder **out_folders,
     size_t *out_folder_count,
     size_t *out_configured_sources,
     size_t *out_successful_sources,
     size_t *out_failed_sources,
     char **out_error,
-    EvolutionEdsCamelProgressCallback progress_callback,
+    MeridianEdsCamelProgressCallback progress_callback,
     void *progress_user_data,
-    EvolutionEdsCamelCancellationCallback cancellation_callback,
+    MeridianEdsCamelCancellationCallback cancellation_callback,
     void *cancellation_user_data);
 
 /* Load only the UIDs reported by CamelFolder::changed.  This keeps signal
  * handling incremental while retaining the normal RFC-822 parsing path. */
-int evolution_eds_camel_load_messages_by_uid(
+int meridian_eds_camel_load_messages_by_uid(
     const char *source_uid,
     const char *folder_name,
     const char * const *message_uids,
     size_t message_uid_count,
-    EvolutionEdsCamelMessage **out_messages,
+    MeridianEdsCamelMessage **out_messages,
     size_t *out_count,
     char **out_error,
-    EvolutionEdsCamelCancellationCallback cancellation_callback,
+    MeridianEdsCamelCancellationCallback cancellation_callback,
     void *cancellation_user_data);
 
-void evolution_eds_camel_free_messages(
-    EvolutionEdsCamelMessage *messages,
+void meridian_eds_camel_free_messages(
+    MeridianEdsCamelMessage *messages,
     size_t count);
 
-void evolution_eds_camel_free_folders(
-    EvolutionEdsCamelFolder *folders,
+void meridian_eds_camel_free_folders(
+    MeridianEdsCamelFolder *folders,
     size_t count);
 
 /*
@@ -210,17 +210,17 @@ void evolution_eds_camel_free_folders(
  * source lookup, connection, list and cancellation failures return 0 with an
  * error.  The list is recursive and never includes virtual folders.
  */
-int evolution_eds_camel_load_subscription_folders(
+int meridian_eds_camel_load_subscription_folders(
     const char *source_uid,
-    EvolutionEdsCamelSubscriptionFolder **out_folders,
+    MeridianEdsCamelSubscriptionFolder **out_folders,
     size_t *out_folder_count,
     int *out_is_subscribable,
     char **out_error,
-    EvolutionEdsCamelCancellationCallback cancellation_callback,
+    MeridianEdsCamelCancellationCallback cancellation_callback,
     void *cancellation_user_data);
 
-void evolution_eds_camel_free_subscription_folders(
-    EvolutionEdsCamelSubscriptionFolder *folders,
+void meridian_eds_camel_free_subscription_folders(
+    MeridianEdsCamelSubscriptionFolder *folders,
     size_t count);
 
 /*
@@ -229,12 +229,12 @@ void evolution_eds_camel_free_subscription_folders(
  * successful return means a fresh SUBSCRIPTION_LIST snapshot confirmed the
  * requested state; it is never an optimistic acknowledgement.
  */
-int evolution_eds_camel_set_folder_subscription(
+int meridian_eds_camel_set_folder_subscription(
     const char *source_uid,
     const char *folder_name,
     int subscribed,
     char **out_error,
-    EvolutionEdsCamelCancellationCallback cancellation_callback,
+    MeridianEdsCamelCancellationCallback cancellation_callback,
     void *cancellation_user_data);
 
 /* Folder-menu operations are intentionally exact-source and exact-folder.
@@ -243,13 +243,13 @@ int evolution_eds_camel_set_folder_subscription(
  * move primitive, so those operation kinds are kept explicit and fail
  * closed rather than attempting an unsafe recursive transfer. */
 typedef enum {
-    EVOLUTION_EDS_CAMEL_FOLDER_CREATE_CHILD = 1,
-    EVOLUTION_EDS_CAMEL_FOLDER_RENAME = 2,
-    EVOLUTION_EDS_CAMEL_FOLDER_DELETE = 3,
-    EVOLUTION_EDS_CAMEL_FOLDER_REFRESH = 4,
-    EVOLUTION_EDS_CAMEL_FOLDER_COPY = 5,
-    EVOLUTION_EDS_CAMEL_FOLDER_MOVE = 6,
-} EvolutionEdsCamelFolderMutationKind;
+    MERIDIAN_EDS_CAMEL_FOLDER_CREATE_CHILD = 1,
+    MERIDIAN_EDS_CAMEL_FOLDER_RENAME = 2,
+    MERIDIAN_EDS_CAMEL_FOLDER_DELETE = 3,
+    MERIDIAN_EDS_CAMEL_FOLDER_REFRESH = 4,
+    MERIDIAN_EDS_CAMEL_FOLDER_COPY = 5,
+    MERIDIAN_EDS_CAMEL_FOLDER_MOVE = 6,
+} MeridianEdsCamelFolderMutationKind;
 
 typedef struct {
     int can_create_child;
@@ -258,17 +258,17 @@ typedef struct {
     int can_refresh;
     int can_copy;
     int can_move;
-} EvolutionEdsCamelFolderMutationCapabilities;
+} MeridianEdsCamelFolderMutationCapabilities;
 
 /* Query the provider-derived action sensitivity for one exact existing
  * folder.  A valid but protected, non-selectable or unsupported folder
  * returns success with the respective capability set to zero. */
-int evolution_eds_camel_get_folder_mutation_capabilities(
+int meridian_eds_camel_get_folder_mutation_capabilities(
     const char *source_uid,
     const char *folder_name,
-    EvolutionEdsCamelFolderMutationCapabilities *out_capabilities,
+    MeridianEdsCamelFolderMutationCapabilities *out_capabilities,
     char **out_error,
-    EvolutionEdsCamelCancellationCallback cancellation_callback,
+    MeridianEdsCamelCancellationCallback cancellation_callback,
     void *cancellation_user_data);
 
 /* Execute a direct Camel folder operation.  CREATE_CHILD, RENAME and DELETE
@@ -277,26 +277,26 @@ int evolution_eds_camel_get_folder_mutation_capabilities(
  * REFRESH requires a selectable non-virtual folder.  Every success is
  * followed by a recursive provider REFRESH that verifies the expected folder
  * state. */
-int evolution_eds_camel_apply_folder_mutation(
-    EvolutionEdsCamelFolderMutationKind kind,
+int meridian_eds_camel_apply_folder_mutation(
+    MeridianEdsCamelFolderMutationKind kind,
     const char *source_uid,
     const char *folder_name,
     const char *target_name,
     char **out_error,
-    EvolutionEdsCamelCancellationCallback cancellation_callback,
+    MeridianEdsCamelCancellationCallback cancellation_callback,
     void *cancellation_user_data);
 
-int evolution_eds_camel_apply_operation(
-    const EvolutionEdsCamelOperation *operation,
+int meridian_eds_camel_apply_operation(
+    const MeridianEdsCamelOperation *operation,
     char **out_error,
-    EvolutionEdsCamelCancellationCallback cancellation_callback,
+    MeridianEdsCamelCancellationCallback cancellation_callback,
     void *cancellation_user_data);
 
 /* Send a complete RFC822 message through the EDS-configured transport linked
  * to the selected mail-account source.  Returns 1 on success and 0 on an
  * ordinary backend error.  out_sent_message_saved is set when the transport
  * also saved a copy in the configured Sent folder. */
-int evolution_eds_camel_send_message(
+int meridian_eds_camel_send_message(
     const char *source_uid,
     const uint8_t *raw_message,
     size_t raw_message_len,
@@ -305,11 +305,11 @@ int evolution_eds_camel_send_message(
 
 /* Append a complete RFC822 message to the EDS-configured Drafts or Sent
  * folder for the selected mail-account source. */
-int evolution_eds_camel_save_message(
+int meridian_eds_camel_save_message(
     const char *source_uid,
     const uint8_t *raw_message,
     size_t raw_message_len,
-    EvolutionEdsCamelSaveFolder folder,
+    MeridianEdsCamelSaveFolder folder,
     char **out_error);
 
 /* Return 1 on success, 0 on an ordinary backend error and 2 when the
@@ -320,28 +320,28 @@ int evolution_eds_camel_save_message(
  * The watcher owns its Camel session and folder references.  next_event may
  * be called from a worker thread and returns 1 for an event, 0 on timeout and
  * -1 after stop/fatal watcher failure. */
-int evolution_eds_camel_watcher_new(
+int meridian_eds_camel_watcher_new(
     const char *source_uid,
-    EvolutionEdsCamelWatcher **out_watcher,
+    MeridianEdsCamelWatcher **out_watcher,
     size_t *out_configured_sources,
     size_t *out_successful_sources,
     size_t *out_failed_sources,
     char **out_error);
 
-int evolution_eds_camel_watcher_next_event(
-    EvolutionEdsCamelWatcher *watcher,
+int meridian_eds_camel_watcher_next_event(
+    MeridianEdsCamelWatcher *watcher,
     int timeout_milliseconds,
-    EvolutionEdsCamelChangeEvent *out_event);
+    MeridianEdsCamelChangeEvent *out_event);
 
-void evolution_eds_camel_free_change_event(
-    EvolutionEdsCamelChangeEvent *event);
+void meridian_eds_camel_free_change_event(
+    MeridianEdsCamelChangeEvent *event);
 
-void evolution_eds_camel_watcher_free(
-    EvolutionEdsCamelWatcher *watcher);
+void meridian_eds_camel_watcher_free(
+    MeridianEdsCamelWatcher *watcher);
 
-void evolution_eds_camel_free_error(char *error_message);
+void meridian_eds_camel_free_error(char *error_message);
 
-int evolution_eds_camel_store_password(
+int meridian_eds_camel_store_password(
     const char *source_uid,
     const char *password,
     char **out_error);
@@ -349,18 +349,18 @@ int evolution_eds_camel_store_password(
 /* Search a specific Camel folder using a Camel S-expression query (e.g.
  * (match-all (or (contains "subject" "...") (contains "from" "...")))).
  * Returns an allocated array of message UID strings and sets out_count.
- * The returned array must be freed with evolution_eds_camel_free_uids(). */
-int evolution_eds_camel_search_folder(
+ * The returned array must be freed with meridian_eds_camel_free_uids(). */
+int meridian_eds_camel_search_folder(
     const char *source_uid,
     const char *folder_name,
     const char *query_sexpr,
     char ***out_uids,
     size_t *out_count,
     char **out_error,
-    EvolutionEdsCamelCancellationCallback cancellation_callback,
+    MeridianEdsCamelCancellationCallback cancellation_callback,
     void *cancellation_user_data);
 
-void evolution_eds_camel_free_uids(
+void meridian_eds_camel_free_uids(
     char **uids,
     size_t count);
 
@@ -368,4 +368,4 @@ void evolution_eds_camel_free_uids(
 }
 #endif
 
-#endif /* EVOLUTION_EDS_CAMEL_BRIDGE_H */
+#endif /* MERIDIAN_EDS_CAMEL_BRIDGE_H */
