@@ -10,6 +10,7 @@ use crate::i18n::gettext;
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
+use gtk::gio;
 use gtk::glib;
 use webkit6::prelude::*;
 
@@ -422,6 +423,15 @@ impl HtmlEditor {
         link_popover_box.append(&entry_label);
         link_popover_box.append(&btn_insert_link_confirm);
 
+        let btn_confirm_url = btn_insert_link_confirm.clone();
+        entry_url.connect_activate(move |_| {
+            btn_confirm_url.emit_clicked();
+        });
+        let btn_confirm_label = btn_insert_link_confirm.clone();
+        entry_label.connect_activate(move |_| {
+            btn_confirm_label.emit_clicked();
+        });
+
         let link_popover = gtk::Popover::builder().child(&link_popover_box).build();
         let btn_link = gtk::MenuButton::builder()
             .icon_name("insert-link-symbolic")
@@ -554,27 +564,66 @@ impl HtmlEditor {
                 "<!DOCTYPE html><html><head><style>",
                 "body {{ font-family: {}; font-size: {}px; line-height: 1.5; color: #222; margin: 12px; }}",
                 "img {{ max-width: 100%; height: auto; }}",
-                "@media (prefers-color-scheme: dark) {{ body {{ color: #eee; background-color: #1e1e1e; }} }}",
+                "a {{ color: #1a73e8; text-decoration: underline; cursor: pointer; }}",
+                "@media (prefers-color-scheme: dark) {{ body {{ color: #eee; background-color: #1e1e1e; }} a {{ color: #78aeed; }} }}",
                 "</style>",
                 "<script>",
+                "document.addEventListener('mouseover', function(e) {{",
+                "    const link = e.target.closest('a');",
+                "    if (link && link.href && !link.title) {{",
+                "        link.title = link.href + ' (Strg+Klick zum Öffnen)';",
+                "    }}",
+                "}});",
+                "document.addEventListener('click', function(e) {{",
+                "    const link = e.target.closest('a');",
+                "    if (link && link.href && (e.ctrlKey || e.metaKey)) {{",
+                "        e.preventDefault();",
+                "        window.open(link.href, '_blank');",
+                "    }}",
+                "}});",
                 "document.addEventListener('paste', function(e) {{",
                 "    if (!e.clipboardData) return;",
                 "    const types = Array.from(e.clipboardData.types || []);",
                 "    if (types.includes('text/html')) return;",
                 "    const items = e.clipboardData.items;",
-                "    if (!items) return;",
-                "    for (let i = 0; i < items.length; i++) {{",
-                "        if (items[i].type.indexOf('image') !== -1) {{",
-                "            const file = items[i].getAsFile();",
-                "            if (file) {{",
-                "                e.preventDefault();",
-                "                const reader = new FileReader();",
-                "                reader.onload = function(evt) {{",
-                "                    document.execCommand('insertImage', false, evt.target.result);",
-                "                }};",
-                "                reader.readAsDataURL(file);",
-                "                return;",
+                "    if (items) {{",
+                "        for (let i = 0; i < items.length; i++) {{",
+                "            if (items[i].type.indexOf('image') !== -1) {{",
+                "                const file = items[i].getAsFile();",
+                "                if (file) {{",
+                "                    e.preventDefault();",
+                "                    const reader = new FileReader();",
+                "                    reader.onload = function(evt) {{",
+                "                        document.execCommand('insertImage', false, evt.target.result);",
+                "                    }};",
+                "                    reader.readAsDataURL(file);",
+                "                    return;",
+                "                }}",
                 "            }}",
+                "        }}",
+                "    }}",
+                "    const text = e.clipboardData.getData('text/plain');",
+                "    if (text) {{",
+                "        const urlRegex = /(https?:\\/\\/[^\\s<]+|mailto:[^\\s<]+|www\\.[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{{2,}}[^\\s<]*|[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{{2,}})/g;",
+                "        if (urlRegex.test(text)) {{",
+                "            e.preventDefault();",
+                "            const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');",
+                "            const htmlWithLinks = escaped.replace(urlRegex, function(match) {{",
+                "                let cleanMatch = match;",
+                "                let trailing = '';",
+                "                while (/[.,;:)]$/.test(cleanMatch)) {{",
+                "                    trailing = cleanMatch.slice(-1) + trailing;",
+                "                    cleanMatch = cleanMatch.slice(0, -1);",
+                "                }}",
+                "                let href = cleanMatch;",
+                "                if (cleanMatch.startsWith('www.')) {{",
+                "                    href = 'https://' + cleanMatch;",
+                "                }} else if (cleanMatch.includes('@') && !cleanMatch.startsWith('mailto:') && !cleanMatch.startsWith('http')) {{",
+                "                    href = 'mailto:' + cleanMatch;",
+                "                }}",
+                "                return '<a href=\"' + href + '\">' + cleanMatch + '</a>' + trailing;",
+                "            }}).replace(/\\r?\\n/g, '<br>');",
+                "            document.execCommand('insertHTML', false, htmlWithLinks);",
                 "        }}",
                 "    }}",
                 "}});",
@@ -600,6 +649,36 @@ impl HtmlEditor {
             ),
             font_family, font_size
         );
+
+        web_view.connect_decide_policy(|_, decision, decision_type| {
+            if decision_type == webkit6::PolicyDecisionType::NavigationAction
+                || decision_type == webkit6::PolicyDecisionType::NewWindowAction
+            {
+                if let Ok(nav) = decision
+                    .clone()
+                    .downcast::<webkit6::NavigationPolicyDecision>()
+                {
+                    if let Some(mut action) = nav.navigation_action() {
+                        if let Some(req) = action.request() {
+                            if let Some(uri) = req.uri() {
+                                if uri.starts_with("http://")
+                                    || uri.starts_with("https://")
+                                    || uri.starts_with("mailto:")
+                                {
+                                    let _ = gio::AppInfo::launch_default_for_uri(
+                                        &uri,
+                                        None::<&gio::AppLaunchContext>,
+                                    );
+                                    decision.ignore();
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            false
+        });
 
         *self.imp().web_view.borrow_mut() = Some(web_view.clone());
         let editor_weak = self.downgrade();
@@ -758,6 +837,59 @@ impl HtmlEditor {
             }
         ));
 
+        let entry_url_weak_for_open = entry_url.downgrade();
+        let entry_label_weak_for_open = entry_label.downgrade();
+        let web_view_for_open = web_view.clone();
+        link_popover.connect_notify_local(Some("visible"), move |popover, _| {
+            if !popover.is_visible() {
+                return;
+            }
+            let Some(entry_url) = entry_url_weak_for_open.upgrade() else {
+                return;
+            };
+            let Some(entry_label) = entry_label_weak_for_open.upgrade() else {
+                return;
+            };
+            let entry_u = entry_url.clone();
+            let entry_l = entry_label.clone();
+            web_view_for_open.evaluate_javascript(
+                r#"(() => {
+    let sel = window.getSelection();
+    let text = sel ? sel.toString().trim() : '';
+    let href = '';
+    if (sel && sel.rangeCount > 0) {
+        let node = sel.anchorNode;
+        if (node && node.nodeType === 3) node = node.parentElement;
+        let a = node ? node.closest('a') : null;
+        if (a) {
+            href = a.getAttribute('href') || a.href || '';
+            if (!text) text = a.textContent ? a.textContent.trim() : '';
+        }
+    }
+    return JSON.stringify({ text, href });
+})()"#,
+                None,
+                None,
+                None::<&gio::Cancellable>,
+                move |result| {
+                    if let Ok(val) = result {
+                        let json_str = val.to_str();
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                            let text = parsed.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                            let href = parsed.get("href").and_then(|v| v.as_str()).unwrap_or("");
+                            entry_u.set_text(href);
+                            entry_l.set_text(text);
+                            if href.is_empty() {
+                                entry_u.grab_focus();
+                            } else {
+                                entry_l.grab_focus();
+                            }
+                        }
+                    }
+                },
+            );
+        });
+
         let web_view_for_link = web_view.clone();
         let link_popover_weak = link_popover.downgrade();
         let entry_url_weak = entry_url.downgrade();
@@ -769,21 +901,72 @@ impl HtmlEditor {
             let Some(entry_label) = entry_label_weak.upgrade() else {
                 return;
             };
-            let url = entry_url.text().trim().to_string();
+            let mut url = entry_url.text().trim().to_string();
             let label = entry_label.text().trim().to_string();
             if !url.is_empty() {
-                let js = if label.is_empty() {
-                    format!(
-                        "document.execCommand('createLink', false, '{}');",
-                        url.replace('\'', "\\'")
-                    )
-                } else {
-                    format!(
-                        "document.execCommand('insertHTML', false, '<a href=\"{}\">{}</a>');",
-                        url.replace('\"', "\\\""),
-                        label.replace('<', "&lt;").replace('>', "&gt;")
-                    )
-                };
+                if !url.contains("://") && !url.starts_with("mailto:") && !url.starts_with('#') {
+                    if url.contains('@') && !url.contains('/') {
+                        url = format!("mailto:{url}");
+                    } else {
+                        url = format!("https://{url}");
+                    }
+                }
+
+                let url_json = serde_json::to_string(&url).unwrap_or_else(|_| format!("\"{}\"", url));
+                let label_json = serde_json::to_string(&label).unwrap_or_else(|_| format!("\"{}\"", label));
+
+                let js = format!(
+                    r#"(() => {{
+    const url = {url_json};
+    const label = {label_json};
+    const sel = window.getSelection();
+    let existingA = null;
+    if (sel && sel.rangeCount > 0) {{
+        let node = sel.anchorNode;
+        if (node && node.nodeType === 3) node = node.parentElement;
+        existingA = node ? node.closest('a') : null;
+    }}
+    if (existingA) {{
+        existingA.href = url;
+        if (label) existingA.textContent = label;
+    }} else if (label) {{
+        const a = document.createElement('a');
+        a.href = url;
+        a.textContent = label;
+        if (sel && sel.rangeCount > 0) {{
+            const range = sel.getRangeAt(0);
+            range.deleteContents();
+            range.insertNode(a);
+            range.setStartAfter(a);
+            range.setEndAfter(a);
+            sel.removeAllRanges();
+            sel.addRange(range);
+        }} else {{
+            document.body.appendChild(a);
+        }}
+    }} else {{
+        if (sel && !sel.isCollapsed) {{
+            document.execCommand('createLink', false, url);
+        }} else {{
+            const a = document.createElement('a');
+            a.href = url;
+            a.textContent = url;
+            if (sel && sel.rangeCount > 0) {{
+                const range = sel.getRangeAt(0);
+                range.deleteContents();
+                range.insertNode(a);
+                range.setStartAfter(a);
+                range.setEndAfter(a);
+                sel.removeAllRanges();
+                sel.addRange(range);
+            }} else {{
+                document.body.appendChild(a);
+            }}
+        }}
+    }}
+}})();"#
+                );
+
                 web_view_for_link.evaluate_javascript(
                     &js,
                     None,
