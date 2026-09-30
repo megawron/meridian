@@ -33,6 +33,7 @@ pub mod quick_add_popover;
 pub mod reminder_dialog;
 pub mod search_folder_dialog;
 pub mod shortcuts_dialog;
+pub mod signature_editor_dialog;
 pub mod source_properties_dialog;
 
 pub use about_dialog::show_about_dialog;
@@ -62,6 +63,7 @@ pub use preferences_dialog::PreferencesDialog;
 pub use reminder_dialog::{ReminderDialog, ReminderDialogAction};
 pub use search_folder_dialog::SearchFolderDialog;
 pub use shortcuts_dialog::show_shortcuts_dialog;
+pub use signature_editor_dialog::SignatureEditorDialog;
 #[allow(unused_imports)]
 pub use source_properties_dialog::{SourcePropertiesDialog, SourcePropertiesUpdate};
 
