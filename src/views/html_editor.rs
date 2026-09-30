@@ -536,6 +536,8 @@ impl HtmlEditor {
             let desktop_font = crate::views::mail_viewer::detect_desktop_font_family();
             settings.set_default_font_family(&desktop_font);
             settings.set_sans_serif_font_family(&desktop_font);
+            settings.set_enable_javascript(true);
+            settings.set_auto_load_images(true);
         }
 
         let font_family_raw = AppSettings::try_new()
@@ -548,7 +550,54 @@ impl HtmlEditor {
             .map(AppSettings::mail_font_size)
             .unwrap_or(14);
         let initial_html = format!(
-            "<!DOCTYPE html><html><head><style>body {{ font-family: {}; font-size: {}px; line-height: 1.5; color: #222; margin: 12px; }} @media (prefers-color-scheme: dark) {{ body {{ color: #eee; background-color: #1e1e1e; }} }}</style></head><body contenteditable='true'><p><br></p></body></html>",
+            concat!(
+                "<!DOCTYPE html><html><head><style>",
+                "body {{ font-family: {}; font-size: {}px; line-height: 1.5; color: #222; margin: 12px; }}",
+                "img {{ max-width: 100%; height: auto; }}",
+                "@media (prefers-color-scheme: dark) {{ body {{ color: #eee; background-color: #1e1e1e; }} }}",
+                "</style>",
+                "<script>",
+                "document.addEventListener('paste', function(e) {{",
+                "    if (!e.clipboardData) return;",
+                "    const types = Array.from(e.clipboardData.types || []);",
+                "    if (types.includes('text/html')) return;",
+                "    const items = e.clipboardData.items;",
+                "    if (!items) return;",
+                "    for (let i = 0; i < items.length; i++) {{",
+                "        if (items[i].type.indexOf('image') !== -1) {{",
+                "            const file = items[i].getAsFile();",
+                "            if (file) {{",
+                "                e.preventDefault();",
+                "                const reader = new FileReader();",
+                "                reader.onload = function(evt) {{",
+                "                    document.execCommand('insertImage', false, evt.target.result);",
+                "                }};",
+                "                reader.readAsDataURL(file);",
+                "                return;",
+                "            }}",
+                "        }}",
+                "    }}",
+                "}});",
+                "document.addEventListener('dragover', function(e) {{ e.preventDefault(); }});",
+                "document.addEventListener('drop', function(e) {{",
+                "    if (!e.dataTransfer) return;",
+                "    const files = e.dataTransfer.files;",
+                "    if (files && files.length > 0) {{",
+                "        for (let i = 0; i < files.length; i++) {{",
+                "            if (files[i].type.indexOf('image') !== -1) {{",
+                "                e.preventDefault();",
+                "                const reader = new FileReader();",
+                "                reader.onload = function(evt) {{",
+                "                    document.execCommand('insertImage', false, evt.target.result);",
+                "                }};",
+                "                reader.readAsDataURL(files[i]);",
+                "                return;",
+                "            }}",
+                "        }}",
+                "    }}",
+                "}});",
+                "</script></head><body contenteditable='true'><p><br></p></body></html>"
+            ),
             font_family, font_size
         );
 
