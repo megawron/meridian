@@ -250,27 +250,27 @@ impl MailViewerWindow {
         // Start actions: Reply, Reply-All, Forward
         let btn_reply = gtk::Button::builder()
             .icon_name("mail-reply-sender-symbolic")
-            .tooltip_text("Antworten (Strg+R)")
+            .tooltip_text(&gettext("Reply (Ctrl+R)"))
             .action_name("win.reply")
             .css_classes(vec!["flat"])
             .build();
-        set_accessible_label(&btn_reply, "Antworten");
+        set_accessible_label(&btn_reply, &gettext("Reply"));
 
         let btn_reply_all = gtk::Button::builder()
             .icon_name("mail-reply-all-symbolic")
-            .tooltip_text("Allen antworten (Strg+Umschalt+R)")
+            .tooltip_text(&gettext("Reply all (Ctrl+Shift+R)"))
             .action_name("win.reply-all")
             .css_classes(vec!["flat"])
             .build();
-        set_accessible_label(&btn_reply_all, "Allen antworten");
+        set_accessible_label(&btn_reply_all, &gettext("Reply all"));
 
         let btn_forward = gtk::Button::builder()
             .icon_name("mail-forward-symbolic")
-            .tooltip_text("Weiterleiten (Strg+L)")
+            .tooltip_text(&gettext("Forward (Ctrl+L)"))
             .action_name("win.forward")
             .css_classes(vec!["flat"])
             .build();
-        set_accessible_label(&btn_forward, "Weiterleiten");
+        set_accessible_label(&btn_forward, &gettext("Forward"));
 
         header_bar.pack_start(&btn_reply);
         header_bar.pack_start(&btn_reply_all);

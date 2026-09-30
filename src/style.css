@@ -1847,11 +1847,12 @@ splitview > .sidebar {
 
 .calendar-day-canvas {
   background: transparent;
-  outline: none;
 }
 
-.calendar-day-canvas:focus {
-  outline: none;
+.calendar-day-canvas:focus-visible {
+  outline: 2px solid @accent_color;
+  outline-offset: -2px;
+  border-radius: 4px;
 }
 
 .calendar-month-cell.calendar-slot-selected {
@@ -2044,52 +2045,27 @@ button.month-bar-chip.span-end {
   outline: none;
 }
 
-.calendar-list-canvas:focus {
-  outline: none;
-}
-
-.calendar-agenda-canvas {
-  background: @view_bg_color;
-  outline: none;
-}
-
-.calendar-agenda-canvas:focus {
-  outline: none;
-}
-
-.calendar-year-canvas {
-  background: @view_bg_color;
-  outline: none;
-}
-
-.calendar-year-canvas:focus-visible {
-  outline: none;
-}
-
-.calendar-month-canvas {
-  background: @view_bg_color;
-  outline: none;
-}
-
-.calendar-month-canvas:focus-visible {
-  outline: 2px solid alpha(@accent_color, 0.6);
+.calendar-list-canvas:focus-visible,
+.calendar-agenda-canvas:focus-visible,
+.calendar-year-canvas:focus-visible,
+.calendar-month-canvas:focus-visible,
+.taskpad-canvas:focus-visible,
+.memopad-canvas:focus-visible,
+.tasks-table-canvas:focus-visible,
+.memos-table-canvas:focus-visible {
+  outline: 2px solid @accent_color;
   outline-offset: -2px;
+  border-radius: 4px;
 }
 
+.calendar-agenda-canvas,
+.calendar-year-canvas,
+.calendar-month-canvas,
 .taskpad-canvas,
 .memopad-canvas,
 .tasks-table-canvas,
 .memos-table-canvas {
   background: @view_bg_color;
-  outline: none;
-}
-
-.taskpad-canvas:focus-visible,
-.memopad-canvas:focus-visible,
-.tasks-table-canvas:focus-visible,
-.memos-table-canvas:focus-visible {
-  outline: 2px solid alpha(@accent_color, 0.6);
-  outline-offset: -2px;
 }
 
 .tasks-table-header,
@@ -2743,11 +2719,12 @@ button.month-bar-chip.span-end {
 
 .mail-table-canvas {
   background-color: transparent;
-  outline: none;
 }
 
-.mail-table-canvas:focus {
-  outline: none;
+.mail-table-canvas:focus-visible {
+  outline: 2px solid @accent_color;
+  outline-offset: -2px;
+  border-radius: 4px;
 }
 
 /* ── Contacts Table View Canvas & Header ────────────────────────────── */
@@ -2758,11 +2735,12 @@ button.month-bar-chip.span-end {
 
 .contacts-table-canvas {
   background-color: transparent;
-  outline: none;
 }
 
-.contacts-table-canvas:focus {
-  outline: none;
+.contacts-table-canvas:focus-visible {
+  outline: 2px solid @accent_color;
+  outline-offset: -2px;
+  border-radius: 4px;
 }
 
 /* ── Contacts Simple List & Map Preview ────────────────────────────── */
@@ -2796,8 +2774,10 @@ button.month-bar-chip.span-end {
   background-color: transparent;
 }
 
-.agenda-sidebar-canvas:focus {
-  outline: none;
+.agenda-sidebar-canvas:focus-visible {
+  outline: 2px solid @accent_color;
+  outline-offset: -2px;
+  border-radius: 4px;
 }
 
 .todo-sidebar .navigation-sidebar {
@@ -3543,4 +3523,24 @@ popover.menu.touch modelbutton {
   min-height: 12px;
   border-radius: 2px;
 }
+
+/* ── Accessibility & High Contrast Enhancements (WCAG 2.4.7 / GNOME HIG C03) ── */
+@media (prefers-contrast: more) {
+  .mail-table-canvas:focus-visible,
+  .contacts-table-canvas:focus-visible,
+  .calendar-day-canvas:focus-visible,
+  .calendar-month-canvas:focus-visible,
+  .calendar-list-canvas:focus-visible,
+  .calendar-agenda-canvas:focus-visible,
+  .calendar-year-canvas:focus-visible,
+  .taskpad-canvas:focus-visible,
+  .memopad-canvas:focus-visible,
+  .tasks-table-canvas:focus-visible,
+  .memos-table-canvas:focus-visible,
+  .agenda-sidebar-canvas:focus-visible {
+    outline: 3px solid @accent_color;
+    outline-offset: -3px;
+  }
+}
+
 

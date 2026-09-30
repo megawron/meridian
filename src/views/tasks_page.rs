@@ -42,7 +42,10 @@ use crate::services::recurrence_service::{
 use crate::services::reminder_service::{Alarm, parse_alarms, replace_component_alarms};
 use crate::services::settings_service::{AppSettings, normalized_task_category_filter};
 use crate::models::source_selector::{SourceDomain, SourceSelector, SourceSelectorItem};
-use crate::views::accessibility::set_accessible_label;
+use crate::views::accessibility::{
+    announce_to_screen_reader, set_accessible_description, set_accessible_label,
+    set_accessible_role,
+};
 use crate::views::calendar_page::calendar_source_color;
 use crate::views::set_button_icon_with_fallback;
 use adw::prelude::*;
@@ -4910,7 +4913,7 @@ impl TasksPage {
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&sidebar_toggle, "Seitenleiste ein- oder ausblenden");
+        set_accessible_label(&sidebar_toggle, &gettext("Toggle sidebar"));
         self.imp()
             .task_sidebar_toggle
             .replace(Some(sidebar_toggle.clone()));
@@ -6659,7 +6662,8 @@ impl TasksPage {
             .focus_on_click(true)
             .css_classes(vec!["tasks-table-canvas"])
             .build();
-        set_accessible_label(&task_table_canvas, &gettext("Task list canvas"));
+        set_accessible_role(&task_table_canvas, gtk::AccessibleRole::List);
+        set_accessible_label(&task_table_canvas, &gettext("Tasks List"));
 
         self.imp()
             .task_table_header
@@ -6924,6 +6928,22 @@ impl TasksPage {
                 let current_sel = page.imp().task_selection.borrow().clone();
                 let current_anchor = page.imp().task_table_anchor_row.get().unwrap_or(0);
 
+                let announce_task = |task: &TaskItemObject| {
+                    let status = if task.is_completed() {
+                        crate::i18n::gettext("Completed")
+                    } else {
+                        crate::i18n::gettext("Not completed")
+                    };
+                    let due = task.due_date();
+                    let speech = if !due.is_empty() {
+                        format!("{}, {}, {}: {}", task.title(), status, crate::i18n::gettext("Due"), due)
+                    } else {
+                        format!("{}, {}", task.title(), status)
+                    };
+                    set_accessible_description(&canvas_clone, &speech);
+                    announce_to_screen_reader(&canvas_clone, &speech, gtk::AccessibleAnnouncementPriority::Medium);
+                };
+
                 match keyval {
                     gdk::Key::Up => {
                         let next_idx = current_anchor.saturating_sub(1);
@@ -6936,6 +6956,7 @@ impl TasksPage {
                         } else if let Some(row) = layout.rows.get(next_idx) {
                             page.imp().task_table_anchor_row.set(Some(next_idx));
                             page.imp().task_selection.replace(vec![TaskSelectionIdentity::from_task(&row.task)]);
+                            announce_task(&row.task);
                         }
                         update_task_selection_controls(&page);
                         refresh_task_preview(&page);
@@ -6953,6 +6974,7 @@ impl TasksPage {
                         } else if let Some(row) = layout.rows.get(next_idx) {
                             page.imp().task_table_anchor_row.set(Some(next_idx));
                             page.imp().task_selection.replace(vec![TaskSelectionIdentity::from_task(&row.task)]);
+                            announce_task(&row.task);
                         }
                         update_task_selection_controls(&page);
                         refresh_task_preview(&page);
@@ -6963,6 +6985,7 @@ impl TasksPage {
                         if let Some(row) = layout.rows.first() {
                             page.imp().task_table_anchor_row.set(Some(0));
                             page.imp().task_selection.replace(vec![TaskSelectionIdentity::from_task(&row.task)]);
+                            announce_task(&row.task);
                             update_task_selection_controls(&page);
                             refresh_task_preview(&page);
                             canvas_clone.queue_draw();
@@ -6974,6 +6997,7 @@ impl TasksPage {
                         if let Some(row) = layout.rows.get(last_idx) {
                             page.imp().task_table_anchor_row.set(Some(last_idx));
                             page.imp().task_selection.replace(vec![TaskSelectionIdentity::from_task(&row.task)]);
+                            announce_task(&row.task);
                             update_task_selection_controls(&page);
                             refresh_task_preview(&page);
                             canvas_clone.queue_draw();

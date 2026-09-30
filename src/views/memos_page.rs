@@ -33,7 +33,10 @@ use crate::services::memo_surface_service::{
 };
 use crate::services::reminder_service::{Alarm, replace_component_alarms};
 use crate::services::settings_service::AppSettings;
-use crate::views::accessibility::set_accessible_label;
+use crate::views::accessibility::{
+    announce_to_screen_reader, set_accessible_description, set_accessible_label,
+    set_accessible_role,
+};
 use crate::views::calendar_page::calendar_source_color;
 use crate::views::set_button_icon_with_fallback;
 
@@ -2569,7 +2572,8 @@ impl MemosPage {
             .focus_on_click(true)
             .css_classes(vec!["memos-table-canvas"])
             .build();
-        set_accessible_label(&memo_table_canvas, &crate::i18n::gettext("Memo List Canvas"));
+        set_accessible_role(&memo_table_canvas, gtk::AccessibleRole::List);
+        set_accessible_label(&memo_table_canvas, &crate::i18n::gettext("Memos List"));
 
         self.imp()
             .memo_table_header
@@ -4216,6 +4220,9 @@ impl MemosPage {
                         memo_text_for_key.buffer().set_text(&memo.description);
                         memo_alarm_editor_for_key.set_component(Some(&memo.component), &memo.summary);
                         memo_detail_stack_for_key.set_visible_child_name("content");
+                        let speech = format!("{}, {}", memo.summary, memo.updated);
+                        set_accessible_description(&canvas_clone, &speech);
+                        announce_to_screen_reader(&canvas_clone, &speech, gtk::AccessibleAnnouncementPriority::Medium);
                     }
                 }
                 sync_memo_surface_selection(&page, &memo_list_for_key);

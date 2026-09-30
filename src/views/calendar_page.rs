@@ -46,7 +46,10 @@ use crate::services::settings_service::AppSettings;
 use crate::dialogs::quick_add_popover::{
     QuickAddCalendarItem, QuickAddEventDraft, present_quick_add_popover,
 };
-use crate::views::accessibility::set_accessible_label;
+use crate::views::accessibility::{
+    announce_to_screen_reader, set_accessible_description, set_accessible_label,
+    set_accessible_role,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CalendarView {
@@ -3719,6 +3722,8 @@ impl CalendarPage {
             .margin_bottom(2)
             .css_classes(vec!["calendar-month-canvas"])
             .build();
+        set_accessible_role(&month_canvas, gtk::AccessibleRole::Grid);
+        set_accessible_label(&month_canvas, &crate::i18n::gettext("Month View Calendar"));
 
         self.imp().month_canvas.replace(Some(month_canvas.clone()));
 
@@ -4160,6 +4165,10 @@ impl CalendarPage {
                 }));
                 *page.imp().current_date.borrow_mut() = d;
                 if let Some(canvas) = page.imp().month_canvas.borrow().as_ref() {
+                    let formatted_date = d.format("%A, %-d. %B %Y").to_string();
+                    let desc = format!("{}: {}", crate::i18n::gettext("Selected date"), formatted_date);
+                    set_accessible_description(canvas, &desc);
+                    announce_to_screen_reader(canvas, &desc, gtk::AccessibleAnnouncementPriority::Medium);
                     canvas.queue_draw();
                 }
                 return glib::Propagation::Stop;
@@ -12276,6 +12285,8 @@ pub(crate) fn draw_month_canvas(
     hovered_target: Option<&MonthHoverTarget>,
     is_dark: bool,
 ) {
+    let font_scale = crate::views::accessibility::get_system_font_scale();
+    let high_contrast = crate::views::accessibility::is_high_contrast_active();
     let header_h = 28.0;
     let kw_w = if layout.show_week_numbers { 36.0 } else { 0.0 };
     let grid_w = (width - kw_w).max(1.0);
@@ -12358,9 +12369,15 @@ pub(crate) fn draw_month_canvas(
         }
     }
 
-    // 2. Crisp 1px Grid Lines
-    cr.set_line_width(1.0);
-    if is_dark {
+    // 2. Crisp Grid Lines (adapted for High Contrast if enabled)
+    cr.set_line_width(if high_contrast { 1.5 } else { 1.0 });
+    if high_contrast {
+        if is_dark {
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.65);
+        } else {
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.65);
+        }
+    } else if is_dark {
         cr.set_source_rgba(1.0, 1.0, 1.0, 0.12);
     } else {
         cr.set_source_rgba(0.0, 0.0, 0.0, 0.12);
@@ -12407,7 +12424,7 @@ pub(crate) fn draw_month_canvas(
         } else {
             cr.set_source_rgba(0.0, 0.0, 0.0, 0.50);
         }
-        cr.set_font_size(11.0);
+        cr.set_font_size((11.0 * font_scale).round());
         cr.select_font_face(
             "sans-serif",
             gtk::cairo::FontSlant::Normal,
@@ -12458,7 +12475,7 @@ pub(crate) fn draw_month_canvas(
 
     // 4. KW Column Numbers
     if layout.show_week_numbers {
-        cr.set_font_size(11.0);
+        cr.set_font_size((11.0 * font_scale).round());
         cr.select_font_face(
             "sans-serif",
             gtk::cairo::FontSlant::Normal,

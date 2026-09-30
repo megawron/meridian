@@ -21,6 +21,7 @@ pub fn show_shortcuts_dialog<W: IsA<gtk::Window>>(parent: &W) {
     for (kind, title) in [
         (ShortcutGroup::General, crate::i18n::gettext("General & Navigation")),
         (ShortcutGroup::Mail, crate::i18n::gettext("Mail Actions")),
+        (ShortcutGroup::Calendar, crate::i18n::gettext("Calendar")),
         (ShortcutGroup::Modules, crate::i18n::gettext("Switch Modules")),
     ] {
         let group = gtk::ShortcutsGroup::builder().title(&title).build();

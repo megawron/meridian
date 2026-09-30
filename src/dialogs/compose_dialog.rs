@@ -43,6 +43,7 @@ use crate::services::mail_composer_service::{self, CancellationToken, OutgoingMe
 use crate::services::mail_print_service::{
     self, MailPrintAction, MailPrintAttachment, MailPrintJobState, MailPrintSnapshot,
 };
+use crate::views::accessibility::set_accessible_label;
 use crate::services::signature_store_service::SignatureStore;
 use crate::services::snippet_store_service::{MailSnippet, SnippetStore};
 use crate::views::{EditorContent, MailViewer};
@@ -945,22 +946,24 @@ impl ComposeDialog {
 
         let btn_close = gtk::Button::builder()
             .icon_name("window-close-symbolic")
-            .tooltip_text("Composer schließen (Ctrl+W)")
+            .tooltip_text(&crate::i18n::gettext("Close composer (Ctrl+W)"))
             .css_classes(vec!["flat"])
             .build();
+        set_accessible_label(&btn_close, &crate::i18n::gettext("Close composer"));
 
         let btn_attach = gtk::Button::builder()
             .icon_name("mail-attachment-symbolic")
-            .tooltip_text("Anhang hinzufügen… (Ctrl+M)")
+            .tooltip_text(&crate::i18n::gettext("Add attachment… (Ctrl+M)"))
             .css_classes(vec!["flat"])
             .build();
+        set_accessible_label(&btn_attach, &crate::i18n::gettext("Add attachment"));
 
         btn_attach.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
             self,
             move |_| {
                 let file_dialog = gtk::FileDialog::builder()
-                    .title("Anhang auswählen")
+                    .title(&crate::i18n::gettext("Select attachment"))
                     .modal(true)
                     .build();
 
@@ -979,41 +982,46 @@ impl ComposeDialog {
 
         let btn_discard = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
-            .tooltip_text("Entwurf verwerfen")
+            .tooltip_text(&crate::i18n::gettext("Discard draft"))
             .css_classes(vec!["flat"])
             .build();
+        set_accessible_label(&btn_discard, &crate::i18n::gettext("Discard draft"));
         header_bar.pack_start(&btn_discard);
         self.imp().btn_discard.replace(Some(btn_discard.clone()));
 
         let menu_button = gtk::MenuButton::builder()
             .icon_name("open-menu-symbolic")
-            .tooltip_text("Composer-Menü")
+            .tooltip_text(&crate::i18n::gettext("Composer menu"))
             .css_classes(vec!["flat"])
             .build();
+        set_accessible_label(&menu_button, &crate::i18n::gettext("Composer menu"));
         header_bar.pack_end(&menu_button);
 
         let btn_send_content = adw::ButtonContent::builder()
             .icon_name("mail-send-symbolic")
-            .label("Senden")
+            .label(&crate::i18n::gettext("Send"))
             .build();
         let btn_send = gtk::Button::builder()
             .child(&btn_send_content)
             .css_classes(vec!["suggested-action"])
-            .tooltip_text("E-Mail jetzt senden (Ctrl+Enter)")
+            .tooltip_text(&crate::i18n::gettext("Send email now (Ctrl+Enter)"))
             .build();
+        set_accessible_label(&btn_send, &crate::i18n::gettext("Send email"));
         header_bar.pack_end(&btn_send);
 
         let btn_save_draft = gtk::Button::builder()
             .icon_name("document-save-symbolic")
-            .tooltip_text("Entwurf speichern (Ctrl+S)")
+            .tooltip_text(&crate::i18n::gettext("Save draft (Ctrl+S)"))
             .css_classes(vec!["flat"])
             .build();
+        set_accessible_label(&btn_save_draft, &crate::i18n::gettext("Save draft"));
 
         let btn_priority = gtk::ToggleButton::builder()
             .icon_name("mail-mark-important-symbolic")
-            .tooltip_text("Nachricht als wichtig markieren")
+            .tooltip_text(&crate::i18n::gettext("Mark message as important"))
             .css_classes(vec!["flat"])
             .build();
+        set_accessible_label(&btn_priority, &crate::i18n::gettext("Mark message as important"));
 
         let request_read_receipt = AppSettings::try_new()
             .map(|settings| settings.request_read_receipt())
@@ -1170,56 +1178,68 @@ impl ComposeDialog {
 
         // Reply-To
         let btn_reply_to = gtk::Button::builder()
-            .label("Antwort an…")
-            .tooltip_text("Antwortadresse aus dem Adressbuch auswählen")
+            .label(crate::i18n::gettext("Reply-To…"))
+            .tooltip_text(crate::i18n::gettext("Select Reply-To address from address book"))
             .css_classes(vec!["flat"])
             .halign(gtk::Align::End)
             .visible(show_reply_to)
             .build();
+        set_accessible_label(&btn_reply_to, &crate::i18n::gettext("Select Reply-To address from address book"));
         let entry_reply_to = gtk::Entry::builder()
-            .placeholder_text("Antwortadresse (Reply-To)…")
+            .input_purpose(gtk::InputPurpose::Email)
+            .placeholder_text(crate::i18n::gettext("Reply-To address…"))
             .hexpand(true)
             .build();
+        set_accessible_label(&entry_reply_to, &crate::i18n::gettext("Reply-To"));
         let directory_button_reply_to = recipient_directory_button();
         let reply_to_field_widget = recipient_field(&entry_reply_to, &directory_button_reply_to);
         reply_to_field_widget.set_visible(show_reply_to);
 
         // To (Evolution-compatible header button opening NameSelectorDialog)
         let btn_to = gtk::Button::builder()
-            .label("An…")
-            .tooltip_text("Empfänger aus dem Adressbuch auswählen")
+            .label(crate::i18n::gettext("To…"))
+            .tooltip_text(crate::i18n::gettext("Select recipients from address book"))
             .css_classes(vec!["flat"])
             .halign(gtk::Align::End)
             .build();
+        set_accessible_label(&btn_to, &crate::i18n::gettext("Select recipients from address book"));
         let entry_to = gtk::Entry::builder()
-            .placeholder_text("Empfänger eingeben…")
+            .input_purpose(gtk::InputPurpose::Email)
+            .placeholder_text(crate::i18n::gettext("Enter recipients…"))
             .hexpand(true)
             .build();
+        set_accessible_label(&entry_to, &crate::i18n::gettext("Recipients"));
 
         // Cc/Bcc visibility defaults from AppSettings
         let btn_cc = gtk::Button::builder()
-            .label("Cc…")
-            .tooltip_text("Cc-Empfänger aus dem Adressbuch auswählen")
+            .label(crate::i18n::gettext("Cc…"))
+            .tooltip_text(crate::i18n::gettext("Select Cc recipients from address book"))
             .css_classes(vec!["flat"])
             .halign(gtk::Align::End)
             .visible(show_cc)
             .build();
+        set_accessible_label(&btn_cc, &crate::i18n::gettext("Select Cc recipients from address book"));
         let entry_cc = gtk::Entry::builder()
-            .placeholder_text("Weitere Empfänger (Cc)…")
+            .input_purpose(gtk::InputPurpose::Email)
+            .placeholder_text(crate::i18n::gettext("Additional recipients (Cc)…"))
             .hexpand(true)
             .build();
+        set_accessible_label(&entry_cc, &crate::i18n::gettext("Copy (Cc)"));
 
         let btn_bcc = gtk::Button::builder()
-            .label("Bcc…")
-            .tooltip_text("Bcc-Empfänger aus dem Adressbuch auswählen")
+            .label(crate::i18n::gettext("Bcc…"))
+            .tooltip_text(crate::i18n::gettext("Select Bcc recipients from address book"))
             .css_classes(vec!["flat"])
             .halign(gtk::Align::End)
             .visible(show_bcc)
             .build();
+        set_accessible_label(&btn_bcc, &crate::i18n::gettext("Select Bcc recipients from address book"));
         let entry_bcc = gtk::Entry::builder()
-            .placeholder_text("Verdeckte Empfänger (Bcc)…")
+            .input_purpose(gtk::InputPurpose::Email)
+            .placeholder_text(crate::i18n::gettext("Undisclosed recipients (Bcc)…"))
             .hexpand(true)
             .build();
+        set_accessible_label(&entry_bcc, &crate::i18n::gettext("Blind Copy (Bcc)"));
 
         let directory_button_to = recipient_directory_button();
         let directory_button_cc = recipient_directory_button();
@@ -1267,14 +1287,15 @@ impl ComposeDialog {
 
         // Subject
         let lbl_subject = gtk::Label::builder()
-            .label("Betreff:")
+            .label(crate::i18n::gettext("Subject:"))
             .css_classes(vec!["dim-label"])
             .halign(gtk::Align::End)
             .build();
         let entry_subject = gtk::Entry::builder()
-            .placeholder_text("Betreff…")
+            .placeholder_text(crate::i18n::gettext("Subject…"))
             .hexpand(true)
             .build();
+        set_accessible_label(&entry_subject, &crate::i18n::gettext("Subject"));
 
         form_grid.attach(&lbl_from, 0, 0, 1, 1);
         form_grid.attach(&from_row_box, 1, 0, 1, 1);

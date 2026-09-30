@@ -65,7 +65,10 @@ use crate::services::search_engine::{
 use crate::services::search_folder_service::{
     SavedSearch, SavedSearchFieldMode, SavedSearchScope, SearchFolderService,
 };
-use crate::views::accessibility::set_accessible_label;
+use crate::views::accessibility::{
+    announce_to_screen_reader, set_accessible_description, set_accessible_label,
+    set_accessible_role,
+};
 use crate::views::{
     ItipBanner, MailViewer, MailViewerWindow, MessageSearchResult, MessageSearchStatus,
     extract_email_address,
@@ -23251,7 +23254,8 @@ impl MailPage {
             .focus_on_click(true)
             .css_classes(vec!["mail-table-canvas"])
             .build();
-        set_accessible_label(&mail_table_canvas, "E-Mail-Liste Canvas");
+        set_accessible_role(&mail_table_canvas, gtk::AccessibleRole::List);
+        set_accessible_label(&mail_table_canvas, &crate::i18n::gettext("Message List"));
 
         self.imp()
             .mail_table_canvas
@@ -23866,6 +23870,22 @@ impl MailPage {
             if let Some(page) = page_for_notify.upgrade() {
                 if !page.imp().is_mouse_selecting.get() {
                     page.scroll_mail_table_to_selected();
+                }
+                if let Some(msg) = page.selected_message() {
+                    let unread_str = if msg.is_unread() {
+                        crate::i18n::gettext("Unread")
+                    } else {
+                        crate::i18n::gettext("Read")
+                    };
+                    let sender = msg.sender_name();
+                    let subj = msg.subject();
+                    let speech = format!("{}, {}, {}", sender, subj, unread_str);
+                    set_accessible_description(&canvas_for_notify, &speech);
+                    announce_to_screen_reader(
+                        &canvas_for_notify,
+                        &speech,
+                        gtk::AccessibleAnnouncementPriority::Medium,
+                    );
                 }
             }
             canvas_for_notify.queue_draw();

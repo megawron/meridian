@@ -30,7 +30,10 @@ use crate::services::ebook_service::{
 use crate::services::eds_service;
 use crate::services::settings_service::AppSettings;
 use crate::services::vcard_service::{VCardContact, VCardListMemberKind};
-use crate::views::accessibility::set_accessible_label;
+use crate::views::accessibility::{
+    announce_to_screen_reader, set_accessible_description, set_accessible_label,
+    set_accessible_role,
+};
 use crate::views::set_button_icon_with_fallback;
 
 const LOCAL_ADDRESS_BOOK_SOURCE_UID: &str = "local-addressbook";
@@ -3007,7 +3010,8 @@ impl ContactsPage {
             .focus_on_click(true)
             .css_classes(vec!["contacts-table-canvas"])
             .build();
-        set_accessible_label(&contact_table_canvas, "Kontaktliste Canvas");
+        set_accessible_role(&contact_table_canvas, gtk::AccessibleRole::List);
+        set_accessible_label(&contact_table_canvas, &crate::i18n::gettext("Contacts List"));
 
         let simple_list_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -3147,7 +3151,7 @@ impl ContactsPage {
             let page_weak = self.downgrade();
             let contact_list_clone = contact_list.clone();
             let list_scroll_clone = list_scroll.clone();
-            key_controller.connect_key_pressed(move |_, keyval, _keycode, state| {
+            key_controller.connect_key_pressed(move |ctrl, keyval, _keycode, state| {
                 let Some(page) = page_weak.upgrade() else { return glib::Propagation::Proceed; };
                 let layout_ref = page.imp().contact_table_layout.borrow();
                 let Some(layout) = layout_ref.as_ref() else { return glib::Propagation::Proceed; };
@@ -3157,6 +3161,18 @@ impl ContactsPage {
 
                 let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
                 let current_anchor = page.imp().contact_table_anchor_row.get().unwrap_or(0).min(layout.rows.len() - 1);
+
+                let announce_row = |row: &PreparedContactTableRow| {
+                    if let Some(w) = ctrl.widget() {
+                        let speech = if !row.email.is_empty() {
+                            format!("{}, {}", row.name, row.email)
+                        } else {
+                            row.name.clone()
+                        };
+                        set_accessible_description(&w, &speech);
+                        announce_to_screen_reader(&w, &speech, gtk::AccessibleAnnouncementPriority::Medium);
+                    }
+                };
 
                 let scroll_to_row = |idx: usize| {
                     if let Some(row) = layout.rows.get(idx) {
@@ -3185,6 +3201,7 @@ impl ContactsPage {
                         } else if let Some(row) = layout.rows.get(next_idx) {
                             page.imp().contact_table_anchor_row.set(Some(next_idx));
                             select_contact_row_ext(&contact_list_clone, &row.identity.source_uid, &row.identity.uid, true, false);
+                            announce_row(row);
                         }
                         scroll_to_row(next_idx);
                         glib::Propagation::Stop
@@ -3204,6 +3221,7 @@ impl ContactsPage {
                         } else if let Some(row) = layout.rows.get(next_idx) {
                             page.imp().contact_table_anchor_row.set(Some(next_idx));
                             select_contact_row_ext(&contact_list_clone, &row.identity.source_uid, &row.identity.uid, true, false);
+                            announce_row(row);
                         }
                         scroll_to_row(next_idx);
                         glib::Propagation::Stop
@@ -3213,6 +3231,7 @@ impl ContactsPage {
                         page.imp().contact_table_anchor_row.set(Some(next_idx));
                         if let Some(row) = layout.rows.get(next_idx) {
                             select_contact_row_ext(&contact_list_clone, &row.identity.source_uid, &row.identity.uid, true, false);
+                            announce_row(row);
                         }
                         scroll_to_row(next_idx);
                         glib::Propagation::Stop
@@ -3222,6 +3241,7 @@ impl ContactsPage {
                         page.imp().contact_table_anchor_row.set(Some(next_idx));
                         if let Some(row) = layout.rows.get(next_idx) {
                             select_contact_row_ext(&contact_list_clone, &row.identity.source_uid, &row.identity.uid, true, false);
+                            announce_row(row);
                         }
                         scroll_to_row(next_idx);
                         glib::Propagation::Stop
@@ -3230,6 +3250,7 @@ impl ContactsPage {
                         page.imp().contact_table_anchor_row.set(Some(0));
                         if let Some(row) = layout.rows.first() {
                             select_contact_row_ext(&contact_list_clone, &row.identity.source_uid, &row.identity.uid, true, false);
+                            announce_row(row);
                         }
                         scroll_to_row(0);
                         glib::Propagation::Stop
@@ -3239,6 +3260,7 @@ impl ContactsPage {
                         page.imp().contact_table_anchor_row.set(Some(last_idx));
                         if let Some(row) = layout.rows.get(last_idx) {
                             select_contact_row_ext(&contact_list_clone, &row.identity.source_uid, &row.identity.uid, true, false);
+                            announce_row(row);
                         }
                         scroll_to_row(last_idx);
                         glib::Propagation::Stop

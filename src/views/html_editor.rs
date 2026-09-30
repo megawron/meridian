@@ -15,6 +15,7 @@ use gtk::glib;
 use webkit6::prelude::*;
 
 use crate::services::settings_service::AppSettings;
+use crate::views::accessibility::set_accessible_label;
 
 mod imp {
     use super::*;
@@ -341,57 +342,68 @@ impl HtmlEditor {
             .tooltip_text(&gettext("Bold (Ctrl+B)"))
             .css_classes(vec!["flat"])
             .build();
+        set_accessible_label(&btn_bold, &gettext("Bold"));
 
         let btn_italic = gtk::Button::builder()
             .icon_name("format-text-italic-symbolic")
             .tooltip_text(&gettext("Italic (Ctrl+I)"))
             .css_classes(vec!["flat"])
             .build();
+        set_accessible_label(&btn_italic, &gettext("Italic"));
 
         let btn_underline = gtk::Button::builder()
             .icon_name("format-text-underline-symbolic")
             .tooltip_text(&gettext("Underline (Ctrl+U)"))
             .css_classes(vec!["flat"])
             .build();
+        set_accessible_label(&btn_underline, &gettext("Underline"));
 
         let btn_strikethrough = gtk::Button::builder()
             .icon_name("format-text-strikethrough-symbolic")
             .tooltip_text(&gettext("Strikethrough"))
             .css_classes(vec!["flat"])
             .build();
+        set_accessible_label(&btn_strikethrough, &gettext("Strikethrough"));
 
         let btn_clear = gtk::Button::builder()
             .icon_name("edit-clear-symbolic")
             .tooltip_text(&gettext("Clear formatting"))
             .css_classes(vec!["flat"])
             .build();
+        set_accessible_label(&btn_clear, &gettext("Clear formatting"));
 
-        let dropdown_format = gtk::DropDown::from_strings(&[
-            "Normal",
-            "Heading 1",
-            "Heading 2",
-            "Heading 3",
-            "Preformatted",
-        ]);
+        let format_labels = [
+            gettext("Normal"),
+            gettext("Heading 1"),
+            gettext("Heading 2"),
+            gettext("Heading 3"),
+            gettext("Preformatted"),
+        ];
+        let format_strs: Vec<&str> = format_labels.iter().map(|s| s.as_str()).collect();
+        let dropdown_format = gtk::DropDown::from_strings(&format_strs);
         dropdown_format.set_valign(gtk::Align::Center);
+        set_accessible_label(&dropdown_format, &gettext("Paragraph format"));
 
         let btn_list = gtk::Button::builder()
             .icon_name("view-list-bullet-symbolic")
             .tooltip_text(&gettext("Bullet list"))
             .css_classes(vec!["flat"])
             .build();
+        set_accessible_label(&btn_list, &gettext("Bullet list"));
 
         let btn_ordered_list = gtk::Button::builder()
             .icon_name("view-list-ordered-symbolic")
             .tooltip_text(&gettext("Numbered list"))
             .css_classes(vec!["flat"])
             .build();
+        set_accessible_label(&btn_ordered_list, &gettext("Numbered list"));
 
         let btn_blockquote = gtk::Button::builder()
             .icon_name("format-text-direction-ltr-symbolic")
             .tooltip_text(&gettext("Block quote"))
             .css_classes(vec!["flat"])
             .build();
+        set_accessible_label(&btn_blockquote, &gettext("Block quote"));
 
         let link_popover_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -439,30 +451,35 @@ impl HtmlEditor {
             .popover(&link_popover)
             .css_classes(vec!["flat"])
             .build();
+        set_accessible_label(&btn_link, &gettext("Insert hyperlink"));
 
         let btn_rule = gtk::Button::builder()
             .icon_name("insert-object-symbolic")
             .tooltip_text(&gettext("Insert horizontal rule"))
             .css_classes(vec!["flat"])
             .build();
+        set_accessible_label(&btn_rule, &gettext("Insert horizontal rule"));
 
         let btn_image = gtk::Button::builder()
             .icon_name("insert-image-symbolic")
             .tooltip_text(&gettext("Insert image"))
             .css_classes(vec!["flat"])
             .build();
+        set_accessible_label(&btn_image, &gettext("Insert image"));
 
         let btn_undo = gtk::Button::builder()
             .icon_name("edit-undo-symbolic")
             .tooltip_text(&gettext("Undo (Ctrl+Z)"))
             .css_classes(vec!["flat"])
             .build();
+        set_accessible_label(&btn_undo, &gettext("Undo"));
 
         let btn_redo = gtk::Button::builder()
             .icon_name("edit-redo-symbolic")
             .tooltip_text(&gettext("Redo (Ctrl+Shift+Z)"))
             .css_classes(vec!["flat"])
             .build();
+        set_accessible_label(&btn_redo, &gettext("Redo"));
 
         toolbar.append(&dropdown_format);
         toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
@@ -541,6 +558,7 @@ impl HtmlEditor {
             .vexpand(true)
             .hexpand(true)
             .build();
+        set_accessible_label(&web_view, &gettext("Email message body"));
 
         if let Some(settings) = webkit6::prelude::WebViewExt::settings(&web_view) {
             let desktop_font = crate::views::mail_viewer::detect_desktop_font_family();

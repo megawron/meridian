@@ -55,6 +55,7 @@ pub(crate) struct MenuActionSpec {
 pub(crate) enum ShortcutGroup {
     General,
     Mail,
+    Calendar,
     Modules,
 }
 
@@ -497,7 +498,7 @@ pub(crate) const SHORTCUTS: &[ShortcutSpec] = &[
         action: "win.switch-memos",
     },
     ShortcutSpec {
-        group: ShortcutGroup::Modules,
+        group: ShortcutGroup::Calendar,
         title: "Purge Old Events",
         action: "win.purge-calendar",
     },
