@@ -195,14 +195,109 @@ pub fn sanitize_html_with_options(input: &str, allow_remote_resources: bool) -> 
     output
 }
 
+/// SVG Data URI representing a minimalist, Libadwaita-inspired vector placeholder icon.
+pub const PLACEHOLDER_IMAGE_DATA_URI: &str =
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgd2lkdGg9IjI0IiBoZWlnaHQ9IjI0Ij48cmVjdCB4PSIzIiB5PSIzIiB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHJ4PSIzIiBmaWxsPSJub25lIiBzdHJva2U9InJnYigxMzYsMTM2LDEzNikiIHN0cm9rZS13aWR0aD0iMS42IiBzdHJva2Utb3BhY2l0eT0iMC41Ii8+PGNpcmNsZSBjeD0iOC41IiBjeT0iOC41IiByPSIxLjUiIGZpbGw9InJnYigxMzYsMTM2LDEzNikiIGZpbGwtb3BhY2l0eT0iMC41Ii8+PHBhdGggZD0iTTIxIDE1bC01LTVMNSAyMSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJyZ2IoMTM2LDEzNikiIHN0cm9rZS13aWR0aD0iMS42IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIHN0cm9rZS1vcGFjaXR5PSIwLjUiLz48L3N2Zz4=";
+
+fn is_tracking_pixel(raw_tag: &str) -> bool {
+    let check_dim = |val: &str| -> bool {
+        let trimmed = val.trim().trim_end_matches("px").trim();
+        if let Ok(num) = trimmed.parse::<u32>() {
+            num <= 1
+        } else {
+            false
+        }
+    };
+
+    if image_attribute(raw_tag, "width").is_some_and(|w| check_dim(&w))
+        || image_attribute(raw_tag, "height").is_some_and(|h| check_dim(&h))
+    {
+        return true;
+    }
+
+    if let Some(style) = image_attribute(raw_tag, "style") {
+        let style_lower = style.to_ascii_lowercase();
+        if style_lower.contains("display:none")
+            || style_lower.contains("display: none")
+            || style_lower.contains("visibility:hidden")
+            || style_lower.contains("visibility: hidden")
+            || style_lower.contains("width:0")
+            || style_lower.contains("width: 0")
+            || style_lower.contains("width:1px")
+            || style_lower.contains("width: 1px")
+            || style_lower.contains("height:0")
+            || style_lower.contains("height: 0")
+            || style_lower.contains("height:1px")
+            || style_lower.contains("height: 1px")
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn build_placeholder_tag(raw_tag: &str) -> String {
+    let (parsed_attributes, self_closing) =
+        parse_attributes(raw_tag).unwrap_or_else(|| (Vec::new(), false));
+    let mut attributes = Vec::new();
+    attributes.push(format!(" src=\"{PLACEHOLDER_IMAGE_DATA_URI}\""));
+    attributes.push(" data-meridian-placeholder=\"true\"".to_string());
+
+    let mut has_title = false;
+    let mut alt_text = None;
+
+    for attribute in parsed_attributes {
+        let name_lower = attribute.name.to_ascii_lowercase();
+        if matches!(
+            name_lower.as_str(),
+            "src" | "srcset" | "imagesrcset" | "xlink:href" | "data-meridian-placeholder"
+        ) {
+            continue;
+        }
+        if name_lower == "title" {
+            has_title = true;
+        }
+        if name_lower == "alt" {
+            if let Some(ref val) = attribute.value {
+                alt_text = Some(val.clone());
+            }
+        }
+        if let Some(val) = attribute.value {
+            attributes.push(format!(" {}=\"{}\"", attribute.name, escape_attribute(&val)));
+        } else {
+            attributes.push(format!(" {}", attribute.name));
+        }
+    }
+
+    if !has_title {
+        if let Some(alt) = alt_text {
+            if !alt.trim().is_empty() {
+                attributes.push(format!(" title=\"{}\"", escape_attribute(&alt)));
+            }
+        }
+    }
+
+    let suffix = if self_closing { "/>" } else { ">" };
+    format!("<img{}{suffix}", attributes.concat())
+}
+
 /// Remove externally hosted image elements from already sanitized mail HTML.
 ///
-/// WebKit's image preference and the document CSP remain active in the
-/// viewer, but removing remote elements here makes the privacy decision
-/// deterministic across WebKit versions and avoids cached images appearing
-/// before the user explicitly allows remote content. Inline `cid:` and
-/// `data:` images are intentionally retained.
+/// Convenience wrapper calling `block_remote_images_with_options(input, false)`
+/// for backward compatibility.
 pub fn block_remote_images(input: &str) -> String {
+    block_remote_images_with_options(input, false)
+}
+
+/// Remove externally hosted image elements or replace them with layout-preserving
+/// placeholders from already sanitized mail HTML.
+///
+/// When `use_placeholders` is true, remote `<img>` tags are converted to lightweight
+/// placeholders that preserve original width/height/alt while preventing any remote
+/// network requests. Tracking pixels (<= 1px) and remote `<source>` candidates in
+/// `<picture>` are still stripped.
+pub fn block_remote_images_with_options(input: &str, use_placeholders: bool) -> String {
     let mut output = String::with_capacity(input.len());
     let mut cursor = 0;
 
@@ -219,12 +314,20 @@ pub fn block_remote_images(input: &str) -> String {
             break;
         };
         let raw_tag = &input[start..=end];
-        let is_remote_image = tag_name(raw_tag)
+        let name_info = tag_name(raw_tag);
+        let is_remote_image = name_info
+            .as_ref()
             .is_some_and(|(closing, tag)| !closing && (tag == "img" || tag == "source"))
             && (image_attribute(raw_tag, "src").is_some_and(|source| is_remote_image_uri(&source))
                 || image_attribute(raw_tag, "srcset").is_some_and(|source| is_remote_srcset(&source))
                 || image_attribute(raw_tag, "xlink:href").is_some_and(|source| is_remote_image_uri(&source)));
-        if !is_remote_image {
+
+        if is_remote_image {
+            let is_img = name_info.as_ref().is_some_and(|(_, tag)| tag == "img");
+            if use_placeholders && is_img && !is_tracking_pixel(raw_tag) {
+                output.push_str(&build_placeholder_tag(raw_tag));
+            }
+        } else {
             output.push_str(raw_tag);
         }
         cursor = end + 1;
@@ -2366,6 +2469,44 @@ Content-Type: text/html; charset=utf-8
         );
         assert!(!sanitized.contains("<title>"));
         assert!(!sanitized.contains("</title>"));
+    }
+
+    #[test]
+    fn test_block_remote_images_with_placeholders_preserves_dimensions_and_alt() {
+        let html = r#"<img src="https://cdn.example/banner.jpg" width="600" height="200" alt="Sommer-Aktion" class="hero">"#;
+        let blocked = block_remote_images_with_options(html, true);
+        assert!(!blocked.contains("cdn.example"));
+        assert!(blocked.contains("data-meridian-placeholder=\"true\""));
+        assert!(blocked.contains("width=\"600\""));
+        assert!(blocked.contains("height=\"200\""));
+        assert!(blocked.contains("alt=\"Sommer-Aktion\""));
+        assert!(blocked.contains("title=\"Sommer-Aktion\""));
+        assert!(blocked.contains("class=\"hero\""));
+        assert!(blocked.contains("src=\"data:image/svg+xml;base64,"));
+    }
+
+    #[test]
+    fn test_block_remote_images_with_placeholders_drops_tracking_pixels() {
+        let html = r#"<img src="https://tracker.example/pixel.gif" width="1" height="1"><img src="https://tracker.example/hidden" style="display:none"><img src="https://tracker.example/zero" width="0" height="0">"#;
+        let blocked = block_remote_images_with_options(html, true);
+        assert_eq!(blocked, "");
+    }
+
+    #[test]
+    fn test_block_remote_images_with_placeholders_drops_remote_sources() {
+        let html = r#"<picture><source srcset="https://cdn.example/pic.webp"><img src="https://cdn.example/pic.jpg" width="100"></picture>"#;
+        let blocked = block_remote_images_with_options(html, true);
+        assert!(!blocked.contains("<source"));
+        assert!(blocked.contains("<img"));
+        assert!(blocked.contains("data-meridian-placeholder=\"true\""));
+        assert!(blocked.contains("width=\"100\""));
+    }
+
+    #[test]
+    fn test_block_remote_images_without_placeholders_drops_all_tags() {
+        let html = r#"<img src="https://cdn.example/pic.jpg" width="100">"#;
+        let blocked = block_remote_images_with_options(html, false);
+        assert_eq!(blocked, "");
     }
 }
 

@@ -1674,6 +1674,14 @@ impl AppSettings {
         self.set_boolean("auto-load-remote-images", value == "always");
     }
 
+    pub fn mail_preserve_image_layout(&self) -> bool {
+        self.settings.boolean("mail-preserve-image-layout")
+    }
+
+    pub fn set_mail_preserve_image_layout(&self, value: bool) {
+        self.set_boolean("mail-preserve-image-layout", value);
+    }
+
     pub fn mail_mark_seen(&self) -> bool {
         self.settings.boolean("mail-mark-seen")
     }

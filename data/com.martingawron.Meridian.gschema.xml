@@ -325,6 +325,10 @@
       <default>'never'</default>
       <summary>Policy for loading remote images in HTML mail (never, always, sometimes)</summary>
     </key>
+    <key name="mail-preserve-image-layout" type="b">
+      <default>true</default>
+      <summary>Preserve layout and display placeholder boxes for blocked remote images</summary>
+    </key>
     <key name="mail-mark-seen" type="b">
       <default>true</default>
       <summary>Mark a message as read when it is viewed</summary>

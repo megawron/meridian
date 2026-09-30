@@ -28,7 +28,7 @@ use webkit6::prelude::*;
 
 use crate::services::AppSettings;
 use crate::services::html_sanitizer::{
-    block_remote_images, html_to_plain_text, is_remote_srcset,
+    block_remote_images_with_options, html_to_plain_text, is_remote_srcset,
     sanitize_html_with_options, sanitized_html_to_plain_text,
 };
 use crate::services::inline_content_service::{InlineImage, resolve_cid_images};
@@ -385,6 +385,7 @@ impl MailViewer {
             for key in [
                 "auto-load-remote-images",
                 "mail-image-loading-policy",
+                "mail-preserve-image-layout",
                 "render-html",
                 "force-dark-mode",
                 "mail-dark-mode",
@@ -795,10 +796,18 @@ impl MailViewer {
                 "#FCAF3E".to_string(),
                 "#E9B96E".to_string(),
             ]);
+        let preserve_image_layout = self
+            .imp()
+            .settings
+            .borrow()
+            .as_ref()
+            .map(AppSettings::mail_preserve_image_layout)
+            .unwrap_or(true);
         let render_key = RenderRequestKey {
             source_generation: self.imp().source_generation.get(),
             render_html,
             remote_images_allowed,
+            preserve_image_layout,
             force_dark_mode: self.effective_dark_mode(),
             mail_font_family: safe_css_font_family(&mail_font_family),
             mail_font_size: safe_mail_font_size(mail_font_size),
@@ -2413,6 +2422,7 @@ struct PreparedMailBody {
 struct BodyRenderKey {
     render_html: bool,
     remote_images_allowed: bool,
+    preserve_image_layout: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2420,6 +2430,7 @@ struct RenderRequestKey {
     source_generation: u64,
     render_html: bool,
     remote_images_allowed: bool,
+    preserve_image_layout: bool,
     force_dark_mode: bool,
     mail_font_family: String,
     mail_font_size: u32,
@@ -2432,6 +2443,7 @@ impl RenderRequestKey {
         BodyRenderKey {
             render_html: self.render_html,
             remote_images_allowed: self.remote_images_allowed,
+            preserve_image_layout: self.preserve_image_layout,
         }
     }
 }
@@ -2499,6 +2511,7 @@ fn execute_render_job(job: RenderJob, current_generation: &AtomicU64) -> Option<
                 fallback_text.as_deref(),
                 key.render_html,
                 key.remote_images_allowed,
+                key.preserve_image_layout,
             ));
             if current_generation.load(Ordering::Acquire) != generation {
                 return None;
@@ -2694,6 +2707,7 @@ fn prepare_mail_body(
     fallback_text: Option<&str>,
     render_html: bool,
     remote_images_allowed: bool,
+    preserve_image_layout: bool,
 ) -> PreparedMailBody {
     if !render_html {
         let visible_text = html_to_fallback_text(html_content);
@@ -2712,7 +2726,10 @@ fn prepare_mail_body(
     }
 
     let sanitized_full = sanitize_html_with_options(html_content, true);
-    let blocked = block_remote_images(&sanitize_html_with_options(html_content, false));
+    let blocked = block_remote_images_with_options(
+        &sanitize_html_with_options(html_content, false),
+        preserve_image_layout,
+    );
     let has_remote_images = blocked != sanitized_full
         || any_image_tag(&sanitized_full, |tag| {
             image_attribute_value(tag, "xlink:href").is_some_and(is_remote_uri_reference)
@@ -2964,6 +2981,27 @@ h1, h2, h3, h4, h5, h6 {
 img, video, iframe, canvas, svg {
   max-width: 100%;
   height: auto;
+}
+img[data-meridian-placeholder] {
+  box-sizing: border-box !important;
+  background-color: rgba(127, 127, 127, 0.08) !important;
+  border: 1px dashed rgba(127, 127, 127, 0.28) !important;
+  border-radius: 6px !important;
+  object-fit: scale-down !important;
+  object-position: center !important;
+  vertical-align: middle !important;
+}
+img[data-meridian-placeholder]:not([width]):not([style*="width"]) {
+  min-width: 32px;
+  min-height: 32px;
+}
+img[data-meridian-placeholder][width="1"],
+img[data-meridian-placeholder][height="1"],
+img[data-meridian-placeholder][width="0"],
+img[data-meridian-placeholder][height="0"] {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
 }
 table {
   border-collapse: collapse !important;
@@ -3435,7 +3473,7 @@ fn readable_fallback_text(value: Option<&str>) -> String {
 #[cfg(test)]
 fn contains_remote_image_reference(value: &str) -> bool {
     let sanitized = crate::services::html_sanitizer::sanitize_html(value);
-    block_remote_images(&sanitized) != sanitized
+    crate::services::html_sanitizer::block_remote_images(&sanitized) != sanitized
         || any_image_tag(&sanitized, |tag| {
             image_attribute_value(tag, "xlink:href").is_some_and(is_remote_uri_reference)
         })
@@ -3443,9 +3481,10 @@ fn contains_remote_image_reference(value: &str) -> bool {
 
 fn contains_renderable_image(value: &str) -> bool {
     any_image_tag(value, |tag| {
-        ["src", "xlink:href"].iter().any(|attribute| {
-            image_attribute_value(tag, attribute).is_some_and(|value| !value.trim().is_empty())
-        })
+        image_attribute_value(tag, "data-meridian-placeholder").is_none()
+            && ["src", "xlink:href"].iter().any(|attribute| {
+                image_attribute_value(tag, attribute).is_some_and(|value| !value.trim().is_empty())
+            })
     })
 }
 
@@ -3667,6 +3706,7 @@ mod tests {
             source_generation,
             render_html: true,
             remote_images_allowed: false,
+            preserve_image_layout: true,
             force_dark_mode: false,
             mail_font_family: "system-ui, sans-serif".to_string(),
             mail_font_size: 16,
@@ -3802,12 +3842,14 @@ mod tests {
             Some("Vorschau"),
             true,
             false,
+            true,
         );
 
         assert!(!plan.used_fallback);
         assert!(plan.has_remote_images);
         assert_eq!(plan.visible_text, "Hallo");
         assert!(!plan.body.contains("cdn.example"));
+        assert!(plan.body.contains("data-meridian-placeholder=\"true\""));
         assert!(plan.body.contains("cid:logo@example.org"));
         assert!(plan.body.contains("data:image/png;base64,AAAA"));
     }
@@ -3817,6 +3859,7 @@ mod tests {
         let plan = prepare_mail_body(
             r#"<p>Hallo</p><img src="//cdn.example/remote.png" srcset="//cdn.example/remote-2x.png 2x"><table background="//cdn.example/bg.png"><tr><td style="background-image: url('//cdn.example/table.png')">Text</td></tr></table>"#,
             Some("Vorschau"),
+            true,
             true,
             true,
         );
@@ -3836,6 +3879,7 @@ mod tests {
             Some("  Lesbare Vorschau  "),
             true,
             false,
+            true,
         );
 
         assert!(plan.used_fallback);
@@ -3843,6 +3887,41 @@ mod tests {
         assert_eq!(plan.visible_text, "Lesbare Vorschau");
         assert!(plan.body.contains("Lesbare Vorschau"));
         assert!(!plan.body.contains("cdn.example"));
+    }
+
+    #[test]
+    fn render_plan_inserts_placeholder_when_preserving_layout() {
+        let plan = prepare_mail_body(
+            r#"<p>Text</p><img src="https://cdn.example/photo.png" width="400" height="200" alt="Foto">"#,
+            None,
+            true,
+            false,
+            true,
+        );
+        assert!(!plan.used_fallback);
+        assert!(plan.has_remote_images);
+        assert!(!plan.body.contains("cdn.example"));
+        assert!(plan.body.contains("data-meridian-placeholder=\"true\""));
+        assert!(plan.body.contains("width=\"400\""));
+        assert!(plan.body.contains("height=\"200\""));
+        assert!(plan.body.contains("alt=\"Foto\""));
+        assert!(plan.body.contains("title=\"Foto\""));
+    }
+
+    #[test]
+    fn render_plan_drops_image_when_not_preserving_layout() {
+        let plan = prepare_mail_body(
+            r#"<p>Text</p><img src="https://cdn.example/photo.png" width="400" height="200" alt="Foto">"#,
+            None,
+            true,
+            false,
+            false,
+        );
+        assert!(!plan.used_fallback);
+        assert!(plan.has_remote_images);
+        assert!(!plan.body.contains("cdn.example"));
+        assert!(!plan.body.contains("data-meridian-placeholder"));
+        assert!(!plan.body.contains("<img"));
     }
 
     #[test]
@@ -3944,7 +4023,7 @@ mod tests {
     #[test]
     fn render_cache_reuses_documents_and_only_recomposes_style_changes() {
         let key = render_key(7);
-        let plan = prepare_mail_body("<p>Hallo</p>", Some("Hallo"), true, false);
+        let plan = prepare_mail_body("<p>Hallo</p>", Some("Hallo"), true, false, true);
         let cache = cache_mail_render(
             7,
             &key,
@@ -4526,7 +4605,7 @@ mod tests {
             let parsed = parsed.unwrap();
             assert!(!parsed.html_body.is_empty(), "fideapi.eml must have an HTML body");
 
-            let plan = super::prepare_mail_body(&parsed.html_body, None, true, false);
+            let plan = super::prepare_mail_body(&parsed.html_body, None, true, false, true);
             assert!(!plan.used_fallback, "fideapi.eml must not fall back to plain text");
             assert!(!plan.body.is_empty(), "fideapi.eml sanitized body must not be empty");
 
@@ -4576,7 +4655,7 @@ mod tests {
                 );
                 assert!(parsed.is_some(), "{filename} must parse");
                 let parsed = parsed.unwrap();
-                let plan = super::prepare_mail_body(&parsed.html_body, None, true, false);
+                let plan = super::prepare_mail_body(&parsed.html_body, None, true, false, true);
                 assert!(!plan.used_fallback, "{filename} must not fall back to plain text");
                 assert!(!plan.body.is_empty(), "{filename} body must not be empty");
                 let doc = super::compose_sanitized_mail_document(
@@ -4615,7 +4694,7 @@ mod tests {
         let path = std::path::Path::new("/tmp/meridian-test/fixture-d.eml");
         if let Ok(bytes) = std::fs::read(&path) {
             let parsed = crate::services::mail_store_service::parse_rfc822_bytes("test", "inbox", &bytes, false).unwrap();
-            let plan = super::prepare_mail_body(&parsed.html_body, None, true, true);
+            let plan = super::prepare_mail_body(&parsed.html_body, None, true, true, true);
             let colors = [
                 "#729FCF".to_string(),
                 "#AD7FA8".to_string(),
@@ -4700,7 +4779,7 @@ mod tests {
             let parsed = parsed.unwrap();
             assert!(!parsed.html_body.is_empty(), "brevo.eml must have an HTML body");
 
-            let plan = super::prepare_mail_body(&parsed.html_body, None, true, false);
+            let plan = super::prepare_mail_body(&parsed.html_body, None, true, false, true);
             assert!(!plan.used_fallback, "brevo.eml must not fall back to plain text");
             assert!(!plan.body.is_empty(), "brevo.eml sanitized body must not be empty");
 
@@ -4750,7 +4829,7 @@ mod tests {
             let parsed = parsed.unwrap();
             assert!(!parsed.html_body.is_empty(), "karr.eml must have an HTML body");
 
-            let plan = super::prepare_mail_body(&parsed.html_body, None, true, true);
+            let plan = super::prepare_mail_body(&parsed.html_body, None, true, true, true);
             assert!(!plan.used_fallback, "karr.eml must not fall back to plain text");
             assert!(!plan.body.is_empty(), "karr.eml sanitized body must not be empty");
 
@@ -4783,7 +4862,7 @@ mod tests {
         if let Ok(bytes) = std::fs::read(google_path) {
             let parsed = crate::services::mail_store_service::parse_rfc822_bytes("test", "inbox", &bytes, false)
                 .expect("google.eml must parse successfully");
-            let plan = super::prepare_mail_body(&parsed.html_body, None, true, true);
+            let plan = super::prepare_mail_body(&parsed.html_body, None, true, true, true);
             let colors = test_citation_colors();
             let doc = super::compose_sanitized_mail_document(
                 &plan.body,
@@ -4809,7 +4888,7 @@ mod tests {
             if let Ok(bytes) = std::fs::read(&eml_path) {
                 let parsed = crate::services::mail_store_service::parse_rfc822_bytes("test", "inbox", &bytes, false)
                     .unwrap_or_else(|| panic!("{} must parse successfully", eml_filename));
-                let plan = super::prepare_mail_body(&parsed.html_body, None, true, true);
+                let plan = super::prepare_mail_body(&parsed.html_body, None, true, true, true);
                 let colors = test_citation_colors();
                 let doc = super::compose_sanitized_mail_document(
                     &plan.body,
