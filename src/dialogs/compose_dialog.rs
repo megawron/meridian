@@ -26,8 +26,7 @@ use crate::services::{AppSettings, AvatarCacheService, RecentRecipientsService};
 use crate::services::account_config_service::{
     AccountConfigStore, AccountProfile, reconciled_local_default_account,
 };
-use crate::dialogs::{NameSelectorDialog, SignatureEditorDialog};
-use crate::i18n::gettext;
+use crate::dialogs::NameSelectorDialog;
 use crate::services::template_store_service::{MailTemplate, TemplateStore};
 use crate::services::camel_mail_service;
 use crate::services::contact_store_service::ContactStoreService;
@@ -1151,13 +1150,6 @@ impl ComposeDialog {
         let combo_signature = gtk::DropDown::new(Some(sig_model), None::<&gtk::Expression>);
         combo_signature.set_valign(gtk::Align::Center);
 
-        let btn_manage_signatures = gtk::Button::builder()
-            .icon_name("document-edit-symbolic")
-            .tooltip_text(&gettext("Signatur bearbeiten oder erstellen…"))
-            .css_classes(vec!["flat"])
-            .valign(gtk::Align::Center)
-            .build();
-
         let lbl_signature = gtk::Label::builder()
             .label("Signatur:")
             .css_classes(vec!["dim-label"])
@@ -1173,7 +1165,6 @@ impl ComposeDialog {
         from_row_box.append(&combo_from);
         from_row_box.append(&lbl_signature);
         from_row_box.append(&combo_signature);
-        from_row_box.append(&btn_manage_signatures);
 
         // Reply-To
         let btn_reply_to = gtk::Button::builder()
@@ -1633,41 +1624,6 @@ impl ComposeDialog {
             dialog.mark_changed();
         });
 
-        let dialog_weak = self.downgrade();
-        btn_manage_signatures.connect_clicked(move |_| {
-            let Some(dialog) = dialog_weak.upgrade() else {
-                return;
-            };
-            let choices = dialog.imp().signature_choices.borrow();
-            let selected_idx = dialog
-                .imp()
-                .combo_signature
-                .borrow()
-                .as_ref()
-                .map(|c| c.selected() as usize)
-                .unwrap_or(0);
-            let selected_choice = choices.get(selected_idx);
-            let selected_id = selected_choice.and_then(|c| c.id.as_deref());
-
-            let store = SignatureStore::from_environment();
-            let signatures = store.load();
-            let existing_profile = selected_id.and_then(|id| signatures.into_iter().find(|s| s.id == id));
-
-            let dialog_for_refresh = dialog.clone();
-            let editor_dialog = if let Some(profile) = existing_profile {
-                SignatureEditorDialog::new_for_edit(
-                    &profile,
-                    Some(move |_saved_profile| {
-                        dialog_for_refresh.refresh_signature_choices();
-                    }),
-                )
-            } else {
-                SignatureEditorDialog::new_for_create(Some(move |_saved_profile| {
-                    dialog_for_refresh.refresh_signature_choices();
-                }))
-            };
-            editor_dialog.present(Some(&dialog));
-        });
 
         for entry in [
             &entry_to,
