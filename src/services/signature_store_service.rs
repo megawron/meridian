@@ -22,6 +22,21 @@ pub struct SignatureProfile {
     pub format: String,
 }
 
+impl SignatureProfile {
+    /// Returns true if this signature is formatted as HTML or contains HTML markup/images.
+    pub fn is_html(&self) -> bool {
+        self.format.eq_ignore_ascii_case("html")
+            || self.format.eq_ignore_ascii_case("text/html")
+            || self.text.contains("<img")
+            || self.text.contains("<p")
+            || self.text.contains("<div")
+            || self.text.contains("<br")
+            || self.text.contains("<span")
+            || self.text.contains("<table")
+            || self.text.contains("<a ")
+    }
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct SignatureFile {
     version: u32,
