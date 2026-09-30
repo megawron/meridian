@@ -93,8 +93,8 @@ impl SignatureEditorDialog {
     {
         let obj: Self = glib::Object::builder()
             .property("title", gettext("Neue Signatur"))
-            .property("content-width", 700)
-            .property("content-height", 580)
+            .property("content-width", 780)
+            .property("content-height", 680)
             .build();
         if let Some(cb) = on_saved {
             *obj.imp().on_saved.borrow_mut() = Some(Rc::new(cb));
@@ -109,8 +109,8 @@ impl SignatureEditorDialog {
         let encoded = serde_json::to_string(profile).unwrap_or_default();
         let obj: Self = glib::Object::builder()
             .property("title", gettext("Signatur bearbeiten"))
-            .property("content-width", 700)
-            .property("content-height", 580)
+            .property("content-width", 780)
+            .property("content-height", 680)
             .property("edit-signature-json", encoded)
             .build();
         if let Some(cb) = on_saved {
@@ -152,6 +152,8 @@ impl SignatureEditorDialog {
         let toolbar_view = adw::ToolbarView::new();
 
         let header_bar = adw::HeaderBar::new();
+        header_bar.set_show_end_title_buttons(false);
+        header_bar.set_show_start_title_buttons(false);
         let title_str = if edit_profile.is_some() {
             gettext("Signatur bearbeiten")
         } else {
@@ -203,9 +205,6 @@ impl SignatureEditorDialog {
         // 2. Signature Content (WYSIWYG Editor)
         let group_editor = adw::PreferencesGroup::builder()
             .title(&gettext("Signatur-Inhalt"))
-            .description(&gettext(
-                "Unterstützt Textformatierung, Links und Grafiken (Bilder können kopiert &amp; eingefügt oder über die Symbolleiste gewählt werden).",
-            ))
             .vexpand(true)
             .build();
 
@@ -226,7 +225,7 @@ impl SignatureEditorDialog {
             .css_classes(vec!["card"])
             .vexpand(true)
             .hexpand(true)
-            .height_request(340)
+            .height_request(450)
             .child(&editor)
             .build();
 

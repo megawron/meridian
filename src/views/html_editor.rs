@@ -574,6 +574,7 @@ impl HtmlEditor {
             .vexpand(true)
             .hexpand(true)
             .build();
+        web_view.set_background_color(&gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.0));
         set_accessible_label(&web_view, &gettext("Email message body"));
 
         if let Some(settings) = webkit6::prelude::WebViewExt::settings(&web_view) {
@@ -607,10 +608,10 @@ impl HtmlEditor {
         let initial_html = format!(
             concat!(
                 "<!DOCTYPE html><html><head><style>",
-                "body {{ font-family: {}; font-size: {}px; line-height: 1.5; color: #222; margin: 12px; }}",
+                "html, body {{ font-family: {}; font-size: {}px; line-height: 1.5; color: #222; margin: 12px; background-color: transparent; }}",
                 "img {{ max-width: 100%; height: auto; }}",
                 "a {{ color: #1a73e8; text-decoration: underline; cursor: pointer; }}",
-                "@media (prefers-color-scheme: dark) {{ body {{ color: #eee; background-color: #1e1e1e; }} a {{ color: #78aeed; }} }}",
+                "@media (prefers-color-scheme: dark) {{ html, body {{ color: #eee; background-color: transparent; }} a {{ color: #78aeed; }} }}",
                 "</style>",
                 "<script>",
                 "document.addEventListener('mouseover', function(e) {{",
