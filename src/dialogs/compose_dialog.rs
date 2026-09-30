@@ -19,8 +19,9 @@ use gtk::glib::prelude::{StaticVariantType, ToVariant};
 use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
+use once_cell::sync::Lazy;
 
 use crate::services::{AppSettings, AvatarCacheService, RecentRecipientsService};
 use crate::services::account_config_service::{
@@ -288,6 +289,7 @@ impl ComposeDialog {
             .build();
         dialog.apply_default_signature();
         dialog.mark_saved();
+        warm_recipient_cache();
         dialog
     }
 
@@ -5279,7 +5281,10 @@ fn setup_directory_recipient_search(
                     let mut suggestions = contacts
                         .into_iter()
                         .map(gal_contact_to_recipient_suggestion)
-                        .filter(|suggestion| !suggestion.address.is_empty())
+                        .filter(|suggestion| {
+                            !suggestion.address.is_empty()
+                                && !is_internal_microsoft_routing_address(&suggestion.address)
+                        })
                         .collect::<Vec<_>>();
                     suggestions.sort_by_key(|suggestion| suggestion.address.to_ascii_lowercase());
                     suggestions
@@ -5456,7 +5461,7 @@ fn setup_recipient_autocompletion(
         }
     };
 
-    let accept_selection_for_row = Rc::new(accept_selection);
+    let accept_selection_for_row: Rc<dyn Fn(usize) + 'static> = Rc::new(accept_selection);
     let accept_for_row_cb = Rc::clone(&accept_selection_for_row);
     list.connect_row_activated(move |_, row| {
         let idx = row.index();
@@ -5573,7 +5578,7 @@ fn setup_recipient_autocompletion(
         let accept_for_row = Rc::clone(&accept_selection_for_click);
 
         let source_id = glib::timeout_add_local(
-            std::time::Duration::from_millis(150),
+            std::time::Duration::from_millis(50),
             move || {
                 debounce_source_timer.borrow_mut().take();
                 if generation_clone.get() != generation_id {
@@ -5588,130 +5593,81 @@ fn setup_recipient_autocompletion(
                     return glib::ControlFlow::Break;
                 }
 
+                // 1. Instant local search from in-memory pool (< 0.1 ms)
                 let mut suggestions = search_recipient_suggestions(&cur_fragment, show_address);
+                suggestions.truncate(10);
 
+                if suggestions.is_empty() {
+                    popover_clone.popdown();
+                    visible_clone.replace(Vec::new());
+                    while let Some(row) = list_clone.first_child() {
+                        list_clone.remove(&row);
+                    }
+                } else {
+                    render_recipient_suggestions_to_list(&list_clone, &suggestions, &accept_for_row);
+                    visible_clone.replace(suggestions.clone());
+                    if let Some(first_row) = list_clone.row_at_index(0) {
+                        list_clone.select_row(Some(&first_row));
+                    }
+                    popover_clone.popup();
+                }
+
+                // 2. Non-blocking asynchronous GAL search in background thread
                 let source_uid = dialog_weak_source
                     .upgrade()
                     .map(|d| d.selected_identity(combo_from_source.selected()).source_uid)
                     .unwrap_or_default();
 
-                if !source_uid.trim().is_empty() {
-                    if let Some(graph) = graph_service_for_source(&source_uid) {
-                        if let Ok(gal_contacts) = graph.search_gal_sync(&cur_fragment) {
+                if !source_uid.trim().is_empty() && cur_fragment.chars().count() >= 3 {
+                    let generation_for_gal = generation_id;
+                    let gen_tracker = Rc::clone(&generation_clone);
+                    let list_for_gal = list_clone.clone();
+                    let visible_for_gal = Rc::clone(&visible_clone);
+                    let popover_for_gal = popover_clone.clone();
+                    let accept_for_gal = Rc::clone(&accept_for_row);
+                    let fragment_for_gal = cur_fragment.clone();
+                    let (sender, receiver) = async_channel::bounded(1);
+
+                    std::thread::spawn(move || {
+                        let contacts = graph_service_for_source(&source_uid)
+                            .and_then(|graph| graph.search_gal_sync(&fragment_for_gal).ok());
+                        let _ = sender.send_blocking(contacts);
+                    });
+
+                    glib::spawn_future_local(async move {
+                        if let Ok(Some(gal_contacts)) = receiver.recv().await {
+                            if gen_tracker.get() != generation_for_gal {
+                                return;
+                            }
+                            let mut current = visible_for_gal.borrow().clone();
+                            let mut added = false;
                             for gc in gal_contacts {
+                                if is_internal_microsoft_routing_address(&gc.email_address) {
+                                    continue;
+                                }
                                 let sugg = gal_contact_to_recipient_suggestion(gc);
                                 if !sugg.address.is_empty()
-                                    && !suggestions.iter().any(|s| s.address.eq_ignore_ascii_case(&sugg.address))
+                                    && !is_internal_microsoft_routing_address(&sugg.address)
+                                    && !current.iter().any(|s| s.address.eq_ignore_ascii_case(&sugg.address))
                                 {
-                                    suggestions.push(sugg);
+                                    current.push(sugg);
+                                    added = true;
                                 }
                             }
-                        }
-                    }
-                }
-
-                if generation_clone.get() != generation_id {
-                    return glib::ControlFlow::Break;
-                }
-
-                suggestions.truncate(10);
-
-                while let Some(row) = list_clone.first_child() {
-                    list_clone.remove(&row);
-                }
-
-                if suggestions.is_empty() {
-                    popover_clone.popdown();
-                    visible_clone.replace(Vec::new());
-                    return glib::ControlFlow::Break;
-                }
-
-                for (idx, sugg) in suggestions.iter().enumerate() {
-                    let row = gtk::Box::builder()
-                        .orientation(gtk::Orientation::Horizontal)
-                        .spacing(8)
-                        .margin_start(8)
-                        .margin_end(8)
-                        .margin_top(4)
-                        .margin_bottom(4)
-                        .build();
-
-                    let display = if sugg.display.is_empty() {
-                        &sugg.address
-                    } else {
-                        &sugg.display
-                    };
-
-                    let avatar = adw::Avatar::builder()
-                        .size(28)
-                        .text(display)
-                        .show_initials(true)
-                        .build();
-
-                    let allow_remote = AppSettings::try_new()
-                        .map(|s| s.mail_fetch_remote_logos())
-                        .unwrap_or(true);
-
-                    let (tx, rx) = async_channel::bounded(1);
-                    let avatar_weak = avatar.downgrade();
-                    glib::spawn_future_local(async move {
-                        if let Ok(bytes) = rx.recv().await {
-                            if let Some(avatar) = avatar_weak.upgrade() {
-                                if let Ok(texture) = gtk::gdk::Texture::from_bytes(&bytes) {
-                                    avatar.set_custom_image(Some(&texture));
+                            if added {
+                                current.truncate(10);
+                                render_recipient_suggestions_to_list(&list_for_gal, &current, &accept_for_gal);
+                                visible_for_gal.replace(current);
+                                if let Some(first_row) = list_for_gal.row_at_index(0) {
+                                    if list_for_gal.selected_row().is_none() {
+                                        list_for_gal.select_row(Some(&first_row));
+                                    }
                                 }
+                                popover_for_gal.popup();
                             }
                         }
                     });
-
-                    if let Some(bytes) = AvatarCacheService::global().request_avatar(&sugg.address, allow_remote, Some(tx)) {
-                        if let Ok(texture) = gtk::gdk::Texture::from_bytes(&bytes) {
-                            avatar.set_custom_image(Some(&texture));
-                        }
-                    }
-
-                    row.append(&avatar);
-
-                    let text_box = gtk::Box::builder()
-                        .orientation(gtk::Orientation::Vertical)
-                        .spacing(1)
-                        .hexpand(true)
-                        .build();
-
-                    let lbl_name = gtk::Label::builder()
-                        .label(display)
-                        .xalign(0.0)
-                        .ellipsize(gtk::pango::EllipsizeMode::End)
-                        .build();
-                    text_box.append(&lbl_name);
-
-                    if !sugg.display.is_empty() && !sugg.address.is_empty() {
-                        let lbl_email = gtk::Label::builder()
-                            .label(&sugg.address)
-                            .xalign(0.0)
-                            .css_classes(vec!["dim-label", "caption"])
-                            .ellipsize(gtk::pango::EllipsizeMode::End)
-                            .build();
-                        text_box.append(&lbl_email);
-                    }
-
-                    row.append(&text_box);
-
-                    let click = gtk::GestureClick::new();
-                    let accept_click = Rc::clone(&accept_for_row);
-                    click.connect_released(move |_, _, _, _| {
-                        accept_click(idx);
-                    });
-                    row.add_controller(click);
-
-                    list_clone.append(&row);
                 }
-
-                visible_clone.replace(suggestions);
-                if let Some(first_row) = list_clone.row_at_index(0) {
-                    list_clone.select_row(Some(&first_row));
-                }
-                popover_clone.popup();
 
                 glib::ControlFlow::Break
             },
@@ -5720,17 +5676,147 @@ fn setup_recipient_autocompletion(
     });
 }
 
-fn search_recipient_suggestions(query: &str, show_address: bool) -> Vec<RecipientSuggestion> {
-    let query_norm = query.trim().to_lowercase();
-    if query_norm.is_empty() {
-        return Vec::new();
+fn render_recipient_suggestions_to_list(
+    list: &gtk::ListBox,
+    suggestions: &[RecipientSuggestion],
+    accept_for_row: &Rc<dyn Fn(usize) + 'static>,
+) {
+    while let Some(row) = list.first_child() {
+        list.remove(&row);
     }
+
+    for (idx, sugg) in suggestions.iter().enumerate() {
+        let row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(4)
+            .margin_bottom(4)
+            .build();
+
+        let display = if sugg.display.is_empty() {
+            &sugg.address
+        } else {
+            &sugg.display
+        };
+
+        let avatar = adw::Avatar::builder()
+            .size(28)
+            .text(display)
+            .show_initials(true)
+            .build();
+
+        let allow_remote = AppSettings::try_new()
+            .map(|s| s.mail_fetch_remote_logos())
+            .unwrap_or(true);
+
+        let (tx, rx) = async_channel::bounded(1);
+        let avatar_weak = avatar.downgrade();
+        glib::spawn_future_local(async move {
+            if let Ok(bytes) = rx.recv().await {
+                if let Some(avatar) = avatar_weak.upgrade() {
+                    if let Ok(texture) = gtk::gdk::Texture::from_bytes(&bytes) {
+                        avatar.set_custom_image(Some(&texture));
+                    }
+                }
+            }
+        });
+
+        if let Some(bytes) =
+            AvatarCacheService::global().request_avatar(&sugg.address, allow_remote, Some(tx))
+        {
+            if let Ok(texture) = gtk::gdk::Texture::from_bytes(&bytes) {
+                avatar.set_custom_image(Some(&texture));
+            }
+        }
+
+        row.append(&avatar);
+
+        let text_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(1)
+            .hexpand(true)
+            .build();
+
+        let lbl_name = gtk::Label::builder()
+            .label(display)
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .build();
+        text_box.append(&lbl_name);
+
+        if !sugg.display.is_empty() && !sugg.address.is_empty() {
+            let lbl_email = gtk::Label::builder()
+                .label(&sugg.address)
+                .xalign(0.0)
+                .css_classes(vec!["dim-label", "caption"])
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .build();
+            text_box.append(&lbl_email);
+        }
+
+        row.append(&text_box);
+
+        let click = gtk::GestureClick::new();
+        let accept_click = Rc::clone(accept_for_row);
+        click.connect_released(move |_, _, _, _| {
+            accept_click(idx);
+        });
+        row.add_controller(click);
+
+        list.append(&row);
+    }
+}
+
+pub fn is_internal_microsoft_routing_address(email: &str) -> bool {
+    let lower = email.trim().to_ascii_lowercase();
+    let Some(domain) = lower.split('@').nth(1) else {
+        return false;
+    };
+    domain == "onmicrosoft.com"
+        || domain.ends_with(".onmicrosoft.com")
+        || domain.contains(".mail.onmicrosoft.com")
+}
+
+static LOCAL_RECIPIENT_POOL_CACHE: Lazy<RwLock<Option<(std::time::Instant, Arc<Vec<RecipientSuggestion>>)>>> =
+    Lazy::new(|| RwLock::new(None));
+
+fn get_or_load_recipient_pool() -> Arc<Vec<RecipientSuggestion>> {
+    const CACHE_TTL_SECS: u64 = 15;
+    if let Ok(read) = LOCAL_RECIPIENT_POOL_CACHE.read() {
+        if let Some((instant, ref pool)) = *read {
+            if instant.elapsed().as_secs() < CACHE_TTL_SECS {
+                return Arc::clone(pool);
+            }
+        }
+    }
+    let pool = Arc::new(load_local_recipients_pool());
+    if let Ok(mut write) = LOCAL_RECIPIENT_POOL_CACHE.write() {
+        *write = Some((std::time::Instant::now(), Arc::clone(&pool)));
+    }
+    pool
+}
+
+pub fn warm_recipient_cache() {
+    std::thread::spawn(|| {
+        let _ = get_or_load_recipient_pool();
+    });
+}
+
+pub fn invalidate_recipient_cache() {
+    if let Ok(mut write) = LOCAL_RECIPIENT_POOL_CACHE.write() {
+        *write = None;
+    }
+}
+
+fn load_local_recipients_pool() -> Vec<RecipientSuggestion> {
     let mut results = Vec::new();
 
     // 1. Check recent recipients (frecency ranking - highest priority)
-    let recent = RecentRecipientsService::new().search_recent(query);
+    let recent = RecentRecipientsService::new().all_recipients();
     for r in recent {
-        if !r.email.is_empty() {
+        if !r.email.is_empty() && !is_internal_microsoft_routing_address(&r.email) {
             results.push(RecipientSuggestion {
                 display: r.display_name,
                 address: r.email,
@@ -5741,17 +5827,14 @@ fn search_recipient_suggestions(query: &str, show_address: bool) -> Vec<Recipien
     // 2. Query EDS contacts (Evolution Data Server synchronized address books)
     let eds_contacts = crate::services::ebook_service::load_contacts_prefer_eds();
     for record in eds_contacts.contacts {
-        let c = &record.contact;
-        if contact_matches_query(c, &query_norm) {
-            let suggestions = contact_to_recipient_suggestions(c, show_address);
-            for s in suggestions {
-                if let Some(existing) = results.iter_mut().find(|r| r.address.eq_ignore_ascii_case(&s.address)) {
-                    if existing.display.is_empty() && !s.display.is_empty() {
-                        existing.display = s.display;
-                    }
-                } else {
-                    results.push(s);
+        let suggestions = contact_to_recipient_suggestions(&record.contact, false);
+        for s in suggestions {
+            if let Some(existing) = results.iter_mut().find(|r| r.address.eq_ignore_ascii_case(&s.address)) {
+                if existing.display.is_empty() && !s.display.is_empty() {
+                    existing.display = s.display;
                 }
+            } else {
+                results.push(s);
             }
         }
     }
@@ -5760,17 +5843,14 @@ fn search_recipient_suggestions(query: &str, show_address: bool) -> Vec<Recipien
     let store = ContactStoreService::new();
     let contacts = store.load_contacts();
     for record in contacts {
-        let c = &record.contact;
-        if contact_matches_query(c, &query_norm) {
-            let suggestions = contact_to_recipient_suggestions(c, show_address);
-            for s in suggestions {
-                if let Some(existing) = results.iter_mut().find(|r| r.address.eq_ignore_ascii_case(&s.address)) {
-                    if existing.display.is_empty() && !s.display.is_empty() {
-                        existing.display = s.display;
-                    }
-                } else {
-                    results.push(s);
+        let suggestions = contact_to_recipient_suggestions(&record.contact, false);
+        for s in suggestions {
+            if let Some(existing) = results.iter_mut().find(|r| r.address.eq_ignore_ascii_case(&s.address)) {
+                if existing.display.is_empty() && !s.display.is_empty() {
+                    existing.display = s.display;
                 }
+            } else {
+                results.push(s);
             }
         }
     }
@@ -5781,38 +5861,37 @@ fn search_recipient_suggestions(query: &str, show_address: bool) -> Vec<Recipien
             // Check sender
             let s_email = msg.sender_email.trim();
             let s_name = msg.sender_name.trim();
-            if !s_email.is_empty() && s_email.contains('@') {
-                if s_email.to_lowercase().contains(&query_norm) || s_name.to_lowercase().contains(&query_norm) {
-                    if let Some(existing) = results.iter_mut().find(|r| r.address.eq_ignore_ascii_case(s_email)) {
-                        if existing.display.is_empty() && !s_name.is_empty() {
-                            existing.display = s_name.to_string();
-                        }
-                    } else {
-                        results.push(RecipientSuggestion {
-                            display: s_name.to_string(),
-                            address: s_email.to_string(),
-                        });
+            if !s_email.is_empty() && s_email.contains('@') && !is_internal_microsoft_routing_address(s_email) {
+                if let Some(existing) = results.iter_mut().find(|r| r.address.eq_ignore_ascii_case(s_email)) {
+                    if existing.display.is_empty() && !s_name.is_empty() {
+                        existing.display = s_name.to_string();
                     }
+                } else {
+                    results.push(RecipientSuggestion {
+                        display: s_name.to_string(),
+                        address: s_email.to_string(),
+                    });
                 }
             }
 
             // Check recipients in To / Cc
             for recipient_header in [&msg.recipient_to, &msg.recipient_cc] {
-                if !recipient_header.is_empty() && recipient_header.to_lowercase().contains(&query_norm) {
+                if !recipient_header.is_empty() {
                     for (name, email) in RecentRecipientsService::parse_recipients(recipient_header) {
                         let email_trim = email.trim();
-                        if !email_trim.is_empty() && email_trim.contains('@') {
-                            if email_trim.to_lowercase().contains(&query_norm) || name.to_lowercase().contains(&query_norm) {
-                                if let Some(existing) = results.iter_mut().find(|r| r.address.eq_ignore_ascii_case(email_trim)) {
-                                    if existing.display.is_empty() && !name.is_empty() {
-                                        existing.display = name;
-                                    }
-                                } else {
-                                    results.push(RecipientSuggestion {
-                                        display: name,
-                                        address: email_trim.to_string(),
-                                    });
+                        if !email_trim.is_empty()
+                            && email_trim.contains('@')
+                            && !is_internal_microsoft_routing_address(email_trim)
+                        {
+                            if let Some(existing) = results.iter_mut().find(|r| r.address.eq_ignore_ascii_case(email_trim)) {
+                                if existing.display.is_empty() && !name.is_empty() {
+                                    existing.display = name;
                                 }
+                            } else {
+                                results.push(RecipientSuggestion {
+                                    display: name,
+                                    address: email_trim.to_string(),
+                                });
                             }
                         }
                     }
@@ -5821,10 +5900,30 @@ fn search_recipient_suggestions(query: &str, show_address: bool) -> Vec<Recipien
         }
     }
 
+    results
+}
+
+fn search_recipient_suggestions(query: &str, _show_address: bool) -> Vec<RecipientSuggestion> {
+    let query_norm = query.trim().to_lowercase();
+    if query_norm.is_empty() {
+        return Vec::new();
+    }
+    let pool = get_or_load_recipient_pool();
+    let mut results: Vec<RecipientSuggestion> = pool
+        .iter()
+        .filter(|s| {
+            s.display.to_lowercase().contains(&query_norm)
+                || s.address.to_lowercase().contains(&query_norm)
+        })
+        .cloned()
+        .collect();
+
     // Rank prefix matches first
     results.sort_by(|a, b| {
-        let a_starts = a.display.to_lowercase().starts_with(&query_norm) || a.address.to_lowercase().starts_with(&query_norm);
-        let b_starts = b.display.to_lowercase().starts_with(&query_norm) || b.address.to_lowercase().starts_with(&query_norm);
+        let a_starts = a.display.to_lowercase().starts_with(&query_norm)
+            || a.address.to_lowercase().starts_with(&query_norm);
+        let b_starts = b.display.to_lowercase().starts_with(&query_norm)
+            || b.address.to_lowercase().starts_with(&query_norm);
         b_starts.cmp(&a_starts)
     });
 
@@ -5876,7 +5975,7 @@ fn contact_to_recipient_suggestions(
         String::new()
     };
 
-    if !contact.email.is_empty() {
+    if !contact.email.is_empty() && !is_internal_microsoft_routing_address(&contact.email) {
         suggestions.push(RecipientSuggestion {
             display: display_name.clone(),
             address: contact.email.clone(),
@@ -5884,7 +5983,11 @@ fn contact_to_recipient_suggestions(
     }
 
     for email in &contact.emails {
-        if email != &contact.email && !email.is_empty() {
+        if email != &contact.email
+            && !email.is_empty()
+            && !is_internal_microsoft_routing_address(email)
+            && !suggestions.iter().any(|s| s.address.eq_ignore_ascii_case(email))
+        {
             suggestions.push(RecipientSuggestion {
                 display: display_name.clone(),
                 address: email.clone(),
@@ -5894,7 +5997,10 @@ fn contact_to_recipient_suggestions(
 
     if contact.is_list {
         for member in &contact.list_members {
-            if !member.email.is_empty() {
+            if !member.email.is_empty()
+                && !is_internal_microsoft_routing_address(&member.email)
+                && !suggestions.iter().any(|s| s.address.eq_ignore_ascii_case(&member.email))
+            {
                 suggestions.push(RecipientSuggestion {
                     display: if !member.display_name.is_empty() {
                         member.display_name.clone()
@@ -6411,11 +6517,13 @@ mod tests {
 
     #[test]
     fn test_search_recipient_suggestions_ranking_and_sources() {
+        invalidate_recipient_cache();
         assert!(search_recipient_suggestions("", false).is_empty());
         assert!(search_recipient_suggestions("   ", false).is_empty());
 
         let recent_srv = RecentRecipientsService::new();
         recent_srv.record_recipient("Alexander Test", "alexander.test@example.com");
+        invalidate_recipient_cache();
 
         let results = search_recipient_suggestions("alexander", false);
         assert!(!results.is_empty(), "Expected suggestions for 'alexander'");
@@ -6425,6 +6533,7 @@ mod tests {
 
         recent_srv.record_recipient("Sub User", "someone@notest.com");
         recent_srv.record_recipient("Prefix User", "test@prefix.com");
+        invalidate_recipient_cache();
 
         let test_results = search_recipient_suggestions("test", false);
         let prefix_idx = test_results.iter().position(|s| s.address == "test@prefix.com");
@@ -6432,6 +6541,37 @@ mod tests {
         if let (Some(p_idx), Some(s_idx)) = (prefix_idx, sub_idx) {
             assert!(p_idx < s_idx, "Prefix matches must be ranked before non-prefix matches");
         }
+    }
+
+    #[test]
+    fn test_internal_microsoft_routing_address_detection() {
+        assert!(is_internal_microsoft_routing_address("user@company.onmicrosoft.com"));
+        assert!(is_internal_microsoft_routing_address("mhenderson@contoso.mail.onmicrosoft.com"));
+        assert!(is_internal_microsoft_routing_address("admin@test.onmicrosoft.com"));
+        assert!(is_internal_microsoft_routing_address("test@onmicrosoft.com"));
+        assert!(!is_internal_microsoft_routing_address("mhenderson@acme-corp.example"));
+        assert!(!is_internal_microsoft_routing_address("user@example.com"));
+        assert!(!is_internal_microsoft_routing_address("onmicrosoft.com@gmail.com"));
+        assert!(!is_internal_microsoft_routing_address(""));
+    }
+
+    #[test]
+    fn test_contact_to_recipient_suggestions_filters_onmicrosoft() {
+        let mut contact = VCardContact::new(
+            "Max Mustermann",
+            "max@company.de",
+            "Company AG",
+            "Staff",
+        );
+        contact.emails = vec![
+            "max@company.de".to_string(),
+            "max@company.mail.onmicrosoft.com".to_string(),
+            "max@company.onmicrosoft.com".to_string(),
+        ];
+        let suggestions = contact_to_recipient_suggestions(&contact, false);
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].address, "max@company.de");
+        assert_eq!(suggestions[0].display, "Max Mustermann");
     }
 
     #[test]
