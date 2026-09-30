@@ -1462,6 +1462,15 @@ impl ComposeDialog {
         });
         html_editor.add_controller(editor_key_controller);
 
+        let dialog_weak_for_drop = self.downgrade();
+        html_editor.connect_files_dropped(move |paths| {
+            if let Some(dialog) = dialog_weak_for_drop.upgrade() {
+                for path in paths {
+                    dialog.add_attachment_path(&path);
+                }
+            }
+        });
+
         let settings_for_composer_mode = AppSettings::try_new();
         let editor_for_composer_mode = html_editor.clone();
         let dialog_for_composer_mode = self.downgrade();
@@ -2359,44 +2368,75 @@ impl ComposeDialog {
             if let Some(error) = discovery.error.as_deref() {
                 tracing::warn!(%error, "Live EDS mail source discovery failed for composer");
             }
-            let cache_suffix = (discovery.origin == EdsSourceOrigin::Cache)
-                .then_some(" · Offline-Cache")
-                .unwrap_or_default();
             let active_sources: Vec<_> = discovery
                 .sources
                 .into_iter()
-                .filter(|source| source.enabled)
-                .collect();
-            let local_choices = local_account_choices();
-            let mut identities: Vec<ComposeIdentity> = active_sources
-                .iter()
-                .map(|source| {
-                    let label =
-                        if source.backend_name.is_empty() || source.display_name.contains('@') {
-                            format!("{}{}", source.display_name, cache_suffix)
-                        } else {
-                            format!(
-                                "{} · {}{}",
-                                source.display_name, source.backend_name, cache_suffix
-                            )
-                        };
-                    let local_profiles = AccountConfigStore::default().load();
-                    let matched_sig = local_profiles
-                        .iter()
-                        .find(|p| {
-                            p.id == source.uid || p.email.eq_ignore_ascii_case(&source.display_name)
-                        })
-                        .and_then(|p| p.signature_id.clone());
-                    ComposeIdentity {
-                        source_uid: source.uid.clone(),
-                        from: source.display_name.clone(),
-                        label,
-                        signature_id: matched_sig,
-                        ..ComposeIdentity::default()
-                    }
+                .filter(|source| {
+                    source.enabled
+                        && (source.display_name.contains('@')
+                            || (!matches!(
+                                source.backend_name.as_str(),
+                                "rss" | "vfolder" | "maildir" | "local" | "none"
+                            ) && !source.display_name.eq_ignore_ascii_case("News and Blogs")
+                                && !source.display_name.eq_ignore_ascii_case("On This Computer")
+                                && !source.display_name.eq_ignore_ascii_case("Search Folders")))
                 })
                 .collect();
-            identities.extend(local_choices);
+            let local_choices = local_account_choices();
+            let mut identities: Vec<ComposeIdentity> = Vec::new();
+            let mut seen_addresses = std::collections::HashSet::new();
+
+            for source in &active_sources {
+                let address = crate::views::extract_email_address(&source.display_name);
+                let address = if address.is_empty() {
+                    if source.display_name.contains('@') {
+                        source.display_name.trim().to_ascii_lowercase()
+                    } else {
+                        continue;
+                    }
+                } else {
+                    address
+                };
+
+                if !seen_addresses.insert(address.clone()) {
+                    continue;
+                }
+
+                let label = if source.backend_name.is_empty() || source.display_name.contains('@') {
+                    source.display_name.clone()
+                } else {
+                    format!("{} <{}>", source.display_name, address)
+                };
+
+                let local_profiles = AccountConfigStore::default().load();
+                let matched_sig = local_profiles
+                    .iter()
+                    .find(|p| {
+                        p.id == source.uid || p.email.eq_ignore_ascii_case(&source.display_name)
+                    })
+                    .and_then(|p| p.signature_id.clone());
+
+                identities.push(ComposeIdentity {
+                    source_uid: source.uid.clone(),
+                    from: source.display_name.clone(),
+                    label,
+                    signature_id: matched_sig,
+                    ..ComposeIdentity::default()
+                });
+            }
+
+            for choice in local_choices {
+                let address = crate::views::extract_email_address(&choice.from);
+                let address = if address.is_empty() {
+                    choice.from.trim().to_ascii_lowercase()
+                } else {
+                    address
+                };
+                if address.contains('@') && !seen_addresses.insert(address) {
+                    continue;
+                }
+                identities.push(choice);
+            }
             let names: Vec<String> = identities
                 .iter()
                 .map(|identity| identity.label.clone())
@@ -4732,8 +4772,15 @@ fn compose_identities_for_profile(profile: AccountProfile) -> Vec<ComposeIdentit
     let display_name = profile.display_name.trim().to_string();
     let reply_to = profile.reply_to.trim().to_string();
     let primary_address = profile.email.trim().to_string();
-    let primary_label = format!("{} <{}> · lokales Profil", display_name, primary_address);
-    let primary_from = format!("{} <{}>", display_name, primary_address);
+    let (primary_label, primary_from) =
+        if display_name.is_empty() || display_name.eq_ignore_ascii_case(&primary_address) {
+            (primary_address.clone(), primary_address.clone())
+        } else {
+            (
+                format!("{} <{}>", display_name, primary_address),
+                format!("{} <{}>", display_name, primary_address),
+            )
+        };
     let signature_id = profile.signature_id;
     let mut identities = vec![ComposeIdentity {
         source_uid: source_uid.clone(),
@@ -4748,15 +4795,26 @@ fn compose_identities_for_profile(profile: AccountProfile) -> Vec<ComposeIdentit
             .into_iter()
             .map(|alias| alias.trim().to_string())
             .filter(|alias| !alias.is_empty())
-            .map(|alias| ComposeIdentity {
-                source_uid: source_uid.clone(),
-                label: format!(
-                    "{} <{}> · Alias von {}",
-                    display_name, alias, primary_address
-                ),
-                from: format!("{} <{}>", display_name, alias),
-                reply_to: reply_to.clone(),
-                signature_id: signature_id.clone(),
+            .map(|alias| {
+                let (label, from) =
+                    if display_name.is_empty() || display_name.eq_ignore_ascii_case(&alias) {
+                        (
+                            format!("{} · Alias von {}", alias, primary_address),
+                            alias.clone(),
+                        )
+                    } else {
+                        (
+                            format!("{} <{}> · Alias von {}", display_name, alias, primary_address),
+                            format!("{} <{}>", display_name, alias),
+                        )
+                    };
+                ComposeIdentity {
+                    source_uid: source_uid.clone(),
+                    label,
+                    from,
+                    reply_to: reply_to.clone(),
+                    signature_id: signature_id.clone(),
+                }
             }),
     );
     identities
@@ -5062,7 +5120,8 @@ pub fn signature_plain_text_to_html(text: &str) -> String {
 }
 
 fn format_signature_markup(inner_html: &str) -> String {
-    let trimmed = inner_html.trim();
+    let sanitized = crate::services::signature_store_service::sanitize_signature_html(inner_html);
+    let trimmed = sanitized.trim();
     if trimmed.is_empty() {
         return String::new();
     }
@@ -5510,7 +5569,7 @@ fn setup_recipient_autocompletion(
 
     let scroll = gtk::ScrolledWindow::builder()
         .child(&list)
-        .width_request(380)
+        .width_request(500)
         .min_content_height(0)
         .max_content_height(280)
         .propagate_natural_height(true)
@@ -5808,6 +5867,10 @@ fn render_recipient_suggestions_to_list(
         list.remove(&row);
     }
 
+    let (show_avatars, fetch_logos) = AppSettings::try_new()
+        .map(|s| (s.mail_show_avatar(), s.mail_fetch_remote_logos()))
+        .unwrap_or((true, true));
+
     for sugg in suggestions {
         let list_row = gtk::ListBoxRow::new();
         list_row.add_css_class("recipient-suggestion-row");
@@ -5816,11 +5879,11 @@ fn render_recipient_suggestions_to_list(
 
         let row_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(10)
+            .spacing(8)
             .margin_start(4)
             .margin_end(4)
-            .margin_top(4)
-            .margin_bottom(4)
+            .margin_top(3)
+            .margin_bottom(3)
             .build();
 
         let display = if sugg.display.is_empty() {
@@ -5829,45 +5892,51 @@ fn render_recipient_suggestions_to_list(
             &sugg.display
         };
 
-        let avatar = adw::Avatar::builder()
-            .size(28)
-            .text(display)
-            .show_initials(true)
-            .build();
+        if show_avatars {
+            let avatar = adw::Avatar::builder()
+                .size(24)
+                .text(display)
+                .show_initials(true)
+                .build();
 
-        if let Some(bytes) = AvatarCacheService::global().get_cached(&sugg.address) {
-            if let Ok(texture) = gtk::gdk::Texture::from_bytes(&bytes) {
-                avatar.set_custom_image(Some(&texture));
+            if fetch_logos {
+                if let Some(bytes) = AvatarCacheService::global().get_cached(&sugg.address) {
+                    if let Ok(texture) = gtk::gdk::Texture::from_bytes(&bytes) {
+                        avatar.set_custom_image(Some(&texture));
+                    }
+                }
             }
+
+            row_box.append(&avatar);
         }
 
-        row_box.append(&avatar);
-
-        let text_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(1)
-            .hexpand(true)
-            .valign(gtk::Align::Center)
-            .build();
+        let has_separate_email = !sugg.display.is_empty()
+            && !sugg.address.is_empty()
+            && !sugg.display.eq_ignore_ascii_case(&sugg.address);
 
         let lbl_name = gtk::Label::builder()
             .label(display)
             .xalign(0.0)
+            .valign(gtk::Align::Center)
+            .hexpand(!has_separate_email)
+            .max_width_chars(32)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .build();
-        text_box.append(&lbl_name);
+        row_box.append(&lbl_name);
 
-        if !sugg.display.is_empty() && !sugg.address.is_empty() {
+        if has_separate_email {
+            let email_str = format!("<{}>", sugg.address);
             let lbl_email = gtk::Label::builder()
-                .label(&sugg.address)
+                .label(&email_str)
                 .xalign(0.0)
-                .css_classes(vec!["dim-label", "caption"])
+                .valign(gtk::Align::Center)
+                .hexpand(true)
+                .css_classes(vec!["dim-label"])
                 .ellipsize(gtk::pango::EllipsizeMode::End)
                 .build();
-            text_box.append(&lbl_email);
+            row_box.append(&lbl_email);
         }
 
-        row_box.append(&text_box);
         list_row.set_child(Some(&row_box));
         list.append(&list_row);
     }
@@ -6291,6 +6360,8 @@ fn mime_type_for_path(path: &Path) -> String {
         Some("png") => "image/png",
         Some("gif") => "image/gif",
         Some("zip") => "application/zip",
+        Some("eml") => "message/rfc822",
+        Some("msg") => "application/vnd.ms-outlook",
         _ => "application/octet-stream",
     }
     .to_string()
@@ -6976,6 +7047,16 @@ mod tests {
     }
 
     #[test]
+    fn format_signature_markup_strips_white_backgrounds() {
+        let raw = r#"<p style="background-color: rgb(255, 255, 255); caret-color: rgb(46, 52, 54); font-family: Aptos;">Mit freundlichen Grüßen</p>"#;
+        let markup = format_signature_markup(raw);
+        assert!(!markup.contains("background-color"));
+        assert!(!markup.contains("caret-color"));
+        assert!(markup.contains("font-family: Aptos"));
+        assert!(markup.contains("id=\"_evolution_signature_\""));
+    }
+
+    #[test]
     fn test_signature_plain_text_to_html_linkification() {
         let text = "Mit freundlichen Grüßen\nMax Mustermann\nWeb: https://example-portal.de.\nMail: kontakt@example-portal.de\nOder www.example-portal.de/portal";
         let html = signature_plain_text_to_html(text);
@@ -7278,6 +7359,11 @@ mod tests {
         assert_eq!(mime_type_for_path(Path::new("archive.zip")), "application/zip");
         assert_eq!(mime_type_for_path(Path::new("notes.txt")), "text/plain");
         assert_eq!(mime_type_for_path(Path::new("page.html")), "text/html");
+        assert_eq!(mime_type_for_path(Path::new("email.eml")), "message/rfc822");
+        assert_eq!(
+            mime_type_for_path(Path::new("item.msg")),
+            "application/vnd.ms-outlook"
+        );
     }
 
     #[test]

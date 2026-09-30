@@ -437,6 +437,70 @@ Viel Freude mit Meridian!\r\n";
         self.copy_import_sources(sources)
     }
 
+    /// Copy user-selected EML, MSG, Maildir files or mbox files into a target local folder.
+    pub fn import_files_to_folder(
+        &self,
+        files: &[PathBuf],
+        target_folder_id: &str,
+    ) -> std::io::Result<usize> {
+        if !self.writable {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "configured local mail store is read-only",
+            ));
+        }
+        let target_dir = if target_folder_id.is_empty() || target_folder_id == "inbox" {
+            self.mail_dir.clone()
+        } else if let Some(custom_name) = target_folder_id.strip_prefix("custom:") {
+            let sub = custom_name
+                .split('/')
+                .map(|part| format!(".{}", part.trim_start_matches('.')))
+                .collect::<Vec<_>>()
+                .join("/");
+            self.mail_dir.join(sub)
+        } else {
+            self.mail_dir.join(format!(".{}", target_folder_id.trim_start_matches('.')))
+        };
+
+        fs::create_dir_all(&target_dir)?;
+        let mut imported = 0;
+        for source in files {
+            if !source.is_file() {
+                continue;
+            }
+            let file_name = match source.file_name().and_then(|n| n.to_str()) {
+                Some(name) => name,
+                None => continue,
+            };
+            let stem = Path::new(file_name)
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("import");
+            let extension = Path::new(file_name)
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(|value| format!(".{value}"))
+                .unwrap_or_else(|| ".eml".to_string());
+            let mut destination = target_dir.join(file_name);
+            let mut suffix = 1;
+            while destination.exists() {
+                destination = target_dir.join(format!("{stem}-{suffix}{extension}"));
+                suffix += 1;
+            }
+            if source == &destination {
+                continue;
+            }
+            fs::copy(source, &destination)?;
+            imported += 1;
+        }
+
+        if target_folder_id.starts_with("custom:") && imported > 0 {
+            let _ = self.metadata.set_local_folder(target_folder_id, true);
+        }
+
+        Ok(imported)
+    }
+
     /// Copy imported files while preserving their relative Evolution mailbox
     /// layout.  In particular, `mail/local/.Projects/cur/message` remains in
     /// `.Projects/cur` so the local folder can be reconstructed after the
@@ -2141,7 +2205,7 @@ fn is_import_candidate(path: &Path) -> bool {
         .extension()
         .and_then(|extension| extension.to_str())
         .map(|extension| extension.to_ascii_lowercase());
-    if matches!(extension.as_deref(), Some("eml" | "mbox")) {
+    if matches!(extension.as_deref(), Some("eml" | "msg" | "mbox")) {
         return true;
     }
     if path
@@ -2190,7 +2254,7 @@ fn is_candidate_mail_file(path: &Path) -> bool {
         .extension()
         .and_then(|ext| ext.to_str())
         .map(str::to_ascii_lowercase);
-    if matches!(extension.as_deref(), Some("eml" | "mbox")) {
+    if matches!(extension.as_deref(), Some("eml" | "msg" | "mbox")) {
         return true;
     }
 
@@ -2220,7 +2284,13 @@ fn looks_like_mbox(raw: &str) -> bool {
 }
 
 fn looks_like_rfc822(raw: &str, path: &Path) -> bool {
-    if path.extension().and_then(|ext| ext.to_str()) == Some("eml") {
+    if matches!(
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("eml" | "msg")
+    ) {
         return true;
     }
 
@@ -2302,7 +2372,7 @@ fn folder_id_for_path_with_root(path: &Path, mail_root: Option<&Path>) -> String
                     .map(str::to_ascii_lowercase);
                 let mut folder_components = if is_maildir_message {
                     components[..components.len().saturating_sub(2)].to_vec()
-                } else if extension.as_deref() == Some("eml") {
+                } else if matches!(extension.as_deref(), Some("eml" | "msg")) {
                     components[..components.len().saturating_sub(1)].to_vec()
                 } else {
                     let mut components = components;
@@ -2349,7 +2419,15 @@ fn folder_id_for_path(path: &Path) -> String {
             .and_then(Path::parent)
             .and_then(Path::file_name)
             .and_then(|name| name.to_str()),
-        Some(_) if path.extension().and_then(|extension| extension.to_str()) == Some("eml") => {
+        Some(_)
+            if matches!(
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(str::to_ascii_lowercase)
+                    .as_deref(),
+                Some("eml" | "msg")
+            ) =>
+        {
             Some("inbox")
         }
         _ => path.file_name().and_then(|name| name.to_str()),
@@ -5545,6 +5623,39 @@ Quarterly planning notes";
         let parsed_subj = parse_rfc822_bytes("msg-3", "folder-1", rfc822_subj_preview, false).unwrap();
         let obj_subj = parsed_subj.into_object();
         assert_eq!(obj_subj.attachment_kind(), MailAttachmentKind::Calendar);
+    }
+
+    #[test]
+    fn test_import_files_to_folder_places_files_correctly() {
+        let temp_dir = temporary_directory("import-to-folder");
+        let mail_dir = temp_dir.join("mail");
+        let store = MailStoreService::with_mail_dir(&mail_dir);
+
+        let source_file = temp_dir.join("test.eml");
+        fs::write(&source_file, b"From: a@b.c\r\nSubject: Test\r\n\r\nBody").unwrap();
+
+        // Import to inbox
+        let imported = store
+            .import_files_to_folder(&[source_file.clone()], "inbox")
+            .unwrap();
+        assert_eq!(imported, 1);
+        assert!(mail_dir.join("test.eml").is_file());
+
+        // Import to custom folder
+        let imported_custom = store
+            .import_files_to_folder(&[source_file.clone()], "custom:Archive")
+            .unwrap();
+        assert_eq!(imported_custom, 1);
+        assert!(mail_dir.join(".Archive").join("test.eml").is_file());
+
+        // Re-importing should not overwrite, should pick a numbered suffix
+        let imported_again = store
+            .import_files_to_folder(&[source_file], "inbox")
+            .unwrap();
+        assert_eq!(imported_again, 1);
+        assert!(mail_dir.join("test-1.eml").is_file());
+
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 
     fn temporary_directory(label: &str) -> std::path::PathBuf {

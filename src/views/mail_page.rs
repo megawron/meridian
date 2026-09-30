@@ -3007,12 +3007,12 @@ pub(crate) fn format_mail_table_subject_markup(
             )
         } else {
             format!(
-                r#"<span foreground="{read_hex}" weight="normal">{esc_subj}</span> <span foreground="{dim_hex}" weight="normal">- {esc_snip}</span>"#
+                r#"<span foreground="{read_hex}" weight="medium">{esc_subj}</span> <span foreground="{dim_hex}" weight="normal">- {esc_snip}</span>"#
             )
         }
     } else {
         let subj_hex = if is_unread { unread_hex } else { read_hex };
-        let weight = if is_unread { "bold" } else { "normal" };
+        let weight = if is_unread { "bold" } else { "medium" };
         format!(r#"<span foreground="{subj_hex}" weight="{weight}">{esc_subj}</span>"#)
     }
 }
@@ -4457,6 +4457,75 @@ pub(crate) fn export_filename(subject: &str) -> String {
         sanitized
     };
     format!("{}.eml", stem.chars().take(80).collect::<String>())
+}
+
+fn build_mail_drag_content_provider(messages: &[MailMessageObject]) -> Option<gtk::gdk::ContentProvider> {
+    if messages.is_empty() {
+        return None;
+    }
+    let ids: Vec<String> = messages.iter().map(|m| m.id()).collect();
+    let provider_internal = gtk::gdk::ContentProvider::for_value(
+        &format!("meridian-message:{}", ids.join(",")).to_value(),
+    );
+
+    let drag_dir = std::env::temp_dir().join("meridian-drag");
+    let _ = std::fs::create_dir_all(&drag_dir);
+    let mut uri_list = String::new();
+    let mut first_file = None;
+    let mut first_raw_bytes = None;
+    let mut all_files = Vec::new();
+
+    for (index, msg) in messages.iter().enumerate() {
+        let subject = msg.subject();
+        let location = msg.backend_location();
+        let raw_mime = msg.raw_mime();
+        let export = export_message_from(msg);
+        let base_filename = export_filename(&subject);
+        let filename = if messages.len() > 1 {
+            format!("{}_{}", index + 1, base_filename)
+        } else {
+            base_filename
+        };
+
+        let raw_bytes = if let Some(raw) = raw_mime {
+            raw.to_vec()
+        } else if let Some(loc) = location.as_ref() {
+            let cancelled = Arc::new(AtomicBool::new(false));
+            camel_mail_service::load_raw_message(loc, &cancelled).unwrap_or_else(|_| {
+                mail_composer_service::build_export_rfc822(&export).unwrap_or_default()
+            })
+        } else {
+            mail_composer_service::build_export_rfc822(&export).unwrap_or_default()
+        };
+
+        let target_file_path = drag_dir.join(&filename);
+        if let Ok(()) = std::fs::write(&target_file_path, &raw_bytes) {
+            let gio_file = gio::File::for_path(&target_file_path);
+            uri_list.push_str(&format!("{}\r\n", gio_file.uri()));
+            if first_file.is_none() {
+                first_file = Some(gio_file.clone());
+                first_raw_bytes = Some(raw_bytes);
+            }
+            all_files.push(gio_file);
+        }
+    }
+
+    let mut providers = vec![provider_internal];
+    if let Some(first) = first_file {
+        providers.push(gtk::gdk::ContentProvider::for_value(&first.to_value()));
+    }
+    if !all_files.is_empty() {
+        let file_list = gtk::gdk::FileList::from_array(&all_files);
+        providers.push(gtk::gdk::ContentProvider::for_value(&file_list.to_value()));
+    }
+    if !uri_list.is_empty() {
+        let uri_list_bytes = glib::Bytes::from(uri_list.as_bytes());
+        providers.push(gtk::gdk::ContentProvider::for_bytes("text/uri-list", &uri_list_bytes));
+    }
+    if let Some(raw) = first_raw_bytes {
+        providers.push(gtk::gdk::ContentProvider::for_bytes("message/rfc822", &glib::Bytes::from(&raw)));
+    }
+    Some(gtk::gdk::ContentProvider::new_union(&providers))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -14793,9 +14862,14 @@ impl MailPage {
             row.add_controller(drag_source);
 
             let drop_target = gtk::DropTarget::new(
-                glib::Type::STRING,
+                glib::Type::INVALID,
                 gtk::gdk::DragAction::MOVE | gtk::gdk::DragAction::COPY,
             );
+            drop_target.set_types(&[
+                glib::Type::STRING,
+                gtk::gdk::FileList::static_type(),
+                gio::File::static_type(),
+            ]);
             drop_target.connect_enter(|_, _, _| {
                 gtk::gdk::DragAction::MOVE | gtk::gdk::DragAction::COPY
             });
@@ -14841,14 +14915,62 @@ impl MailPage {
                 row.remove_css_class("drop-after");
                 row.remove_css_class("drop-into");
 
-                let Ok(payload_str) = value.get::<String>() else {
-                    return false;
-                };
+                let mut dropped_files = Vec::new();
+                if let Ok(file_list) = value.get::<gtk::gdk::FileList>() {
+                    for file in file_list.files() {
+                        if let Some(path) = file.path() {
+                            if path.is_file() {
+                                dropped_files.push(path);
+                            }
+                        }
+                    }
+                } else if let Ok(file) = value.get::<gio::File>() {
+                    if let Some(path) = file.path() {
+                        if path.is_file() {
+                            dropped_files.push(path);
+                        }
+                    }
+                }
+
+                let payload_str = value.get::<String>().ok();
+                if let Some(ref s) = payload_str {
+                    if s.starts_with("file://") {
+                        for line in s.lines() {
+                            let line = line.trim();
+                            if !line.is_empty() {
+                                let f = gio::File::for_uri(line);
+                                if let Some(p) = f.path() {
+                                    if p.is_file() {
+                                        dropped_files.push(p);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
 
                 let Some(tree_row) = list_item.item().and_downcast::<gtk::TreeListRow>() else {
                     return false;
                 };
                 let Some(target_folder) = tree_row.item().and_downcast::<FolderObject>() else {
+                    return false;
+                };
+
+                if !dropped_files.is_empty() {
+                    let target_folder_id = target_folder
+                        .folder_name()
+                        .unwrap_or_else(|| target_folder.id());
+                    match crate::services::MailStoreService::new().import_files_to_folder(&dropped_files, &target_folder_id) {
+                        Ok(count) if count > 0 => {
+                            page.show_toast(&format!("{} {}", count, gettext("Nachricht(en) importiert")));
+                            page.refresh_mail();
+                            return true;
+                        }
+                        _ => return false,
+                    }
+                }
+
+                let Some(payload_str) = payload_str else {
                     return false;
                 };
 
@@ -16666,29 +16788,8 @@ impl MailPage {
         }
         let mut roots = unique_roots;
 
-        let profiles = AccountConfigStore::default().load();
-        let shared_uids: HashSet<String> = profiles
-            .iter()
-            .filter(|p| p.is_shared_mailbox)
-            .flat_map(|p| {
-                let eds_uid = crate::services::account_config_service::eds_source_uid_for_email(&p.email);
-                let p_canon = Self::canonical_account_uid(&p.id).to_string();
-                let e_canon = Self::canonical_account_uid(&eds_uid).to_string();
-                vec![p.id.clone(), eds_uid, p_canon, e_canon]
-            })
-            .collect();
-
-        roots.sort_by(|a, b| {
-            let a_uid = a.source_uid().unwrap_or_default();
-            let b_uid = b.source_uid().unwrap_or_default();
-            let a_shared = a.icon_name() == "system-users-symbolic"
-                || shared_uids.contains(&a_uid)
-                || shared_uids.contains(Self::canonical_account_uid(&a_uid));
-            let b_shared = b.icon_name() == "system-users-symbolic"
-                || shared_uids.contains(&b_uid)
-                || shared_uids.contains(Self::canonical_account_uid(&b_uid));
-            a_shared.cmp(&b_shared).then_with(|| a.name().cmp(&b.name()))
-        });
+        let (order_map, shared_uids) = Self::account_order_maps();
+        roots.sort_by(|a, b| Self::compare_account_roots(a, b, &order_map, &shared_uids));
         for root in &roots {
             let root_uid = root.source_uid().unwrap_or_default();
             let root_canon = Self::canonical_account_uid(&root_uid);
@@ -16828,6 +16929,118 @@ impl MailPage {
             nodes_count,
             "EDS/Camel folder rows rebuilt"
         );
+    }
+
+    pub(crate) fn account_order_maps() -> (HashMap<String, usize>, HashSet<String>) {
+        let profiles = AccountConfigStore::default().load();
+        let mut order_map = HashMap::new();
+        let mut shared_uids = HashSet::new();
+
+        for (pos, p) in profiles.into_iter().enumerate() {
+            let eds_uid =
+                crate::services::account_config_service::eds_source_uid_for_email(&p.email);
+            let p_canon = Self::canonical_account_uid(&p.id).to_string();
+            let e_canon = Self::canonical_account_uid(&eds_uid).to_string();
+
+            if p.is_shared_mailbox {
+                shared_uids.insert(p.id.clone());
+                shared_uids.insert(eds_uid.clone());
+                shared_uids.insert(p_canon.clone());
+                shared_uids.insert(e_canon.clone());
+            }
+
+            order_map.entry(p.id).or_insert(pos);
+            order_map.entry(eds_uid).or_insert(pos);
+            order_map.entry(p_canon).or_insert(pos);
+            order_map.entry(e_canon).or_insert(pos);
+            if !p.display_name.trim().is_empty() {
+                order_map
+                    .entry(p.display_name.trim().to_ascii_lowercase())
+                    .or_insert(pos);
+            }
+            if !p.email.trim().is_empty() {
+                order_map
+                    .entry(p.email.trim().to_ascii_lowercase())
+                    .or_insert(pos);
+            }
+        }
+
+        (order_map, shared_uids)
+    }
+
+    pub(crate) fn account_root_order(
+        root: &FolderObject,
+        order_map: &HashMap<String, usize>,
+    ) -> usize {
+        let uid = root.source_uid().unwrap_or_default();
+        if let Some(&pos) = order_map.get(&uid) {
+            return pos;
+        }
+        let canon = Self::canonical_account_uid(&uid);
+        if let Some(&pos) = order_map.get(canon) {
+            return pos;
+        }
+        let name_lower = root.name().trim().to_ascii_lowercase();
+        if let Some(&pos) = order_map.get(&name_lower) {
+            return pos;
+        }
+        usize::MAX
+    }
+
+    pub(crate) fn is_account_root_shared(
+        root: &FolderObject,
+        shared_uids: &HashSet<String>,
+    ) -> bool {
+        let uid = root.source_uid().unwrap_or_default();
+        root.icon_name() == "system-users-symbolic"
+            || shared_uids.contains(&uid)
+            || shared_uids.contains(Self::canonical_account_uid(&uid))
+    }
+
+    pub(crate) fn compare_account_roots(
+        a: &FolderObject,
+        b: &FolderObject,
+        order_map: &HashMap<String, usize>,
+        shared_uids: &HashSet<String>,
+    ) -> std::cmp::Ordering {
+        let pos_a = Self::account_root_order(a, order_map);
+        let pos_b = Self::account_root_order(b, order_map);
+
+        let a_shared = Self::is_account_root_shared(a, shared_uids);
+        let b_shared = Self::is_account_root_shared(b, shared_uids);
+
+        pos_a
+            .cmp(&pos_b)
+            .then_with(|| a_shared.cmp(&b_shared))
+            .then_with(|| a.name().cmp(&b.name()))
+    }
+
+    /// Reorders the top-level account roots in the dynamic folder store in-place
+    /// based on the user-configured account profile order in AccountConfigStore.
+    /// This causes zero flickering, no network requests, and preserves folder
+    /// expansion states and folder selection.
+    pub fn reorder_account_roots(&self) {
+        let Some(root_store) = self.imp().dynamic_folder_store.borrow().as_ref().cloned() else {
+            return;
+        };
+        let was_updating = self.imp().updating_folder_rows.replace(true);
+        let (order_map, shared_uids) = Self::account_order_maps();
+        root_store.sort(move |a, b| {
+            let Some(folder_a) = a.downcast_ref::<FolderObject>() else {
+                return std::cmp::Ordering::Equal;
+            };
+            let Some(folder_b) = b.downcast_ref::<FolderObject>() else {
+                return std::cmp::Ordering::Equal;
+            };
+            Self::compare_account_roots(folder_a, folder_b, &order_map, &shared_uids)
+        });
+
+        let current_sel = self.active_folder_selection();
+        self.imp().updating_folder_rows.set(was_updating);
+
+        if current_sel.source_uid.is_some() || current_sel.folder_id.starts_with("unified_") {
+            self.select_folder_row(&current_sel);
+        }
     }
 
     pub(crate) fn set_dynamic_folder_expanded(&self, folder_id: &str, expanded: bool) {
@@ -21125,64 +21338,13 @@ impl MailPage {
                     return None;
                 }
 
-                let ids: Vec<String> = messages_to_drag.iter().map(|m| m.id()).collect();
-                let provider_internal = gtk::gdk::ContentProvider::for_value(
-                    &format!("meridian-message:{}", ids.join(",")).to_value(),
-                );
-
-                let drag_dir = std::env::temp_dir().join("meridian-drag");
-                let _ = std::fs::create_dir_all(&drag_dir);
-                let mut uri_list = String::new();
-                let mut first_file = None;
-                let mut first_raw_bytes = None;
-
-                for msg in &messages_to_drag {
-                    let subject = msg.subject();
-                    let location = msg.backend_location();
-                    let raw_mime = msg.raw_mime();
-                    let export = export_message_from(msg);
-                    let filename = export_filename(&subject);
-
-                    let raw_bytes = if let Some(raw) = raw_mime {
-                        raw.to_vec()
-                    } else if let Some(loc) = location.as_ref() {
-                        let cancelled = Arc::new(AtomicBool::new(false));
-                        camel_mail_service::load_raw_message(loc, &cancelled).unwrap_or_else(|_| {
-                            mail_composer_service::build_export_rfc822(&export).unwrap_or_default()
-                        })
-                    } else {
-                        mail_composer_service::build_export_rfc822(&export).unwrap_or_default()
-                    };
-
-                    let target_file_path = drag_dir.join(&filename);
-                    if let Ok(()) = std::fs::write(&target_file_path, &raw_bytes) {
-                        let gio_file = gio::File::for_path(&target_file_path);
-                        uri_list.push_str(&format!("{}\r\n", gio_file.uri()));
-                        if first_file.is_none() {
-                            first_file = Some(gio_file);
-                            first_raw_bytes = Some(raw_bytes);
-                        }
-                    }
-                }
-
                 if let Some(outer) = outer_for_drag.upgrade() {
                     let icon_paintable = gtk::IconTheme::for_display(&outer.display())
                         .lookup_icon("mail-unread-symbolic", &[], 32, 1, gtk::TextDirection::None, gtk::IconLookupFlags::empty());
                     drag_src.set_icon(Some(&icon_paintable), 16, 16);
                 }
 
-                let mut providers = vec![provider_internal];
-                if let Some(first) = first_file {
-                    providers.push(gtk::gdk::ContentProvider::for_value(&first.to_value()));
-                }
-                if !uri_list.is_empty() {
-                    let uri_list_bytes = glib::Bytes::from(uri_list.as_bytes());
-                    providers.push(gtk::gdk::ContentProvider::for_bytes("text/uri-list", &uri_list_bytes));
-                }
-                if let Some(raw) = first_raw_bytes {
-                    providers.push(gtk::gdk::ContentProvider::for_bytes("message/rfc822", &glib::Bytes::from(&raw)));
-                }
-                Some(gtk::gdk::ContentProvider::new_union(&providers))
+                build_mail_drag_content_provider(&messages_to_drag)
             });
             outer.add_controller(drag_source);
         });
@@ -23632,6 +23794,87 @@ impl MailPage {
         });
         mail_table_canvas.add_controller(canvas_long_press);
 
+        // Touch / Precision-Trackpad horizontal swipe gesture
+        let canvas_swipe = gtk::GestureSwipe::new();
+        let page_for_swipe = self.downgrade();
+        let thread_sel_for_swipe = thread_selection.clone();
+        let canvas_for_swipe = mail_table_canvas.clone();
+        canvas_swipe.connect_swipe(move |gesture, velocity_x, velocity_y| {
+            if velocity_x.abs() > 200.0 && velocity_x.abs() > velocity_y.abs() * 1.5 {
+                let Some(page) = page_for_swipe.upgrade() else { return; };
+                let (start_x, start_y) = gesture.bounding_box_center().unwrap_or((0.0, 0.0));
+                let w = canvas_for_swipe.width().max(120) as f64;
+                let n_items = thread_sel_for_swipe.n_items() as usize;
+                let layout = {
+                    let cached = page.imp().mail_table_layout.borrow();
+                    if let Some(ref l) = *cached {
+                        if page.is_mail_table_layout_cached_valid(l, w, n_items) {
+                            Some(Rc::clone(l))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                };
+                let layout = match layout {
+                    Some(l) => l,
+                    None => {
+                        let l = Rc::new(page.current_mail_table_layout(&thread_sel_for_swipe, w));
+                        page.imp().mail_table_layout.replace(Some(Rc::clone(&l)));
+                        l
+                    }
+                };
+                let scroll_y = page.imp().list_vadjustment.borrow().as_ref().map(|a| a.value()).unwrap_or(0.0);
+                let hit_idx = hit_test_mail_table(&layout, start_x, start_y + scroll_y).map(|action| {
+                    match action {
+                        MailTableHitAction::ToggleExpander(_, m)
+                        | MailTableHitAction::ToggleStatus(_, m)
+                        | MailTableHitAction::ToggleStar(_, m)
+                        | MailTableHitAction::ToggleFollowUp(_, m)
+                        | MailTableHitAction::SelectRow(_, m) => m as u32,
+                    }
+                }).or_else(|| page.imp().last_selected_mail_index.get());
+
+                if let Some(idx) = hit_idx {
+                    page.imp().last_selected_mail_index.set(Some(idx));
+                    thread_sel_for_swipe.select_item(idx, true);
+
+                    if velocity_x < -200.0 {
+                        // Swipe left: Delete / Trash
+                        let _ = page.delete_selected();
+                        crate::views::accessibility::announce_to_screen_reader(
+                            &canvas_for_swipe,
+                            &crate::i18n::gettext("Message moved to trash"),
+                            gtk::AccessibleAnnouncementPriority::Medium,
+                        );
+                        gesture.set_state(gtk::EventSequenceState::Claimed);
+                    } else if velocity_x > 200.0 {
+                        // Swipe right: Toggle read/unread status
+                        if let Some(item) = thread_sel_for_swipe.item(idx).and_downcast::<crate::models::mail_message::MailMessageObject>() {
+                            if item.is_unread() {
+                                let _ = page.mark_message_read(&item);
+                                crate::views::accessibility::announce_to_screen_reader(
+                                    &canvas_for_swipe,
+                                    &crate::i18n::gettext("Marked as read"),
+                                    gtk::AccessibleAnnouncementPriority::Medium,
+                                );
+                            } else {
+                                let _ = page.mark_message_unread(&item);
+                                crate::views::accessibility::announce_to_screen_reader(
+                                    &canvas_for_swipe,
+                                    &crate::i18n::gettext("Marked as unread"),
+                                    gtk::AccessibleAnnouncementPriority::Medium,
+                                );
+                            }
+                        }
+                        gesture.set_state(gtk::EventSequenceState::Claimed);
+                    }
+                }
+            }
+        });
+        mail_table_canvas.add_controller(canvas_swipe);
+
         let canvas_drag_source = gtk::DragSource::new();
         canvas_drag_source.set_actions(gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE);
         let page_for_canvas_drag = self.downgrade();
@@ -23692,16 +23935,88 @@ impl MailPage {
             if msgs.is_empty() {
                 return None;
             }
-            let ids: Vec<String> = msgs.iter().map(|m| m.id()).collect();
-            let payload = format!("meridian-message:{}", ids.join(","));
-
             let icon_paintable = gtk::IconTheme::for_display(&canvas_for_drag.display())
                 .lookup_icon("mail-unread-symbolic", &[], 32, 1, gtk::TextDirection::None, gtk::IconLookupFlags::empty());
             drag_source.set_icon(Some(&icon_paintable), 16, 16);
 
-            Some(gtk::gdk::ContentProvider::for_value(&payload.to_value()))
+            build_mail_drag_content_provider(&msgs)
         });
         mail_table_canvas.add_controller(canvas_drag_source);
+
+        let canvas_drop_target = gtk::DropTarget::new(
+            glib::Type::INVALID,
+            gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE,
+        );
+        canvas_drop_target.set_types(&[
+            gtk::gdk::FileList::static_type(),
+            gio::File::static_type(),
+            glib::Type::STRING,
+        ]);
+        let page_for_canvas_drop = self.downgrade();
+        canvas_drop_target.connect_drop(move |_, value, _, _| {
+            let Some(page) = page_for_canvas_drop.upgrade() else {
+                return false;
+            };
+            let mut dropped_files = Vec::new();
+            if let Ok(file_list) = value.get::<gtk::gdk::FileList>() {
+                for file in file_list.files() {
+                    if let Some(path) = file.path() {
+                        if path.is_file() {
+                            dropped_files.push(path);
+                        }
+                    }
+                }
+            } else if let Ok(file) = value.get::<gio::File>() {
+                if let Some(path) = file.path() {
+                    if path.is_file() {
+                        dropped_files.push(path);
+                    }
+                }
+            } else if let Ok(payload_str) = value.get::<String>() {
+                if payload_str.starts_with("file://") {
+                    for line in payload_str.lines() {
+                        let line = line.trim();
+                        if !line.is_empty() {
+                            let f = gio::File::for_uri(line);
+                            if let Some(p) = f.path() {
+                                if p.is_file() {
+                                    dropped_files.push(p);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if dropped_files.is_empty() {
+                return false;
+            }
+
+            let target_folder_id = page
+                .imp()
+                .folder_selection
+                .borrow()
+                .as_ref()
+                .map(|s| {
+                    let sel = s.borrow();
+                    if sel.folder_id == "all" || sel.folder_id.starts_with("unified_") {
+                        "inbox".to_string()
+                    } else {
+                        sel.folder_name.clone().unwrap_or_else(|| sel.folder_id.clone())
+                    }
+                })
+                .unwrap_or_else(|| "inbox".to_string());
+
+            match crate::services::MailStoreService::new().import_files_to_folder(&dropped_files, &target_folder_id) {
+                Ok(count) if count > 0 => {
+                    page.show_toast(&format!("{} {}", count, gettext("Nachricht(en) importiert")));
+                    page.refresh_mail();
+                    true
+                }
+                _ => false,
+            }
+        });
+        mail_table_canvas.add_controller(canvas_drop_target);
 
         let motion = gtk::EventControllerMotion::new();
         let page_for_motion = self.downgrade();
@@ -35834,7 +36149,7 @@ mod tests {
         assert!(!markup.contains('\n'));
         assert!(!markup.contains('\r'));
 
-        // Snippet disabled: only subject displayed
+        // Snippet disabled: only subject displayed (medium weight for read messages)
         let markup_no_snippet = format_mail_table_subject_markup(
             "Project Update",
             "Ignored snippet text",
@@ -35844,8 +36159,20 @@ mod tests {
             false,
         );
         assert!(markup_no_snippet.contains("Project Update"));
-        assert!(markup_no_snippet.contains("weight=\"normal\""));
+        assert!(markup_no_snippet.contains("weight=\"medium\""));
         assert!(!markup_no_snippet.contains("Ignored snippet text"));
+
+        // Read message with snippet: subject is medium (weight 500), snippet is normal (weight 400)
+        let markup_read_with_snip = format_mail_table_subject_markup(
+            "Meeting Notes",
+            "Here are the notes from today",
+            false,
+            true,
+            false,
+            false,
+        );
+        assert!(markup_read_with_snip.contains("weight=\"medium\">Meeting Notes</span>"));
+        assert!(markup_read_with_snip.contains("weight=\"normal\">- Here are the notes from today</span>"));
 
         // Empty subject fallback
         let markup_empty = format_mail_table_subject_markup(
@@ -40622,6 +40949,142 @@ mod tests {
         // 5. Code setup in mail_page.rs
         let mail_source = include_str!("mail_page.rs");
         assert!(mail_source.contains(".css_classes(vec![\"caption\", \"dim-label\", \"mail-modern-sender-address\"])"));
+    }
+
+    #[test]
+    fn test_account_roots_custom_ordering_and_reorder_in_place() {
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        // Setup mock order_map and shared_uids
+        let mut order_map = HashMap::<String, usize>::new();
+        let mut shared_uids = HashSet::<String>::new();
+
+        // Configured accounts:
+        // Pos 0: "work@corp.com" (ID "acc_work")
+        // Pos 1: "shared@corp.com" (ID "acc_shared", shared mailbox)
+        // Pos 2: "personal@gmail.com" (ID "acc_personal")
+        order_map.insert("acc_work".to_string(), 0);
+        order_map.insert("work@corp.com".to_string(), 0);
+
+        order_map.insert("acc_shared".to_string(), 1);
+        order_map.insert("shared@corp.com".to_string(), 1);
+        shared_uids.insert("acc_shared".to_string());
+
+        order_map.insert("acc_personal".to_string(), 2);
+        order_map.insert("personal@gmail.com".to_string(), 2);
+
+        let root_work = FolderObject::new_backend(
+            "work\0",
+            "Work Account",
+            "",
+            0,
+            0,
+            "acc_work",
+            "",
+            None,
+            true,
+        );
+        let root_shared = FolderObject::new_backend(
+            "shared\0",
+            "Shared Project",
+            "system-users-symbolic",
+            0,
+            0,
+            "acc_shared",
+            "",
+            None,
+            true,
+        );
+        let root_personal = FolderObject::new_backend(
+            "personal\0",
+            "Personal Gmail",
+            "",
+            0,
+            0,
+            "acc_personal",
+            "",
+            None,
+            true,
+        );
+        let root_unconfigured = FolderObject::new_backend(
+            "unconfigured\0",
+            "Z-Unconfigured EDS Account",
+            "",
+            0,
+            0,
+            "eds_other",
+            "",
+            None,
+            true,
+        );
+
+        // 1. Verify comparator respects configured positions
+        assert_eq!(
+            MailPage::compare_account_roots(&root_work, &root_personal, &order_map, &shared_uids),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            MailPage::compare_account_roots(&root_personal, &root_work, &order_map, &shared_uids),
+            std::cmp::Ordering::Greater
+        );
+        assert_eq!(
+            MailPage::compare_account_roots(&root_work, &root_shared, &order_map, &shared_uids),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            MailPage::compare_account_roots(&root_shared, &root_personal, &order_map, &shared_uids),
+            std::cmp::Ordering::Less
+        );
+
+        // Configured accounts sort ahead of unconfigured ones
+        assert_eq!(
+            MailPage::compare_account_roots(&root_personal, &root_unconfigured, &order_map, &shared_uids),
+            std::cmp::Ordering::Less
+        );
+
+        // 2. Verify in-place sorting in a gio::ListStore
+        let list_store = gio::ListStore::new::<FolderObject>();
+        list_store.append(&root_personal);
+        list_store.append(&root_work);
+        list_store.append(&root_unconfigured);
+        list_store.append(&root_shared);
+
+        assert_eq!(list_store.n_items(), 4);
+
+        // Sort in place
+        let order_map_clone = order_map.clone();
+        let shared_uids_clone = shared_uids.clone();
+        list_store.sort(move |a, b| {
+            let folder_a = a.downcast_ref::<FolderObject>().unwrap();
+            let folder_b = b.downcast_ref::<FolderObject>().unwrap();
+            MailPage::compare_account_roots(folder_a, folder_b, &order_map_clone, &shared_uids_clone)
+        });
+
+        assert_eq!(
+            list_store.item(0).and_downcast::<FolderObject>().unwrap().id(),
+            "work\0"
+        );
+        assert_eq!(
+            list_store.item(1).and_downcast::<FolderObject>().unwrap().id(),
+            "shared\0"
+        );
+        assert_eq!(
+            list_store.item(2).and_downcast::<FolderObject>().unwrap().id(),
+            "personal\0"
+        );
+        assert_eq!(
+            list_store.item(3).and_downcast::<FolderObject>().unwrap().id(),
+            "unconfigured\0"
+        );
+
+        // 3. Verify source code contract
+        let source = include_str!("mail_page.rs");
+        assert!(source.contains("pub fn reorder_account_roots(&self)"));
+        assert!(source.contains("root_store.sort(move |a, b|"));
+        assert!(source.contains("Self::account_order_maps()"));
+        assert!(source.contains("Self::compare_account_roots("));
     }
 }
 

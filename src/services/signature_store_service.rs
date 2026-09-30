@@ -59,6 +59,39 @@ pub struct SignatureStore {
     path: PathBuf,
 }
 
+/// Sanitizes signature HTML by stripping intrusive default white/opaque backgrounds
+/// and caret-color styles often injected when copying from WebKit previews, browsers,
+/// or word processors. This ensures signatures adapt seamlessly to composer themes
+/// (both light and dark mode) without leaving an opaque white rectangular block.
+pub fn sanitize_signature_html(html: &str) -> String {
+    static RE_BG: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r#"(?i)\b(?:background(?:-color)?)\s*:\s*(?:rgb\(\s*255\s*,\s*255\s*,\s*255\s*\)|rgba\(\s*255\s*,\s*255\s*,\s*255\s*,\s*1(?:\.0+)?\s*\)|#(?:ffffff|fff)\b|white\b)\s*(?:!\s*important)?\s*;?"#
+        ).expect("valid regex for background color")
+    });
+    static RE_CARET: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"(?i)\bcaret-color\s*:\s*[^;"]+;?"#).expect("valid regex for caret-color")
+    });
+    static RE_BGCOLOR: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r#"(?i)\s*bgcolor\s*=\s*["']\s*(?:#ffffff|#fff|white|rgb\(\s*255\s*,\s*255\s*,\s*255\s*\))\s*["']"#
+        ).expect("valid regex for bgcolor")
+    });
+    static RE_EMPTY_STYLE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"(?i)\s*style\s*=\s*["']\s*;?\s*["']"#).expect("valid regex for empty style")
+    });
+    static RE_LEADING_SEMI: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"(?i)(style\s*=\s*["'])\s*;\s*"#).expect("valid regex for leading semi")
+    });
+
+    let s1 = RE_BG.replace_all(html, "");
+    let s2 = RE_CARET.replace_all(&s1, "");
+    let s3 = RE_BGCOLOR.replace_all(&s2, "");
+    let s4 = RE_EMPTY_STYLE.replace_all(&s3, "");
+    let s5 = RE_LEADING_SEMI.replace_all(&s4, "$1");
+    s5.to_string()
+}
+
 impl SignatureStore {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
@@ -81,10 +114,11 @@ impl SignatureStore {
         let mut unique: Vec<SignatureProfile> = Vec::with_capacity(signatures.len());
         let mut seen_ids = std::collections::HashSet::new();
         let mut seen_names = std::collections::HashSet::new();
-        for sig in signatures {
+        for mut sig in signatures {
             let id = sig.id.trim().to_string();
             let name_norm = sig.name.trim().to_lowercase();
             if !id.is_empty() && seen_ids.insert(id) && seen_names.insert(name_norm) {
+                sig.text = sanitize_signature_html(&sig.text);
                 unique.push(sig);
             }
         }
@@ -119,7 +153,8 @@ impl SignatureStore {
         })
     }
 
-    pub fn upsert(&self, signature: SignatureProfile) -> io::Result<()> {
+    pub fn upsert(&self, mut signature: SignatureProfile) -> io::Result<()> {
+        signature.text = sanitize_signature_html(&signature.text);
         if signature.id.trim().is_empty() || signature.text.trim().is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -332,6 +367,34 @@ mod tests {
         assert_eq!(loaded[0].text, "<p>Updated Text</p>");
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sanitize_signature_html_strips_white_backgrounds_and_caret_color() {
+        let input = r#"<p class="MsoNormal" style="max-width: 100%; margin: 0cm; font-family: Aptos, sans-serif; caret-color: rgb(46, 52, 54); color: rgb(46, 52, 54); background-color: rgb(255, 255, 255); min-width: 0px !important;">Martin</p>"#;
+        let sanitized = sanitize_signature_html(input);
+        assert!(!sanitized.contains("background-color"));
+        assert!(!sanitized.contains("caret-color"));
+        assert!(sanitized.contains("font-family: Aptos"));
+        assert!(sanitized.contains("Martin"));
+
+        let input_hex = r#"<div style="background-color: #ffffff; color: red;">Test</div>"#;
+        assert_eq!(sanitize_signature_html(input_hex), r#"<div style=" color: red;">Test</div>"#);
+
+        let input_short_hex = r#"<div style="background-color: #fff">Short</div>"#;
+        assert_eq!(sanitize_signature_html(input_short_hex), r#"<div>Short</div>"#);
+
+        let input_white_keyword = r#"<div style="background: white !important;">Keyword</div>"#;
+        assert_eq!(sanitize_signature_html(input_white_keyword), r#"<div>Keyword</div>"#);
+
+        let input_bgcolor = r##"<table bgcolor="#ffffff"><tr><td bgcolor="white">Cell</td></tr></table>"##;
+        assert_eq!(sanitize_signature_html(input_bgcolor), r#"<table><tr><td>Cell</td></tr></table>"#);
+
+        // Keep non-white backgrounds and background-image
+        let input_keep = r#"<p style="background-color: yellow; background-image: url('pic.png');">Keep</p>"#;
+        let sanitized_keep = sanitize_signature_html(input_keep);
+        assert!(sanitized_keep.contains("background-color: yellow"));
+        assert!(sanitized_keep.contains("background-image: url('pic.png')"));
     }
 
     fn temporary_directory(label: &str) -> PathBuf {

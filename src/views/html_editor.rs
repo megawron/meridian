@@ -10,6 +10,7 @@ use crate::i18n::gettext;
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
+use gtk::gdk;
 use gtk::gio;
 use gtk::glib;
 use webkit6::prelude::*;
@@ -20,6 +21,15 @@ use crate::views::accessibility::set_accessible_label;
 mod imp {
     use super::*;
     use std::cell::{Cell, RefCell};
+
+    #[derive(Default)]
+    pub struct CallbackList(pub Vec<Box<dyn Fn(Vec<std::path::PathBuf>) + 'static>>);
+
+    impl std::fmt::Debug for CallbackList {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "CallbackList({} callbacks)", self.0.len())
+        }
+    }
 
     #[derive(Debug, Default)]
     pub struct HtmlEditor {
@@ -32,6 +42,7 @@ mod imp {
         pub spell_checking_enabled: Cell<bool>,
         pub spell_checking_languages: RefCell<Vec<String>>,
         pub spelling_handler_ids: RefCell<Vec<glib::SignalHandlerId>>,
+        pub files_dropped_callbacks: RefCell<CallbackList>,
     }
 
     #[glib::object_subclass]
@@ -85,6 +96,26 @@ glib::wrapper! {
 impl HtmlEditor {
     pub fn new() -> Self {
         glib::Object::builder().build()
+    }
+
+    pub fn connect_files_dropped<F>(&self, callback: F)
+    where
+        F: Fn(Vec<std::path::PathBuf>) + 'static,
+    {
+        self.imp()
+            .files_dropped_callbacks
+            .borrow_mut()
+            .0
+            .push(Box::new(callback));
+    }
+
+    pub fn dispatch_files_dropped(&self, paths: Vec<std::path::PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
+        for cb in self.imp().files_dropped_callbacks.borrow().0.iter() {
+            cb(paths.clone());
+        }
     }
 
     /// Read the current editor contents asynchronously on the GTK main
@@ -579,8 +610,11 @@ impl HtmlEditor {
 
         if let Some(settings) = webkit6::prelude::WebViewExt::settings(&web_view) {
             let desktop_font = crate::views::mail_viewer::detect_desktop_font_family();
+            let desktop_mono = crate::views::mail_viewer::detect_desktop_monospace_font_family();
             settings.set_default_font_family(&desktop_font);
             settings.set_sans_serif_font_family(&desktop_font);
+            settings.set_serif_font_family(&desktop_font);
+            settings.set_monospace_font_family(&desktop_mono);
             settings.set_enable_javascript(true);
             settings.set_auto_load_images(true);
             settings.set_enable_developer_extras(false);
@@ -629,8 +663,6 @@ impl HtmlEditor {
                 "}});",
                 "document.addEventListener('paste', function(e) {{",
                 "    if (!e.clipboardData) return;",
-                "    const types = Array.from(e.clipboardData.types || []);",
-                "    if (types.includes('text/html')) return;",
                 "    const items = e.clipboardData.items;",
                 "    if (items) {{",
                 "        for (let i = 0; i < items.length; i++) {{",
@@ -645,6 +677,42 @@ impl HtmlEditor {
                 "                    reader.readAsDataURL(file);",
                 "                    return;",
                 "                }}",
+                "            }}",
+                "        }}",
+                "    }}",
+                "    const types = Array.from(e.clipboardData.types || []);",
+                "    if (types.includes('text/html')) {{",
+                "        const rawHtml = e.clipboardData.getData('text/html');",
+                "        if (rawHtml) {{",
+                "            e.preventDefault();",
+                "            let cleanHtml = rawHtml;",
+                "            try {{",
+                "                const parser = new DOMParser();",
+                "                const doc = parser.parseFromString(rawHtml, 'text/html');",
+                "                const isWhite = function(v) {{",
+                "                    if (!v) return false;",
+                "                    const s = v.toLowerCase().replace(/\\s+/g, '');",
+                "                    return s === 'rgb(255,255,255)' || s === 'rgba(255,255,255,1)' || s === '#ffffff' || s === '#fff' || s === 'white' || s === 'transparent' || s === 'rgba(0,0,0,0)';",
+                "                }};",
+                "                const all = doc.querySelectorAll('*');",
+                "                for (let j = 0; j < all.length; j++) {{",
+                "                    const el = all[j];",
+                "                    if (isWhite(el.style.backgroundColor)) {{ el.style.removeProperty('background-color'); }}",
+                "                    if (isWhite(el.style.background)) {{ el.style.removeProperty('background'); }}",
+                "                    if (el.style.caretColor) {{ el.style.removeProperty('caret-color'); }}",
+                "                    if (el.hasAttribute('bgcolor') && isWhite(el.getAttribute('bgcolor'))) {{ el.removeAttribute('bgcolor'); }}",
+                "                    if (el.getAttribute('style') !== null && el.style.length === 0) {{ el.removeAttribute('style'); }}",
+                "                }}",
+                "                cleanHtml = doc.body.innerHTML;",
+                "            }} catch (err) {{",
+                "                cleanHtml = rawHtml",
+                "                    .replace(/(?:background-color|background)\\s*:\\s*(?:rgb\\(\\s*255\\s*,\\s*255\\s*,\\s*255\\s*\\)|rgba\\(\\s*255\\s*,\\s*255\\s*,\\s*255\\s*,\\s*1(?:\\.0+)?\\s*\\)|#(?:ffffff|fff)\\b|white\\b)\\s*(?:!\\s*important)?\\s*;?/gi, '')",
+                "                    .replace(/caret-color\\s*:\\s*[^;\"]+;?/gi, '')",
+                "                    .replace(/\\s*bgcolor\\s*=\\s*[\"']\\s*(?:#ffffff|#fff|white|rgb\\(\\s*255\\s*,\\s*255\\s*,\\s*255\\s*\\))\\s*[\"']/gi, '');",
+                "            }}",
+                "            if (cleanHtml && cleanHtml.trim().length > 0) {{",
+                "                document.execCommand('insertHTML', false, cleanHtml);",
+                "                return;",
                 "            }}",
                 "        }}",
                 "    }}",
@@ -678,9 +746,9 @@ impl HtmlEditor {
                 "    if (!e.dataTransfer) return;",
                 "    const files = e.dataTransfer.files;",
                 "    if (files && files.length > 0) {{",
+                "        e.preventDefault();",
                 "        for (let i = 0; i < files.length; i++) {{",
                 "            if (files[i].type.indexOf('image') !== -1) {{",
-                "                e.preventDefault();",
                 "                const reader = new FileReader();",
                 "                reader.onload = function(evt) {{",
                 "                    document.execCommand('insertImage', false, evt.target.result);",
@@ -696,7 +764,8 @@ impl HtmlEditor {
             font_family, font_size
         );
 
-        web_view.connect_decide_policy(|_, decision, decision_type| {
+        let editor_weak_for_policy = self.downgrade();
+        web_view.connect_decide_policy(move |_, decision, decision_type| {
             if decision_type == webkit6::PolicyDecisionType::NavigationAction
                 || decision_type == webkit6::PolicyDecisionType::NewWindowAction
             {
@@ -717,6 +786,17 @@ impl HtmlEditor {
                                     );
                                     decision.ignore();
                                     return true;
+                                } else if uri.starts_with("file://") {
+                                    let file = gio::File::for_uri(&uri);
+                                    if let Some(path) = file.path() {
+                                        if path.is_file() {
+                                            if let Some(editor) = editor_weak_for_policy.upgrade() {
+                                                editor.dispatch_files_dropped(vec![path]);
+                                            }
+                                        }
+                                    }
+                                    decision.ignore();
+                                    return true;
                                 }
                             }
                         }
@@ -725,6 +805,37 @@ impl HtmlEditor {
             }
             false
         });
+
+        let drop_target = gtk::DropTarget::new(glib::Type::INVALID, gdk::DragAction::COPY);
+        drop_target.set_types(&[gdk::FileList::static_type(), gio::File::static_type()]);
+        let editor_weak_for_drop = self.downgrade();
+        drop_target.connect_drop(move |_, value, _, _| {
+            let Some(editor) = editor_weak_for_drop.upgrade() else {
+                return false;
+            };
+            let mut paths = Vec::new();
+            if let Ok(file_list) = value.get::<gdk::FileList>() {
+                for file in file_list.files() {
+                    if let Some(path) = file.path() {
+                        if path.is_file() {
+                            paths.push(path);
+                        }
+                    }
+                }
+            } else if let Ok(file) = value.get::<gio::File>() {
+                if let Some(path) = file.path() {
+                    if path.is_file() {
+                        paths.push(path);
+                    }
+                }
+            }
+            if !paths.is_empty() {
+                editor.dispatch_files_dropped(paths);
+                return true;
+            }
+            false
+        });
+        web_view.add_controller(drop_target);
 
         *self.imp().web_view.borrow_mut() = Some(web_view.clone());
         let editor_weak = self.downgrade();
