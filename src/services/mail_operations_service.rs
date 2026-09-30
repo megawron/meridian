@@ -1149,7 +1149,7 @@ impl MailCommandStack {
     }
 
     fn persistent_path() -> PathBuf {
-        std::env::var_os("EVOLUTION_GTK4_MAIL_UNDO_FILE")
+        std::env::var_os("MERIDIAN_MAIL_UNDO_FILE").or_else(|| std::env::var_os("EVOLUTION_GTK4_MAIL_UNDO_FILE"))
             .map(PathBuf::from)
             .unwrap_or_else(|| crate::services::app_data_dir().join("mail-undo.json"))
     }
@@ -1658,9 +1658,12 @@ impl MailOperationsService {
                 metadata,
             } => match location {
                 Some(location) => {
-                    if metadata.text.as_deref().is_some_and(|text| {
-                        text != super::mail_metadata_service::DEFAULT_FOLLOW_UP_TEXT
-                    }) {
+                    if metadata.state == super::mail_metadata_service::MailFollowUpState::FollowUp
+                        && metadata
+                            .text
+                            .as_deref()
+                            .is_some_and(|text| !super::mail_metadata_service::is_default_follow_up_text(text))
+                    {
                         return Err(MailOperationError::Unsupported {
                             operation: MailOperationKind::SetFollowUp,
                             backend: "Camel (eigener Follow-up-Text ist noch nicht über die native Brücke verfügbar)",
@@ -1903,10 +1906,11 @@ impl MailOperationsService {
         {
             return match location {
                 Some(location) => {
-                    if metadata
-                        .text
-                        .as_deref()
-                        .is_some_and(|text| text != super::mail_metadata_service::DEFAULT_FOLLOW_UP_TEXT)
+                    if metadata.state == super::mail_metadata_service::MailFollowUpState::FollowUp
+                        && metadata
+                            .text
+                            .as_deref()
+                            .is_some_and(|text| !super::mail_metadata_service::is_default_follow_up_text(text))
                     {
                         return Err(MailOperationError::Unsupported {
                             operation: MailOperationKind::SetFollowUp,
@@ -3335,7 +3339,7 @@ mod tests {
 
     fn temporary_directory(label: &str) -> PathBuf {
         let path =
-            std::env::temp_dir().join(format!("evolution-gtk4-{label}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("meridian-{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).expect("temporary directory should be created");
         path

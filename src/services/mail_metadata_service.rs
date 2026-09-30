@@ -59,7 +59,19 @@ impl MailFollowUpState {
     }
 }
 
-pub const DEFAULT_FOLLOW_UP_TEXT: &str = "Follow Up";
+pub const DEFAULT_FOLLOW_UP_TEXT: &str = "Follow-up";
+
+/// Checks if a follow-up string corresponds to the standard default follow-up
+/// tag (e.g. "Follow-up", "Follow Up", localized "Zur Nachverfolgung", or empty).
+pub fn is_default_follow_up_text(text: &str) -> bool {
+    let t = text.trim();
+    t.is_empty()
+        || t.eq_ignore_ascii_case("follow-up")
+        || t.eq_ignore_ascii_case("follow up")
+        || t.eq_ignore_ascii_case("zur nachverfolgung")
+        || t.eq_ignore_ascii_case("nachverfolgen")
+        || t.eq_ignore_ascii_case("nachverfolgung")
+}
 
 /// The complete Evolution follow-up tag set.  The ordinary star is stored in
 /// `MailMessageState::is_flagged` and must never be inferred from this data.
@@ -637,7 +649,7 @@ impl RemoteContentStore {
     }
 
     pub fn from_environment() -> Self {
-        let path = std::env::var_os("EVOLUTION_GTK4_REMOTE_CONTENT_FILE")
+        let path = std::env::var_os("MERIDIAN_REMOTE_CONTENT_FILE").or_else(|| std::env::var_os("EVOLUTION_GTK4_REMOTE_CONTENT_FILE"))
             .map(PathBuf::from)
             .unwrap_or_else(|| crate::services::app_data_dir().join("remote-content.json"));
         Self::new(path)
@@ -1333,7 +1345,7 @@ mod tests {
 
     fn tempfile_dir(label: &str) -> PathBuf {
         let path =
-            std::env::temp_dir().join(format!("evolution-gtk4-{label}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("meridian-{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).expect("temporary directory should be created");
         path
