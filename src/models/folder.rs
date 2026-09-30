@@ -27,7 +27,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for FolderObject {
-        const NAME: &'static str = "EvolutionFolderObject";
+        const NAME: &'static str = "MeridianFolderObject";
         type Type = super::FolderObject;
         type ParentType = glib::Object;
     }

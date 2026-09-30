@@ -23,7 +23,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for TaskItemObject {
-        const NAME: &'static str = "EvolutionTaskItemObject";
+        const NAME: &'static str = "MeridianTaskItemObject";
         type Type = super::TaskItemObject;
         type ParentType = glib::Object;
     }

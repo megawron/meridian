@@ -21,7 +21,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for EdsSourceObject {
-        const NAME: &'static str = "EvolutionEdsSourceObject";
+        const NAME: &'static str = "MeridianEdsSourceObject";
         type Type = super::EdsSourceObject;
         type ParentType = glib::Object;
     }
