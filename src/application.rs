@@ -197,8 +197,7 @@ mod imp {
 
             if std::env::args().any(|a| a == "--compose") {
                 let dialog = crate::dialogs::ComposeDialog::new();
-                dialog.set_transient_for(Some(&window));
-                dialog.present();
+                dialog.present_modal(&window);
             }
 
             if std::env::args().any(|a| a == "--preferences") {

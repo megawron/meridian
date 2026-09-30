@@ -26,7 +26,8 @@ use crate::services::{AppSettings, AvatarCacheService, RecentRecipientsService};
 use crate::services::account_config_service::{
     AccountConfigStore, AccountProfile, reconciled_local_default_account,
 };
-use crate::dialogs::NameSelectorDialog;
+use crate::dialogs::{NameSelectorDialog, SignatureEditorDialog};
+use crate::i18n::gettext;
 use crate::services::template_store_service::{MailTemplate, TemplateStore};
 use crate::services::camel_mail_service;
 use crate::services::contact_store_service::ContactStoreService;
@@ -1150,6 +1151,13 @@ impl ComposeDialog {
         let combo_signature = gtk::DropDown::new(Some(sig_model), None::<&gtk::Expression>);
         combo_signature.set_valign(gtk::Align::Center);
 
+        let btn_manage_signatures = gtk::Button::builder()
+            .icon_name("document-edit-symbolic")
+            .tooltip_text(&gettext("Signatur bearbeiten oder erstellen…"))
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+
         let lbl_signature = gtk::Label::builder()
             .label("Signatur:")
             .css_classes(vec!["dim-label"])
@@ -1165,6 +1173,7 @@ impl ComposeDialog {
         from_row_box.append(&combo_from);
         from_row_box.append(&lbl_signature);
         from_row_box.append(&combo_signature);
+        from_row_box.append(&btn_manage_signatures);
 
         // Reply-To
         let btn_reply_to = gtk::Button::builder()
@@ -1622,6 +1631,42 @@ impl ComposeDialog {
                 editor.replace_or_insert_signature(&markup, top_signature);
             }
             dialog.mark_changed();
+        });
+
+        let dialog_weak = self.downgrade();
+        btn_manage_signatures.connect_clicked(move |_| {
+            let Some(dialog) = dialog_weak.upgrade() else {
+                return;
+            };
+            let choices = dialog.imp().signature_choices.borrow();
+            let selected_idx = dialog
+                .imp()
+                .combo_signature
+                .borrow()
+                .as_ref()
+                .map(|c| c.selected() as usize)
+                .unwrap_or(0);
+            let selected_choice = choices.get(selected_idx);
+            let selected_id = selected_choice.and_then(|c| c.id.as_deref());
+
+            let store = SignatureStore::from_environment();
+            let signatures = store.load();
+            let existing_profile = selected_id.and_then(|id| signatures.into_iter().find(|s| s.id == id));
+
+            let dialog_for_refresh = dialog.clone();
+            let editor_dialog = if let Some(profile) = existing_profile {
+                SignatureEditorDialog::new_for_edit(
+                    &profile,
+                    Some(move |_saved_profile| {
+                        dialog_for_refresh.refresh_signature_choices();
+                    }),
+                )
+            } else {
+                SignatureEditorDialog::new_for_create(Some(move |_saved_profile| {
+                    dialog_for_refresh.refresh_signature_choices();
+                }))
+            };
+            editor_dialog.present(Some(&dialog));
         });
 
         for entry in [
@@ -3962,6 +4007,17 @@ impl ComposeDialog {
         });
     }
 
+    pub fn refresh_signature_choices(&self) {
+        let choices = load_signature_choices();
+        let sig_names: Vec<&str> = choices.iter().map(|c| c.name.as_str()).collect();
+        let sig_model = gtk::StringList::new(&sig_names);
+        self.imp().signature_choices.replace(choices);
+        if let Some(combo_sig) = self.imp().combo_signature.borrow().as_ref() {
+            combo_sig.set_model(Some(&sig_model));
+        }
+        self.sync_signature_for_selected_account();
+    }
+
     pub(crate) fn sync_signature_for_selected_account(&self) {
         let Some(combo_from) = self.imp().combo_from.borrow().as_ref().cloned() else {
             return;
@@ -4946,7 +5002,7 @@ fn load_signature_choices() -> Vec<SignatureChoice> {
 
     let store_signatures = SignatureStore::default().load();
     for sig in store_signatures {
-        let html = if sig.format.to_ascii_lowercase().contains("html") {
+        let html = if sig.is_html() {
             sanitize_html(sig.text.trim_end())
         } else {
             html_escape(sig.text.trim_end()).replace('\n', "<br>")
@@ -4963,10 +5019,22 @@ fn load_signature_choices() -> Vec<SignatureChoice> {
         if !sig_text.trim().is_empty()
             && !choices.iter().any(|c| c.id.as_deref() == Some("default"))
         {
+            let is_html = sig_text.contains("<img")
+                || sig_text.contains("<p")
+                || sig_text.contains("<div")
+                || sig_text.contains("<br")
+                || sig_text.contains("<span")
+                || sig_text.contains("<table")
+                || sig_text.contains("<a ");
+            let html = if is_html {
+                sanitize_html(sig_text.trim_end())
+            } else {
+                html_escape(sig_text.trim_end()).replace('\n', "<br>")
+            };
             choices.push(SignatureChoice {
                 id: Some("default".to_string()),
                 name: "Allgemeine Standardsignatur".to_string(),
-                html: html_escape(sig_text.trim_end()).replace('\n', "<br>"),
+                html,
             });
         }
     }
@@ -5008,7 +5076,7 @@ fn default_signature_html() -> String {
         return String::new();
     }
     if let Some(signature) = SignatureStore::default().active() {
-        if signature.format.to_ascii_lowercase().contains("html") {
+        if signature.is_html() {
             return sanitize_html(signature.text.trim_end());
         }
         return html_escape(signature.text.trim_end()).replace('\n', "<br>");
@@ -5017,7 +5085,18 @@ fn default_signature_html() -> String {
     if text.trim().is_empty() {
         return String::new();
     }
-    html_escape(text.trim_end()).replace('\n', "<br>")
+    let is_html = text.contains("<img")
+        || text.contains("<p")
+        || text.contains("<div")
+        || text.contains("<br")
+        || text.contains("<span")
+        || text.contains("<table")
+        || text.contains("<a ");
+    if is_html {
+        sanitize_html(text.trim_end())
+    } else {
+        html_escape(text.trim_end()).replace('\n', "<br>")
+    }
 }
 
 fn default_quote_style() -> &'static str {
