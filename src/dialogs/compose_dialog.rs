@@ -4963,7 +4963,7 @@ fn load_signature_choices() -> Vec<SignatureChoice> {
         let html = if sig.is_html() {
             sanitize_html(sig.text.trim_end())
         } else {
-            html_escape(sig.text.trim_end()).replace('\n', "<br>")
+            signature_plain_text_to_html(sig.text.trim_end())
         };
         choices.push(SignatureChoice {
             id: Some(sig.id),
@@ -4977,17 +4977,18 @@ fn load_signature_choices() -> Vec<SignatureChoice> {
         if !sig_text.trim().is_empty()
             && !choices.iter().any(|c| c.id.as_deref() == Some("default"))
         {
-            let is_html = sig_text.contains("<img")
-                || sig_text.contains("<p")
-                || sig_text.contains("<div")
-                || sig_text.contains("<br")
-                || sig_text.contains("<span")
-                || sig_text.contains("<table")
-                || sig_text.contains("<a ");
+            let lower = sig_text.to_ascii_lowercase();
+            let is_html = lower.contains("<img")
+                || lower.contains("<p")
+                || lower.contains("<div")
+                || lower.contains("<br")
+                || lower.contains("<span")
+                || lower.contains("<table")
+                || lower.contains("<a");
             let html = if is_html {
                 sanitize_html(sig_text.trim_end())
             } else {
-                html_escape(sig_text.trim_end()).replace('\n', "<br>")
+                signature_plain_text_to_html(sig_text.trim_end())
             };
             choices.push(SignatureChoice {
                 id: Some("default".to_string()),
@@ -4998,6 +4999,38 @@ fn load_signature_choices() -> Vec<SignatureChoice> {
     }
 
     choices
+}
+
+pub fn signature_plain_text_to_html(text: &str) -> String {
+    let escaped = html_escape(text);
+    static URL_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(https?://[^\s<]+|mailto:[^\s<]+|www\.[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}[^\s<]*|[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})").unwrap()
+    });
+
+    let with_links = URL_RE.replace_all(&escaped, |caps: &regex::Captures| {
+        let matched = &caps[0];
+        let mut clean = matched;
+        let mut trailing = "";
+        while let Some(last) = clean.chars().last() {
+            if matches!(last, '.' | ',' | ';' | ':' | ')') {
+                let split_idx = clean.len() - last.len_utf8();
+                trailing = &matched[split_idx..];
+                clean = &clean[..split_idx];
+            } else {
+                break;
+            }
+        }
+        let href = if clean.starts_with("www.") {
+            format!("https://{clean}")
+        } else if clean.contains('@') && !clean.starts_with("mailto:") && !clean.starts_with("http") {
+            format!("mailto:{clean}")
+        } else {
+            clean.to_string()
+        };
+        format!("<a href=\"{href}\">{clean}</a>{trailing}")
+    });
+
+    with_links.replace('\n', "<br>")
 }
 
 fn format_signature_markup(inner_html: &str) -> String {
@@ -5037,23 +5070,24 @@ fn default_signature_html() -> String {
         if signature.is_html() {
             return sanitize_html(signature.text.trim_end());
         }
-        return html_escape(signature.text.trim_end()).replace('\n', "<br>");
+        return signature_plain_text_to_html(signature.text.trim_end());
     }
     let text = settings.signature_text();
     if text.trim().is_empty() {
         return String::new();
     }
-    let is_html = text.contains("<img")
-        || text.contains("<p")
-        || text.contains("<div")
-        || text.contains("<br")
-        || text.contains("<span")
-        || text.contains("<table")
-        || text.contains("<a ");
+    let lower = text.to_ascii_lowercase();
+    let is_html = lower.contains("<img")
+        || lower.contains("<p")
+        || lower.contains("<div")
+        || lower.contains("<br")
+        || lower.contains("<span")
+        || lower.contains("<table")
+        || lower.contains("<a");
     if is_html {
         sanitize_html(text.trim_end())
     } else {
-        html_escape(text.trim_end()).replace('\n', "<br>")
+        signature_plain_text_to_html(text.trim_end())
     }
 }
 
@@ -6813,6 +6847,16 @@ mod tests {
         assert!(markup.contains("class=\"evolution-signature\""));
         assert!(markup.contains("Best regards<br>Alice"));
         assert_eq!(format_signature_markup("   "), "");
+    }
+
+    #[test]
+    fn test_signature_plain_text_to_html_linkification() {
+        let text = "Mit freundlichen Grüßen\nMax Mustermann\nWeb: https://example-portal.de.\nMail: kontakt@example-portal.de\nOder www.example-portal.de/portal";
+        let html = signature_plain_text_to_html(text);
+        assert!(html.contains("<a href=\"https://example-portal.de\">https://example-portal.de</a>."));
+        assert!(html.contains("<a href=\"mailto:kontakt@example-portal.de\">kontakt@example-portal.de</a>"));
+        assert!(html.contains("<a href=\"https://www.example-portal.de/portal\">www.example-portal.de/portal</a>"));
+        assert!(html.contains("<br>"));
     }
 
     #[test]

@@ -25,15 +25,23 @@ pub struct SignatureProfile {
 impl SignatureProfile {
     /// Returns true if this signature is formatted as HTML or contains HTML markup/images.
     pub fn is_html(&self) -> bool {
-        self.format.eq_ignore_ascii_case("html")
+        if self.format.eq_ignore_ascii_case("html")
             || self.format.eq_ignore_ascii_case("text/html")
-            || self.text.contains("<img")
-            || self.text.contains("<p")
-            || self.text.contains("<div")
-            || self.text.contains("<br")
-            || self.text.contains("<span")
-            || self.text.contains("<table")
-            || self.text.contains("<a ")
+        {
+            return true;
+        }
+        let lower = self.text.to_ascii_lowercase();
+        lower.contains("<img")
+            || lower.contains("<p")
+            || lower.contains("<div")
+            || lower.contains("<br")
+            || lower.contains("<span")
+            || lower.contains("<table")
+            || lower.contains("<a ")
+            || lower.contains("<a\n")
+            || lower.contains("<a\t")
+            || lower.contains("<a\r")
+            || lower.contains("<a>")
     }
 }
 
