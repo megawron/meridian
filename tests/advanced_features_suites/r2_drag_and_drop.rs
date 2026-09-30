@@ -269,10 +269,10 @@ fn r2_test_mail_list_drag_source_action_mask() {
 #[test]
 fn r2_test_mail_list_drag_payload_serialization() {
     let message_id = "backend/source1/INBOX/1042";
-    let payload = format!("evolution-message:{}", message_id);
+    let payload = format!("meridian-message:{}", message_id);
 
-    assert!(payload.starts_with("evolution-message:"));
-    let extracted = payload.strip_prefix("evolution-message:").unwrap();
+    assert!(payload.starts_with("meridian-message:"));
+    let extracted = payload.strip_prefix("meridian-message:").unwrap();
     assert_eq!(extracted, message_id);
 }
 

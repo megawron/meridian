@@ -816,7 +816,7 @@ impl ECalService {
         let mut out_component = ptr::null_mut();
         let mut out_error = ptr::null_mut();
         let result = unsafe {
-            ffi::evolution_eds_ecal_apply_operation(
+            ffi::meridian_eds_ecal_apply_operation(
                 source_uid.as_ptr(),
                 component_type as i32,
                 operation,
@@ -864,7 +864,7 @@ impl ECalService {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut out_error = std::ptr::null_mut();
         let result = unsafe {
-            ffi::evolution_eds_ecal_refresh_source(
+            ffi::meridian_eds_ecal_refresh_source(
                 source_uid.as_ptr(),
                 component_type as i32,
                 &mut out_error,
@@ -898,7 +898,7 @@ impl ECalService {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut out_error = std::ptr::null_mut();
         let result = unsafe {
-            ffi::evolution_eds_ecal_rename_source(
+            ffi::meridian_eds_ecal_rename_source(
                 source_uid.as_ptr(),
                 component_type as i32,
                 display_name.as_ptr(),
@@ -930,7 +930,7 @@ impl ECalService {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut out_error = std::ptr::null_mut();
         let result = unsafe {
-            ffi::evolution_eds_ecal_delete_source(
+            ffi::meridian_eds_ecal_delete_source(
                 source_uid.as_ptr(),
                 component_type as i32,
                 &mut out_error,
@@ -966,7 +966,7 @@ impl ECalService {
         let mut updated_count = 0usize;
         let mut out_error = std::ptr::null_mut();
         let result = unsafe {
-            ffi::evolution_eds_ecal_copy_source(
+            ffi::meridian_eds_ecal_copy_source(
                 from_source_uid.as_ptr(),
                 to_source_uid.as_ptr(),
                 component_type as i32,
@@ -1017,7 +1017,7 @@ impl ECalService {
         let mut out_warning = std::ptr::null_mut();
         let mut out_error = std::ptr::null_mut();
         let result = unsafe {
-            ffi::evolution_eds_ecal_create_local_source(
+            ffi::meridian_eds_ecal_create_local_source(
                 display_name.as_ptr(),
                 color.as_ptr(),
                 component_type as i32,
@@ -1075,10 +1075,10 @@ impl ECalService {
         let _guard = ECAL_NATIVE_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut raw: ffi::EvolutionEdsECalLocalSourceProperties = unsafe { std::mem::zeroed() };
+        let mut raw: ffi::MeridianEdsECalLocalSourceProperties = unsafe { std::mem::zeroed() };
         let mut out_error = std::ptr::null_mut();
         let result = unsafe {
-            ffi::evolution_eds_ecal_get_local_source_properties(
+            ffi::meridian_eds_ecal_get_local_source_properties(
                 source_uid.as_ptr(),
                 component_type as i32,
                 &mut raw,
@@ -1107,10 +1107,10 @@ impl ECalService {
                                 .to_string(),
                         )
                     });
-                ffi::evolution_eds_ecal_clear_local_source_properties(&mut raw);
+                ffi::meridian_eds_ecal_clear_local_source_properties(&mut raw);
                 parsed
             } else {
-                ffi::evolution_eds_ecal_clear_local_source_properties(&mut raw);
+                ffi::meridian_eds_ecal_clear_local_source_properties(&mut raw);
                 Err(match result {
                     2 => ECalServiceError::Unsupported,
                     _ => ECalServiceError::Backend(error.unwrap_or_else(|| {
@@ -1151,7 +1151,7 @@ impl ECalService {
         let mut out_warning = std::ptr::null_mut();
         let mut out_error = std::ptr::null_mut();
         let result = unsafe {
-            ffi::evolution_eds_ecal_update_local_source_properties(
+            ffi::meridian_eds_ecal_update_local_source_properties(
                 source_uid.as_ptr(),
                 component_type as i32,
                 display_name.as_ptr(),
@@ -1197,7 +1197,7 @@ impl ECalService {
         let mut count = 0usize;
         let mut out_error = std::ptr::null_mut();
         let result = unsafe {
-            ffi::evolution_eds_ecal_list_source_capabilities(
+            ffi::meridian_eds_ecal_list_source_capabilities(
                 component_type as i32,
                 &mut sources,
                 &mut count,
@@ -1207,7 +1207,7 @@ impl ECalService {
         let warning = error_string(out_error);
         if result == 0 {
             unsafe {
-                ffi::evolution_eds_ecal_free_source_capabilities(sources, count);
+                ffi::meridian_eds_ecal_free_source_capabilities(sources, count);
             }
             return Err(ECalServiceError::Backend(warning.unwrap_or_else(|| {
                 "EDS/ECal-Quellen konnten nicht gelesen werden".to_string()
@@ -1257,7 +1257,7 @@ impl ECalService {
             }
         };
         unsafe {
-            ffi::evolution_eds_ecal_free_source_capabilities(sources, count);
+            ffi::meridian_eds_ecal_free_source_capabilities(sources, count);
         }
         let sources = parsed?;
         let mut identities = HashSet::new();
@@ -1307,7 +1307,7 @@ impl ECalWatcher {
         let mut failed_sources = 0;
         let mut error = ptr::null_mut();
         let result = unsafe {
-            ffi::evolution_eds_ecal_watcher_new(
+            ffi::meridian_eds_ecal_watcher_new(
                 &mut raw,
                 &mut configured_sources,
                 &mut active_sources,
@@ -1317,7 +1317,7 @@ impl ECalWatcher {
         };
         let warning = c_string(error);
         if !error.is_null() {
-            unsafe { ffi::evolution_eds_ecal_free_error(error) };
+            unsafe { ffi::meridian_eds_ecal_free_error(error) };
         }
         if result == 0 || raw.is_null() {
             return Err(ECalServiceError::Backend(warning.unwrap_or_else(|| {
@@ -1341,7 +1341,7 @@ impl ECalWatcher {
         timeout: Duration,
     ) -> Result<Option<ECalChangeEvent>, ECalServiceError> {
         let timeout_milliseconds = timeout.as_millis().min(i32::MAX as u128) as i32;
-        let mut raw_event = ffi::EvolutionEdsECalWatcherEvent {
+        let mut raw_event = ffi::MeridianEdsECalWatcherEvent {
             source_type: 0,
             kind: 0,
             source_uid: std::ptr::null_mut(),
@@ -1351,7 +1351,7 @@ impl ECalWatcher {
             error: std::ptr::null_mut(),
         };
         let result = unsafe {
-            ffi::evolution_eds_ecal_watcher_next_event(
+            ffi::meridian_eds_ecal_watcher_next_event(
                 self.raw,
                 timeout_milliseconds,
                 &mut raw_event,
@@ -1377,7 +1377,7 @@ impl ECalWatcher {
             2 => ECalComponentType::Memo,
             _ => {
                 unsafe {
-                    ffi::evolution_eds_ecal_free_watcher_event(&mut raw_event);
+                    ffi::meridian_eds_ecal_free_watcher_event(&mut raw_event);
                 }
                 return Err(ECalServiceError::Backend(
                     "EDS/ECal-Signalmonitor lieferte einen unbekannten Quellentyp".to_string(),
@@ -1390,7 +1390,7 @@ impl ECalWatcher {
             3 => ECalChangeKind::Removed,
             4 => {
                 unsafe {
-                    ffi::evolution_eds_ecal_free_watcher_event(&mut raw_event);
+                    ffi::meridian_eds_ecal_free_watcher_event(&mut raw_event);
                 }
                 return Err(ECalServiceError::Backend(error.unwrap_or_else(|| {
                     "EDS/ECal-Signalmonitor meldete einen Fehler".to_string()
@@ -1398,7 +1398,7 @@ impl ECalWatcher {
             }
             _ => {
                 unsafe {
-                    ffi::evolution_eds_ecal_free_watcher_event(&mut raw_event);
+                    ffi::meridian_eds_ecal_free_watcher_event(&mut raw_event);
                 }
                 return Err(ECalServiceError::Backend(
                     "EDS/ECal-Signalmonitor lieferte einen unbekannten Ereignistyp".to_string(),
@@ -1407,7 +1407,7 @@ impl ECalWatcher {
         };
 
         unsafe {
-            ffi::evolution_eds_ecal_free_watcher_event(&mut raw_event);
+            ffi::meridian_eds_ecal_free_watcher_event(&mut raw_event);
         }
         Ok(Some(ECalChangeEvent {
             source_type,
@@ -1424,7 +1424,7 @@ impl ECalWatcher {
 impl Drop for ECalWatcher {
     fn drop(&mut self) {
         if !self.raw.is_null() {
-            unsafe { ffi::evolution_eds_ecal_watcher_free(self.raw) };
+            unsafe { ffi::meridian_eds_ecal_watcher_free(self.raw) };
             self.raw = std::ptr::null_mut();
         }
     }
@@ -1520,20 +1520,7 @@ pub(crate) fn load_snapshot_prefer_eds() -> CalendarLoadResult {
                 }
             }
             let local_service = super::calendar_store_service::CalendarStoreService::new();
-            let mut snapshot = local_service.load_snapshot();
-            #[cfg(all(target_os = "macos", macos_bridge))]
-            {
-                if snapshot.events.is_empty()
-                    && snapshot.tasks.is_empty()
-                    && snapshot.memos.is_empty()
-                    && local_service.is_writable()
-                {
-                    let macos = super::macos_integration_service::MacosIntegrationService::new();
-                    let _ = macos.sync_apple_calendar_to_store(&local_service);
-                    let _ = macos.sync_apple_reminders_to_store(&local_service);
-                    snapshot = local_service.load_snapshot();
-                }
-            }
+            let snapshot = local_service.load_snapshot();
 
             CalendarLoadResult {
                 snapshot,
@@ -1851,14 +1838,14 @@ mod ffi {
     use std::ffi::{c_char, c_int, c_void};
 
     #[repr(C)]
-    pub(super) struct EvolutionEdsECalComponent {
+    pub(super) struct MeridianEdsECalComponent {
         pub(super) source_uid: *mut c_char,
         pub(super) source_display_name: *mut c_char,
         pub(super) component: *mut c_char,
     }
 
     #[repr(C)]
-    pub(super) struct EvolutionEdsECalSourceCapability {
+    pub(super) struct MeridianEdsECalSourceCapability {
         pub(super) source_uid: *mut c_char,
         pub(super) source_display_name: *mut c_char,
         pub(super) connected: c_int,
@@ -1873,7 +1860,7 @@ mod ffi {
     }
 
     #[repr(C)]
-    pub(super) struct EvolutionEdsECalLocalSourceProperties {
+    pub(super) struct MeridianEdsECalLocalSourceProperties {
         pub(super) source_uid: *mut c_char,
         pub(super) display_name: *mut c_char,
         pub(super) color: *mut c_char,
@@ -1884,7 +1871,7 @@ mod ffi {
     }
 
     #[repr(C)]
-    pub(super) struct EvolutionEdsECalWatcherEvent {
+    pub(super) struct MeridianEdsECalWatcherEvent {
         pub(super) source_type: c_int,
         pub(super) kind: c_int,
         pub(super) source_uid: *mut c_char,
@@ -1895,9 +1882,9 @@ mod ffi {
     }
 
     unsafe extern "C" {
-        pub(super) fn evolution_eds_ecal_load_components(
+        pub(super) fn meridian_eds_ecal_load_components(
             source_type: c_int,
-            out_components: *mut *mut EvolutionEdsECalComponent,
+            out_components: *mut *mut MeridianEdsECalComponent,
             out_count: *mut usize,
             out_configured_sources: *mut usize,
             out_successful_sources: *mut usize,
@@ -1905,12 +1892,12 @@ mod ffi {
             out_error: *mut *mut c_char,
         ) -> c_int;
 
-        pub(super) fn evolution_eds_ecal_free_components(
-            components: *mut EvolutionEdsECalComponent,
+        pub(super) fn meridian_eds_ecal_free_components(
+            components: *mut MeridianEdsECalComponent,
             count: usize,
         );
 
-        pub(super) fn evolution_eds_ecal_apply_operation(
+        pub(super) fn meridian_eds_ecal_apply_operation(
             source_uid: *const c_char,
             source_type: c_int,
             operation: c_int,
@@ -1921,38 +1908,38 @@ mod ffi {
             out_error: *mut *mut c_char,
         ) -> c_int;
 
-        pub(super) fn evolution_eds_ecal_refresh_source(
+        pub(super) fn meridian_eds_ecal_refresh_source(
             source_uid: *const c_char,
             source_type: c_int,
             out_error: *mut *mut c_char,
         ) -> c_int;
 
-        pub(super) fn evolution_eds_ecal_list_source_capabilities(
+        pub(super) fn meridian_eds_ecal_list_source_capabilities(
             source_type: c_int,
-            out_sources: *mut *mut EvolutionEdsECalSourceCapability,
+            out_sources: *mut *mut MeridianEdsECalSourceCapability,
             out_count: *mut usize,
             out_error: *mut *mut c_char,
         ) -> c_int;
 
-        pub(super) fn evolution_eds_ecal_free_source_capabilities(
-            sources: *mut EvolutionEdsECalSourceCapability,
+        pub(super) fn meridian_eds_ecal_free_source_capabilities(
+            sources: *mut MeridianEdsECalSourceCapability,
             count: usize,
         );
 
-        pub(super) fn evolution_eds_ecal_rename_source(
+        pub(super) fn meridian_eds_ecal_rename_source(
             source_uid: *const c_char,
             source_type: c_int,
             display_name: *const c_char,
             out_error: *mut *mut c_char,
         ) -> c_int;
 
-        pub(super) fn evolution_eds_ecal_delete_source(
+        pub(super) fn meridian_eds_ecal_delete_source(
             source_uid: *const c_char,
             source_type: c_int,
             out_error: *mut *mut c_char,
         ) -> c_int;
 
-        pub(super) fn evolution_eds_ecal_copy_source(
+        pub(super) fn meridian_eds_ecal_copy_source(
             from_source_uid: *const c_char,
             to_source_uid: *const c_char,
             source_type: c_int,
@@ -1961,7 +1948,7 @@ mod ffi {
             out_error: *mut *mut c_char,
         ) -> c_int;
 
-        pub(super) fn evolution_eds_ecal_create_local_source(
+        pub(super) fn meridian_eds_ecal_create_local_source(
             display_name: *const c_char,
             color: *const c_char,
             source_type: c_int,
@@ -1970,18 +1957,18 @@ mod ffi {
             out_error: *mut *mut c_char,
         ) -> c_int;
 
-        pub(super) fn evolution_eds_ecal_get_local_source_properties(
+        pub(super) fn meridian_eds_ecal_get_local_source_properties(
             source_uid: *const c_char,
             source_type: c_int,
-            out_properties: *mut EvolutionEdsECalLocalSourceProperties,
+            out_properties: *mut MeridianEdsECalLocalSourceProperties,
             out_error: *mut *mut c_char,
         ) -> c_int;
 
-        pub(super) fn evolution_eds_ecal_clear_local_source_properties(
-            properties: *mut EvolutionEdsECalLocalSourceProperties,
+        pub(super) fn meridian_eds_ecal_clear_local_source_properties(
+            properties: *mut MeridianEdsECalLocalSourceProperties,
         );
 
-        pub(super) fn evolution_eds_ecal_update_local_source_properties(
+        pub(super) fn meridian_eds_ecal_update_local_source_properties(
             source_uid: *const c_char,
             source_type: c_int,
             display_name: *const c_char,
@@ -1993,9 +1980,9 @@ mod ffi {
             out_error: *mut *mut c_char,
         ) -> c_int;
 
-        pub(super) fn evolution_eds_ecal_free_error(error_message: *mut c_char);
+        pub(super) fn meridian_eds_ecal_free_error(error_message: *mut c_char);
 
-        pub(super) fn evolution_eds_ecal_watcher_new(
+        pub(super) fn meridian_eds_ecal_watcher_new(
             out_watcher: *mut *mut c_void,
             out_configured_sources: *mut usize,
             out_active_sources: *mut usize,
@@ -2003,17 +1990,17 @@ mod ffi {
             out_error: *mut *mut c_char,
         ) -> c_int;
 
-        pub(super) fn evolution_eds_ecal_watcher_next_event(
+        pub(super) fn meridian_eds_ecal_watcher_next_event(
             watcher: *mut c_void,
             timeout_milliseconds: c_int,
-            out_event: *mut EvolutionEdsECalWatcherEvent,
+            out_event: *mut MeridianEdsECalWatcherEvent,
         ) -> c_int;
 
-        pub(super) fn evolution_eds_ecal_free_watcher_event(
-            event: *mut EvolutionEdsECalWatcherEvent,
+        pub(super) fn meridian_eds_ecal_free_watcher_event(
+            event: *mut MeridianEdsECalWatcherEvent,
         );
 
-        pub(super) fn evolution_eds_ecal_watcher_free(watcher: *mut c_void);
+        pub(super) fn meridian_eds_ecal_watcher_free(watcher: *mut c_void);
     }
 }
 
@@ -2084,7 +2071,7 @@ fn load_components_native(
     let mut error = std::ptr::null_mut();
 
     let result = unsafe {
-        ffi::evolution_eds_ecal_load_components(
+        ffi::meridian_eds_ecal_load_components(
             source_type,
             &mut components,
             &mut count,
@@ -2107,7 +2094,7 @@ fn load_components_native(
                 let source_display_name = c_string(entry.source_display_name).unwrap_or_default();
                 parse_ical_component(&component, &source_uid, &source_display_name, snapshot);
             }
-            ffi::evolution_eds_ecal_free_components(components, count);
+            ffi::meridian_eds_ecal_free_components(components, count);
         }
     }
 
@@ -2146,7 +2133,7 @@ fn error_string(pointer: *mut std::ffi::c_char) -> Option<String> {
     let value = c_string(pointer);
     if !pointer.is_null() {
         unsafe {
-            ffi::evolution_eds_ecal_free_error(pointer);
+            ffi::meridian_eds_ecal_free_error(pointer);
         }
     }
     value
@@ -2164,7 +2151,7 @@ fn take_c_string(pointer: *mut std::ffi::c_char) -> Option<String> {
             .map(ToOwned::to_owned)
     };
     unsafe {
-        ffi::evolution_eds_ecal_free_error(pointer);
+        ffi::meridian_eds_ecal_free_error(pointer);
     }
     value
 }

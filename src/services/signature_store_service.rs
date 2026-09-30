@@ -42,7 +42,7 @@ impl SignatureStore {
     }
 
     pub fn from_environment() -> Self {
-        let path = std::env::var_os("EVOLUTION_GTK4_SIGNATURE_FILE")
+        let path = std::env::var_os("MERIDIAN_SIGNATURE_FILE").or_else(|| std::env::var_os("EVOLUTION_GTK4_SIGNATURE_FILE"))
             .map(PathBuf::from)
             .unwrap_or_else(|| crate::services::app_data_dir().join("signatures.json"));
         Self::new(path)
@@ -233,7 +233,7 @@ mod tests {
 
     fn temporary_directory(label: &str) -> PathBuf {
         let path =
-            std::env::temp_dir().join(format!("evolution-gtk4-{label}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("meridian-{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).expect("temporary directory should be created");
         path

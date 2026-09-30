@@ -433,7 +433,7 @@ impl EBookService {
         let mut out_vcard = ptr::null_mut();
         let mut out_error = ptr::null_mut();
         let result = unsafe {
-            ffi::evolution_eds_ebook_apply_operation(
+            ffi::meridian_eds_ebook_apply_operation(
                 source_uid.as_ptr(),
                 operation,
                 vcard.as_ptr(),
@@ -499,7 +499,7 @@ impl EBookWatcher {
         let mut failed_sources = 0;
         let mut error = ptr::null_mut();
         let result = unsafe {
-            ffi::evolution_eds_ebook_watcher_new(
+            ffi::meridian_eds_ebook_watcher_new(
                 &mut raw,
                 &mut configured_sources,
                 &mut active_sources,
@@ -509,7 +509,7 @@ impl EBookWatcher {
         };
         let warning = borrowed_c_string(error);
         if !error.is_null() {
-            unsafe { ffi::evolution_eds_ebook_free_error(error) };
+            unsafe { ffi::meridian_eds_ebook_free_error(error) };
         }
         if result == 0 || raw.is_null() {
             return Err(EBookServiceError::Backend(warning.unwrap_or_else(|| {
@@ -533,7 +533,7 @@ impl EBookWatcher {
         timeout: Duration,
     ) -> Result<Option<EBookChangeEvent>, EBookServiceError> {
         let timeout_milliseconds = timeout.as_millis().min(i32::MAX as u128) as i32;
-        let mut raw_event = ffi::EvolutionEdsEBookWatcherEvent {
+        let mut raw_event = ffi::MeridianEdsEBookWatcherEvent {
             kind: 0,
             source_uid: std::ptr::null_mut(),
             source_display_name: std::ptr::null_mut(),
@@ -542,7 +542,7 @@ impl EBookWatcher {
             error: std::ptr::null_mut(),
         };
         let result = unsafe {
-            ffi::evolution_eds_ebook_watcher_next_event(
+            ffi::meridian_eds_ebook_watcher_next_event(
                 self.raw,
                 timeout_milliseconds,
                 &mut raw_event,
@@ -569,7 +569,7 @@ impl EBookWatcher {
             3 => EBookChangeKind::Removed,
             4 => {
                 unsafe {
-                    ffi::evolution_eds_ebook_free_watcher_event(&mut raw_event);
+                    ffi::meridian_eds_ebook_free_watcher_event(&mut raw_event);
                 }
                 return Err(EBookServiceError::Backend(error.unwrap_or_else(|| {
                     "EDS/EBook-Signalmonitor meldete einen Fehler".to_string()
@@ -577,7 +577,7 @@ impl EBookWatcher {
             }
             _ => {
                 unsafe {
-                    ffi::evolution_eds_ebook_free_watcher_event(&mut raw_event);
+                    ffi::meridian_eds_ebook_free_watcher_event(&mut raw_event);
                 }
                 return Err(EBookServiceError::Backend(
                     "EDS/EBook-Signalmonitor lieferte einen unbekannten Ereignistyp".to_string(),
@@ -586,7 +586,7 @@ impl EBookWatcher {
         };
 
         unsafe {
-            ffi::evolution_eds_ebook_free_watcher_event(&mut raw_event);
+            ffi::meridian_eds_ebook_free_watcher_event(&mut raw_event);
         }
         Ok(Some(EBookChangeEvent {
             kind,
@@ -602,7 +602,7 @@ impl EBookWatcher {
 impl Drop for EBookWatcher {
     fn drop(&mut self) {
         if !self.raw.is_null() {
-            unsafe { ffi::evolution_eds_ebook_watcher_free(self.raw) };
+            unsafe { ffi::meridian_eds_ebook_watcher_free(self.raw) };
             self.raw = std::ptr::null_mut();
         }
     }
@@ -676,13 +676,6 @@ fn load_contacts_prefer_eds_fresh() -> EBookLoadResult {
     }
 
     let local_service = ContactStoreService::new();
-    #[cfg(all(target_os = "macos", macos_bridge))]
-    {
-        if local_service.is_writable() && local_service.load_contacts().is_empty() {
-            let macos = super::macos_integration_service::MacosIntegrationService::new();
-            let _ = macos.sync_apple_contacts_to_store(&local_service);
-        }
-    }
 
     if local_service.is_writable() {
         contacts.extend(local_service.load_contacts().into_iter().map(|record| {
@@ -846,7 +839,7 @@ mod ffi {
     use std::ffi::{c_char, c_int, c_void};
 
     #[repr(C)]
-    pub(super) struct EvolutionEdsEBookContact {
+    pub(super) struct MeridianEdsEBookContact {
         pub(super) source_uid: *mut c_char,
         pub(super) source_display_name: *mut c_char,
         pub(super) contact_uid: *mut c_char,
@@ -854,7 +847,7 @@ mod ffi {
     }
 
     #[repr(C)]
-    pub(super) struct EvolutionEdsEBookWatcherEvent {
+    pub(super) struct MeridianEdsEBookWatcherEvent {
         pub(super) kind: c_int,
         pub(super) source_uid: *mut c_char,
         pub(super) source_display_name: *mut c_char,
@@ -864,8 +857,8 @@ mod ffi {
     }
 
     unsafe extern "C" {
-        pub(super) fn evolution_eds_ebook_load_contacts(
-            out_contacts: *mut *mut EvolutionEdsEBookContact,
+        pub(super) fn meridian_eds_ebook_load_contacts(
+            out_contacts: *mut *mut MeridianEdsEBookContact,
             out_count: *mut usize,
             out_configured_sources: *mut usize,
             out_successful_sources: *mut usize,
@@ -873,12 +866,12 @@ mod ffi {
             out_error: *mut *mut c_char,
         ) -> c_int;
 
-        pub(super) fn evolution_eds_ebook_free_contacts(
-            contacts: *mut EvolutionEdsEBookContact,
+        pub(super) fn meridian_eds_ebook_free_contacts(
+            contacts: *mut MeridianEdsEBookContact,
             count: usize,
         );
 
-        pub(super) fn evolution_eds_ebook_apply_operation(
+        pub(super) fn meridian_eds_ebook_apply_operation(
             source_uid: *const c_char,
             operation: c_int,
             vcard: *const c_char,
@@ -888,9 +881,9 @@ mod ffi {
             out_error: *mut *mut c_char,
         ) -> c_int;
 
-        pub(super) fn evolution_eds_ebook_free_error(error_message: *mut c_char);
+        pub(super) fn meridian_eds_ebook_free_error(error_message: *mut c_char);
 
-        pub(super) fn evolution_eds_ebook_watcher_new(
+        pub(super) fn meridian_eds_ebook_watcher_new(
             out_watcher: *mut *mut c_void,
             out_configured_sources: *mut usize,
             out_active_sources: *mut usize,
@@ -898,17 +891,17 @@ mod ffi {
             out_error: *mut *mut c_char,
         ) -> c_int;
 
-        pub(super) fn evolution_eds_ebook_watcher_next_event(
+        pub(super) fn meridian_eds_ebook_watcher_next_event(
             watcher: *mut c_void,
             timeout_milliseconds: c_int,
-            out_event: *mut EvolutionEdsEBookWatcherEvent,
+            out_event: *mut MeridianEdsEBookWatcherEvent,
         ) -> c_int;
 
-        pub(super) fn evolution_eds_ebook_free_watcher_event(
-            event: *mut EvolutionEdsEBookWatcherEvent,
+        pub(super) fn meridian_eds_ebook_free_watcher_event(
+            event: *mut MeridianEdsEBookWatcherEvent,
         );
 
-        pub(super) fn evolution_eds_ebook_watcher_free(watcher: *mut c_void);
+        pub(super) fn meridian_eds_ebook_watcher_free(watcher: *mut c_void);
     }
 }
 
@@ -923,7 +916,7 @@ fn load_contacts_native() -> Result<(Vec<EBookContactRecord>, Option<String>), E
     let mut failed_sources = 0;
     let mut error_pointer = ptr::null_mut();
     let result = unsafe {
-        ffi::evolution_eds_ebook_load_contacts(
+        ffi::meridian_eds_ebook_load_contacts(
             &mut contacts_pointer,
             &mut count,
             &mut configured_sources,
@@ -963,7 +956,7 @@ fn load_contacts_native() -> Result<(Vec<EBookContactRecord>, Option<String>), E
         }
     }
     unsafe {
-        ffi::evolution_eds_ebook_free_contacts(contacts_pointer, count);
+        ffi::meridian_eds_ebook_free_contacts(contacts_pointer, count);
     }
 
     let warning = error.or_else(|| {
@@ -1002,7 +995,7 @@ fn take_c_string(pointer: *mut std::ffi::c_char) -> Option<String> {
             .map(ToOwned::to_owned)
     };
     unsafe {
-        ffi::evolution_eds_ebook_free_error(pointer);
+        ffi::meridian_eds_ebook_free_error(pointer);
     }
     value
 }

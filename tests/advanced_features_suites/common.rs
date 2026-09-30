@@ -5,7 +5,6 @@
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 use gtk::gio;
-use gtk::gio::prelude::*;
 
 pub const SCHEMA_ID: &str = "com.martingawron.Meridian";
 pub const KEYCHAIN_SERVICE_ID: &str = "com.martingawron.Meridian";

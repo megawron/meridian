@@ -20,9 +20,9 @@ fn tier5_adversarial_truncated_x509_der_asn1_fuzzing() {
     let der = DerBuilder::create_test_x509_der(
         0x999,
         "User S/MIME Certificate",
-        "Evolution Project",
-        "Evolution Root CA",
-        "Evolution Project",
+        "Meridian Project",
+        "Meridian Root CA",
+        "Meridian Project",
         "260901000000Z",
         "300901000000Z",
         None,
@@ -71,15 +71,15 @@ fn tier5_adversarial_malformed_drag_drop_uris_and_schemes() {
     let invalid_payloads = [
         "",
         "http://example.com/not-a-message",
-        "evolution-message:", // missing ID
+        "meridian-message:", // missing ID
         "unknown-scheme:12345",
         "file:///path/to/something/else",
     ];
 
     for payload in &invalid_payloads {
-        let is_valid_msg = payload.starts_with("evolution-message:")
-            && payload.len() > "evolution-message:".len();
-        if !payload.starts_with("evolution-message:") || payload.len() <= "evolution-message:".len() {
+        let is_valid_msg = payload.starts_with("meridian-message:")
+            && payload.len() > "meridian-message:".len();
+        if !payload.starts_with("meridian-message:") || payload.len() <= "meridian-message:".len() {
             assert!(!is_valid_msg, "Should be recognized as invalid message payload: {}", payload);
         }
     }
@@ -329,7 +329,7 @@ fn validate_and_process_composer_file_drop(path: &Path) -> Option<TestAttachment
 
 #[test]
 fn tier5_adversarial_m1_composer_file_drop_rejects_directories_without_crash() {
-    let temp_base = std::env::temp_dir().join("evolution_adversarial_test_dirs");
+    let temp_base = std::env::temp_dir().join("meridian_adversarial_test_dirs");
     let _ = fs::create_dir_all(&temp_base);
 
     let sub_dir = temp_base.join("sub_folder_test");
@@ -353,7 +353,7 @@ fn tier5_adversarial_m1_composer_file_drop_rejects_directories_without_crash() {
 #[test]
 fn tier5_adversarial_m1_composer_file_drop_rejects_nonexistent_files() {
     let non_existent_paths = [
-        "/tmp/evolution_ghost_non_existent_file_987654321.pdf",
+        "/tmp/meridian_ghost_non_existent_file_987654321.pdf",
         "/does/not/exist/at/all.txt",
         "",
         "relative/nonexistent.docx",
@@ -371,7 +371,7 @@ fn tier5_adversarial_m1_composer_file_drop_rejects_nonexistent_files() {
 
 #[test]
 fn tier5_adversarial_m1_composer_file_drop_zero_byte_and_unusual_paths() {
-    let temp_base = std::env::temp_dir().join("evolution_adversarial_test_files");
+    let temp_base = std::env::temp_dir().join("meridian_adversarial_test_files");
     let _ = fs::create_dir_all(&temp_base);
 
     // 1. Zero-byte file
@@ -409,7 +409,7 @@ fn tier5_adversarial_m1_composer_file_drop_symlink_discrimination() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::symlink;
-        let temp_base = std::env::temp_dir().join("evolution_adversarial_symlinks");
+        let temp_base = std::env::temp_dir().join("meridian_adversarial_symlinks");
         let _ = fs::create_dir_all(&temp_base);
 
         let real_file = temp_base.join("target_real.txt");
@@ -457,7 +457,7 @@ fn validate_sidebar_folder_drop(
         return Ok(false);
     }
 
-    if let Some(msg_id) = payload_str.strip_prefix("evolution-message:") {
+    if let Some(msg_id) = payload_str.strip_prefix("meridian-message:") {
         let msg_id = msg_id.trim();
         if msg_id.is_empty() {
             return Ok(false); // malformed message ID
@@ -473,7 +473,7 @@ fn validate_sidebar_folder_drop(
         return Ok(true);
     }
 
-    if let Some(json) = payload_str.strip_prefix("evolution-folder:") {
+    if let Some(json) = payload_str.strip_prefix("meridian-folder:") {
         // Must parse valid JSON payload
         let parsed: serde_json::Value =
             serde_json::from_str(json).map_err(|e| format!("Invalid JSON: {e}"))?;
@@ -494,12 +494,12 @@ fn tier5_adversarial_m1_sidebar_folder_drop_malformed_and_missing_payloads() {
     let malformed_payloads = [
         "",
         "   ",
-        "evolution-message:",
-        "evolution-message:   ",
-        "evolution-folder:",
-        "evolution-folder:not-a-json",
-        "evolution-folder:[]",
-        "evolution-folder:{\"unknown_field\": true}",
+        "meridian-message:",
+        "meridian-message:   ",
+        "meridian-folder:",
+        "meridian-folder:not-a-json",
+        "meridian-folder:[]",
+        "meridian-folder:{\"unknown_field\": true}",
         "http://evil.com/payload",
         "file:///tmp/something.eml",
         "random-unrecognized-string",
@@ -523,7 +523,7 @@ fn tier5_adversarial_m1_sidebar_folder_drop_malformed_and_missing_payloads() {
 #[test]
 fn tier5_adversarial_m1_sidebar_folder_drop_unselectable_folder_rejected() {
     let mut store = MockFolderStore::new();
-    let valid_payload = "evolution-message:msg_101";
+    let valid_payload = "meridian-message:msg_101";
 
     // Target folder has selectable == false (e.g., account root header)
     let res = validate_sidebar_folder_drop(valid_payload, false, &mut store, "inbox", false);
@@ -537,7 +537,7 @@ fn tier5_adversarial_m1_sidebar_folder_drop_unselectable_folder_rejected() {
 #[test]
 fn tier5_adversarial_m1_sidebar_folder_drop_nonexistent_message_fails_gracefully() {
     let mut store = MockFolderStore::new();
-    let ghost_payload = "evolution-message:ghost_nonexistent_uid_12345";
+    let ghost_payload = "meridian-message:ghost_nonexistent_uid_12345";
 
     let res = validate_sidebar_folder_drop(ghost_payload, true, &mut store, "archive", false);
     assert!(res.is_err());
@@ -941,7 +941,7 @@ fn tier5_challenger2_drag_drop_unselected_disabled_and_multimessage() {
 
     // ── Part A: Move into an unselected folder ────────────────────────────────
     let move_res = validate_sidebar_folder_drop(
-        "evolution-message:msg_101",
+        "meridian-message:msg_101",
         true,
         &mut store,
         "archive",
@@ -957,7 +957,7 @@ fn tier5_challenger2_drag_drop_unselected_disabled_and_multimessage() {
 
     // ── Part B: Copy into an unselected folder ────────────────────────────────
     let copy_res = validate_sidebar_folder_drop(
-        "evolution-message:msg_102",
+        "meridian-message:msg_102",
         true,
         &mut store,
         "receipts",
@@ -973,7 +973,7 @@ fn tier5_challenger2_drag_drop_unselected_disabled_and_multimessage() {
     // ── Part C: Drop onto a disabled / non-selectable folder ──────────────────
     // Target folder has selectable == false (e.g. IMAP namespace header or disabled heading)
     let disabled_res = validate_sidebar_folder_drop(
-        "evolution-message:msg_102",
+        "meridian-message:msg_102",
         false, // selectable = false
         &mut store,
         "gmail_heading",
@@ -992,7 +992,7 @@ fn tier5_challenger2_drag_drop_unselected_disabled_and_multimessage() {
 
     // ── Part D: Drop onto same folder (no-op) ─────────────────────────────────
     let same_res = validate_sidebar_folder_drop(
-        "evolution-message:msg_102",
+        "meridian-message:msg_102",
         true,
         &mut store,
         "inbox",
@@ -1003,10 +1003,10 @@ fn tier5_challenger2_drag_drop_unselected_disabled_and_multimessage() {
 
     // ── Part E: Multiple message IDs in payload (safely rejected) ─────────────
     let multi_id_payloads = [
-        "evolution-message:msg_101,msg_102",
-        "evolution-message:msg_101\nevolution-message:msg_102",
-        "evolution-message:msg_101 msg_102",
-        "evolution-message:;msg_101;",
+        "meridian-message:msg_101,msg_102",
+        "meridian-message:msg_101\nmeridian-message:msg_102",
+        "meridian-message:msg_101 msg_102",
+        "meridian-message:;msg_101;",
     ];
     for multi_payload in &multi_id_payloads {
         let res = validate_sidebar_folder_drop(multi_payload, true, &mut store, "drafts", false);
@@ -3424,20 +3424,17 @@ fn tier5_challenger2_m3_cross_platform_gating_and_cfg_cleanliness() {
     assert_eq!(KEYCHAIN_SERVICE_ID, "com.martingawron.Meridian");
 
     // 3. Native adapter availability contract:
-    // On macOS, native_adapter_available() must be true even without libcamel/EDS bridge.
-    // On Linux without eds_camel_bridge, native_adapter_available() must be false.
     let eds_bridge = cfg!(eds_camel_bridge);
-    let adapter_expected = eds_bridge || is_macos;
+    let adapter_expected = eds_bridge;
     assert_eq!(
-        cfg!(any(eds_camel_bridge, target_os = "macos")),
+        cfg!(eds_camel_bridge),
         adapter_expected,
-        "Native adapter gating logic must match cfg!(any(eds_camel_bridge, target_os = \"macos\"))"
+        "Native adapter gating logic must match cfg!(eds_camel_bridge)"
     );
 
-    // 4. Security.framework linkage contract:
-    // On Linux builds, Apple Security.framework MUST NOT be linked.
+    // 4. Clean Linux build contract
     if is_linux {
-        assert!(!cfg!(feature = "macos_bridge"));
+        assert!(!is_macos, "Linux build must not be macos");
     }
 }
 
@@ -4376,7 +4373,7 @@ fn tier5_challenger2_m4_pkcs12_passphrase_matrix_and_adversarial_import_stress()
         .arg(&rsa_key)
         .arg("-out")
         .arg(&x509_cert)
-        .args(["-days", "1", "-nodes", "-subj", "/CN=Challenger Stress/O=Evolution Project"])
+        .args(["-days", "1", "-nodes", "-subj", "/CN=Challenger Stress/O=Meridian Project"])
         .output()
         .expect("OpenSSL certificate generation must succeed");
     assert!(gen_status.status.success());
@@ -4960,7 +4957,7 @@ fn tier5_challenger1_m4_fix1_openssl_process_table_secrecy_matrix() {
         .arg(&rsa_key)
         .arg("-out")
         .arg(&x509_cert)
-        .args(["-days", "1", "-nodes", "-subj", "/CN=Process Secrecy Test/O=Evolution Project"])
+        .args(["-days", "1", "-nodes", "-subj", "/CN=Process Secrecy Test/O=Meridian Project"])
         .output()
         .expect("OpenSSL certificate generation must succeed");
     assert!(gen_status.status.success());

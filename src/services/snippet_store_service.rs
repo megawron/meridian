@@ -43,7 +43,7 @@ impl SnippetStore {
     }
 
     pub fn from_environment() -> Self {
-        let path = std::env::var_os("EVOLUTION_GTK4_SNIPPET_FILE")
+        let path = std::env::var_os("MERIDIAN_SNIPPET_FILE").or_else(|| std::env::var_os("EVOLUTION_GTK4_SNIPPET_FILE"))
             .map(PathBuf::from)
             .unwrap_or_else(|| crate::services::app_data_dir().join("mail-snippets.json"));
         Self::new(path)
@@ -137,7 +137,7 @@ mod tests {
     #[test]
     fn snippets_roundtrip_sorted_and_can_be_deleted() {
         let root =
-            std::env::temp_dir().join(format!("evolution-gtk4-snippets-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("meridian-snippets-{}", uuid::Uuid::new_v4()));
         let store = SnippetStore::new(root.join("snippets.json"));
         let later = MailSnippet {
             id: "snippet-2".to_string(),
@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn invalid_snippet_metadata_is_rejected() {
         let store = SnippetStore::new(std::env::temp_dir().join(format!(
-            "evolution-gtk4-snippet-{}.json",
+            "meridian-snippet-{}.json",
             uuid::Uuid::new_v4()
         )));
         let result = store.upsert(MailSnippet {

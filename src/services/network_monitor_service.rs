@@ -135,7 +135,7 @@ impl NetworkMonitorService {
         }
 
         // Detect via gio::NetworkMonitor if available on platform
-        #[cfg(all(unix, not(target_os = "macos")))]
+        #[cfg(unix)]
         {
             use gio::prelude::*;
             let monitor = gio::NetworkMonitor::default();
@@ -147,7 +147,7 @@ impl NetworkMonitorService {
             }
             NetworkConnectivity::Online
         }
-        #[cfg(any(target_os = "macos", windows, not(unix)))]
+        #[cfg(not(unix))]
         {
             NetworkConnectivity::Online
         }

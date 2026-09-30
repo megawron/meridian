@@ -471,7 +471,7 @@ pub struct CalendarStoreService {
 impl CalendarStoreService {
     pub fn new() -> Self {
         let (calendar_dir, writable) =
-            if let Some(path) = std::env::var_os("EVOLUTION_GTK4_ICAL_DIR").map(PathBuf::from) {
+            if let Some(path) = std::env::var_os("MERIDIAN_ICAL_DIR").or_else(|| std::env::var_os("EVOLUTION_GTK4_ICAL_DIR")).map(PathBuf::from) {
                 (path, false)
             } else if let Some(path) = crate::services::settings_service::AppSettings::try_new()
                 .map(|settings| settings.local_calendar_directory())
@@ -768,7 +768,12 @@ impl CalendarStoreService {
     }
 
     fn calendar_file_path(&self) -> PathBuf {
-        self.calendar_dir.join("evolution-gtk4-local.ics")
+        let meridian_path = self.calendar_dir.join("meridian-local.ics");
+        if meridian_path.is_file() || !self.calendar_dir.join("evolution-gtk4-local.ics").is_file() {
+            meridian_path
+        } else {
+            self.calendar_dir.join("evolution-gtk4-local.ics")
+        }
     }
 
     fn mutable_calendar_files(&self) -> Vec<PathBuf> {
@@ -1033,7 +1038,7 @@ fn ensure_component_uid(raw: &str, kind: &str, fallback_uid: Option<&str>) -> (S
     let mut lines = unfold_lines(raw);
     let uid = component_uid_from_lines(&lines)
         .or_else(|| fallback_uid.map(ToOwned::to_owned))
-        .unwrap_or_else(|| format!("evolution-gtk4-{}", uuid::Uuid::new_v4()));
+        .unwrap_or_else(|| format!("meridian-{}", uuid::Uuid::new_v4()));
     if component_uid_from_lines(&lines).is_none() {
         let insertion = lines
             .iter()
@@ -2824,7 +2829,7 @@ mod tests {
     #[test]
     fn missing_calendar_directory_is_empty_and_does_not_create_data() {
         let root = std::env::temp_dir().join(format!(
-            "evolution-gtk4-missing-ical-{}",
+            "meridian-missing-ical-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
@@ -3739,7 +3744,7 @@ END:VCALENDAR\r\n";
 
     fn temporary_directory(label: &str) -> PathBuf {
         let path =
-            std::env::temp_dir().join(format!("evolution-gtk4-{label}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("meridian-{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).expect("temporary directory should be created");
         path

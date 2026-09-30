@@ -732,7 +732,7 @@ fn run_gpg_verify(data: &[u8], signature: &[u8]) -> Result<GpgVerifyResult, Stri
             return Err(error);
         }
     };
-    let binary = std::env::var_os("EVOLUTION_GPG_BINARY").unwrap_or_else(|| "gpg".into());
+    let binary = std::env::var_os("MERIDIAN_GPG_BINARY").or_else(|| std::env::var_os("EVOLUTION_GPG_BINARY")).unwrap_or_else(|| "gpg".into());
     let result = Command::new(binary)
         .args(["--batch", "--no-tty", "--status-fd=2", "--verify"])
         .arg(&signature_path)
@@ -751,7 +751,7 @@ fn run_gpg_verify(data: &[u8], signature: &[u8]) -> Result<GpgVerifyResult, Stri
 }
 
 fn run_gpg_clear_verify(input: &[u8]) -> Result<GpgVerifyResult, String> {
-    let binary = std::env::var_os("EVOLUTION_GPG_BINARY").unwrap_or_else(|| "gpg".into());
+    let binary = std::env::var_os("MERIDIAN_GPG_BINARY").or_else(|| std::env::var_os("EVOLUTION_GPG_BINARY")).unwrap_or_else(|| "gpg".into());
     let mut child = Command::new(binary)
         .args(["--batch", "--no-tty", "--status-fd=2", "--verify"])
         .stdin(Stdio::piped())
@@ -776,7 +776,7 @@ fn run_gpg_clear_verify(input: &[u8]) -> Result<GpgVerifyResult, String> {
 }
 
 fn run_gpg_decrypt(ciphertext: &[u8]) -> Result<GpgDecryptResult, String> {
-    let binary = std::env::var_os("EVOLUTION_GPG_BINARY").unwrap_or_else(|| "gpg".into());
+    let binary = std::env::var_os("MERIDIAN_GPG_BINARY").or_else(|| std::env::var_os("EVOLUTION_GPG_BINARY")).unwrap_or_else(|| "gpg".into());
     let mut child = Command::new(binary)
         .args([
             "--batch",
@@ -1015,7 +1015,7 @@ fn run_openssl_with_input(
 }
 
 fn run_openssl_command(arguments: &[String]) -> Result<OpenSslCommandOutput, String> {
-    let binary = std::env::var_os("EVOLUTION_OPENSSL_BINARY").unwrap_or_else(|| "openssl".into());
+    let binary = std::env::var_os("MERIDIAN_OPENSSL_BINARY").or_else(|| std::env::var_os("EVOLUTION_OPENSSL_BINARY")).unwrap_or_else(|| "openssl".into());
     let output = Command::new(binary)
         .args(arguments)
         .output()
@@ -1044,7 +1044,7 @@ fn command_mentions_expiry(stderr: &[u8]) -> bool {
 
 fn write_secure_temp_file(label: &str, contents: &[u8]) -> Result<PathBuf, String> {
     let path = std::env::temp_dir().join(format!(
-        "evolution-gtk4-{label}-{}-{}.bin",
+        "meridian-{label}-{}-{}.bin",
         std::process::id(),
         uuid::Uuid::new_v4().simple()
     ));
@@ -1161,7 +1161,7 @@ pub(crate) fn protect_smime_rfc822(raw: &[u8], options: &SmimeOptions) -> Result
 
 fn wrap_smime_signed_entity(entity: &[u8], signature: &[u8]) -> Vec<u8> {
     let boundary = format!(
-        "=_EvolutionGTK4_SMIME_Signed_{}",
+        "=_Meridian_SMIME_Signed_{}",
         uuid::Uuid::new_v4().simple()
     );
     let mut output = Vec::new();
@@ -1294,7 +1294,7 @@ fn serialize_header_lines(lines: &[&[u8]]) -> Vec<u8> {
 
 fn wrap_signed_entity(entity: &[u8], signature: &[u8]) -> Vec<u8> {
     let boundary = format!(
-        "=_EvolutionGTK4_PGP_Signed_{}",
+        "=_Meridian_PGP_Signed_{}",
         uuid::Uuid::new_v4().simple()
     );
     let mut output = Vec::new();
@@ -1319,7 +1319,7 @@ fn wrap_signed_entity(entity: &[u8], signature: &[u8]) -> Vec<u8> {
 
 fn wrap_encrypted_entity(ciphertext: &[u8]) -> Vec<u8> {
     let boundary = format!(
-        "=_EvolutionGTK4_PGP_Encrypted_{}",
+        "=_Meridian_PGP_Encrypted_{}",
         uuid::Uuid::new_v4().simple()
     );
     let mut output = Vec::new();
@@ -1390,7 +1390,7 @@ fn run_gpg_encrypt(input: &[u8], recipients: &[String]) -> Result<Vec<u8>, Strin
 }
 
 fn run_gpg(arguments: &[String], input: &[u8], operation: &str) -> Result<Vec<u8>, String> {
-    let binary = std::env::var_os("EVOLUTION_GPG_BINARY").unwrap_or_else(|| "gpg".into());
+    let binary = std::env::var_os("MERIDIAN_GPG_BINARY").or_else(|| std::env::var_os("EVOLUTION_GPG_BINARY")).unwrap_or_else(|| "gpg".into());
     let mut child = Command::new(binary)
         .args(arguments)
         .stdin(Stdio::piped())
@@ -1457,7 +1457,7 @@ pub(crate) fn normalize_recipient_addresses(fields: &[String]) -> Result<Vec<Str
 /// output.  Fingerprints, rather than short key IDs, are returned so the
 /// selected signing key cannot become ambiguous after a keyring change.
 pub(crate) fn list_openpgp_keys() -> Result<Vec<OpenPgpKey>, String> {
-    let binary = std::env::var_os("EVOLUTION_GPG_BINARY").unwrap_or_else(|| "gpg".into());
+    let binary = std::env::var_os("MERIDIAN_GPG_BINARY").or_else(|| std::env::var_os("EVOLUTION_GPG_BINARY")).unwrap_or_else(|| "gpg".into());
     let output = Command::new(binary)
         .args(["--batch", "--with-colons", "--list-keys"])
         .output()

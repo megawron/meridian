@@ -798,7 +798,7 @@ pub struct OpenSslBridge;
 
 impl OpenSslBridge {
     fn binary() -> std::ffi::OsString {
-        std::env::var_os("EVOLUTION_OPENSSL_BINARY").unwrap_or_else(|| "openssl".into())
+        std::env::var_os("MERIDIAN_OPENSSL_BINARY").or_else(|| std::env::var_os("EVOLUTION_OPENSSL_BINARY")).unwrap_or_else(|| "openssl".into())
     }
 
     pub(crate) fn apply_passin(cmd: &mut Command, passphrase: Option<&str>) {
@@ -961,7 +961,7 @@ pub struct GnuPgBridge;
 
 impl GnuPgBridge {
     fn binary() -> std::ffi::OsString {
-        std::env::var_os("EVOLUTION_GPG_BINARY").unwrap_or_else(|| "gpg".into())
+        std::env::var_os("MERIDIAN_GPG_BINARY").or_else(|| std::env::var_os("EVOLUTION_GPG_BINARY")).unwrap_or_else(|| "gpg".into())
     }
 
     pub fn list_keys() -> Result<Vec<OpenPgpKeyRecord>, String> {
@@ -1138,7 +1138,7 @@ pub struct CertificateStore {
 impl CertificateStore {
     pub fn new(custom_path: Option<PathBuf>) -> Self {
         let store_file = custom_path.unwrap_or_else(|| {
-            if let Some(env_path) = std::env::var_os("EVOLUTION_GTK4_CERT_FILE") {
+            if let Some(env_path) = std::env::var_os("MERIDIAN_CERT_FILE").or_else(|| std::env::var_os("EVOLUTION_GTK4_CERT_FILE")) {
                 PathBuf::from(env_path)
             } else {
                 crate::services::app_data_dir().join("certificates/certificates.json")
@@ -1588,9 +1588,9 @@ mod tests {
         let der = build_test_cert_der(
             0x123456,
             "User S/MIME Certificate",
-            "Evolution Project",
-            "Evolution Root CA",
-            "Evolution Project",
+            "Meridian Project",
+            "Meridian Root CA",
+            "Meridian Project",
             "260901000000Z",
             "301231235959Z",
             Some(0x80 | 0x40 | 0x20),
@@ -1598,9 +1598,9 @@ mod tests {
 
         let cert = X509Parser::parse_der(&der).expect("DER parse must succeed");
         assert_eq!(cert.subject_cn, "User S/MIME Certificate");
-        assert_eq!(cert.issuer_cn, "Evolution Root CA");
-        assert_eq!(cert.subject_org, "Evolution Project");
-        assert_eq!(cert.issuer_org, "Evolution Project");
+        assert_eq!(cert.issuer_cn, "Meridian Root CA");
+        assert_eq!(cert.subject_org, "Meridian Project");
+        assert_eq!(cert.issuer_org, "Meridian Project");
         assert!(!cert.is_expired);
         assert_eq!(cert.key_usage_flags.digital_signature, true);
         assert_eq!(cert.key_usage_flags.non_repudiation, true);
@@ -1613,9 +1613,9 @@ mod tests {
         let der = build_test_cert_der(
             0x999,
             "User Fuzz Test",
-            "Evolution Project",
-            "Evolution Root CA",
-            "Evolution Project",
+            "Meridian Project",
+            "Meridian Root CA",
+            "Meridian Project",
             "260901000000Z",
             "300901000000Z",
             None,
@@ -1969,7 +1969,7 @@ mod tests {
             0x9999,
             "NonAscii Validity Cert",
             "Evolution Org",
-            "Evolution CA",
+            "Meridian CA",
             "Evolution Org",
             bad_time_str,
             bad_time_str,

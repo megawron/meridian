@@ -42,7 +42,7 @@ impl CalendarCategoryStore {
     }
 
     pub fn from_environment() -> Self {
-        let path = std::env::var_os("EVOLUTION_GTK4_CATEGORY_FILE")
+        let path = std::env::var_os("MERIDIAN_CATEGORY_FILE").or_else(|| std::env::var_os("EVOLUTION_GTK4_CATEGORY_FILE"))
             .map(PathBuf::from)
             .unwrap_or_else(|| crate::services::app_data_dir().join("calendar-categories.json"));
         Self::new(path)
@@ -458,7 +458,7 @@ mod tests {
 
     fn temporary_directory(label: &str) -> PathBuf {
         let path =
-            std::env::temp_dir().join(format!("evolution-gtk4-{label}-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("meridian-{label}-{}", uuid::Uuid::new_v4()));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).expect("temporary directory should be created");
         path

@@ -771,7 +771,7 @@ fn http_fetch_get(
 
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(timeout_secs))
-        .user_agent("Evolution-GTK4/0.1.0 (Autoconfig)")
+        .user_agent("Meridian/0.1.0 (Autoconfig)")
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -797,7 +797,7 @@ fn http_fetch_get(
     response.text().map_err(|e| e.to_string())
 }
 
-/// Resolves DNS MX records using GIO Resolver (cross-platform Linux/macOS)
+/// Resolves DNS MX records using GIO Resolver
 pub fn resolve_dns_mx(domain: &str) -> Result<Vec<(u16, String)>, String> {
     let resolver = Resolver::default();
     let records = resolver

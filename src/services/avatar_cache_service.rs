@@ -3,7 +3,7 @@
 // AvatarCacheService — Asynchronous contact and domain avatar fetching and caching.
 
 use gtk::glib;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;

@@ -5,9 +5,8 @@
 // Covers:
 // - R1: Standalone Message Viewer Window (activation, actions, multi-window, lifecycle)
 // - R2: Desktop Drag-and-Drop (Composer file drop, Mail list drag/drop to sidebar folders, Calendar time grid drag)
-// - R3: Account Autodiscover & Wizard Modernization (Mozilla ISPDB, DNS MX, known provider profiles)
-// - R4: Native macOS Keychain Integration (Security.framework bindings under com.martingawron.Meridian, Linux compilation cleanliness)
-// - R5: Standalone Portable IMAP/SMTP Engine for macOS (offline/mock-server tests for IMAP listing, envelope/body parse, direct SMTP delivery)
+// - R4: Credential & Secret Storage Service (Linux Secret Service / Keyring integration, password CRUD)
+// - R5: Protocol Engines & Parsers (IMAP folder hierarchy, envelope/body parse, SMTP delivery)
 // - R6: Interactive Certificate & Security Manager (X.509 parsing, OpenPGP, import/export, trust levels)
 //
 // Organized across:
@@ -17,9 +16,9 @@
 // - Tier 4: Real-World Application Workloads & Onboarding Flows
 // - Tier 5: Adversarial Hardening & Boundary Stress
 
+#![allow(dead_code)]
+
 mod advanced_features_suites;
-#[path = "advanced_features_suites/r4_r5_macos.rs"]
-mod r4_r5_macos;
 
 #[test]
 fn advanced_features_e2e_suite_initialization() {

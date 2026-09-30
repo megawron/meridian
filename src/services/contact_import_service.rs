@@ -781,7 +781,7 @@ mail: danny@example.com
     fn duplicate_policies_behave_deterministically_with_contact_store() {
         let unique_suffix = uuid::Uuid::new_v4();
         let temp_path =
-            std::env::temp_dir().join(format!("evolution-contact-import-test-{unique_suffix}"));
+            std::env::temp_dir().join(format!("meridian-contact-import-test-{unique_suffix}"));
         std::fs::create_dir_all(&temp_path).unwrap();
         let store = ContactStoreService::with_writable_contact_dir(&temp_path);
 

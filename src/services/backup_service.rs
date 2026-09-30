@@ -102,6 +102,8 @@ const APP_FILES: &[&str] = &[
     "mail-templates.json",
     "calendar-categories.json",
     "out-of-office.json",
+    "ical/meridian-local.ics",
+    "vcards/meridian-local.vcf",
     "ical/evolution-gtk4-local.ics",
     "vcards/evolution-gtk4-local.vcf",
 ];
@@ -4426,7 +4428,7 @@ mod tests {
             .expect("clock should be valid")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "evolution-gtk4-{label}-{}-{unique}",
+            "meridian-{label}-{}-{unique}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&path);

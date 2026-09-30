@@ -255,7 +255,7 @@ impl AccountConfigStore {
     }
 
     pub fn from_environment() -> Self {
-        let path = std::env::var_os("EVOLUTION_GTK4_ACCOUNT_FILE")
+        let path = std::env::var_os("MERIDIAN_ACCOUNT_FILE").or_else(|| std::env::var_os("EVOLUTION_GTK4_ACCOUNT_FILE"))
             .map(PathBuf::from)
             .unwrap_or_else(|| crate::services::app_data_dir().join("accounts.json"));
         Self::new(path)
@@ -770,7 +770,7 @@ pub fn query_exchange_auth_methods(host_or_url: &str) -> Result<Vec<String>, Str
 
 /// Returns the path to the EDS sources configuration directory.
 pub fn eds_sources_dir() -> PathBuf {
-    if let Ok(custom) = std::env::var("EVOLUTION_SOURCES_DIR") {
+    if let Ok(custom) = std::env::var("MERIDIAN_SOURCES_DIR").or_else(|_| std::env::var("EVOLUTION_SOURCES_DIR")) {
         let path = PathBuf::from(custom.trim());
         if !path.as_os_str().is_empty() {
             return path;
@@ -1641,7 +1641,7 @@ mod tests {
 
     fn temporary_directory(label: &str) -> PathBuf {
         let path =
-            std::env::temp_dir().join(format!("evolution-gtk4-{label}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("meridian-{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).expect("temporary directory should be created");
         path
@@ -1655,36 +1655,6 @@ mod tests {
         // Sync with password
         let res = sync_profile_to_eds(&profile, Some(test_pass));
         assert!(res.is_ok(), "sync_profile_to_eds failed: {:?}", res.err());
-
-        // On macOS, verify CredentialService contains the password under profile.id
-        if cfg!(target_os = "macos") {
-            let fetched = crate::services::credential_service::CredentialService::fetch_password(&profile.id);
-            assert!(fetched.is_ok(), "fetch_password returned error: {:?}", fetched.err());
-            assert_eq!(fetched.unwrap(), Some(test_pass.to_string()));
-
-            // Also verify mail_uid and transport_uid
-            let parent_uid = eds_source_uid_for_email(&profile.email);
-            let mail_uid = format!("{}-mail", parent_uid);
-            let transport_uid = format!("{}-transport", parent_uid);
-            assert_eq!(
-                crate::services::credential_service::CredentialService::fetch_password(&mail_uid).unwrap(),
-                Some(test_pass.to_string())
-            );
-            assert_eq!(
-                crate::services::credential_service::CredentialService::fetch_password(&transport_uid).unwrap(),
-                Some(test_pass.to_string())
-            );
-
-            // Delete account and verify credentials removed
-            let store = AccountConfigStore::default();
-            let _ = store.upsert(profile.clone());
-            let del_res = store.delete(&profile.id);
-            assert!(del_res.is_ok());
-            assert_eq!(
-                crate::services::credential_service::CredentialService::fetch_password(&profile.id).unwrap(),
-                None
-            );
-        }
 
         // Always remove test-generated .source files from the system
         remove_eds_sources_for_profile(&profile);

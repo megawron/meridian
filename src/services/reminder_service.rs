@@ -59,7 +59,7 @@ fn reminder_process_nonce() -> u128 {
 pub(crate) fn calendar_store_for_worker(
     local_calendar_directory: Option<String>,
 ) -> CalendarStoreService {
-    if let Some(path) = std::env::var_os("EVOLUTION_GTK4_ICAL_DIR") {
+    if let Some(path) = std::env::var_os("MERIDIAN_ICAL_DIR").or_else(|| std::env::var_os("EVOLUTION_GTK4_ICAL_DIR")) {
         return CalendarStoreService::with_calendar_dir(path);
     }
     if let Some(path) = local_calendar_directory
@@ -79,7 +79,7 @@ pub(crate) fn calendar_store_for_worker(
 pub(crate) fn contact_store_for_worker(
     local_contact_directory: Option<String>,
 ) -> super::contact_store_service::ContactStoreService {
-    if let Some(path) = std::env::var_os("EVOLUTION_GTK4_VCARD_DIR") {
+    if let Some(path) = std::env::var_os("MERIDIAN_VCARD_DIR").or_else(|| std::env::var_os("EVOLUTION_GTK4_VCARD_DIR")) {
         return super::contact_store_service::ContactStoreService::with_contact_dir(path);
     }
     if let Some(path) = local_contact_directory
@@ -1776,7 +1776,7 @@ pub struct ReminderStore {
 
 impl ReminderStore {
     pub fn new() -> io::Result<Self> {
-        let path = std::env::var_os("EVOLUTION_GTK4_REMINDER_FILE")
+        let path = std::env::var_os("MERIDIAN_REMINDER_FILE").or_else(|| std::env::var_os("EVOLUTION_GTK4_REMINDER_FILE"))
             .map(PathBuf::from)
             .unwrap_or_else(|| super::app_data_dir().join("reminders.json"));
         Self::with_path(path)
@@ -3345,7 +3345,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let parent = std::env::temp_dir().join(format!(
-            "evolution-gtk4-failed-write-{}",
+            "meridian-failed-write-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&parent);
@@ -3380,7 +3380,7 @@ mod tests {
     #[test]
     fn failed_atomic_save_cleans_temp_and_preserves_destination() {
         let parent = std::env::temp_dir().join(format!(
-            "evolution-gtk4-reminder-atomic-{}",
+            "meridian-reminder-atomic-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&parent);
@@ -3428,7 +3428,7 @@ mod tests {
             .expect("clock should be valid")
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "evolution-gtk4-{label}-{}-{unique}.json",
+            "meridian-{label}-{}-{unique}.json",
             std::process::id()
         ))
     }

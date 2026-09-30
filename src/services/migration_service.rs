@@ -5051,7 +5051,7 @@ Password=must-not-be-retained
             .expect("clock should be valid")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "evolution-gtk4-{label}-{}-{unique}",
+            "meridian-{label}-{}-{unique}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&path);

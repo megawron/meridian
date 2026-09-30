@@ -27,7 +27,7 @@ pub struct ContactStoreService {
 impl ContactStoreService {
     pub fn new() -> Self {
         let (contact_dir, writable) =
-            if let Some(path) = std::env::var_os("EVOLUTION_GTK4_VCARD_DIR").map(PathBuf::from) {
+            if let Some(path) = std::env::var_os("MERIDIAN_VCARD_DIR").or_else(|| std::env::var_os("EVOLUTION_GTK4_VCARD_DIR")).map(PathBuf::from) {
                 (path, false)
             } else if let Some(path) = crate::services::settings_service::AppSettings::try_new()
                 .map(|settings| settings.local_contact_directory())
@@ -398,7 +398,12 @@ impl ContactStoreService {
     }
 
     fn contact_file_path(&self) -> PathBuf {
-        self.contact_dir.join("evolution-gtk4-local.vcf")
+        let meridian_path = self.contact_dir.join("meridian-local.vcf");
+        if meridian_path.is_file() || !self.contact_dir.join("evolution-gtk4-local.vcf").is_file() {
+            meridian_path
+        } else {
+            self.contact_dir.join("evolution-gtk4-local.vcf")
+        }
     }
 
     fn mutable_vcard_files(&self) -> Vec<PathBuf> {
@@ -536,7 +541,7 @@ fn ensure_vcard_uid(raw: &str, fallback_uid: Option<&str>) -> String {
     }
     let uid = fallback_uid
         .map(ToOwned::to_owned)
-        .unwrap_or_else(|| format!("evolution-gtk4-{}", uuid::Uuid::new_v4()));
+        .unwrap_or_else(|| format!("meridian-{}", uuid::Uuid::new_v4()));
     let normalized = normalize_line_endings(raw);
     let mut lines = normalized
         .split("\r\n")
@@ -753,7 +758,7 @@ mod tests {
     #[test]
     fn missing_directory_is_empty_and_does_not_create_data() {
         let root = std::env::temp_dir().join(format!(
-            "evolution-gtk4-missing-vcards-{}",
+            "meridian-missing-vcards-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
@@ -877,7 +882,7 @@ mod tests {
         service
             .create_contact(valid)
             .expect("valid list should be created");
-        let path = root.join("evolution-gtk4-local.vcf");
+        let path = root.join("meridian-local.vcf");
         let original = fs::read_to_string(&path).expect("list file should exist");
         let invalid = valid.replace("valid@example.test", "not-an-email");
         let error = service
@@ -921,7 +926,7 @@ mod tests {
         service
             .create_contact(vcard)
             .expect("folded contact should save");
-        let path = root.join("evolution-gtk4-local.vcf");
+        let path = root.join("meridian-local.vcf");
         let stored = fs::read_to_string(&path).expect("store should be readable");
         assert!(stored.contains("X-PROVIDER-LONG:erste Zeile\r\n zweite Zeile"));
 
@@ -952,6 +957,7 @@ mod tests {
             .create_contact(multiple)
             .expect_err("multiple cards should be rejected");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(!root.join("meridian-local.vcf").exists());
         assert!(!root.join("evolution-gtk4-local.vcf").exists());
 
         let _ = fs::remove_dir_all(root);
@@ -1071,7 +1077,7 @@ mod tests {
 
     fn temporary_directory(label: &str) -> PathBuf {
         let path =
-            std::env::temp_dir().join(format!("evolution-gtk4-{label}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("meridian-{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).expect("temporary directory should be created");
         path

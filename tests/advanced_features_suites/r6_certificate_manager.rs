@@ -430,9 +430,9 @@ fn r6_test_x509_asn1_der_parser_subject_and_issuer() {
     let der = DerBuilder::create_test_x509_der(
         0x1234,
         "User S/MIME Certificate",
-        "Evolution Project",
-        "Evolution Root CA",
-        "Evolution Project",
+        "Meridian Project",
+        "Meridian Root CA",
+        "Meridian Project",
         "260901000000Z",
         "301231235959Z",
         Some(0x80 | 0x40 | 0x20), // DigitalSignature, NonRepudiation, KeyEncipherment
@@ -440,8 +440,8 @@ fn r6_test_x509_asn1_der_parser_subject_and_issuer() {
 
     let cert = MockX509Parser::parse_der(&der).unwrap();
     assert_eq!(cert.subject_cn, "User S/MIME Certificate");
-    assert_eq!(cert.issuer_cn, "Evolution Root CA");
-    assert_eq!(cert.subject_org, "Evolution Project");
+    assert_eq!(cert.issuer_cn, "Meridian Root CA");
+    assert_eq!(cert.subject_org, "Meridian Project");
 }
 
 #[test]
@@ -449,9 +449,9 @@ fn r6_test_x509_asn1_der_parser_sha256_fingerprint() {
     let der = DerBuilder::create_test_x509_der(
         0x5678,
         "User S/MIME Certificate",
-        "Evolution Project",
-        "Evolution Root CA",
-        "Evolution Project",
+        "Meridian Project",
+        "Meridian Root CA",
+        "Meridian Project",
         "260901000000Z",
         "301231235959Z",
         None,
@@ -470,9 +470,9 @@ fn r6_test_x509_pem_decoding_and_roundtrip() {
     let der = DerBuilder::create_test_x509_der(
         0x9999,
         "User S/MIME Certificate",
-        "Evolution Project",
-        "Evolution Root CA",
-        "Evolution Project",
+        "Meridian Project",
+        "Meridian Root CA",
+        "Meridian Project",
         "260901000000Z",
         "301231235959Z",
         None,
@@ -491,9 +491,9 @@ fn r6_test_x509_key_usage_extension_parsing() {
     let der = DerBuilder::create_test_x509_der(
         0x1001,
         "User S/MIME Certificate",
-        "Evolution Project",
-        "Evolution Root CA",
-        "Evolution Project",
+        "Meridian Project",
+        "Meridian Root CA",
+        "Meridian Project",
         "260901000000Z",
         "301231235959Z",
         Some(0xE0),
@@ -510,9 +510,9 @@ fn r6_test_x509_expired_certificate_detection() {
     let expired_der = DerBuilder::create_test_x509_der(
         0x1002,
         "Expired Test Cert",
-        "Evolution Project",
-        "Evolution Root CA",
-        "Evolution Project",
+        "Meridian Project",
+        "Meridian Root CA",
+        "Meridian Project",
         "150101000000Z",
         "200101000000Z", // Expired in 2020
         None,
@@ -526,10 +526,10 @@ fn r6_test_x509_expired_certificate_detection() {
 fn r6_test_x509_self_signed_ca_detection() {
     let ca_der = DerBuilder::create_test_x509_der(
         0x1,
-        "Evolution Root CA",
-        "Evolution Project",
-        "Evolution Root CA",
-        "Evolution Project",
+        "Meridian Root CA",
+        "Meridian Project",
+        "Meridian Root CA",
+        "Meridian Project",
         "260901000000Z",
         "360901000000Z",
         Some(0x06), // KeyCertSign | CRLSign
@@ -564,10 +564,10 @@ fn r6_test_certificate_store_categorization() {
 
     let ca_der = DerBuilder::create_test_x509_der(
         0x1,
-        "Evolution Root CA",
-        "Evolution Project",
-        "Evolution Root CA",
-        "Evolution Project",
+        "Meridian Root CA",
+        "Meridian Project",
+        "Meridian Root CA",
+        "Meridian Project",
         "260901000000Z",
         "360901000000Z",
         None,
@@ -577,9 +577,9 @@ fn r6_test_certificate_store_categorization() {
     let user_der = DerBuilder::create_test_x509_der(
         0x2,
         "User S/MIME Certificate",
-        "Evolution Project",
-        "Evolution Root CA",
-        "Evolution Project",
+        "Meridian Project",
+        "Meridian Root CA",
+        "Meridian Project",
         "260901000000Z",
         "300901000000Z",
         None,
@@ -593,7 +593,7 @@ fn r6_test_certificate_store_categorization() {
     let personal = store.list_by_category(CertCategory::Personal);
 
     assert_eq!(authorities.len(), 1);
-    assert_eq!(authorities[0].subject_cn, "Evolution Root CA");
+    assert_eq!(authorities[0].subject_cn, "Meridian Root CA");
     assert_eq!(personal.len(), 1);
     assert_eq!(personal[0].subject_cn, "User S/MIME Certificate");
 }
@@ -604,9 +604,9 @@ fn r6_test_certificate_trust_level_configuration() {
     let user_der = DerBuilder::create_test_x509_der(
         0x3,
         "User S/MIME Certificate",
-        "Evolution Project",
-        "Evolution Root CA",
-        "Evolution Project",
+        "Meridian Project",
+        "Meridian Root CA",
+        "Meridian Project",
         "260901000000Z",
         "300901000000Z",
         None,
@@ -637,9 +637,9 @@ fn r6_test_certificate_store_json_persistence_roundtrip() {
     let user_der = DerBuilder::create_test_x509_der(
         0x4,
         "User S/MIME Certificate",
-        "Evolution Project",
-        "Evolution Root CA",
-        "Evolution Project",
+        "Meridian Project",
+        "Meridian Root CA",
+        "Meridian Project",
         "260901000000Z",
         "300901000000Z",
         None,
@@ -649,7 +649,7 @@ fn r6_test_certificate_store_json_persistence_roundtrip() {
 
     let json = store.export_json();
     assert!(json.contains("User S/MIME Certificate"));
-    assert!(json.contains("Evolution Project"));
+    assert!(json.contains("Meridian Project"));
 
     let restored = MockCertificateStore::import_json(&json).unwrap();
     assert_eq!(restored.records.len(), 1);

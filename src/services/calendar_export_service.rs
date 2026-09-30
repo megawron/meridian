@@ -424,7 +424,7 @@ fn export_to_rdf(events: &[CalendarEventRecord]) -> Result<String, String> {
     out.push_str("  <channel rdf:about=\"https://www.gnome.org/projects/evolution/\">\n");
     out.push_str("    <title>Kalendertermine</title>\n");
     out.push_str("    <link>https://www.gnome.org/projects/evolution/</link>\n");
-    out.push_str("    <description>Evolution Kalender-Export</description>\n");
+    out.push_str("    <description>Meridian Kalender-Export</description>\n");
     out.push_str("    <items>\n");
     out.push_str("      <rdf:Seq>\n");
     for event in events {

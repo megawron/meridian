@@ -60,11 +60,56 @@ impl ItipMethod {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItipPerson {
+    pub name: Option<String>,
+    pub email: String,
+}
+
+impl ItipPerson {
+    pub fn display_label(&self) -> String {
+        if let Some(name) = &self.name {
+            if !name.trim().is_empty() {
+                return name.trim().to_string();
+            }
+        }
+        if !self.email.is_empty() {
+            self.email.clone()
+        } else {
+            String::new()
+        }
+    }
+
+    pub fn full_display(&self) -> String {
+        if let Some(name) = &self.name {
+            if !name.trim().is_empty() && !self.email.is_empty() {
+                return format!("{} <{}>", name.trim(), self.email.trim());
+            }
+        }
+        if !self.email.is_empty() {
+            self.email.clone()
+        } else {
+            self.name.clone().unwrap_or_default()
+        }
+    }
+}
+
+pub fn strip_mailto_prefix(s: &str) -> &str {
+    let s = s.trim();
+    if s.len() >= 7 && s[..7].eq_ignore_ascii_case("mailto:") {
+        s[7..].trim()
+    } else {
+        s
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItipInvitation {
     pub method: ItipMethod,
     pub event: CalendarEventRecord,
     pub organizer: String,
     pub attendees: Vec<String>,
+    pub organizer_person: Option<ItipPerson>,
+    pub attendee_persons: Vec<ItipPerson>,
     pub sequence: Option<u32>,
     pub recurrence: Option<String>,
     pub raw_component: String,
@@ -135,11 +180,45 @@ pub fn normalize_attendee_address(value: &str) -> Option<String> {
         .and_then(|(_, value)| value.strip_suffix('>'))
         .unwrap_or(value)
         .trim();
-    let value = value.strip_prefix("mailto:").unwrap_or(value).trim();
+    let value = strip_mailto_prefix(value);
     if value.is_empty() || value.chars().any(char::is_whitespace) || !value.contains('@') {
         return None;
     }
     Some(format!("mailto:{value}"))
+}
+
+pub fn parse_ical_person(line: &str) -> ItipPerson {
+    let line = line.trim();
+    let (property_and_params, val_part) = line.split_once(':').unwrap_or(("", line));
+
+    let mut cn = None;
+    for param in property_and_params.split(';') {
+        let param = param.trim();
+        if param.len() >= 3 && param[..3].eq_ignore_ascii_case("CN=") {
+            let val = param[3..].trim_matches('"').trim();
+            if !val.is_empty() {
+                cn = Some(unescape_ical_text(val));
+                break;
+            }
+        }
+    }
+
+    let clean_val = strip_mailto_prefix(val_part).trim();
+    let (name, email) = if let Some(start) = clean_val.rfind('<') {
+        if let Some(end_offset) = clean_val[start..].find('>') {
+            let end = start + end_offset;
+            let mail = clean_val[start + 1..end].trim();
+            let parsed_name = clean_val[..start].trim().trim_matches('"').trim();
+            let resolved_name = cn.or_else(|| (!parsed_name.is_empty()).then(|| parsed_name.to_string()));
+            (resolved_name, strip_mailto_prefix(mail).to_string())
+        } else {
+            (cn, clean_val.to_string())
+        }
+    } else {
+        (cn, clean_val.to_string())
+    };
+
+    ItipPerson { name, email }
 }
 
 /// Parse a `text/calendar` payload if it contains a supported VEVENT and a
@@ -155,7 +234,12 @@ pub fn parse_invitation(raw: &str) -> Option<ItipInvitation> {
     let mut snapshot = CalendarSnapshot::default();
     crate::services::calendar_store_service::parse_ical_component(raw, "", "", &mut snapshot);
     let event = snapshot.events.into_iter().next()?;
+    let organizer_line = ical_property_line(raw, "ORGANIZER");
+    let organizer_person = organizer_line.as_deref().map(parse_ical_person);
     let organizer = ical_property(raw, "ORGANIZER").unwrap_or_default();
+
+    let attendee_lines = ical_property_lines(raw, "ATTENDEE");
+    let attendee_persons: Vec<ItipPerson> = attendee_lines.iter().map(|l| parse_ical_person(l)).collect();
     let attendees = ical_properties(raw, "ATTENDEE");
     let sequence = ical_property(raw, "SEQUENCE").and_then(|value| value.parse::<u32>().ok());
     let recurrence = ical_property(raw, "RRULE");
@@ -164,6 +248,8 @@ pub fn parse_invitation(raw: &str) -> Option<ItipInvitation> {
         event,
         organizer,
         attendees,
+        organizer_person,
+        attendee_persons,
         sequence,
         recurrence,
         raw_component: raw.to_string(),
@@ -208,6 +294,33 @@ fn ical_properties(raw: &str, target: &str) -> Vec<String> {
                 .unwrap_or(property)
                 .eq_ignore_ascii_case(target)
                 .then(|| unescape_ical_text(value))
+        })
+        .collect()
+}
+
+fn ical_property_line(raw: &str, target: &str) -> Option<String> {
+    unfold_lines(raw).into_iter().find(|line| {
+        if let Some((property, _)) = line.split_once(':') {
+            let name = property.split(';').next().unwrap_or(property);
+            if name.eq_ignore_ascii_case(target) {
+                return true;
+            }
+        }
+        false
+    })
+}
+
+fn ical_property_lines(raw: &str, target: &str) -> Vec<String> {
+    unfold_lines(raw)
+        .into_iter()
+        .filter(|line| {
+            if let Some((property, _)) = line.split_once(':') {
+                let name = property.split(';').next().unwrap_or(property);
+                if name.eq_ignore_ascii_case(target) {
+                    return true;
+                }
+            }
+            false
         })
         .collect()
 }
@@ -662,4 +775,42 @@ mod tests {
             Some(ItipReplyStatus::Tentative)
         );
     }
+
+    #[test]
+    fn test_parse_ical_person_and_organizer_attendees() {
+        let p1 = parse_ical_person("ORGANIZER;CN=\"Gregory Davis\":MAILTO:gregory@acme-corp.example");
+        assert_eq!(p1.name.as_deref(), Some("Gregory Davis"));
+        assert_eq!(p1.email, "gregory@acme-corp.example");
+        assert_eq!(p1.display_label(), "Gregory Davis");
+        assert_eq!(p1.full_display(), "Gregory Davis <gregory@acme-corp.example>");
+
+        let p2 = parse_ical_person("ATTENDEE;ROLE=REQ-PARTICIPANT;CN=Max Jensen;RSVP=TRUE:mailto:MJensen@acme-corp.example");
+        assert_eq!(p2.name.as_deref(), Some("Max Jensen"));
+        assert_eq!(p2.email, "MJensen@acme-corp.example");
+        assert_eq!(p2.display_label(), "Max Jensen");
+
+        let p3 = parse_ical_person("ORGANIZER:MAILTO:noreply@example.com");
+        assert_eq!(p3.name, None);
+        assert_eq!(p3.email, "noreply@example.com");
+        assert_eq!(p3.display_label(), "noreply@example.com");
+
+        let raw = concat!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\n",
+            "BEGIN:VEVENT\r\nUID:meeting-custom\r\nSUMMARY:Team Event\r\n",
+            "DTSTART;TZID=Europe/Berlin:20260905T180000\r\n",
+            "DTEND;TZID=Europe/Berlin:20260905T230000\r\n",
+            "ORGANIZER;CN=\"Gregory Davis\":MAILTO:gregory@acme-corp.example\r\n",
+            "ATTENDEE;CN=Max Jensen:mailto:MJensen@acme-corp.example\r\n",
+            "ATTENDEE;CN=Max Mustermann:mailto:max@example.com\r\n",
+            "SEQUENCE:1\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        );
+        let invitation = parse_invitation(raw).expect("should parse");
+        let org = invitation.organizer_person.expect("organizer person");
+        assert_eq!(org.name.as_deref(), Some("Gregory Davis"));
+        assert_eq!(org.email, "gregory@acme-corp.example");
+        assert_eq!(invitation.attendee_persons.len(), 2);
+        assert_eq!(invitation.attendee_persons[0].display_label(), "Max Jensen");
+        assert_eq!(invitation.attendee_persons[1].display_label(), "Max Mustermann");
+    }
 }
+

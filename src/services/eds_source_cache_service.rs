@@ -101,7 +101,7 @@ pub struct EdsSourceCache {
 
 impl EdsSourceCache {
     pub fn new() -> Self {
-        let path = std::env::var_os("EVOLUTION_GTK4_EDS_SOURCE_CACHE")
+        let path = std::env::var_os("MERIDIAN_EDS_SOURCE_CACHE").or_else(|| std::env::var_os("EVOLUTION_GTK4_EDS_SOURCE_CACHE"))
             .map(PathBuf::from)
             .unwrap_or_else(|| crate::services::app_data_dir().join("eds-sources.json"));
         Self { path }
@@ -342,7 +342,7 @@ mod tests {
             .expect("test clock should be valid")
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "evolution-gtk4-eds-cache-{label}-{}-{nonce}.json",
+            "meridian-eds-cache-{label}-{}-{nonce}.json",
             std::process::id()
         ))
     }

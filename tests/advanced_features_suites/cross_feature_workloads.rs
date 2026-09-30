@@ -69,9 +69,9 @@ fn tier3_interaction_mail_viewer_smime_certificate_trust_banner() {
     let cert_der = DerBuilder::create_test_x509_der(
         0x501,
         "User S/MIME Certificate",
-        "Evolution Project",
-        "Evolution Root CA",
-        "Evolution Project",
+        "Meridian Project",
+        "Meridian Root CA",
+        "Meridian Project",
         "260901000000Z",
         "300901000000Z",
         None,
@@ -167,10 +167,10 @@ fn tier4_workload_certificate_manager_full_trust_lifecycle() {
     // 1. Import Root CA
     let ca_der = DerBuilder::create_test_x509_der(
         0x10,
-        "Evolution Root CA",
-        "Evolution Project",
-        "Evolution Root CA",
-        "Evolution Project",
+        "Meridian Root CA",
+        "Meridian Project",
+        "Meridian Root CA",
+        "Meridian Project",
         "260101000000Z",
         "360101000000Z",
         Some(0x06),
@@ -186,9 +186,9 @@ fn tier4_workload_certificate_manager_full_trust_lifecycle() {
     let user_der = DerBuilder::create_test_x509_der(
         0x20,
         "User S/MIME Certificate",
-        "Evolution Project",
-        "Evolution Root CA",
-        "Evolution Project",
+        "Meridian Project",
+        "Meridian Root CA",
+        "Meridian Project",
         "260101000000Z",
         "280101000000Z",
         Some(0xE0),
@@ -430,9 +430,9 @@ fn tier4_adversarial_challenger2_cross_feature_autodiscover_keychain_composer_sm
     let der = DerBuilder::create_test_x509_der(
         0x777,
         "Director S/MIME Signing Key",
-        "Evolution CA",
-        "Evolution Root CA",
-        "Evolution CA",
+        "Meridian CA",
+        "Meridian Root CA",
+        "Meridian CA",
         "260101000000Z",
         "300101000000Z",
         Some(0x20), // non-repudiation / digital signature

@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn out_of_office_settings_roundtrip_is_versioned() {
         let root = std::env::temp_dir().join(format!(
-            "evolution-gtk4-out-of-office-{}",
+            "meridian-out-of-office-{}",
             uuid::Uuid::new_v4()
         ));
         let store = OutOfOfficeStore::new(root.join("out-of-office.json"));

@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Platform source discovery — EDS/GOA on Linux, EventKit/Contacts on macOS.
+// Platform source discovery — EDS/GOA on Linux.
 //
-// Linux uses the asynchronous EDS registry via zbus; macOS enumerates native
-// system sources on a worker without D-Bus. Public async operations return Futures that
+// Uses the asynchronous EDS registry via zbus. Public async operations return Futures that
 // can be spawned on the GLib main context via `glib::spawn_future_local()`.
 //
 // Architecture:
@@ -17,7 +16,6 @@
 // bindings (via GIR-generated crates) for low-level mail operations
 // that don't have adequate D-Bus coverage.
 
-#[cfg(not(target_os = "macos"))]
 use glib::MainContext;
 use glib::{KeyFile, KeyFileFlags};
 use serde::{Deserialize, Serialize};
@@ -411,7 +409,6 @@ async fn get_eds_managed_objects() -> Result<
 ///     }
 /// });
 /// ```
-#[cfg(not(target_os = "macos"))]
 pub async fn list_mail_sources() -> Result<Vec<EdsSource>, EdsServiceError> {
     tracing::debug!("Connecting to EDS Source Registry & GNOME Online Accounts via D-Bus...");
 
@@ -811,7 +808,6 @@ fn resolve_source_parent_name_uncached(uid: &str) -> String {
 /// List EDS sources for one product area through the shared SourceManager
 /// object model.  Account mutation and ECal/EBook client streams intentionally
 /// remain separate adapter layers.
-#[cfg(not(target_os = "macos"))]
 pub async fn list_sources(kind: EdsSourceKind) -> Result<Vec<EdsSource>, EdsServiceError> {
     let managed_objects = get_eds_managed_objects().await?;
     let mut display_name_by_uid: std::collections::HashMap<String, String> =
@@ -1042,7 +1038,6 @@ async fn get_goa_calendar_accounts() -> Result<Vec<EdsSource>, EdsServiceError> 
 
 /// List all calendar sources from EDS (with GOA fallback).
 #[allow(dead_code)]
-#[cfg(not(target_os = "macos"))]
 pub async fn list_calendar_sources() -> Result<Vec<EdsSource>, EdsServiceError> {
     tracing::debug!("Listing calendar sources from EDS & GOA...");
     let (mut sources, registry_error) = match list_sources(EdsSourceKind::Calendar).await {
@@ -1181,7 +1176,6 @@ pub fn canonical_book_name(name: &str) -> &'static str {
 
 /// List all address book sources from EDS (including configured accounts & GOA).
 #[allow(dead_code)]
-#[cfg(not(target_os = "macos"))]
 pub async fn list_address_book_sources() -> Result<Vec<EdsSource>, EdsServiceError> {
     tracing::debug!("Listing address book sources from EDS, configured accounts & GOA...");
     let (mut sources, registry_error) = match list_sources(EdsSourceKind::AddressBook).await {
@@ -1312,7 +1306,6 @@ pub async fn list_address_book_sources() -> Result<Vec<EdsSource>, EdsServiceErr
 /// Discover EDS sources and retain only non-secret source metadata for an
 /// offline UI state.  A cached result is explicitly marked as such and is
 /// never treated as authoritative for mutations or message/calendar data.
-#[cfg(not(target_os = "macos"))]
 pub async fn discover_sources(kind: EdsSourceKind) -> EdsSourceDiscovery {
     let cache = EdsSourceCache::new();
     let cached = cache.load_with_status(kind);
@@ -1354,137 +1347,6 @@ pub async fn discover_sources(kind: EdsSourceKind) -> EdsSourceDiscovery {
             discovery_from_cache(cached, error)
         }
     }
-}
-
-/// macOS source enumeration uses EventKit/Contacts and the app's own mail
-/// profiles. It intentionally does not read the Linux EDS/GOA cache: an old
-/// source row is not evidence of macOS permission or a connected system source.
-#[cfg(target_os = "macos")]
-pub async fn discover_sources(kind: EdsSourceKind) -> EdsSourceDiscovery {
-    let (sender, receiver) = async_channel::bounded(1);
-    std::thread::spawn(move || {
-        let discovery = discover_macos_sources_blocking(kind);
-        let _ = sender.send_blocking(discovery);
-    });
-    receiver
-        .recv()
-        .await
-        .unwrap_or_else(|_| EdsSourceDiscovery {
-            sources: Vec::new(),
-            origin: EdsSourceOrigin::Empty,
-            error: Some("Die macOS-Quellenerkennung wurde abgebrochen".to_string()),
-        })
-}
-
-#[cfg(target_os = "macos")]
-pub fn discover_sources_blocking(kind: EdsSourceKind) -> EdsSourceDiscovery {
-    discover_macos_sources_blocking(kind)
-}
-
-#[cfg(target_os = "macos")]
-fn discover_macos_sources_blocking(kind: EdsSourceKind) -> EdsSourceDiscovery {
-    if kind == EdsSourceKind::Mail {
-        let profiles = super::account_config_service::AccountConfigStore::default().load();
-        return macos_configured_mail_sources(&profiles);
-    }
-    macos_system_source_discovery(
-        kind,
-        super::macos_integration_service::MacosIntegrationService::new().system_sources(),
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn macos_system_source_discovery(
-    kind: EdsSourceKind,
-    snapshot: Result<super::macos_integration_service::MacosSystemSnapshot, String>,
-) -> EdsSourceDiscovery {
-    use super::macos_integration_service::MacosSourceKind;
-    let snapshot = match snapshot {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            return EdsSourceDiscovery {
-                sources: Vec::new(),
-                origin: EdsSourceOrigin::Empty,
-                error: Some(error),
-            };
-        }
-    };
-    let mut sources: Vec<_> = snapshot
-        .sources
-        .iter()
-        .filter(|source| {
-            matches!(
-                (kind, source.kind),
-                (EdsSourceKind::Calendar, MacosSourceKind::Calendar)
-                    | (EdsSourceKind::AddressBook, MacosSourceKind::Contacts)
-            )
-        })
-        .map(|source| source.as_eds_source())
-        .collect();
-    sort_sources(&mut sources);
-    let error = (!snapshot.errors.is_empty()).then(|| snapshot.errors.join("; "));
-    EdsSourceDiscovery {
-        origin: if sources.is_empty() && error.is_some() {
-            EdsSourceOrigin::Empty
-        } else {
-            EdsSourceOrigin::Live
-        },
-        sources,
-        error,
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn macos_configured_mail_sources(
-    profiles: &[super::account_config_service::AccountProfile],
-) -> EdsSourceDiscovery {
-    let mut sources: Vec<_> = profiles
-        .iter()
-        .filter(|profile| !profile.id.trim().is_empty())
-        .map(|profile| EdsSource {
-            // Graph requests and saved folder selections use the exact profile ID.
-            uid: profile.id.clone(),
-            display_name: profile.display_name.clone(),
-            backend_name: profile.protocol.as_str().to_string(),
-            enabled: profile.enabled,
-            writable: true,
-            parent_name: None,
-            color: None,
-            foreign_mail: None,
-        })
-        .collect();
-    sort_sources(&mut sources);
-    EdsSourceDiscovery {
-        sources,
-        origin: EdsSourceOrigin::Live,
-        error: Some("Mail accounts are configured in Evolution; macOS does not share mail credentials from Internet Accounts with other apps".to_string()),
-    }
-}
-
-#[cfg(target_os = "macos")]
-pub async fn list_sources(kind: EdsSourceKind) -> Result<Vec<EdsSource>, EdsServiceError> {
-    let discovery = discover_sources(kind).await;
-    if discovery.sources.is_empty() {
-        if let Some(error) = discovery.error {
-            return Err(EdsServiceError::OperationFailed(error));
-        }
-    }
-    Ok(discovery.sources)
-}
-
-#[cfg(target_os = "macos")]
-pub async fn list_mail_sources() -> Result<Vec<EdsSource>, EdsServiceError> {
-    list_sources(EdsSourceKind::Mail).await
-}
-
-#[cfg(target_os = "macos")]
-pub async fn list_calendar_sources() -> Result<Vec<EdsSource>, EdsServiceError> {
-    list_sources(EdsSourceKind::Calendar).await
-}
-
-#[cfg(target_os = "macos")]
-pub async fn list_address_book_sources() -> Result<Vec<EdsSource>, EdsServiceError> {
-    list_sources(EdsSourceKind::AddressBook).await
 }
 
 fn current_unix_seconds() -> i64 {
@@ -1569,7 +1431,6 @@ fn discovery_from_cache(cached: EdsSourceCacheLoad, error: String) -> EdsSourceD
 /// UI callers should invoke this from a worker thread and only hand the
 /// resulting plain data back to GTK. A private GLib context keeps the zbus
 /// future alive without borrowing the application's main context.
-#[cfg(not(target_os = "macos"))]
 pub fn discover_sources_blocking(kind: EdsSourceKind) -> EdsSourceDiscovery {
     MainContext::new().block_on(discover_sources(kind))
 }
@@ -1577,93 +1438,6 @@ pub fn discover_sources_blocking(kind: EdsSourceKind) -> EdsSourceDiscovery {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_source_discovery_keeps_calendar_contact_and_reminder_scopes_distinct() {
-        use super::super::macos_integration_service::{
-            MacosSourceKind, MacosSystemSnapshot, MacosSystemSource,
-        };
-        let sources = [
-            ("calendar-a", MacosSourceKind::Calendar),
-            ("reminders-a", MacosSourceKind::Reminders),
-            ("contacts-a", MacosSourceKind::Contacts),
-        ]
-        .into_iter()
-        .map(|(uid, kind)| MacosSystemSource {
-            uid: uid.to_string(),
-            name: "Work".to_string(),
-            kind,
-            account_uid: "account-a".to_string(),
-            account_name: "System account".to_string(),
-            backend: "icloud".to_string(),
-            writable: false,
-        })
-        .collect::<Vec<_>>();
-        let expected_calendar_uid = sources[0].source_uid();
-        let expected_contact_uid = sources[2].source_uid();
-        for (kind, expected_uid) in [
-            (EdsSourceKind::Calendar, Some(expected_calendar_uid)),
-            (EdsSourceKind::AddressBook, Some(expected_contact_uid)),
-            (EdsSourceKind::Mail, None),
-        ] {
-            let snapshot = MacosSystemSnapshot {
-                version: 1,
-                sources: sources.clone(),
-                errors: vec!["Erinnerungen: Zugriff verweigert".to_string()],
-                ..MacosSystemSnapshot::default()
-            };
-            let discovery = macos_system_source_discovery(kind, Ok(snapshot));
-            if let Some(expected_uid) = expected_uid {
-                assert_eq!(discovery.sources.len(), 1);
-                assert_eq!(discovery.sources[0].uid, expected_uid);
-                assert_eq!(discovery.origin, EdsSourceOrigin::Live);
-            } else {
-                assert!(discovery.sources.is_empty());
-            }
-            assert!(discovery.status_text().contains("Zugriff verweigert"));
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_discovery_permission_error_never_becomes_a_cached_source() {
-        let discovery = macos_system_source_discovery(
-            EdsSourceKind::Calendar,
-            Err("Kalenderzugriff wurde verweigert".to_string()),
-        );
-        assert!(discovery.sources.is_empty());
-        assert_eq!(discovery.origin, EdsSourceOrigin::Empty);
-        assert!(discovery.status_text().contains("verweigert"));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_mail_discovery_preserves_app_profile_identity_and_enabled_state() {
-        use super::super::account_config_service::{AccountProfile, AccountProtocol};
-        let enabled = AccountProfile {
-            id: "profile-exchange-123".to_string(),
-            display_name: "Work".to_string(),
-            protocol: AccountProtocol::Exchange,
-            enabled: true,
-            ..AccountProfile::default()
-        };
-        let disabled = AccountProfile {
-            id: "disabled-account".to_string(),
-            display_name: "Archive".to_string(),
-            enabled: false,
-            ..AccountProfile::default()
-        };
-        let discovery = macos_configured_mail_sources(&[enabled, disabled]);
-        assert_eq!(discovery.sources.len(), 2);
-        assert_eq!(discovery.sources[0].uid, "disabled-account");
-        assert!(!discovery.sources[0].enabled);
-        assert_eq!(discovery.sources[1].uid, "profile-exchange-123");
-        assert!(discovery.sources[1].enabled);
-        assert_eq!(discovery.sources[1].backend_name, "exchange");
-        assert!(discovery.status_text().contains("mail credentials"));
-        assert!(macos_configured_mail_sources(&[]).sources.is_empty());
-    }
 
     #[test]
     fn live_source_status_retains_partial_permission_warning() {

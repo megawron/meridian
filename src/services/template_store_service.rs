@@ -40,7 +40,7 @@ impl TemplateStore {
     }
 
     pub fn from_environment() -> Self {
-        let path = std::env::var_os("EVOLUTION_GTK4_TEMPLATE_FILE")
+        let path = std::env::var_os("MERIDIAN_TEMPLATE_FILE").or_else(|| std::env::var_os("EVOLUTION_GTK4_TEMPLATE_FILE"))
             .map(PathBuf::from)
             .unwrap_or_else(|| crate::services::app_data_dir().join("mail-templates.json"));
         Self::new(path)
@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn templates_roundtrip_and_can_be_deleted() {
         let root =
-            std::env::temp_dir().join(format!("evolution-gtk4-templates-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("meridian-templates-{}", uuid::Uuid::new_v4()));
         let store = TemplateStore::new(root.join("templates.json"));
         let template = MailTemplate {
             id: "template-1".to_string(),
@@ -147,7 +147,7 @@ mod tests {
     #[test]
     fn empty_template_name_is_rejected() {
         let store =
-            TemplateStore::new(std::env::temp_dir().join("evolution-gtk4-template-test.json"));
+            TemplateStore::new(std::env::temp_dir().join("meridian-template-test.json"));
         let result = store.upsert(MailTemplate {
             id: "id".to_string(),
             name: " ".to_string(),

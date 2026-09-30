@@ -432,13 +432,11 @@ fn r5_test_portable_smtp_dot_stuffing_rfc5321() {
 }
 
 #[test]
-fn r5_test_portable_engine_fallback_routing_contract() {
-    // When compiling on macOS or in environments without EDS Camel,
-    // mail routing routes to the portable engine.
+fn r5_test_linux_build_cleanliness_contract() {
     let is_macos = cfg!(target_os = "macos");
     let is_linux = cfg!(target_os = "linux");
 
-    if is_macos {
-        assert!(!is_linux, "macOS target must not be linux");
+    if is_linux {
+        assert!(!is_macos, "Linux build must not be macos");
     }
 }

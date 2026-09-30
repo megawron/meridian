@@ -14,7 +14,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use super::vcard_service::{VCardContact, VCardListMemberKind};
 
 pub const CONTACT_SEARCH_FIXTURE_VERSION: u32 = 1;
-const CONTACT_SEARCH_FIXTURE_FORMAT: &str = "evolution-contact-search";
+const CONTACT_SEARCH_FIXTURE_FORMAT: &str = "meridian-contact-search";
 
 /// The stable identity used by the contacts page and every search result.
 /// Source UID is intentionally part of the key: providers are allowed to
@@ -2287,7 +2287,7 @@ mod tests {
         assert!(matches!(
             ContactSearchQuery::decode_fixture(
                 r#"{
-                    "format": "evolution-contact-search",
+                    "format": "meridian-contact-search",
                     "version": 7,
                     "future_payload": {"new": ["shape"]}
                 }"#
@@ -2296,7 +2296,7 @@ mod tests {
         ));
         assert!(matches!(
             ContactSearchQuery::decode_fixture(&fixture.replace(
-                "\"format\": \"evolution-contact-search\"",
+                "\"format\": \"meridian-contact-search\"",
                 "\"format\": \"other\""
             )),
             Err(ContactSearchValidationError::InvalidFixture(_))
