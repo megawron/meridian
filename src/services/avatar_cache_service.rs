@@ -430,6 +430,20 @@ impl AvatarCacheService {
         None
     }
 
+    /// Check if an avatar is already in memory cache (non-blocking, 0ms).
+    pub fn peek_memory(&self, email_or_sender: &str) -> Option<glib::Bytes> {
+        let clean = Self::extract_email(email_or_sender);
+        if clean.is_empty() {
+            return None;
+        }
+        if let Ok(cache) = self.memory_cache.lock() {
+            if let Some(Some(bytes)) = cache.get(&clean) {
+                return Some(bytes.clone());
+            }
+        }
+        None
+    }
+
     /// Request an avatar synchronously or asynchronously.
     pub fn request_avatar(
         &self,
