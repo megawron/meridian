@@ -36,7 +36,7 @@ use crate::services::ical_time_service::{
 #[cfg(test)]
 use crate::services::recurrence_service::recurrence_matches_without_count;
 use crate::services::recurrence_service::{
-    RecurrenceByDay, next_recurrence_date, parse_extended_weekday_token, parse_recurrence_rule,
+    RecurrenceByDay, parse_extended_weekday_token, parse_recurrence_rule,
     recurrence_occurs_on as recurrence_rule_occurs_on, recurrence_occurrences_in_range,
 };
 use crate::services::reminder_service::{
@@ -47,7 +47,6 @@ use crate::dialogs::quick_add_popover::{
     QuickAddCalendarItem, QuickAddEventDraft, present_quick_add_popover,
 };
 use crate::views::accessibility::set_accessible_label;
-use crate::views::set_button_icon_with_fallback;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CalendarView {
@@ -813,7 +812,7 @@ impl CalendarSnapshotIndex {
             all_event_indices: Vec::new(),
         };
 
-        for (event_index, event) in index.snapshot.events.iter().enumerate() {
+        for (event_index, _) in index.snapshot.events.iter().enumerate() {
             index.all_event_indices.push(event_index);
             let recurring = index.metas[event_index].recurrence_rule.is_some()
                 || !index.metas[event_index].rdate_values.is_empty();
@@ -1037,7 +1036,7 @@ fn application_settings_schema() -> Option<gio::SettingsSchema> {
         .as_ref()
         .and_then(|source| source.lookup(crate::APP_ID, true))
         .or_else(|| {
-            let directory = option_env!("EVOLUTION_GTK4_SCHEMA_DIR")?;
+            let directory = option_env!("MERIDIAN_SCHEMA_DIR").or(option_env!("EVOLUTION_GTK4_SCHEMA_DIR"))?;
             let source = gio::SettingsSchemaSource::from_directory(
                 directory,
                 installed_source.as_ref(),
@@ -1120,20 +1119,20 @@ mod imp {
         pub month_header_labels: RefCell<Vec<gtk::Label>>,
         pub month_header_is_compact: Cell<bool>,
         pub month_canvas: RefCell<Option<gtk::DrawingArea>>,
-        pub month_layout: RefCell<Option<Rc<PreparedMonthLayout>>>,
-        pub month_drag_selection: RefCell<Option<MonthDragSelection>>,
+        pub(crate) month_layout: RefCell<Option<Rc<PreparedMonthLayout>>>,
+        pub(crate) month_drag_selection: RefCell<Option<MonthDragSelection>>,
         pub month_hovered_date: RefCell<Option<NaiveDate>>,
-        pub month_hovered_target: RefCell<Option<MonthHoverTarget>>,
+        pub(crate) month_hovered_target: RefCell<Option<MonthHoverTarget>>,
         pub month_rendered_key: RefCell<Option<(NaiveDate, u64, String, Option<String>, usize, bool)>>,
-        pub agenda_rendered_key: RefCell<Option<(CalendarDateRange, u64, String, Option<String>, usize)>>,
+        pub(crate) agenda_rendered_key: RefCell<Option<(CalendarDateRange, u64, String, Option<String>, usize)>>,
         pub year_rendered_key: RefCell<Option<(i32, u64, String, Option<String>, usize)>>,
-        pub mini_calendar_last_key: RefCell<Option<(CalendarView, NaiveDate, CalendarDateRange)>>,
+        pub(crate) mini_calendar_last_key: RefCell<Option<(CalendarView, NaiveDate, CalendarDateRange)>>,
         pub day_view: RefCell<Option<gtk::Box>>,
         pub week_view: RefCell<Option<gtk::Box>>,
         pub workweek_view: RefCell<Option<gtk::Box>>,
         pub agenda_view: RefCell<Option<gtk::Box>>,
         pub agenda_canvas: RefCell<Option<gtk::DrawingArea>>,
-        pub agenda_items: RefCell<Vec<PreparedAgendaItem>>,
+        pub(crate) agenda_items: RefCell<Vec<PreparedAgendaItem>>,
         pub agenda_hovered_row: Cell<Option<usize>>,
         pub agenda_selected_row: Cell<Option<usize>>,
         pub agenda_title_label: RefCell<Option<gtk::Label>>,
@@ -1146,18 +1145,18 @@ mod imp {
         pub year_vadjustment: RefCell<Option<gtk::Adjustment>>,
         pub year_nav_strip_container: RefCell<Option<gtk::Box>>,
         pub year_markers: RefCell<BTreeMap<NaiveDate, usize>>,
-        pub year_hovered_target: RefCell<Option<YearCanvasHitTarget>>,
+        pub(crate) year_hovered_target: RefCell<Option<YearCanvasHitTarget>>,
         pub year_rendered_year: Cell<Option<i32>>,
         pub year_day_buttons: RefCell<HashMap<NaiveDate, gtk::Button>>,
-        pub year_preview_mode: Cell<YearPreviewMode>,
-        pub year_preview_orientation: Cell<YearPreviewOrientation>,
+        pub(crate) year_preview_mode: Cell<YearPreviewMode>,
+        pub(crate) year_preview_orientation: Cell<YearPreviewOrientation>,
         pub year_details_container: RefCell<Option<gtk::Box>>,
         pub year_paned: RefCell<Option<gtk::Paned>>,
         pub year_details_side_width: Cell<i32>,
         pub year_details_bottom_height: Cell<i32>,
         pub list_view: RefCell<Option<gtk::Box>>,
         pub calendar_list_canvas: RefCell<Option<gtk::DrawingArea>>,
-        pub calendar_list_events: RefCell<Vec<PreparedCalendarListRow>>,
+        pub(crate) calendar_list_events: RefCell<Vec<PreparedCalendarListRow>>,
         pub calendar_list_hovered_row: Cell<Option<usize>>,
         pub calendar_list_count_label: RefCell<Option<gtk::Label>>,
         pub calendar_list_empty_box: RefCell<Option<gtk::Widget>>,
@@ -1171,14 +1170,14 @@ mod imp {
         pub memo_records: RefCell<Option<Rc<RefCell<Vec<MemoRecord>>>>>,
         pub taskpad_list: RefCell<Option<gtk::ListBox>>,
         pub taskpad_canvas: RefCell<Option<gtk::DrawingArea>>,
-        pub taskpad_layout: RefCell<Option<PreparedTaskpadLayout>>,
+        pub(crate) taskpad_layout: RefCell<Option<PreparedTaskpadLayout>>,
         pub taskpad_hovered_index: RefCell<Option<usize>>,
         pub taskpad_selected_index: RefCell<Option<usize>>,
         pub taskpad_state: RefCell<Option<gtk::Label>>,
         pub taskpad_count: RefCell<Option<gtk::Label>>,
         pub memopad_list: RefCell<Option<gtk::ListBox>>,
         pub memopad_canvas: RefCell<Option<gtk::DrawingArea>>,
-        pub memopad_layout: RefCell<Option<PreparedMemopadLayout>>,
+        pub(crate) memopad_layout: RefCell<Option<PreparedMemopadLayout>>,
         pub memopad_hovered_index: RefCell<Option<usize>>,
         pub memopad_selected_index: RefCell<Option<usize>>,
         pub memopad_state: RefCell<Option<gtk::Label>>,
@@ -1186,7 +1185,6 @@ mod imp {
         pub tag_vpaned: RefCell<Option<gtk::Paned>>,
         pub content_hpaned: RefCell<Option<gtk::Paned>>,
         pub toolbar: RefCell<Option<gtk::Widget>>,
-        pub macos_banner: RefCell<Option<adw::Banner>>,
         pub outer_paned: RefCell<Option<gtk::Paned>>,
         pub tag_vpane_toggle_btn: RefCell<Option<gtk::ToggleButton>>,
         pub calendar_sidebar_toggle: RefCell<Option<gtk::ToggleButton>>,
@@ -1371,14 +1369,13 @@ mod imp {
                 calendar_mutation_gate: RefCell::new(CalendarMutationGate::default()),
                 calendar_list_projection_count: Cell::new(None),
                 calendar_reload_debounce: RefCell::new(None),
-                macos_banner: RefCell::new(None),
             }
         }
     }
 
     #[glib::object_subclass]
     impl ObjectSubclass for CalendarPage {
-        const NAME: &'static str = "EvolutionCalendarPage";
+        const NAME: &'static str = "MeridianCalendarPage";
         type Type = super::CalendarPage;
         type ParentType = gtk::Widget;
 
@@ -1541,7 +1538,7 @@ impl CalendarPage {
         }
         self.sync_calendar_layout_visibility();
         self.sync_toolbar_button_labels();
-        if let Some(win) = crate::window::find_evolution_window(self) {
+        if let Some(win) = crate::window::find_meridian_window(self) {
             win.sync_back_button();
         }
     }
@@ -1599,7 +1596,7 @@ impl CalendarPage {
             if let Some(prev) = imp.drill_down_previous_view.get() {
                 imp.drill_down_previous_view.set(None);
                 self.select_calendar_view(prev);
-                if let Some(win) = crate::window::find_evolution_window(self) {
+                if let Some(win) = crate::window::find_meridian_window(self) {
                     win.sync_back_button();
                 }
                 return true;
@@ -1849,7 +1846,7 @@ impl CalendarPage {
         let Some(root) = self.root() else {
             return false;
         };
-        let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() else {
+        let Ok(window) = root.downcast::<crate::window::MeridianWindow>() else {
             return false;
         };
         window.open_component(ReminderIdentity {
@@ -1872,7 +1869,7 @@ impl CalendarPage {
         let Some(root) = self.root() else {
             return false;
         };
-        let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() else {
+        let Ok(window) = root.downcast::<crate::window::MeridianWindow>() else {
             return false;
         };
         window.open_component(ReminderIdentity {
@@ -1905,30 +1902,6 @@ impl CalendarPage {
                 }
             });
         self.imp().calendar_reload_debounce.replace(Some(source));
-    }
-
-    #[cfg(all(target_os = "macos", macos_bridge))]
-    pub fn update_macos_permission_banner(&self) {
-        let Some(banner) = self.imp().macos_banner.borrow().as_ref().cloned() else {
-            return;
-        };
-        let srv = crate::services::MacosIntegrationService::new();
-        let status = srv.check_permission(crate::services::MacosPermissionKind::Calendar);
-        match status {
-            crate::services::MacosPermissionStatus::NotDetermined => {
-                banner.set_title(&gettext("Connect Apple Calendar: Would you like to view your macOS calendars and appointments in Evolution?"));
-                banner.set_button_label(Some(&gettext("Connect Apple Calendar")));
-                banner.set_revealed(true);
-            }
-            crate::services::MacosPermissionStatus::Denied => {
-                banner.set_title(&gettext("Access to Apple Calendar not allowed. Enable it in macOS System Settings."));
-                banner.set_button_label(Some(&gettext("Open System Settings")));
-                banner.set_revealed(true);
-            }
-            _ => {
-                banner.set_revealed(false);
-            }
-        }
     }
 
     /// Present the calendar purge dialog to purge past events.
@@ -2339,7 +2312,7 @@ impl CalendarPage {
         } else {
             status_msg
         };
-        if let Some(win) = self.root().and_downcast::<crate::window::EvolutionWindow>() {
+        if let Some(win) = self.root().and_downcast::<crate::window::MeridianWindow>() {
             win.set_status(&status_msg);
         }
 
@@ -3337,7 +3310,7 @@ impl CalendarPage {
 
         let sidebar_outer_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .css_classes(vec!["evolution-sidebar-drawer"])
+            .css_classes(vec!["meridian-sidebar-drawer"])
             .build();
         sidebar_outer_box.append(&drawer_header);
         sidebar_outer_box.append(&sidebar_scroll);
@@ -3569,7 +3542,7 @@ impl CalendarPage {
         sidebar_toggle.connect_toggled(move |toggle| {
             let is_active = toggle.is_active();
             if let Some(page) = page_weak_for_sidebar.upgrade() {
-                if let Some(win) = crate::window::find_evolution_window(&page) {
+                if let Some(win) = crate::window::find_meridian_window(&page) {
                     if win.is_sidebar_visible_for_active_view() != is_active {
                         win.toggle_sidebar_animated(is_active);
                         return;
@@ -3721,7 +3694,7 @@ impl CalendarPage {
                 entry_for_search_mode.set_text("");
             }
             if let Some(page) = page_weak_for_search_mode.upgrade() {
-                if let Some(window) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
+                if let Some(window) = page.root().and_downcast::<crate::window::MeridianWindow>() {
                     if let Some(btn) = window.search_button() {
                         if btn.is_active() != is_mode {
                             btn.set_active(is_mode);
@@ -3827,7 +3800,7 @@ impl CalendarPage {
                         page.imp().view_state.borrow_mut().select_civil_day(date);
                         page.imp().drill_down_previous_view.set(Some(CalendarView::Month));
                         page.select_calendar_view(CalendarView::Day);
-                        if let Some(win) = crate::window::find_evolution_window(&page) {
+                        if let Some(win) = crate::window::find_meridian_window(&page) {
                             win.sync_back_button();
                         }
                     } else if direct_create || n_press == 2 {
@@ -5768,7 +5741,7 @@ impl CalendarPage {
             .build();
         taskpad_add_btn.connect_clicked(move |btn| {
             if let Some(root) = btn.root() {
-                if let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() {
+                if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
                     window.present_new_task();
                 }
             }
@@ -6022,7 +5995,7 @@ impl CalendarPage {
             .build();
         memopad_add_btn.connect_clicked(move |btn| {
             if let Some(root) = btn.root() {
-                if let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() {
+                if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
                     window.present_new_memo();
                 }
             }
@@ -6289,7 +6262,7 @@ impl CalendarPage {
                 if position != clamped {
                     paned.set_position(clamped);
                 }
-                if let Some(win) = crate::window::find_evolution_window(paned) {
+                if let Some(win) = crate::window::find_meridian_window(paned) {
                     win.set_sidebar_position_sync(clamped);
                 }
                 if settings.mail_sidebar_position() != clamped {
@@ -6303,7 +6276,7 @@ impl CalendarPage {
         key_controller.connect_key_pressed(move |_, key, _, modifiers| {
             if key == gtk::gdk::Key::F9 {
                 if let Some(page) = page_weak_for_keys.upgrade() {
-                    if let Some(win) = crate::window::find_evolution_window(&page) {
+                    if let Some(win) = crate::window::find_meridian_window(&page) {
                         let cur = win.is_sidebar_visible_for_active_view();
                         win.toggle_sidebar_animated(!cur);
                         return glib::Propagation::Stop;
@@ -6371,127 +6344,13 @@ impl CalendarPage {
         });
         self.add_controller(key_controller);
 
-        #[cfg(all(target_os = "macos", macos_bridge))]
-        let macos_banner = {
-            let banner = adw::Banner::builder()
-                .title(&gettext("Connect Apple Calendar: Would you like to view your macOS calendars and appointments in Evolution?"))
-                .button_label(&gettext("Connect Apple Calendar"))
-                .revealed(false)
-                .build();
-            let page_weak = self.downgrade();
-            let banner_clone = banner.clone();
-            banner.connect_button_clicked(move |_| {
-                let Some(page) = page_weak.upgrade() else { return; };
-                let srv = crate::services::MacosIntegrationService::new();
-                let status = srv.check_permission(crate::services::MacosPermissionKind::Calendar);
-                match status {
-                    crate::services::MacosPermissionStatus::NotDetermined => {
-                        let page_weak_cb = page.downgrade();
-                        srv.request_permission(crate::services::MacosPermissionKind::Calendar, move |granted| {
-                            if let Some(page) = page_weak_cb.upgrade() {
-                                if granted {
-                                    let (sender, receiver) = async_channel::bounded(1);
-                                    std::thread::spawn(move || {
-                                        let cal_store = crate::services::CalendarStoreService::new();
-                                        let macos = crate::services::MacosIntegrationService::new();
-                                        let _ = macos.sync_apple_calendar_to_store(&cal_store);
-                                        let _ = macos.sync_apple_reminders_to_store(&cal_store);
-                                        let _ = sender.send_blocking(());
-                                    });
-                                    let page_weak_sync = page.downgrade();
-                                    glib::spawn_future_local(async move {
-                                        if receiver.recv().await.is_ok() {
-                                            if let Some(page) = page_weak_sync.upgrade() {
-                                                page.reload_calendar_data();
-                                                if let Some(win) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
-                                                    win.add_toast(&adw::Toast::new(&gettext("Apple Calendar connected successfully!")));
-                                                }
-                                                page.update_macos_permission_banner();
-                                            }
-                                        }
-                                    });
-                                } else {
-                                    page.update_macos_permission_banner();
-                                }
-                            }
-                        });
-                    }
-                    crate::services::MacosPermissionStatus::Denied => {
-                        srv.open_privacy_settings(crate::services::MacosPermissionKind::Calendar);
-                    }
-                    _ => {
-                        banner_clone.set_revealed(false);
-                    }
-                }
-            });
-            self.imp().macos_banner.replace(Some(banner.clone()));
-            banner
-        };
-
         let root_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .vexpand(true)
             .hexpand(true)
             .build();
-        #[cfg(all(target_os = "macos", macos_bridge))]
-        root_box.append(&macos_banner);
         root_box.append(&paned);
         root_box.set_parent(self);
-
-        #[cfg(all(target_os = "macos", macos_bridge))]
-        {
-            self.update_macos_permission_banner();
-            let srv = crate::services::MacosIntegrationService::new();
-            let perm = srv.check_permission(crate::services::MacosPermissionKind::Calendar);
-            if perm == crate::services::MacosPermissionStatus::NotDetermined {
-                let page_weak = self.downgrade();
-                srv.request_permission(crate::services::MacosPermissionKind::Calendar, move |granted| {
-                    if let Some(page) = page_weak.upgrade() {
-                        if granted {
-                            let (sender, receiver) = async_channel::bounded(1);
-                            std::thread::spawn(move || {
-                                let cal_store = crate::services::CalendarStoreService::new();
-                                let macos = crate::services::MacosIntegrationService::new();
-                                let _ = macos.sync_apple_calendar_to_store(&cal_store);
-                                let _ = macos.sync_apple_reminders_to_store(&cal_store);
-                                let _ = sender.send_blocking(());
-                            });
-                            let page_weak_sync = page.downgrade();
-                            glib::spawn_future_local(async move {
-                                if receiver.recv().await.is_ok() {
-                                    if let Some(page) = page_weak_sync.upgrade() {
-                                        page.reload_calendar_data();
-                                        if let Some(win) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
-                                            win.add_toast(&adw::Toast::new(&gettext("Apple Calendar connected successfully!")));
-                                        }
-                                        page.update_macos_permission_banner();
-                                    }
-                                }
-                            });
-                        } else {
-                            page.update_macos_permission_banner();
-                        }
-                    }
-                });
-            } else if perm == crate::services::MacosPermissionStatus::Authorized {
-                let (sender, receiver) = async_channel::bounded(1);
-                std::thread::spawn(move || {
-                    let cal_store = crate::services::CalendarStoreService::new();
-                    let macos = crate::services::MacosIntegrationService::new();
-                    let _ = macos.sync_apple_calendar_to_store(&cal_store);
-                    let _ = macos.sync_apple_reminders_to_store(&cal_store);
-                    let _ = sender.send_blocking(());
-                });
-                let page_weak_sync = self.downgrade();
-                glib::spawn_future_local(async move {
-                    if receiver.recv().await.is_ok() {
-                        if let Some(page) = page_weak_sync.upgrade() {
-                            page.reload_calendar_data();
-                        }
-                    }
-                });
-            }
-        }
 
         // Initialize toolbar button modes (desktop: pure text, mobile: pure icon)
         let is_compact_initial = self.imp().is_mobile.get() || (self.width() > 0 && self.width() < 820);
@@ -6562,7 +6421,7 @@ impl CalendarPage {
         self.update_calendar_navigation_controls();
         self.refresh_calendar_views();
         self.imp().syncing_calendar_view.set(false);
-        if let Some(win) = crate::window::find_evolution_window(self) {
+        if let Some(win) = crate::window::find_meridian_window(self) {
             win.sync_back_button();
         }
     }
@@ -7908,7 +7767,7 @@ impl CalendarPage {
             label.set_label(&text);
         }
         if self.imp().is_mobile.get() {
-            if let Some(win) = crate::window::find_evolution_window(self) {
+            if let Some(win) = crate::window::find_meridian_window(self) {
                 win.sync_back_button();
             }
         }
@@ -11305,7 +11164,7 @@ impl CalendarPage {
                         &anchor_for_result,
                         &gettext("Appointment deleted ({id})").replace("{id}", &result.uid),
                     );
-                    if let Some(window) = anchor_for_result.root().and_downcast::<crate::window::EvolutionWindow>() {
+                    if let Some(window) = anchor_for_result.root().and_downcast::<crate::window::MeridianWindow>() {
                         window.refresh_calendar_page();
                     }
                 }
@@ -12039,7 +11898,7 @@ fn show_taskpad_empty_context_menu(
         popover_for_new.popdown();
         if let Some(page) = page_weak_new.upgrade() {
             if let Some(root) = page.root() {
-                if let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() {
+                if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
                     window.present_new_task();
                 }
             }
@@ -12083,7 +11942,7 @@ fn show_memopad_empty_context_menu(
         popover_for_new.popdown();
         if let Some(page) = page_weak_new.upgrade() {
             if let Some(root) = page.root() {
-                if let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() {
+                if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
                     window.present_new_memo();
                 }
             }
@@ -14351,7 +14210,7 @@ fn show_month_overflow_popover(
                 page.imp().drill_down_previous_view.set(Some(CalendarView::Month));
             }
             page.select_calendar_view(CalendarView::Day);
-            if let Some(win) = crate::window::find_evolution_window(&page) {
+            if let Some(win) = crate::window::find_meridian_window(&page) {
                 win.sync_back_button();
             }
         }
@@ -16137,7 +15996,7 @@ fn execute_delete_calendar_event<W: IsA<gtk::Widget> + Clone + 'static>(
                         );
                         if let Some(window) = widget_for_result
                             .root()
-                            .and_downcast::<crate::window::EvolutionWindow>()
+                            .and_downcast::<crate::window::MeridianWindow>()
                         {
                             window.refresh_calendar_page();
                         }
@@ -17324,11 +17183,11 @@ fn open_event_editor_for_widget<W: IsA<gtk::Widget>>(widget: &W, event: &Calenda
     }
     let dialog = crate::dialogs::EventDialog::new_for_edit(event);
     if let Some(root) = widget.root() {
-        let evolution_window = root
+        let meridian_window = root
             .clone()
-            .downcast::<crate::window::EvolutionWindow>()
+            .downcast::<crate::window::MeridianWindow>()
             .ok();
-        if let Some(window) = evolution_window {
+        if let Some(window) = meridian_window {
             let window = window.downgrade();
             dialog.connect_closed(move |_| {
                 if let Some(window) = window.upgrade() {
@@ -18721,11 +18580,11 @@ fn append_event_row(
         }
         let dialog = crate::dialogs::EventDialog::new_for_edit(&event_for_edit);
         if let Some(root) = edit_button_for_click.root() {
-            let evolution_window = root
+            let meridian_window = root
                 .clone()
-                .downcast::<crate::window::EvolutionWindow>()
+                .downcast::<crate::window::MeridianWindow>()
                 .ok();
-            if let Some(window) = evolution_window {
+            if let Some(window) = meridian_window {
                 let window = window.downgrade();
                 dialog.connect_closed(move |_| {
                     if let Some(window) = window.upgrade() {
@@ -19056,7 +18915,7 @@ fn append_event_row(
                             );
                             if let Some(window) = delete_button_for_result
                                 .root()
-                                .and_downcast::<crate::window::EvolutionWindow>()
+                                .and_downcast::<crate::window::MeridianWindow>()
                             {
                                 window.refresh_calendar_page();
                             }
@@ -19190,7 +19049,7 @@ fn remove_event_list_row_by_identity(event_list: &gtk::ListBox, identity: &Calen
 
 fn show_toast_for_widget<W: IsA<gtk::Widget>>(widget: &W, message: &str) {
     if let Some(root) = widget.root() {
-        if let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() {
+        if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
             window.add_toast(&adw::Toast::new(message));
             return;
         }

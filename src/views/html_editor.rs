@@ -34,7 +34,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for HtmlEditor {
-        const NAME: &'static str = "EvolutionHtmlEditor";
+        const NAME: &'static str = "MeridianHtmlEditor";
         type Type = super::HtmlEditor;
         type ParentType = gtk::Widget;
 

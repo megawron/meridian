@@ -36,7 +36,7 @@ use crate::views::set_button_icon_with_fallback;
 const LOCAL_ADDRESS_BOOK_SOURCE_UID: &str = "local-addressbook";
 
 #[derive(Debug)]
-struct ContactPageSearchState {
+pub(crate) struct ContactPageSearchState {
     visible_identities: RefCell<HashSet<ContactIdentity>>,
     active_query: RefCell<ContactSearchQuery>,
     last_valid: RefCell<LastValidContactSearch>,
@@ -643,14 +643,14 @@ mod imp {
         pub column_header_scroll: RefCell<Option<gtk::ScrolledWindow>>,
         pub contact_col_widths: RefCell<HashMap<String, i32>>,
         pub contact_table_canvas: RefCell<Option<gtk::DrawingArea>>,
-        pub contact_table_layout: RefCell<Option<PreparedContactTableLayout>>,
+        pub(crate) contact_table_layout: RefCell<Option<PreparedContactTableLayout>>,
         pub contact_table_hovered_row: Cell<Option<usize>>,
-        pub contact_table_hovered_header: Cell<Option<ContactTableColumn>>,
+        pub(crate) contact_table_hovered_header: Cell<Option<ContactTableColumn>>,
         pub contact_table_anchor_row: Cell<Option<usize>>,
-        pub contact_sort_col: Cell<ContactTableColumn>,
+        pub(crate) contact_sort_col: Cell<ContactTableColumn>,
         pub contact_sort_desc: Cell<bool>,
-        pub stored_contacts: RefCell<Option<Rc<RefCell<Vec<EBookContactRecord>>>>>,
-        pub search_state: RefCell<Option<Rc<ContactPageSearchState>>>,
+        pub(crate) stored_contacts: RefCell<Option<Rc<RefCell<Vec<EBookContactRecord>>>>>,
+        pub(crate) search_state: RefCell<Option<Rc<ContactPageSearchState>>>,
         pub contact_cards_flow: RefCell<Option<gtk::FlowBox>>,
         pub cards_scroll: RefCell<Option<gtk::ScrolledWindow>>,
         pub simple_list_scroll: RefCell<Option<gtk::ScrolledWindow>>,
@@ -671,7 +671,6 @@ mod imp {
         pub collapsed_addressbook_groups: RefCell<HashSet<String>>,
         pub is_syncing_selection: Cell<bool>,
         pub toolbar: RefCell<Option<gtk::Widget>>,
-        pub macos_banner: RefCell<Option<adw::Banner>>,
         pub reload_address_books_fn: RefCell<Option<ReloadAddressBooksCallback>>,
         pub is_mobile: Cell<bool>,
         pub is_tablet: Cell<bool>,
@@ -692,7 +691,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for ContactsPage {
-        const NAME: &'static str = "EvolutionContactsPage";
+        const NAME: &'static str = "MeridianContactsPage";
         type Type = super::ContactsPage;
         type ParentType = gtk::Widget;
 
@@ -1697,30 +1696,6 @@ impl ContactsPage {
         }
     }
 
-    #[cfg(all(target_os = "macos", macos_bridge))]
-    pub fn update_macos_permission_banner(&self) {
-        let Some(banner) = self.imp().macos_banner.borrow().as_ref().cloned() else {
-            return;
-        };
-        let srv = crate::services::MacosIntegrationService::new();
-        let status = srv.check_permission(crate::services::MacosPermissionKind::Contacts);
-        match status {
-            crate::services::MacosPermissionStatus::NotDetermined => {
-                banner.set_title(&gettext("Connect Apple Contacts: Would you like to view your macOS contacts in Evolution?"));
-                banner.set_button_label(Some(&gettext("Connect Apple Contacts")));
-                banner.set_revealed(true);
-            }
-            crate::services::MacosPermissionStatus::Denied => {
-                banner.set_title(&gettext("Access to Apple Contacts not allowed. Enable in macOS System Settings."));
-                banner.set_button_label(Some(&gettext("Open System Settings")));
-                banner.set_revealed(true);
-            }
-            _ => {
-                banner.set_revealed(false);
-            }
-        }
-    }
-
     pub fn outer_paned(&self) -> Option<gtk::Paned> {
         self.imp().outer_paned.borrow().clone()
     }
@@ -1772,8 +1747,8 @@ impl ContactsPage {
             }
             if visible {
                 let saved_pos = AppSettings::try_new()
-                    .map(|s| s.contact_hpane_position())
-                    .unwrap_or(320)
+                    .map(|s| s.mail_sidebar_position())
+                    .unwrap_or(240)
                     .clamp(crate::window::MIN_SIDEBAR_WIDTH, crate::window::MAX_SIDEBAR_WIDTH);
                 if paned.position() < 180 {
                     paned.set_position(saved_pos);
@@ -1853,7 +1828,7 @@ impl ContactsPage {
         if imp.is_mobile.get() && imp.is_detail_shown.get() {
             imp.is_detail_shown.set(false);
             self.sync_contacts_layout_visibility();
-            if let Some(win) = crate::window::find_evolution_window(self) {
+            if let Some(win) = crate::window::find_meridian_window(self) {
                 win.sync_back_button();
             }
             true
@@ -3132,7 +3107,7 @@ impl ContactsPage {
                 if page.imp().is_mobile.get() {
                     page.imp().is_detail_shown.set(true);
                     page.sync_contacts_layout_visibility();
-                    if let Some(win) = crate::window::find_evolution_window(&page) {
+                    if let Some(win) = crate::window::find_meridian_window(&page) {
                         win.sync_back_button();
                     }
                 }
@@ -3431,17 +3406,6 @@ impl ContactsPage {
         list_container.append(&status_box);
         list_container.append(&list_with_alphabet);
 
-        let contacts_toolbar = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(4)
-            .margin_start(8)
-            .margin_end(8)
-            .margin_top(4)
-            .margin_bottom(4)
-            .hexpand(true)
-            .css_classes(vec!["unified-view-toolbar", "toolbar"])
-            .build();
-
         let new_contact_btn = gtk::Button::builder()
             .icon_name("contact-new-symbolic")
             .tooltip_text(&crate::i18n::gettext("Create new contact (Ctrl+N)"))
@@ -3630,7 +3594,7 @@ impl ContactsPage {
 
         let sidebar_outer_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .css_classes(vec!["evolution-sidebar-drawer"])
+            .css_classes(vec!["meridian-sidebar-drawer"])
             .build();
         sidebar_outer_box.append(&drawer_header);
         sidebar_outer_box.append(&sidebar_scroll);
@@ -3641,7 +3605,7 @@ impl ContactsPage {
 
         paned.set_start_child(Some(&sidebar_outer_box));
         paned.set_resize_start_child(false);
-        paned.set_shrink_start_child(true);
+        paned.set_shrink_start_child(false);
 
         // ── Contact Detail (Content) ────────────────────────────────────
 
@@ -4779,7 +4743,7 @@ impl ContactsPage {
         sidebar_toggle.connect_toggled(move |toggle| {
             let is_active = toggle.is_active();
             if let Some(page) = page_weak_for_sidebar.upgrade() {
-                if let Some(win) = crate::window::find_evolution_window(&page) {
+                if let Some(win) = crate::window::find_meridian_window(&page) {
                     if win.is_sidebar_visible_for_active_view() != is_active {
                         win.toggle_sidebar_animated(is_active);
                         return;
@@ -4999,7 +4963,7 @@ impl ContactsPage {
                 entry_for_search_mode.set_text("");
             }
             if let Some(page) = page_weak_for_search_mode.upgrade() {
-                if let Some(window) = page.root().and_downcast::<crate::window::EvolutionWindow>() {
+                if let Some(window) = page.root().and_downcast::<crate::window::MeridianWindow>() {
                     if let Some(btn) = window.search_button() {
                         if btn.is_active() != is_mode {
                             btn.set_active(is_mode);
@@ -5354,7 +5318,7 @@ impl ContactsPage {
             if page.imp().is_mobile.get() && !list.selected_rows().is_empty() {
                 page.imp().is_detail_shown.set(true);
                 page.sync_contacts_layout_visibility();
-                if let Some(win) = crate::window::find_evolution_window(&page) {
+                if let Some(win) = crate::window::find_meridian_window(&page) {
                     win.sync_back_button();
                 }
             }
@@ -5393,7 +5357,7 @@ impl ContactsPage {
                 if page.imp().is_mobile.get() && page.imp().selected_identity.borrow().is_some() {
                     page.imp().is_detail_shown.set(true);
                     page.sync_contacts_layout_visibility();
-                    if let Some(win) = crate::window::find_evolution_window(&page) {
+                    if let Some(win) = crate::window::find_meridian_window(&page) {
                         win.sync_back_button();
                     }
                 }
@@ -5646,13 +5610,13 @@ impl ContactsPage {
         paned.set_end_child(Some(&content_box));
         paned.set_resize_start_child(false);
         paned.set_resize_end_child(true);
-        paned.set_shrink_start_child(true);
+        paned.set_shrink_start_child(false);
         paned.set_shrink_end_child(true);
 
         let sidebar_position = AppSettings::try_new()
-            .map(|settings| settings.contact_hpane_position())
-            .unwrap_or(320)
-            .clamp(80, 1500);
+            .map(|settings| settings.mail_sidebar_position())
+            .unwrap_or(240)
+            .clamp(crate::window::MIN_SIDEBAR_WIDTH, crate::window::MAX_SIDEBAR_WIDTH);
         paned.set_position(sidebar_position);
         if let Some(settings) = AppSettings::try_new() {
             let settings_for_notify = settings.clone();
@@ -5663,20 +5627,35 @@ impl ContactsPage {
                     }
                 }
                 let position = paned.position();
-                if (80..=1500).contains(&position) {
-                    if let Some(win) = crate::window::find_evolution_window(paned) {
-                        win.set_sidebar_position_sync(position);
-                    }
-                    if settings_for_notify.contact_hpane_position() != position {
-                        settings_for_notify.set_contact_hpane_position(position);
-                    }
+                let clamped = position.clamp(crate::window::MIN_SIDEBAR_WIDTH, crate::window::MAX_SIDEBAR_WIDTH);
+                if position != clamped {
+                    paned.set_position(clamped);
+                }
+                if let Some(win) = crate::window::find_meridian_window(paned) {
+                    win.set_sidebar_position_sync(clamped);
+                }
+                if settings_for_notify.mail_sidebar_position() != clamped {
+                    settings_for_notify.set_mail_sidebar_position(clamped);
+                }
+                if settings_for_notify.contact_hpane_position() != clamped {
+                    settings_for_notify.set_contact_hpane_position(clamped);
                 }
             });
 
             let paned_weak = paned.downgrade();
-            settings.connect_changed(Some("contact-hpane-position"), move |settings, _| {
+            settings.connect_changed(Some("mail-sidebar-position"), move |settings, _| {
                 if let Some(paned) = paned_weak.upgrade() {
-                    let pos = settings.int("contact-hpane-position").clamp(80, 1500);
+                    let pos = settings.int("mail-sidebar-position").clamp(crate::window::MIN_SIDEBAR_WIDTH, crate::window::MAX_SIDEBAR_WIDTH);
+                    if (paned.position() - pos).abs() > 1 {
+                        paned.set_position(pos);
+                    }
+                }
+            });
+
+            let paned_weak_hpane = paned.downgrade();
+            settings.connect_changed(Some("contact-hpane-position"), move |settings, _| {
+                if let Some(paned) = paned_weak_hpane.upgrade() {
+                    let pos = settings.int("contact-hpane-position").clamp(crate::window::MIN_SIDEBAR_WIDTH, crate::window::MAX_SIDEBAR_WIDTH);
                     if (paned.position() - pos).abs() > 1 {
                         paned.set_position(pos);
                     }
@@ -5748,128 +5727,18 @@ impl ContactsPage {
             });
         }
 
-        #[cfg(all(target_os = "macos", macos_bridge))]
-        let macos_banner = {
-            let banner = adw::Banner::builder()
-                .title(&gettext("Connect Apple Contacts: Would you like to view your macOS contacts in Evolution?"))
-                .button_label(&gettext("Connect Apple Contacts"))
-                .revealed(false)
-                .build();
-            let page_weak = self.downgrade();
-            let banner_clone = banner.clone();
-            banner.connect_button_clicked(move |_| {
-                let Some(page) = page_weak.upgrade() else { return; };
-                let srv = crate::services::MacosIntegrationService::new();
-                let status = srv.check_permission(crate::services::MacosPermissionKind::Contacts);
-                match status {
-                    crate::services::MacosPermissionStatus::NotDetermined => {
-                        let page_weak_cb = page.downgrade();
-                        srv.request_permission(crate::services::MacosPermissionKind::Contacts, move |granted| {
-                            if let Some(page) = page_weak_cb.upgrade() {
-                                if granted {
-                                    let (sender, receiver) = async_channel::bounded(1);
-                                    std::thread::spawn(move || {
-                                        let contact_store = crate::services::ContactStoreService::new();
-                                        let macos = crate::services::MacosIntegrationService::new();
-                                        let _ = macos.sync_apple_contacts_to_store(&contact_store);
-                                        let _ = sender.send_blocking(());
-                                    });
-                                    let page_weak_sync = page.downgrade();
-                                    glib::spawn_future_local(async move {
-                                        if receiver.recv().await.is_ok() {
-                                            if let Some(page) = page_weak_sync.upgrade() {
-                                                page.reload_contacts();
-                                                page.reload_address_books();
-                                                page.show_toast(&gettext("Apple Contacts connected successfully!"));
-                                                page.update_macos_permission_banner();
-                                            }
-                                        }
-                                    });
-                                } else {
-                                    page.update_macos_permission_banner();
-                                }
-                            }
-                        });
-                    }
-                    crate::services::MacosPermissionStatus::Denied => {
-                        srv.open_privacy_settings(crate::services::MacosPermissionKind::Contacts);
-                    }
-                    _ => {
-                        banner_clone.set_revealed(false);
-                    }
-                }
-            });
-            self.imp().macos_banner.replace(Some(banner.clone()));
-            banner
-        };
-
         let root_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .vexpand(true)
             .hexpand(true)
             .build();
-        #[cfg(all(target_os = "macos", macos_bridge))]
-        root_box.append(&macos_banner);
         root_box.append(&paned);
         root_box.set_parent(self);
-
-        #[cfg(all(target_os = "macos", macos_bridge))]
-        {
-            self.update_macos_permission_banner();
-            let srv = crate::services::MacosIntegrationService::new();
-            let perm = srv.check_permission(crate::services::MacosPermissionKind::Contacts);
-            if perm == crate::services::MacosPermissionStatus::NotDetermined {
-                let page_weak = self.downgrade();
-                srv.request_permission(crate::services::MacosPermissionKind::Contacts, move |granted| {
-                    if let Some(page) = page_weak.upgrade() {
-                        if granted {
-                            let (sender, receiver) = async_channel::bounded(1);
-                            std::thread::spawn(move || {
-                                let contact_store = crate::services::ContactStoreService::new();
-                                let macos = crate::services::MacosIntegrationService::new();
-                                let _ = macos.sync_apple_contacts_to_store(&contact_store);
-                                let _ = sender.send_blocking(());
-                            });
-                            let page_weak_sync = page.downgrade();
-                            glib::spawn_future_local(async move {
-                                if receiver.recv().await.is_ok() {
-                                    if let Some(page) = page_weak_sync.upgrade() {
-                                        page.reload_contacts();
-                                        page.reload_address_books();
-                                        page.show_toast(&gettext("Apple Contacts connected successfully!"));
-                                        page.update_macos_permission_banner();
-                                    }
-                                }
-                            });
-                        } else {
-                            page.update_macos_permission_banner();
-                        }
-                    }
-                });
-            } else if perm == crate::services::MacosPermissionStatus::Authorized {
-                let (sender, receiver) = async_channel::bounded(1);
-                std::thread::spawn(move || {
-                    let contact_store = crate::services::ContactStoreService::new();
-                    let macos = crate::services::MacosIntegrationService::new();
-                    let _ = macos.sync_apple_contacts_to_store(&contact_store);
-                    let _ = sender.send_blocking(());
-                });
-                let page_weak_sync = self.downgrade();
-                glib::spawn_future_local(async move {
-                    if receiver.recv().await.is_ok() {
-                        if let Some(page) = page_weak_sync.upgrade() {
-                            page.reload_contacts();
-                            page.reload_address_books();
-                        }
-                    }
-                });
-            }
-        }
     }
 
     fn show_toast(&self, message: &str) {
         if let Some(root) = self.root() {
-            if let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() {
+            if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
                 window.add_toast(&adw::Toast::new(message));
                 return;
             }
@@ -6384,7 +6253,7 @@ impl ContactTransferUiContext {
 }
 
 fn prepare_vcard_for_transfer(vcard: &str) -> String {
-    let fresh_uid = format!("evolution-gtk4-{}", uuid::Uuid::new_v4());
+    let fresh_uid = format!("meridian-{}", uuid::Uuid::new_v4());
     let normalized = vcard.replace("\r\n", "\n").replace('\r', "\n");
     let mut lines: Vec<String> = normalized.lines().map(ToString::to_string).collect();
     let mut replaced = false;
@@ -8334,7 +8203,7 @@ fn update_contact_detail(
 
 fn show_toast_for_widget<W: IsA<gtk::Widget>>(widget: &W, message: &str) {
     if let Some(root) = widget.root() {
-        if let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() {
+        if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
             window.add_toast(&adw::Toast::new(message));
             return;
         }
@@ -8741,7 +8610,6 @@ fn append_contact_card(flow: &gtk::FlowBox, record: &EBookContactRecord) {
                     .build();
                 addr_row.append(&label);
                 details_box.append(&addr_row);
-                detail_rows += 1;
             }
         }
     }
@@ -9126,7 +8994,7 @@ mod tests {
         reduce_contact_delete_result, reduce_contact_transfer_result,
         should_restore_contact_selection, with_contact_outer_filters,
         append_contact_card, find_card_child, select_contact_card, remove_contact_card, upsert_contact_card,
-        contact_card_phones, ContactCardPhone,
+        contact_card_phones,
     };
     use crate::services::contact_export_service::ContactExportFormat;
     use crate::services::contact_search_service::{
@@ -9718,7 +9586,7 @@ mod tests {
             "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:old-uid-12345\r\nFN:Ada Lovelace\r\nEND:VCARD";
         let transformed = prepare_vcard_for_transfer(vcard);
         assert!(!transformed.contains("UID:old-uid-12345"));
-        assert!(transformed.contains("UID:evolution-gtk4-"));
+        assert!(transformed.contains("UID:meridian-"));
         assert!(transformed.contains("FN:Ada Lovelace"));
     }
 
@@ -9726,7 +9594,7 @@ mod tests {
     fn prepare_vcard_for_transfer_inserts_uid_if_missing() {
         let vcard = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ada Lovelace\r\nEND:VCARD";
         let transformed = prepare_vcard_for_transfer(vcard);
-        assert!(transformed.contains("UID:evolution-gtk4-"));
+        assert!(transformed.contains("UID:meridian-"));
         assert!(transformed.contains("FN:Ada Lovelace"));
     }
 
@@ -9942,27 +9810,27 @@ mod tests {
         let paned = page.outer_paned().expect("outer paned exists");
 
         if let Some(settings) = crate::services::settings_service::AppSettings::try_new() {
-            settings.set_mail_sidebar_position(210);
-            settings.set_contact_hpane_position(320);
+            settings.set_mail_sidebar_position(260);
+            settings.set_contact_hpane_position(260);
 
             // Re-sync with position
             paned.set_position(340);
             while context.iteration(false) {}
             assert_eq!(settings.contact_hpane_position(), 340);
-            assert_eq!(settings.mail_sidebar_position(), 210);
+            assert_eq!(settings.mail_sidebar_position(), 340);
 
-            // Moving paned must write contact_hpane_position without altering mail_sidebar_position
+            // Moving paned writes unified mail_sidebar_position and contact_hpane_position
             paned.set_position(440);
             while context.iteration(false) {}
             assert_eq!(settings.contact_hpane_position(), 440);
-            assert_eq!(settings.mail_sidebar_position(), 210);
+            assert_eq!(settings.mail_sidebar_position(), 440);
 
-            // External change to contact_hpane_position updates paned
-            settings.set_contact_hpane_position(280);
+            // External change to mail_sidebar_position updates paned
+            settings.set_mail_sidebar_position(280);
             while context.iteration(false) {}
             assert_eq!(paned.position(), 280);
         } else {
-            assert!(paned.position() >= 80 && paned.position() <= 1500);
+            assert!(paned.position() >= crate::window::MIN_SIDEBAR_WIDTH && paned.position() <= crate::window::MAX_SIDEBAR_WIDTH);
         }
     }
 
@@ -9980,85 +9848,76 @@ mod tests {
         };
 
         // 1. Boundary & Clamping Stress
+        settings.set_mail_sidebar_position(300);
         settings.set_contact_hpane_position(300);
         paned.set_position(300);
         while context.iteration(false) {}
-        assert_eq!(settings.contact_hpane_position(), 300);
+        assert_eq!(settings.mail_sidebar_position(), 300);
 
-        // Paned dragging out-of-bounds: < 80 (e.g. 50) must not overwrite settings
+        // Paned dragging out-of-bounds: < MIN_SIDEBAR_WIDTH (e.g. 50) clamps to MIN_SIDEBAR_WIDTH
         paned.set_position(50);
         while context.iteration(false) {}
-        assert_eq!(
-            settings.contact_hpane_position(),
-            300,
-            "Paned position < 80 must not be written to GSettings"
-        );
+        assert_eq!(paned.position(), crate::window::MIN_SIDEBAR_WIDTH);
+        assert_eq!(settings.mail_sidebar_position(), crate::window::MIN_SIDEBAR_WIDTH);
 
-        // Paned dragging out-of-bounds: > 1500 (e.g. 2000) must not overwrite settings
+        // Paned dragging out-of-bounds: > MAX_SIDEBAR_WIDTH (e.g. 2000) clamps to MAX_SIDEBAR_WIDTH
         paned.set_position(2000);
         while context.iteration(false) {}
-        assert_eq!(
-            settings.contact_hpane_position(),
-            300,
-            "Paned position > 1500 must not be written to GSettings"
-        );
+        assert_eq!(paned.position(), crate::window::MAX_SIDEBAR_WIDTH);
+        assert_eq!(settings.mail_sidebar_position(), crate::window::MAX_SIDEBAR_WIDTH);
 
-        // Valid boundaries: exactly 80 and exactly 1500
-        paned.set_position(80);
+        // Valid boundaries: MIN_SIDEBAR_WIDTH and MAX_SIDEBAR_WIDTH
+        paned.set_position(crate::window::MIN_SIDEBAR_WIDTH);
         while context.iteration(false) {}
-        assert_eq!(settings.contact_hpane_position(), 80);
+        assert_eq!(settings.mail_sidebar_position(), crate::window::MIN_SIDEBAR_WIDTH);
 
-        paned.set_position(1500);
+        paned.set_position(crate::window::MAX_SIDEBAR_WIDTH);
         while context.iteration(false) {}
-        assert_eq!(settings.contact_hpane_position(), 1500);
+        assert_eq!(settings.mail_sidebar_position(), crate::window::MAX_SIDEBAR_WIDTH);
 
-        // External setting change with large value (e.g. 2500) clamps UI paned to 1500
-        settings.set_contact_hpane_position(2500);
+        // External setting change with large value clamps UI paned to MAX_SIDEBAR_WIDTH
+        settings.set_mail_sidebar_position(2500);
         while context.iteration(false) {}
         assert_eq!(
             paned.position(),
-            1500,
-            "UI paned must clamp large external GSettings to 1500"
+            crate::window::MAX_SIDEBAR_WIDTH,
+            "UI paned must clamp large external GSettings to MAX_SIDEBAR_WIDTH"
         );
 
-        // External setting change below min (e.g. 40 -> settings clamps to 80)
-        settings.set_contact_hpane_position(40);
+        // External setting change below min clamps UI paned to MIN_SIDEBAR_WIDTH
+        settings.set_mail_sidebar_position(40);
         while context.iteration(false) {}
         assert_eq!(
             paned.position(),
-            80,
-            "UI paned must clamp small external GSettings to 80"
+            crate::window::MIN_SIDEBAR_WIDTH,
+            "UI paned must clamp small external GSettings to MIN_SIDEBAR_WIDTH"
         );
 
-        // 2. Window View Switching & Sidebar Width Independence
-        let app = crate::application::EvolutionApplication::new();
-        let window = crate::window::EvolutionWindow::new(&app);
+        // 2. Window View Switching & Unified Sidebar Width Across Views
+        let app = crate::application::MeridianApplication::new();
+        let window = crate::window::MeridianWindow::new(&app);
 
-        settings.set_mail_sidebar_position(240);
-        settings.set_contact_hpane_position(320);
+        settings.set_mail_sidebar_position(260);
         while context.iteration(false) {}
 
-        // Switching between views keeps independent sidebar widths
+        // Switching between views keeps unified sidebar widths without layout jumps
         window.set_active_view("mail");
         while context.iteration(false) {}
-        assert_eq!(settings.mail_sidebar_position(), 240);
+        assert_eq!(settings.mail_sidebar_position(), 260);
 
         window.set_active_view("contacts");
         while context.iteration(false) {}
-        assert_eq!(settings.contact_hpane_position(), 320);
-        assert_eq!(settings.mail_sidebar_position(), 240);
+        assert_eq!(settings.mail_sidebar_position(), 260);
 
-        // Altering contact-hpane-position while in contacts does not alter mail_sidebar_position
-        settings.set_contact_hpane_position(350);
+        // Altering sidebar while in contacts updates unified mail_sidebar_position
+        settings.set_mail_sidebar_position(350);
         while context.iteration(false) {}
-        assert_eq!(settings.contact_hpane_position(), 350);
-        assert_eq!(settings.mail_sidebar_position(), 240);
+        assert_eq!(settings.mail_sidebar_position(), 350);
 
-        // Switching back to mail view preserves mail_sidebar_position
+        // Switching back to mail view preserves unified mail_sidebar_position
         window.set_active_view("mail");
         while context.iteration(false) {}
-        assert_eq!(settings.mail_sidebar_position(), 240);
-        assert_eq!(settings.contact_hpane_position(), 350);
+        assert_eq!(settings.mail_sidebar_position(), 350);
     }
 
     #[test]

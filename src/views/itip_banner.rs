@@ -11,7 +11,7 @@ use crate::i18n::gettext;
 use adw::prelude::*;
 use chrono::NaiveDate;
 use gtk::glib;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::services::ecal_service::{ECalComponentType, ECalService};
@@ -24,6 +24,10 @@ use crate::services::itip_service::{
 pub struct ItipBanner {
     revealer: gtk::Revealer,
     banner_box: gtk::Box,
+    details_revealer: gtk::Revealer,
+    cal_select_box: gtk::Box,
+    footer_box: gtk::Box,
+    is_compact: Rc<Cell<bool>>,
     icon: gtk::Image,
     lbl_title: gtk::Label,
     lbl_method: gtk::Label,
@@ -126,14 +130,11 @@ impl ItipBanner {
             .valign(gtk::Align::Center)
             .build();
         header_row.append(&lbl_status_badge);
-
         banner_box.append(&header_row);
 
-        // ── Separator ────────────────────────────────────────────────────────
+        // ── Details Grid (wrapped in details_revealer for scroll-collapse) ──
         let sep = gtk::Separator::new(gtk::Orientation::Horizontal);
-        banner_box.append(&sep);
 
-        // ── Details Grid ─────────────────────────────────────────────────────
         let details_vbox = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(6)
@@ -235,7 +236,20 @@ impl ItipBanner {
         attendees_row.append(&lbl_attendees);
         details_vbox.append(&attendees_row);
 
-        banner_box.append(&details_vbox);
+        let details_container = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .build();
+        details_container.append(&sep);
+        details_container.append(&details_vbox);
+
+        let details_revealer = gtk::Revealer::builder()
+            .reveal_child(true)
+            .transition_type(gtk::RevealerTransitionType::SlideDown)
+            .transition_duration(200)
+            .child(&details_container)
+            .build();
+        banner_box.append(&details_revealer);
 
         // ── Action Footer ────────────────────────────────────────────────────
         let footer_box = gtk::Box::builder()
@@ -356,6 +370,10 @@ impl ItipBanner {
         let banner = Self {
             revealer,
             banner_box,
+            details_revealer,
+            cal_select_box,
+            footer_box,
+            is_compact: Rc::new(Cell::new(false)),
             icon,
             lbl_title,
             lbl_method,
@@ -395,6 +413,24 @@ impl ItipBanner {
 
     pub fn widget(&self) -> &gtk::Revealer {
         &self.revealer
+    }
+
+    pub fn set_compact(&self, compact: bool) {
+        if self.is_compact.get() == compact {
+            return;
+        }
+        self.is_compact.set(compact);
+        self.details_revealer.set_reveal_child(!compact);
+        self.cal_select_box.set_visible(!compact);
+        self.lbl_method.set_visible(!compact);
+        self.footer_box.set_margin_top(if compact { 0 } else { 4 });
+        if compact {
+            self.banner_box.add_css_class("is-compact");
+            self.icon.set_pixel_size(22);
+        } else {
+            self.banner_box.remove_css_class("is-compact");
+            self.icon.set_pixel_size(32);
+        }
     }
 
     pub fn connect_calendar_navigate<F: Fn(NaiveDate) + 'static>(&self, f: F) {
@@ -550,23 +586,77 @@ impl ItipBanner {
         }
 
         // Organizer
-        if !invitation.organizer.trim().is_empty() {
-            let org = invitation.organizer.trim().trim_start_matches("mailto:");
+        if let Some(person) = &invitation.organizer_person {
+            let display_name = person.display_label();
+            if !display_name.is_empty() {
+                self.lbl_organizer.set_text(&format!("{}: {display_name}", gettext("Organizer")));
+                let tooltip = person.full_display();
+                self.lbl_organizer.set_tooltip_text(Some(&tooltip));
+                self.organizer_row.set_tooltip_text(Some(&tooltip));
+                self.organizer_row.set_visible(true);
+            } else {
+                self.organizer_row.set_visible(false);
+            }
+        } else if !invitation.organizer.trim().is_empty() {
+            let org = crate::services::itip_service::strip_mailto_prefix(invitation.organizer.trim());
             self.lbl_organizer.set_text(&format!("{}: {org}", gettext("Organizer")));
+            self.lbl_organizer.set_tooltip_text(Some(org));
+            self.organizer_row.set_tooltip_text(Some(org));
             self.organizer_row.set_visible(true);
         } else {
             self.organizer_row.set_visible(false);
         }
 
         // Attendees
-        if !invitation.attendees.is_empty() {
+        let attendees = &invitation.attendee_persons;
+        if !attendees.is_empty() {
+            let count = attendees.len();
+            let label_text = if count == 1 {
+                format!("{}: {}", gettext("Attendee"), attendees[0].display_label())
+            } else if count <= 3 {
+                let names = attendees
+                    .iter()
+                    .map(|p| p.display_label())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{}: {names}", gettext("Attendees"))
+            } else {
+                let names_preview = attendees
+                    .iter()
+                    .take(2)
+                    .map(|p| p.display_label())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let base = gettext("{} attendees").replace("{}", &count.to_string());
+                format!("{base} ({names_preview}, …)")
+            };
+
+            let tooltip_lines = attendees
+                .iter()
+                .map(|p| p.full_display())
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            self.lbl_attendees.set_text(&label_text);
+            self.lbl_attendees.set_tooltip_text(Some(&tooltip_lines));
+            self.attendees_row.set_tooltip_text(Some(&tooltip_lines));
+            self.attendees_row.set_visible(true);
+        } else if !invitation.attendees.is_empty() {
             let count = invitation.attendees.len();
             let text = if count == 1 {
                 gettext("1 attendee")
             } else {
                 gettext("{} attendees").replace("{}", &count.to_string())
             };
+            let tooltip_lines = invitation
+                .attendees
+                .iter()
+                .map(|s| crate::services::itip_service::strip_mailto_prefix(s))
+                .collect::<Vec<_>>()
+                .join("\n");
             self.lbl_attendees.set_text(&text);
+            self.lbl_attendees.set_tooltip_text(Some(&tooltip_lines));
+            self.attendees_row.set_tooltip_text(Some(&tooltip_lines));
             self.attendees_row.set_visible(true);
         } else {
             self.attendees_row.set_visible(false);

@@ -71,9 +71,9 @@ mod imp {
         pub task_list: RefCell<Option<gtk::ListBox>>,
         pub task_table_header: RefCell<Option<gtk::DrawingArea>>,
         pub task_table_canvas: RefCell<Option<gtk::DrawingArea>>,
-        pub task_table_layout: RefCell<Option<PreparedTaskTableLayout>>,
+        pub(crate) task_table_layout: RefCell<Option<PreparedTaskTableLayout>>,
         pub task_table_hovered_row: Cell<Option<usize>>,
-        pub task_table_hovered_header: Cell<Option<TaskTableColumn>>,
+        pub(crate) task_table_hovered_header: Cell<Option<TaskTableColumn>>,
         pub task_table_anchor_row: Cell<Option<usize>>,
         pub task_store: RefCell<Option<gio::ListStore>>,
         pub task_empty_state: RefCell<Option<gtk::Label>>,
@@ -154,7 +154,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for TasksPage {
-        const NAME: &'static str = "EvolutionTasksPage";
+        const NAME: &'static str = "MeridianTasksPage";
         type Type = super::TasksPage;
         type ParentType = gtk::Widget;
 
@@ -410,9 +410,9 @@ struct TaskFilterContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct TaskSelectionIdentity {
-    source_uid: String,
-    task_uid: String,
+pub(crate) struct TaskSelectionIdentity {
+    pub(crate) source_uid: String,
+    pub(crate) task_uid: String,
 }
 
 impl TaskSelectionIdentity {
@@ -3779,7 +3779,7 @@ impl TasksPage {
         if imp.is_mobile.get() && imp.is_detail_shown.get() {
             imp.is_detail_shown.set(false);
             self.sync_tasks_layout_visibility();
-            if let Some(win) = crate::window::find_evolution_window(self) {
+            if let Some(win) = crate::window::find_meridian_window(self) {
                 win.sync_back_button();
             }
             true
@@ -4569,7 +4569,7 @@ impl TasksPage {
 
         let sidebar_outer_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .css_classes(vec!["evolution-sidebar-drawer"])
+            .css_classes(vec!["meridian-sidebar-drawer"])
             .build();
         sidebar_outer_box.append(&drawer_header);
         sidebar_outer_box.append(&sidebar_scroll);
@@ -4920,7 +4920,7 @@ impl TasksPage {
         sidebar_toggle.connect_toggled(move |toggle| {
             let is_active = toggle.is_active();
             if let Some(page) = page_weak_for_sidebar.upgrade() {
-                if let Some(win) = crate::window::find_evolution_window(&page) {
+                if let Some(win) = crate::window::find_meridian_window(&page) {
                     if win.is_sidebar_visible_for_active_view() != is_active {
                         win.toggle_sidebar_animated(is_active);
                         return;
@@ -5321,7 +5321,7 @@ impl TasksPage {
                     }
                 }
                 refresh_task_preview(&page);
-                if let Some(win) = crate::window::find_evolution_window(&page) {
+                if let Some(win) = crate::window::find_meridian_window(&page) {
                     win.sync_right_sidebar_toggle();
                 }
             }
@@ -5359,7 +5359,7 @@ impl TasksPage {
             if page.imp().is_mobile.get() && has_selection {
                 page.imp().is_detail_shown.set(true);
                 page.sync_tasks_layout_visibility();
-                if let Some(win) = crate::window::find_evolution_window(&page) {
+                if let Some(win) = crate::window::find_meridian_window(&page) {
                     win.sync_back_button();
                 }
             }
@@ -6845,7 +6845,7 @@ impl TasksPage {
                     if page.imp().is_mobile.get() {
                         page.imp().is_detail_shown.set(true);
                         page.sync_tasks_layout_visibility();
-                        if let Some(win) = crate::window::find_evolution_window(&page) {
+                        if let Some(win) = crate::window::find_meridian_window(&page) {
                             win.sync_back_button();
                         }
                     }
@@ -7106,7 +7106,7 @@ impl TasksPage {
                 if position != clamped {
                     paned.set_position(clamped);
                 }
-                if let Some(win) = crate::window::find_evolution_window(paned) {
+                if let Some(win) = crate::window::find_meridian_window(paned) {
                     win.set_sidebar_position_sync(clamped);
                 }
                 if settings.mail_sidebar_position() != clamped {
@@ -8254,7 +8254,7 @@ impl TasksPage {
 
     fn show_toast(&self, message: &str) {
         if let Some(root) = self.root() {
-            if let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() {
+            if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
                 window.add_toast(&adw::Toast::new(message));
                 return;
             }
@@ -8489,7 +8489,7 @@ fn truncate_cairo_text(cr: &gtk::cairo::Context, text: &str, max_width: f64) -> 
     res
 }
 
-pub(crate) fn draw_task_table_header(
+fn draw_task_table_header(
     cr: &gtk::cairo::Context,
     layout: &PreparedTaskTableLayout,
     width: f64,
@@ -8583,7 +8583,7 @@ pub(crate) fn draw_task_table_header(
     }
 }
 
-pub(crate) fn draw_task_table_canvas(
+fn draw_task_table_canvas(
     cr: &gtk::cairo::Context,
     layout: &PreparedTaskTableLayout,
     selection: &HashSet<TaskSelectionIdentity>,
@@ -8987,7 +8987,6 @@ fn render_task_rows(
         page.imp().task_search_mode.get(),
         page.imp().task_query.borrow().as_str(),
     );
-    let mut visible = 0;
     let mut tasks = Vec::new();
     for index in 0..task_store.n_items() {
         let Some(task) = task_store.item(index).and_downcast::<TaskItemObject>() else {
@@ -9043,7 +9042,7 @@ fn render_task_rows(
         .collect();
     page.imp().task_selection.replace(active_selection);
     page.imp().task_selection_restoring.set(false);
-    visible = tasks.len();
+    let visible = tasks.len();
     update_task_selection_controls(page);
     empty_tasks.set_visible(visible == 0);
     if visible == 0 {
@@ -10235,7 +10234,7 @@ fn start_task_clipboard_paste(
         };
         let fresh_uids = components
             .iter()
-            .map(|_| format!("evolution-gtk4-{}", uuid::Uuid::new_v4()))
+            .map(|_| format!("meridian-{}", uuid::Uuid::new_v4()))
             .collect::<Vec<_>>();
         let existing = task_export_candidates(&task_store)
             .into_iter()
@@ -11871,7 +11870,7 @@ fn remove_task_row(task_list: &gtk::ListBox, source_uid: &str, task_uid: &str) {
 
 fn show_toast_for_widget<W: IsA<gtk::Widget>>(widget: &W, message: &str) {
     if let Some(root) = widget.root() {
-        if let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() {
+        if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
             window.add_toast(&adw::Toast::new(message));
             return;
         }
@@ -12977,7 +12976,7 @@ fn present_loaded_task_source_properties(
     file_row.append(&choose_file_button);
     file_row.set_visible(!properties.is_builtin && properties.custom_file_uri.is_some());
     let custom_writable_check =
-        gtk::CheckButton::with_label(&gettext("Evolution may update the iCalendar file"));
+        gtk::CheckButton::with_label(&gettext("Meridian may update the iCalendar file"));
     custom_writable_check.set_active(properties.custom_file_writable);
     custom_writable_check
         .set_visible(!properties.is_builtin && properties.custom_file_uri.is_some());
@@ -13471,7 +13470,7 @@ fn present_task_source_delete_confirmation(page: &TasksPage, button: &gtk::Butto
         gettext("“{name}” and its tasks will be permanently deleted from the provider.")
             .replace("{name}", &source.display_name)
     } else {
-        gettext("“{name}” will be removed from Evolution. This action cannot be undone.")
+        gettext("“{name}” will be removed from Meridian. This action cannot be undone.")
             .replace("{name}", &source.display_name)
     };
     let dialog = adw::AlertDialog::new(Some(&title), Some(&description));
@@ -14285,7 +14284,7 @@ fn build_task_component_with_dates(
 
     let mut component = vec![
         "BEGIN:VTODO".to_string(),
-        format!("UID:evolution-gtk4-{}", uuid::Uuid::new_v4()),
+        format!("UID:meridian-{}", uuid::Uuid::new_v4()),
         format!("DTSTAMP:{}", Utc::now().format("%Y%m%dT%H%M%SZ")),
         format!("STATUS:{}", lifecycle.status),
         format!("PERCENT-COMPLETE:{}", lifecycle.percent),
@@ -18287,7 +18286,7 @@ mod tests {
     #[test]
     fn local_task_create_edit_and_reload_roundtrip_is_authoritative() {
         let directory = std::env::temp_dir().join(format!(
-            "evolution-gtk4-task-editor-{}",
+            "meridian-task-editor-{}",
             uuid::Uuid::new_v4()
         ));
         let service = CalendarStoreService::with_writable_calendar_dir(&directory);

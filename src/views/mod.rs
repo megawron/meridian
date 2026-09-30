@@ -5,10 +5,6 @@
 pub(crate) mod accessibility;
 pub(crate) mod calendar_page;
 mod contacts_page;
-#[cfg(target_os = "linux")]
-mod html_editor;
-#[cfg(not(target_os = "linux"))]
-#[path = "html_editor_fallback.rs"]
 mod html_editor;
 pub mod itip_banner;
 mod mail_page;
@@ -18,8 +14,10 @@ mod memos_page;
 mod tasks_page;
 
 pub use calendar_page::CalendarPage;
+#[allow(unused_imports)]
 pub(crate) use calendar_page::CalendarView;
 pub use contacts_page::ContactsPage;
+#[allow(unused_imports)]
 pub(crate) use contacts_page::ContactTableColumn;
 pub use html_editor::EditorContent;
 pub use html_editor::HtmlEditor;
@@ -27,7 +25,6 @@ pub use itip_banner::ItipBanner;
 pub use mail_page::MailPage;
 pub(crate) use mail_page::MailDrillDownLevel;
 pub(crate) use mail_page::set_button_icon_with_fallback;
-#[cfg(target_os = "linux")]
 pub(crate) use mail_viewer::MailPrintDialogResult;
 pub use mail_viewer::MailViewer;
 pub use mail_viewer_window::MailViewerWindow;
@@ -70,7 +67,7 @@ pub fn build_sidebar_module_switcher(
         .margin_bottom(0)
         .valign(gtk::Align::End)
         .vexpand(false)
-        .css_classes(vec!["evolution-module-switcher"])
+        .css_classes(vec!["meridian-module-switcher"])
         .build();
 
     let grid = gtk::Grid::builder()
@@ -122,7 +119,7 @@ pub fn build_sidebar_module_switcher(
         let target_name = name.to_string();
         btn.connect_clicked(move |_| {
             if let Some(w) = widget_weak.upgrade() {
-                if let Some(window) = w.root().and_downcast::<crate::window::EvolutionWindow>() {
+                if let Some(window) = w.root().and_downcast::<crate::window::MeridianWindow>() {
                     window.set_active_view(&target_name);
                 }
             }
@@ -255,7 +252,7 @@ mod tests {
         };
         let anchor = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let switcher = build_sidebar_module_switcher("mail", &anchor);
-        assert!(switcher.has_css_class("evolution-module-switcher"));
+        assert!(switcher.has_css_class("meridian-module-switcher"));
         let grid = switcher.first_child().and_downcast::<gtk::Grid>().expect("Grid");
         let mut count = 0;
         let mut child = grid.first_child();

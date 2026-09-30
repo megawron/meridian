@@ -19,7 +19,7 @@ use crate::services::reminder_service::{
     self, ReminderComponentKind, ReminderIdentity, ReminderKind, ReminderScheduler, ReminderStore,
     SystemClock, parse_reminder_action_target, parse_reminder_deep_link,
 };
-use crate::window::EvolutionWindow;
+use crate::window::MeridianWindow;
 use crate::{APP_ID, RESOURCE_PATH};
 
 pub(crate) const ACCELERATOR_BINDINGS: &[(&str, &[&str])] = &[
@@ -114,7 +114,7 @@ mod action_contract_tests {
 
     #[test]
     fn application_action_contract_is_registered() {
-        let app = EvolutionApplication::new();
+        let app = MeridianApplication::new();
         app.setup_actions();
         for spec in ACTIONS
             .iter()
@@ -143,22 +143,22 @@ mod imp {
     use std::cell::RefCell;
 
     #[derive(Debug, Default)]
-    pub struct EvolutionApplication {
+    pub struct MeridianApplication {
         pub reminder_source: RefCell<Option<glib::SourceId>>,
         pub reminder_check_in_progress: Cell<bool>,
         pub reminder_action_in_progress: Cell<bool>,
     }
 
     #[glib::object_subclass]
-    impl ObjectSubclass for EvolutionApplication {
-        const NAME: &'static str = "EvolutionApplication";
-        type Type = super::EvolutionApplication;
+    impl ObjectSubclass for MeridianApplication {
+        const NAME: &'static str = "MeridianApplication";
+        type Type = super::MeridianApplication;
         type ParentType = adw::Application;
     }
 
-    impl ObjectImpl for EvolutionApplication {}
+    impl ObjectImpl for MeridianApplication {}
 
-    impl ApplicationImpl for EvolutionApplication {
+    impl ApplicationImpl for MeridianApplication {
         /// Called once on first activation. Sets up global resources.
         fn startup(&self) {
             self.parent_startup();
@@ -236,20 +236,22 @@ mod imp {
         }
     }
 
-    impl GtkApplicationImpl for EvolutionApplication {}
-    impl AdwApplicationImpl for EvolutionApplication {}
+    impl GtkApplicationImpl for MeridianApplication {}
+    impl AdwApplicationImpl for MeridianApplication {}
 }
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 glib::wrapper! {
     /// The main application object.
-    pub struct EvolutionApplication(ObjectSubclass<imp::EvolutionApplication>)
+    pub struct MeridianApplication(ObjectSubclass<imp::MeridianApplication>)
         @extends adw::Application, gtk::Application, gio::Application,
         @implements gio::ActionGroup, gio::ActionMap;
 }
 
-impl EvolutionApplication {
+pub type EvolutionApplication = MeridianApplication;
+
+impl MeridianApplication {
     /// Create a new application instance.
     pub fn new() -> Self {
         Self::with_flags(gio::ApplicationFlags::HANDLES_OPEN)
@@ -369,9 +371,9 @@ impl EvolutionApplication {
             ),
         ];
 
-        #[cfg(all(unix, not(target_os = "macos")))]
+        #[cfg(unix)]
         let user_hicolor_dir = glib::user_data_dir().join("icons/hicolor");
-        #[cfg(all(unix, not(target_os = "macos")))]
+        #[cfg(unix)]
         let mut user_icons_updated = false;
 
         for (size, bytes) in app_icon_sizes {
@@ -379,7 +381,7 @@ impl EvolutionApplication {
             let _ = std::fs::create_dir_all(&dir);
             let _ = std::fs::write(dir.join(format!("{APP_ID}.png")), bytes);
 
-            #[cfg(all(unix, not(target_os = "macos")))]
+            #[cfg(unix)]
             if std::env::var("FLATPAK_ID").is_err() {
                 let user_dir = user_hicolor_dir.join(format!("{size}/apps"));
                 let user_file = user_dir.join(format!("{APP_ID}.png"));
@@ -395,7 +397,7 @@ impl EvolutionApplication {
             }
         }
 
-        #[cfg(all(unix, not(target_os = "macos")))]
+        #[cfg(unix)]
         if user_icons_updated {
             let _ = std::process::Command::new("gtk-update-icon-cache")
                 .args(["-f", "-t"])
@@ -409,20 +411,11 @@ impl EvolutionApplication {
             icon_theme.add_search_path(local_data);
         }
 
-        #[cfg(target_os = "macos")]
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(bundle_icons) = exe.parent().and_then(|p| p.parent()).map(|p| p.join("Resources/icons")) {
-                if bundle_icons.is_dir() {
-                    icon_theme.add_search_path(&bundle_icons);
-                }
-            }
-        }
-
         tracing::debug!("Application icons registered");
     }
 
     /// Ensure desktop launcher and executable symlink exist for GNOME Shell integration.
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(unix)]
     fn setup_desktop_integration(&self) {
         if std::env::var("FLATPAK_ID").is_err() {
             let data_dir = glib::user_data_dir();
@@ -459,7 +452,7 @@ impl EvolutionApplication {
         }
     }
 
-    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    #[cfg(not(unix))]
     fn setup_desktop_integration(&self) {}
 
     /// Load the application-wide CSS stylesheet.
@@ -473,17 +466,6 @@ impl EvolutionApplication {
                 &provider,
                 gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
             );
-
-            #[cfg(target_os = "macos")]
-            {
-                let theme = gtk::IconTheme::for_display(&display);
-                for path in &["/opt/homebrew/share/icons", "/usr/local/share/icons"] {
-                    let p = std::path::Path::new(path);
-                    if p.exists() {
-                        theme.add_search_path(p);
-                    }
-                }
-            }
         }
 
         tracing::debug!("Custom CSS loaded");
@@ -640,17 +622,17 @@ impl EvolutionApplication {
         self.add_action(&action);
     }
 
-    fn main_window(&self) -> EvolutionWindow {
+    fn main_window(&self) -> MeridianWindow {
         if let Some(window) = self
             .active_window()
-            .and_then(|window| window.downcast::<EvolutionWindow>().ok())
+            .and_then(|window| window.downcast::<MeridianWindow>().ok())
         {
             return window;
         }
         self.windows()
             .into_iter()
-            .find_map(|window| window.downcast::<EvolutionWindow>().ok())
-            .unwrap_or_else(|| EvolutionWindow::new(self))
+            .find_map(|window| window.downcast::<MeridianWindow>().ok())
+            .unwrap_or_else(|| MeridianWindow::new(self))
     }
 
     fn show_reminder_error(&self, message: &str) {
@@ -808,9 +790,8 @@ impl EvolutionApplication {
         self.imp().reminder_source.replace(Some(source));
     }
 
-    /// Poll the portable local calendar store.  EDS-backed snapshots use the
-    /// same candidate/state API once the native Linux watcher is enabled; the
-    /// macOS development path intentionally never tries to fake that bridge.
+    /// Poll the local calendar store. EDS-backed snapshots use the
+    /// same candidate/state API once the native Linux watcher is enabled.
     fn check_local_reminders(&self) {
         if AppSettings::try_new().is_some_and(|settings| !settings.notifications_enabled()) {
             return;
@@ -964,10 +945,10 @@ impl EvolutionApplication {
 }
 
 fn reminder_notification_id(key: &str) -> String {
-    format!("evolution-reminder-{key}")
+    format!("meridian-reminder-{key}")
 }
 
-impl Default for EvolutionApplication {
+impl Default for MeridianApplication {
     fn default() -> Self {
         Self::new()
     }

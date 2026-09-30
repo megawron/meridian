@@ -12,7 +12,7 @@ use adw::subclass::prelude::*;
 use chrono::Utc;
 use gtk::{gdk, gio, glib};
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use crate::dialogs::event_dialog::AlarmEditor;
@@ -32,7 +32,7 @@ use crate::services::memo_surface_service::{
     validated_url_for_record,
 };
 use crate::services::reminder_service::{Alarm, replace_component_alarms};
-use crate::services::settings_service::{AppSettings, normalize_memo_source_filter_value};
+use crate::services::settings_service::AppSettings;
 use crate::views::accessibility::set_accessible_label;
 use crate::views::calendar_page::calendar_source_color;
 use crate::views::set_button_icon_with_fallback;
@@ -59,11 +59,11 @@ mod imp {
         pub memo_list: RefCell<Option<gtk::ListBox>>,
         pub memo_table_header: RefCell<Option<gtk::DrawingArea>>,
         pub memo_table_canvas: RefCell<Option<gtk::DrawingArea>>,
-        pub memo_table_layout: RefCell<Option<PreparedMemoTableLayout>>,
+        pub(crate) memo_table_layout: RefCell<Option<PreparedMemoTableLayout>>,
         pub memo_table_hovered_row: Cell<Option<usize>>,
-        pub memo_table_hovered_header: Cell<Option<MemoTableColumn>>,
+        pub(crate) memo_table_hovered_header: Cell<Option<MemoTableColumn>>,
         pub memo_table_anchor_row: Cell<Option<usize>>,
-        pub memo_sort: Cell<MemoSort>,
+        pub(crate) memo_sort: Cell<MemoSort>,
         pub memo_sort_descending: Cell<bool>,
         pub memo_records: RefCell<Option<Rc<RefCell<Vec<MemoRecord>>>>>,
         pub memo_empty_state: RefCell<Option<gtk::Label>>,
@@ -153,7 +153,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for MemosPage {
-        const NAME: &'static str = "EvolutionMemosPage";
+        const NAME: &'static str = "MeridianMemosPage";
         type Type = super::MemosPage;
         type ParentType = gtk::Widget;
 
@@ -718,7 +718,7 @@ impl MemosPage {
         if let Some(settings) = AppSettings::try_new() {
             settings.set_memo_preview_visible(visible);
         }
-        if let Some(win) = crate::window::find_evolution_window(self) {
+        if let Some(win) = crate::window::find_meridian_window(self) {
             win.sync_right_sidebar_toggle();
         }
     }
@@ -824,7 +824,7 @@ impl MemosPage {
         if imp.is_mobile.get() && imp.is_detail_shown.get() {
             imp.is_detail_shown.set(false);
             self.sync_memos_layout_visibility();
-            if let Some(win) = crate::window::find_evolution_window(self) {
+            if let Some(win) = crate::window::find_meridian_window(self) {
                 win.sync_back_button();
             }
             true
@@ -1451,7 +1451,7 @@ impl MemosPage {
         self.refresh_active_memo_list();
     }
 
-    pub(crate) fn apply_memo_sources(&self, sources: Vec<MemoSourceProjection>) {
+    fn apply_memo_sources(&self, sources: Vec<MemoSourceProjection>) {
         let mut items = Vec::new();
         let mut available_sources = HashSet::new();
         let mut unavailable_sources = HashSet::new();
@@ -1753,11 +1753,9 @@ impl MemosPage {
         set_direction_button(&direction_button, memo_sort_descending.get());
         let all_memo_lists = crate::i18n::gettext("All Memo Lists");
         let source_model = gtk::StringList::new(&[&all_memo_lists]);
-        let source_uids = Rc::new(RefCell::new(Vec::<String>::new()));
         let source_selector =
             gtk::DropDown::new(Some(source_model.clone()), None::<&gtk::Expression>);
         source_selector.set_tooltip_text(Some(&crate::i18n::gettext("Select memo list")));
-        let initial_source_filter = memo_source_filter.borrow().clone();
         let all_categories = crate::i18n::gettext("All Categories");
         let uncategorized = crate::i18n::gettext("Uncategorized");
         let category_model = gtk::StringList::new(&[&all_categories, &uncategorized]);
@@ -2082,7 +2080,7 @@ impl MemosPage {
 
         let sidebar_outer_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .css_classes(vec!["evolution-sidebar-drawer"])
+            .css_classes(vec!["meridian-sidebar-drawer"])
             .build();
         sidebar_outer_box.append(&drawer_header);
         sidebar_outer_box.append(&sidebar_scroll);
@@ -2371,7 +2369,7 @@ impl MemosPage {
         sidebar_toggle.connect_toggled(move |toggle| {
             let is_active = toggle.is_active();
             if let Some(page) = page_weak_for_sidebar.upgrade() {
-                if let Some(win) = crate::window::find_evolution_window(&page) {
+                if let Some(win) = crate::window::find_meridian_window(&page) {
                     if win.is_sidebar_visible_for_active_view() != is_active {
                         win.toggle_sidebar_animated(is_active);
                         return;
@@ -2816,7 +2814,7 @@ impl MemosPage {
                         &memo_list_for_preview_settings,
                         &memo_records_for_preview_settings,
                     );
-                    if let Some(win) = crate::window::find_evolution_window(&page) {
+                    if let Some(win) = crate::window::find_meridian_window(&page) {
                         win.sync_right_sidebar_toggle();
                     }
                 }
@@ -2867,7 +2865,6 @@ impl MemosPage {
         let memo_text_for_save = memo_text.clone();
         let memo_alarm_editor_for_save = memo_alarm_editor.clone();
         let memo_list_for_save = memo_list.clone();
-        let empty_state_for_save = empty_state.clone();
         let memo_meta_for_save = memo_meta.clone();
         save_memo_btn.connect_clicked(move |_| {
             let Some(page) = page_weak_for_save.upgrade() else {
@@ -4352,7 +4349,7 @@ impl MemosPage {
                 &memo_list_for_preview_toggle,
                 &memo_records_for_preview_toggle,
             );
-            if let Some(win) = crate::window::find_evolution_window(&page) {
+            if let Some(win) = crate::window::find_meridian_window(&page) {
                 win.sync_right_sidebar_toggle();
             }
         });
@@ -4392,7 +4389,7 @@ impl MemosPage {
                 if page.imp().is_mobile.get() {
                     page.imp().is_detail_shown.set(true);
                     page.sync_memos_layout_visibility();
-                    if let Some(win) = crate::window::find_evolution_window(&page) {
+                    if let Some(win) = crate::window::find_meridian_window(&page) {
                         win.sync_back_button();
                     }
                 }
@@ -4406,7 +4403,7 @@ impl MemosPage {
                 if page.imp().is_mobile.get() {
                     page.imp().is_detail_shown.set(true);
                     page.sync_memos_layout_visibility();
-                    if let Some(win) = crate::window::find_evolution_window(&page) {
+                    if let Some(win) = crate::window::find_meridian_window(&page) {
                         win.sync_back_button();
                     }
                 }
@@ -4646,7 +4643,7 @@ impl MemosPage {
                 if position != clamped {
                     paned.set_position(clamped);
                 }
-                if let Some(win) = crate::window::find_evolution_window(paned) {
+                if let Some(win) = crate::window::find_meridian_window(paned) {
                     win.set_sidebar_position_sync(clamped);
                 }
                 if settings.mail_sidebar_position() != clamped {
@@ -5340,7 +5337,7 @@ impl MemosPage {
 
     fn show_toast(&self, message: &str) {
         if let Some(root) = self.root() {
-            if let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() {
+            if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
                 window.add_toast(&adw::Toast::new(message));
                 return;
             }
@@ -6375,7 +6372,7 @@ fn remove_memo_row(
 
 fn show_toast_for_widget<W: IsA<gtk::Widget>>(widget: &W, message: &str) {
     if let Some(root) = widget.root() {
-        if let Ok(window) = root.downcast::<crate::window::EvolutionWindow>() {
+        if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
             window.add_toast(&adw::Toast::new(message));
             return;
         }
@@ -6629,7 +6626,7 @@ fn build_memo_component(
     let stamp = Utc::now().format("%Y%m%dT%H%M%SZ");
     let mut component = vec![
         "BEGIN:VJOURNAL".to_string(),
-        format!("UID:evolution-gtk4-{}", uuid::Uuid::new_v4()),
+        format!("UID:meridian-{}", uuid::Uuid::new_v4()),
         format!("DTSTAMP:{stamp}"),
         format!("DTSTART:{stamp}"),
         format!("SUMMARY:{}", escape_ical_text(title)),

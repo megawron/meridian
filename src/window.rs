@@ -20,11 +20,10 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
 use std::cell::Cell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::action_contract::{ACTIONS, ActionScope, MenuPath, menu_actions};
-use crate::application::EvolutionApplication;
+use crate::application::MeridianApplication;
 use crate::dialogs::{ReminderDialog, ReminderDialogAction};
 use crate::i18n::{gettext, ngettext};
 use crate::services::AppSettings;
@@ -53,7 +52,7 @@ mod imp {
     use std::cell::RefCell;
 
     #[derive(Default)]
-    pub struct EvolutionWindow {
+    pub struct MeridianWindow {
         pub settings: RefCell<Option<AppSettings>>,
         pub header_bar: RefCell<Option<adw::HeaderBar>>,
         pub sidebar_header: RefCell<Option<adw::HeaderBar>>,
@@ -96,13 +95,13 @@ mod imp {
     }
 
     #[glib::object_subclass]
-    impl ObjectSubclass for EvolutionWindow {
-        const NAME: &'static str = "EvolutionWindow";
-        type Type = super::EvolutionWindow;
+    impl ObjectSubclass for MeridianWindow {
+        const NAME: &'static str = "MeridianWindow";
+        type Type = super::MeridianWindow;
         type ParentType = adw::ApplicationWindow;
     }
 
-    impl ObjectImpl for EvolutionWindow {
+    impl ObjectImpl for MeridianWindow {
         fn constructed(&self) {
             self.parent_constructed();
             let window = self.obj();
@@ -125,7 +124,7 @@ mod imp {
             window.setup_layout();
             window.setup_actions();
 
-            if std::env::var("EVOLUTION_OPEN_DEBUG_CONSOLE").is_ok() {
+            if std::env::var("MERIDIAN_OPEN_DEBUG_CONSOLE").or_else(|_| std::env::var("EVOLUTION_OPEN_DEBUG_CONSOLE")).is_ok() {
                 window.set_debug_console_open(true);
             }
 
@@ -133,12 +132,12 @@ mod imp {
         }
     }
 
-    impl WidgetImpl for EvolutionWindow {
+    impl WidgetImpl for MeridianWindow {
         fn realize(&self) {
             self.parent_realize();
         }
     }
-    impl WindowImpl for EvolutionWindow {
+    impl WindowImpl for MeridianWindow {
         fn close_request(&self) -> glib::Propagation {
             let window = self.obj();
             window.imp().transport_service.stop();
@@ -162,14 +161,14 @@ mod imp {
             self.parent_close_request()
         }
     }
-    impl ApplicationWindowImpl for EvolutionWindow {}
-    impl AdwApplicationWindowImpl for EvolutionWindow {}
+    impl ApplicationWindowImpl for MeridianWindow {}
+    impl AdwApplicationWindowImpl for MeridianWindow {}
 }
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 glib::wrapper! {
-    pub struct EvolutionWindow(ObjectSubclass<imp::EvolutionWindow>)
+    pub struct MeridianWindow(ObjectSubclass<imp::MeridianWindow>)
         @extends adw::ApplicationWindow, gtk::ApplicationWindow,
                  gtk::Window, gtk::Widget,
         @implements gio::ActionGroup, gio::ActionMap,
@@ -183,20 +182,6 @@ pub(crate) static GTK_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new((
 
 #[cfg(test)]
 pub(crate) fn gtk_test_main_context() -> Option<glib::MainContext> {
-    #[cfg(target_os = "macos")]
-    if !gtk::is_initialized() {
-        unsafe extern "C" {
-            fn pthread_main_np() -> std::ffi::c_int;
-        }
-        // GTK4 aborts before returning an error when initialization is
-        // attempted from a Rust test-harness worker on macOS.  Detect that
-        // topology before calling gtk::init(); widget behavior remains covered
-        // on platforms whose test harness can own GTK's process main thread.
-        if unsafe { pthread_main_np() } == 0 {
-            eprintln!("skipping GTK integration test: macOS requires the process main thread");
-            return None;
-        }
-    }
     if !gtk::is_initialized() {
         if gtk::init().is_err() {
             eprintln!("skipping GTK integration test: no display is available");
@@ -359,8 +344,8 @@ enum SearchRouteDecision {
     Failed,
 }
 
-impl EvolutionWindow {
-    pub fn new(app: &EvolutionApplication) -> Self {
+impl MeridianWindow {
+    pub fn new(app: &MeridianApplication) -> Self {
         glib::Object::builder().property("application", app).build()
     }
 
@@ -404,7 +389,7 @@ impl EvolutionWindow {
                         return false;
                     };
                     let Some(application) = window.application().and_then(|application| {
-                        application.downcast::<EvolutionApplication>().ok()
+                        application.downcast::<MeridianApplication>().ok()
                     }) else {
                         return false;
                     };
@@ -1344,6 +1329,12 @@ impl EvolutionWindow {
     }
 
     pub(crate) fn handle_navigate_back(&self) -> bool {
+        if self.is_active_search_open() {
+            self.close_active_search();
+            self.sync_back_button();
+            return true;
+        }
+
         let handled = if let Some(view_stack) = self.imp().view_stack.borrow().as_ref() {
             match view_stack.visible_child_name().as_deref() {
                 Some("mail") => self.mail_page().map(|p| p.navigate_back()).unwrap_or(false),
@@ -1543,18 +1534,12 @@ impl EvolutionWindow {
         self.sync_right_sidebar_toggle();
     }
 
-    pub fn sidebar_position_for_view(&self, view_name: &str) -> i32 {
+    pub fn sidebar_position_for_view(&self, _view_name: &str) -> i32 {
         let settings = AppSettings::try_new();
-        match view_name {
-            "contacts" => settings
-                .map(|s| s.contact_hpane_position())
-                .unwrap_or(320)
-                .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH),
-            _ => settings
-                .map(|s| s.mail_sidebar_position())
-                .unwrap_or(240)
-                .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH),
-        }
+        settings
+            .map(|s| s.mail_sidebar_position())
+            .unwrap_or(240)
+            .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH)
     }
 
     pub fn update_sidebar_title(&self, title: &str) {
@@ -1972,20 +1957,28 @@ impl EvolutionWindow {
 
 }
 
-/// Find the active EvolutionWindow from any widget or dialog.
-pub fn find_evolution_window(widget: &impl gtk::prelude::IsA<gtk::Widget>) -> Option<EvolutionWindow> {
-    if let Ok(win) = widget.clone().upcast::<gtk::Widget>().downcast::<EvolutionWindow>() {
+pub type EvolutionWindow = MeridianWindow;
+
+/// Backward compatibility shim for finding the active window.
+#[inline]
+pub fn find_evolution_window(widget: &impl gtk::prelude::IsA<gtk::Widget>) -> Option<MeridianWindow> {
+    find_meridian_window(widget)
+}
+
+/// Find the active MeridianWindow from any widget or dialog.
+pub fn find_meridian_window(widget: &impl gtk::prelude::IsA<gtk::Widget>) -> Option<MeridianWindow> {
+    if let Ok(win) = widget.clone().upcast::<gtk::Widget>().downcast::<MeridianWindow>() {
         return Some(win);
     }
     if let Some(root) = widget.root() {
-        if let Ok(win) = root.downcast::<EvolutionWindow>() {
+        if let Ok(win) = root.downcast::<MeridianWindow>() {
             return Some(win);
         }
     }
     let mut current_parent = widget.clone().upcast::<gtk::Widget>().parent();
     while let Some(parent) = current_parent {
-        if let Ok(evo_win) = parent.clone().downcast::<EvolutionWindow>() {
-            return Some(evo_win);
+        if let Ok(meridian_win) = parent.clone().downcast::<MeridianWindow>() {
+            return Some(meridian_win);
         }
         current_parent = parent.parent();
     }
@@ -1996,23 +1989,23 @@ pub fn find_evolution_window(widget: &impl gtk::prelude::IsA<gtk::Widget>) -> Op
         .ok()
         .or_else(|| widget.root().and_then(|r| r.downcast::<gtk::Window>().ok()));
     while let Some(win) = current_window {
-        if let Ok(evo_win) = win.clone().downcast::<EvolutionWindow>() {
-            return Some(evo_win);
+        if let Ok(meridian_win) = win.clone().downcast::<MeridianWindow>() {
+            return Some(meridian_win);
         }
         current_window = win.transient_for();
     }
     let toplevels = gtk::Window::toplevels();
     for i in 0..toplevels.n_items() {
         if let Some(toplevel) = toplevels.item(i) {
-            if let Ok(evo_win) = toplevel.downcast::<EvolutionWindow>() {
-                return Some(evo_win);
+            if let Ok(meridian_win) = toplevel.downcast::<MeridianWindow>() {
+                return Some(meridian_win);
             }
         }
     }
     None
 }
 
-impl EvolutionWindow {
+impl MeridianWindow {
 
     /// Toggle the developer protocol console drawer.
     pub fn toggle_debug_console(&self) {
@@ -3120,16 +3113,10 @@ impl EvolutionWindow {
                     })
                     .unwrap_or_else(|| {
                         let settings = AppSettings::try_new();
-                        let pos = match name {
-                            "contacts" => settings
-                                .map(|s| s.contact_hpane_position())
-                                .unwrap_or(320)
-                                .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH),
-                            _ => settings
-                                .map(|s| s.mail_sidebar_position())
-                                .unwrap_or(240)
-                                .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH),
-                        };
+                        let pos = settings
+                            .map(|s| s.mail_sidebar_position())
+                            .unwrap_or(240)
+                            .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
                         let vis = AppSettings::try_new()
                             .map(|s| s.mail_show_sidebar())
                             .unwrap_or(true);
@@ -3238,6 +3225,7 @@ impl EvolutionWindow {
         let sync_sidebar_position: Rc<dyn Fn(i32)> = {
             let mail_page = mail_page.clone();
             let calendar_bin = calendar_bin.clone();
+            let contacts_bin = contacts_bin.clone();
             let tasks_bin = tasks_bin.clone();
             let memos_bin = memos_bin.clone();
             let win_weak_sidebar_pos = self.downgrade();
@@ -3245,7 +3233,7 @@ impl EvolutionWindow {
                 let clamped = pos.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
                 mail_page.set_sidebar_position(clamped);
                 if let Some(win) = win_weak_sidebar_pos.upgrade() {
-                    if win.active_view_name() != "contacts" && !win.imp().is_mobile.get() {
+                    if !win.imp().is_mobile.get() {
                         if let Some(sb_h) = win.imp().sidebar_header.borrow().as_ref() {
                             sb_h.set_size_request(clamped, -1);
                         }
@@ -3253,6 +3241,11 @@ impl EvolutionWindow {
                 }
                 if let Some(child) = calendar_bin.child() {
                     if let Ok(page) = child.downcast::<CalendarPage>() {
+                        page.set_sidebar_position(clamped);
+                    }
+                }
+                if let Some(child) = contacts_bin.child() {
+                    if let Ok(page) = child.downcast::<ContactsPage>() {
                         page.set_sidebar_position(clamped);
                     }
                 }
@@ -5437,127 +5430,6 @@ impl EvolutionWindow {
         ));
         self.add_action(&action_import);
 
-        let action_macos_sync = gio::SimpleAction::new("macos-sync", None);
-        action_macos_sync.connect_activate(glib::clone!(
-            #[weak(rename_to = win)]
-            self,
-            move |_, _| {
-                let srv = crate::services::MacosIntegrationService::new();
-                let cal_perm = srv.check_permission(crate::services::MacosPermissionKind::Calendar);
-                let contact_perm = srv.check_permission(crate::services::MacosPermissionKind::Contacts);
-
-                let win_clone = win.clone();
-                let do_sync = move || {
-                    let (sender, receiver) = async_channel::bounded(1);
-                    std::thread::spawn(move || {
-                        let srv = crate::services::MacosIntegrationService::new();
-                        let cal_store = crate::services::CalendarStoreService::new();
-                        let contact_store = crate::services::ContactStoreService::new();
-                        let summary = srv.sync_all(&cal_store, &contact_store);
-                        let _ = sender.send_blocking(summary);
-                    });
-                    let win_weak = win_clone.downgrade();
-                    glib::spawn_future_local(async move {
-                        if let Ok(summary) = receiver.recv().await {
-                            if let Some(win) = win_weak.upgrade() {
-                                if summary.errors.is_empty() {
-                                    win.add_toast(&adw::Toast::new(&format!(
-                                        "{}: {} {}, {} {}, {} {}",
-                                        crate::i18n::gettext("macOS Synchronization"),
-                                        summary.calendar_events,
-                                        crate::i18n::gettext("events"),
-                                        summary.tasks_reminders,
-                                        crate::i18n::gettext("tasks"),
-                                        summary.contacts,
-                                        crate::i18n::gettext("contacts synchronized")
-                                    )));
-                                } else {
-                                    win.add_toast(&adw::Toast::new(&format!(
-                                        "{} ({} {}, {} {}). {}",
-                                        crate::i18n::gettext("macOS Synchronization"),
-                                        summary.calendar_events,
-                                        crate::i18n::gettext("events"),
-                                        summary.contacts,
-                                        crate::i18n::gettext("contacts"),
-                                        summary.errors.join("; ")
-                                    )));
-                                }
-                                if let Some(cal_page) = win.calendar_page() {
-                                    cal_page.reload_calendar_data();
-                                }
-                                if let Some(contact_page) = win.contacts_page() {
-                                    contact_page.reload_contacts();
-                                }
-                            }
-                        }
-                    });
-                };
-
-                let rc_sync = std::rc::Rc::new(do_sync);
-                if cal_perm == crate::services::MacosPermissionStatus::NotDetermined {
-                    let srv_c = srv.clone();
-                    let sync_c = std::rc::Rc::clone(&rc_sync);
-                    srv.request_permission(crate::services::MacosPermissionKind::Calendar, move |_| {
-                        if contact_perm == crate::services::MacosPermissionStatus::NotDetermined {
-                            let sync_c2 = std::rc::Rc::clone(&sync_c);
-                            srv_c.request_permission(crate::services::MacosPermissionKind::Contacts, move |_| {
-                                sync_c2();
-                            });
-                        } else {
-                            sync_c();
-                        }
-                    });
-                } else if contact_perm == crate::services::MacosPermissionStatus::NotDetermined {
-                    let sync_c = std::rc::Rc::clone(&rc_sync);
-                    srv.request_permission(crate::services::MacosPermissionKind::Contacts, move |_| {
-                        sync_c();
-                    });
-                } else {
-                    rc_sync();
-                }
-            }
-        ));
-        self.add_action(&action_macos_sync);
-
-        #[cfg(all(target_os = "macos", macos_bridge))]
-        {
-            glib::idle_add_local_once(glib::clone!(
-                #[weak(rename_to = win)]
-                self,
-                move || {
-                    let srv = crate::services::MacosIntegrationService::new();
-                    let cal_perm = srv.check_permission(crate::services::MacosPermissionKind::Calendar);
-                    let contact_perm = srv.check_permission(crate::services::MacosPermissionKind::Contacts);
-                    if cal_perm == crate::services::MacosPermissionStatus::Authorized
-                        || contact_perm == crate::services::MacosPermissionStatus::Authorized
-                    {
-                        let (sender, receiver) = async_channel::bounded(1);
-                        std::thread::spawn(move || {
-                            let srv = crate::services::MacosIntegrationService::new();
-                            let cal_store = crate::services::CalendarStoreService::new();
-                            let contact_store = crate::services::ContactStoreService::new();
-                            let summary = srv.sync_all(&cal_store, &contact_store);
-                            let _ = sender.send_blocking(summary);
-                        });
-                        let win_weak = win.downgrade();
-                        glib::spawn_future_local(async move {
-                            if let Ok(summary) = receiver.recv().await {
-                                if summary.calendar_events > 0 || summary.tasks_reminders > 0 || summary.contacts > 0 {
-                                    if let Some(win) = win_weak.upgrade() {
-                                        if let Some(cal_page) = win.calendar_page() {
-                                            cal_page.reload_calendar_data();
-                                        }
-                                        if let Some(contact_page) = win.contacts_page() {
-                                            contact_page.reload_contacts();
-                                        }
-                                    }
-                                }
-                            }
-                        });
-                    }
-                }
-            ));
-        }
 
         let action_purge_calendar = gio::SimpleAction::new("purge-calendar", None);
         action_purge_calendar.connect_activate(glib::clone!(
@@ -6198,8 +6070,8 @@ mod tests {
         let Some(_context) = gtk_test_main_context() else {
             return;
         };
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
         for spec in ACTIONS
             .iter()
             .filter(|spec| spec.action.starts_with("win."))
@@ -6220,8 +6092,8 @@ mod tests {
         let Some(_context) = gtk_test_main_context() else {
             return;
         };
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
 
         window.set_message_actions_enabled(false);
         for spec in ACTIONS
@@ -6259,8 +6131,8 @@ mod tests {
         // Ensure clean starting state
         settings.set_switcher_location("bottom-left");
 
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
 
         let header_bar = window.imp().header_bar.borrow().as_ref().unwrap().clone();
         assert!(header_bar.title_widget().unwrap().downcast_ref::<adw::WindowTitle>().is_some());
@@ -6293,7 +6165,7 @@ mod tests {
 
     fn wait_for_search_route_source_to_clear(
         context: &glib::MainContext,
-        window: &EvolutionWindow,
+        window: &MeridianWindow,
         max_wait: std::time::Duration,
     ) {
         let deadline = Instant::now() + max_wait;
@@ -6535,8 +6407,8 @@ mod tests {
         let Some(context) = gtk_test_main_context() else {
             return;
         };
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
         let stack = window
             .imp()
             .view_stack
@@ -6578,8 +6450,8 @@ mod tests {
         let Some(context) = gtk_test_main_context() else {
             return;
         };
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
         let stack = window
             .imp()
             .view_stack
@@ -6613,8 +6485,8 @@ mod tests {
         let Some(context) = gtk_test_main_context() else {
             return;
         };
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
         let stack = window
             .imp()
             .view_stack
@@ -6659,8 +6531,8 @@ mod tests {
         let Some(context) = gtk_test_main_context() else {
             return;
         };
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
         let stack = window
             .imp()
             .view_stack
@@ -6757,8 +6629,8 @@ mod tests {
         let Some(_context) = gtk_test_main_context() else {
             return;
         };
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
 
         let stack = window
             .imp()
@@ -6822,7 +6694,7 @@ mod tests {
         let memos_paned = memos_page.outer_paned().expect("memos paned");
         assert_eq!(memos_paned.position(), 330);
 
-        // Switch to contacts - contacts divider uses its independent contact_hpane_position (default 320)
+        // Switch to contacts - contacts divider uses the unified sidebar position (330)
         window.set_active_view("contacts");
         let contacts_bin = stack
             .child_by_name("contacts")
@@ -6833,7 +6705,7 @@ mod tests {
             .and_downcast::<ContactsPage>()
             .expect("contacts page");
         let contacts_paned = contacts_page.outer_paned().expect("contacts paned");
-        assert_eq!(contacts_paned.position(), 320);
+        assert_eq!(contacts_paned.position(), 330);
 
         // Switch back to mail
         window.set_active_view("mail");
@@ -6853,8 +6725,8 @@ mod tests {
             settings.set_mail_show_sidebar(true);
             settings.set_mail_sidebar_position(260);
         }
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
         window.set_visible(true);
 
         // 1. Verify bounds constants
@@ -6949,7 +6821,7 @@ mod tests {
         assert!(calendar_page.is_sidebar_visible());
         assert!(mail_page.is_sidebar_visible());
 
-        // 5. Contacts sidebar view-dependent width independence
+        // 5. Contacts sidebar unified cross-view synchronization
         window.set_active_view("contacts");
         let contacts_bin = stack
             .child_by_name("contacts")
@@ -6960,8 +6832,8 @@ mod tests {
             .and_downcast::<ContactsPage>()
             .expect("contacts page");
         let contacts_paned = contacts_page.outer_paned().expect("contacts paned");
-        assert_eq!(contacts_paned.position(), 320);
-        assert_eq!(sb_h.size_request().0, 320);
+        assert_eq!(contacts_paned.position(), 300);
+        assert_eq!(sb_h.size_request().0, 300);
 
         // Switch back to mail: mail remains at 300
         window.set_active_view("mail");
@@ -6977,8 +6849,8 @@ mod tests {
         let Some(_context) = gtk_test_main_context() else {
             return;
         };
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
 
         // Verify execute_exit_purge_and_expunge executes safely
         window.execute_exit_purge_and_expunge();
@@ -6992,8 +6864,8 @@ mod tests {
         let Some(_context) = gtk_test_main_context() else {
             return;
         };
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
 
         let stack = window
             .imp()
@@ -7046,8 +6918,8 @@ mod tests {
         crate::services::log_buffer::clear_logs();
         crate::services::log_buffer::append_log_line("Test line with \0 interior null characters \0 in log");
 
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
 
         // Toggle console open - this exercises connect_reveal_child_notify, refresh_logs,
         // TextBuffer::set_text, and scrolling without panic
@@ -7071,8 +6943,8 @@ mod tests {
         let Some(_context) = gtk_test_main_context() else {
             return;
         };
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
         window.set_visible(true);
 
         let action = window
@@ -7195,8 +7067,8 @@ mod tests {
         let Some(_context) = gtk_test_main_context() else {
             return;
         };
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
 
         let action = window
             .lookup_action("toggle-statusbar")
@@ -7260,8 +7132,8 @@ mod tests {
         let Some(_context) = gtk_test_main_context() else {
             return;
         };
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
 
         let classic_action = window
             .lookup_action("use-classic-mail-layout")
@@ -7307,8 +7179,8 @@ mod tests {
         let Some(context) = gtk_test_main_context() else {
             return;
         };
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
 
         let Some(settings) = AppSettings::try_new() else {
             return;
@@ -7347,8 +7219,8 @@ mod tests {
         let Some(_context) = gtk_test_main_context() else {
             return;
         };
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
 
         let search_btn = window.search_button();
         assert!(search_btn.is_some(), "search_button must be present on window");
@@ -7428,16 +7300,16 @@ mod tests {
     }
 
     #[test]
-    fn test_window_reload_accounts_and_find_evolution_window() {
+    fn test_window_reload_accounts_and_find_meridian_window() {
         let _gtk_lock = GTK_TEST_MUTEX
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(_context) = gtk_test_main_context() else {
             return;
         };
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
-        let found = find_evolution_window(&window);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
+        let found = find_meridian_window(&window);
         assert!(found.is_some());
         window.reload_accounts();
     }
@@ -7450,8 +7322,8 @@ mod tests {
         let Some(_context) = gtk_test_main_context() else {
             return;
         };
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
 
         let switcher_bar = window.view_switcher_bar().expect("view_switcher_bar should exist");
         let back_btn = window.back_button().expect("back_button should exist");
@@ -7488,8 +7360,8 @@ mod tests {
         let Some(_context) = gtk_test_main_context() else {
             return;
         };
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
         window.set_visible(true);
 
         let back_btn = window.back_button().expect("back_button should exist");
@@ -7541,6 +7413,34 @@ mod tests {
     }
 
     #[test]
+    fn test_window_navigate_back_closes_search() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
+        window.set_visible(true);
+
+        if let Some(view_stack) = window.imp().view_stack.borrow().as_ref() {
+            view_stack.set_visible_child_name("mail");
+        }
+        let mail_page = window.mail_page().expect("mail_page should exist");
+
+        // Open search
+        mail_page.toggle_search();
+        assert!(mail_page.is_search_active());
+        assert!(window.is_active_search_open());
+
+        // Trigger navigate back (e.g. Escape key)
+        assert!(window.handle_navigate_back());
+        assert!(!mail_page.is_search_active());
+        assert!(!window.is_active_search_open());
+    }
+
+    #[test]
     fn test_responsive_tablet_mode_drilldown_navigation() {
         let _gtk_lock = GTK_TEST_MUTEX
             .lock()
@@ -7548,8 +7448,8 @@ mod tests {
         let Some(_context) = gtk_test_main_context() else {
             return;
         };
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
         window.set_visible(true);
 
         let back_btn = window.back_button().expect("back_button should exist");
@@ -7595,8 +7495,8 @@ mod tests {
         let Some(_context) = gtk_test_main_context() else {
             return;
         };
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
         window.set_visible(true);
 
         let snapshot = crate::dialogs::FolderPropertiesSnapshot {
@@ -7621,8 +7521,8 @@ mod tests {
         let Some(_context) = gtk_test_main_context() else {
             return;
         };
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
         window.set_visible(true);
 
         let dialog = crate::dialogs::EventDialog::new();
@@ -7660,8 +7560,8 @@ mod tests {
         let Some(_context) = gtk_test_main_context() else {
             return;
         };
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
         window.set_visible(true);
 
         let dialog = crate::dialogs::ComposeDialog::new();
@@ -7689,8 +7589,8 @@ mod tests {
         let Some(_context) = gtk_test_main_context() else {
             return;
         };
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
         window.set_visible(true);
 
         let mgr = crate::dialogs::CertificateManagerDialog::new(Some(&window));
@@ -7771,8 +7671,8 @@ mod tests {
             settings.set_active_view("mail");
             settings.set_mail_show_sidebar(true);
         }
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
         window.set_visible(true);
         if let Some(stack) = window.imp().view_stack.borrow().as_ref() {
             stack.set_visible_child_name("mail");
@@ -7831,8 +7731,8 @@ mod tests {
             settings.set_active_view("mail");
             settings.set_mail_show_sidebar(true);
         }
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
         window.set_visible(true);
         window.set_screen_mode(false, false);
         if let Some(stack) = window.imp().view_stack.borrow().as_ref() {
@@ -7926,8 +7826,8 @@ mod tests {
             settings.set_mail_show_sidebar(true);
             settings.set_mail_sidebar_position(260);
         }
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
         window.set_visible(true);
         window.set_screen_mode(false, false);
         if let Some(stack) = window.imp().view_stack.borrow().as_ref() {
@@ -8027,38 +7927,38 @@ mod tests {
 
         let button = gtk::Button::new();
         // Desktop/Tablet: pure text label (GNOME HIG)
-        EvolutionWindow::configure_primary_action(&button, "mail", false);
+        MeridianWindow::configure_primary_action(&button, "mail", false);
         let child = button.child().expect("Button child");
         let label = child.downcast::<gtk::Label>().expect("Label child on desktop");
         assert_eq!(label.label().as_str(), crate::i18n::gettext("New Mail"));
         assert!(button.has_css_class("suggested-action"));
 
         // Switch to calendar: pure text label
-        EvolutionWindow::configure_primary_action(&button, "calendar", false);
+        MeridianWindow::configure_primary_action(&button, "calendar", false);
         let child = button.child().expect("Button child");
         let label = child.downcast::<gtk::Label>().expect("Label child on desktop");
         assert_eq!(label.label().as_str(), crate::i18n::gettext("New Event"));
 
         // Switch to contacts: pure text label
-        EvolutionWindow::configure_primary_action(&button, "contacts", false);
+        MeridianWindow::configure_primary_action(&button, "contacts", false);
         let child = button.child().expect("Button child");
         let label = child.downcast::<gtk::Label>().expect("Label child on desktop");
         assert_eq!(label.label().as_str(), crate::i18n::gettext("New Contact"));
 
         // Switch to tasks: pure text label
-        EvolutionWindow::configure_primary_action(&button, "tasks", false);
+        MeridianWindow::configure_primary_action(&button, "tasks", false);
         let child = button.child().expect("Button child");
         let label = child.downcast::<gtk::Label>().expect("Label child on desktop");
         assert_eq!(label.label().as_str(), crate::i18n::gettext("New Task"));
 
         // Switch to memos: pure text label
-        EvolutionWindow::configure_primary_action(&button, "memos", false);
+        MeridianWindow::configure_primary_action(&button, "memos", false);
         let child = button.child().expect("Button child");
         let label = child.downcast::<gtk::Label>().expect("Label child on desktop");
         assert_eq!(label.label().as_str(), crate::i18n::gettext("New Memo"));
 
         // Compact / Mobile mode: pure icon '+' without text (GNOME HIG)
-        EvolutionWindow::configure_primary_action(&button, "mail", true);
+        MeridianWindow::configure_primary_action(&button, "mail", true);
         let child = button.child().expect("Button child");
         let img = child.downcast::<gtk::Image>().expect("Image child when compact");
         assert_eq!(img.icon_name().as_deref(), Some("list-add-symbolic"));
@@ -8102,8 +8002,8 @@ mod tests {
             return;
         };
 
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
         window.set_screen_mode(true, false);
 
         // At default top-level, can_navigate_back is false
@@ -8191,8 +8091,8 @@ mod tests {
             return;
         };
 
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
 
         // Desktop mode: no mobile-screen CSS class
         window.set_screen_mode(false, false);
@@ -8242,8 +8142,8 @@ mod tests {
             return;
         };
 
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
 
         // Verify initial state is desktop
         assert!(!window.is_mobile());
@@ -8363,8 +8263,8 @@ mod tests {
         let Some(_context) = gtk_test_main_context() else {
             return;
         };
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
         let original_active_view = window.active_view_name();
 
         // 1. Mail view options button is present in window header_bar
@@ -8414,8 +8314,8 @@ mod tests {
         let Some(_context) = gtk_test_main_context() else {
             return;
         };
-        let app = EvolutionApplication::new();
-        let window = EvolutionWindow::new(&app);
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
         let original_active_view = window.active_view_name();
 
         let mail_btn = window
