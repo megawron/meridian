@@ -208,6 +208,37 @@ fn parse_dimension(val: &str) -> Option<u32> {
     trimmed.parse::<u32>().ok()
 }
 
+fn extract_dimension_from_style(style: &str, prop: &str) -> Option<u32> {
+    let style_lower = style.to_ascii_lowercase();
+    for declaration in style_lower.split(';') {
+        let mut parts = declaration.splitn(2, ':');
+        if let (Some(k), Some(v)) = (parts.next(), parts.next()) {
+            if k.trim() == prop {
+                return parse_dimension(v);
+            }
+        }
+    }
+    None
+}
+
+fn get_tag_dimensions(raw_tag: &str) -> (Option<u32>, Option<u32>) {
+    let width = image_attribute(raw_tag, "width")
+        .and_then(|w| parse_dimension(&w))
+        .or_else(|| {
+            image_attribute(raw_tag, "style")
+                .and_then(|s| extract_dimension_from_style(&s, "width"))
+        });
+
+    let height = image_attribute(raw_tag, "height")
+        .and_then(|h| parse_dimension(&h))
+        .or_else(|| {
+            image_attribute(raw_tag, "style")
+                .and_then(|s| extract_dimension_from_style(&s, "height"))
+        });
+
+    (width, height)
+}
+
 fn is_tracking_pixel(raw_tag: &str) -> bool {
     // 1. Hidden via style
     if let Some(style) = image_attribute(raw_tag, "style") {
@@ -240,8 +271,7 @@ fn is_tracking_pixel(raw_tag: &str) -> bool {
         }
     }
 
-    let width = image_attribute(raw_tag, "width").and_then(|w| parse_dimension(&w));
-    let height = image_attribute(raw_tag, "height").and_then(|h| parse_dimension(&h));
+    let (width, height) = get_tag_dimensions(raw_tag);
 
     // 3. Dimension checks:
     // If either dimension is 0
@@ -302,8 +332,7 @@ fn is_spacer_image(raw_tag: &str) -> bool {
         !t.is_empty() && !t.eq_ignore_ascii_case("spacer") && !t.eq_ignore_ascii_case("blank")
     });
 
-    let width = image_attribute(raw_tag, "width").and_then(|w| parse_dimension(&w));
-    let height = image_attribute(raw_tag, "height").and_then(|h| parse_dimension(&h));
+    let (width, height) = get_tag_dimensions(raw_tag);
 
     // 4. Dimension-based heuristics for layout spacers:
     // If either dimension is very small (<= 4px), it is a divider or spacer line
@@ -342,10 +371,13 @@ fn is_spacer_image(raw_tag: &str) -> bool {
 }
 
 fn build_transparent_spacer_tag(raw_tag: &str) -> String {
+    let (width, height) = get_tag_dimensions(raw_tag);
     let (parsed_attributes, self_closing) =
         parse_attributes(raw_tag).unwrap_or_else(|| (Vec::new(), false));
     let mut attributes = Vec::new();
     attributes.push(format!(" src=\"{TRANSPARENT_PIXEL_DATA_URI}\""));
+
+    let mut existing_style = None;
 
     for attribute in parsed_attributes {
         let name_lower = attribute.name.to_ascii_lowercase();
@@ -355,6 +387,10 @@ fn build_transparent_spacer_tag(raw_tag: &str) -> String {
         ) {
             continue;
         }
+        if name_lower == "style" {
+            existing_style = attribute.value;
+            continue;
+        }
         if let Some(val) = attribute.value {
             attributes.push(format!(" {}=\"{}\"", attribute.name, escape_attribute(&val)));
         } else {
@@ -362,11 +398,31 @@ fn build_transparent_spacer_tag(raw_tag: &str) -> String {
         }
     }
 
+    // Build constrained style for layout spacers so they cannot balloon in height
+    let mut style_parts = Vec::new();
+    if let Some(ref style) = existing_style {
+        let trimmed = style.trim().trim_end_matches(';').trim();
+        if !trimmed.is_empty() {
+            style_parts.push(trimmed.to_string());
+        }
+    }
+    if let Some(h) = height {
+        style_parts.push(format!("max-height: {h}px; height: {h}px"));
+    }
+    if let Some(w) = width {
+        style_parts.push(format!("max-width: {w}px"));
+    }
+
+    if !style_parts.is_empty() {
+        attributes.push(format!(" style=\"{}\"", escape_attribute(&style_parts.join("; "))));
+    }
+
     let suffix = if self_closing { "/>" } else { ">" };
     format!("<img{}{suffix}", attributes.concat())
 }
 
 fn build_placeholder_tag(raw_tag: &str) -> String {
+    let (width, height) = get_tag_dimensions(raw_tag);
     let (parsed_attributes, self_closing) =
         parse_attributes(raw_tag).unwrap_or_else(|| (Vec::new(), false));
     let mut attributes = Vec::new();
@@ -375,6 +431,7 @@ fn build_placeholder_tag(raw_tag: &str) -> String {
 
     let mut has_title = false;
     let mut alt_text = None;
+    let mut existing_style = None;
 
     for attribute in parsed_attributes {
         let name_lower = attribute.name.to_ascii_lowercase();
@@ -392,6 +449,10 @@ fn build_placeholder_tag(raw_tag: &str) -> String {
                 alt_text = Some(val.clone());
             }
         }
+        if name_lower == "style" {
+            existing_style = attribute.value;
+            continue;
+        }
         if let Some(val) = attribute.value {
             attributes.push(format!(" {}=\"{}\"", attribute.name, escape_attribute(&val)));
         } else {
@@ -405,6 +466,42 @@ fn build_placeholder_tag(raw_tag: &str) -> String {
                 attributes.push(format!(" title=\"{}\"", escape_attribute(&alt)));
             }
         }
+    }
+
+    // Build style preserving aspect ratio and preventing square distortion
+    let mut style_parts = Vec::new();
+    if let Some(ref style) = existing_style {
+        let trimmed = style.trim().trim_end_matches(';').trim();
+        if !trimmed.is_empty() {
+            style_parts.push(trimmed.to_string());
+        }
+    }
+
+    match (width, height) {
+        (Some(w), Some(h)) => {
+            if w > 0 && h > 0 {
+                style_parts.push(format!("aspect-ratio: {w} / {h}; max-height: {h}px"));
+            }
+        }
+        (Some(w), None) => {
+            if w >= 300 {
+                // Wide banner/header with no height attribute (e.g. corp.eml 689px header):
+                // Give it a natural wide banner aspect ratio instead of a 1:1 square
+                style_parts.push("aspect-ratio: 16 / 5; max-height: 180px".to_string());
+            } else if w > 0 {
+                style_parts.push(format!("max-height: {w}px"));
+            }
+        }
+        (None, Some(h)) => {
+            if h > 0 {
+                style_parts.push(format!("max-height: {h}px"));
+            }
+        }
+        (None, None) => {}
+    }
+
+    if !style_parts.is_empty() {
+        attributes.push(format!(" style=\"{}\"", escape_attribute(&style_parts.join("; "))));
     }
 
     let suffix = if self_closing { "/>" } else { ">" };
@@ -2684,12 +2781,40 @@ Content-Type: text/html; charset=utf-8
         let track_blocked = block_remote_images_with_options(track_html, true);
         assert_eq!(track_blocked, "");
 
-        // 5. True content image: must have data-meridian-placeholder and SVG placeholder
+        // 5. True content image: must have data-meridian-placeholder and SVG placeholder with aspect ratio
         let content_html = r#"<img src="https://cdn.example/asus_laptop.jpg" width="350" height="250" alt="ASUS Laptop">"#;
         let content_blocked = block_remote_images_with_options(content_html, true);
         assert!(content_blocked.contains("data-meridian-placeholder=\"true\""));
         assert!(content_blocked.contains(PLACEHOLDER_IMAGE_DATA_URI));
         assert!(content_blocked.contains("alt=\"ASUS Laptop\""));
+        assert!(content_blocked.contains("aspect-ratio: 350 / 250"));
+        assert!(content_blocked.contains("max-height: 250px"));
+    }
+
+    #[test]
+    fn test_block_remote_images_corp_eml_patterns() {
+        // 1. Separator between sections: 689x12
+        let sep_html = r#"<img src="https://cdn.example/separator_b.gif" style="display:block" width="689" height="12">"#;
+        let sep_blocked = block_remote_images_with_options(sep_html, true);
+        assert!(sep_blocked.contains(TRANSPARENT_PIXEL_DATA_URI));
+        assert!(!sep_blocked.contains("data-meridian-placeholder"));
+        assert!(sep_blocked.contains("max-height: 12px; height: 12px"));
+        assert!(sep_blocked.contains("max-width: 689px"));
+
+        // 2. Wide banner with no height specified (like corp.eml header):
+        let hdr_html = r#"<img src="https://cdn.example/header.png" style="display:block" width="689">"#;
+        let hdr_blocked = block_remote_images_with_options(hdr_html, true);
+        assert!(hdr_blocked.contains("data-meridian-placeholder=\"true\""));
+        assert!(hdr_blocked.contains("aspect-ratio: 16 / 5"));
+        assert!(hdr_blocked.contains("max-height: 180px"));
+
+        // 3. Rectangular product banner: 322x155
+        let banner_html = r#"<img src="https://cdn.example/product.png" style="display:block;border:1px solid #ddd" width="322" height="155">"#;
+        let banner_blocked = block_remote_images_with_options(banner_html, true);
+        assert!(banner_blocked.contains("data-meridian-placeholder=\"true\""));
+        assert!(banner_blocked.contains("aspect-ratio: 322 / 155"));
+        assert!(banner_blocked.contains("max-height: 155px"));
+        assert!(banner_blocked.contains("border:1px solid #ddd"));
     }
 }
 
