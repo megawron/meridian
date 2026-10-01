@@ -992,8 +992,11 @@ impl MailViewer {
                 // CSP and policy CSS continue to deny remote sources.
                 settings.set_auto_load_images(true);
                 let desktop_font = detect_desktop_font_family();
+                let desktop_mono = detect_desktop_monospace_font_family();
                 settings.set_default_font_family(&desktop_font);
                 settings.set_sans_serif_font_family(&desktop_font);
+                settings.set_serif_font_family(&desktop_font);
+                settings.set_monospace_font_family(&desktop_mono);
             }
             let base_uri = self.imp().current_base_uri.borrow().clone();
             let effective_base_uri =
@@ -1886,6 +1889,8 @@ impl MailViewer {
         let stack = self.imp().renderer_stack.borrow().clone()?;
         tracing::debug!("Creating deferred WebKitGTK context and view");
         let web_context = webkit6::WebContext::new();
+        web_context.set_cache_model(webkit6::CacheModel::DocumentViewer);
+
         let settings = webkit6::Settings::new();
         // Enable JavaScript so internal measurement scripts (adapt_card_height) can execute.
         // Document scripts in incoming emails remain strictly blocked by ammonia HTML
@@ -1903,8 +1908,26 @@ impl MailViewer {
         settings.set_enable_page_cache(true);
         settings.set_enable_smooth_scrolling(true);
         let desktop_font = detect_desktop_font_family();
+        let desktop_mono = detect_desktop_monospace_font_family();
         settings.set_default_font_family(&desktop_font);
         settings.set_sans_serif_font_family(&desktop_font);
+        settings.set_serif_font_family(&desktop_font);
+        settings.set_monospace_font_family(&desktop_mono);
+
+        // Security & Anti-Tracking Hardening:
+        settings.set_allow_file_access_from_file_urls(false);
+        settings.set_allow_universal_access_from_file_urls(false);
+        settings.set_enable_dns_prefetching(false);
+        settings.set_enable_webgl(false);
+        settings.set_enable_webrtc(false);
+        settings.set_enable_mediasource(false);
+        settings.set_enable_media_stream(false);
+        settings.set_enable_mock_capture_devices(false);
+        settings.set_enable_hyperlink_auditing(false);
+        settings.set_enable_html5_local_storage(false);
+        settings.set_enable_html5_database(false);
+        settings.set_enable_offline_web_application_cache(false);
+        settings.set_media_playback_requires_user_gesture(true);
 
         let user_content_manager = webkit6::UserContentManager::new();
         let user_style_sheet = webkit6::UserStyleSheet::new(
@@ -2781,6 +2804,16 @@ pub(crate) fn detect_desktop_font_family() -> String {
         .is_some()
     {
         let s = gio::Settings::new("org.gnome.desktop.interface");
+        let doc_font = s.string("document-font-name");
+        if let Some(idx) = doc_font.rfind(' ') {
+            let (fam, _) = doc_font.split_at(idx);
+            let fam = fam.trim();
+            if !fam.is_empty() {
+                return fam.to_string();
+            }
+        } else if !doc_font.trim().is_empty() {
+            return doc_font.trim().to_string();
+        }
         let font_name = s.string("font-name");
         if let Some(idx) = font_name.rfind(' ') {
             let (fam, _) = font_name.split_at(idx);
@@ -2793,6 +2826,26 @@ pub(crate) fn detect_desktop_font_family() -> String {
         }
     }
     "Cantarell".to_string()
+}
+
+pub(crate) fn detect_desktop_monospace_font_family() -> String {
+    if gio::SettingsSchemaSource::default()
+        .and_then(|s| s.lookup("org.gnome.desktop.interface", true))
+        .is_some()
+    {
+        let s = gio::Settings::new("org.gnome.desktop.interface");
+        let font_name = s.string("monospace-font-name");
+        if let Some(idx) = font_name.rfind(' ') {
+            let (fam, _) = font_name.split_at(idx);
+            let fam = fam.trim();
+            if !fam.is_empty() {
+                return fam.to_string();
+            }
+        } else if !font_name.trim().is_empty() {
+            return font_name.trim().to_string();
+        }
+    }
+    "monospace".to_string()
 }
 
 pub(crate) fn safe_css_font_family(value: &str) -> String {
@@ -2946,6 +2999,7 @@ span[style*="max-height:0" i], span[style*="max-height: 0" i] {
   min-width: 0 !important;
 }
 html {
+  font-family: Cantarell, "Adwaita Sans", system-ui, -apple-system, sans-serif;
   width: 100% !important;
   max-width: 100% !important;
   min-width: 0 !important;
@@ -2958,6 +3012,7 @@ html {
   -webkit-text-size-adjust: 100%;
 }
 body {
+  font-family: Cantarell, "Adwaita Sans", system-ui, -apple-system, sans-serif;
   width: 100% !important;
   max-width: 100% !important;
   min-width: 0 !important;
@@ -2975,11 +3030,64 @@ table, div, p, span, a, td, th, center, article, section, header, footer {
   overflow-wrap: anywhere !important;
   word-break: break-word !important;
 }
+table, td, th {
+  font-family: inherit;
+}
+@font-face {
+  font-family: 'serif';
+  src: local('Adwaita Sans'), local('Cantarell'), local('sans-serif');
+}
+@font-face {
+  font-family: 'Times New Roman';
+  src: local('Adwaita Sans'), local('Cantarell'), local('sans-serif');
+}
+@font-face {
+  font-family: 'Times';
+  src: local('Adwaita Sans'), local('Cantarell'), local('sans-serif');
+}
+@font-face {
+  font-family: 'Liberation Serif';
+  src: local('Adwaita Sans'), local('Cantarell'), local('sans-serif');
+}
+@font-face {
+  font-family: 'Noto Serif';
+  src: local('Adwaita Sans'), local('Cantarell'), local('sans-serif');
+}
+@font-face {
+  font-family: 'DejaVu Serif';
+  src: local('Adwaita Sans'), local('Cantarell'), local('sans-serif');
+}
+@font-face {
+  font-family: 'Georgia';
+  src: local('Adwaita Sans'), local('Cantarell'), local('sans-serif');
+}
+@font-face {
+  font-family: 'Garamond';
+  src: local('Adwaita Sans'), local('Cantarell'), local('sans-serif');
+}
+@font-face {
+  font-family: 'Cambria';
+  src: local('Adwaita Sans'), local('Cantarell'), local('sans-serif');
+}
+@font-face {
+  font-family: 'Palatino';
+  src: local('Adwaita Sans'), local('Cantarell'), local('sans-serif');
+}
+@font-face {
+  font-family: 'Book Antiqua';
+  src: local('Adwaita Sans'), local('Cantarell'), local('sans-serif');
+}
 h1, h2, h3, h4, h5, h6 {
   line-height: 1.25 !important;
 }
 img, video, iframe, canvas, svg {
   max-width: 100%;
+}
+img:not([height]):not([style*="height"]),
+video:not([height]):not([style*="height"]),
+iframe:not([height]):not([style*="height"]),
+canvas:not([height]):not([style*="height"]),
+svg:not([height]):not([style*="height"]) {
   height: auto;
 }
 img[data-meridian-placeholder] {
@@ -2996,6 +3104,9 @@ img[data-meridian-placeholder] {
     background-color: rgba(255, 255, 255, 0.05) !important;
     border: 1px solid rgba(255, 255, 255, 0.18) !important;
   }
+}
+img[data-meridian-placeholder]:not([height]):not([style*="height"]) {
+  max-height: 180px !important;
 }
 img[data-meridian-placeholder]:not([width]):not([style*="width"]) {
   min-width: 32px;
@@ -3316,8 +3427,10 @@ fn compose_sanitized_mail_document(
     background-color: transparent !important;
     color: #eeeeec;
   }
-  body {
+  body, table, td, th, p, div, span, a {
     font-family: __FONT_FAMILY__;
+  }
+  body {
     font-size: __FONT_SIZE__px;
     line-height: 1.6;
     color: inherit;
@@ -3336,8 +3449,10 @@ fn compose_sanitized_mail_document(
     filter: invert(100%) hue-rotate(180deg);
     -webkit-filter: invert(100%) hue-rotate(180deg);
   }
-  body {
+  body, table, td, th, p, div, span, a {
     font-family: __FONT_FAMILY__;
+  }
+  body {
     font-size: __FONT_SIZE__px;
     line-height: 1.6;
     color: inherit;
@@ -3360,8 +3475,10 @@ fn compose_sanitized_mail_document(
     background-color: transparent !important;
     color: #2e3436;
   }
-  body {
+  body, table, td, th, p, div, span, a {
     font-family: __FONT_FAMILY__;
+  }
+  body {
     font-size: __FONT_SIZE__px;
     line-height: 1.6;
     color: inherit;
@@ -4958,6 +5075,73 @@ mod tests {
         assert!(super::has_effective_native_dark_mode(
             "<style>@media (prefers-color-scheme: dark) { body { background-color: #1a1a1a !important; } }</style><body style=\"background: #ffffff;\"><p>Dark</p></body>"
         ));
+    }
+
+    #[test]
+    fn test_user_mail_override_css_enforces_sans_serif_and_table_inheritance() {
+        let css = super::USER_MAIL_OVERRIDE_CSS;
+        assert!(
+            css.contains("font-family: Cantarell, \"Adwaita Sans\", system-ui, -apple-system, sans-serif;"),
+            "USER_MAIL_OVERRIDE_CSS must declare modern sans-serif font family on html/body"
+        );
+        assert!(
+            css.contains("table, td, th {\n  font-family: inherit;\n}"),
+            "USER_MAIL_OVERRIDE_CSS must ensure tables inherit font family"
+        );
+    }
+
+    #[test]
+    fn test_user_mail_override_css_aliases_serif_fonts() {
+        let css = super::USER_MAIL_OVERRIDE_CSS;
+        for serif_font in &[
+            "serif",
+            "Times New Roman",
+            "Times",
+            "Liberation Serif",
+            "Noto Serif",
+            "DejaVu Serif",
+            "Georgia",
+            "Garamond",
+            "Cambria",
+            "Palatino",
+            "Book Antiqua",
+        ] {
+            let expected_face = format!("font-family: '{}';", serif_font);
+            assert!(
+                css.contains(&expected_face),
+                "USER_MAIL_OVERRIDE_CSS must alias serif font: {}",
+                serif_font
+            );
+        }
+    }
+
+    #[test]
+    fn test_detect_desktop_monospace_font_family_returns_valid_family() {
+        let mono = super::detect_desktop_monospace_font_family();
+        assert!(!mono.is_empty(), "Monospace family should not be empty");
+    }
+
+    #[test]
+    fn test_composed_document_baseline_styles_content_elements() {
+        let colors = test_citation_colors();
+        let doc = super::compose_sanitized_mail_document(
+            "<p>Test text</p>",
+            true,
+            false,
+            false,
+            "\"TestSans\", sans-serif",
+            14,
+            false,
+            &colors,
+        );
+        assert!(
+            doc.contains("body, table, td, th, p, div, span, a"),
+            "Document baseline CSS must include body and common content elements"
+        );
+        assert!(
+            doc.contains("font-family: Cantarell, \"Adwaita Sans\", \"TestSans\", sans-serif;"),
+            "Document baseline CSS must use the safe configured font family"
+        );
     }
 }
 

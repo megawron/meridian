@@ -4010,6 +4010,25 @@ impl CalendarPage {
         });
         month_canvas.add_controller(drag_gesture);
 
+        // Touch / Trackpad swipe gesture (Month switching)
+        let month_swipe = gtk::GestureSwipe::new();
+        let page_for_month_swipe = self.downgrade();
+        month_swipe.connect_swipe(move |gesture, velocity_x, velocity_y| {
+            if velocity_x.abs() > 200.0 && velocity_x.abs() > velocity_y.abs() * 1.5 {
+                let Some(page) = page_for_month_swipe.upgrade() else { return; };
+                if velocity_x < -200.0 {
+                    // Swipe left: Next month
+                    page.shift_period(1);
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                } else if velocity_x > 200.0 {
+                    // Swipe right: Previous month
+                    page.shift_period(-1);
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                }
+            }
+        });
+        month_canvas.add_controller(month_swipe);
+
         // Motion Controller (Cursor changes and hover states)
         let motion_controller = gtk::EventControllerMotion::new();
         let page_weak_motion = self.downgrade();
@@ -8817,6 +8836,25 @@ impl CalendarPage {
                 }
             });
             drawing_area.add_controller(time_grid_long_press);
+
+            // Touch / Trackpad swipe gesture (Day / Week switching)
+            let time_grid_swipe = gtk::GestureSwipe::new();
+            let page_weak_tgswipe = self.downgrade();
+            time_grid_swipe.connect_swipe(move |gesture, velocity_x, velocity_y| {
+                if velocity_x.abs() > 200.0 && velocity_x.abs() > velocity_y.abs() * 1.5 {
+                    let Some(page) = page_weak_tgswipe.upgrade() else { return; };
+                    if velocity_x < -200.0 {
+                        // Swipe left: Next day / week
+                        page.shift_period(1);
+                        gesture.set_state(gtk::EventSequenceState::Claimed);
+                    } else if velocity_x > 200.0 {
+                        // Swipe right: Previous day / week
+                        page.shift_period(-1);
+                        gesture.set_state(gtk::EventSequenceState::Claimed);
+                    }
+                }
+            });
+            drawing_area.add_controller(time_grid_swipe);
 
             // Drop target: Rescheduling or duplicating a dropped event onto this day / time
             let drop_target = gtk::DropTarget::new(glib::Type::STRING, gdk::DragAction::MOVE | gdk::DragAction::COPY);

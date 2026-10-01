@@ -6887,6 +6887,61 @@ impl TasksPage {
             task_table_canvas.add_controller(canvas_secondary_click);
         }
 
+        // Touch / Trackpad horizontal swipe gesture (Task completion / deletion)
+        {
+            let task_swipe = gtk::GestureSwipe::new();
+            let page_for_task_swipe = self.downgrade();
+            let canvas_for_task_swipe = task_table_canvas.clone();
+            task_swipe.connect_swipe(move |gesture, velocity_x, velocity_y| {
+                if velocity_x.abs() > 200.0 && velocity_x.abs() > velocity_y.abs() * 1.5 {
+                    let Some(page) = page_for_task_swipe.upgrade() else { return; };
+                    let (start_x, start_y) = gesture.bounding_box_center().unwrap_or((0.0, 0.0));
+                    let layout_ref = page.imp().task_table_layout.borrow();
+                    let Some(layout) = layout_ref.as_ref() else { return; };
+                    let Some((row_idx, _)) = hit_test_task_table(layout, start_x, start_y) else { return; };
+                    if let Some(row) = layout.rows.get(row_idx) {
+                        let clicked_id = TaskSelectionIdentity::from_task(&row.task);
+                        page.imp().task_selection.replace(vec![clicked_id]);
+                        page.imp().task_table_anchor_row.set(Some(row_idx));
+                        update_task_selection_controls(&page);
+                        refresh_task_preview(&page);
+                        canvas_for_task_swipe.queue_draw();
+
+                        if velocity_x > 200.0 {
+                            // Swipe right: Toggle completion
+                            let completed = task_is_completed(&row.task);
+                            toggle_task_item_completion(&page, &row.task, !completed);
+                            let feedback = if !completed {
+                                crate::i18n::gettext("Task marked as completed")
+                            } else {
+                                crate::i18n::gettext("Task marked as incomplete")
+                            };
+                            crate::views::accessibility::announce_to_screen_reader(
+                                &canvas_for_task_swipe,
+                                &feedback,
+                                gtk::AccessibleAnnouncementPriority::Medium,
+                            );
+                            gesture.set_state(gtk::EventSequenceState::Claimed);
+                        } else if velocity_x < -200.0 {
+                            // Swipe left: Trigger delete
+                            if let Some(btn) = page.imp().task_delete_selection_button.borrow().as_ref() {
+                                if btn.is_sensitive() {
+                                    btn.emit_clicked();
+                                    crate::views::accessibility::announce_to_screen_reader(
+                                        &canvas_for_task_swipe,
+                                        &crate::i18n::gettext("Task deleted"),
+                                        gtk::AccessibleAnnouncementPriority::Medium,
+                                    );
+                                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+            task_table_canvas.add_controller(task_swipe);
+        }
+
         // Canvas Motion Controller
         {
             let canvas_motion = gtk::EventControllerMotion::new();

@@ -1907,6 +1907,12 @@ impl MeridianWindow {
         }
     }
 
+    pub(crate) fn reorder_account_roots(&self) {
+        if let Some(mail_page) = self.mail_page() {
+            mail_page.reorder_account_roots();
+        }
+    }
+
     pub(crate) fn reload_accounts(&self) {
         crate::services::eds_service::invalidate_account_collections_cache();
         if let Some(mail_page) = self.mail_page() {
@@ -4182,6 +4188,10 @@ impl MeridianWindow {
             self,
             move |_, _| {
                 let dialog = crate::dialogs::PreferencesDialog::new();
+                let win_clone = win.clone();
+                dialog.connect_closed(move |_| {
+                    win_clone.reorder_account_roots();
+                });
                 dialog.present(Some(&win));
             }
         ));
