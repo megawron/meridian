@@ -596,7 +596,7 @@ pub(crate) fn embedded_draft_attachment_with_content_id(
     Ok(attachment)
 }
 
-fn decode_embedded_attachment(value: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn decode_embedded_attachment(value: &str) -> Result<Vec<u8>, String> {
     let mut sextets = Vec::with_capacity(value.len());
     let mut padding = 0usize;
     for byte in value.bytes() {
@@ -1521,7 +1521,7 @@ fn base64_with_crlf(bytes: &[u8]) -> String {
     encoded
 }
 
-fn base64(bytes: &[u8]) -> String {
+pub(crate) fn base64(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
 
