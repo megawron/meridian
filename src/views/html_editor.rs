@@ -31,6 +31,35 @@ mod imp {
         }
     }
 
+    #[derive(Default)]
+    pub struct DragMotionCallbackList(pub Vec<Box<dyn Fn(f64, f64) + 'static>>);
+
+    impl std::fmt::Debug for DragMotionCallbackList {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "DragMotionCallbackList({} callbacks)", self.0.len())
+        }
+    }
+
+    #[derive(Default)]
+    pub struct DragLeaveCallbackList(pub Vec<Box<dyn Fn() + 'static>>);
+
+    impl std::fmt::Debug for DragLeaveCallbackList {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "DragLeaveCallbackList({} callbacks)", self.0.len())
+        }
+    }
+
+    #[derive(Default)]
+    pub struct ImageConvertCallbackList(
+        pub Vec<Box<dyn Fn(crate::services::draft_store_service::DraftAttachment) + 'static>>,
+    );
+
+    impl std::fmt::Debug for ImageConvertCallbackList {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "ImageConvertCallbackList({} callbacks)", self.0.len())
+        }
+    }
+
     #[derive(Debug, Default)]
     pub struct HtmlEditor {
         pub web_view: RefCell<Option<webkit6::WebView>>,
@@ -43,6 +72,10 @@ mod imp {
         pub spell_checking_languages: RefCell<Vec<String>>,
         pub spelling_handler_ids: RefCell<Vec<glib::SignalHandlerId>>,
         pub files_dropped_callbacks: RefCell<CallbackList>,
+        pub drag_motion_callbacks: RefCell<DragMotionCallbackList>,
+        pub drag_leave_callbacks: RefCell<DragLeaveCallbackList>,
+        pub image_convert_callbacks: RefCell<ImageConvertCallbackList>,
+        pub active_image_popover: RefCell<Option<gtk::Popover>>,
     }
 
     #[glib::object_subclass]
@@ -63,6 +96,9 @@ mod imp {
         }
 
         fn dispose(&self) {
+            if let Some(popover) = self.active_image_popover.borrow_mut().take() {
+                popover.unparent();
+            }
             if let Some(settings) = AppSettings::try_new() {
                 for id in self.spelling_handler_ids.borrow_mut().drain(..) {
                     settings.disconnect(id);
@@ -115,6 +151,667 @@ impl HtmlEditor {
         }
         for cb in self.imp().files_dropped_callbacks.borrow().0.iter() {
             cb(paths.clone());
+        }
+    }
+
+    pub fn connect_drag_motion<F>(&self, callback: F)
+    where
+        F: Fn(f64, f64) + 'static,
+    {
+        self.imp()
+            .drag_motion_callbacks
+            .borrow_mut()
+            .0
+            .push(Box::new(callback));
+    }
+
+    pub fn connect_drag_leave<F>(&self, callback: F)
+    where
+        F: Fn() + 'static,
+    {
+        self.imp()
+            .drag_leave_callbacks
+            .borrow_mut()
+            .0
+            .push(Box::new(callback));
+    }
+
+    pub fn is_supported_image(path: &std::path::Path) -> bool {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp")
+    }
+
+    pub fn insert_image_from_path(&self, path: &std::path::Path) -> bool {
+        if self.plain_text_mode() || !Self::is_supported_image(path) {
+            return false;
+        }
+        let Ok(bytes) = std::fs::read(path) else {
+            return false;
+        };
+        let mime = match path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "svg" => "image/svg+xml",
+            "webp" => "image/webp",
+            _ => "image/png",
+        };
+        let b64 = encode_base64(&bytes);
+        let data_uri = format!("data:{mime};base64,{b64}");
+        let js = format!("document.execCommand('insertImage', false, '{data_uri}');");
+        if let Some(wv) = self.imp().web_view.borrow().as_ref() {
+            wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn connect_image_convert_to_attachment<F>(&self, callback: F)
+    where
+        F: Fn(crate::services::draft_store_service::DraftAttachment) + 'static,
+    {
+        self.imp()
+            .image_convert_callbacks
+            .borrow_mut()
+            .0
+            .push(Box::new(callback));
+    }
+
+    pub(crate) fn handle_image_menu_script_message(&self, json: &str) {
+        let Ok(payload) = serde_json::from_str::<ImageMenuPayload>(json) else {
+            return;
+        };
+        self.present_image_context_popover(&payload);
+    }
+
+    fn present_image_context_popover(&self, payload: &ImageMenuPayload) {
+        if let Some(old_pop) = self.imp().active_image_popover.borrow_mut().take() {
+            old_pop.unparent();
+        }
+
+        let Some(web_view) = self.imp().web_view.borrow().as_ref().cloned() else {
+            return;
+        };
+
+        let popover = gtk::Popover::builder()
+            .has_arrow(true)
+            .pointing_to(&gdk::Rectangle::new(payload.x, payload.y, 1, 1))
+            .css_classes(vec!["image-options-popover"])
+            .build();
+        popover.set_parent(&web_view);
+
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        content.set_margin_start(8);
+        content.set_margin_end(8);
+        content.set_margin_top(8);
+        content.set_margin_bottom(8);
+
+        // Header
+        let header_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let header_icon = gtk::Image::from_icon_name("insert-image-symbolic");
+        header_icon.set_pixel_size(16);
+        let header_label = gtk::Label::builder()
+            .label(&gettext("Inline-Bild"))
+            .css_classes(vec!["heading"])
+            .xalign(0.0)
+            .build();
+        header_box.append(&header_icon);
+        header_box.append(&header_label);
+        content.append(&header_box);
+
+        // 1. Alignment section
+        let align_label = gtk::Label::builder()
+            .label(&gettext("Anordnung"))
+            .css_classes(vec!["dim-label", "caption"])
+            .xalign(0.0)
+            .build();
+        content.append(&align_label);
+
+        let align_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        align_box.add_css_class("linked");
+
+        let btn_align_left = gtk::Button::builder()
+            .icon_name("format-justify-left-symbolic")
+            .tooltip_text(&gettext("Linksbündig"))
+            .build();
+        let btn_align_center = gtk::Button::builder()
+            .icon_name("format-justify-center-symbolic")
+            .tooltip_text(&gettext("Zentriert"))
+            .build();
+        let btn_align_right = gtk::Button::builder()
+            .icon_name("format-justify-right-symbolic")
+            .tooltip_text(&gettext("Rechtsbündig"))
+            .build();
+        let btn_align_wrap = gtk::Button::builder()
+            .icon_name("format-text-direction-ltr-symbolic")
+            .tooltip_text(&gettext("Textumfluss links"))
+            .build();
+
+        match payload.align.as_str() {
+            "left" => btn_align_left.add_css_class("suggested-action"),
+            "center" => btn_align_center.add_css_class("suggested-action"),
+            "right" => btn_align_right.add_css_class("suggested-action"),
+            _ => btn_align_wrap.add_css_class("suggested-action"),
+        }
+
+        let id = payload.id.clone();
+        let wv = web_view.clone();
+        let (b_l, b_c, b_r, b_w) = (
+            btn_align_left.clone(),
+            btn_align_center.clone(),
+            btn_align_right.clone(),
+            btn_align_wrap.clone(),
+        );
+        btn_align_left.connect_clicked(move |_| {
+            b_l.add_css_class("suggested-action");
+            b_c.remove_css_class("suggested-action");
+            b_r.remove_css_class("suggested-action");
+            b_w.remove_css_class("suggested-action");
+            let js = format!("(function(){{ const el = document.getElementById('{id}'); if (el) {{ el.style.display = 'block'; el.style.marginLeft = '0'; el.style.marginRight = 'auto'; el.style.float = 'none'; el.removeAttribute('align'); }} }})()");
+            wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
+        });
+
+        let id = payload.id.clone();
+        let wv = web_view.clone();
+        let (b_l, b_c, b_r, b_w) = (
+            btn_align_left.clone(),
+            btn_align_center.clone(),
+            btn_align_right.clone(),
+            btn_align_wrap.clone(),
+        );
+        btn_align_center.connect_clicked(move |_| {
+            b_l.remove_css_class("suggested-action");
+            b_c.add_css_class("suggested-action");
+            b_r.remove_css_class("suggested-action");
+            b_w.remove_css_class("suggested-action");
+            let js = format!("(function(){{ const el = document.getElementById('{id}'); if (el) {{ el.style.display = 'block'; el.style.marginLeft = 'auto'; el.style.marginRight = 'auto'; el.style.float = 'none'; el.removeAttribute('align'); }} }})()");
+            wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
+        });
+
+        let id = payload.id.clone();
+        let wv = web_view.clone();
+        let (b_l, b_c, b_r, b_w) = (
+            btn_align_left.clone(),
+            btn_align_center.clone(),
+            btn_align_right.clone(),
+            btn_align_wrap.clone(),
+        );
+        btn_align_right.connect_clicked(move |_| {
+            b_l.remove_css_class("suggested-action");
+            b_c.remove_css_class("suggested-action");
+            b_r.remove_css_class("suggested-action");
+            b_w.remove_css_class("suggested-action");
+            let js = format!("(function(){{ const el = document.getElementById('{id}'); if (el) {{ el.style.display = 'block'; el.style.marginLeft = 'auto'; el.style.marginRight = '0'; el.style.float = 'none'; el.removeAttribute('align'); }} }})()");
+            wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
+        });
+
+        let id = payload.id.clone();
+        let wv = web_view.clone();
+        let (b_l, b_c, b_r, b_w) = (
+            btn_align_left.clone(),
+            btn_align_center.clone(),
+            btn_align_right.clone(),
+            btn_align_wrap.clone(),
+        );
+        btn_align_wrap.connect_clicked(move |_| {
+            b_l.remove_css_class("suggested-action");
+            b_c.remove_css_class("suggested-action");
+            b_r.remove_css_class("suggested-action");
+            b_w.add_css_class("suggested-action");
+            let js = format!("(function(){{ const el = document.getElementById('{id}'); if (el) {{ el.style.display = 'inline'; el.style.float = 'left'; el.style.margin = '4px 14px 6px 0'; el.removeAttribute('align'); }} }})()");
+            wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
+        });
+
+        align_box.append(&btn_align_left);
+        align_box.append(&btn_align_center);
+        align_box.append(&btn_align_right);
+        align_box.append(&btn_align_wrap);
+        content.append(&align_box);
+
+        // 2. Size section
+        let size_label = gtk::Label::builder()
+            .label(&gettext("Größe"))
+            .css_classes(vec!["dim-label", "caption"])
+            .xalign(0.0)
+            .build();
+        content.append(&size_label);
+
+        let size_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        size_box.add_css_class("linked");
+
+        let btn_size_25 = gtk::Button::builder()
+            .label("25%")
+            .tooltip_text(&gettext("Klein (25%)"))
+            .build();
+        let btn_size_50 = gtk::Button::builder()
+            .label("50%")
+            .tooltip_text(&gettext("Mittel (50%)"))
+            .build();
+        let btn_size_100 = gtk::Button::builder()
+            .label("100%")
+            .tooltip_text(&gettext("Groß (100%)"))
+            .build();
+        let btn_size_orig = gtk::Button::builder()
+            .label(&gettext("Original"))
+            .tooltip_text(&gettext("Originalgröße"))
+            .build();
+
+        match payload.size.as_str() {
+            "small" => btn_size_25.add_css_class("suggested-action"),
+            "medium" => btn_size_50.add_css_class("suggested-action"),
+            "large" => btn_size_100.add_css_class("suggested-action"),
+            _ => btn_size_orig.add_css_class("suggested-action"),
+        }
+
+        let id = payload.id.clone();
+        let wv = web_view.clone();
+        let (s25, s50, s100, sorig) = (
+            btn_size_25.clone(),
+            btn_size_50.clone(),
+            btn_size_100.clone(),
+            btn_size_orig.clone(),
+        );
+        btn_size_25.connect_clicked(move |_| {
+            s25.add_css_class("suggested-action");
+            s50.remove_css_class("suggested-action");
+            s100.remove_css_class("suggested-action");
+            sorig.remove_css_class("suggested-action");
+            let js = format!("(function(){{ const el = document.getElementById('{id}'); if (el) {{ el.style.width = '25%'; el.style.maxWidth = '25%'; el.style.height = 'auto'; }} }})()");
+            wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
+        });
+
+        let id = payload.id.clone();
+        let wv = web_view.clone();
+        let (s25, s50, s100, sorig) = (
+            btn_size_25.clone(),
+            btn_size_50.clone(),
+            btn_size_100.clone(),
+            btn_size_orig.clone(),
+        );
+        btn_size_50.connect_clicked(move |_| {
+            s25.remove_css_class("suggested-action");
+            s50.add_css_class("suggested-action");
+            s100.remove_css_class("suggested-action");
+            sorig.remove_css_class("suggested-action");
+            let js = format!("(function(){{ const el = document.getElementById('{id}'); if (el) {{ el.style.width = '50%'; el.style.maxWidth = '50%'; el.style.height = 'auto'; }} }})()");
+            wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
+        });
+
+        let id = payload.id.clone();
+        let wv = web_view.clone();
+        let (s25, s50, s100, sorig) = (
+            btn_size_25.clone(),
+            btn_size_50.clone(),
+            btn_size_100.clone(),
+            btn_size_orig.clone(),
+        );
+        btn_size_100.connect_clicked(move |_| {
+            s25.remove_css_class("suggested-action");
+            s50.remove_css_class("suggested-action");
+            s100.add_css_class("suggested-action");
+            sorig.remove_css_class("suggested-action");
+            let js = format!("(function(){{ const el = document.getElementById('{id}'); if (el) {{ el.style.width = '100%'; el.style.maxWidth = '100%'; el.style.height = 'auto'; }} }})()");
+            wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
+        });
+
+        let id = payload.id.clone();
+        let wv = web_view.clone();
+        let (s25, s50, s100, sorig) = (
+            btn_size_25.clone(),
+            btn_size_50.clone(),
+            btn_size_100.clone(),
+            btn_size_orig.clone(),
+        );
+        btn_size_orig.connect_clicked(move |_| {
+            s25.remove_css_class("suggested-action");
+            s50.remove_css_class("suggested-action");
+            s100.remove_css_class("suggested-action");
+            sorig.add_css_class("suggested-action");
+            let js = format!("(function(){{ const el = document.getElementById('{id}'); if (el) {{ el.style.width = 'auto'; el.style.maxWidth = '100%'; el.style.height = 'auto'; }} }})()");
+            wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
+        });
+
+        size_box.append(&btn_size_25);
+        size_box.append(&btn_size_50);
+        size_box.append(&btn_size_100);
+        size_box.append(&btn_size_orig);
+        content.append(&size_box);
+
+        content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+        let make_action_btn = |icon: &str, label: &str, tooltip: &str, is_destr: bool| {
+            let btn = gtk::Button::builder()
+                .css_classes(if is_destr {
+                    vec!["flat", "destructive-action"]
+                } else {
+                    vec!["flat"]
+                })
+                .halign(gtk::Align::Fill)
+                .tooltip_text(tooltip)
+                .build();
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let img = gtk::Image::from_icon_name(icon);
+            img.set_pixel_size(16);
+            let lbl = gtk::Label::builder()
+                .label(label)
+                .xalign(0.0)
+                .hexpand(true)
+                .build();
+            row.append(&img);
+            row.append(&lbl);
+            btn.set_child(Some(&row));
+            btn
+        };
+
+        // Convert to attachment
+        let btn_convert = make_action_btn(
+            "mail-attachment-symbolic",
+            &gettext("In Anhang umwandeln"),
+            &gettext("Entfernt das Bild aus dem Text und hängt es als Datei an"),
+            false,
+        );
+        let editor_weak = self.downgrade();
+        let img_id = payload.id.clone();
+        let pop_weak = popover.downgrade();
+        btn_convert.connect_clicked(move |_| {
+            if let Some(pop) = pop_weak.upgrade() {
+                pop.popdown();
+            }
+            if let Some(editor) = editor_weak.upgrade() {
+                editor.convert_image_to_attachment(&img_id, false);
+            }
+        });
+        content.append(&btn_convert);
+
+        // Also attach
+        let btn_attach_also = make_action_btn(
+            "list-add-symbolic",
+            &gettext("Auch als Anhang anhängen"),
+            &gettext("Behält das Bild im Text und hängt es zusätzlich als Datei an"),
+            false,
+        );
+        let editor_weak = self.downgrade();
+        let img_id = payload.id.clone();
+        let pop_weak = popover.downgrade();
+        btn_attach_also.connect_clicked(move |_| {
+            if let Some(pop) = pop_weak.upgrade() {
+                pop.popdown();
+            }
+            if let Some(editor) = editor_weak.upgrade() {
+                editor.convert_image_to_attachment(&img_id, true);
+            }
+        });
+        content.append(&btn_attach_also);
+
+        content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+        // Copy image
+        let btn_copy = make_action_btn(
+            "edit-copy-symbolic",
+            &gettext("Bild kopieren"),
+            &gettext("Kopiert das Bild in die Zwischenablage"),
+            false,
+        );
+        let editor_weak = self.downgrade();
+        let img_id = payload.id.clone();
+        let pop_weak = popover.downgrade();
+        btn_copy.connect_clicked(move |_| {
+            if let Some(pop) = pop_weak.upgrade() {
+                pop.popdown();
+            }
+            if let Some(editor) = editor_weak.upgrade() {
+                editor.copy_image_to_clipboard(&img_id);
+            }
+        });
+        content.append(&btn_copy);
+
+        // Save image as
+        let btn_save = make_action_btn(
+            "document-save-as-symbolic",
+            &gettext("Bild speichern unter…"),
+            &gettext("Speichert das Bild auf der Festplatte"),
+            false,
+        );
+        let editor_weak = self.downgrade();
+        let img_id = payload.id.clone();
+        let pop_weak = popover.downgrade();
+        btn_save.connect_clicked(move |_| {
+            if let Some(pop) = pop_weak.upgrade() {
+                pop.popdown();
+            }
+            if let Some(editor) = editor_weak.upgrade() {
+                editor.save_image_as(&img_id);
+            }
+        });
+        content.append(&btn_save);
+
+        content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+        // Remove image
+        let btn_remove = make_action_btn(
+            "user-trash-symbolic",
+            &gettext("Bild entfernen"),
+            &gettext("Löscht das Bild aus der E-Mail"),
+            true,
+        );
+        let editor_weak = self.downgrade();
+        let img_id = payload.id.clone();
+        let pop_weak = popover.downgrade();
+        btn_remove.connect_clicked(move |_| {
+            if let Some(pop) = pop_weak.upgrade() {
+                pop.popdown();
+            }
+            if let Some(editor) = editor_weak.upgrade() {
+                editor.remove_image(&img_id);
+            }
+        });
+        content.append(&btn_remove);
+
+        let editor_weak = self.downgrade();
+        popover.connect_closed(move |p| {
+            if let Some(editor) = editor_weak.upgrade() {
+                let mut cur = editor.imp().active_image_popover.borrow_mut();
+                if let Some(active) = cur.as_ref() {
+                    if active == p {
+                        p.unparent();
+                        *cur = None;
+                    }
+                }
+            }
+        });
+
+        popover.set_child(Some(&content));
+        self.imp().active_image_popover.replace(Some(popover.clone()));
+        popover.popup();
+    }
+
+    pub fn convert_image_to_attachment(&self, img_id: &str, keep_inline: bool) {
+        let Some(wv) = self.imp().web_view.borrow().as_ref().cloned() else {
+            return;
+        };
+        let js = if keep_inline {
+            format!(
+                "(function(){{ const el = document.getElementById('{}'); if (!el) return null; return JSON.stringify({{ src: el.src, alt: el.getAttribute('alt') || el.getAttribute('title') || '' }}); }})()",
+                img_id
+            )
+        } else {
+            format!(
+                "(function(){{ const el = document.getElementById('{}'); if (!el) return null; const data = {{ src: el.src, alt: el.getAttribute('alt') || el.getAttribute('title') || '' }}; el.remove(); return JSON.stringify(data); }})()",
+                img_id
+            )
+        };
+
+        let editor_weak = self.downgrade();
+        wv.evaluate_javascript(
+            &js,
+            None,
+            None,
+            None::<&gio::Cancellable>,
+            move |result| {
+                if let Ok(js_val) = result {
+                    if let Some(json_str) = js_val.to_json(0) {
+                        if let Some(editor) = editor_weak.upgrade() {
+                            editor.process_converted_image_json(&json_str);
+                        }
+                    } else {
+                        let s = js_val.to_str();
+                        if s != "null" && s != "undefined" && !s.is_empty() {
+                            if let Some(editor) = editor_weak.upgrade() {
+                                editor.process_converted_image_json(&s);
+                            }
+                        }
+                    }
+                }
+            },
+        );
+    }
+
+    fn process_converted_image_json(&self, json_str: &str) {
+        let Ok(data) = serde_json::from_str::<ConvertedImageData>(json_str) else {
+            return;
+        };
+        let Some((bytes, mime, filename)) = parse_image_data_uri_or_path(&data.src, &data.alt) else {
+            return;
+        };
+        let temp_filename = format!("meridian_att_{}_{}", &glib::uuid_string_random()[..8], filename);
+        let temp_path = std::env::temp_dir().join(&temp_filename);
+        let _ = std::fs::write(&temp_path, &bytes);
+        let b64 = encode_base64(&bytes);
+
+        let attachment = crate::services::draft_store_service::DraftAttachment {
+            path: temp_path.to_string_lossy().to_string(),
+            filename,
+            mime_type: mime,
+            size: bytes.len() as u64,
+            content_id: None,
+            embedded_content_base64: b64,
+        };
+
+        for cb in self.imp().image_convert_callbacks.borrow().0.iter() {
+            cb(attachment.clone());
+        }
+    }
+
+    pub fn copy_image_to_clipboard(&self, img_id: &str) {
+        let Some(wv) = self.imp().web_view.borrow().as_ref().cloned() else {
+            return;
+        };
+        let editor_weak = self.downgrade();
+        let js = format!(
+            "(function(){{ const el = document.getElementById('{}'); return el ? el.src : null; }})()",
+            img_id
+        );
+        wv.evaluate_javascript(
+            &js,
+            None,
+            None,
+            None::<&gio::Cancellable>,
+            move |result| {
+                if let Ok(js_val) = result {
+                    let s = js_val.to_str();
+                    if let Some((bytes, _, _)) = parse_image_data_uri_or_path(&s, "") {
+                        let glib_bytes = glib::Bytes::from_owned(bytes);
+                        if let Ok(texture) = gdk::Texture::from_bytes(&glib_bytes) {
+                            if let Some(editor) = editor_weak.upgrade() {
+                                editor.display().clipboard().set_texture(&texture);
+                            }
+                        }
+                    }
+                }
+            },
+        );
+    }
+
+    pub fn save_image_as(&self, img_id: &str) {
+        let Some(wv) = self.imp().web_view.borrow().as_ref().cloned() else {
+            return;
+        };
+        let parent = self.root().and_downcast::<gtk::Window>();
+        let js = format!(
+            "(function(){{ const el = document.getElementById('{}'); if (!el) return null; return JSON.stringify({{ src: el.src, alt: el.getAttribute('alt') || el.getAttribute('title') || '' }}); }})()",
+            img_id
+        );
+        wv.evaluate_javascript(
+            &js,
+            None,
+            None,
+            None::<&gio::Cancellable>,
+            move |result| {
+                if let Ok(js_val) = result {
+                    let s = js_val.to_str();
+                    if let Ok(data) = serde_json::from_str::<ConvertedImageData>(&s) {
+                        if let Some((bytes, _, filename)) = parse_image_data_uri_or_path(&data.src, &data.alt) {
+                            let file_dialog = gtk::FileDialog::builder()
+                                .title(&gettext("Bild speichern unter…"))
+                                .initial_name(&filename)
+                                .modal(true)
+                                .build();
+                            file_dialog.save(parent.as_ref(), None::<&gio::Cancellable>, move |res| {
+                                if let Ok(file) = res {
+                                    if let Some(path) = file.path() {
+                                        let _ = std::fs::write(&path, &bytes);
+                                    }
+                                }
+                            });
+                        }
+                    }
+                }
+            },
+        );
+    }
+
+    pub fn remove_image(&self, img_id: &str) {
+        let Some(wv) = self.imp().web_view.borrow().as_ref().cloned() else {
+            return;
+        };
+        let js = format!(
+            "(function(){{ const el = document.getElementById('{}'); if (el) el.remove(); }})()",
+            img_id
+        );
+        wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
+    }
+
+    pub fn cancel_drag_session(&self) {
+        if let Some(wv) = self.imp().web_view.borrow().as_ref() {
+            wv.evaluate_javascript(
+                "hideCaret(); dragCounter = 0; currentDropRange = null;",
+                None,
+                None,
+                None::<&gio::Cancellable>,
+                |_| {},
+            );
+        }
+    }
+
+    pub(crate) fn handle_drag_script_message(&self, msg: &str) {
+        if msg == "enter" {
+            for cb in self.imp().drag_motion_callbacks.borrow().0.iter() {
+                cb(0.0, 100.0);
+            }
+        } else if let Some(coords) = msg.strip_prefix("motion:") {
+            let mut parts = coords.split(':');
+            if let (Some(y_str), Some(h_str)) = (parts.next(), parts.next()) {
+                if let (Ok(y), Ok(h)) = (y_str.parse::<f64>(), h_str.parse::<f64>()) {
+                    for cb in self.imp().drag_motion_callbacks.borrow().0.iter() {
+                        cb(y, h);
+                    }
+                }
+            }
+        } else if msg == "leave" || msg == "drop" || msg == "cancel" {
+            for cb in self.imp().drag_leave_callbacks.borrow().0.iter() {
+                cb();
+            }
         }
     }
 
@@ -327,6 +1024,7 @@ impl HtmlEditor {
             .to_string()
         };
         self.evaluate_or_queue(script);
+        self.evaluate_or_queue(format!("window.__plainTextMode = {};", plain_text));
     }
 
     fn evaluate_or_queue(&self, script: String) {
@@ -549,7 +1247,17 @@ impl HtmlEditor {
 
         self.imp().format_toolbar.replace(Some(toolbar.clone()));
 
-        vbox.append(&toolbar);
+        let toolbar_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_width(false)
+            .propagate_natural_height(true)
+            .min_content_width(0)
+            .css_classes(vec!["format-toolbar-scrolled"])
+            .child(&toolbar)
+            .build();
+
+        vbox.append(&toolbar_scroll);
         vbox.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
         // WebKit6 WebView Canvas
@@ -600,13 +1308,61 @@ impl HtmlEditor {
             self.imp().spelling_handler_ids.borrow_mut().push(id_languages);
         }
 
+        let user_content_manager = webkit6::UserContentManager::new();
+        user_content_manager.register_script_message_handler("meridianDrag", None);
+        user_content_manager.register_script_message_handler("meridianImageMenu", None);
+
+        let editor_weak_for_drag = self.downgrade();
+        user_content_manager.connect_local(
+            "script-message-received::meridianDrag",
+            false,
+            move |values| {
+                if let Some(editor) = editor_weak_for_drag.upgrade() {
+                    if let Some(js_val) = values
+                        .get(1)
+                        .and_then(|v| v.get::<javascriptcore6::Value>().ok())
+                    {
+                        let msg = js_val.to_str();
+                        editor.handle_drag_script_message(&msg);
+                    }
+                }
+                None
+            },
+        );
+
+        let editor_weak_for_img_menu = self.downgrade();
+        user_content_manager.connect_local(
+            "script-message-received::meridianImageMenu",
+            false,
+            move |values| {
+                if let Some(editor) = editor_weak_for_img_menu.upgrade() {
+                    if let Some(js_val) = values
+                        .get(1)
+                        .and_then(|v| v.get::<javascriptcore6::Value>().ok())
+                    {
+                        let msg = js_val.to_str();
+                        editor.handle_image_menu_script_message(&msg);
+                    }
+                }
+                None
+            },
+        );
+
         let web_view = webkit6::WebView::builder()
             .web_context(&web_context)
+            .user_content_manager(&user_content_manager)
             .vexpand(true)
             .hexpand(true)
             .build();
         web_view.set_background_color(&gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.0));
         set_accessible_label(&web_view, &gettext("Email message body"));
+
+        web_view.connect_context_menu(|_, _, hit_test_result| {
+            if hit_test_result.context_is_image() {
+                return true;
+            }
+            false
+        });
 
         if let Some(settings) = webkit6::prelude::WebViewExt::settings(&web_view) {
             let desktop_font = crate::views::mail_viewer::detect_desktop_font_family();
@@ -741,24 +1497,237 @@ impl HtmlEditor {
                 "        }}",
                 "    }}",
                 "}});",
-                "document.addEventListener('dragover', function(e) {{ e.preventDefault(); }});",
+                "window.__plainTextMode = false;",
+                "document.addEventListener('contextmenu', function(e) {{",
+                "    const img = e.target.closest('img');",
+                "    if (img && !window.__plainTextMode) {{",
+                "        e.preventDefault();",
+                "        e.stopPropagation();",
+                "        if (!img.id) {{",
+                "            img.id = '__meridian_img_' + Date.now() + '_' + Math.floor(Math.random() * 10000);",
+                "        }}",
+                "        const rect = img.getBoundingClientRect();",
+                "        let align = 'inline';",
+                "        if (img.style.display === 'block') {{",
+                "            if (img.style.marginLeft === 'auto' && img.style.marginRight === 'auto') {{",
+                "                align = 'center';",
+                "            }} else if (img.style.marginLeft === 'auto' || img.getAttribute('align') === 'right') {{",
+                "                align = 'right';",
+                "            }} else {{",
+                "                align = 'left';",
+                "            }}",
+                "        }} else if (img.style.float === 'left') {{",
+                "            align = 'wrap_left';",
+                "        }} else if (img.style.float === 'right') {{",
+                "            align = 'wrap_right';",
+                "        }} else if (img.getAttribute('align') === 'left') {{",
+                "            align = 'left';",
+                "        }} else if (img.getAttribute('align') === 'right') {{",
+                "            align = 'right';",
+                "        }} else if (img.getAttribute('align') === 'center') {{",
+                "            align = 'center';",
+                "        }}",
+                "        let size = 'original';",
+                "        const w = img.style.width || img.style.maxWidth || '';",
+                "        if (w === '25%') size = 'small';",
+                "        else if (w === '50%') size = 'medium';",
+                "        else if (w === '100%') size = 'large';",
+                "        const payload = JSON.stringify({{",
+                "            id: img.id,",
+                "            x: Math.round(e.clientX),",
+                "            y: Math.round(e.clientY),",
+                "            img_x: Math.round(rect.left),",
+                "            img_y: Math.round(rect.top),",
+                "            img_w: Math.round(rect.width),",
+                "            img_h: Math.round(rect.height),",
+                "            align: align,",
+                "            size: size",
+                "        }});",
+                "        try {{",
+                "            window.webkit.messageHandlers.meridianImageMenu.postMessage(payload);",
+                "        }} catch(err) {{}}",
+                "        return false;",
+                "    }}",
+                "}});",
+                "let lastDragNotify = 0;",
+                "function checkHasFiles(e) {{",
+                "    if (!e.dataTransfer || !e.dataTransfer.types) return false;",
+                "    for (let i = 0; i < e.dataTransfer.types.length; i++) {{",
+                "        const t = e.dataTransfer.types[i];",
+                "        if (t === 'Files' || t === 'application/x-moz-file' || t === 'text/uri-list') {{",
+                "            return true;",
+                "        }}",
+                "    }}",
+                "    return false;",
+                "}};",
+                "let currentDropRange = null;",
+                "let dropIndicator = null;",
+                "function getDropIndicator() {{",
+                "    if (!dropIndicator || !dropIndicator.parentNode) {{",
+                "        if (!document.getElementById('__meridian_caret_style')) {{",
+                "            const style = document.createElement('style');",
+                "            style.id = '__meridian_caret_style';",
+                "            style.textContent = '@keyframes meridianCaretBlink {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0; }} }}';",
+                "            document.head.appendChild(style);",
+                "        }}",
+                "        dropIndicator = document.createElement('div');",
+                "        dropIndicator.id = '__meridian_drop_caret';",
+                "        dropIndicator.style.position = 'fixed';",
+                "        dropIndicator.style.width = '2px';",
+                "        dropIndicator.style.backgroundColor = '#3584e4';",
+                "        dropIndicator.style.borderRadius = '1px';",
+                "        dropIndicator.style.pointerEvents = 'none';",
+                "        dropIndicator.style.zIndex = '2147483647';",
+                "        dropIndicator.style.boxShadow = '0 0 5px rgba(53, 132, 228, 0.85)';",
+                "        dropIndicator.style.animation = 'meridianCaretBlink 1s step-end infinite';",
+                "        dropIndicator.style.display = 'none';",
+                "        document.body.appendChild(dropIndicator);",
+                "    }}",
+                "    return dropIndicator;",
+                "}};",
+                "function hideCaret() {{",
+                "    const el = document.getElementById('__meridian_drop_caret');",
+                "    if (el) el.style.display = 'none';",
+                "}};",
+                "function getCaretRect(range) {{",
+                "    if (!range) return null;",
+                "    let rect = range.getBoundingClientRect();",
+                "    if (rect && rect.height > 0 && (rect.top > 0 || rect.bottom > 0)) {{",
+                "        return rect;",
+                "    }}",
+                "    const rects = range.getClientRects();",
+                "    if (rects && rects.length > 0 && rects[0].height > 0) {{",
+                "        return rects[0];",
+                "    }}",
+                "    try {{",
+                "        const cloned = range.cloneRange();",
+                "        const span = document.createElement('span');",
+                "        span.textContent = '\\u200b';",
+                "        cloned.insertNode(span);",
+                "        const r = span.getBoundingClientRect();",
+                "        if (span.parentNode) {{",
+                "            span.parentNode.removeChild(span);",
+                "        }}",
+                "        if (r && r.height > 0) {{",
+                "            return r;",
+                "        }}",
+                "    }} catch(e) {{}}",
+                "    return null;",
+                "}};",
+                "function updateCaretToPoint(x, y) {{",
+                "    if (window.__plainTextMode) return null;",
+                "    let range = null;",
+                "    try {{",
+                "        if (document.caretRangeFromPoint) {{",
+                "            range = document.caretRangeFromPoint(x, y);",
+                "        }} else if (document.caretPositionFromPoint) {{",
+                "            const pos = document.caretPositionFromPoint(x, y);",
+                "            if (pos) {{",
+                "                range = document.createRange();",
+                "                range.setStart(pos.offsetNode, pos.offset);",
+                "                range.collapse(true);",
+                "            }}",
+                "        }}",
+                "        if (range) {{",
+                "            const rect = getCaretRect(range);",
+                "            if (rect && rect.height > 0) {{",
+                "                const el = getDropIndicator();",
+                "                el.style.left = Math.round(rect.left) + 'px';",
+                "                el.style.top = Math.round(rect.top) + 'px';",
+                "                el.style.height = Math.max(16, Math.round(rect.height)) + 'px';",
+                "                el.style.display = 'block';",
+                "                currentDropRange = range.cloneRange();",
+                "                return currentDropRange;",
+                "            }}",
+                "        }}",
+                "    }} catch(err) {{}}",
+                "    hideCaret();",
+                "    return null;",
+                "}};",
+                "let dragCounter = 0;",
+                "document.addEventListener('dragenter', function(e) {{",
+                "    if (checkHasFiles(e)) {{",
+                "        dragCounter++;",
+                "        updateCaretToPoint(e.clientX, e.clientY);",
+                "        try {{ window.webkit.messageHandlers.meridianDrag.postMessage('enter'); }} catch(err) {{}}",
+                "    }}",
+                "}});",
+                "document.addEventListener('dragover', function(e) {{",
+                "    if (!checkHasFiles(e)) return;",
+                "    e.preventDefault();",
+                "    if (e.dataTransfer) {{ e.dataTransfer.dropEffect = 'copy'; }}",
+                "    updateCaretToPoint(e.clientX, e.clientY);",
+                "    const now = Date.now();",
+                "    if (now - lastDragNotify > 40) {{",
+                "        lastDragNotify = now;",
+                "        try {{",
+                "            window.webkit.messageHandlers.meridianDrag.postMessage('motion:' + Math.round(e.clientY) + ':' + Math.round(window.innerHeight));",
+                "        }} catch(err) {{}}",
+                "    }}",
+                "}});",
+                "document.addEventListener('dragleave', function(e) {{",
+                "    dragCounter--;",
+                "    if (dragCounter <= 0 || !e.relatedTarget || e.clientY <= 0 || e.clientX <= 0 || e.clientX >= window.innerWidth) {{",
+                "        dragCounter = 0;",
+                "        hideCaret();",
+                "        currentDropRange = null;",
+                "        try {{ window.webkit.messageHandlers.meridianDrag.postMessage('leave'); }} catch(err) {{}}",
+                "    }}",
+                "}});",
                 "document.addEventListener('drop', function(e) {{",
+                "    dragCounter = 0;",
+                "    hideCaret();",
+                "    try {{ window.webkit.messageHandlers.meridianDrag.postMessage('drop'); }} catch(err) {{}}",
                 "    if (!e.dataTransfer) return;",
                 "    const files = e.dataTransfer.files;",
                 "    if (files && files.length > 0) {{",
-                "        e.preventDefault();",
+                "        function isImg(f) {{",
+                "            if (f.type && f.type.indexOf('image') !== -1) return true;",
+                "            if (f.name && /\\.(png|jpe?g|gif|svg|webp|bmp|ico)$/i.test(f.name)) return true;",
+                "            return false;",
+                "        }}",
+                "        let hasImage = false;",
                 "        for (let i = 0; i < files.length; i++) {{",
-                "            if (files[i].type.indexOf('image') !== -1) {{",
-                "                const reader = new FileReader();",
-                "                reader.onload = function(evt) {{",
-                "                    document.execCommand('insertImage', false, evt.target.result);",
-                "                }};",
-                "                reader.readAsDataURL(files[i]);",
-                "                return;",
+                "            if (isImg(files[i])) {{",
+                "                hasImage = true;",
+                "                break;",
+                "            }}",
+                "        }}",
+                "        if (hasImage && !window.__plainTextMode) {{",
+                "            e.preventDefault();",
+                "            const dropRange = currentDropRange || updateCaretToPoint(e.clientX, e.clientY);",
+                "            hideCaret();",
+                "            currentDropRange = null;",
+                "            for (let i = 0; i < files.length; i++) {{",
+                "                if (isImg(files[i])) {{",
+                "                    const reader = new FileReader();",
+                "                    reader.onload = function(evt) {{",
+                "                        if (dropRange) {{",
+                "                            try {{",
+                "                                const sel = window.getSelection();",
+                "                                sel.removeAllRanges();",
+                "                                sel.addRange(dropRange);",
+                "                            }} catch(err) {{}}",
+                "                        }}",
+                "                        document.execCommand('insertImage', false, evt.target.result);",
+                "                    }};",
+                "                    reader.readAsDataURL(files[i]);",
+                "                }}",
                 "            }}",
                 "        }}",
                 "    }}",
+                "    currentDropRange = null;",
                 "}});",
+                "function handleEscape(e) {{",
+                "    if (e.key === 'Escape') {{",
+                "        dragCounter = 0;",
+                "        hideCaret();",
+                "        currentDropRange = null;",
+                "        try {{ window.webkit.messageHandlers.meridianDrag.postMessage('cancel'); }} catch(err) {{}}",
+                "    }}",
+                "}};",
+                "window.addEventListener('keydown', handleEscape);",
+                "document.addEventListener('keydown', handleEscape);",
                 "</script></head><body contenteditable='true'><p><br></p></body></html>"
             ),
             font_family, font_size
@@ -808,6 +1777,31 @@ impl HtmlEditor {
 
         let drop_target = gtk::DropTarget::new(glib::Type::INVALID, gdk::DragAction::COPY);
         drop_target.set_types(&[gdk::FileList::static_type(), gio::File::static_type()]);
+
+        drop_target.connect_enter(move |_, _, _| {
+            gdk::DragAction::COPY
+        });
+
+        let editor_weak_for_motion = self.downgrade();
+        drop_target.connect_motion(move |_, _x, y| {
+            if let Some(editor) = editor_weak_for_motion.upgrade() {
+                let h = editor.height() as f64;
+                for cb in editor.imp().drag_motion_callbacks.borrow().0.iter() {
+                    cb(y, h);
+                }
+            }
+            gdk::DragAction::COPY
+        });
+
+        let editor_weak_for_leave = self.downgrade();
+        drop_target.connect_leave(move |_| {
+            if let Some(editor) = editor_weak_for_leave.upgrade() {
+                for cb in editor.imp().drag_leave_callbacks.borrow().0.iter() {
+                    cb();
+                }
+            }
+        });
+
         let editor_weak_for_drop = self.downgrade();
         drop_target.connect_drop(move |_, value, _, _| {
             let Some(editor) = editor_weak_for_drop.upgrade() else {
@@ -1310,3 +2304,140 @@ fn encode_base64(bytes: &[u8]) -> String {
 
     encoded
 }
+
+#[derive(Debug, serde::Deserialize)]
+struct ImageMenuPayload {
+    id: String,
+    x: i32,
+    y: i32,
+    #[allow(dead_code)]
+    img_x: i32,
+    #[allow(dead_code)]
+    img_y: i32,
+    #[allow(dead_code)]
+    img_w: i32,
+    #[allow(dead_code)]
+    img_h: i32,
+    align: String,
+    size: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ConvertedImageData {
+    src: String,
+    #[serde(default)]
+    alt: String,
+}
+
+pub fn parse_image_data_uri_or_path(src: &str, alt: &str) -> Option<(Vec<u8>, String, String)> {
+    if let Some(rest) = src.strip_prefix("data:") {
+        let mut parts = rest.splitn(2, ',');
+        let header = parts.next()?;
+        let body = parts.next()?;
+        let mime = header.split(';').next().unwrap_or("image/png").trim();
+        let is_base64 = header.contains(";base64");
+        let bytes = if is_base64 {
+            glib::base64_decode(body.trim())
+        } else {
+            body.as_bytes().to_vec()
+        };
+        if bytes.is_empty() {
+            return None;
+        }
+        let ext = match mime {
+            "image/png" => "png",
+            "image/jpeg" | "image/jpg" => "jpg",
+            "image/gif" => "gif",
+            "image/webp" => "webp",
+            "image/svg+xml" => "svg",
+            _ => "png",
+        };
+        let alt_clean = alt.trim();
+        let filename = if !alt_clean.is_empty() && alt_clean.contains('.') {
+            alt_clean.to_string()
+        } else if !alt_clean.is_empty() {
+            format!("{alt_clean}.{ext}")
+        } else {
+            format!("bild_{}.{ext}", &glib::uuid_string_random()[..6])
+        };
+        Some((bytes, mime.to_string(), filename))
+    } else if let Some(_path_str) = src.strip_prefix("file://") {
+        let file = gio::File::for_uri(src);
+        let path = file.path()?;
+        let bytes = std::fs::read(&path).ok()?;
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("png")
+            .to_ascii_lowercase();
+        let mime = match ext.as_str() {
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            "svg" => "image/svg+xml",
+            _ => "application/octet-stream",
+        };
+        let filename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("bild.png")
+            .to_string();
+        Some((bytes, mime.to_string(), filename))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_image_data_uri_png() {
+        let dummy_png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        let data_uri = format!("data:image/png;base64,{dummy_png_b64}");
+        let result = parse_image_data_uri_or_path(&data_uri, "my_screenshot.png");
+        assert!(result.is_some());
+        let (bytes, mime, filename) = result.unwrap();
+        assert_eq!(mime, "image/png");
+        assert_eq!(filename, "my_screenshot.png");
+        assert!(!bytes.is_empty());
+        assert_eq!(bytes[0], 0x89);
+        assert_eq!(bytes[1], 0x50); // 'P'
+        assert_eq!(bytes[2], 0x4e); // 'N'
+        assert_eq!(bytes[3], 0x47); // 'G'
+    }
+
+    #[test]
+    fn test_parse_image_data_uri_custom_alt() {
+        let dummy_b64 = "dGVzdA=="; // "test"
+        let data_uri = format!("data:image/jpeg;base64,{dummy_b64}");
+        let result = parse_image_data_uri_or_path(&data_uri, "photo");
+        assert!(result.is_some());
+        let (bytes, mime, filename) = result.unwrap();
+        assert_eq!(mime, "image/jpeg");
+        assert_eq!(filename, "photo.jpg");
+        assert_eq!(bytes, b"test");
+    }
+
+    #[test]
+    fn test_parse_image_data_uri_invalid() {
+        assert!(parse_image_data_uri_or_path("invalid:not-a-data-uri", "").is_none());
+        assert!(parse_image_data_uri_or_path("data:image/png;base64,", "").is_none());
+    }
+
+    #[test]
+    fn test_image_menu_payload_deserialize() {
+        let json = r#"{"id":"__meridian_img_123","x":150,"y":280,"img_x":100,"img_y":200,"img_w":400,"img_h":300,"align":"center","size":"medium"}"#;
+        let payload: Result<ImageMenuPayload, _> = serde_json::from_str(json);
+        assert!(payload.is_ok());
+        let p = payload.unwrap();
+        assert_eq!(p.id, "__meridian_img_123");
+        assert_eq!(p.x, 150);
+        assert_eq!(p.y, 280);
+        assert_eq!(p.align, "center");
+        assert_eq!(p.size, "medium");
+    }
+}
+
