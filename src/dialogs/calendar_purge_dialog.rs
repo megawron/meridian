@@ -10,6 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::i18n::gettext;
 use crate::services::calendar_store_service::{CalendarPurgeResult, CalendarStoreService};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,7 +174,7 @@ impl CalendarPurgeDialog {
             .halign(gtk::Align::End)
             .margin_top(8)
             .build();
-        let cancel = gtk::Button::with_label("Abbrechen");
+        let cancel = gtk::Button::with_label(&gettext("Cancel"));
         cancel.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
             self,
@@ -183,7 +184,7 @@ impl CalendarPurgeDialog {
                         cancellation.store(true, Ordering::Relaxed);
                     }
                     button.set_sensitive(false);
-                    dialog.set_status("Bereinigung wird abgebrochen …", false);
+                    dialog.set_status(&gettext("Canceling purge…"), false);
                 } else {
                     dialog.close();
                 }
@@ -193,7 +194,7 @@ impl CalendarPurgeDialog {
         self.imp().cancel_button.replace(Some(cancel));
 
         let purge = gtk::Button::builder()
-            .label("Endgültig löschen")
+            .label(&gettext("Permanently Delete"))
             .css_classes(vec!["destructive-action"])
             .build();
         purge.connect_clicked(glib::clone!(
@@ -240,7 +241,7 @@ impl CalendarPurgeDialog {
         }
         if let Some(button) = self.imp().cancel_button.borrow().as_ref() {
             button.set_sensitive(true);
-            button.set_label("Abbrechen");
+            button.set_label(&gettext("Cancel"));
         }
         self.set_status("Lokale Termine werden geprüft …", false);
 

@@ -17,6 +17,7 @@ use crate::services::contact_store_service::ContactStoreService;
 use crate::services::ical_import_service::{
     IcalDuplicatePolicy, execute_ical_import, plan_ical_import,
 };
+use crate::i18n::gettext;
 use crate::services::mail_store_service::MailStoreService;
 
 mod imp {
@@ -215,7 +216,7 @@ impl ImportDialog {
             .margin_top(8)
             .build();
 
-        let cancel_btn = gtk::Button::builder().label("Abbrechen").build();
+        let cancel_btn = gtk::Button::builder().label(&gettext("Cancel")).build();
         let dialog_for_cancel = self.downgrade();
         cancel_btn.connect_clicked(move |_| {
             if let Some(dialog) = dialog_for_cancel.upgrade() {
@@ -225,7 +226,7 @@ impl ImportDialog {
         button_box.append(&cancel_btn);
 
         let import_btn = gtk::Button::builder()
-            .label("Importieren")
+            .label(&gettext("Import"))
             .css_classes(vec!["suggested-action"])
             .build();
         let dialog_for_import = self.downgrade();

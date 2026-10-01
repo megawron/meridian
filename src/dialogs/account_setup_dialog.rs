@@ -681,8 +681,8 @@ impl AccountSetupDialog {
                 content_box.append(&group_prompt);
                 alert.set_extra_child(Some(&content_box));
 
-                alert.add_response("cancel", "Abbrechen");
-                alert.add_response("confirm", "Anmelden");
+                alert.add_response("cancel", &crate::i18n::gettext("Cancel"));
+                alert.add_response("confirm", &crate::i18n::gettext("Sign In"));
                 alert.set_response_appearance("confirm", adw::ResponseAppearance::Suggested);
                 alert.set_default_response(Some("confirm"));
                 alert.set_close_response("cancel");
@@ -1673,7 +1673,7 @@ impl AccountSetupDialog {
             .build();
         self.imp().split_view.replace(Some(split_view.clone()));
 
-        let btn_cancel = gtk::Button::builder().label("Abbrechen").build();
+        let btn_cancel = gtk::Button::builder().label(&crate::i18n::gettext("Cancel")).build();
         btn_cancel.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
             self,
@@ -2456,9 +2456,9 @@ mod tests {
         assert!(source.contains("OAB-URL"));
 
         // Verify action buttons
-        assert!(source.contains("Abbrechen"));
-        assert!(source.contains("Speichern"));
-        assert!(source.contains("Einrichten"));
+        assert!(source.contains("Cancel") || source.contains("Abbrechen"));
+        assert!(source.contains("Speichern") || source.contains("Save"));
+        assert!(source.contains("Einrichten") || source.contains("Set up"));
     }
 
     #[test]

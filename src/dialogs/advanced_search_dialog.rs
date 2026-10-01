@@ -14,6 +14,7 @@ use gtk::glib;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use crate::i18n::gettext;
 use crate::services::search_engine::{MailSearchFieldScope, parse_mail_query};
 
 const TEXT_FIELD_LABELS: &[&str] = &[
@@ -307,7 +308,7 @@ impl AdvancedSearchDialog {
             .halign(gtk::Align::End)
             .margin_top(4)
             .build();
-        let cancel = gtk::Button::with_label("Abbrechen");
+        let cancel = gtk::Button::with_label(&gettext("Cancel"));
         cancel.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
             self,
@@ -316,7 +317,7 @@ impl AdvancedSearchDialog {
             }
         ));
         let apply = gtk::Button::builder()
-            .label("Anwenden")
+            .label(&gettext("Apply"))
             .css_classes(vec!["suggested-action"])
             .build();
         apply.connect_clicked(glib::clone!(

@@ -12,6 +12,7 @@ use gtk::glib;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::i18n::gettext;
 use crate::services::contact_store_service::ContactStoreService;
 use crate::services::vcard_service::VCardContact;
 
@@ -195,11 +196,11 @@ impl NameSelectorDialog {
         let header_bar = adw::HeaderBar::new();
 
         let cancel_button = gtk::Button::builder()
-            .label("Abbrechen")
+            .label(&gettext("Cancel"))
             .css_classes(vec!["flat"])
             .build();
         let apply_button = gtk::Button::builder()
-            .label("Übernehmen")
+            .label(&gettext("Apply"))
             .css_classes(vec!["suggested-action"])
             .build();
 

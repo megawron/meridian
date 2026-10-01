@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
+use crate::i18n::gettext;
 use crate::services::camel_mail_service::{
     self, CamelSubscriptionFolder, CamelSubscriptionSnapshot,
 };
@@ -62,13 +63,13 @@ impl FolderSubscriptionsDialog {
         let header = adw::HeaderBar::new();
         let refresh = gtk::Button::builder()
             .icon_name("view-refresh-symbolic")
-            .tooltip_text("Abonnementsliste neu laden")
+            .tooltip_text(&gettext("Reload subscription list"))
             .build();
         let cancel = gtk::Button::builder()
-            .label("Abbrechen")
+            .label(&gettext("Cancel"))
             .sensitive(false)
             .build();
-        let close = gtk::Button::builder().label("Schließen").build();
+        let close = gtk::Button::builder().label(&gettext("Close")).build();
         header.pack_start(&refresh);
         header.pack_start(&cancel);
         header.pack_end(&close);

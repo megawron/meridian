@@ -9,6 +9,7 @@ use gtk::glib;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::i18n::gettext;
 use crate::services::contact_search_service::{
     ContactClauseGroup, ContactOuterFilters, ContactSearchClause, ContactSearchField,
     ContactSearchOperator, ContactSearchQuery, operators_for_field, parse_query_text,
@@ -230,7 +231,7 @@ impl ContactSearchDialog {
             .halign(gtk::Align::End)
             .margin_top(4)
             .build();
-        let cancel = gtk::Button::with_label("Abbrechen");
+        let cancel = gtk::Button::with_label(&gettext("Cancel"));
         cancel.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
             self,
@@ -239,7 +240,7 @@ impl ContactSearchDialog {
             }
         ));
         let apply = gtk::Button::builder()
-            .label("Anwenden")
+            .label(&gettext("Apply"))
             .css_classes(vec!["suggested-action"])
             .build();
         apply.connect_clicked(glib::clone!(

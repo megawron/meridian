@@ -7166,7 +7166,7 @@ msgstr ""
 
 #: src/views/tasks_page.rs:10496
 msgid "Permanently Delete"
-msgstr ""
+msgstr "Endgültig löschen"
 
 #: src/views/tasks_page.rs:10637
 msgid "The set of completed tasks changed prior to deletion"
@@ -8147,3 +8147,49 @@ msgstr "Favicons aus dem Internet laden"
 
 msgid "Show replies grouped as threads"
 msgstr "Antworten als Thread anzeigen"
+
+msgid "Edit Signature"
+msgstr "Signatur bearbeiten"
+
+msgid "New Signature"
+msgstr "Neue Signatur"
+
+msgid "Canceling purge…"
+msgstr "Bereinigung wird abgebrochen …"
+
+msgid "Reload subscription list"
+msgstr "Abonnementsliste neu laden"
+
+msgid "No Subject"
+msgstr "Kein Betreff"
+
+msgid "This message has no subject. Send anyway?"
+msgstr "Die Nachricht hat keinen Betreff. Trotzdem senden?"
+
+msgid "Cancel operation before transport"
+msgstr "Vorgang vor dem Transport abbrechen"
+
+msgid "Select Reply-To address from address book"
+msgstr "Antwortadresse aus dem Adressbuch auswählen"
+
+msgid "Select recipients from address book"
+msgstr "Empfänger aus dem Adressbuch auswählen"
+
+msgid "Select Cc recipients from address book"
+msgstr "Cc-Empfänger aus dem Adressbuch auswählen"
+
+msgid "Select Bcc recipients from address book"
+msgstr "Bcc-Empfänger aus dem Adressbuch auswählen"
+
+msgid "Reply-To address…"
+msgstr "Antwortadresse (Reply-To)…"
+
+msgid "Enter recipients…"
+msgstr "Empfänger eingeben…"
+
+msgid "Additional recipients (Cc)…"
+msgstr "Weitere Empfänger (Cc)…"
+
+msgid "Undisclosed recipients (Bcc)…"
+msgstr "Verdeckte Empfänger (Bcc)…"
+

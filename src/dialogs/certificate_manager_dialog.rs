@@ -16,6 +16,7 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
+use crate::i18n::gettext;
 use crate::services::certificate_service::{
     CertCategory, CertExportFormat, CertType, CertificateRecord, CertificateService, TrustLevel,
 };
@@ -546,7 +547,7 @@ fn delete_selected_certificate(state: &Rc<RefCell<ManagerState>>) {
             cert.display_name
         )),
     );
-    prompt.add_responses(&[("cancel", "Abbrechen"), ("delete", "Löschen")]);
+    prompt.add_responses(&[("cancel", &gettext("Cancel")), ("delete", &gettext("Delete"))]);
     prompt.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
 
     prompt.connect_response(None, move |alert, response| {
@@ -966,9 +967,9 @@ impl CertificateTrustDialog {
         let toolbar_view = adw::ToolbarView::new();
         let header_bar = adw::HeaderBar::new();
 
-        let btn_cancel = gtk::Button::builder().label("Abbrechen").build();
+        let btn_cancel = gtk::Button::builder().label(&gettext("Cancel")).build();
         let btn_save = gtk::Button::builder()
-            .label("Speichern")
+            .label(&gettext("Save"))
             .css_classes(vec!["suggested-action"])
             .build();
 
@@ -1125,9 +1126,9 @@ impl PassphrasePromptDialog {
         let toolbar_view = adw::ToolbarView::new();
         let header_bar = adw::HeaderBar::new();
 
-        let btn_cancel = gtk::Button::builder().label("Abbrechen").build();
+        let btn_cancel = gtk::Button::builder().label(&gettext("Cancel")).build();
         let btn_unlock = gtk::Button::builder()
-            .label("Entschlüsseln")
+            .label(&gettext("Unlock"))
             .css_classes(vec!["suggested-action"])
             .build();
 
@@ -1217,9 +1218,9 @@ impl PassphrasePromptDialog {
         let toolbar_view = adw::ToolbarView::new();
         let header_bar = adw::HeaderBar::new();
 
-        let btn_cancel = gtk::Button::builder().label("Abbrechen").build();
+        let btn_cancel = gtk::Button::builder().label(&gettext("Cancel")).build();
         let btn_export = gtk::Button::builder()
-            .label("Exportieren")
+            .label(&gettext("Export"))
             .css_classes(vec!["suggested-action"])
             .build();
 

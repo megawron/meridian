@@ -7,6 +7,7 @@ use adw::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::i18n::gettext;
 use crate::models::source_selector::SourceSelector;
 
 pub struct ManageGroupsDialog {
@@ -39,7 +40,7 @@ impl ManageGroupsDialog {
         let header_bar = adw::HeaderBar::new();
 
         let cancel_btn = gtk::Button::builder()
-            .label("Abbrechen")
+            .label(&gettext("Cancel"))
             .build();
         let dialog_cancel = dialog.downgrade();
         cancel_btn.connect_clicked(move |_| {
@@ -50,7 +51,7 @@ impl ManageGroupsDialog {
         header_bar.pack_start(&cancel_btn);
 
         let save_btn = gtk::Button::builder()
-            .label("Speichern")
+            .label(&gettext("Save"))
             .css_classes(vec!["suggested-action"])
             .build();
         let dialog_save = dialog.downgrade();
@@ -330,8 +331,8 @@ mod tests {
         assert!(source.contains("Legen Sie die Reihenfolge und Sichtbarkeit der Quellengruppen fest."));
         assert!(source.contains("Neue Gruppe"));
         assert!(source.contains("Hinweis: Das Ausblenden einer Gruppe blendet alle darin enthaltenen Quellen aus"));
-        assert!(source.contains("Abbrechen"));
-        assert!(source.contains("Speichern"));
+        assert!(source.contains("Cancel") || source.contains("Abbrechen"));
+        assert!(source.contains("Save") || source.contains("Speichern"));
     }
 
     #[test]

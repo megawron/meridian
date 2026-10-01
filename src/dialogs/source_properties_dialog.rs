@@ -6,6 +6,7 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
 use std::cell::RefCell;
+use crate::i18n::gettext;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourcePropertiesUpdate {
@@ -97,7 +98,7 @@ impl SourcePropertiesDialog {
         let header = adw::HeaderBar::new();
 
         let cancel_btn = gtk::Button::builder()
-            .label("Abbrechen")
+            .label(&gettext("Cancel"))
             .build();
         let dialog_for_cancel = self.downgrade();
         cancel_btn.connect_clicked(move |_| {
@@ -315,7 +316,7 @@ mod tests {
         assert!(source.contains("Farbe"));
         assert!(source.contains("Schreibzugriff"));
         assert!(source.contains("Als Standardquelle verwenden"));
-        assert!(source.contains("Abbrechen"));
-        assert!(source.contains("Speichern"));
+        assert!(source.contains("Cancel") || source.contains("Abbrechen"));
+        assert!(source.contains("Speichern") || source.contains("Save"));
     }
 }
