@@ -1148,16 +1148,389 @@ popover.menu separator {
   border-radius: 3px;
 }
 
-/* ── Attachment Chips ──────────────────────────────────────────────────── */
+/* ── Attachment Chips & Minimal Composer Attachment Tray (GNOME HIG) ──────────────── */
 .attachment-chip {
-  background-color: alpha(@window_fg_color, 0.07);
-  border-radius: 8px;
-  padding: 4px 10px;
+  background-color: alpha(currentColor, 0.08);
+  border: none;
+  border-radius: 9999px;
+  padding: 2px 6px 2px 8px;
+  min-height: 24px;
+  max-height: 24px;
   transition: background-color 150ms ease;
 }
 
 .attachment-chip:hover {
-  background-color: alpha(@window_fg_color, 0.12);
+  background-color: alpha(currentColor, 0.14);
+}
+
+.attachment-chip:focus,
+.attachment-chip:focus-within {
+  outline: none;
+}
+
+.attachment-chip:focus-visible {
+  outline: 2px solid alpha(@accent_color, 0.5);
+  outline-offset: 2px;
+}
+
+.attachment-flow-child {
+  border-radius: 8px;
+  padding: 0;
+  background: transparent;
+}
+
+flowbox > flowboxchild.attachment-flow-child {
+  outline: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+flowbox > flowboxchild.attachment-flow-child:focus,
+flowbox > flowboxchild.attachment-flow-child:focus-visible,
+flowbox > flowboxchild.attachment-flow-child:selected {
+  outline: 2px solid alpha(@accent_color, 0.5);
+  outline-offset: 2px;
+  background: alpha(@accent_color, 0.06);
+  border-radius: 8px;
+}
+
+.attachment-chip-label {
+  font-weight: 500;
+  font-size: 0.76rem;
+}
+
+.attachment-chip-size {
+  font-size: 0.72rem;
+  opacity: 0.65;
+}
+
+.attachment-bar,
+.attachment-bottom-bar {
+  background-color: @window_bg_color;
+  border-top: 1px solid alpha(currentColor, 0.08);
+  min-height: 40px;
+  padding: 2px 0 4px 0;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+
+.attachment-bottom-bar:drop(active) {
+  background-color: alpha(@accent_color, 0.12);
+  border-top-color: @accent_color;
+}
+
+.attachment-bar-handle {
+  min-width: 32px;
+  max-width: 32px;
+  min-height: 4px;
+  max-height: 4px;
+  border-radius: 9999px;
+  background-color: alpha(currentColor, 0.22);
+  margin-top: 2px;
+  margin-bottom: 3px;
+  cursor: pointer;
+  transition: background-color 150ms ease;
+}
+
+.attachment-bar-handle:hover {
+  background-color: alpha(currentColor, 0.45);
+}
+
+.attachment-bar-chip-container {
+  background: transparent;
+  padding: 0 4px;
+}
+
+.attachment-overflow-btn {
+  padding: 2px 8px;
+  min-height: 24px;
+  max-height: 24px;
+  border-radius: 9999px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  background-color: alpha(currentColor, 0.07);
+  color: alpha(currentColor, 0.85);
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+.attachment-overflow-btn:hover {
+  background-color: alpha(currentColor, 0.14);
+  color: currentColor;
+}
+
+.attachment-overflow-btn:focus,
+.attachment-overflow-btn:focus-within {
+  outline: none;
+}
+
+.attachment-overflow-btn:focus-visible {
+  outline: 2px solid alpha(@accent_color, 0.5);
+  outline-offset: 2px;
+}
+
+.attachment-bar-chips-scroll scrollbar {
+  opacity: 0;
+  min-height: 0;
+  min-width: 0;
+}
+
+.attachment-bar-chips-scroll:hover scrollbar {
+  opacity: 0.5;
+}
+
+.format-toolbar-scrolled {
+  background: transparent;
+}
+
+.format-toolbar-scrolled scrollbar {
+  opacity: 0;
+  min-height: 0;
+  min-width: 0;
+}
+
+.format-toolbar-scrolled:hover scrollbar {
+  opacity: 0.5;
+}
+
+/* ── Bottom Sheet Container & Outlines (Prevent outer rectangular outline artifact) ── */
+bottom-sheet,
+bottom-sheet > sheet,
+bottom-sheet > sheet > stack,
+bottom-sheet > sheet > stack > widget,
+bottom-sheet > sheet > stack > button,
+bottom-sheet > sheet > stack > button:focus,
+bottom-sheet > sheet > stack > button:focus-visible,
+bottom-sheet:focus,
+bottom-sheet:focus-within,
+bottom-sheet:drop(active),
+bottom-sheet > sheet:drop(active),
+.attachment-sheet-box,
+.attachment-sheet-box:focus,
+.attachment-sheet-box:focus-within,
+.attachment-sheet-box:drop(active),
+.attachment-sheet-scrolled,
+.attachment-sheet-scrolled:focus,
+.attachment-sheet-scrolled:focus-within,
+.attachment-sheet-scrolled:drop(active),
+.attachment-flowbox,
+.attachment-flowbox:focus,
+.attachment-flowbox:focus-within,
+.attachment-flowbox:drop(active) {
+  outline: none;
+}
+
+.attachment-sheet-box {
+  background-color: @window_bg_color;
+}
+
+.attachment-sheet-header {
+  min-height: 42px;
+  border-bottom: 1px solid alpha(currentColor, 0.08);
+}
+
+.attachment-sheet-summary-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  opacity: 0.90;
+}
+
+.attachment-sheet-scrolled {
+  padding: 8px 12px 10px 12px;
+}
+
+image.attachment-thumbnail {
+  border-radius: 4px;
+}
+
+image.attachment-card-thumbnail {
+  border-radius: 6px;
+  box-shadow: 0 1px 3px alpha(currentColor, 0.15);
+}
+
+/* ── Nautilus-style Preview Cards: clean, un-bordered by default, calm hover ─────── */
+.attachment-card {
+  padding: 8px 6px 8px 6px;
+  border-radius: 8px;
+  background-color: transparent;
+  transition: background-color 150ms ease;
+  min-width: 90px;
+}
+
+.attachment-card:hover {
+  background-color: alpha(currentColor, 0.08);
+}
+
+.attachment-card:active {
+  background-color: alpha(currentColor, 0.14);
+}
+
+.attachment-card:focus,
+.attachment-card:focus-within {
+  outline: none;
+}
+
+.attachment-card:focus-visible {
+  outline: 2px solid alpha(@accent_color, 0.5);
+  outline-offset: 2px;
+}
+
+.attachment-card-label {
+  font-size: 0.82rem;
+  font-weight: 500;
+  line-height: 1.25;
+}
+
+.attachment-card-size {
+  font-size: 0.72rem;
+  opacity: 0.70;
+}
+
+.attachment-card-remove-btn {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+  border-radius: 9999px;
+  background-color: alpha(@window_bg_color, 0.90);
+  opacity: 0;
+  transition: opacity 150ms ease, background-color 120ms ease;
+}
+
+.attachment-card:hover .attachment-card-remove-btn,
+.attachment-flow-child:hover .attachment-card-remove-btn,
+.attachment-flow-child:focus .attachment-card-remove-btn,
+.attachment-flow-child:focus-within .attachment-card-remove-btn,
+.attachment-flow-child:selected .attachment-card-remove-btn {
+  opacity: 0.85;
+}
+
+.attachment-card-remove-btn:hover {
+  opacity: 1.0;
+  background-color: @window_bg_color;
+}
+
+.attachment-header-bar {
+  min-height: 32px;
+}
+
+.attachment-summary-btn {
+  padding: 3px 10px;
+  border-radius: 9999px;
+  font-size: 0.80rem;
+  font-weight: 500;
+  background-color: alpha(currentColor, 0.07);
+  transition: background-color 150ms ease;
+}
+
+.attachment-summary-btn:hover {
+  background-color: alpha(currentColor, 0.12);
+}
+
+.attachment-summary-btn:focus,
+.attachment-summary-btn:focus-within {
+  outline: none;
+}
+
+.attachment-summary-btn:focus-visible {
+  outline: 2px solid alpha(@accent_color, 0.5);
+  outline-offset: 2px;
+}
+
+.attachment-view-toggle button {
+  min-width: 26px;
+  min-height: 24px;
+  padding: 2px 6px;
+}
+
+.attachment-view-toggle button.active {
+  background-color: alpha(@accent_color, 0.18);
+  color: @accent_color;
+}
+
+.attachment-chip-btn {
+  min-width: 18px;
+  min-height: 18px;
+  max-width: 18px;
+  max-height: 18px;
+  padding: 0;
+  margin-start: 2px;
+  border-radius: 9999px;
+  opacity: 0.6;
+  transition: opacity 120ms ease, background-color 120ms ease;
+}
+
+.attachment-chip-btn:hover {
+  opacity: 1.0;
+  background-color: alpha(currentColor, 0.15);
+}
+
+.attachment-close-btn {
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0;
+  border-radius: 9999px;
+  opacity: 0.8;
+  transition: opacity 120ms ease, background-color 120ms ease;
+}
+
+.attachment-close-btn:hover {
+  opacity: 1.0;
+  background-color: alpha(currentColor, 0.10);
+}
+
+.attachment-listbox {
+  background-color: transparent;
+  padding: 2px 0;
+}
+
+.attachment-list-row {
+  border-radius: 6px;
+  padding: 2px 6px;
+  min-height: 32px;
+  margin: 1px 0;
+  transition: background-color 120ms ease;
+}
+
+.attachment-list-row:hover {
+  background-color: alpha(currentColor, 0.06);
+}
+
+.attachment-list-row:selected,
+.attachment-list-row:focus,
+.attachment-list-row:focus-within {
+  background-color: alpha(@accent_color, 0.12);
+  outline: none;
+}
+
+.attachment-list-label {
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.attachment-list-header {
+  min-height: 32px;
+  padding: 0 10px;
+  border-bottom: 1px solid alpha(currentColor, 0.08);
+}
+
+.attachment-col-header-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: alpha(currentColor, 0.75);
+}
+
+.attachment-col-type {
+  font-size: 0.82rem;
+  opacity: 0.75;
+}
+
+.attachment-col-modified {
+  font-size: 0.82rem;
+  opacity: 0.70;
+}
+
+.attachment-col-size {
+  font-size: 0.82rem;
+  font-weight: 500;
+  opacity: 0.85;
 }
 
 /* ── Contact Detail & List ─────────────────────────────────────────────── */
@@ -3590,3 +3963,25 @@ row.recipient-suggestion-row:selected:hover {
 row.recipient-suggestion-row:focus {
   outline: none;
 }
+
+/* Inline Image Context Popover */
+popover.image-options-popover contents {
+  padding: 8px 10px;
+  min-width: 250px;
+}
+
+popover.image-options-popover .linked button {
+  padding: 6px 12px;
+  min-height: 32px;
+}
+
+popover.image-options-popover button.flat {
+  padding: 7px 10px;
+  border-radius: 6px;
+  transition: background-color 75ms ease;
+}
+
+popover.image-options-popover button.flat:hover {
+  background-color: alpha(currentColor, 0.08);
+}
+
