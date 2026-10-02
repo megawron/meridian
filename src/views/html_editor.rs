@@ -185,29 +185,89 @@ impl HtmlEditor {
         matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp")
     }
 
+    /// Loads an image from path and prepares an optimized data URI.
+    /// Raster images exceeding 1920px or 1.5 MB are downscaled using gdk-pixbuf
+    /// to avoid passing multi-megabyte Base64 strings through WebKit IPC,
+    /// preventing WebKitWebProcess memory bloat and UI freezes.
+    pub fn prepare_image_data_uri(path: &std::path::Path) -> Option<(String, String)> {
+        let Ok(metadata) = std::fs::metadata(path) else {
+            return None;
+        };
+        let ext = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+
+        let (mime, is_jpeg) = match ext.as_str() {
+            "png" => ("image/png", false),
+            "jpg" | "jpeg" => ("image/jpeg", true),
+            "gif" => ("image/gif", false),
+            "svg" => ("image/svg+xml", false),
+            "webp" => ("image/webp", false),
+            _ => ("image/png", false),
+        };
+
+        let is_vector_or_anim = ext == "svg" || ext == "gif";
+        let file_size = metadata.len();
+
+        if is_vector_or_anim || file_size < 1_500_000 {
+            if !is_vector_or_anim {
+                if let Ok(pixbuf) = gdk_pixbuf::Pixbuf::from_file(path) {
+                    let w = pixbuf.width();
+                    let h = pixbuf.height();
+                    if w > 1920 || h > 1920 {
+                        let scale = 1920.0 / (w.max(h) as f64);
+                        let target_w = (w as f64 * scale).round() as i32;
+                        let target_h = (h as f64 * scale).round() as i32;
+                        if let Some(scaled) = pixbuf.scale_simple(target_w, target_h, gdk_pixbuf::InterpType::Bilinear) {
+                            let format = if is_jpeg { "jpeg" } else { "png" };
+                            let options: &[(&str, &str)] = if is_jpeg {
+                                &[("quality", "88")]
+                            } else {
+                                &[]
+                            };
+                            if let Ok(buf) = scaled.save_to_bufferv(format, options) {
+                                let b64 = encode_base64(&buf);
+                                return Some((format!("data:{mime};base64,{b64}"), mime.to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+            if let Ok(bytes) = std::fs::read(path) {
+                let b64 = encode_base64(&bytes);
+                return Some((format!("data:{mime};base64,{b64}"), mime.to_string()));
+            }
+        } else {
+            if let Ok(pixbuf) = gdk_pixbuf::Pixbuf::from_file_at_scale(path, 1920, 1920, true) {
+                let format = if is_jpeg { "jpeg" } else { "png" };
+                let options: &[(&str, &str)] = if is_jpeg {
+                    &[("quality", "85")]
+                } else {
+                    &[]
+                };
+                if let Ok(buf) = pixbuf.save_to_bufferv(format, options) {
+                    let b64 = encode_base64(&buf);
+                    return Some((format!("data:{mime};base64,{b64}"), mime.to_string()));
+                }
+            }
+            if let Ok(bytes) = std::fs::read(path) {
+                let b64 = encode_base64(&bytes);
+                return Some((format!("data:{mime};base64,{b64}"), mime.to_string()));
+            }
+        }
+
+        None
+    }
+
     pub fn insert_image_from_path(&self, path: &std::path::Path) -> bool {
         if self.plain_text_mode() || !Self::is_supported_image(path) {
             return false;
         }
-        let Ok(bytes) = std::fs::read(path) else {
+        let Some((data_uri, _)) = Self::prepare_image_data_uri(path) else {
             return false;
         };
-        let mime = match path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "png" => "image/png",
-            "jpg" | "jpeg" => "image/jpeg",
-            "gif" => "image/gif",
-            "svg" => "image/svg+xml",
-            "webp" => "image/webp",
-            _ => "image/png",
-        };
-        let b64 = encode_base64(&bytes);
-        let data_uri = format!("data:{mime};base64,{b64}");
         let js = format!("document.execCommand('insertImage', false, '{data_uri}');");
         if let Some(wv) = self.imp().web_view.borrow().as_ref() {
             wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
@@ -620,15 +680,19 @@ impl HtmlEditor {
 
         let editor_weak = self.downgrade();
         popover.connect_closed(move |p| {
-            if let Some(editor) = editor_weak.upgrade() {
-                let mut cur = editor.imp().active_image_popover.borrow_mut();
-                if let Some(active) = cur.as_ref() {
-                    if active == p {
-                        p.unparent();
-                        *cur = None;
+            let p_clone = p.clone();
+            let ed_weak = editor_weak.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(editor) = ed_weak.upgrade() {
+                    let mut cur = editor.imp().active_image_popover.borrow_mut();
+                    if let Some(active) = cur.as_ref() {
+                        if active == &p_clone {
+                            p_clone.unparent();
+                            *cur = None;
+                        }
                     }
                 }
-            }
+            });
         });
 
         popover.set_child(Some(&content));
@@ -1428,7 +1492,21 @@ impl HtmlEditor {
                 "                    e.preventDefault();",
                 "                    const reader = new FileReader();",
                 "                    reader.onload = function(evt) {{",
-                "                        document.execCommand('insertImage', false, evt.target.result);",
+                "                        const img = new Image();",
+                "                        img.onload = function() {{",
+                "                            if (img.width > 1920 || img.height > 1920) {{",
+                "                                const scale = 1920 / Math.max(img.width, img.height);",
+                "                                const cv = document.createElement('canvas');",
+                "                                cv.width = Math.round(img.width * scale);",
+                "                                cv.height = Math.round(img.height * scale);",
+                "                                const ctx = cv.getContext('2d');",
+                "                                ctx.drawImage(img, 0, 0, cv.width, cv.height);",
+                "                                document.execCommand('insertImage', false, cv.toDataURL('image/jpeg', 0.85));",
+                "                            }} else {{",
+                "                                document.execCommand('insertImage', false, evt.target.result);",
+                "                            }}",
+                "                        }};",
+                "                        img.src = evt.target.result;",
                 "                    }};",
                 "                    reader.readAsDataURL(file);",
                 "                    return;",
@@ -1698,21 +1776,12 @@ impl HtmlEditor {
                 "            const dropRange = currentDropRange || updateCaretToPoint(e.clientX, e.clientY);",
                 "            hideCaret();",
                 "            currentDropRange = null;",
-                "            for (let i = 0; i < files.length; i++) {{",
-                "                if (isImg(files[i])) {{",
-                "                    const reader = new FileReader();",
-                "                    reader.onload = function(evt) {{",
-                "                        if (dropRange) {{",
-                "                            try {{",
-                "                                const sel = window.getSelection();",
-                "                                sel.removeAllRanges();",
-                "                                sel.addRange(dropRange);",
-                "                            }} catch(err) {{}}",
-                "                        }}",
-                "                        document.execCommand('insertImage', false, evt.target.result);",
-                "                    }};",
-                "                    reader.readAsDataURL(files[i]);",
-                "                }}",
+                "            if (dropRange) {{",
+                "                try {{",
+                "                    const sel = window.getSelection();",
+                "                    sel.removeAllRanges();",
+                "                    sel.addRange(dropRange);",
+                "                }} catch(err) {{}}",
                 "            }}",
                 "        }}",
                 "    }}",
@@ -2189,7 +2258,6 @@ impl HtmlEditor {
             }
         ));
 
-        let web_view_for_image = web_view.clone();
         let editor_for_image = self.downgrade();
         btn_image.connect_clicked(move |_| {
             let Some(editor) = editor_for_image.upgrade() else {
@@ -2211,37 +2279,12 @@ impl HtmlEditor {
             filters.append(&filter);
             file_dialog.set_filters(Some(&filters));
 
-            let web_view = web_view_for_image.clone();
+            let editor_weak = editor_for_image.clone();
             file_dialog.open(parent.as_ref(), None::<&gio::Cancellable>, move |result| {
                 if let Ok(file) = result {
                     if let Some(path) = file.path() {
-                        if let Ok(bytes) = std::fs::read(&path) {
-                            let mime = match path
-                                .extension()
-                                .and_then(|ext| ext.to_str())
-                                .unwrap_or("")
-                                .to_ascii_lowercase()
-                                .as_str()
-                            {
-                                "png" => "image/png",
-                                "jpg" | "jpeg" => "image/jpeg",
-                                "gif" => "image/gif",
-                                "svg" => "image/svg+xml",
-                                "webp" => "image/webp",
-                                _ => "image/png",
-                            };
-                            let b64 = encode_base64(&bytes);
-                            let data_uri = format!("data:{mime};base64,{b64}");
-                            let js = format!(
-                                "document.execCommand('insertImage', false, '{data_uri}');"
-                            );
-                            web_view.evaluate_javascript(
-                                &js,
-                                None,
-                                None,
-                                None::<&gio::Cancellable>,
-                                |_| {},
-                            );
+                        if let Some(editor) = editor_weak.upgrade() {
+                            editor.insert_image_from_path(&path);
                         }
                     }
                 }
@@ -2438,6 +2481,25 @@ mod tests {
         assert_eq!(p.y, 280);
         assert_eq!(p.align, "center");
         assert_eq!(p.size, "medium");
+    }
+
+    #[test]
+    fn test_prepare_image_data_uri() {
+        let tmp = std::env::temp_dir().join("meridian_test_inline_prep.png");
+        let png_bytes = [
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00,
+            0x00, 0x90, 0x77, 0x53, 0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00, 0xc9, 0xfe, 0x92,
+            0xef, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+        ];
+        let _ = std::fs::write(&tmp, &png_bytes);
+        let res = HtmlEditor::prepare_image_data_uri(&tmp);
+        assert!(res.is_some());
+        let (data_uri, mime) = res.unwrap();
+        assert_eq!(mime, "image/png");
+        assert!(data_uri.starts_with("data:image/png;base64,"));
+        let _ = std::fs::remove_file(&tmp);
     }
 }
 
