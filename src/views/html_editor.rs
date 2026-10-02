@@ -22,8 +22,8 @@ mod imp {
     use super::*;
     use std::cell::{Cell, RefCell};
 
-    #[derive(Default)]
-    pub struct CallbackList(pub Vec<Box<dyn Fn(Vec<std::path::PathBuf>) + 'static>>);
+    #[derive(Default, Clone)]
+    pub struct CallbackList(pub Vec<std::rc::Rc<dyn Fn(Vec<std::path::PathBuf>) + 'static>>);
 
     impl std::fmt::Debug for CallbackList {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -31,8 +31,8 @@ mod imp {
         }
     }
 
-    #[derive(Default)]
-    pub struct DragMotionCallbackList(pub Vec<Box<dyn Fn(f64, f64) + 'static>>);
+    #[derive(Default, Clone)]
+    pub struct DragMotionCallbackList(pub Vec<std::rc::Rc<dyn Fn(f64, f64) + 'static>>);
 
     impl std::fmt::Debug for DragMotionCallbackList {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -40,8 +40,8 @@ mod imp {
         }
     }
 
-    #[derive(Default)]
-    pub struct DragLeaveCallbackList(pub Vec<Box<dyn Fn() + 'static>>);
+    #[derive(Default, Clone)]
+    pub struct DragLeaveCallbackList(pub Vec<std::rc::Rc<dyn Fn() + 'static>>);
 
     impl std::fmt::Debug for DragLeaveCallbackList {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -49,9 +49,9 @@ mod imp {
         }
     }
 
-    #[derive(Default)]
+    #[derive(Default, Clone)]
     pub struct ImageConvertCallbackList(
-        pub Vec<Box<dyn Fn(crate::services::draft_store_service::DraftAttachment) + 'static>>,
+        pub Vec<std::rc::Rc<dyn Fn(crate::services::draft_store_service::DraftAttachment) + 'static>>,
     );
 
     impl std::fmt::Debug for ImageConvertCallbackList {
@@ -138,19 +138,25 @@ impl HtmlEditor {
     where
         F: Fn(Vec<std::path::PathBuf>) + 'static,
     {
-        self.imp()
-            .files_dropped_callbacks
-            .borrow_mut()
-            .0
-            .push(Box::new(callback));
+        if let Ok(mut cbs) = self.imp().files_dropped_callbacks.try_borrow_mut() {
+            cbs.0.push(std::rc::Rc::new(callback));
+        }
     }
 
     pub fn dispatch_files_dropped(&self, paths: Vec<std::path::PathBuf>) {
         if paths.is_empty() {
             return;
         }
-        for cb in self.imp().files_dropped_callbacks.borrow().0.iter() {
-            cb(paths.clone());
+        let cbs: Vec<_> = if let Ok(guard) = self.imp().files_dropped_callbacks.try_borrow() {
+            guard.0.clone()
+        } else {
+            Vec::new()
+        };
+        for cb in cbs {
+            let p = paths.clone();
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                cb(p);
+            }));
         }
     }
 
@@ -158,22 +164,18 @@ impl HtmlEditor {
     where
         F: Fn(f64, f64) + 'static,
     {
-        self.imp()
-            .drag_motion_callbacks
-            .borrow_mut()
-            .0
-            .push(Box::new(callback));
+        if let Ok(mut cbs) = self.imp().drag_motion_callbacks.try_borrow_mut() {
+            cbs.0.push(std::rc::Rc::new(callback));
+        }
     }
 
     pub fn connect_drag_leave<F>(&self, callback: F)
     where
         F: Fn() + 'static,
     {
-        self.imp()
-            .drag_leave_callbacks
-            .borrow_mut()
-            .0
-            .push(Box::new(callback));
+        if let Ok(mut cbs) = self.imp().drag_leave_callbacks.try_borrow_mut() {
+            cbs.0.push(std::rc::Rc::new(callback));
+        }
     }
 
     pub fn is_supported_image(path: &std::path::Path) -> bool {
@@ -281,11 +283,9 @@ impl HtmlEditor {
     where
         F: Fn(crate::services::draft_store_service::DraftAttachment) + 'static,
     {
-        self.imp()
-            .image_convert_callbacks
-            .borrow_mut()
-            .0
-            .push(Box::new(callback));
+        if let Ok(mut cbs) = self.imp().image_convert_callbacks.try_borrow_mut() {
+            cbs.0.push(std::rc::Rc::new(callback));
+        }
     }
 
     pub(crate) fn handle_image_menu_script_message(&self, json: &str) {
@@ -762,8 +762,16 @@ impl HtmlEditor {
             embedded_content_base64: b64,
         };
 
-        for cb in self.imp().image_convert_callbacks.borrow().0.iter() {
-            cb(attachment.clone());
+        let cbs: Vec<_> = if let Ok(guard) = self.imp().image_convert_callbacks.try_borrow() {
+            guard.0.clone()
+        } else {
+            Vec::new()
+        };
+        for cb in cbs {
+            let att = attachment.clone();
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                cb(att);
+            }));
         }
     }
 
@@ -860,21 +868,42 @@ impl HtmlEditor {
 
     pub(crate) fn handle_drag_script_message(&self, msg: &str) {
         if msg == "enter" {
-            for cb in self.imp().drag_motion_callbacks.borrow().0.iter() {
-                cb(0.0, 100.0);
+            let cbs: Vec<_> = if let Ok(guard) = self.imp().drag_motion_callbacks.try_borrow() {
+                guard.0.clone()
+            } else {
+                Vec::new()
+            };
+            for cb in cbs {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                    cb(0.0, 100.0);
+                }));
             }
         } else if let Some(coords) = msg.strip_prefix("motion:") {
             let mut parts = coords.split(':');
             if let (Some(y_str), Some(h_str)) = (parts.next(), parts.next()) {
                 if let (Ok(y), Ok(h)) = (y_str.parse::<f64>(), h_str.parse::<f64>()) {
-                    for cb in self.imp().drag_motion_callbacks.borrow().0.iter() {
-                        cb(y, h);
+                    let cbs: Vec<_> = if let Ok(guard) = self.imp().drag_motion_callbacks.try_borrow() {
+                        guard.0.clone()
+                    } else {
+                        Vec::new()
+                    };
+                    for cb in cbs {
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                            cb(y, h);
+                        }));
                     }
                 }
             }
         } else if msg == "leave" || msg == "drop" || msg == "cancel" {
-            for cb in self.imp().drag_leave_callbacks.borrow().0.iter() {
-                cb();
+            let cbs: Vec<_> = if let Ok(guard) = self.imp().drag_leave_callbacks.try_borrow() {
+                guard.0.clone()
+            } else {
+                Vec::new()
+            };
+            for cb in cbs {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                    cb();
+                }));
             }
         }
     }
@@ -1851,52 +1880,35 @@ impl HtmlEditor {
             gdk::DragAction::COPY
         });
 
-        let editor_weak_for_motion = self.downgrade();
-        drop_target.connect_motion(move |_, _x, y| {
-            if let Some(editor) = editor_weak_for_motion.upgrade() {
-                let h = editor.height() as f64;
-                for cb in editor.imp().drag_motion_callbacks.borrow().0.iter() {
-                    cb(y, h);
-                }
-            }
-            gdk::DragAction::COPY
-        });
-
-        let editor_weak_for_leave = self.downgrade();
-        drop_target.connect_leave(move |_| {
-            if let Some(editor) = editor_weak_for_leave.upgrade() {
-                for cb in editor.imp().drag_leave_callbacks.borrow().0.iter() {
-                    cb();
-                }
-            }
-        });
-
         let editor_weak_for_drop = self.downgrade();
         drop_target.connect_drop(move |_, value, _, _| {
-            let Some(editor) = editor_weak_for_drop.upgrade() else {
-                return false;
-            };
-            let mut paths = Vec::new();
-            if let Ok(file_list) = value.get::<gdk::FileList>() {
-                for file in file_list.files() {
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let Some(editor) = editor_weak_for_drop.upgrade() else {
+                    return false;
+                };
+                let mut paths = Vec::new();
+                if let Ok(file_list) = value.get::<gdk::FileList>() {
+                    for file in file_list.files() {
+                        if let Some(path) = file.path() {
+                            if path.is_file() {
+                                paths.push(path);
+                            }
+                        }
+                    }
+                } else if let Ok(file) = value.get::<gio::File>() {
                     if let Some(path) = file.path() {
                         if path.is_file() {
                             paths.push(path);
                         }
                     }
                 }
-            } else if let Ok(file) = value.get::<gio::File>() {
-                if let Some(path) = file.path() {
-                    if path.is_file() {
-                        paths.push(path);
-                    }
+                if !paths.is_empty() {
+                    editor.dispatch_files_dropped(paths);
+                    return true;
                 }
-            }
-            if !paths.is_empty() {
-                editor.dispatch_files_dropped(paths);
-                return true;
-            }
-            false
+                false
+            }));
+            res.unwrap_or(false)
         });
         web_view.add_controller(drop_target);
 
