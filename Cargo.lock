@@ -1225,6 +1225,7 @@ version = "0.1.0"
 dependencies = [
  "async-channel",
  "chrono",
+ "gdk-pixbuf",
  "gdk4",
  "gettext-rs",
  "gio",

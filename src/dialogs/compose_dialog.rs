@@ -5797,8 +5797,16 @@ fn create_attachment_visual(attachment: &DraftAttachment, size: i32) -> gtk::Wid
         };
 
         if let Some(p) = valid_path {
-            let file = gio::File::for_path(&p);
-            if let Ok(texture) = gdk::Texture::from_file(&file) {
+            let scale_size = if size > 32 { 128 } else { 48 };
+            let texture_opt = gdk_pixbuf::Pixbuf::from_file_at_scale(&p, scale_size, scale_size, true)
+                .ok()
+                .map(|pixbuf| gdk::Texture::for_pixbuf(&pixbuf))
+                .or_else(|| {
+                    let file = gio::File::for_path(&p);
+                    gdk::Texture::from_file(&file).ok()
+                });
+
+            if let Some(texture) = texture_opt {
                 let img = gtk::Image::from_paintable(Some(&texture));
                 img.set_pixel_size(size);
                 if size > 32 {

@@ -16,6 +16,7 @@ adw = { package = "libadwaita", version = "0.7", features = ["v1_6"] }
 glib = { version = "0.20", features = ["v2_80"] }
 gio = { version = "0.20", features = ["v2_80"] }
 gdk = { package = "gdk4", version = "0.9" }
+gdk-pixbuf = "0.20"
 webkit6 = "0.4"
 javascriptcore6 = "0.4"
 pango = "0.20"

@@ -17,6 +17,7 @@ adw.workspace = true
 glib.workspace = true
 gio.workspace = true
 gdk.workspace = true
+gdk-pixbuf.workspace = true
 pango.workspace = true
 zbus.workspace = true
 async-channel.workspace = true
