@@ -270,7 +270,99 @@ impl HtmlEditor {
         let Some((data_uri, _)) = Self::prepare_image_data_uri(path) else {
             return false;
         };
-        let js = format!("document.execCommand('insertImage', false, '{data_uri}');");
+        let js = format!(
+            r#"(function() {{
+    const uri = '{data_uri}';
+    let sel = window.getSelection();
+    const editor = document.body;
+    const sig = document.getElementById('_evolution_signature_') || document.querySelector('.evolution-signature');
+
+    function isInsideOrAfterSig(node, offset) {{
+        if (!sig || !node) return false;
+        if (sig.contains(node)) return true;
+        try {{
+            const cmp = sig.compareDocumentPosition(node);
+            if (cmp & Node.DOCUMENT_POSITION_PRECEDING) return true;
+            if (node === editor) {{
+                const sigIdx = Array.prototype.indexOf.call(editor.childNodes, sig);
+                if (sigIdx !== -1 && offset > sigIdx) return true;
+            }}
+        }} catch(e) {{}}
+        return false;
+    }}
+
+    let validSel = sel && sel.rangeCount > 0 && editor.contains(sel.anchorNode);
+    if (validSel && sig && isInsideOrAfterSig(sel.anchorNode, sel.anchorOffset)) {{
+        validSel = false;
+    }}
+
+    if (!validSel) {{
+        editor.focus();
+        const range = document.createRange();
+        if (sig) {{
+            let prev = sig.previousElementSibling;
+            if (!prev) {{
+                prev = document.createElement('p');
+                prev.innerHTML = '<br>';
+                editor.insertBefore(prev, sig);
+            }}
+            const br = prev.querySelector('br');
+            if (br && prev.childNodes.length === 1) {{
+                range.selectNode(br);
+            }} else {{
+                range.selectNodeContents(prev);
+                range.collapse(false);
+            }}
+        }} else {{
+            range.selectNodeContents(editor);
+            range.collapse(false);
+        }}
+        sel = window.getSelection();
+        if (sel) {{
+            sel.removeAllRanges();
+            sel.addRange(range);
+        }}
+    }}
+    let success = false;
+    try {{
+        success = document.execCommand('insertImage', false, uri);
+    }} catch(e) {{}}
+    if (!success) {{
+        try {{
+            const img = document.createElement('img');
+            img.src = uri;
+            img.style.maxWidth = '100%';
+            img.style.height = 'auto';
+            img.setAttribute('draggable', 'true');
+            const range = (sel && sel.rangeCount > 0) ? sel.getRangeAt(0) : null;
+            if (range) {{
+                range.deleteContents();
+                range.insertNode(img);
+                range.setStartAfter(img);
+                range.collapse(true);
+                sel.removeAllRanges();
+                sel.addRange(range);
+            }} else if (sig) {{
+                editor.insertBefore(img, sig);
+            }} else {{
+                editor.appendChild(img);
+            }}
+        }} catch(e) {{}}
+    }}
+    try {{
+        const imgs = editor.querySelectorAll('img');
+        for (let i = 0; i < imgs.length; i++) {{
+            imgs[i].setAttribute('draggable', 'true');
+            if (!imgs[i].id) {{
+                imgs[i].id = '__meridian_img_' + Date.now() + '_' + Math.floor(Math.random() * 10000);
+            }}
+            if (!imgs[i].getAttribute('data-meridian-id')) {{
+                imgs[i].setAttribute('data-meridian-id', imgs[i].id);
+            }}
+        }}
+    }} catch(e) {{}}
+}})();"#
+        );
         if let Some(wv) = self.imp().web_view.borrow().as_ref() {
             wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
             true
@@ -289,7 +381,10 @@ impl HtmlEditor {
     }
 
     pub(crate) fn handle_image_menu_script_message(&self, json: &str) {
-        let Ok(payload) = serde_json::from_str::<ImageMenuPayload>(json) else {
+        let unquoted: String = serde_json::from_str(json).unwrap_or_else(|_| json.to_string());
+        let Ok(payload) = serde_json::from_str::<ImageMenuPayload>(&unquoted)
+            .or_else(|_| serde_json::from_str::<ImageMenuPayload>(json))
+        else {
             return;
         };
         self.present_image_context_popover(&payload);
@@ -378,7 +473,7 @@ impl HtmlEditor {
             b_c.remove_css_class("suggested-action");
             b_r.remove_css_class("suggested-action");
             b_w.remove_css_class("suggested-action");
-            let js = format!("(function(){{ const el = document.getElementById('{id}'); if (el) {{ el.style.display = 'block'; el.style.marginLeft = '0'; el.style.marginRight = 'auto'; el.style.float = 'none'; el.removeAttribute('align'); }} }})()");
+            let js = format!("(function(){{ const el = document.getElementById('{id}') || document.querySelector('img[data-meridian-id=\"{id}\"]'); if (el) {{ el.style.display = 'block'; el.style.marginLeft = '0'; el.style.marginRight = 'auto'; el.style.float = 'none'; el.removeAttribute('align'); }} }})()");
             wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
         });
 
@@ -395,7 +490,7 @@ impl HtmlEditor {
             b_c.add_css_class("suggested-action");
             b_r.remove_css_class("suggested-action");
             b_w.remove_css_class("suggested-action");
-            let js = format!("(function(){{ const el = document.getElementById('{id}'); if (el) {{ el.style.display = 'block'; el.style.marginLeft = 'auto'; el.style.marginRight = 'auto'; el.style.float = 'none'; el.removeAttribute('align'); }} }})()");
+            let js = format!("(function(){{ const el = document.getElementById('{id}') || document.querySelector('img[data-meridian-id=\"{id}\"]'); if (el) {{ el.style.display = 'block'; el.style.marginLeft = 'auto'; el.style.marginRight = 'auto'; el.style.float = 'none'; el.removeAttribute('align'); }} }})()");
             wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
         });
 
@@ -412,7 +507,7 @@ impl HtmlEditor {
             b_c.remove_css_class("suggested-action");
             b_r.remove_css_class("suggested-action");
             b_w.remove_css_class("suggested-action");
-            let js = format!("(function(){{ const el = document.getElementById('{id}'); if (el) {{ el.style.display = 'block'; el.style.marginLeft = 'auto'; el.style.marginRight = '0'; el.style.float = 'none'; el.removeAttribute('align'); }} }})()");
+            let js = format!("(function(){{ const el = document.getElementById('{id}') || document.querySelector('img[data-meridian-id=\"{id}\"]'); if (el) {{ el.style.display = 'block'; el.style.marginLeft = 'auto'; el.style.marginRight = '0'; el.style.float = 'none'; el.removeAttribute('align'); }} }})()");
             wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
         });
 
@@ -429,7 +524,7 @@ impl HtmlEditor {
             b_c.remove_css_class("suggested-action");
             b_r.remove_css_class("suggested-action");
             b_w.add_css_class("suggested-action");
-            let js = format!("(function(){{ const el = document.getElementById('{id}'); if (el) {{ el.style.display = 'inline'; el.style.float = 'left'; el.style.margin = '4px 14px 6px 0'; el.removeAttribute('align'); }} }})()");
+            let js = format!("(function(){{ const el = document.getElementById('{id}') || document.querySelector('img[data-meridian-id=\"{id}\"]'); if (el) {{ el.style.display = 'inline'; el.style.float = 'left'; el.style.margin = '4px 14px 6px 0'; el.removeAttribute('align'); }} }})()");
             wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
         });
 
@@ -487,7 +582,7 @@ impl HtmlEditor {
             s50.remove_css_class("suggested-action");
             s100.remove_css_class("suggested-action");
             sorig.remove_css_class("suggested-action");
-            let js = format!("(function(){{ const el = document.getElementById('{id}'); if (el) {{ el.style.width = '25%'; el.style.maxWidth = '25%'; el.style.height = 'auto'; }} }})()");
+            let js = format!("(function(){{ const el = document.getElementById('{id}') || document.querySelector('img[data-meridian-id=\"{id}\"]'); if (el) {{ el.style.width = '25%'; el.style.maxWidth = '25%'; el.style.height = 'auto'; }} }})()");
             wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
         });
 
@@ -504,7 +599,7 @@ impl HtmlEditor {
             s50.add_css_class("suggested-action");
             s100.remove_css_class("suggested-action");
             sorig.remove_css_class("suggested-action");
-            let js = format!("(function(){{ const el = document.getElementById('{id}'); if (el) {{ el.style.width = '50%'; el.style.maxWidth = '50%'; el.style.height = 'auto'; }} }})()");
+            let js = format!("(function(){{ const el = document.getElementById('{id}') || document.querySelector('img[data-meridian-id=\"{id}\"]'); if (el) {{ el.style.width = '50%'; el.style.maxWidth = '50%'; el.style.height = 'auto'; }} }})()");
             wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
         });
 
@@ -521,7 +616,7 @@ impl HtmlEditor {
             s50.remove_css_class("suggested-action");
             s100.add_css_class("suggested-action");
             sorig.remove_css_class("suggested-action");
-            let js = format!("(function(){{ const el = document.getElementById('{id}'); if (el) {{ el.style.width = '100%'; el.style.maxWidth = '100%'; el.style.height = 'auto'; }} }})()");
+            let js = format!("(function(){{ const el = document.getElementById('{id}') || document.querySelector('img[data-meridian-id=\"{id}\"]'); if (el) {{ el.style.width = '100%'; el.style.maxWidth = '100%'; el.style.height = 'auto'; }} }})()");
             wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
         });
 
@@ -538,7 +633,7 @@ impl HtmlEditor {
             s50.remove_css_class("suggested-action");
             s100.remove_css_class("suggested-action");
             sorig.add_css_class("suggested-action");
-            let js = format!("(function(){{ const el = document.getElementById('{id}'); if (el) {{ el.style.width = 'auto'; el.style.maxWidth = '100%'; el.style.height = 'auto'; }} }})()");
+            let js = format!("(function(){{ const el = document.getElementById('{id}') || document.querySelector('img[data-meridian-id=\"{id}\"]'); if (el) {{ el.style.width = 'auto'; el.style.maxWidth = '100%'; el.style.height = 'auto'; }} }})()");
             wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
         });
 
@@ -706,13 +801,13 @@ impl HtmlEditor {
         };
         let js = if keep_inline {
             format!(
-                "(function(){{ const el = document.getElementById('{}'); if (!el) return null; return JSON.stringify({{ src: el.src, alt: el.getAttribute('alt') || el.getAttribute('title') || '' }}); }})()",
-                img_id
+                "(function(){{ const el = document.getElementById('{id}') || document.querySelector('img[data-meridian-id=\"{id}\"]'); if (!el) return null; return JSON.stringify({{ src: el.src, alt: el.getAttribute('alt') || el.getAttribute('title') || '' }}); }})()",
+                id = img_id
             )
         } else {
             format!(
-                "(function(){{ const el = document.getElementById('{}'); if (!el) return null; const data = {{ src: el.src, alt: el.getAttribute('alt') || el.getAttribute('title') || '' }}; el.remove(); return JSON.stringify(data); }})()",
-                img_id
+                "(function(){{ const el = document.getElementById('{id}') || document.querySelector('img[data-meridian-id=\"{id}\"]'); if (!el) return null; const data = {{ src: el.src, alt: el.getAttribute('alt') || el.getAttribute('title') || '' }}; const p = el.parentNode; el.remove(); if (p && p !== document.body && p.childNodes.length === 0) {{ p.remove(); }} return JSON.stringify(data); }})()",
+                id = img_id
             )
         };
 
@@ -724,16 +819,10 @@ impl HtmlEditor {
             None::<&gio::Cancellable>,
             move |result| {
                 if let Ok(js_val) = result {
-                    if let Some(json_str) = js_val.to_json(0) {
+                    let s = js_val.to_str();
+                    if s != "null" && s != "undefined" && !s.is_empty() {
                         if let Some(editor) = editor_weak.upgrade() {
-                            editor.process_converted_image_json(&json_str);
-                        }
-                    } else {
-                        let s = js_val.to_str();
-                        if s != "null" && s != "undefined" && !s.is_empty() {
-                            if let Some(editor) = editor_weak.upgrade() {
-                                editor.process_converted_image_json(&s);
-                            }
+                            editor.process_converted_image_json(&s);
                         }
                     }
                 }
@@ -742,7 +831,10 @@ impl HtmlEditor {
     }
 
     fn process_converted_image_json(&self, json_str: &str) {
-        let Ok(data) = serde_json::from_str::<ConvertedImageData>(json_str) else {
+        let parsed_str: String = serde_json::from_str(json_str).unwrap_or_else(|_| json_str.to_string());
+        let Ok(data) = serde_json::from_str::<ConvertedImageData>(&parsed_str)
+            .or_else(|_| serde_json::from_str::<ConvertedImageData>(json_str))
+        else {
             return;
         };
         let Some((bytes, mime, filename)) = parse_image_data_uri_or_path(&data.src, &data.alt) else {
@@ -781,8 +873,8 @@ impl HtmlEditor {
         };
         let editor_weak = self.downgrade();
         let js = format!(
-            "(function(){{ const el = document.getElementById('{}'); return el ? el.src : null; }})()",
-            img_id
+            "(function(){{ const el = document.getElementById('{id}') || document.querySelector('img[data-meridian-id=\"{id}\"]'); return el ? el.src : null; }})()",
+            id = img_id
         );
         wv.evaluate_javascript(
             &js,
@@ -811,8 +903,8 @@ impl HtmlEditor {
         };
         let parent = self.root().and_downcast::<gtk::Window>();
         let js = format!(
-            "(function(){{ const el = document.getElementById('{}'); if (!el) return null; return JSON.stringify({{ src: el.src, alt: el.getAttribute('alt') || el.getAttribute('title') || '' }}); }})()",
-            img_id
+            "(function(){{ const el = document.getElementById('{id}') || document.querySelector('img[data-meridian-id=\"{id}\"]'); if (!el) return null; return JSON.stringify({{ src: el.src, alt: el.getAttribute('alt') || el.getAttribute('title') || '' }}); }})()",
+            id = img_id
         );
         wv.evaluate_javascript(
             &js,
@@ -822,21 +914,25 @@ impl HtmlEditor {
             move |result| {
                 if let Ok(js_val) = result {
                     let s = js_val.to_str();
-                    if let Ok(data) = serde_json::from_str::<ConvertedImageData>(&s) {
-                        if let Some((bytes, _, filename)) = parse_image_data_uri_or_path(&data.src, &data.alt) {
-                            let file_dialog = gtk::FileDialog::builder()
-                                .title(&gettext("Bild speichern unter…"))
-                                .initial_name(&filename)
-                                .modal(true)
-                                .build();
-                            file_dialog.save(parent.as_ref(), None::<&gio::Cancellable>, move |res| {
-                                if let Ok(file) = res {
-                                    if let Some(path) = file.path() {
-                                        let _ = std::fs::write(&path, &bytes);
-                                    }
+                    let parsed_str: String = serde_json::from_str::<String>(&s).unwrap_or_else(|_| s.to_string());
+                    let Ok(data) = serde_json::from_str::<ConvertedImageData>(&parsed_str)
+                        .or_else(|_| serde_json::from_str::<ConvertedImageData>(&s))
+                    else {
+                        return;
+                    };
+                    if let Some((bytes, _, filename)) = parse_image_data_uri_or_path(&data.src, &data.alt) {
+                        let file_dialog = gtk::FileDialog::builder()
+                            .title(&gettext("Bild speichern unter…"))
+                            .initial_name(&filename)
+                            .modal(true)
+                            .build();
+                        file_dialog.save(parent.as_ref(), None::<&gio::Cancellable>, move |res| {
+                            if let Ok(file) = res {
+                                if let Some(path) = file.path() {
+                                    let _ = std::fs::write(&path, &bytes);
                                 }
-                            });
-                        }
+                            }
+                        });
                     }
                 }
             },
@@ -848,8 +944,8 @@ impl HtmlEditor {
             return;
         };
         let js = format!(
-            "(function(){{ const el = document.getElementById('{}'); if (el) el.remove(); }})()",
-            img_id
+            "(function(){{ const el = document.getElementById('{id}') || document.querySelector('img[data-meridian-id=\"{id}\"]'); if (el) {{ const p = el.parentNode; el.remove(); if (p && p !== document.body && p.childNodes.length === 0) {{ p.remove(); }} }} }})()",
+            id = img_id
         );
         wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
     }
@@ -857,7 +953,7 @@ impl HtmlEditor {
     pub fn cancel_drag_session(&self) {
         if let Some(wv) = self.imp().web_view.borrow().as_ref() {
             wv.evaluate_javascript(
-                "hideCaret(); dragCounter = 0; currentDropRange = null;",
+                "hideCaret(); dragCounter = 0; currentDropRange = null; currentDropInfo = null; isInternalDrag = false; draggedElement = null;",
                 None,
                 None,
                 None::<&gio::Cancellable>,
@@ -1492,7 +1588,8 @@ impl HtmlEditor {
             concat!(
                 "<!DOCTYPE html><html><head><style>",
                 "html, body {{ font-family: {}; font-size: {}px; line-height: 1.5; color: #222; margin: 12px; background-color: transparent; }}",
-                "img {{ max-width: 100%; height: auto; }}",
+                "img {{ max-width: 100%; height: auto; cursor: grab; -webkit-user-drag: element; }}",
+                "img:active {{ cursor: grabbing; }}",
                 "a {{ color: #1a73e8; text-decoration: underline; cursor: pointer; }}",
                 "@media (prefers-color-scheme: dark) {{ html, body {{ color: #eee; background-color: transparent; }} a {{ color: #78aeed; }} }}",
                 "</style>",
@@ -1606,13 +1703,28 @@ impl HtmlEditor {
                 "}});",
                 "window.__plainTextMode = false;",
                 "document.addEventListener('contextmenu', function(e) {{",
-                "    const img = e.target.closest('img');",
-                "    if (img && !window.__plainTextMode) {{",
-                "        e.preventDefault();",
-                "        e.stopPropagation();",
-                "        if (!img.id) {{",
-                "            img.id = '__meridian_img_' + Date.now() + '_' + Math.floor(Math.random() * 10000);",
+                "    try {{",
+                "        const target = e.target;",
+                "        let img = null;",
+                "        if (target) {{",
+                "            if (target.nodeName === 'IMG') {{",
+                "                img = target;",
+                "            }} else if (target.closest) {{",
+                "                img = target.closest('img');",
+                "            }}",
+                "            if (!img && target.querySelector) {{",
+                "                img = target.querySelector('img');",
+                "            }}",
                 "        }}",
+                "        if (img && !window.__plainTextMode) {{",
+                "            e.preventDefault();",
+                "            e.stopPropagation();",
+                "            if (!img.id) {{",
+                "                img.id = '__meridian_img_' + Date.now() + '_' + Math.floor(Math.random() * 10000);",
+                "            }}",
+                "            if (!img.getAttribute('data-meridian-id')) {{",
+                "                img.setAttribute('data-meridian-id', img.id);",
+                "            }}",
                 "        const rect = img.getBoundingClientRect();",
                 "        let align = 'inline';",
                 "        if (img.style.display === 'block') {{",
@@ -1641,8 +1753,8 @@ impl HtmlEditor {
                 "        else if (w === '100%') size = 'large';",
                 "        const payload = JSON.stringify({{",
                 "            id: img.id,",
-                "            x: Math.round(e.clientX),",
-                "            y: Math.round(e.clientY),",
+                "            x: Math.max(0, Math.round(e.clientX)),",
+                "            y: Math.max(0, Math.round(e.clientY)),",
                 "            img_x: Math.round(rect.left),",
                 "            img_y: Math.round(rect.top),",
                 "            img_w: Math.round(rect.width),",
@@ -1655,28 +1767,72 @@ impl HtmlEditor {
                 "        }} catch(err) {{}}",
                 "        return false;",
                 "    }}",
+                "    }} catch(err) {{}}",
                 "}});",
                 "let lastDragNotify = 0;",
+                "let isInternalDrag = false;",
+                "let draggedElement = null;",
+                "let currentDropInfo = null;",
+                "document.addEventListener('dragstart', function(e) {{",
+                "    const img = (e.target && e.target.nodeName === 'IMG') ? e.target : (e.target.querySelector ? e.target.querySelector('img') : (e.target.closest ? e.target.closest('img') : null));",
+                "    if (img) {{",
+                "        isInternalDrag = true;",
+                "        let block = img.parentElement;",
+                "        if (!block || block === document.body || (block.childNodes.length > 1 && block.textContent.trim() !== '')) {{",
+                "            const wrapper = document.createElement('p');",
+                "            wrapper.style.margin = '4px 0';",
+                "            img.parentNode.insertBefore(wrapper, img);",
+                "            wrapper.appendChild(img);",
+                "            block = wrapper;",
+                "        }}",
+                "        draggedElement = block;",
+                "        if (!img.id) {{",
+                "            img.id = '__meridian_img_' + Date.now() + '_' + Math.floor(Math.random() * 10000);",
+                "        }}",
+                "        if (!img.getAttribute('data-meridian-id')) {{",
+                "            img.setAttribute('data-meridian-id', img.id);",
+                "        }}",
+                "        if (e.dataTransfer) {{",
+                "            e.dataTransfer.effectAllowed = 'move';",
+                "            try {{",
+                "                e.dataTransfer.setData('text/plain', '');",
+                "            }} catch(err) {{}}",
+                "            try {{",
+                "                const rect = img.getBoundingClientRect();",
+                "                const clickX = Math.max(0, Math.min(Math.round(rect.width), Math.round(e.clientX - rect.left)));",
+                "                const clickY = Math.max(0, Math.min(Math.round(rect.height), Math.round(e.clientY - rect.top)));",
+                "                if (e.dataTransfer.setDragImage) {{",
+                "                    e.dataTransfer.setDragImage(img, -clickX, -clickY);",
+                "                }}",
+                "            }} catch(err) {{}}",
+                "        }}",
+                "    }} else {{",
+                "        isInternalDrag = false;",
+                "        draggedElement = null;",
+                "    }}",
+                "}});",
+                "document.addEventListener('dragend', function(e) {{",
+                "    isInternalDrag = false;",
+                "    draggedElement = null;",
+                "    currentDropInfo = null;",
+                "    hideCaret();",
+                "}});",
                 "function checkHasFiles(e) {{",
+                "    if (isInternalDrag) return false;",
                 "    if (!e.dataTransfer || !e.dataTransfer.types) return false;",
                 "    for (let i = 0; i < e.dataTransfer.types.length; i++) {{",
                 "        const t = e.dataTransfer.types[i];",
-                "        if (t === 'Files' || t === 'application/x-moz-file' || t === 'text/uri-list') {{",
+                "        if (t === 'Files' || t === 'application/x-moz-file') {{",
                 "            return true;",
                 "        }}",
                 "    }}",
                 "    return false;",
                 "}};",
                 "let currentDropRange = null;",
+                "let currentDropInfo = null;",
                 "let dropIndicator = null;",
                 "function getDropIndicator() {{",
                 "    if (!dropIndicator || !dropIndicator.parentNode) {{",
-                "        if (!document.getElementById('__meridian_caret_style')) {{",
-                "            const style = document.createElement('style');",
-                "            style.id = '__meridian_caret_style';",
-                "            style.textContent = '@keyframes meridianCaretBlink {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0; }} }}';",
-                "            document.head.appendChild(style);",
-                "        }}",
                 "        dropIndicator = document.createElement('div');",
                 "        dropIndicator.id = '__meridian_drop_caret';",
                 "        dropIndicator.style.position = 'fixed';",
@@ -1685,8 +1841,8 @@ impl HtmlEditor {
                 "        dropIndicator.style.borderRadius = '1px';",
                 "        dropIndicator.style.pointerEvents = 'none';",
                 "        dropIndicator.style.zIndex = '2147483647';",
-                "        dropIndicator.style.boxShadow = '0 0 5px rgba(53, 132, 228, 0.85)';",
-                "        dropIndicator.style.animation = 'meridianCaretBlink 1s step-end infinite';",
+                "        dropIndicator.style.boxShadow = '0 0 3px rgba(53, 132, 228, 0.8)';",
+                "        dropIndicator.style.animation = 'none';",
                 "        dropIndicator.style.display = 'none';",
                 "        document.body.appendChild(dropIndicator);",
                 "    }}",
@@ -1721,10 +1877,91 @@ impl HtmlEditor {
                 "    }} catch(e) {{}}",
                 "    return null;",
                 "}};",
+                "function getSignatureElement() {{",
+                "    return document.getElementById('_evolution_signature_') || document.querySelector('.evolution-signature');",
+                "}};",
+                "function isBlockEmpty(el) {{",
+                "    if (!el) return true;",
+                "    if (el.nodeType === 3) {{",
+                "        return el.textContent.trim() === '';",
+                "    }}",
+                "    const text = el.textContent ? el.textContent.trim() : '';",
+                "    if (text === '') {{",
+                "        const imgs = el.querySelectorAll ? el.querySelectorAll('img') : [];",
+                "        return imgs.length === 0;",
+                "    }}",
+                "    return false;",
+                "}};",
+                "function getContentBlocks(excludeEl) {{",
+                "    const sig = getSignatureElement();",
+                "    const blocks = [];",
+                "    for (let i = 0; i < document.body.children.length; i++) {{",
+                "        const child = document.body.children[i];",
+                "        if (child === sig || child.id === '__meridian_drop_caret' || child.tagName === 'STYLE' || child.tagName === 'SCRIPT') continue;",
+                "        if (excludeEl && (child === excludeEl || child.contains(excludeEl))) continue;",
+                "        blocks.push(child);",
+                "    }}",
+                "    return blocks;",
+                "}};",
+                "function constrainRangeBeforeSignature(range) {{",
+                "    if (!range) return null;",
+                "    const sig = getSignatureElement();",
+                "    if (!sig) return range;",
+                "    let node = range.startContainer;",
+                "    let isAfterOrInside = sig.contains(node);",
+                "    if (!isAfterOrInside) {{",
+                "        try {{",
+                "            const cmp = sig.compareDocumentPosition(node);",
+                "            if (cmp & Node.DOCUMENT_POSITION_PRECEDING) {{",
+                "                isAfterOrInside = true;",
+                "            }} else if (node === document.body) {{",
+                "                const sigIdx = Array.prototype.indexOf.call(document.body.childNodes, sig);",
+                "                if (sigIdx !== -1 && range.startOffset > sigIdx) {{",
+                "                    isAfterOrInside = true;",
+                "                }}",
+                "            }}",
+                "        }} catch(e) {{}}",
+                "    }}",
+                "    if (isAfterOrInside) {{",
+                "        let prev = sig.previousElementSibling;",
+                "        if (!prev) {{",
+                "            prev = document.createElement('p');",
+                "            prev.innerHTML = '<br>';",
+                "            document.body.insertBefore(prev, sig);",
+                "        }}",
+                "        const safeRange = document.createRange();",
+                "        const br = prev.querySelector('br');",
+                "        if (br && prev.childNodes.length === 1) {{",
+                "            safeRange.selectNode(br);",
+                "        }} else {{",
+                "            safeRange.selectNodeContents(prev);",
+                "            safeRange.collapse(false);",
+                "        }}",
+                "        return safeRange;",
+                "    }}",
+                "    return range;",
+                "}};",
                 "function updateCaretToPoint(x, y) {{",
                 "    if (window.__plainTextMode) return null;",
-                "    let range = null;",
                 "    try {{",
+                "        if (isInternalDrag && draggedElement) {{",
+                "            const blocks = getContentBlocks(draggedElement);",
+                "            const firstBlock = blocks.length > 0 ? blocks[0] : null;",
+                "            const fbRect = firstBlock ? firstBlock.getBoundingClientRect() : null;",
+                "            if (firstBlock && y <= fbRect.top + fbRect.height / 2) {{",
+                "                currentDropInfo = {{ isTop: true, block: firstBlock }};",
+                "                currentDropRange = null;",
+                "                const el = getDropIndicator();",
+                "                el.style.left = Math.round(fbRect.left) + 'px';",
+                "                el.style.top = Math.round(fbRect.top) + 'px';",
+                "                el.style.width = '2px';",
+                "                el.style.height = Math.max(16, Math.round(fbRect.height || 20)) + 'px';",
+                "                el.style.display = 'block';",
+                "                return currentDropInfo;",
+                "            }}",
+                "            currentDropInfo = null;",
+                "        }}",
+                "        let range = null;",
                 "        if (document.caretRangeFromPoint) {{",
                 "            range = document.caretRangeFromPoint(x, y);",
                 "        }} else if (document.caretPositionFromPoint) {{",
@@ -1736,11 +1973,17 @@ impl HtmlEditor {
                 "            }}",
                 "        }}",
                 "        if (range) {{",
+                "            range = constrainRangeBeforeSignature(range);",
+                "            if (draggedElement && draggedElement.contains(range.startContainer)) {{",
+                "                hideCaret();",
+                "                return null;",
+                "            }}",
                 "            const rect = getCaretRect(range);",
                 "            if (rect && rect.height > 0) {{",
                 "                const el = getDropIndicator();",
                 "                el.style.left = Math.round(rect.left) + 'px';",
                 "                el.style.top = Math.round(rect.top) + 'px';",
+                "                el.style.width = '2px';",
                 "                el.style.height = Math.max(16, Math.round(rect.height)) + 'px';",
                 "                el.style.display = 'block';",
                 "                currentDropRange = range.cloneRange();",
@@ -1753,6 +1996,10 @@ impl HtmlEditor {
                 "}};",
                 "let dragCounter = 0;",
                 "document.addEventListener('dragenter', function(e) {{",
+                "    if (isInternalDrag) {{",
+                "        updateCaretToPoint(e.clientX, e.clientY);",
+                "        return;",
+                "    }}",
                 "    if (checkHasFiles(e)) {{",
                 "        dragCounter++;",
                 "        updateCaretToPoint(e.clientX, e.clientY);",
@@ -1760,6 +2007,12 @@ impl HtmlEditor {
                 "    }}",
                 "}});",
                 "document.addEventListener('dragover', function(e) {{",
+                "    if (isInternalDrag) {{",
+                "        e.preventDefault();",
+                "        if (e.dataTransfer) {{ e.dataTransfer.dropEffect = 'move'; }}",
+                "        updateCaretToPoint(e.clientX, e.clientY);",
+                "        return;",
+                "    }}",
                 "    if (!checkHasFiles(e)) return;",
                 "    e.preventDefault();",
                 "    if (e.dataTransfer) {{ e.dataTransfer.dropEffect = 'copy'; }}",
@@ -1773,6 +2026,7 @@ impl HtmlEditor {
                 "    }}",
                 "}});",
                 "document.addEventListener('dragleave', function(e) {{",
+                "    if (isInternalDrag) return;",
                 "    dragCounter--;",
                 "    if (dragCounter <= 0 || !e.relatedTarget || e.clientY <= 0 || e.clientX <= 0 || e.clientX >= window.innerWidth) {{",
                 "        dragCounter = 0;",
@@ -1784,41 +2038,91 @@ impl HtmlEditor {
                 "document.addEventListener('drop', function(e) {{",
                 "    dragCounter = 0;",
                 "    hideCaret();",
-                "    try {{ window.webkit.messageHandlers.meridianDrag.postMessage('drop'); }} catch(err) {{}}",
-                "    if (!e.dataTransfer) return;",
-                "    const files = e.dataTransfer.files;",
-                "    if (files && files.length > 0) {{",
-                "        function isImg(f) {{",
-                "            if (f.type && f.type.indexOf('image') !== -1) return true;",
-                "            if (f.name && /\\.(png|jpe?g|gif|svg|webp|bmp|ico)$/i.test(f.name)) return true;",
-                "            return false;",
+                "    if (isInternalDrag && draggedElement) {{",
+                "        e.preventDefault();",
+                "        const info = currentDropInfo;",
+                "        currentDropInfo = null;",
+                "        let dropRange = currentDropRange;",
+                "        currentDropRange = null;",
+                "        const oldParent = draggedElement.parentElement;",
+                "        draggedElement.remove();",
+                "        if (oldParent && oldParent !== document.body && oldParent.childNodes.length === 0) {{",
+                "            oldParent.remove();",
                 "        }}",
-                "        let hasImage = false;",
-                "        for (let i = 0; i < files.length; i++) {{",
-                "            if (isImg(files[i])) {{",
-                "                hasImage = true;",
-                "                break;",
+                "        const sig = getSignatureElement();",
+                "        if (info && info.isTop) {{",
+                "            while (document.body.firstChild && isBlockEmpty(document.body.firstChild) && document.body.firstChild !== sig) {{",
+                "                document.body.firstChild.remove();",
                 "            }}",
-                "        }}",
-                "        if (hasImage && !window.__plainTextMode) {{",
-                "            e.preventDefault();",
-                "            const dropRange = currentDropRange || updateCaretToPoint(e.clientX, e.clientY);",
-                "            hideCaret();",
-                "            currentDropRange = null;",
-                "            if (dropRange) {{",
-                "                try {{",
-                "                    const sel = window.getSelection();",
-                "                    sel.removeAllRanges();",
-                "                    sel.addRange(dropRange);",
-                "                }} catch(err) {{}}",
+                "            let topElem = draggedElement;",
+                "            if (!topElem || topElem.nodeName !== 'P') {{",
+                "                const newP = document.createElement('p');",
+                "                newP.style.margin = '4px 0';",
+                "                newP.appendChild(draggedElement);",
+                "                topElem = newP;",
                 "            }}",
+                "            if (document.body.firstChild) {{",
+                "                document.body.insertBefore(topElem, document.body.firstChild);",
+                "            }} else if (sig) {{",
+                "                document.body.insertBefore(topElem, sig);",
+                "            }} else {{",
+                "                document.body.appendChild(topElem);",
+                "            }}",
+                "        }} else if (dropRange) {{",
+                "            dropRange = constrainRangeBeforeSignature(dropRange);",
+                "            dropRange.insertNode(draggedElement);",
+                "        }} else if (sig) {{",
+                "            let fallbackElem = draggedElement;",
+                "            if (!fallbackElem || fallbackElem.nodeName !== 'P') {{",
+                "                const newP = document.createElement('p');",
+                "                newP.style.margin = '4px 0';",
+                "                newP.appendChild(draggedElement);",
+                "                fallbackElem = newP;",
+                "            }}",
+                "            document.body.insertBefore(fallbackElem, sig);",
+                "        }} else {{",
+                "            let fallbackElem = draggedElement;",
+                "            if (!fallbackElem || fallbackElem.nodeName !== 'P') {{",
+                "                const newP = document.createElement('p');",
+                "                newP.style.margin = '4px 0';",
+                "                newP.appendChild(draggedElement);",
+                "                fallbackElem = newP;",
+                "            }}",
+                "            document.body.appendChild(fallbackElem);",
                 "        }}",
+                "        const sel = window.getSelection();",
+                "        if (sel) {{",
+                "            const afterRange = document.createRange();",
+                "            afterRange.setStartAfter(draggedElement);",
+                "            afterRange.collapse(true);",
+                "            sel.removeAllRanges();",
+                "            sel.addRange(afterRange);",
+                "        }}",
+                "        isInternalDrag = false;",
+                "        draggedElement = null;",
+                "        return;",
                 "    }}",
+                "    isInternalDrag = false;",
+                "    draggedElement = null;",
+                "    try {{ window.webkit.messageHandlers.meridianDrag.postMessage('drop'); }} catch(err) {{}}",
+                "    e.preventDefault();",
+                "    let dropRange = currentDropRange || updateCaretToPoint(e.clientX, e.clientY);",
                 "    currentDropRange = null;",
+                "    if (dropRange) {{",
+                "        dropRange = constrainRangeBeforeSignature(dropRange);",
+                "        try {{",
+                "            const sel = window.getSelection();",
+                "            sel.removeAllRanges();",
+                "            sel.addRange(dropRange);",
+                "        }} catch(err) {{}}",
+                "    }}",
                 "}});",
                 "function handleEscape(e) {{",
                 "    if (e.key === 'Escape') {{",
                 "        dragCounter = 0;",
+                "        isInternalDrag = false;",
+                "        draggedElement = null;",
+                "        currentDropInfo = null;",
                 "        hideCaret();",
                 "        currentDropRange = null;",
                 "        try {{ window.webkit.messageHandlers.meridianDrag.postMessage('cancel'); }} catch(err) {{}}",
@@ -2496,6 +2800,21 @@ mod tests {
     }
 
     #[test]
+    fn test_image_menu_payload_quoted_deserialize() {
+        let quoted_json = r#""{\"id\":\"__meridian_img_999\",\"x\":200,\"y\":350,\"img_x\":180,\"img_y\":300,\"img_w\":500,\"img_h\":400,\"align\":\"left\",\"size\":\"large\"}""#;
+        let unquoted: String = serde_json::from_str(quoted_json).unwrap_or_else(|_| quoted_json.to_string());
+        let payload: Result<ImageMenuPayload, _> = serde_json::from_str::<ImageMenuPayload>(&unquoted)
+            .or_else(|_| serde_json::from_str::<ImageMenuPayload>(quoted_json));
+        assert!(payload.is_ok());
+        let p = payload.unwrap();
+        assert_eq!(p.id, "__meridian_img_999");
+        assert_eq!(p.x, 200);
+        assert_eq!(p.y, 350);
+        assert_eq!(p.align, "left");
+        assert_eq!(p.size, "large");
+    }
+
+    #[test]
     fn test_prepare_image_data_uri() {
         let tmp = std::env::temp_dir().join("meridian_test_inline_prep.png");
         let png_bytes = [
@@ -2512,6 +2831,24 @@ mod tests {
         assert_eq!(mime, "image/png");
         assert!(data_uri.starts_with("data:image/png;base64,"));
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_converted_image_data_deserialize() {
+        let raw_json = r#"{"src":"data:image/png;base64,dGVzdA==","alt":"test.png"}"#;
+        let data: Result<ConvertedImageData, _> = serde_json::from_str(raw_json);
+        assert!(data.is_ok());
+        let d = data.unwrap();
+        assert_eq!(d.src, "data:image/png;base64,dGVzdA==");
+        assert_eq!(d.alt, "test.png");
+
+        let quoted_json = r#""{\"src\":\"data:image/png;base64,dGVzdA==\",\"alt\":\"test.png\"}""#;
+        let unquoted: String = serde_json::from_str(quoted_json).unwrap_or_else(|_| quoted_json.to_string());
+        let data2: Result<ConvertedImageData, _> = serde_json::from_str(&unquoted);
+        assert!(data2.is_ok());
+        let d2 = data2.unwrap();
+        assert_eq!(d2.src, "data:image/png;base64,dGVzdA==");
+        assert_eq!(d2.alt, "test.png");
     }
 }
 

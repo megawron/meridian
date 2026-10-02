@@ -1213,9 +1213,45 @@ flowbox > flowboxchild.attachment-flow-child:selected {
   transition: background-color 150ms ease, border-color 150ms ease;
 }
 
+/* ── Drop Target Styling: Rounded Borders & Corner Clipping Fix ───────────── */
+/* GTK4 renders outline as a sharp 90-degree rectangle which gets clipped by  */
+/* rounded window/dialog/sheet corners. Replacing outline with inset box-shadow */
+/* ensures the blue accent highlight follows border-radius smoothly without any */
+/* corner cut-off artifacts.                                                  */
+
+dialog:drop(active),
+dialog.meridian-compose-dialog:drop(active),
+dialog.composer-dialog:drop(active),
+window.meridian-compose-window:drop(active),
+window.composer-window:drop(active),
+window.dialog:drop(active),
+adw-dialog:drop(active) {
+  outline: none;
+  box-shadow: inset 0 0 0 2px @accent_color;
+  border-radius: 12px;
+}
+
+dialog:drop(active) > .background,
+dialog.meridian-compose-dialog:drop(active) > .background,
+dialog.composer-dialog:drop(active) > .background,
+dialog > .background:drop(active),
+window.meridian-compose-window:drop(active) > .background,
+window.composer-window:drop(active) > .background,
+window:drop(active) > .background {
+  outline: none;
+  box-shadow: inset 0 0 0 2px @accent_color;
+  border-radius: 12px;
+}
+
 .attachment-bottom-bar:drop(active) {
+  outline: none;
   background-color: alpha(@accent_color, 0.12);
   border-top-color: @accent_color;
+  box-shadow: inset 0 0 0 2px @accent_color;
+  border-bottom-left-radius: 12px;
+  border-bottom-right-radius: 12px;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
 }
 
 .attachment-bar-handle {
@@ -1301,21 +1337,47 @@ bottom-sheet > sheet > stack > button:focus,
 bottom-sheet > sheet > stack > button:focus-visible,
 bottom-sheet:focus,
 bottom-sheet:focus-within,
-bottom-sheet:drop(active),
-bottom-sheet > sheet:drop(active),
 .attachment-sheet-box,
 .attachment-sheet-box:focus,
 .attachment-sheet-box:focus-within,
-.attachment-sheet-box:drop(active),
 .attachment-sheet-scrolled,
 .attachment-sheet-scrolled:focus,
 .attachment-sheet-scrolled:focus-within,
-.attachment-sheet-scrolled:drop(active),
 .attachment-flowbox,
 .attachment-flowbox:focus,
-.attachment-flowbox:focus-within,
-.attachment-flowbox:drop(active) {
+.attachment-flowbox:focus-within {
   outline: none;
+}
+
+/* Bottom Sheet & Attachment Sheet Drawer: rounded corners matching sheet drawer */
+bottom-sheet:drop(active),
+bottom-sheet > sheet:drop(active),
+.attachment-sheet-box:drop(active) {
+  outline: none;
+  box-shadow: inset 0 0 0 2px @accent_color;
+  border-radius: 12px;
+}
+
+bottom-sheet > sheet:drop(active) > .background,
+.attachment-sheet-box:drop(active) > .background {
+  outline: none;
+  box-shadow: inset 0 0 0 2px @accent_color;
+  border-radius: 12px;
+}
+
+/* Prevent inner child widgets from showing sharp rectangular outlines */
+webview:drop(active),
+.html-editor:drop(active),
+.html-editor-scroll:drop(active),
+.editor-container:drop(active),
+.attachment-flowbox:drop(active),
+.attachment-listbox:drop(active),
+.attachment-sheet-scrolled:drop(active),
+.attachment-chip:drop(active),
+.attachment-card:drop(active),
+.attachment-list-row:drop(active) {
+  outline: none;
+  box-shadow: none;
 }
 
 .attachment-sheet-box {
@@ -1337,11 +1399,15 @@ bottom-sheet > sheet:drop(active),
   padding: 8px 12px 10px 12px;
 }
 
-image.attachment-thumbnail {
+.attachment-thumbnail,
+image.attachment-thumbnail,
+picture.attachment-thumbnail {
   border-radius: 4px;
 }
 
-image.attachment-card-thumbnail {
+.attachment-card-thumbnail,
+image.attachment-card-thumbnail,
+picture.attachment-card-thumbnail {
   border-radius: 6px;
   box-shadow: 0 1px 3px alpha(currentColor, 0.15);
 }
@@ -1412,16 +1478,23 @@ image.attachment-card-thumbnail {
 }
 
 .attachment-summary-btn {
-  padding: 3px 10px;
-  border-radius: 9999px;
-  font-size: 0.80rem;
-  font-weight: 500;
-  background-color: alpha(currentColor, 0.07);
-  transition: background-color 150ms ease;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  font-weight: normal;
+  background-color: transparent;
+  border: none;
+  box-shadow: none;
+  color: currentColor;
+  transition: background-color 150ms ease, color 150ms ease;
 }
 
 .attachment-summary-btn:hover {
-  background-color: alpha(currentColor, 0.12);
+  background-color: alpha(currentColor, 0.08);
+}
+
+.attachment-summary-btn:active {
+  background-color: alpha(currentColor, 0.14);
 }
 
 .attachment-summary-btn:focus,
@@ -1430,6 +1503,39 @@ image.attachment-card-thumbnail {
 }
 
 .attachment-summary-btn:focus-visible {
+  outline: 2px solid alpha(@accent_color, 0.5);
+  outline-offset: 2px;
+}
+
+.attachment-bar-separator {
+  margin: 3px 2px;
+  opacity: 0.25;
+  min-height: 18px;
+}
+
+.attachment-bar-add-btn {
+  min-width: 24px;
+  min-height: 24px;
+  max-width: 24px;
+  max-height: 24px;
+  padding: 0;
+  border-radius: 9999px;
+  background-color: alpha(currentColor, 0.06);
+  color: alpha(currentColor, 0.75);
+  transition: background-color 150ms ease, color 150ms ease, opacity 150ms ease;
+}
+
+.attachment-bar-add-btn:hover {
+  background-color: alpha(currentColor, 0.14);
+  color: currentColor;
+}
+
+.attachment-bar-add-btn:focus,
+.attachment-bar-add-btn:focus-within {
+  outline: none;
+}
+
+.attachment-bar-add-btn:focus-visible {
   outline: 2px solid alpha(@accent_color, 0.5);
   outline-offset: 2px;
 }

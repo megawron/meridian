@@ -214,6 +214,8 @@ mod imp {
         pub attachment_expanded: Cell<bool>,
         pub attachment_view_mode: Cell<AttachmentViewMode>,
         pub attachment_bar_chip_box: RefCell<Option<gtk::Box>>,
+        pub attachment_bar_separator: RefCell<Option<gtk::Separator>>,
+        pub attachment_bar_add_btn: RefCell<Option<gtk::Button>>,
         pub attachment_table_compact: Cell<bool>,
         pub attachment_col_type: RefCell<Option<gtk::Label>>,
         pub attachment_col_mod: RefCell<Option<gtk::Label>>,
@@ -396,6 +398,8 @@ impl ComposeDialog {
     pub fn configure_root_window(&self) {
         if let Some(win) = self.root().and_downcast::<gtk::Window>() {
             win.set_resizable(true);
+            win.add_css_class("meridian-compose-window");
+            win.add_css_class("composer-window");
         }
     }
 
@@ -991,6 +995,8 @@ impl ComposeDialog {
     }
 
     fn build_ui(&self) {
+        self.add_css_class("meridian-compose-dialog");
+        self.add_css_class("composer-dialog");
         {
             let mut stored_id = self.imp().draft_id.borrow_mut();
             if stored_id.is_empty() {
@@ -1049,7 +1055,6 @@ impl ComposeDialog {
             .css_classes(vec!["flat"])
             .build();
         set_accessible_label(&btn_discard, &crate::i18n::gettext("Discard draft"));
-        header_bar.pack_start(&btn_discard);
         self.imp().btn_discard.replace(Some(btn_discard.clone()));
 
         let menu_button = gtk::MenuButton::builder()
@@ -1147,6 +1152,18 @@ impl ComposeDialog {
             .orientation(gtk::Orientation::Vertical)
             .spacing(0)
             .build();
+
+        let sheet_dismiss_gesture = gtk::GestureClick::new();
+        sheet_dismiss_gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let dialog_weak_for_dismiss = self.downgrade();
+        sheet_dismiss_gesture.connect_pressed(move |_, _, _, _| {
+            if let Some(dialog) = dialog_weak_for_dismiss.upgrade() {
+                if dialog.imp().attachment_expanded.get() {
+                    dialog.set_attachment_expanded(false);
+                }
+            }
+        });
+        content_box.add_controller(sheet_dismiss_gesture);
 
         let operation_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -1510,6 +1527,9 @@ impl ComposeDialog {
         editor_key_controller.connect_key_pressed(move |_, _, _, _| {
             if let Some(dialog) = dialog_weak_for_editor.upgrade() {
                 dialog.mark_changed();
+                if dialog.imp().attachment_expanded.get() {
+                    dialog.set_attachment_expanded(false);
+                }
             }
             glib::Propagation::Proceed
         });
@@ -1519,28 +1539,43 @@ impl ComposeDialog {
         html_editor.connect_files_dropped(move |paths| {
             if let Some(dialog) = dialog_weak_for_drop.upgrade() {
                 let is_plain = dialog.imp().html_editor.borrow().as_ref().map(|e| e.plain_text_mode()).unwrap_or(false);
+                let mut added_attachment = false;
                 for path in paths {
                     if !is_plain && crate::views::HtmlEditor::is_supported_image(&path) {
                         if let Some(editor) = dialog.imp().html_editor.borrow().as_ref() {
                             if editor.insert_image_from_path(&path) {
                                 dialog.mark_changed();
+                                let path_str = path.to_string_lossy().to_string();
+                                if dialog.imp().attachments.borrow().iter().any(|a| a.path == path_str) {
+                                    dialog.remove_attachment(&path_str);
+                                }
                                 continue;
                             }
                         }
                     }
                     dialog.add_attachment_path(&path);
+                    added_attachment = true;
                 }
-                if dialog.imp().attachments.borrow().is_empty() {
+                if !added_attachment {
+                    dialog.set_attachment_expanded(false);
                     dialog.show_attachment_bar_drag_hint(false);
+                    if dialog.imp().attachments.borrow().is_empty() {
+                        if let Some(bar) = dialog.imp().attachment_bar.borrow().as_ref() {
+                            bar.set_visible(false);
+                        }
+                    }
+                } else if dialog.imp().attachments.borrow().is_empty() {
+                    dialog.set_attachment_expanded(false);
+                    dialog.show_attachment_bar_drag_hint(false);
+                    if let Some(bar) = dialog.imp().attachment_bar.borrow().as_ref() {
+                        bar.set_visible(false);
+                    }
                 }
             }
         });
 
-        let dialog_weak_for_drag_motion = self.downgrade();
         html_editor.connect_drag_motion(move |_y, _h| {
-            if let Some(dialog) = dialog_weak_for_drag_motion.upgrade() {
-                dialog.start_drag_session();
-            }
+            // Dragging inside the editor body: do NOT expand the attachment drawer!
         });
 
         let dialog_weak_for_drag_leave = self.downgrade();
@@ -1578,6 +1613,7 @@ impl ComposeDialog {
 
         let dialog_weak_for_editor_click = self.downgrade();
         let editor_click = gtk::GestureClick::new();
+        editor_click.set_propagation_phase(gtk::PropagationPhase::Capture);
         editor_click.connect_pressed(move |_, _, _, _| {
             if let Some(dialog) = dialog_weak_for_editor_click.upgrade() {
                 if dialog.imp().attachment_expanded.get() {
@@ -1592,7 +1628,7 @@ impl ComposeDialog {
             .orientation(gtk::Orientation::Vertical)
             .spacing(0)
             .css_classes(vec!["attachment-bottom-bar"])
-            .visible(true)
+            .visible(false)
             .build();
 
         let handle = gtk::Box::builder()
@@ -1614,9 +1650,9 @@ impl ComposeDialog {
 
         let bar_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .margin_start(12)
-            .margin_end(12)
+            .spacing(6)
+            .margin_start(10)
+            .margin_end(10)
             .margin_top(0)
             .margin_bottom(0)
             .valign(gtk::Align::Center)
@@ -1635,19 +1671,21 @@ impl ComposeDialog {
             .build();
 
         let clip_icon = gtk::Image::from_icon_name("mail-attachment-symbolic");
-        clip_icon.set_pixel_size(14);
+        clip_icon.set_pixel_size(15);
         clip_icon.set_opacity(0.85);
         summary_content.append(&clip_icon);
 
         let summary_label = gtk::Label::builder()
             .label(&crate::i18n::gettext("Dateien hier ablegen"))
             .valign(gtk::Align::Center)
+            .use_markup(true)
             .build();
         summary_content.append(&summary_label);
 
         let summary_chevron = gtk::Image::from_icon_name("pan-up-symbolic");
         summary_chevron.set_pixel_size(11);
         summary_chevron.set_opacity(0.7);
+        summary_chevron.set_visible(false);
         summary_content.append(&summary_chevron);
 
         btn_summary.set_child(Some(&summary_content));
@@ -1659,13 +1697,21 @@ impl ComposeDialog {
             }
         });
 
+        let separator = gtk::Separator::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["attachment-bar-separator"])
+            .visible(false)
+            .build();
+
         let add_icon = gtk::Image::from_icon_name("list-add-symbolic");
-        add_icon.set_pixel_size(13);
+        add_icon.set_pixel_size(12);
         let btn_add_attachment = gtk::Button::builder()
             .child(&add_icon)
             .tooltip_text(&crate::i18n::gettext("Add attachment…"))
-            .css_classes(vec!["flat", "circular", "attachment-chip-btn"])
+            .css_classes(vec!["flat", "circular", "attachment-bar-add-btn"])
             .valign(gtk::Align::Center)
+            .visible(false)
             .build();
         set_accessible_label(&btn_add_attachment, &crate::i18n::gettext("Add attachment"));
 
@@ -1677,6 +1723,7 @@ impl ComposeDialog {
         });
 
         bar_row.append(&btn_summary);
+        bar_row.append(&separator);
         bar_row.append(&btn_add_attachment);
 
         let chip_box = gtk::Box::builder()
@@ -1689,44 +1736,73 @@ impl ComposeDialog {
 
         bar_row.append(&chip_box);
         self.imp().attachment_bar_chip_box.replace(Some(chip_box));
+        self.imp().attachment_bar_separator.replace(Some(separator));
+        self.imp().attachment_bar_add_btn.replace(Some(btn_add_attachment));
         attachment_bar.append(&bar_row);
 
         let drop_target_bar = gtk::DropTarget::new(glib::Type::INVALID, gdk::DragAction::COPY);
-        drop_target_bar.set_types(&[gdk::FileList::static_type(), gio::File::static_type()]);
+        drop_target_bar.set_types(&[
+            gdk::FileList::static_type(),
+            gio::File::static_type(),
+            gdk::Texture::static_type(),
+            glib::types::Type::STRING,
+        ]);
         let dialog_weak_for_bar_enter = self.downgrade();
         drop_target_bar.connect_enter(move |_, _, _| {
-            if let Some(dialog) = dialog_weak_for_bar_enter.upgrade() {
-                dialog.start_drag_session();
-                dialog.imp().is_drag_over_sheet.set(true);
-            }
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Some(dialog) = dialog_weak_for_bar_enter.upgrade() {
+                    dialog.start_drag_session();
+                    dialog.imp().is_drag_over_sheet.set(true);
+                    if !dialog.imp().attachment_expanded.get() {
+                        dialog.update_attachment_max_height();
+                        dialog.set_attachment_expanded(true);
+                    }
+                }
+            }));
             gdk::DragAction::COPY
         });
         let dialog_weak_for_bar_motion = self.downgrade();
         drop_target_bar.connect_motion(move |_, _, _| {
-            if let Some(dialog) = dialog_weak_for_bar_motion.upgrade() {
-                dialog.start_drag_session();
-            }
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Some(dialog) = dialog_weak_for_bar_motion.upgrade() {
+                    if !dialog.imp().attachment_expanded.get() {
+                        dialog.update_attachment_max_height();
+                        dialog.set_attachment_expanded(true);
+                    }
+                }
+            }));
             gdk::DragAction::COPY
         });
         let dialog_weak_for_bar_leave = self.downgrade();
         drop_target_bar.connect_leave(move |_| {
-            if let Some(dialog) = dialog_weak_for_bar_leave.upgrade() {
-                dialog.imp().is_drag_over_sheet.set(false);
-            }
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Some(dialog) = dialog_weak_for_bar_leave.upgrade() {
+                    dialog.imp().is_drag_over_sheet.set(false);
+                }
+            }));
         });
         let dialog_weak_for_bar_drop = self.downgrade();
         drop_target_bar.connect_drop(move |_, value, _, _| {
-            let Some(dialog) = dialog_weak_for_bar_drop.upgrade() else {
-                return false;
-            };
-            if let Some(source_id) = dialog.imp().drag_leave_timeout.borrow_mut().take() {
-                source_id.remove();
-            }
-            dialog.imp().is_drag_active.set(false);
-            dialog.imp().is_drag_over_sheet.set(false);
-            let mut any_added = false;
-            if let Ok(file_list) = value.get::<gdk::FileList>() {
-                for file in file_list.files() {
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let Some(dialog) = dialog_weak_for_bar_drop.upgrade() else {
+                    return false;
+                };
+                if let Some(source_id) = dialog.imp().drag_leave_timeout.borrow_mut().take() {
+                    source_id.remove();
+                }
+                dialog.imp().is_drag_active.set(false);
+                dialog.imp().is_drag_over_sheet.set(false);
+                let mut any_added = false;
+                if let Ok(file_list) = value.get::<gdk::FileList>() {
+                    for file in file_list.files() {
+                        if let Some(path) = file.path() {
+                            if path.is_file() {
+                                dialog.add_attachment_path(&path);
+                                any_added = true;
+                            }
+                        }
+                    }
+                } else if let Ok(file) = value.get::<gio::File>() {
                     if let Some(path) = file.path() {
                         if path.is_file() {
                             dialog.add_attachment_path(&path);
@@ -1734,19 +1810,16 @@ impl ComposeDialog {
                         }
                     }
                 }
-            } else if let Ok(file) = value.get::<gio::File>() {
-                if let Some(path) = file.path() {
-                    if path.is_file() {
-                        dialog.add_attachment_path(&path);
-                        any_added = true;
+                if dialog.imp().attachments.borrow().is_empty() {
+                    dialog.set_attachment_expanded(false);
+                    dialog.show_attachment_bar_drag_hint(false);
+                    if let Some(bar) = dialog.imp().attachment_bar.borrow().as_ref() {
+                        bar.set_visible(false);
                     }
                 }
-            }
-            if dialog.imp().attachments.borrow().is_empty() {
-                dialog.set_attachment_expanded(false);
-                dialog.show_attachment_bar_drag_hint(false);
-            }
-            any_added
+                any_added
+            }));
+            res.unwrap_or(false)
         });
         attachment_bar.add_controller(drop_target_bar);
 
@@ -1758,41 +1831,68 @@ impl ComposeDialog {
             .build();
 
         let drop_target_sheet = gtk::DropTarget::new(glib::Type::INVALID, gdk::DragAction::COPY);
-        drop_target_sheet.set_types(&[gdk::FileList::static_type(), gio::File::static_type()]);
+        drop_target_sheet.set_types(&[
+            gdk::FileList::static_type(),
+            gio::File::static_type(),
+            gdk::Texture::static_type(),
+            glib::types::Type::STRING,
+        ]);
         let dialog_weak_for_sheet_enter = self.downgrade();
         drop_target_sheet.connect_enter(move |_, _, _| {
-            if let Some(dialog) = dialog_weak_for_sheet_enter.upgrade() {
-                dialog.start_drag_session();
-                dialog.imp().is_drag_over_sheet.set(true);
-            }
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Some(dialog) = dialog_weak_for_sheet_enter.upgrade() {
+                    dialog.start_drag_session();
+                    dialog.imp().is_drag_over_sheet.set(true);
+                    if !dialog.imp().attachment_expanded.get() {
+                        dialog.update_attachment_max_height();
+                        dialog.set_attachment_expanded(true);
+                    }
+                }
+            }));
             gdk::DragAction::COPY
         });
         let dialog_weak_for_sheet_motion = self.downgrade();
         drop_target_sheet.connect_motion(move |_, _, _| {
-            if let Some(dialog) = dialog_weak_for_sheet_motion.upgrade() {
-                dialog.start_drag_session();
-            }
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Some(dialog) = dialog_weak_for_sheet_motion.upgrade() {
+                    if !dialog.imp().attachment_expanded.get() {
+                        dialog.update_attachment_max_height();
+                        dialog.set_attachment_expanded(true);
+                    }
+                }
+            }));
             gdk::DragAction::COPY
         });
         let dialog_weak_for_sheet_leave = self.downgrade();
         drop_target_sheet.connect_leave(move |_| {
-            if let Some(dialog) = dialog_weak_for_sheet_leave.upgrade() {
-                dialog.imp().is_drag_over_sheet.set(false);
-            }
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Some(dialog) = dialog_weak_for_sheet_leave.upgrade() {
+                    dialog.imp().is_drag_over_sheet.set(false);
+                }
+            }));
         });
         let dialog_weak_for_sheet_drop = self.downgrade();
         drop_target_sheet.connect_drop(move |_, value, _, _| {
-            let Some(dialog) = dialog_weak_for_sheet_drop.upgrade() else {
-                return false;
-            };
-            if let Some(source_id) = dialog.imp().drag_leave_timeout.borrow_mut().take() {
-                source_id.remove();
-            }
-            dialog.imp().is_drag_active.set(false);
-            dialog.imp().is_drag_over_sheet.set(false);
-            let mut any_added = false;
-            if let Ok(file_list) = value.get::<gdk::FileList>() {
-                for file in file_list.files() {
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let Some(dialog) = dialog_weak_for_sheet_drop.upgrade() else {
+                    return false;
+                };
+                if let Some(source_id) = dialog.imp().drag_leave_timeout.borrow_mut().take() {
+                    source_id.remove();
+                }
+                dialog.imp().is_drag_active.set(false);
+                dialog.imp().is_drag_over_sheet.set(false);
+                let mut any_added = false;
+                if let Ok(file_list) = value.get::<gdk::FileList>() {
+                    for file in file_list.files() {
+                        if let Some(path) = file.path() {
+                            if path.is_file() {
+                                dialog.add_attachment_path(&path);
+                                any_added = true;
+                            }
+                        }
+                    }
+                } else if let Ok(file) = value.get::<gio::File>() {
                     if let Some(path) = file.path() {
                         if path.is_file() {
                             dialog.add_attachment_path(&path);
@@ -1800,19 +1900,16 @@ impl ComposeDialog {
                         }
                     }
                 }
-            } else if let Ok(file) = value.get::<gio::File>() {
-                if let Some(path) = file.path() {
-                    if path.is_file() {
-                        dialog.add_attachment_path(&path);
-                        any_added = true;
+                if dialog.imp().attachments.borrow().is_empty() {
+                    dialog.set_attachment_expanded(false);
+                    dialog.show_attachment_bar_drag_hint(false);
+                    if let Some(bar) = dialog.imp().attachment_bar.borrow().as_ref() {
+                        bar.set_visible(false);
                     }
                 }
-            }
-            if dialog.imp().attachments.borrow().is_empty() {
-                dialog.set_attachment_expanded(false);
-                dialog.show_attachment_bar_drag_hint(false);
-            }
-            any_added
+                any_added
+            }));
+            res.unwrap_or(false)
         });
         sheet_box.add_controller(drop_target_sheet);
 
@@ -2093,7 +2190,7 @@ impl ComposeDialog {
         // Native Libadwaita Bottom Sheet (AdwBottomSheet - non-modal so editor remains accessible and un-dimmed)
         let bottom_sheet = adw::BottomSheet::builder()
             .modal(false)
-            .can_open(true)
+            .can_open(false)
             .can_close(true)
             .show_drag_handle(true)
             .full_width(true)
@@ -3954,6 +4051,11 @@ impl ComposeDialog {
                         dialog.show_attachment_bar_drag_hint(false);
                         handled = true;
                     }
+                    if dialog.imp().attachments.borrow().is_empty() {
+                        if let Some(bar) = dialog.imp().attachment_bar.borrow().as_ref() {
+                            bar.set_visible(false);
+                        }
+                    }
                     if let Some(editor) = dialog.imp().html_editor.borrow().as_ref() {
                         editor.cancel_drag_session();
                     }
@@ -5332,65 +5434,89 @@ impl ComposeDialog {
 
         let dialog_weak_for_motion = self.downgrade();
         drop_target.connect_motion(move |_, _, _| {
-            if let Some(dialog) = dialog_weak_for_motion.upgrade() {
-                dialog.start_drag_session();
-            }
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Some(dialog) = dialog_weak_for_motion.upgrade() {
+                    dialog.start_drag_session();
+                }
+            }));
             gdk::DragAction::COPY
         });
 
         let dialog_weak_for_leave = self.downgrade();
         drop_target.connect_leave(move |_| {
-            if let Some(dialog) = dialog_weak_for_leave.upgrade() {
-                dialog.schedule_drag_leave();
-            }
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Some(dialog) = dialog_weak_for_leave.upgrade() {
+                    dialog.schedule_drag_leave();
+                }
+            }));
         });
 
         let dialog_weak = self.downgrade();
         drop_target.connect_drop(move |_, value, _, _| {
-            let Some(dialog) = dialog_weak.upgrade() else {
-                return false;
-            };
-            if let Some(source_id) = dialog.imp().drag_leave_timeout.borrow_mut().take() {
-                source_id.remove();
-            }
-            dialog.imp().is_drag_active.set(false);
-            dialog.imp().is_drag_over_sheet.set(false);
-            let mut any_added = false;
-            let mut paths = Vec::new();
-            if let Ok(file_list) = value.get::<gdk::FileList>() {
-                for file in file_list.files() {
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let Some(dialog) = dialog_weak.upgrade() else {
+                    return false;
+                };
+                if let Some(source_id) = dialog.imp().drag_leave_timeout.borrow_mut().take() {
+                    source_id.remove();
+                }
+                dialog.imp().is_drag_active.set(false);
+                dialog.imp().is_drag_over_sheet.set(false);
+                let mut any_added = false;
+                let mut paths = Vec::new();
+                if let Ok(file_list) = value.get::<gdk::FileList>() {
+                    for file in file_list.files() {
+                        if let Some(path) = file.path() {
+                            if path.is_file() {
+                                paths.push(path);
+                            }
+                        }
+                    }
+                } else if let Ok(file) = value.get::<gio::File>() {
                     if let Some(path) = file.path() {
                         if path.is_file() {
                             paths.push(path);
                         }
                     }
                 }
-            } else if let Ok(file) = value.get::<gio::File>() {
-                if let Some(path) = file.path() {
-                    if path.is_file() {
-                        paths.push(path);
-                    }
-                }
-            }
-            let is_plain = dialog.imp().html_editor.borrow().as_ref().map(|e| e.plain_text_mode()).unwrap_or(false);
-            for path in paths {
-                if !is_plain && crate::views::HtmlEditor::is_supported_image(&path) {
-                    if let Some(editor) = dialog.imp().html_editor.borrow().as_ref() {
-                        if editor.insert_image_from_path(&path) {
-                            dialog.mark_changed();
-                            any_added = true;
-                            continue;
+                let is_plain = dialog.imp().html_editor.borrow().as_ref().map(|e| e.plain_text_mode()).unwrap_or(false);
+                let mut added_attachment = false;
+                for path in paths {
+                    if !is_plain && crate::views::HtmlEditor::is_supported_image(&path) {
+                        if let Some(editor) = dialog.imp().html_editor.borrow().as_ref() {
+                            if editor.insert_image_from_path(&path) {
+                                dialog.mark_changed();
+                                any_added = true;
+                                let path_str = path.to_string_lossy().to_string();
+                                if dialog.imp().attachments.borrow().iter().any(|a| a.path == path_str) {
+                                    dialog.remove_attachment(&path_str);
+                                }
+                                continue;
+                            }
                         }
                     }
+                    dialog.add_attachment_path(&path);
+                    any_added = true;
+                    added_attachment = true;
                 }
-                dialog.add_attachment_path(&path);
-                any_added = true;
-            }
-            if dialog.imp().attachments.borrow().is_empty() {
-                dialog.set_attachment_expanded(false);
-                dialog.show_attachment_bar_drag_hint(false);
-            }
-            any_added
+                if !added_attachment {
+                    dialog.set_attachment_expanded(false);
+                    dialog.show_attachment_bar_drag_hint(false);
+                    if dialog.imp().attachments.borrow().is_empty() {
+                        if let Some(bar) = dialog.imp().attachment_bar.borrow().as_ref() {
+                            bar.set_visible(false);
+                        }
+                    }
+                } else if dialog.imp().attachments.borrow().is_empty() {
+                    dialog.set_attachment_expanded(false);
+                    dialog.show_attachment_bar_drag_hint(false);
+                    if let Some(bar) = dialog.imp().attachment_bar.borrow().as_ref() {
+                        bar.set_visible(false);
+                    }
+                }
+                any_added
+            }));
+            res.unwrap_or(false)
         });
         self.add_controller(drop_target);
     }
@@ -5399,23 +5525,14 @@ impl ComposeDialog {
         if let Some(source_id) = self.imp().drag_leave_timeout.borrow_mut().take() {
             source_id.remove();
         }
-        if self.imp().is_drag_active.get() && self.imp().attachment_expanded.get() {
+        if self.imp().is_drag_active.get() {
             return;
         }
         self.imp().is_drag_active.set(true);
         self.show_attachment_bar_drag_hint(true);
-        let sheet = self.imp().attachment_sheet.borrow().clone();
-        if let Some(sheet) = sheet.as_ref() {
-            sheet.set_can_open(true);
-            sheet.set_can_close(true);
-        }
         let bar = self.imp().attachment_bar.borrow().clone();
         if let Some(bar) = bar.as_ref() {
             bar.set_visible(true);
-        }
-        if !self.imp().attachment_expanded.get() {
-            self.update_attachment_max_height();
-            self.set_attachment_expanded(true);
         }
     }
 
@@ -5430,6 +5547,9 @@ impl ComposeDialog {
                 if dialog.imp().attachments.borrow().is_empty() {
                     dialog.set_attachment_expanded(false);
                     dialog.show_attachment_bar_drag_hint(false);
+                    if let Some(bar) = dialog.imp().attachment_bar.borrow().as_ref() {
+                        bar.set_visible(false);
+                    }
                 }
             }
         });
@@ -5462,7 +5582,7 @@ impl ComposeDialog {
         self.imp().attachment_expanded.set(expanded);
         let sheet = self.imp().attachment_sheet.borrow().clone();
         if let Some(sheet) = sheet.as_ref() {
-            sheet.set_can_open(true);
+            sheet.set_can_open(false);
             sheet.set_can_close(true);
             let bar = self.imp().attachment_bar.borrow().clone();
             if let Some(bar) = bar.as_ref() {
@@ -5482,7 +5602,7 @@ impl ComposeDialog {
     pub fn show_attachment_bar_drag_hint(&self, visible: bool) {
         if self.imp().attachments.borrow().is_empty() {
             if let Some(bar) = self.imp().attachment_bar.borrow().as_ref() {
-                bar.set_visible(true);
+                bar.set_visible(visible);
             }
             if let Some(lbl) = self.imp().attachment_summary_label.borrow().as_ref() {
                 let text = if visible {
@@ -5491,6 +5611,15 @@ impl ComposeDialog {
                     crate::i18n::gettext("Dateien hier ablegen")
                 };
                 lbl.set_label(&text);
+            }
+            if let Some(sep) = self.imp().attachment_bar_separator.borrow().as_ref() {
+                sep.set_visible(false);
+            }
+            if let Some(add_btn) = self.imp().attachment_bar_add_btn.borrow().as_ref() {
+                add_btn.set_visible(false);
+            }
+            if let Some(chevron) = self.imp().attachment_summary_chevron.borrow().as_ref() {
+                chevron.set_visible(false);
             }
         }
     }
@@ -5737,15 +5866,29 @@ impl ComposeDialog {
         if let Some(scrolled) = self.imp().attachment_scrolled.borrow().as_ref() {
             scrolled.set_visible(count > 0);
         }
+        if let Some(sep) = self.imp().attachment_bar_separator.borrow().as_ref() {
+            sep.set_visible(count > 0);
+        }
+        if let Some(add_btn) = self.imp().attachment_bar_add_btn.borrow().as_ref() {
+            add_btn.set_visible(count > 0);
+        }
+        if let Some(chevron) = self.imp().attachment_summary_chevron.borrow().as_ref() {
+            chevron.set_visible(count > 0);
+        }
         if let Some(sheet) = self.imp().attachment_sheet.borrow().as_ref() {
-            sheet.set_can_open(true);
+            sheet.set_can_open(false);
             sheet.set_can_close(true);
-            if let Some(bar) = self.imp().attachment_bar.borrow().as_ref() {
-                bar.set_visible(true);
-            }
             if count == 0 {
                 if !self.imp().is_drag_active.get() {
-                    sheet.set_open(false);
+                    let sheet_clone = sheet.clone();
+                    glib::idle_add_local_once(move || {
+                        sheet_clone.set_open(false);
+                    });
+                    if let Some(bar) = self.imp().attachment_bar.borrow().as_ref() {
+                        bar.set_visible(false);
+                    }
+                } else if let Some(bar) = self.imp().attachment_bar.borrow().as_ref() {
+                    bar.set_visible(true);
                 }
                 let empty_text = crate::i18n::gettext("Dateien hier ablegen");
                 if let Some(lbl) = self.imp().attachment_summary_label.borrow().as_ref() {
@@ -5755,6 +5898,9 @@ impl ComposeDialog {
                     lbl.set_label(&empty_text);
                 }
             } else {
+                if let Some(bar) = self.imp().attachment_bar.borrow().as_ref() {
+                    bar.set_visible(true);
+                }
                 let total_size: u64 = self
                     .imp()
                     .attachments
@@ -5764,7 +5910,17 @@ impl ComposeDialog {
                     .sum();
                 let summary = format_attachment_summary(count, total_size);
                 if let Some(lbl) = self.imp().attachment_summary_label.borrow().as_ref() {
-                    lbl.set_label(&summary);
+                    let size_str = format_size(total_size);
+                    let count_str = if count == 1 {
+                        crate::i18n::gettext("1 Anhang")
+                    } else {
+                        format!("{} {}", count, crate::i18n::gettext("Anhänge"))
+                    };
+                    lbl.set_markup(&format!(
+                        "<b>{}</b> <span alpha='70%'>({})</span>",
+                        glib::markup_escape_text(&count_str),
+                        glib::markup_escape_text(&size_str)
+                    ));
                 }
                 if let Some(lbl) = self.imp().attachment_sheet_summary_label.borrow().as_ref() {
                     lbl.set_label(&summary);
@@ -5795,37 +5951,56 @@ fn attachment_icon_name(mime_type: &str, filename: &str) -> &'static str {
     }
 }
 
+fn load_attachment_texture(attachment: &DraftAttachment, scale_size: i32) -> Option<(gdk::Texture, i32, i32)> {
+    if !attachment.mime_type.starts_with("image/") {
+        return None;
+    }
+    let path = std::path::Path::new(&attachment.path);
+    let valid_path = if path.exists() {
+        Some(path.to_path_buf())
+    } else {
+        crate::services::quick_preview_service::ensure_attachment_preview_path(attachment).ok()
+    };
+
+    let p = valid_path?;
+    let pixbuf_res = gdk_pixbuf::Pixbuf::from_file_at_scale(&p, scale_size, scale_size, true);
+    let (pw, ph) = pixbuf_res
+        .as_ref()
+        .map(|pb| (pb.width().max(1), pb.height().max(1)))
+        .unwrap_or((scale_size, scale_size));
+    let texture = pixbuf_res
+        .as_ref()
+        .ok()
+        .map(|pixbuf| gdk::Texture::for_pixbuf(pixbuf))
+        .or_else(|| {
+            let file = gio::File::for_path(&p);
+            gdk::Texture::from_file(&file).ok()
+        })?;
+    Some((texture, pw, ph))
+}
+
 fn create_attachment_visual(attachment: &DraftAttachment, size: i32) -> gtk::Widget {
-    if attachment.mime_type.starts_with("image/") {
-        let path = std::path::Path::new(&attachment.path);
-        let valid_path = if path.exists() {
-            Some(path.to_path_buf())
+    let scale_size = if size > 32 { 128 } else { 48 };
+    if let Some((texture, pw, ph)) = load_attachment_texture(attachment, scale_size) {
+        let pic = gtk::Picture::for_paintable(&texture);
+        pic.set_can_shrink(true);
+        pic.set_content_fit(gtk::ContentFit::ScaleDown);
+        let min_dim = if size <= 20 { 10 } else { 16 };
+        let (target_w, target_h) = if pw >= ph {
+            (size, ((size * ph) / pw).max(min_dim))
         } else {
-            crate::services::quick_preview_service::ensure_attachment_preview_path(attachment).ok()
+            (((size * pw) / ph).max(min_dim), size)
         };
-
-        if let Some(p) = valid_path {
-            let scale_size = if size > 32 { 128 } else { 48 };
-            let texture_opt = gdk_pixbuf::Pixbuf::from_file_at_scale(&p, scale_size, scale_size, true)
-                .ok()
-                .map(|pixbuf| gdk::Texture::for_pixbuf(&pixbuf))
-                .or_else(|| {
-                    let file = gio::File::for_path(&p);
-                    gdk::Texture::from_file(&file).ok()
-                });
-
-            if let Some(texture) = texture_opt {
-                let img = gtk::Image::from_paintable(Some(&texture));
-                img.set_pixel_size(size);
-                if size > 32 {
-                    img.add_css_class("attachment-card-thumbnail");
-                } else {
-                    img.add_css_class("attachment-thumbnail");
-                }
-                img.set_valign(gtk::Align::Center);
-                return img.upcast();
-            }
+        pic.set_width_request(target_w);
+        pic.set_height_request(target_h);
+        pic.set_halign(gtk::Align::Center);
+        pic.set_valign(gtk::Align::Center);
+        if size > 32 {
+            pic.add_css_class("attachment-card-thumbnail");
+        } else {
+            pic.add_css_class("attachment-thumbnail");
         }
+        return pic.upcast();
     }
 
     let icon_name = attachment_icon_name(&attachment.mime_type, &attachment.filename);
@@ -5922,11 +6097,31 @@ fn create_attachment_chip(
     let path_for_remove = attachment.path.clone();
     let dialog_weak_for_remove = dialog_weak.clone();
     btn_remove.connect_clicked(move |_| {
-        if let Some(dialog) = dialog_weak_for_remove.upgrade() {
-            dialog.remove_attachment(&path_for_remove);
-        }
+        let path = path_for_remove.clone();
+        let dialog_weak = dialog_weak_for_remove.clone();
+        glib::idle_add_local_once(move || {
+            if let Some(dialog) = dialog_weak.upgrade() {
+                dialog.remove_attachment(&path);
+            }
+        });
     });
     chip_box.append(&btn_remove);
+
+    // Support dragging chip to editor or desktop
+    if std::path::Path::new(&attachment.path).exists() {
+        let file = gio::File::for_path(&attachment.path);
+        let drag_source = gtk::DragSource::new();
+        drag_source.set_actions(gdk::DragAction::COPY);
+        if let Some((texture, _, _)) = load_attachment_texture(attachment, 64) {
+            drag_source.set_icon(Some(&texture), 16, 16);
+        }
+        let file_for_drag = file.clone();
+        drag_source.connect_prepare(move |_, _, _| {
+            let file_list = gdk::FileList::from_array(&[file_for_drag.clone()]);
+            Some(gdk::ContentProvider::for_value(&file_list.to_value()))
+        });
+        chip_box.add_controller(drag_source);
+    }
 
     // Preview on click
     let att_for_click = attachment.clone();
@@ -5948,10 +6143,14 @@ fn create_attachment_chip(
             let _ = crate::services::quick_preview_service::preview_attachment(&att_for_key, None);
             return glib::Propagation::Stop;
         } else if keyval == gdk::Key::Delete || keyval == gdk::Key::BackSpace {
-            if let Some(dialog) = dialog_weak_for_key.upgrade() {
-                dialog.remove_attachment(&path_for_key);
-                return glib::Propagation::Stop;
-            }
+            let path = path_for_key.clone();
+            let dialog_weak = dialog_weak_for_key.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(dialog) = dialog_weak.upgrade() {
+                    dialog.remove_attachment(&path);
+                }
+            });
+            return glib::Propagation::Stop;
         }
         glib::Propagation::Proceed
     });
@@ -6032,9 +6231,13 @@ fn create_attachment_card(
     let path = attachment.path.clone();
     let dialog_weak_for_remove = dialog_weak.clone();
     btn_remove.connect_clicked(move |_| {
-        if let Some(dialog) = dialog_weak_for_remove.upgrade() {
-            dialog.remove_attachment(&path);
-        }
+        let path = path.clone();
+        let dialog_weak = dialog_weak_for_remove.clone();
+        glib::idle_add_local_once(move || {
+            if let Some(dialog) = dialog_weak.upgrade() {
+                dialog.remove_attachment(&path);
+            }
+        });
     });
     overlay.add_overlay(&btn_remove);
 
@@ -6058,10 +6261,14 @@ fn create_attachment_card(
             let _ = crate::services::quick_preview_service::preview_attachment(&att_for_key, None);
             return glib::Propagation::Stop;
         } else if keyval == gdk::Key::Delete || keyval == gdk::Key::BackSpace {
-            if let Some(dialog) = dialog_weak_for_key.upgrade() {
-                dialog.remove_attachment(&path_for_key);
-                return glib::Propagation::Stop;
-            }
+            let path = path_for_key.clone();
+            let dialog_weak = dialog_weak_for_key.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(dialog) = dialog_weak.upgrade() {
+                    dialog.remove_attachment(&path);
+                }
+            });
+            return glib::Propagation::Stop;
         }
         glib::Propagation::Proceed
     });
@@ -6072,6 +6279,9 @@ fn create_attachment_card(
         let file = gio::File::for_path(&attachment.path);
         let drag_source = gtk::DragSource::new();
         drag_source.set_actions(gdk::DragAction::COPY);
+        if let Some((texture, _, _)) = load_attachment_texture(attachment, 96) {
+            drag_source.set_icon(Some(&texture), 32, 32);
+        }
         let file_for_drag = file.clone();
         drag_source.connect_prepare(move |_, _, _| {
             let file_list = gdk::FileList::from_array(&[file_for_drag.clone()]);
@@ -6188,10 +6398,14 @@ fn create_attachment_list_row(
             let _ = crate::services::quick_preview_service::preview_attachment(&att_for_key, None);
             return glib::Propagation::Stop;
         } else if keyval == gdk::Key::Delete || keyval == gdk::Key::BackSpace {
-            if let Some(dialog) = dialog_weak_for_key.upgrade() {
-                dialog.remove_attachment(&path_for_key);
-                return glib::Propagation::Stop;
-            }
+            let path = path_for_key.clone();
+            let dialog_weak = dialog_weak_for_key.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(dialog) = dialog_weak.upgrade() {
+                    dialog.remove_attachment(&path);
+                }
+            });
+            return glib::Propagation::Stop;
         }
         glib::Propagation::Proceed
     });
@@ -6201,9 +6415,13 @@ fn create_attachment_list_row(
     let path = attachment.path.clone();
     let dialog_weak_for_remove = dialog_weak.clone();
     btn_remove.connect_clicked(move |_| {
-        if let Some(dialog) = dialog_weak_for_remove.upgrade() {
-            dialog.remove_attachment(&path);
-        }
+        let path = path.clone();
+        let dialog_weak = dialog_weak_for_remove.clone();
+        glib::idle_add_local_once(move || {
+            if let Some(dialog) = dialog_weak.upgrade() {
+                dialog.remove_attachment(&path);
+            }
+        });
     });
 
     // Support dragging list row to desktop/file manager
@@ -6211,6 +6429,9 @@ fn create_attachment_list_row(
         let file = gio::File::for_path(&attachment.path);
         let drag_source = gtk::DragSource::new();
         drag_source.set_actions(gdk::DragAction::COPY);
+        if let Some((texture, _, _)) = load_attachment_texture(attachment, 48) {
+            drag_source.set_icon(Some(&texture), 16, 16);
+        }
         let file_for_drag = file.clone();
         drag_source.connect_prepare(move |_, _, _| {
             let file_list = gdk::FileList::from_array(&[file_for_drag.clone()]);
@@ -8723,12 +8944,10 @@ mod tests {
             assert_eq!(stack.visible_child_name().as_deref(), Some("icons"));
         }
 
-        // Test show_attachment_bar_drag_hint & persistent dock visibility
-        assert!(dialog.imp().attachment_bar.borrow().as_ref().unwrap().is_visible());
-        assert_eq!(
-            dialog.imp().attachment_summary_label.borrow().as_ref().unwrap().text().as_str(),
-            "Dateien hier ablegen"
-        );
+        // Test show_attachment_bar_drag_hint & adaptive dock visibility
+        assert!(!dialog.imp().attachment_bar.borrow().as_ref().unwrap().is_visible());
+        assert!(!dialog.imp().attachment_bar_separator.borrow().as_ref().unwrap().is_visible());
+        assert!(!dialog.imp().attachment_bar_add_btn.borrow().as_ref().unwrap().is_visible());
         dialog.show_attachment_bar_drag_hint(true);
         assert!(dialog.imp().attachment_bar.borrow().as_ref().unwrap().is_visible());
         assert_eq!(
@@ -8736,11 +8955,7 @@ mod tests {
             "Dateien hier ablegen zum Anhängen"
         );
         dialog.show_attachment_bar_drag_hint(false);
-        assert!(dialog.imp().attachment_bar.borrow().as_ref().unwrap().is_visible());
-        assert_eq!(
-            dialog.imp().attachment_summary_label.borrow().as_ref().unwrap().text().as_str(),
-            "Dateien hier ablegen"
-        );
+        assert!(!dialog.imp().attachment_bar.borrow().as_ref().unwrap().is_visible());
 
         // Toggle expanded state
         dialog.toggle_attachment_expanded();
@@ -8764,14 +8979,17 @@ mod tests {
         // Test Escape cancels drag session when drag is active without closing dialog
         dialog.start_drag_session();
         assert!(dialog.imp().is_drag_active.get());
+        assert!(!dialog.imp().attachment_expanded.get(), "start_drag_session does not auto-expand until hovered over bar");
+        dialog.set_attachment_expanded(true);
         assert!(dialog.imp().attachment_expanded.get());
         let _ = dialog.activate_action("compose.close", None);
         assert!(!dialog.imp().is_drag_active.get(), "compose.close should deactivate drag session");
         assert!(!dialog.imp().attachment_expanded.get(), "compose.close should collapse sheet");
 
-        // Test re-dragging files after collapse immediately re-expands drawer
+        // Test drag session can be active and expanded
         dialog.start_drag_session();
         assert!(dialog.imp().is_drag_active.get());
+        dialog.set_attachment_expanded(true);
         assert!(dialog.imp().attachment_expanded.get());
         dialog.set_attachment_expanded(false);
         assert!(!dialog.imp().attachment_expanded.get());
@@ -8808,6 +9026,8 @@ mod tests {
         if let Some(chip_box) = dialog.imp().attachment_bar_chip_box.borrow().as_ref() {
             assert!(chip_box.first_child().is_some(), "Bottom bar chip box should have child");
         }
+        assert!(dialog.imp().attachment_bar_separator.borrow().as_ref().unwrap().is_visible());
+        assert!(dialog.imp().attachment_bar_add_btn.borrow().as_ref().unwrap().is_visible());
 
         // Test compact mode for mobile / narrow view (<= 600sp) vs Desktop (> 600sp)
         assert!(!dialog.is_attachment_table_compact());
@@ -8921,8 +9141,20 @@ mod tests {
             embedded_content_base64: String::new(),
         };
         let visual_img = create_attachment_visual(&att_img, 20);
-        let img_widget = visual_img.downcast_ref::<gtk::Image>().expect("Image widget for thumbnail");
-        assert!(img_widget.has_css_class("attachment-thumbnail"));
+        let picture_widget = visual_img.downcast_ref::<gtk::Picture>().expect("Picture widget for thumbnail");
+        assert!(picture_widget.has_css_class("attachment-thumbnail"));
+
+        let chip_img = create_attachment_chip(&att_img, dialog.downgrade());
+        let chip_img_box = chip_img.downcast_ref::<gtk::Box>().expect("chip box");
+        assert!(chip_img_box.has_css_class("attachment-chip"));
+        let chip_first = chip_img_box.first_child().expect("chip first child");
+        assert!(chip_first.downcast_ref::<gtk::Image>().is_some(), "Chip for image should use clean symbolic icon");
+
+        let chip_pdf = create_attachment_chip(&att, dialog.downgrade());
+        let chip_pdf_box = chip_pdf.downcast_ref::<gtk::Box>().expect("chip box");
+        let chip_pdf_first = chip_pdf_box.first_child().expect("chip pdf first child");
+        assert!(chip_pdf_first.downcast_ref::<gtk::Image>().is_some(), "Chip for PDF should have an Image icon visual");
+
         let _ = std::fs::remove_file(&tmp_img);
 
         dialog.close();
