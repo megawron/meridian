@@ -5399,13 +5399,18 @@ impl ComposeDialog {
         if let Some(source_id) = self.imp().drag_leave_timeout.borrow_mut().take() {
             source_id.remove();
         }
+        if self.imp().is_drag_active.get() && self.imp().attachment_expanded.get() {
+            return;
+        }
         self.imp().is_drag_active.set(true);
         self.show_attachment_bar_drag_hint(true);
-        if let Some(sheet) = self.imp().attachment_sheet.borrow().as_ref() {
+        let sheet = self.imp().attachment_sheet.borrow().clone();
+        if let Some(sheet) = sheet.as_ref() {
             sheet.set_can_open(true);
             sheet.set_can_close(true);
         }
-        if let Some(bar) = self.imp().attachment_bar.borrow().as_ref() {
+        let bar = self.imp().attachment_bar.borrow().clone();
+        if let Some(bar) = bar.as_ref() {
             bar.set_visible(true);
         }
         if !self.imp().attachment_expanded.get() {
@@ -5455,15 +5460,18 @@ impl ComposeDialog {
 
     pub fn set_attachment_expanded(&self, expanded: bool) {
         self.imp().attachment_expanded.set(expanded);
-        if let Some(sheet) = self.imp().attachment_sheet.borrow().as_ref() {
+        let sheet = self.imp().attachment_sheet.borrow().clone();
+        if let Some(sheet) = sheet.as_ref() {
             sheet.set_can_open(true);
             sheet.set_can_close(true);
-            if let Some(bar) = self.imp().attachment_bar.borrow().as_ref() {
+            let bar = self.imp().attachment_bar.borrow().clone();
+            if let Some(bar) = bar.as_ref() {
                 bar.set_visible(true);
             }
             sheet.set_open(expanded);
         }
-        if let Some(chevron) = self.imp().attachment_summary_chevron.borrow().as_ref() {
+        let chevron = self.imp().attachment_summary_chevron.borrow().clone();
+        if let Some(chevron) = chevron.as_ref() {
             chevron.set_icon_name(Some(if expanded { "pan-down-symbolic" } else { "pan-up-symbolic" }));
         }
         if expanded {
