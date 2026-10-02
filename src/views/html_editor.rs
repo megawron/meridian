@@ -60,6 +60,17 @@ mod imp {
         }
     }
 
+    #[derive(Default, Clone)]
+    pub struct DragInternalCallbackList(
+        pub Vec<std::rc::Rc<dyn Fn(bool) + 'static>>,
+    );
+
+    impl std::fmt::Debug for DragInternalCallbackList {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "DragInternalCallbackList({} callbacks)", self.0.len())
+        }
+    }
+
     #[derive(Debug, Default)]
     pub struct HtmlEditor {
         pub web_view: RefCell<Option<webkit6::WebView>>,
@@ -74,6 +85,7 @@ mod imp {
         pub files_dropped_callbacks: RefCell<CallbackList>,
         pub drag_motion_callbacks: RefCell<DragMotionCallbackList>,
         pub drag_leave_callbacks: RefCell<DragLeaveCallbackList>,
+        pub drag_internal_callbacks: RefCell<DragInternalCallbackList>,
         pub image_convert_callbacks: RefCell<ImageConvertCallbackList>,
         pub active_image_popover: RefCell<Option<gtk::Popover>>,
     }
@@ -178,6 +190,15 @@ impl HtmlEditor {
         }
     }
 
+    pub fn connect_drag_internal<F>(&self, callback: F)
+    where
+        F: Fn(bool) + 'static,
+    {
+        if let Ok(mut cbs) = self.imp().drag_internal_callbacks.try_borrow_mut() {
+            cbs.0.push(std::rc::Rc::new(callback));
+        }
+    }
+
     pub fn is_supported_image(path: &std::path::Path) -> bool {
         let ext = path
             .extension()
@@ -277,12 +298,23 @@ impl HtmlEditor {
     const editor = document.body;
     const sig = document.getElementById('_evolution_signature_') || document.querySelector('.evolution-signature');
 
+    function isBlockEmpty(el) {{
+        if (!el) return true;
+        if (el.nodeType === 3) return el.textContent.replace(/[\s\u200b\u00a0]+/g, '') === '';
+        const text = el.textContent ? el.textContent.replace(/[\s\u200b\u00a0]+/g, '') : '';
+        if (text === '') {{
+            const imgs = el.querySelectorAll ? el.querySelectorAll('img') : [];
+            return imgs.length === 0;
+        }}
+        return false;
+    }}
+
     function isInsideOrAfterSig(node, offset) {{
         if (!sig || !node) return false;
         if (sig.contains(node)) return true;
         try {{
             const cmp = sig.compareDocumentPosition(node);
-            if (cmp & Node.DOCUMENT_POSITION_PRECEDING) return true;
+            if (cmp & Node.DOCUMENT_POSITION_FOLLOWING) return true;
             if (node === editor) {{
                 const sigIdx = Array.prototype.indexOf.call(editor.childNodes, sig);
                 if (sigIdx !== -1 && offset > sigIdx) return true;
@@ -296,69 +328,133 @@ impl HtmlEditor {
         validSel = false;
     }}
 
-    if (!validSel) {{
-        editor.focus();
-        const range = document.createRange();
-        if (sig) {{
-            let prev = sig.previousElementSibling;
-            if (!prev) {{
-                prev = document.createElement('p');
-                prev.innerHTML = '<br>';
-                editor.insertBefore(prev, sig);
-            }}
-            const br = prev.querySelector('br');
-            if (br && prev.childNodes.length === 1) {{
-                range.selectNode(br);
-            }} else {{
-                range.selectNodeContents(prev);
-                range.collapse(false);
-            }}
-        }} else {{
-            range.selectNodeContents(editor);
-            range.collapse(false);
+    const img = document.createElement('img');
+    img.src = uri;
+    img.style.maxWidth = '100%';
+    img.style.height = 'auto';
+    img.setAttribute('draggable', 'true');
+    img.id = '__meridian_img_' + Date.now() + '_' + Math.floor(Math.random() * 10000);
+    img.setAttribute('data-meridian-id', img.id);
+
+    let inserted = false;
+
+    // Check if drop was marked as top
+    const wasTop = !!window.__lastDropWasTop;
+    if (window.__lastDropWasTop) {{
+        window.__lastDropWasTop = false;
+        let firstBlock = null;
+        for (let i = 0; i < editor.children.length; i++) {{
+            const child = editor.children[i];
+            if (child === sig || child.id === '__meridian_drop_caret' || child.tagName === 'STYLE' || child.tagName === 'SCRIPT') continue;
+            firstBlock = child;
+            break;
         }}
+        if (firstBlock && isBlockEmpty(firstBlock) && firstBlock !== sig) {{
+            firstBlock.innerHTML = '';
+            firstBlock.appendChild(img);
+            inserted = true;
+        }} else {{
+            const p = document.createElement('p');
+            p.style.margin = '4px 0';
+            p.appendChild(img);
+            if (firstBlock) {{
+                editor.insertBefore(p, firstBlock);
+            }} else if (sig) {{
+                editor.insertBefore(p, sig);
+            }} else {{
+                editor.appendChild(p);
+            }}
+            inserted = true;
+        }}
+    }}
+
+    if (!inserted && validSel) {{
+        const range = sel.getRangeAt(0);
+        let container = range.startContainer;
+        let block = (container.nodeType === 1 ? container : container.parentElement)?.closest('p, div, li, blockquote');
+
+        if (container === editor) {{
+            const childAtOffset = editor.childNodes[range.startOffset];
+            const prevChild = range.startOffset > 0 ? editor.childNodes[range.startOffset - 1] : null;
+            if (prevChild && isBlockEmpty(prevChild) && prevChild !== sig) {{
+                block = prevChild;
+            }} else if (childAtOffset && isBlockEmpty(childAtOffset) && childAtOffset !== sig) {{
+                block = childAtOffset;
+            }}
+        }}
+
+        if (block && isBlockEmpty(block) && block !== sig) {{
+            block.innerHTML = '';
+            block.appendChild(img);
+            inserted = true;
+        }} else if (container.nodeType === 1 && container.childNodes.length === 1 && container.childNodes[0].nodeName === 'BR') {{
+            container.innerHTML = '';
+            container.appendChild(img);
+            inserted = true;
+        }} else {{
+            range.deleteContents();
+            if (container.nodeType === 1 && container.children.length === 1 && container.children[0].nodeName === 'BR') {{
+                container.innerHTML = '';
+                container.appendChild(img);
+            }} else if (container === editor) {{
+                const p = document.createElement('p');
+                p.style.margin = '4px 0';
+                p.appendChild(img);
+                range.insertNode(p);
+            }} else {{
+                range.insertNode(img);
+            }}
+            inserted = true;
+        }}
+    }}
+
+    if (!inserted) {{
+        let firstBlock = null;
+        for (let i = 0; i < editor.children.length; i++) {{
+            const child = editor.children[i];
+            if (child === sig || child.id === '__meridian_drop_caret' || child.tagName === 'STYLE' || child.tagName === 'SCRIPT') continue;
+            firstBlock = child;
+            break;
+        }}
+        if (firstBlock && isBlockEmpty(firstBlock) && firstBlock !== sig) {{
+            firstBlock.innerHTML = '';
+            firstBlock.appendChild(img);
+        }} else if (sig) {{
+            const p = document.createElement('p');
+            p.style.margin = '4px 0';
+            p.appendChild(img);
+            editor.insertBefore(p, sig);
+        }} else {{
+            const p = document.createElement('p');
+            p.style.margin = '4px 0';
+            p.appendChild(img);
+            editor.appendChild(p);
+        }}
+    }}
+
+    // Clean up empty first block only if dropped at top
+    if (wasTop) {{
+        let firstBlock = null;
+        for (let i = 0; i < editor.children.length; i++) {{
+            const child = editor.children[i];
+            if (child === sig || child.id === '__meridian_drop_caret' || child.tagName === 'STYLE' || child.tagName === 'SCRIPT') continue;
+            firstBlock = child;
+            break;
+        }}
+        if (firstBlock && firstBlock !== sig && isBlockEmpty(firstBlock) && !firstBlock.contains(img)) {{
+            firstBlock.remove();
+        }}
+    }}
+
+    // Set selection after image
+    try {{
+        const afterRange = document.createRange();
+        afterRange.setStartAfter(img);
+        afterRange.collapse(true);
         sel = window.getSelection();
         if (sel) {{
             sel.removeAllRanges();
-            sel.addRange(range);
-        }}
-    }}
-    let success = false;
-    try {{
-        success = document.execCommand('insertImage', false, uri);
-    }} catch(e) {{}}
-    if (!success) {{
-        try {{
-            const img = document.createElement('img');
-            img.src = uri;
-            img.style.maxWidth = '100%';
-            img.style.height = 'auto';
-            img.setAttribute('draggable', 'true');
-            const range = (sel && sel.rangeCount > 0) ? sel.getRangeAt(0) : null;
-            if (range) {{
-                range.deleteContents();
-                range.insertNode(img);
-                range.setStartAfter(img);
-                range.collapse(true);
-                sel.removeAllRanges();
-                sel.addRange(range);
-            }} else if (sig) {{
-                editor.insertBefore(img, sig);
-            }} else {{
-                editor.appendChild(img);
-            }}
-        }} catch(e) {{}}
-    }}
-    try {{
-        const imgs = editor.querySelectorAll('img');
-        for (let i = 0; i < imgs.length; i++) {{
-            imgs[i].setAttribute('draggable', 'true');
-            if (!imgs[i].id) {{
-                imgs[i].id = '__meridian_img_' + Date.now() + '_' + Math.floor(Math.random() * 10000);
-            }}
-            if (!imgs[i].getAttribute('data-meridian-id')) {{
-                imgs[i].setAttribute('data-meridian-id', imgs[i].id);
-            }}
+            sel.addRange(afterRange);
         }}
     }} catch(e) {{}}
 }})();"#
@@ -953,7 +1049,7 @@ impl HtmlEditor {
     pub fn cancel_drag_session(&self) {
         if let Some(wv) = self.imp().web_view.borrow().as_ref() {
             wv.evaluate_javascript(
-                "hideCaret(); dragCounter = 0; currentDropRange = null; currentDropInfo = null; isInternalDrag = false; draggedElement = null;",
+                "if (typeof resetDraggedElement === 'function') resetDraggedElement(); if (isInternalDrag) { try { window.webkit.messageHandlers.meridianDrag.postMessage('internal_end'); } catch(err) {} } hideCaret(); dragCounter = 0; currentDropRange = null; currentDropInfo = null; isInternalDrag = false; draggedElement = null;",
                 None,
                 None,
                 None::<&gio::Cancellable>,
@@ -989,6 +1085,28 @@ impl HtmlEditor {
                         }));
                     }
                 }
+            }
+        } else if msg == "internal_start" {
+            let cbs: Vec<_> = if let Ok(guard) = self.imp().drag_internal_callbacks.try_borrow() {
+                guard.0.clone()
+            } else {
+                Vec::new()
+            };
+            for cb in cbs {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                    cb(true);
+                }));
+            }
+        } else if msg == "internal_end" {
+            let cbs: Vec<_> = if let Ok(guard) = self.imp().drag_internal_callbacks.try_borrow() {
+                guard.0.clone()
+            } else {
+                Vec::new()
+            };
+            for cb in cbs {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                    cb(false);
+                }));
             }
         } else if msg == "leave" || msg == "drop" || msg == "cancel" {
             let cbs: Vec<_> = if let Ok(guard) = self.imp().drag_leave_callbacks.try_borrow() {
@@ -1772,20 +1890,28 @@ impl HtmlEditor {
                 "let lastDragNotify = 0;",
                 "let isInternalDrag = false;",
                 "let draggedElement = null;",
+                "let currentDropRange = null;",
                 "let currentDropInfo = null;",
+                "let lastValidDropRange = null;",
+                "let lastValidDropInfo = null;",
+                "let dropIndicator = null;",
+                "function resetDraggedElement() {{",
+                "    if (draggedElement) {{",
+                "        try {{",
+                "            draggedElement.style.opacity = '';",
+                "            draggedElement.style.pointerEvents = '';",
+                "            if (draggedElement.parentElement && draggedElement.parentElement !== document.body) {{",
+                "                draggedElement.parentElement.style.pointerEvents = '';",
+                "            }}",
+                "        }} catch(e) {{}}",
+                "    }}",
+                "}};",
                 "document.addEventListener('dragstart', function(e) {{",
                 "    const img = (e.target && e.target.nodeName === 'IMG') ? e.target : (e.target.querySelector ? e.target.querySelector('img') : (e.target.closest ? e.target.closest('img') : null));",
                 "    if (img) {{",
                 "        isInternalDrag = true;",
-                "        let block = img.parentElement;",
-                "        if (!block || block === document.body || (block.childNodes.length > 1 && block.textContent.trim() !== '')) {{",
-                "            const wrapper = document.createElement('p');",
-                "            wrapper.style.margin = '4px 0';",
-                "            img.parentNode.insertBefore(wrapper, img);",
-                "            wrapper.appendChild(img);",
-                "            block = wrapper;",
-                "        }}",
-                "        draggedElement = block;",
+                "        try {{ window.webkit.messageHandlers.meridianDrag.postMessage('internal_start'); }} catch(err) {{}}",
+                "        draggedElement = img;",
                 "        if (!img.id) {{",
                 "            img.id = '__meridian_img_' + Date.now() + '_' + Math.floor(Math.random() * 10000);",
                 "        }}",
@@ -1802,35 +1928,51 @@ impl HtmlEditor {
                 "                const clickX = Math.max(0, Math.min(Math.round(rect.width), Math.round(e.clientX - rect.left)));",
                 "                const clickY = Math.max(0, Math.min(Math.round(rect.height), Math.round(e.clientY - rect.top)));",
                 "                if (e.dataTransfer.setDragImage) {{",
-                "                    e.dataTransfer.setDragImage(img, -clickX, -clickY);",
+                "                    e.dataTransfer.setDragImage(img, clickX, clickY);",
                 "                }}",
                 "            }} catch(err) {{}}",
                 "        }}",
+                "        setTimeout(() => {{",
+                "            if (draggedElement === img) {{",
+                "                img.style.opacity = '0.35';",
+                "                img.style.pointerEvents = 'none';",
+                "                if (img.parentElement && img.parentElement !== document.body) {{",
+                "                    img.parentElement.style.pointerEvents = 'none';",
+                "                }}",
+                "            }}",
+                "        }}, 0);",
                 "    }} else {{",
                 "        isInternalDrag = false;",
                 "        draggedElement = null;",
                 "    }}",
                 "}});",
-                "document.addEventListener('dragend', function(e) {{",
+                "function handleDragEnd() {{",
+                "    resetDraggedElement();",
+                "    if (isInternalDrag) {{",
+                "        try {{ window.webkit.messageHandlers.meridianDrag.postMessage('internal_end'); }} catch(err) {{}}",
+                "    }}",
                 "    isInternalDrag = false;",
                 "    draggedElement = null;",
                 "    currentDropInfo = null;",
+                "    currentDropRange = null;",
+                "    lastValidDropInfo = null;",
+                "    lastValidDropRange = null;",
+                "    dragCounter = 0;",
                 "    hideCaret();",
-                "}});",
+                "}};",
+                "document.addEventListener('dragend', handleDragEnd);",
+                "window.addEventListener('dragend', handleDragEnd);",
                 "function checkHasFiles(e) {{",
                 "    if (isInternalDrag) return false;",
                 "    if (!e.dataTransfer || !e.dataTransfer.types) return false;",
                 "    for (let i = 0; i < e.dataTransfer.types.length; i++) {{",
                 "        const t = e.dataTransfer.types[i];",
-                "        if (t === 'Files' || t === 'application/x-moz-file') {{",
+                "        if (t === 'Files' || t === 'application/x-moz-file' || t === 'text/uri-list') {{",
                 "            return true;",
                 "        }}",
                 "    }}",
                 "    return false;",
                 "}};",
-                "let currentDropRange = null;",
-                "let currentDropInfo = null;",
-                "let dropIndicator = null;",
                 "function getDropIndicator() {{",
                 "    if (!dropIndicator || !dropIndicator.parentNode) {{",
                 "        dropIndicator = document.createElement('div');",
@@ -1852,7 +1994,7 @@ impl HtmlEditor {
                 "    const el = document.getElementById('__meridian_drop_caret');",
                 "    if (el) el.style.display = 'none';",
                 "}};",
-                "function getCaretRect(range) {{",
+                "function getCaretRect(range, y) {{",
                 "    if (!range) return null;",
                 "    let rect = range.getBoundingClientRect();",
                 "    if (rect && rect.height > 0 && (rect.top > 0 || rect.bottom > 0)) {{",
@@ -1863,16 +2005,59 @@ impl HtmlEditor {
                 "        return rects[0];",
                 "    }}",
                 "    try {{",
-                "        const cloned = range.cloneRange();",
-                "        const span = document.createElement('span');",
-                "        span.textContent = '\\u200b';",
-                "        cloned.insertNode(span);",
-                "        const r = span.getBoundingClientRect();",
-                "        if (span.parentNode) {{",
-                "            span.parentNode.removeChild(span);",
-                "        }}",
-                "        if (r && r.height > 0) {{",
-                "            return r;",
+                "        const container = range.startContainer;",
+                "        const offset = range.startOffset;",
+                "        if (container.nodeType === 3) {{",
+                "            const len = container.nodeValue ? container.nodeValue.length : 0;",
+                "            if (len > 0) {{",
+                "                if (offset < len) {{",
+                "                    const tr = document.createRange();",
+                "                    tr.setStart(container, offset);",
+                "                    tr.setEnd(container, offset + 1);",
+                "                    const cr = tr.getBoundingClientRect();",
+                "                    if (cr && cr.height > 0) {{",
+                "                        return {{ left: cr.left, right: cr.left, top: cr.top, bottom: cr.bottom, width: 0, height: cr.height }};",
+                "                    }}",
+                "                }}",
+                "                if (offset > 0) {{",
+                "                    const tr = document.createRange();",
+                "                    tr.setStart(container, offset - 1);",
+                "                    tr.setEnd(container, offset);",
+                "                    const cr = tr.getBoundingClientRect();",
+                "                    if (cr && cr.height > 0) {{",
+                "                        return {{ left: cr.right, right: cr.right, top: cr.top, bottom: cr.bottom, width: 0, height: cr.height }};",
+                "                    }}",
+                "                }}",
+                "            }}",
+                "        }} else if (container.nodeType === 1) {{",
+                "            if (offset < container.childNodes.length) {{",
+                "                const child = container.childNodes[offset];",
+                "                if (child && child.getBoundingClientRect) {{",
+                "                    const cr = child.getBoundingClientRect();",
+                "                    if (cr && cr.height > 0) {{",
+                "                        const h = 20;",
+                "                        const t = (cr.height > 24 && y !== undefined) ? Math.max(cr.top, Math.min(cr.bottom - h, y - h / 2)) : cr.top;",
+                "                        return {{ left: cr.left, right: cr.left, top: t, bottom: t + h, width: 0, height: h }};",
+                "                    }}",
+                "                }}",
+                "            }}",
+                "            if (offset > 0) {{",
+                "                const child = container.childNodes[offset - 1];",
+                "                if (child && child.getBoundingClientRect) {{",
+                "                    const cr = child.getBoundingClientRect();",
+                "                    if (cr && cr.height > 0) {{",
+                "                        const h = 20;",
+                "                        const t = (cr.height > 24 && y !== undefined) ? Math.max(cr.top, Math.min(cr.bottom - h, y - h / 2)) : cr.top;",
+                "                        return {{ left: cr.right, right: cr.right, top: t, bottom: t + h, width: 0, height: h }};",
+                "                    }}",
+                "                }}",
+                "            }}",
+                "            const pr = container.getBoundingClientRect();",
+                "            if (pr && pr.height > 0) {{",
+                "                const h = 20;",
+                "                const t = (pr.height > 24 && y !== undefined) ? Math.max(pr.top, Math.min(pr.bottom - h, y - h / 2)) : pr.top;",
+                "                return {{ left: pr.left, right: pr.left, top: t, bottom: t + h, width: 0, height: h }};",
+                "            }}",
                 "        }}",
                 "    }} catch(e) {{}}",
                 "    return null;",
@@ -1883,9 +2068,9 @@ impl HtmlEditor {
                 "function isBlockEmpty(el) {{",
                 "    if (!el) return true;",
                 "    if (el.nodeType === 3) {{",
-                "        return el.textContent.trim() === '';",
+                "        return el.textContent.replace(/[\\s\\u200b\\u00a0]+/g, '') === '';",
                 "    }}",
-                "    const text = el.textContent ? el.textContent.trim() : '';",
+                "    const text = el.textContent ? el.textContent.replace(/[\\s\\u200b\\u00a0]+/g, '') : '';",
                 "    if (text === '') {{",
                 "        const imgs = el.querySelectorAll ? el.querySelectorAll('img') : [];",
                 "        return imgs.length === 0;",
@@ -1908,11 +2093,11 @@ impl HtmlEditor {
                 "    const sig = getSignatureElement();",
                 "    if (!sig) return range;",
                 "    let node = range.startContainer;",
-                "    let isAfterOrInside = sig.contains(node);",
+                "    let isAfterOrInside = (node === sig || sig.contains(node));",
                 "    if (!isAfterOrInside) {{",
                 "        try {{",
                 "            const cmp = sig.compareDocumentPosition(node);",
-                "            if (cmp & Node.DOCUMENT_POSITION_PRECEDING) {{",
+                "            if (cmp & Node.DOCUMENT_POSITION_FOLLOWING) {{",
                 "                isAfterOrInside = true;",
                 "            }} else if (node === document.body) {{",
                 "                const sigIdx = Array.prototype.indexOf.call(document.body.childNodes, sig);",
@@ -1930,13 +2115,8 @@ impl HtmlEditor {
                 "            document.body.insertBefore(prev, sig);",
                 "        }}",
                 "        const safeRange = document.createRange();",
-                "        const br = prev.querySelector('br');",
-                "        if (br && prev.childNodes.length === 1) {{",
-                "            safeRange.selectNode(br);",
-                "        }} else {{",
-                "            safeRange.selectNodeContents(prev);",
-                "            safeRange.collapse(false);",
-                "        }}",
+                "        safeRange.selectNodeContents(prev);",
+                "        safeRange.collapse(false);",
                 "        return safeRange;",
                 "    }}",
                 "    return range;",
@@ -1944,23 +2124,28 @@ impl HtmlEditor {
                 "function updateCaretToPoint(x, y) {{",
                 "    if (window.__plainTextMode) return null;",
                 "    try {{",
-                "        if (isInternalDrag && draggedElement) {{",
-                "            const blocks = getContentBlocks(draggedElement);",
-                "            const firstBlock = blocks.length > 0 ? blocks[0] : null;",
-                "            const fbRect = firstBlock ? firstBlock.getBoundingClientRect() : null;",
-                "            if (firstBlock && y <= fbRect.top + fbRect.height / 2) {{",
-                "                currentDropInfo = {{ isTop: true, block: firstBlock }};",
-                "                currentDropRange = null;",
-                "                const el = getDropIndicator();",
-                "                el.style.left = Math.round(fbRect.left) + 'px';",
-                "                el.style.top = Math.round(fbRect.top) + 'px';",
-                "                el.style.width = '2px';",
-                "                el.style.height = Math.max(16, Math.round(fbRect.height || 20)) + 'px';",
-                "                el.style.display = 'block';",
-                "                return currentDropInfo;",
-                "            }}",
-                "            currentDropInfo = null;",
+                "        const blocks = getContentBlocks(draggedElement);",
+                "        const firstBlock = blocks.length > 0 ? blocks[0] : null;",
+                "        const fbRect = firstBlock ? firstBlock.getBoundingClientRect() : null;",
+                "        const isNearTop = fbRect",
+                "            ? (isBlockEmpty(firstBlock) ? (y <= Math.max(fbRect.bottom, 40)) : (y < fbRect.top - 2))",
+                "            : (y <= 40);",
+                "        if (firstBlock && isNearTop) {{",
+                "            currentDropInfo = {{ isTop: true, block: firstBlock }};",
+                "            currentDropRange = null;",
+                "            lastValidDropInfo = currentDropInfo;",
+                "            lastValidDropRange = null;",
+                "            const el = getDropIndicator();",
+                "            const caretH = 20;",
+                "            const top = Math.round(fbRect.top + (fbRect.height > 20 ? (fbRect.height - 20) / 2 : 0));",
+                "            el.style.left = Math.round(fbRect.left) + 'px';",
+                "            el.style.top = top + 'px';",
+                "            el.style.width = '2px';",
+                "            el.style.height = caretH + 'px';",
+                "            el.style.display = 'block';",
+                "            return currentDropInfo;",
                 "        }}",
+                "        currentDropInfo = null;",
                 "        let range = null;",
                 "        if (document.caretRangeFromPoint) {{",
                 "            range = document.caretRangeFromPoint(x, y);",
@@ -1972,21 +2157,35 @@ impl HtmlEditor {
                 "                range.collapse(true);",
                 "            }}",
                 "        }}",
+                "        if (!range && blocks.length > 0) {{",
+                "            const lastBlock = blocks[blocks.length - 1];",
+                "            const lbRect = lastBlock.getBoundingClientRect();",
+                "            if (y >= lbRect.bottom) {{",
+                "                const fallbackRange = document.createRange();",
+                "                fallbackRange.selectNodeContents(lastBlock);",
+                "                fallbackRange.collapse(false);",
+                "                range = fallbackRange;",
+                "            }}",
+                "        }}",
                 "        if (range) {{",
                 "            range = constrainRangeBeforeSignature(range);",
-                "            if (draggedElement && draggedElement.contains(range.startContainer)) {{",
+                "            if (draggedElement && (draggedElement.contains(range.startContainer) || draggedElement === range.startContainer || (draggedElement.parentElement && draggedElement.parentElement === range.startContainer && draggedElement.parentElement.children.length === 1))) {{",
                 "                hideCaret();",
                 "                return null;",
                 "            }}",
-                "            const rect = getCaretRect(range);",
+                "            const rect = getCaretRect(range, y);",
                 "            if (rect && rect.height > 0) {{",
                 "                const el = getDropIndicator();",
+                "                const caretH = 20;",
+                "                const top = Math.round(rect.top + (rect.height > 20 ? (rect.height - 20) / 2 : 0));",
                 "                el.style.left = Math.round(rect.left) + 'px';",
-                "                el.style.top = Math.round(rect.top) + 'px';",
+                "                el.style.top = top + 'px';",
                 "                el.style.width = '2px';",
-                "                el.style.height = Math.max(16, Math.round(rect.height)) + 'px';",
+                "                el.style.height = caretH + 'px';",
                 "                el.style.display = 'block';",
                 "                currentDropRange = range.cloneRange();",
+                "                lastValidDropRange = currentDropRange;",
+                "                lastValidDropInfo = null;",
                 "                return currentDropRange;",
                 "            }}",
                 "        }}",
@@ -2026,88 +2225,168 @@ impl HtmlEditor {
                 "    }}",
                 "}});",
                 "document.addEventListener('dragleave', function(e) {{",
-                "    if (isInternalDrag) return;",
                 "    dragCounter--;",
-                "    if (dragCounter <= 0 || !e.relatedTarget || e.clientY <= 0 || e.clientX <= 0 || e.clientX >= window.innerWidth) {{",
+                "    const isOutOfWindow = e.clientY <= 0 || e.clientX <= 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight;",
+                "    if (dragCounter <= 0 || isOutOfWindow) {{",
                 "        dragCounter = 0;",
                 "        hideCaret();",
-                "        currentDropRange = null;",
-                "        try {{ window.webkit.messageHandlers.meridianDrag.postMessage('leave'); }} catch(err) {{}}",
+                "        if (!isInternalDrag) {{",
+                "            try {{ window.webkit.messageHandlers.meridianDrag.postMessage('leave'); }} catch(err) {{}}",
+                "        }}",
                 "    }}",
                 "}});",
                 "document.addEventListener('drop', function(e) {{",
                 "    dragCounter = 0;",
                 "    hideCaret();",
+                "    let dropInfo = currentDropInfo || lastValidDropInfo;",
+                "    currentDropInfo = null;",
+                "    let dropRange = currentDropRange || lastValidDropRange;",
+                "    currentDropRange = null;",
+                "    if (!dropInfo && !dropRange && e.clientX > 0 && e.clientY > 0) {{",
+                "        updateCaretToPoint(e.clientX, e.clientY);",
+                "        dropInfo = currentDropInfo || lastValidDropInfo;",
+                "        currentDropInfo = null;",
+                "        dropRange = currentDropRange || lastValidDropRange;",
+                "        currentDropRange = null;",
+                "    }}",
+                "    hideCaret();",
+                "    const sig = getSignatureElement();",
                 "    if (isInternalDrag && draggedElement) {{",
                 "        e.preventDefault();",
-                "        const info = currentDropInfo;",
-                "        currentDropInfo = null;",
-                "        let dropRange = currentDropRange;",
-                "        currentDropRange = null;",
-                "        const oldParent = draggedElement.parentElement;",
-                "        draggedElement.remove();",
-                "        if (oldParent && oldParent !== document.body && oldParent.childNodes.length === 0) {{",
-                "            oldParent.remove();",
-                "        }}",
-                "        const sig = getSignatureElement();",
-                "        if (info && info.isTop) {{",
-                "            while (document.body.firstChild && isBlockEmpty(document.body.firstChild) && document.body.firstChild !== sig) {{",
-                "                document.body.firstChild.remove();",
-                "            }}",
-                "            let topElem = draggedElement;",
-                "            if (!topElem || topElem.nodeName !== 'P') {{",
-                "                const newP = document.createElement('p');",
-                "                newP.style.margin = '4px 0';",
-                "                newP.appendChild(draggedElement);",
-                "                topElem = newP;",
-                "            }}",
-                "            if (document.body.firstChild) {{",
-                "                document.body.insertBefore(topElem, document.body.firstChild);",
+                "        try {{",
+                "            resetDraggedElement();",
+                "            const oldParent = draggedElement.parentElement;",
+                "            if (dropInfo && dropInfo.isTop) {{",
+                "                const blocks = getContentBlocks(draggedElement);",
+                "                const firstBlock = blocks.length > 0 ? blocks[0] : null;",
+                "                if (firstBlock && isBlockEmpty(firstBlock) && firstBlock !== sig) {{",
+                "                    firstBlock.innerHTML = '';",
+                "                    firstBlock.appendChild(draggedElement);",
+                "                }} else {{",
+                "                    let topElem = draggedElement;",
+                "                    if (!topElem || topElem.nodeName !== 'P') {{",
+                "                        const newP = document.createElement('p');",
+                "                        newP.style.margin = '4px 0';",
+                "                        newP.appendChild(draggedElement);",
+                "                        topElem = newP;",
+                "                    }}",
+                "                    if (firstBlock) {{",
+                "                        document.body.insertBefore(topElem, firstBlock);",
+                "                    }} else if (sig) {{",
+                "                        document.body.insertBefore(topElem, sig);",
+                "                    }} else {{",
+                "                        document.body.appendChild(topElem);",
+                "                    }}",
+                "                }}",
+                "                if (oldParent && oldParent !== document.body && oldParent !== draggedElement.parentElement && isBlockEmpty(oldParent)) {{",
+                "                    oldParent.remove();",
+                "                }}",
+                "                const allBlocks = getContentBlocks();",
+                "                for (let i = 0; i < allBlocks.length; i++) {{",
+                "                    const b = allBlocks[i];",
+                "                    if (b === sig || b.contains(draggedElement)) break;",
+                "                    if (isBlockEmpty(b)) {{",
+                "                        b.remove();",
+                "                    }} else {{",
+                "                        break;",
+                "                    }}",
+                "                }}",
+                "            }} else if (dropRange) {{",
+                "                dropRange = constrainRangeBeforeSignature(dropRange);",
+                "                let container = dropRange.startContainer;",
+                "                let block = (container.nodeType === 1) ? container : container.parentElement;",
+                "                block = block ? block.closest('p, div, li, blockquote') : null;",
+                "                if (container === document.body) {{",
+                "                    const childAtOffset = document.body.childNodes[dropRange.startOffset];",
+                "                    const prevChild = dropRange.startOffset > 0 ? document.body.childNodes[dropRange.startOffset - 1] : null;",
+                "                    if (prevChild && isBlockEmpty(prevChild) && prevChild !== sig) {{",
+                "                        block = prevChild;",
+                "                    }} else if (childAtOffset && isBlockEmpty(childAtOffset) && childAtOffset !== sig) {{",
+                "                        block = childAtOffset;",
+                "                    }}",
+                "                }}",
+                "                if (block && isBlockEmpty(block) && block !== sig) {{",
+                "                    block.innerHTML = '';",
+                "                    block.appendChild(draggedElement);",
+                "                }} else if (container.nodeType === 1 && container.childNodes.length === 1 && container.childNodes[0].nodeName === 'BR') {{",
+                "                    container.innerHTML = '';",
+                "                    container.appendChild(draggedElement);",
+                "                }} else {{",
+                "                    let toInsert = draggedElement;",
+                "                    if (container === document.body && toInsert.nodeName === 'IMG') {{",
+                "                        const newP = document.createElement('p');",
+                "                        newP.style.margin = '4px 0';",
+                "                        newP.appendChild(toInsert);",
+                "                        toInsert = newP;",
+                "                    }}",
+                "                    dropRange.insertNode(toInsert);",
+                "                }}",
+                "                if (oldParent && oldParent !== document.body && oldParent !== draggedElement.parentElement && isBlockEmpty(oldParent)) {{",
+                "                    oldParent.remove();",
+                "                }}",
                 "            }} else if (sig) {{",
-                "                document.body.insertBefore(topElem, sig);",
+                "                let fallbackElem = draggedElement;",
+                "                if (!fallbackElem || fallbackElem.nodeName !== 'P') {{",
+                "                    const newP = document.createElement('p');",
+                "                    newP.style.margin = '4px 0';",
+                "                    newP.appendChild(draggedElement);",
+                "                    fallbackElem = newP;",
+                "                }}",
+                "                document.body.insertBefore(fallbackElem, sig);",
+                "                if (oldParent && oldParent !== document.body && oldParent !== draggedElement.parentElement && isBlockEmpty(oldParent)) {{",
+                "                    oldParent.remove();",
+                "                }}",
                 "            }} else {{",
-                "                document.body.appendChild(topElem);",
+                "                let fallbackElem = draggedElement;",
+                "                if (!fallbackElem || fallbackElem.nodeName !== 'P') {{",
+                "                    const newP = document.createElement('p');",
+                "                    newP.style.margin = '4px 0';",
+                "                    newP.appendChild(draggedElement);",
+                "                    fallbackElem = newP;",
+                "                }}",
+                "                document.body.appendChild(fallbackElem);",
+                "                if (oldParent && oldParent !== document.body && oldParent !== draggedElement.parentElement && isBlockEmpty(oldParent)) {{",
+                "                    oldParent.remove();",
+                "                }}",
                 "            }}",
-                "        }} else if (dropRange) {{",
-                "            dropRange = constrainRangeBeforeSignature(dropRange);",
-                "            dropRange.insertNode(draggedElement);",
-                "        }} else if (sig) {{",
-                "            let fallbackElem = draggedElement;",
-                "            if (!fallbackElem || fallbackElem.nodeName !== 'P') {{",
-                "                const newP = document.createElement('p');",
-                "                newP.style.margin = '4px 0';",
-                "                newP.appendChild(draggedElement);",
-                "                fallbackElem = newP;",
+                "            const sel = window.getSelection();",
+                "            if (sel) {{",
+                "                const afterRange = document.createRange();",
+                "                afterRange.setStartAfter(draggedElement);",
+                "                afterRange.collapse(true);",
+                "                sel.removeAllRanges();",
+                "                sel.addRange(afterRange);",
                 "            }}",
-                "            document.body.insertBefore(fallbackElem, sig);",
-                "        }} else {{",
-                "            let fallbackElem = draggedElement;",
-                "            if (!fallbackElem || fallbackElem.nodeName !== 'P') {{",
-                "                const newP = document.createElement('p');",
-                "                newP.style.margin = '4px 0';",
-                "                newP.appendChild(draggedElement);",
-                "                fallbackElem = newP;",
+                "        }} catch(err) {{",
+                "            console.error('Drop error:', err);",
+                "        }} finally {{",
+                "            resetDraggedElement();",
+                "            if (isInternalDrag) {{",
+                "                try {{ window.webkit.messageHandlers.meridianDrag.postMessage('internal_end'); }} catch(err) {{}}",
                 "            }}",
-                "            document.body.appendChild(fallbackElem);",
+                "            isInternalDrag = false;",
+                "            draggedElement = null;",
+                "            currentDropInfo = null;",
+                "            currentDropRange = null;",
+                "            lastValidDropInfo = null;",
+                "            lastValidDropRange = null;",
+                "            hideCaret();",
                 "        }}",
-                "        const sel = window.getSelection();",
-                "        if (sel) {{",
-                "            const afterRange = document.createRange();",
-                "            afterRange.setStartAfter(draggedElement);",
-                "            afterRange.collapse(true);",
-                "            sel.removeAllRanges();",
-                "            sel.addRange(afterRange);",
-                "        }}",
-                "        isInternalDrag = false;",
-                "        draggedElement = null;",
                 "        return;",
                 "    }}",
+                "    if (isInternalDrag) {{",
+                "        try {{ window.webkit.messageHandlers.meridianDrag.postMessage('internal_end'); }} catch(err) {{}}",
+                "    }}",
+                "    resetDraggedElement();",
                 "    isInternalDrag = false;",
                 "    draggedElement = null;",
                 "    try {{ window.webkit.messageHandlers.meridianDrag.postMessage('drop'); }} catch(err) {{}}",
                 "    e.preventDefault();",
-                "    let dropRange = currentDropRange || updateCaretToPoint(e.clientX, e.clientY);",
-                "    currentDropRange = null;",
+                "    if (dropInfo && dropInfo.isTop) {{",
+                "        window.__lastDropWasTop = true;",
+                "    }} else {{",
+                "        window.__lastDropWasTop = false;",
+                "    }}",
                 "    if (dropRange) {{",
                 "        dropRange = constrainRangeBeforeSignature(dropRange);",
                 "        try {{",
@@ -2119,17 +2398,15 @@ impl HtmlEditor {
                 "}});",
                 "function handleEscape(e) {{",
                 "    if (e.key === 'Escape') {{",
-                "        dragCounter = 0;",
-                "        isInternalDrag = false;",
-                "        draggedElement = null;",
-                "        currentDropInfo = null;",
-                "        hideCaret();",
-                "        currentDropRange = null;",
+                "        handleDragEnd();",
                 "        try {{ window.webkit.messageHandlers.meridianDrag.postMessage('cancel'); }} catch(err) {{}}",
                 "    }}",
                 "}};",
                 "window.addEventListener('keydown', handleEscape);",
                 "document.addEventListener('keydown', handleEscape);",
+                "window.addEventListener('mouseleave', function(e) {{ hideCaret(); }});",
+                "document.addEventListener('mouseleave', function(e) {{ hideCaret(); }});",
+                "window.addEventListener('scroll', function() {{ hideCaret(); }}, true);",
                 "</script></head><body contenteditable='true'><p><br></p></body></html>"
             ),
             font_family, font_size
@@ -2184,8 +2461,27 @@ impl HtmlEditor {
             gdk::DragAction::COPY
         });
 
+        let web_view_for_leave = web_view.clone();
+        drop_target.connect_leave(move |_| {
+            web_view_for_leave.evaluate_javascript(
+                "hideCaret(); currentDropRange = null; currentDropInfo = null;",
+                None,
+                None,
+                None::<&gio::Cancellable>,
+                |_| {},
+            );
+        });
+
         let editor_weak_for_drop = self.downgrade();
+        let web_view_for_drop_eval = web_view.clone();
         drop_target.connect_drop(move |_, value, _, _| {
+            web_view_for_drop_eval.evaluate_javascript(
+                "hideCaret(); currentDropRange = null;",
+                None,
+                None,
+                None::<&gio::Cancellable>,
+                |_| {},
+            );
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let Some(editor) = editor_weak_for_drop.upgrade() else {
                     return false;
@@ -2849,6 +3145,19 @@ mod tests {
         let d2 = data2.unwrap();
         assert_eq!(d2.src, "data:image/png;base64,dGVzdA==");
         assert_eq!(d2.alt, "test.png");
+    }
+
+    #[test]
+    fn test_is_supported_image() {
+        assert!(HtmlEditor::is_supported_image(std::path::Path::new("photo.png")));
+        assert!(HtmlEditor::is_supported_image(std::path::Path::new("photo.JPG")));
+        assert!(HtmlEditor::is_supported_image(std::path::Path::new("photo.jpeg")));
+        assert!(HtmlEditor::is_supported_image(std::path::Path::new("animation.gif")));
+        assert!(HtmlEditor::is_supported_image(std::path::Path::new("vector.svg")));
+        assert!(HtmlEditor::is_supported_image(std::path::Path::new("modern.webp")));
+        assert!(!HtmlEditor::is_supported_image(std::path::Path::new("doc.pdf")));
+        assert!(!HtmlEditor::is_supported_image(std::path::Path::new("archive.zip")));
+        assert!(!HtmlEditor::is_supported_image(std::path::Path::new("text.txt")));
     }
 }
 

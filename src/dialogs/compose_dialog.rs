@@ -221,6 +221,8 @@ mod imp {
         pub attachment_col_mod: RefCell<Option<gtk::Label>>,
         pub is_drag_over_sheet: Cell<bool>,
         pub is_drag_active: Cell<bool>,
+        pub is_internal_drag: Cell<bool>,
+        pub drag_auto_expanded: Cell<bool>,
         pub drag_leave_timeout: RefCell<Option<glib::SourceId>>,
         pub attachment_empty_page: RefCell<Option<adw::StatusPage>>,
         pub compose_controls: RefCell<Vec<gtk::Widget>>,
@@ -1154,6 +1156,7 @@ impl ComposeDialog {
             .build();
 
         let sheet_dismiss_gesture = gtk::GestureClick::new();
+        sheet_dismiss_gesture.set_button(1);
         sheet_dismiss_gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
         let dialog_weak_for_dismiss = self.downgrade();
         sheet_dismiss_gesture.connect_pressed(move |_, _, _, _| {
@@ -1574,14 +1577,29 @@ impl ComposeDialog {
             }
         });
 
+        let dialog_weak_for_drag_motion = self.downgrade();
         html_editor.connect_drag_motion(move |_y, _h| {
-            // Dragging inside the editor body: do NOT expand the attachment drawer!
+            if let Some(dialog) = dialog_weak_for_drag_motion.upgrade() {
+                if dialog.is_external_drag(None) {
+                    dialog.start_external_drag_session();
+                }
+            }
         });
 
         let dialog_weak_for_drag_leave = self.downgrade();
         html_editor.connect_drag_leave(move || {
             if let Some(dialog) = dialog_weak_for_drag_leave.upgrade() {
                 dialog.schedule_drag_leave();
+            }
+        });
+
+        let dialog_weak_for_internal = self.downgrade();
+        html_editor.connect_drag_internal(move |is_internal| {
+            if let Some(dialog) = dialog_weak_for_internal.upgrade() {
+                dialog.imp().is_internal_drag.set(is_internal);
+                if !is_internal {
+                    dialog.imp().is_drag_active.set(false);
+                }
             }
         });
 
@@ -1613,6 +1631,7 @@ impl ComposeDialog {
 
         let dialog_weak_for_editor_click = self.downgrade();
         let editor_click = gtk::GestureClick::new();
+        editor_click.set_button(1);
         editor_click.set_propagation_phase(gtk::PropagationPhase::Capture);
         editor_click.connect_pressed(move |_, _, _, _| {
             if let Some(dialog) = dialog_weak_for_editor_click.upgrade() {
@@ -1748,30 +1767,38 @@ impl ComposeDialog {
             glib::types::Type::STRING,
         ]);
         let dialog_weak_for_bar_enter = self.downgrade();
-        drop_target_bar.connect_enter(move |_, _, _| {
+        drop_target_bar.connect_enter(move |target, _, _| {
+            let mut action = gdk::DragAction::empty();
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 if let Some(dialog) = dialog_weak_for_bar_enter.upgrade() {
-                    dialog.start_drag_session();
-                    dialog.imp().is_drag_over_sheet.set(true);
-                    if !dialog.imp().attachment_expanded.get() {
-                        dialog.update_attachment_max_height();
-                        dialog.set_attachment_expanded(true);
+                    if dialog.is_external_drag(Some(target)) {
+                        dialog.start_drag_session();
+                        dialog.imp().is_drag_over_sheet.set(true);
+                        if !dialog.imp().attachment_expanded.get() {
+                            dialog.update_attachment_max_height();
+                            dialog.set_attachment_expanded(true);
+                        }
+                        action = gdk::DragAction::COPY;
                     }
                 }
             }));
-            gdk::DragAction::COPY
+            action
         });
         let dialog_weak_for_bar_motion = self.downgrade();
-        drop_target_bar.connect_motion(move |_, _, _| {
+        drop_target_bar.connect_motion(move |target, _, _| {
+            let mut action = gdk::DragAction::empty();
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 if let Some(dialog) = dialog_weak_for_bar_motion.upgrade() {
-                    if !dialog.imp().attachment_expanded.get() {
-                        dialog.update_attachment_max_height();
-                        dialog.set_attachment_expanded(true);
+                    if dialog.is_external_drag(Some(target)) {
+                        if !dialog.imp().attachment_expanded.get() {
+                            dialog.update_attachment_max_height();
+                            dialog.set_attachment_expanded(true);
+                        }
+                        action = gdk::DragAction::COPY;
                     }
                 }
             }));
-            gdk::DragAction::COPY
+            action
         });
         let dialog_weak_for_bar_leave = self.downgrade();
         drop_target_bar.connect_leave(move |_| {
@@ -1782,11 +1809,14 @@ impl ComposeDialog {
             }));
         });
         let dialog_weak_for_bar_drop = self.downgrade();
-        drop_target_bar.connect_drop(move |_, value, _, _| {
+        drop_target_bar.connect_drop(move |target, value, _, _| {
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let Some(dialog) = dialog_weak_for_bar_drop.upgrade() else {
                     return false;
                 };
+                if !dialog.is_external_drag(Some(target)) {
+                    return false;
+                }
                 if let Some(source_id) = dialog.imp().drag_leave_timeout.borrow_mut().take() {
                     source_id.remove();
                 }
@@ -1838,30 +1868,38 @@ impl ComposeDialog {
             glib::types::Type::STRING,
         ]);
         let dialog_weak_for_sheet_enter = self.downgrade();
-        drop_target_sheet.connect_enter(move |_, _, _| {
+        drop_target_sheet.connect_enter(move |target, _, _| {
+            let mut action = gdk::DragAction::empty();
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 if let Some(dialog) = dialog_weak_for_sheet_enter.upgrade() {
-                    dialog.start_drag_session();
-                    dialog.imp().is_drag_over_sheet.set(true);
-                    if !dialog.imp().attachment_expanded.get() {
-                        dialog.update_attachment_max_height();
-                        dialog.set_attachment_expanded(true);
+                    if dialog.is_external_drag(Some(target)) {
+                        dialog.start_drag_session();
+                        dialog.imp().is_drag_over_sheet.set(true);
+                        if !dialog.imp().attachment_expanded.get() {
+                            dialog.update_attachment_max_height();
+                            dialog.set_attachment_expanded(true);
+                        }
+                        action = gdk::DragAction::COPY;
                     }
                 }
             }));
-            gdk::DragAction::COPY
+            action
         });
         let dialog_weak_for_sheet_motion = self.downgrade();
-        drop_target_sheet.connect_motion(move |_, _, _| {
+        drop_target_sheet.connect_motion(move |target, _, _| {
+            let mut action = gdk::DragAction::empty();
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 if let Some(dialog) = dialog_weak_for_sheet_motion.upgrade() {
-                    if !dialog.imp().attachment_expanded.get() {
-                        dialog.update_attachment_max_height();
-                        dialog.set_attachment_expanded(true);
+                    if dialog.is_external_drag(Some(target)) {
+                        if !dialog.imp().attachment_expanded.get() {
+                            dialog.update_attachment_max_height();
+                            dialog.set_attachment_expanded(true);
+                        }
+                        action = gdk::DragAction::COPY;
                     }
                 }
             }));
-            gdk::DragAction::COPY
+            action
         });
         let dialog_weak_for_sheet_leave = self.downgrade();
         drop_target_sheet.connect_leave(move |_| {
@@ -1872,11 +1910,14 @@ impl ComposeDialog {
             }));
         });
         let dialog_weak_for_sheet_drop = self.downgrade();
-        drop_target_sheet.connect_drop(move |_, value, _, _| {
+        drop_target_sheet.connect_drop(move |target, value, _, _| {
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let Some(dialog) = dialog_weak_for_sheet_drop.upgrade() else {
                     return false;
                 };
+                if !dialog.is_external_drag(Some(target)) {
+                    return false;
+                }
                 if let Some(source_id) = dialog.imp().drag_leave_timeout.borrow_mut().take() {
                     source_id.remove();
                 }
@@ -3650,6 +3691,8 @@ impl ComposeDialog {
                 if let Some(source_id) = dialog.imp().drag_leave_timeout.borrow_mut().take() {
                     source_id.remove();
                 }
+                dialog.imp().is_internal_drag.set(false);
+                dialog.imp().drag_auto_expanded.set(false);
                 if dialog.imp().attachment_expanded.get() {
                     dialog.set_attachment_expanded(false);
                     dialog.imp().is_drag_active.set(false);
@@ -5424,22 +5467,71 @@ impl ComposeDialog {
         self.set_attachment_expanded(true);
     }
 
+    pub fn is_external_drag(&self, drop_target: Option<&gtk::DropTarget>) -> bool {
+        if let Some(target) = drop_target {
+            if let Some(drop) = target.current_drop() {
+                if drop.drag().is_some() {
+                    return false;
+                } else {
+                    // Truly an external drag (Nautilus, desktop, etc.)
+                    self.imp().is_internal_drag.set(false);
+                    return true;
+                }
+            }
+        }
+        !self.imp().is_internal_drag.get()
+    }
+
+    pub fn start_external_drag_session(&self) {
+        if let Some(source_id) = self.imp().drag_leave_timeout.borrow_mut().take() {
+            source_id.remove();
+        }
+        if self.imp().is_drag_active.get() && self.imp().attachment_expanded.get() {
+            return;
+        }
+        self.imp().is_drag_active.set(true);
+        self.show_attachment_bar_drag_hint(true);
+        let bar = self.imp().attachment_bar.borrow().clone();
+        if let Some(bar) = bar.as_ref() {
+            bar.set_visible(true);
+        }
+        if !self.imp().attachment_expanded.get() {
+            self.imp().drag_auto_expanded.set(true);
+            self.update_attachment_max_height();
+            self.set_attachment_expanded(true);
+        }
+    }
+
     fn install_file_drop_target(&self) {
         let drop_target = gtk::DropTarget::new(glib::Type::INVALID, gdk::DragAction::COPY);
         drop_target.set_types(&[gdk::FileList::static_type(), gio::File::static_type()]);
 
-        drop_target.connect_enter(move |_, _, _| {
-            gdk::DragAction::COPY
+        let dialog_weak_for_enter = self.downgrade();
+        drop_target.connect_enter(move |target, _, _| {
+            let mut action = gdk::DragAction::empty();
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Some(dialog) = dialog_weak_for_enter.upgrade() {
+                    if dialog.is_external_drag(Some(target)) {
+                        dialog.start_external_drag_session();
+                        action = gdk::DragAction::COPY;
+                    }
+                }
+            }));
+            action
         });
 
         let dialog_weak_for_motion = self.downgrade();
-        drop_target.connect_motion(move |_, _, _| {
+        drop_target.connect_motion(move |target, _, _| {
+            let mut action = gdk::DragAction::empty();
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 if let Some(dialog) = dialog_weak_for_motion.upgrade() {
-                    dialog.start_drag_session();
+                    if dialog.is_external_drag(Some(target)) {
+                        dialog.start_external_drag_session();
+                        action = gdk::DragAction::COPY;
+                    }
                 }
             }));
-            gdk::DragAction::COPY
+            action
         });
 
         let dialog_weak_for_leave = self.downgrade();
@@ -5452,16 +5544,21 @@ impl ComposeDialog {
         });
 
         let dialog_weak = self.downgrade();
-        drop_target.connect_drop(move |_, value, _, _| {
+        drop_target.connect_drop(move |target, value, _, _| {
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let Some(dialog) = dialog_weak.upgrade() else {
                     return false;
                 };
+                if !dialog.is_external_drag(Some(target)) {
+                    return false;
+                }
                 if let Some(source_id) = dialog.imp().drag_leave_timeout.borrow_mut().take() {
                     source_id.remove();
                 }
                 dialog.imp().is_drag_active.set(false);
                 dialog.imp().is_drag_over_sheet.set(false);
+                dialog.imp().is_internal_drag.set(false);
+                let was_auto_expanded = dialog.imp().drag_auto_expanded.take();
                 let mut any_added = false;
                 let mut paths = Vec::new();
                 if let Ok(file_list) = value.get::<gdk::FileList>() {
@@ -5500,9 +5597,12 @@ impl ComposeDialog {
                     added_attachment = true;
                 }
                 if !added_attachment {
-                    dialog.set_attachment_expanded(false);
+                    if was_auto_expanded {
+                        dialog.set_attachment_expanded(false);
+                    }
                     dialog.show_attachment_bar_drag_hint(false);
                     if dialog.imp().attachments.borrow().is_empty() {
+                        dialog.set_attachment_expanded(false);
                         if let Some(bar) = dialog.imp().attachment_bar.borrow().as_ref() {
                             bar.set_visible(false);
                         }
@@ -5544,6 +5644,9 @@ impl ComposeDialog {
         let source_id = glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
             if let Some(dialog) = dialog_weak.upgrade() {
                 dialog.imp().is_drag_active.set(false);
+                if dialog.imp().drag_auto_expanded.take() {
+                    dialog.set_attachment_expanded(false);
+                }
                 if dialog.imp().attachments.borrow().is_empty() {
                     dialog.set_attachment_expanded(false);
                     dialog.show_attachment_bar_drag_hint(false);
@@ -6120,6 +6223,25 @@ fn create_attachment_chip(
             let file_list = gdk::FileList::from_array(&[file_for_drag.clone()]);
             Some(gdk::ContentProvider::for_value(&file_list.to_value()))
         });
+        let dialog_weak_begin = dialog_weak.clone();
+        drag_source.connect_drag_begin(move |_, _| {
+            if let Some(dialog) = dialog_weak_begin.upgrade() {
+                dialog.imp().is_internal_drag.set(true);
+            }
+        });
+        let dialog_weak_end = dialog_weak.clone();
+        drag_source.connect_drag_end(move |_, _, _| {
+            if let Some(dialog) = dialog_weak_end.upgrade() {
+                dialog.imp().is_internal_drag.set(false);
+            }
+        });
+        let dialog_weak_cancel = dialog_weak.clone();
+        drag_source.connect_drag_cancel(move |_, _, _| {
+            if let Some(dialog) = dialog_weak_cancel.upgrade() {
+                dialog.imp().is_internal_drag.set(false);
+            }
+            false
+        });
         chip_box.add_controller(drag_source);
     }
 
@@ -6287,6 +6409,25 @@ fn create_attachment_card(
             let file_list = gdk::FileList::from_array(&[file_for_drag.clone()]);
             Some(gdk::ContentProvider::for_value(&file_list.to_value()))
         });
+        let dialog_weak_begin = dialog_weak.clone();
+        drag_source.connect_drag_begin(move |_, _| {
+            if let Some(dialog) = dialog_weak_begin.upgrade() {
+                dialog.imp().is_internal_drag.set(true);
+            }
+        });
+        let dialog_weak_end = dialog_weak.clone();
+        drag_source.connect_drag_end(move |_, _, _| {
+            if let Some(dialog) = dialog_weak_end.upgrade() {
+                dialog.imp().is_internal_drag.set(false);
+            }
+        });
+        let dialog_weak_cancel = dialog_weak.clone();
+        drag_source.connect_drag_cancel(move |_, _, _| {
+            if let Some(dialog) = dialog_weak_cancel.upgrade() {
+                dialog.imp().is_internal_drag.set(false);
+            }
+            false
+        });
         card.add_controller(drag_source);
     }
 
@@ -6436,6 +6577,25 @@ fn create_attachment_list_row(
         drag_source.connect_prepare(move |_, _, _| {
             let file_list = gdk::FileList::from_array(&[file_for_drag.clone()]);
             Some(gdk::ContentProvider::for_value(&file_list.to_value()))
+        });
+        let dialog_weak_begin = dialog_weak.clone();
+        drag_source.connect_drag_begin(move |_, _| {
+            if let Some(dialog) = dialog_weak_begin.upgrade() {
+                dialog.imp().is_internal_drag.set(true);
+            }
+        });
+        let dialog_weak_end = dialog_weak.clone();
+        drag_source.connect_drag_end(move |_, _, _| {
+            if let Some(dialog) = dialog_weak_end.upgrade() {
+                dialog.imp().is_internal_drag.set(false);
+            }
+        });
+        let dialog_weak_cancel = dialog_weak.clone();
+        drag_source.connect_drag_cancel(move |_, _, _| {
+            if let Some(dialog) = dialog_weak_cancel.upgrade() {
+                dialog.imp().is_internal_drag.set(false);
+            }
+            false
         });
         row_box.add_controller(drag_source);
     }
@@ -8993,6 +9153,27 @@ mod tests {
         assert!(dialog.imp().attachment_expanded.get());
         dialog.set_attachment_expanded(false);
         assert!(!dialog.imp().attachment_expanded.get());
+
+        // Test external drag auto-expands drawer
+        assert!(dialog.is_external_drag(None));
+        dialog.start_external_drag_session();
+        assert!(dialog.imp().is_drag_active.get());
+        assert!(dialog.imp().attachment_expanded.get(), "start_external_drag_session must auto-expand drawer");
+        assert!(dialog.imp().drag_auto_expanded.get());
+        let _ = dialog.activate_action("compose.close", None);
+        assert!(!dialog.imp().is_drag_active.get());
+        assert!(!dialog.imp().attachment_expanded.get());
+        assert!(!dialog.imp().drag_auto_expanded.get());
+
+        // Test internal drag flag prevents external drag classification and drawer expansion
+        dialog.imp().is_internal_drag.set(true);
+        assert!(!dialog.is_external_drag(None));
+        if dialog.is_external_drag(None) {
+            dialog.start_external_drag_session();
+        }
+        assert!(!dialog.imp().drag_auto_expanded.get());
+        dialog.imp().is_internal_drag.set(false);
+        assert!(dialog.is_external_drag(None));
 
         // Test 38% dynamic height capping (clamped between 190 and 340)
         dialog.update_attachment_max_height();
