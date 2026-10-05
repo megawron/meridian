@@ -201,6 +201,7 @@ mod imp {
         pub charset: RefCell<String>,
         pub attachments: RefCell<Vec<DraftAttachment>>,
         pub attachment_section_revealer: RefCell<Option<gtk::Revealer>>,
+        pub attachment_section_box: RefCell<Option<gtk::Box>>,
         pub attachment_bar: RefCell<Option<gtk::Box>>,
         pub attachment_left_container: RefCell<Option<gtk::Box>>,
         pub attachment_bar_spacer: RefCell<Option<gtk::Box>>,
@@ -1883,200 +1884,12 @@ impl ComposeDialog {
         self.imp().attachment_btn_list.replace(Some(btn_list));
         self.imp().attachment_btn_collapse.replace(Some(btn_collapse));
 
-        let drop_target_bar = gtk::DropTarget::new(glib::Type::INVALID, gdk::DragAction::COPY);
-        drop_target_bar.set_types(&[
-            gdk::FileList::static_type(),
-            gio::File::static_type(),
-            gdk::Texture::static_type(),
-            glib::types::Type::STRING,
-        ]);
-        let dialog_weak_for_bar_enter = self.downgrade();
-        drop_target_bar.connect_enter(move |target, _, _| {
-            let mut action = gdk::DragAction::empty();
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if let Some(dialog) = dialog_weak_for_bar_enter.upgrade() {
-                    if dialog.is_external_drag(Some(target)) {
-                        dialog.start_drag_session();
-                        dialog.imp().is_drag_over_sheet.set(true);
-                        if !dialog.imp().attachment_expanded.get() {
-                            dialog.update_attachment_max_height();
-                            dialog.set_attachment_expanded(true);
-                        }
-                        action = gdk::DragAction::COPY;
-                    }
-                }
-            }));
-            action
-        });
-        let dialog_weak_for_bar_motion = self.downgrade();
-        drop_target_bar.connect_motion(move |target, _, _| {
-            let mut action = gdk::DragAction::empty();
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if let Some(dialog) = dialog_weak_for_bar_motion.upgrade() {
-                    if dialog.is_external_drag(Some(target)) {
-                        if !dialog.imp().attachment_expanded.get() {
-                            dialog.update_attachment_max_height();
-                            dialog.set_attachment_expanded(true);
-                        }
-                        action = gdk::DragAction::COPY;
-                    }
-                }
-            }));
-            action
-        });
-        let dialog_weak_for_bar_leave = self.downgrade();
-        drop_target_bar.connect_leave(move |_| {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if let Some(dialog) = dialog_weak_for_bar_leave.upgrade() {
-                    dialog.imp().is_drag_over_sheet.set(false);
-                }
-            }));
-        });
-        let dialog_weak_for_bar_drop = self.downgrade();
-        drop_target_bar.connect_drop(move |target, value, _, _| {
-            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let Some(dialog) = dialog_weak_for_bar_drop.upgrade() else {
-                    return false;
-                };
-                if !dialog.is_external_drag(Some(target)) {
-                    return false;
-                }
-                if let Some(source_id) = dialog.imp().drag_leave_timeout.borrow_mut().take() {
-                    source_id.remove();
-                }
-                dialog.imp().is_drag_active.set(false);
-                dialog.imp().is_drag_over_sheet.set(false);
-                let mut any_added = false;
-                if let Ok(file_list) = value.get::<gdk::FileList>() {
-                    for file in file_list.files() {
-                        if let Some(path) = file.path() {
-                            if path.is_file() {
-                                dialog.add_attachment_path(&path);
-                                any_added = true;
-                            }
-                        }
-                    }
-                } else if let Ok(file) = value.get::<gio::File>() {
-                    if let Some(path) = file.path() {
-                        if path.is_file() {
-                            dialog.add_attachment_path(&path);
-                            any_added = true;
-                        }
-                    }
-                }
-                if dialog.imp().attachments.borrow().is_empty() {
-                    dialog.set_attachment_expanded(false);
-                    dialog.show_attachment_bar_drag_hint(false);
-                    if let Some(bar) = dialog.imp().attachment_bar.borrow().as_ref() {
-                        bar.set_visible(false);
-                    }
-                }
-                any_added
-            }));
-            res.unwrap_or(false)
-        });
-        attachment_bar.add_controller(drop_target_bar);
-
         // Bottom Sheet container (slide-up drawer)
         let sheet_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(0)
             .css_classes(vec!["attachment-sheet-box"])
             .build();
-
-        let drop_target_sheet = gtk::DropTarget::new(glib::Type::INVALID, gdk::DragAction::COPY);
-        drop_target_sheet.set_types(&[
-            gdk::FileList::static_type(),
-            gio::File::static_type(),
-            gdk::Texture::static_type(),
-            glib::types::Type::STRING,
-        ]);
-        let dialog_weak_for_sheet_enter = self.downgrade();
-        drop_target_sheet.connect_enter(move |target, _, _| {
-            let mut action = gdk::DragAction::empty();
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if let Some(dialog) = dialog_weak_for_sheet_enter.upgrade() {
-                    if dialog.is_external_drag(Some(target)) {
-                        dialog.start_drag_session();
-                        dialog.imp().is_drag_over_sheet.set(true);
-                        if !dialog.imp().attachment_expanded.get() {
-                            dialog.update_attachment_max_height();
-                            dialog.set_attachment_expanded(true);
-                        }
-                        action = gdk::DragAction::COPY;
-                    }
-                }
-            }));
-            action
-        });
-        let dialog_weak_for_sheet_motion = self.downgrade();
-        drop_target_sheet.connect_motion(move |target, _, _| {
-            let mut action = gdk::DragAction::empty();
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if let Some(dialog) = dialog_weak_for_sheet_motion.upgrade() {
-                    if dialog.is_external_drag(Some(target)) {
-                        if !dialog.imp().attachment_expanded.get() {
-                            dialog.update_attachment_max_height();
-                            dialog.set_attachment_expanded(true);
-                        }
-                        action = gdk::DragAction::COPY;
-                    }
-                }
-            }));
-            action
-        });
-        let dialog_weak_for_sheet_leave = self.downgrade();
-        drop_target_sheet.connect_leave(move |_| {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if let Some(dialog) = dialog_weak_for_sheet_leave.upgrade() {
-                    dialog.imp().is_drag_over_sheet.set(false);
-                }
-            }));
-        });
-        let dialog_weak_for_sheet_drop = self.downgrade();
-        drop_target_sheet.connect_drop(move |target, value, _, _| {
-            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let Some(dialog) = dialog_weak_for_sheet_drop.upgrade() else {
-                    return false;
-                };
-                if !dialog.is_external_drag(Some(target)) {
-                    return false;
-                }
-                if let Some(source_id) = dialog.imp().drag_leave_timeout.borrow_mut().take() {
-                    source_id.remove();
-                }
-                dialog.imp().is_drag_active.set(false);
-                dialog.imp().is_drag_over_sheet.set(false);
-                let mut any_added = false;
-                if let Ok(file_list) = value.get::<gdk::FileList>() {
-                    for file in file_list.files() {
-                        if let Some(path) = file.path() {
-                            if path.is_file() {
-                                dialog.add_attachment_path(&path);
-                                any_added = true;
-                            }
-                        }
-                    }
-                } else if let Ok(file) = value.get::<gio::File>() {
-                    if let Some(path) = file.path() {
-                        if path.is_file() {
-                            dialog.add_attachment_path(&path);
-                            any_added = true;
-                        }
-                    }
-                }
-                if dialog.imp().attachments.borrow().is_empty() {
-                    dialog.set_attachment_expanded(false);
-                    dialog.show_attachment_bar_drag_hint(false);
-                    if let Some(bar) = dialog.imp().attachment_bar.borrow().as_ref() {
-                        bar.set_visible(false);
-                    }
-                }
-                any_added
-            }));
-            res.unwrap_or(false)
-        });
-        sheet_box.add_controller(drop_target_sheet);
 
         // FlowBox (Preview Cards in Drawer)
         let flowbox = gtk::FlowBox::builder()
@@ -2324,6 +2137,101 @@ impl ComposeDialog {
             .build();
         attachment_section_box.append(&attachment_bar);
         attachment_section_box.append(&detail_revealer);
+        self.imp().attachment_section_box.replace(Some(attachment_section_box.clone()));
+
+        let drop_target_section = gtk::DropTarget::new(glib::Type::INVALID, gdk::DragAction::COPY);
+        drop_target_section.set_types(&[
+            gdk::FileList::static_type(),
+            gio::File::static_type(),
+            gdk::Texture::static_type(),
+            glib::types::Type::STRING,
+        ]);
+        let dialog_weak_for_section_enter = self.downgrade();
+        drop_target_section.connect_enter(move |target, _, _| {
+            let mut action = gdk::DragAction::empty();
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Some(dialog) = dialog_weak_for_section_enter.upgrade() {
+                    if dialog.is_external_drag(Some(target)) {
+                        dialog.start_drag_session();
+                        dialog.set_drag_over_sheet(true);
+                        if !dialog.imp().attachment_expanded.get() {
+                            dialog.update_attachment_max_height();
+                            dialog.set_attachment_expanded(true);
+                        }
+                        action = gdk::DragAction::COPY;
+                    }
+                }
+            }));
+            action
+        });
+        let dialog_weak_for_section_motion = self.downgrade();
+        drop_target_section.connect_motion(move |target, _, _| {
+            let mut action = gdk::DragAction::empty();
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Some(dialog) = dialog_weak_for_section_motion.upgrade() {
+                    if dialog.is_external_drag(Some(target)) {
+                        if !dialog.imp().attachment_expanded.get() {
+                            dialog.update_attachment_max_height();
+                            dialog.set_attachment_expanded(true);
+                        }
+                        action = gdk::DragAction::COPY;
+                    }
+                }
+            }));
+            action
+        });
+        let dialog_weak_for_section_leave = self.downgrade();
+        drop_target_section.connect_leave(move |_| {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Some(dialog) = dialog_weak_for_section_leave.upgrade() {
+                    dialog.set_drag_over_sheet(false);
+                }
+            }));
+        });
+        let dialog_weak_for_section_drop = self.downgrade();
+        drop_target_section.connect_drop(move |target, value, _, _| {
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let Some(dialog) = dialog_weak_for_section_drop.upgrade() else {
+                    return false;
+                };
+                if !dialog.is_external_drag(Some(target)) {
+                    return false;
+                }
+                if let Some(source_id) = dialog.imp().drag_leave_timeout.borrow_mut().take() {
+                    source_id.remove();
+                }
+                dialog.imp().is_drag_active.set(false);
+                dialog.set_drag_over_sheet(false);
+                let mut any_added = false;
+                if let Ok(file_list) = value.get::<gdk::FileList>() {
+                    for file in file_list.files() {
+                        if let Some(path) = file.path() {
+                            if path.is_file() {
+                                dialog.add_attachment_path(&path);
+                                any_added = true;
+                            }
+                        }
+                    }
+                } else if let Ok(file) = value.get::<gio::File>() {
+                    if let Some(path) = file.path() {
+                        if path.is_file() {
+                            dialog.add_attachment_path(&path);
+                            any_added = true;
+                        }
+                    }
+                }
+                if dialog.imp().attachments.borrow().is_empty() {
+                    dialog.set_attachment_expanded(false);
+                    dialog.show_attachment_bar_drag_hint(false);
+                    if let Some(bar) = dialog.imp().attachment_bar.borrow().as_ref() {
+                        bar.set_visible(false);
+                    }
+                }
+                any_added
+            }));
+            res.unwrap_or(false)
+        });
+        attachment_section_box.add_controller(drop_target_section);
 
         let attachment_section_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideDown)
@@ -5598,7 +5506,7 @@ impl ComposeDialog {
                     source_id.remove();
                 }
                 dialog.imp().is_drag_active.set(false);
-                dialog.imp().is_drag_over_sheet.set(false);
+                dialog.set_drag_over_sheet(false);
                 dialog.imp().is_internal_drag.set(false);
                 let was_auto_expanded = dialog.imp().drag_auto_expanded.take();
                 let mut any_added = false;
@@ -5663,6 +5571,17 @@ impl ComposeDialog {
         self.add_controller(drop_target);
     }
 
+    pub fn set_drag_over_sheet(&self, active: bool) {
+        self.imp().is_drag_over_sheet.set(active);
+        if let Some(section) = self.imp().attachment_section_box.borrow().as_ref() {
+            if active {
+                section.add_css_class("drag-active");
+            } else {
+                section.remove_css_class("drag-active");
+            }
+        }
+    }
+
     pub fn start_drag_session(&self) {
         if let Some(source_id) = self.imp().drag_leave_timeout.borrow_mut().take() {
             source_id.remove();
@@ -5686,6 +5605,7 @@ impl ComposeDialog {
         let source_id = glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
             if let Some(dialog) = dialog_weak.upgrade() {
                 dialog.imp().is_drag_active.set(false);
+                dialog.set_drag_over_sheet(false);
                 if dialog.imp().drag_auto_expanded.take() {
                     dialog.set_attachment_expanded(false);
                 }
