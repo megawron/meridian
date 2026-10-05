@@ -2937,6 +2937,10 @@ msgstr ""
 msgid "Attachment"
 msgstr ""
 
+#: src/dialogs/compose_dialog.rs:1068
+msgid "Attach"
+msgstr ""
+
 #: src/views/mail_page.rs:2982 src/views/mail_page.rs:15866
 msgid "From"
 msgstr ""

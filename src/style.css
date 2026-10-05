@@ -1303,6 +1303,32 @@ flowbox > flowboxchild.attachment-flow-child:selected {
   opacity: 1.0;
 }
 
+/* Circular close button on composer header (GNOME HIG standard titlebutton size) */
+button.composer-close-btn {
+  border-radius: 9999px;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  margin: 0;
+  background-color: alpha(currentColor, 0.08);
+  color: inherit;
+  transition: background-color 150ms ease, opacity 150ms ease;
+}
+
+button.composer-close-btn:hover {
+  background-color: alpha(currentColor, 0.16);
+}
+
+button.composer-close-btn:active {
+  background-color: alpha(currentColor, 0.24);
+}
+
+/* Responsive attachment button on composer header */
+button.composer-attach-btn {
+  font-weight: 500;
+  transition: background-color 150ms ease, opacity 150ms ease;
+}
+
 /* ── Drop Target Styling: Rounded Borders & Corner Clipping Fix ───────────── */
 /* GTK4 renders outline as a sharp 90-degree rectangle which gets clipped by  */
 /* rounded window/dialog/sheet corners. Replacing outline with inset box-shadow */

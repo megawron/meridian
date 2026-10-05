@@ -237,6 +237,7 @@ mod imp {
         pub composer_action_group: RefCell<Option<gio::SimpleActionGroup>>,
         pub dirty_revision: Cell<u64>,
         pub saved_revision: Cell<u64>,
+        pub user_typed_in_editor: Cell<bool>,
         pub suppress_dirty_tracking: Cell<bool>,
         pub suppress_setting_persistence: Cell<bool>,
         pub suppress_from_notify: Cell<bool>,
@@ -268,6 +269,7 @@ mod imp {
         pub settings: RefCell<Option<AppSettings>>,
         pub on_send_success: RefCell<Option<Box<dyn Fn() + 'static>>>,
         pub btn_open_in_new_window: RefCell<Option<gtk::Button>>,
+        pub btn_attach_stack: RefCell<Option<gtk::Stack>>,
         pub is_modal: Cell<bool>,
         pub stored_parent: RefCell<Option<gtk::Widget>>,
     }
@@ -920,6 +922,7 @@ impl ComposeDialog {
             });
         dialog.imp().suppress_dirty_tracking.set(true);
         dialog.imp().suppress_setting_persistence.set(true);
+        dialog.imp().user_typed_in_editor.set(draft_has_user_content(&draft));
         *dialog.imp().draft_id.borrow_mut() = draft.id.clone();
         dialog.imp().persisted_draft.replace(Some(draft.clone()));
         dialog.imp().local_draft_persisted.set(true);
@@ -1014,6 +1017,7 @@ impl ComposeDialog {
     }
 
     fn build_ui(&self) {
+        self.imp().suppress_dirty_tracking.set(true);
         self.add_css_class("meridian-compose-dialog");
         self.add_css_class("composer-dialog");
         {
@@ -1033,12 +1037,15 @@ impl ComposeDialog {
 
         let btn_close = gtk::Button::builder()
             .icon_name("window-close-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Close composer (Ctrl+W)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(&crate::i18n::gettext("Close (Ctrl+W)"))
+            .css_classes(vec!["circular", "composer-close-btn"])
             .valign(gtk::Align::Center)
-            .margin_end(6)
+            .halign(gtk::Align::Center)
+            .width_request(24)
+            .height_request(24)
+            .margin_end(12)
             .build();
-        set_accessible_label(&btn_close, &crate::i18n::gettext("Close composer"));
+        set_accessible_label(&btn_close, &crate::i18n::gettext("Close"));
         btn_close.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
             self,
@@ -1064,12 +1071,27 @@ impl ComposeDialog {
         header_bar.pack_start(&btn_open_in_new_window);
         self.imp().btn_open_in_new_window.replace(Some(btn_open_in_new_window));
 
+        let attach_lbl = gtk::Label::builder()
+            .label(&crate::i18n::gettext("Attach"))
+            .build();
+        let attach_img = gtk::Image::from_icon_name("mail-attachment-symbolic");
+
+        let attach_stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .transition_duration(100)
+            .build();
+        attach_stack.add_named(&attach_lbl, Some("text"));
+        attach_stack.add_named(&attach_img, Some("icon"));
+        attach_stack.set_visible_child_name("text");
+
         let btn_attach = gtk::Button::builder()
-            .icon_name("mail-attachment-symbolic")
+            .child(&attach_stack)
             .tooltip_text(&crate::i18n::gettext("Add attachment… (Ctrl+M)"))
-            .css_classes(vec!["flat"])
+            .css_classes(vec!["composer-attach-btn"])
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&btn_attach, &crate::i18n::gettext("Add attachment"));
+        self.imp().btn_attach_stack.replace(Some(attach_stack.clone()));
 
         btn_attach.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
@@ -1104,18 +1126,11 @@ impl ComposeDialog {
         let btn_save_draft = gtk::Button::builder()
             .icon_name("document-save-symbolic")
             .tooltip_text(&crate::i18n::gettext("Save draft (Ctrl+S)"))
+            .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
+            .margin_end(8)
             .build();
         set_accessible_label(&btn_save_draft, &crate::i18n::gettext("Save draft"));
-
-        let draft_actions = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["linked"])
-            .valign(gtk::Align::Center)
-            .margin_end(6)
-            .build();
-        draft_actions.append(&btn_discard);
-        draft_actions.append(&btn_save_draft);
 
         let btn_send = gtk::Button::builder()
             .label(&crate::i18n::gettext("Send"))
@@ -1125,9 +1140,9 @@ impl ComposeDialog {
             .build();
         set_accessible_label(&btn_send, &crate::i18n::gettext("Send email"));
 
-        // Header actions (packed right-to-left: draft actions, Send)
+        // Header actions (packed right-to-left: Save draft, Send)
         header_bar.pack_end(&btn_send);
-        header_bar.pack_end(&draft_actions);
+        header_bar.pack_end(&btn_save_draft);
 
 
         let btn_priority = gtk::ToggleButton::builder()
@@ -1583,6 +1598,34 @@ impl ComposeDialog {
         let dialog_weak_for_editor = self.downgrade();
         editor_key_controller.connect_key_pressed(move |_, keyval, _, state| {
             if let Some(dialog) = dialog_weak_for_editor.upgrade() {
+                let is_nav_or_modifier = matches!(
+                    keyval,
+                    gdk::Key::Shift_L
+                        | gdk::Key::Shift_R
+                        | gdk::Key::Control_L
+                        | gdk::Key::Control_R
+                        | gdk::Key::Alt_L
+                        | gdk::Key::Alt_R
+                        | gdk::Key::Super_L
+                        | gdk::Key::Super_R
+                        | gdk::Key::Caps_Lock
+                        | gdk::Key::Num_Lock
+                        | gdk::Key::Scroll_Lock
+                        | gdk::Key::Up
+                        | gdk::Key::Down
+                        | gdk::Key::Left
+                        | gdk::Key::Right
+                        | gdk::Key::Page_Up
+                        | gdk::Key::Page_Down
+                        | gdk::Key::Home
+                        | gdk::Key::End
+                        | gdk::Key::Tab
+                        | gdk::Key::ISO_Left_Tab
+                        | gdk::Key::Escape
+                );
+                if !is_nav_or_modifier {
+                    dialog.imp().user_typed_in_editor.set(true);
+                }
                 dialog.mark_changed();
                 if dialog.imp().attachment_expanded.get() {
                     dialog.set_attachment_expanded(false);
@@ -1606,6 +1649,7 @@ impl ComposeDialog {
         let dialog_weak_for_drop = self.downgrade();
         html_editor.connect_files_dropped(move |paths| {
             if let Some(dialog) = dialog_weak_for_drop.upgrade() {
+                dialog.imp().user_typed_in_editor.set(true);
                 let is_plain = dialog.imp().html_editor.borrow().as_ref().map(|e| e.plain_text_mode()).unwrap_or(false);
                 let mut added_attachment = false;
                 for path in paths {
@@ -1671,6 +1715,7 @@ impl ComposeDialog {
         let dialog_weak_for_img_convert = self.downgrade();
         html_editor.connect_image_convert_to_attachment(move |attachment| {
             if let Some(dialog) = dialog_weak_for_img_convert.upgrade() {
+                dialog.imp().user_typed_in_editor.set(true);
                 dialog.add_attachment(attachment);
                 dialog.set_attachment_expanded(true);
             }
@@ -2335,11 +2380,15 @@ impl ComposeDialog {
         let bp_narrow = adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 600sp").unwrap());
         bp_narrow.add_setter(&col_type, "visible", Some(&false.to_value()));
         bp_narrow.add_setter(&col_mod, "visible", Some(&false.to_value()));
+        bp_narrow.add_setter(&attach_stack, "visible-child-name", Some(&"icon".to_value()));
         let dialog_weak_for_bp_apply = self.downgrade();
         bp_narrow.connect_apply(move |_| {
             if let Some(dialog) = dialog_weak_for_bp_apply.upgrade() {
                 dialog.set_attachment_table_compact(true);
                 dialog.update_attachment_bar_chips();
+                if let Some(stack) = dialog.imp().btn_attach_stack.borrow().as_ref() {
+                    stack.set_visible_child_name("icon");
+                }
             }
         });
         let dialog_weak_for_bp_unapply = self.downgrade();
@@ -2347,6 +2396,9 @@ impl ComposeDialog {
             if let Some(dialog) = dialog_weak_for_bp_unapply.upgrade() {
                 dialog.set_attachment_table_compact(false);
                 dialog.update_attachment_bar_chips();
+                if let Some(stack) = dialog.imp().btn_attach_stack.borrow().as_ref() {
+                    stack.set_visible_child_name("text");
+                }
             }
         });
         self.add_breakpoint(bp_narrow);
@@ -2578,10 +2630,15 @@ impl ComposeDialog {
                     let editor_for_apply = html_editor_for_templates.clone();
                     let subject_for_apply = entry_subject_for_templates.clone();
                     let popover_for_apply = popover.clone();
+                    let dialog_for_apply = dialog_weak_for_templates.clone();
                     apply_button.connect_clicked(move |_| {
                         editor_for_apply.set_html(&body);
                         if subject_for_apply.text().trim().is_empty() {
                             subject_for_apply.set_text(&subject);
+                        }
+                        if let Some(dialog) = dialog_for_apply.upgrade() {
+                            dialog.imp().user_typed_in_editor.set(true);
+                            dialog.mark_changed();
                         }
                         popover_for_apply.popdown();
                     });
@@ -2651,8 +2708,13 @@ impl ComposeDialog {
                 let body = snippet.body_html.clone();
                 let editor_for_apply = html_editor_for_templates.clone();
                 let popover_for_apply = popover.clone();
+                let dialog_for_apply = dialog_weak_for_templates.clone();
                 apply_button.connect_clicked(move |_| {
                     editor_for_apply.insert_html(&body);
+                    if let Some(dialog) = dialog_for_apply.upgrade() {
+                        dialog.imp().user_typed_in_editor.set(true);
+                        dialog.mark_changed();
+                    }
                     popover_for_apply.popdown();
                 });
 
@@ -3612,6 +3674,8 @@ impl ComposeDialog {
         self.install_file_drop_target();
 
         self.start_local_autosave();
+        self.imp().suppress_dirty_tracking.set(false);
+        self.mark_saved();
     }
 
     fn install_action_surface(
@@ -4082,7 +4146,49 @@ impl ComposeDialog {
             .set(self.imp().dirty_revision.get());
     }
 
+    fn has_user_content(&self) -> bool {
+        let to_has_content = self
+            .imp()
+            .entry_to
+            .borrow()
+            .as_ref()
+            .is_some_and(|e| !e.text().trim().is_empty());
+        let cc_has_content = self
+            .imp()
+            .entry_cc
+            .borrow()
+            .as_ref()
+            .is_some_and(|e| !e.text().trim().is_empty());
+        let bcc_has_content = self
+            .imp()
+            .entry_bcc
+            .borrow()
+            .as_ref()
+            .is_some_and(|e| !e.text().trim().is_empty());
+        let subject_has_content = self
+            .imp()
+            .entry_subject
+            .borrow()
+            .as_ref()
+            .is_some_and(|e| !e.text().trim().is_empty());
+        let has_attachments = !self.imp().attachments.borrow().is_empty();
+        let has_calendar = self.imp().calendar_method.borrow().is_some()
+            || self.imp().calendar_component.borrow().is_some();
+        let typed_in_editor = self.imp().user_typed_in_editor.get();
+
+        to_has_content
+            || cc_has_content
+            || bcc_has_content
+            || subject_has_content
+            || has_attachments
+            || has_calendar
+            || typed_in_editor
+    }
+
     fn is_dirty(&self) -> bool {
+        if !self.has_user_content() && !self.imp().local_draft_persisted.get() {
+            return false;
+        }
         self.imp().dirty_revision.get() != self.imp().saved_revision.get()
     }
 
@@ -4105,6 +4211,7 @@ impl ComposeDialog {
             let _ = DraftStoreService::default().delete(&draft_id);
         }
         self.imp().local_draft_persisted.set(false);
+        self.imp().user_typed_in_editor.set(false);
         self.imp().close_confirmed.set(true);
         self.set_can_close(true);
         self.close();
@@ -4146,14 +4253,47 @@ impl ComposeDialog {
                 );
                 true
             }
-            CloseRequestDecision::AutoSave => {
-                self.imp().close_after_save.set(true);
-                if let Some(button) = self.imp().save_draft_button.borrow().as_ref() {
-                    button.emit_clicked();
-                } else {
-                    self.imp().close_after_save.set(false);
+            CloseRequestDecision::Prompt => {
+                if self.root().is_none() {
                     return false;
                 }
+                if self.imp().close_prompt_open.get() {
+                    return true;
+                }
+                self.imp().close_prompt_open.set(true);
+                let dialog_weak = self.downgrade();
+                let alert = adw::AlertDialog::new(
+                    Some(&crate::i18n::gettext("Discard draft?")),
+                    Some(&crate::i18n::gettext("Unsaved changes will be discarded.")),
+                );
+                alert.set_prefer_wide_layout(true);
+                alert.add_responses(&[
+                    ("cancel", &crate::i18n::gettext("Cancel")),
+                    ("discard", &crate::i18n::gettext("Discard")),
+                    ("save", &crate::i18n::gettext("Save Draft")),
+                ]);
+                alert.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
+                alert.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+                alert.set_default_response(Some("save"));
+                alert.set_close_response("cancel");
+                alert.choose(self, None::<&gio::Cancellable>, move |response| {
+                    let Some(dialog) = dialog_weak.upgrade() else {
+                        return;
+                    };
+                    dialog.imp().close_prompt_open.set(false);
+                    match response.as_str() {
+                        "discard" => {
+                            dialog.discard_and_close();
+                        }
+                        "save" => {
+                            dialog.imp().close_after_save.set(true);
+                            if let Some(button) = dialog.imp().save_draft_button.borrow().as_ref() {
+                                button.emit_clicked();
+                            }
+                        }
+                        _ => {}
+                    }
+                });
                 true
             }
         }
@@ -4965,6 +5105,8 @@ impl ComposeDialog {
     pub fn insert_html_fragment(&self, html: &str) {
         if let Some(editor) = self.imp().html_editor.borrow().as_ref() {
             editor.insert_html(html);
+            self.imp().user_typed_in_editor.set(true);
+            self.mark_changed();
         }
     }
 
@@ -8224,7 +8366,7 @@ fn compose_operation_can_start(operation: ComposeOperation) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CloseRequestDecision {
     Allow,
-    AutoSave,
+    Prompt,
     BlockOperation,
 }
 
@@ -8237,7 +8379,7 @@ fn close_request_decision(
     } else if !dirty {
         CloseRequestDecision::Allow
     } else {
-        CloseRequestDecision::AutoSave
+        CloseRequestDecision::Prompt
     }
 }
 
@@ -8261,7 +8403,7 @@ mod tests {
         );
         assert_eq!(
             close_request_decision(true, ComposeOperation::Idle),
-            CloseRequestDecision::AutoSave
+            CloseRequestDecision::Prompt
         );
         assert_eq!(
             close_request_decision(false, ComposeOperation::Sending),
@@ -9545,6 +9687,68 @@ mod tests {
             "converted_inline.png"
         );
         assert!(dialog.imp().attachment_expanded.get());
+
+        dialog.close();
+        while context.iteration(false) {}
+    }
+
+    #[test]
+    fn test_compose_dialog_responsive_attach_button() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let dialog = ComposeDialog::new();
+        let stack = dialog.imp().btn_attach_stack.borrow().as_ref().cloned().expect("btn_attach_stack exists");
+        assert_eq!(stack.visible_child_name().as_deref(), Some("text"));
+
+        // Simulate narrow screen breakpoint: switches to icon only
+        stack.set_visible_child_name("icon");
+        assert_eq!(stack.visible_child_name().as_deref(), Some("icon"));
+
+        // Restore wide screen: switches back to text only
+        stack.set_visible_child_name("text");
+        assert_eq!(stack.visible_child_name().as_deref(), Some("text"));
+
+        dialog.close();
+        while context.iteration(false) {}
+    }
+
+    #[test]
+    fn test_empty_compose_dialog_is_not_dirty_and_closes_without_prompt() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let dialog = ComposeDialog::new();
+        assert!(!dialog.has_user_content());
+        assert!(!dialog.is_dirty());
+        // Closing an empty compose dialog must be allowed immediately without prompting
+        assert!(!dialog.handle_close_request());
+        assert!(!dialog.imp().close_prompt_open.get());
+
+        dialog.close();
+        while context.iteration(false) {}
+    }
+
+    #[test]
+    fn test_compose_dialog_with_content_becomes_dirty_and_prompts() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let dialog = ComposeDialog::new();
+        assert!(!dialog.is_dirty());
+
+        if let Some(entry) = dialog.imp().entry_subject.borrow().as_ref() {
+            entry.set_text("Hello");
+        }
+        assert!(dialog.has_user_content());
+        assert!(dialog.is_dirty());
+        assert_eq!(
+            close_request_decision(dialog.is_dirty(), dialog.imp().operation.get()),
+            CloseRequestDecision::Prompt
+        );
 
         dialog.close();
         while context.iteration(false) {}
