@@ -1150,20 +1150,18 @@ popover.menu separator {
 
 /* ── Attachment Chips & Minimal Composer Attachment Tray (GNOME HIG) ──────────────── */
 .attachment-chip {
-  background-color: @card_bg_color;
-  border: 1px solid alpha(currentColor, 0.12);
+  background-color: alpha(currentColor, 0.07);
+  border: none;
   border-radius: 9999px;
-  padding: 2px 7px 2px 9px;
+  padding: 3px 8px 3px 10px;
   min-height: 28px;
   max-height: 28px;
-  box-shadow: 0 1px 2px alpha(currentColor, 0.04);
-  transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+  box-shadow: none;
+  transition: background-color 150ms ease;
 }
 
 .attachment-chip:hover {
-  background-color: alpha(currentColor, 0.08);
-  border-color: alpha(currentColor, 0.22);
-  box-shadow: 0 1px 3px alpha(currentColor, 0.08);
+  background-color: alpha(currentColor, 0.12);
 }
 
 .attachment-chip:focus,
@@ -1208,13 +1206,13 @@ flowbox > flowboxchild.attachment-flow-child:selected {
 }
 
 .attachment-section-box {
-  background-color: alpha(@window_fg_color, 0.035);
+  background-color: transparent;
   border-top: 1px solid alpha(currentColor, 0.08);
   transition: background-color 150ms ease, border-color 150ms ease;
 }
 
 .attachment-section-box:hover {
-  background-color: alpha(@window_fg_color, 0.045);
+  background-color: transparent;
 }
 
 .attachment-section-box:drop(active) {
@@ -1387,24 +1385,22 @@ window:drop(active) > .background {
 }
 
 .attachment-overflow-btn {
-  padding: 2px 10px;
+  padding: 3px 10px;
   min-height: 28px;
   max-height: 28px;
   border-radius: 9999px;
   font-size: 0.80rem;
   font-weight: 600;
-  background-color: @card_bg_color;
-  border: 1px solid alpha(currentColor, 0.12);
-  box-shadow: 0 1px 2px alpha(currentColor, 0.04);
+  background-color: alpha(currentColor, 0.07);
+  border: none;
+  box-shadow: none;
   color: alpha(currentColor, 0.85);
-  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, box-shadow 150ms ease;
+  transition: background-color 150ms ease, color 150ms ease;
 }
 
 .attachment-overflow-btn:hover {
-  background-color: alpha(currentColor, 0.08);
-  border-color: alpha(currentColor, 0.22);
+  background-color: alpha(currentColor, 0.12);
   color: currentColor;
-  box-shadow: 0 1px 3px alpha(currentColor, 0.08);
 }
 
 .attachment-overflow-btn:focus,
@@ -1511,7 +1507,7 @@ webview:drop(active),
 }
 
 .attachment-sheet-scrolled {
-  padding: 2px 8px 4px 8px;
+  padding: 2px 8px 0px 8px;
 }
 
 .attachment-sheet-scrolled undershoot,
@@ -1522,34 +1518,89 @@ webview:drop(active),
   box-shadow: none;
 }
 
+/* Bottom Handle to collapse attachment drawer (Libadwaita bottom-sheet style) */
+button.attachment-sheet-handle-btn {
+  background: transparent;
+  border-radius: 9999px;
+  min-width: 48px;
+  min-height: 6px;
+  padding: 1px 8px;
+  margin: 0;
+  border: none;
+  box-shadow: none;
+  outline: none;
+  transition: all 150ms ease;
+}
+
+button.attachment-sheet-handle-btn:hover {
+  background: transparent;
+  box-shadow: none;
+}
+
+button.attachment-sheet-handle-btn .attachment-sheet-handle-pill {
+  min-width: 44px;
+  max-width: 44px;
+  min-height: 4px;
+  max-height: 4px;
+  border-radius: 9999px;
+  background-color: alpha(currentColor, 0.22);
+  transition: all 150ms ease;
+}
+
+button.attachment-sheet-handle-btn:hover .attachment-sheet-handle-pill {
+  min-width: 52px;
+  max-width: 52px;
+  background-color: alpha(currentColor, 0.50);
+}
+
+button.attachment-sheet-handle-btn:active .attachment-sheet-handle-pill {
+  background-color: @accent_color;
+}
+
 .attachment-thumbnail,
 image.attachment-thumbnail,
 picture.attachment-thumbnail {
   border-radius: 4px;
+  border: none;
+  box-shadow: none;
+  background: transparent;
+}
+
+.attachment-card-visual-box {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  min-width: 64px;
+  max-width: 64px;
+  min-height: 64px;
+  max-height: 64px;
 }
 
 .attachment-card-thumbnail,
 image.attachment-card-thumbnail,
 picture.attachment-card-thumbnail {
-  border-radius: 6px;
-  box-shadow: 0 1px 3px alpha(currentColor, 0.15);
+  border-radius: 4px;
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.18),
+              0 0 0 1px alpha(currentColor, 0.12);
+  background: transparent;
 }
 
 /* ── Nautilus-style Preview Cards: clean, un-bordered by default, calm hover ─────── */
 .attachment-card {
-  padding: 6px 4px 6px 4px;
-  border-radius: 8px;
+  padding: 6px;
+  border-radius: 10px;
   background-color: transparent;
   transition: background-color 150ms ease;
-  min-width: 80px;
+  min-width: 96px;
+  max-width: 96px;
 }
 
 .attachment-card:hover {
-  background-color: alpha(currentColor, 0.08);
+  background-color: alpha(currentColor, 0.07);
 }
 
 .attachment-card:active {
-  background-color: alpha(currentColor, 0.14);
+  background-color: alpha(currentColor, 0.13);
 }
 
 .attachment-card:focus,
@@ -1570,12 +1621,14 @@ picture.attachment-card-thumbnail {
 
 .attachment-card-size {
   font-size: 0.70rem;
-  opacity: 0.70;
+  opacity: 0.65;
 }
 
 .attachment-card-remove-btn {
-  min-width: 22px;
-  min-height: 22px;
+  min-width: 20px;
+  min-height: 20px;
+  max-width: 20px;
+  max-height: 20px;
   padding: 0;
   border-radius: 9999px;
   background-color: alpha(@window_bg_color, 0.90);

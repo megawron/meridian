@@ -216,6 +216,7 @@ mod imp {
         pub attachment_bar_separator: RefCell<Option<gtk::Separator>>,
         pub attachment_bar_add_btn: RefCell<Option<gtk::Button>>,
         pub attachment_detail_revealer: RefCell<Option<gtk::Revealer>>,
+        pub attachment_sheet_handle_btn: RefCell<Option<gtk::Button>>,
         pub attachment_scrolled: RefCell<Option<gtk::ScrolledWindow>>,
         pub attachment_stack: RefCell<Option<gtk::Stack>>,
         pub attachment_flowbox: RefCell<Option<gtk::FlowBox>>,
@@ -1082,33 +1083,37 @@ impl ComposeDialog {
         let btn_discard = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
             .tooltip_text(&crate::i18n::gettext("Discard draft"))
-            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&btn_discard, &crate::i18n::gettext("Discard draft"));
         self.imp().btn_discard.replace(Some(btn_discard.clone()));
 
-        let btn_send_content = adw::ButtonContent::builder()
-            .icon_name("mail-send-symbolic")
-            .label(&crate::i18n::gettext("Send"))
-            .build();
-        let btn_send = gtk::Button::builder()
-            .child(&btn_send_content)
-            .css_classes(vec!["suggested-action"])
-            .tooltip_text(&crate::i18n::gettext("Send email now (Ctrl+Enter)"))
-            .build();
-        set_accessible_label(&btn_send, &crate::i18n::gettext("Send email"));
-
         let btn_save_draft = gtk::Button::builder()
             .icon_name("document-save-symbolic")
             .tooltip_text(&crate::i18n::gettext("Save draft (Ctrl+S)"))
-            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&btn_save_draft, &crate::i18n::gettext("Save draft"));
 
-        // Header actions (packed right-to-left: Discard, Save Draft, Send)
+        let draft_actions = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .css_classes(vec!["linked"])
+            .valign(gtk::Align::Center)
+            .build();
+        draft_actions.append(&btn_discard);
+        draft_actions.append(&btn_save_draft);
+
+        let btn_send = gtk::Button::builder()
+            .label(&crate::i18n::gettext("Send"))
+            .css_classes(vec!["suggested-action"])
+            .tooltip_text(&crate::i18n::gettext("Send email now (Ctrl+Enter)"))
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&btn_send, &crate::i18n::gettext("Send email"));
+
+        // Header actions (packed right-to-left: draft actions, Send)
         header_bar.pack_end(&btn_send);
-        header_bar.pack_end(&btn_save_draft);
-        header_bar.pack_end(&btn_discard);
+        header_bar.pack_end(&draft_actions);
 
 
         let btn_priority = gtk::ToggleButton::builder()
@@ -1767,13 +1772,15 @@ impl ComposeDialog {
 
         attachment_bar.append(&left_container);
 
+        let bar_spacer = gtk::Box::builder().hexpand(true).build();
+        attachment_bar.append(&bar_spacer);
+
         let separator = gtk::Separator::builder()
             .orientation(gtk::Orientation::Vertical)
             .valign(gtk::Align::Center)
             .css_classes(vec!["attachment-bar-separator"])
             .visible(false)
             .build();
-        attachment_bar.append(&separator);
 
         let add_icon = gtk::Image::from_icon_name("list-add-symbolic");
         add_icon.set_pixel_size(14);
@@ -1791,16 +1798,14 @@ impl ComposeDialog {
                 dialog.open_attachment_chooser();
             }
         });
-        attachment_bar.append(&btn_add_attachment);
-
-        let bar_spacer = gtk::Box::builder().hexpand(true).build();
-        attachment_bar.append(&bar_spacer);
 
         // View toggle: Only the two drawer views (Icons and List), visible only when expanded
         let view_toggle_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .css_classes(vec!["linked", "attachment-view-toggle"])
             .valign(gtk::Align::Center)
+            .margin_start(12)
+            .margin_end(10)
             .visible(false)
             .build();
 
@@ -1834,7 +1839,6 @@ impl ComposeDialog {
 
         view_toggle_box.append(&btn_icons);
         view_toggle_box.append(&btn_list);
-        attachment_bar.append(&view_toggle_box);
 
         let collapse_icon = gtk::Image::from_icon_name("pan-down-symbolic");
         collapse_icon.set_pixel_size(12);
@@ -1852,7 +1856,17 @@ impl ComposeDialog {
                 dialog.toggle_attachment_expanded();
             }
         });
-        attachment_bar.append(&btn_collapse);
+
+        let right_actions = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(0)
+            .valign(gtk::Align::Center)
+            .hexpand(false)
+            .build();
+        right_actions.append(&btn_add_attachment);
+        right_actions.append(&view_toggle_box);
+        right_actions.append(&btn_collapse);
+        attachment_bar.append(&right_actions);
 
         self.imp().attachment_bar.replace(Some(attachment_bar.clone()));
         self.imp().attachment_left_container.replace(Some(left_container));
@@ -2068,15 +2082,15 @@ impl ComposeDialog {
         let flowbox = gtk::FlowBox::builder()
             .orientation(gtk::Orientation::Horizontal)
             .selection_mode(gtk::SelectionMode::None)
-            .homogeneous(true)
+            .homogeneous(false)
             .row_spacing(10)
             .column_spacing(10)
             .min_children_per_line(1)
             .max_children_per_line(8)
             .margin_start(12)
             .margin_end(12)
-            .margin_top(8)
-            .margin_bottom(12)
+            .margin_top(6)
+            .margin_bottom(2)
             .valign(gtk::Align::Start)
             .halign(gtk::Align::Fill)
             .hexpand(true)
@@ -2220,7 +2234,7 @@ impl ComposeDialog {
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_height(true)
             .propagate_natural_width(false)
-            .min_content_height(34)
+            .min_content_height(0)
             .max_content_height(220)
             .vexpand(false)
             .hexpand(true)
@@ -2229,6 +2243,72 @@ impl ComposeDialog {
             .child(&stack)
             .build();
         sheet_box.append(&scrolled);
+
+        let handle_pill = gtk::Box::builder()
+            .width_request(44)
+            .height_request(4)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["attachment-sheet-handle-pill"])
+            .build();
+
+        let handle_btn = gtk::Button::builder()
+            .child(&handle_pill)
+            .tooltip_text(&crate::i18n::gettext("Collapse attachments"))
+            .css_classes(vec!["flat", "attachment-sheet-handle-btn"])
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .margin_top(1)
+            .margin_bottom(1)
+            .focusable(false)
+            .visible(false)
+            .build();
+        set_accessible_label(&handle_btn, &crate::i18n::gettext("Collapse attachments"));
+        handle_btn.set_cursor_from_name(Some("grab"));
+
+        let dialog_weak_for_handle = self.downgrade();
+        handle_btn.connect_clicked(move |_| {
+            if let Some(dialog) = dialog_weak_for_handle.upgrade() {
+                dialog.set_attachment_expanded(false);
+            }
+        });
+
+        let drag_gesture = gtk::GestureDrag::new();
+        drag_gesture.set_button(1);
+        let btn_drag_begin = handle_btn.clone();
+        drag_gesture.connect_drag_begin(move |_, _, _| {
+            btn_drag_begin.set_cursor_from_name(Some("grabbing"));
+        });
+        let dialog_weak_for_drag_update = self.downgrade();
+        drag_gesture.connect_drag_update(move |gesture, _offset_x, offset_y| {
+            if offset_y < -8.0 {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                if let Some(dialog) = dialog_weak_for_drag_update.upgrade() {
+                    if dialog.imp().attachment_expanded.get() {
+                        dialog.set_attachment_expanded(false);
+                    }
+                }
+            }
+        });
+        let dialog_weak_for_drag_end = self.downgrade();
+        let btn_drag_end = handle_btn.clone();
+        drag_gesture.connect_drag_end(move |gesture, _offset_x, offset_y| {
+            btn_drag_end.set_cursor_from_name(Some("grab"));
+            if offset_y < -8.0 {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                if let Some(dialog) = dialog_weak_for_drag_end.upgrade() {
+                    if dialog.imp().attachment_expanded.get() {
+                        dialog.set_attachment_expanded(false);
+                    }
+                }
+            }
+        });
+        handle_btn.add_controller(drag_gesture);
+
+        sheet_box.append(&handle_btn);
+        self.imp()
+            .attachment_sheet_handle_btn
+            .replace(Some(handle_btn));
 
         let detail_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideDown)
@@ -5686,6 +5766,9 @@ impl ComposeDialog {
             if let Some(cb) = self.imp().attachment_bar_chip_box.borrow().as_ref() {
                 cb.set_visible(count > 0);
             }
+            if let Some(add_btn) = self.imp().attachment_bar_add_btn.borrow().as_ref() {
+                add_btn.set_visible(false);
+            }
             if let Some(toggle) = self.imp().attachment_view_toggle_box.borrow().as_ref() {
                 toggle.set_visible(false);
             }
@@ -5702,12 +5785,18 @@ impl ComposeDialog {
                 btn.set_tooltip_text(Some(&crate::i18n::gettext("Expand attachments")));
                 set_accessible_label(btn, &crate::i18n::gettext("Expand attachments"));
             }
+            if let Some(handle) = self.imp().attachment_sheet_handle_btn.borrow().as_ref() {
+                handle.set_visible(false);
+            }
         } else {
             if let Some(sb) = self.imp().attachment_summary_box.borrow().as_ref() {
                 sb.set_visible(count > 0);
             }
             if let Some(cb) = self.imp().attachment_bar_chip_box.borrow().as_ref() {
                 cb.set_visible(false);
+            }
+            if let Some(add_btn) = self.imp().attachment_bar_add_btn.borrow().as_ref() {
+                add_btn.set_visible(count > 0);
             }
             if let Some(toggle) = self.imp().attachment_view_toggle_box.borrow().as_ref() {
                 toggle.set_visible(count > 0);
@@ -5724,6 +5813,9 @@ impl ComposeDialog {
                 btn.set_icon_name("pan-up-symbolic");
                 btn.set_tooltip_text(Some(&crate::i18n::gettext("Collapse attachments")));
                 set_accessible_label(btn, &crate::i18n::gettext("Collapse attachments"));
+            }
+            if let Some(handle) = self.imp().attachment_sheet_handle_btn.borrow().as_ref() {
+                handle.set_visible(count > 0);
             }
             self.update_attachment_max_height();
         }
@@ -5775,6 +5867,9 @@ impl ComposeDialog {
             if let Some(collapse) = self.imp().attachment_btn_collapse.borrow().as_ref() {
                 collapse.set_visible(false);
             }
+            if let Some(handle) = self.imp().attachment_sheet_handle_btn.borrow().as_ref() {
+                handle.set_visible(false);
+            }
         }
     }
 
@@ -5818,19 +5913,8 @@ impl ComposeDialog {
     }
 
     pub fn update_attachment_max_height(&self) {
-        let count = self.imp().attachments.borrow().len();
-        let target_height = match count {
-            0 => 0,
-            1 => 34,
-            2 => 66,
-            3 => 98,
-            4 => 130,
-            5 => 162,
-            6 => 194,
-            _ => 220,
-        };
         if let Some(scrolled) = self.imp().attachment_scrolled.borrow().as_ref() {
-            scrolled.set_min_content_height(target_height);
+            scrolled.set_min_content_height(0);
             scrolled.set_max_content_height(220);
         }
         if let Some(page) = self.imp().attachment_empty_page.borrow().as_ref() {
@@ -6003,10 +6087,10 @@ impl ComposeDialog {
             scrolled.set_visible(count > 0);
         }
         if let Some(sep) = self.imp().attachment_bar_separator.borrow().as_ref() {
-            sep.set_visible(count > 0);
+            sep.set_visible(false);
         }
         if let Some(add_btn) = self.imp().attachment_bar_add_btn.borrow().as_ref() {
-            add_btn.set_visible(count > 0);
+            add_btn.set_visible(count > 0 && self.imp().attachment_expanded.get());
         }
         if count == 0 {
             if !self.imp().is_drag_active.get() {
@@ -6100,38 +6184,38 @@ fn load_attachment_texture(attachment: &DraftAttachment, scale_size: i32) -> Opt
     };
 
     let p = valid_path?;
+    let min_dim = 6.min(scale_size);
     let pixbuf_res = gdk_pixbuf::Pixbuf::from_file_at_scale(&p, scale_size, scale_size, true);
-    let (pw, ph) = pixbuf_res
-        .as_ref()
-        .map(|pb| (pb.width().max(1), pb.height().max(1)))
-        .unwrap_or((scale_size, scale_size));
-    let texture = pixbuf_res
-        .as_ref()
-        .ok()
-        .map(|pixbuf| gdk::Texture::for_pixbuf(pixbuf))
-        .or_else(|| {
-            let file = gio::File::for_path(&p);
-            gdk::Texture::from_file(&file).ok()
-        })?;
+    let pixbuf = pixbuf_res.ok().map(|pb| {
+        let w = pb.width();
+        let h = pb.height();
+        if (w < min_dim || h < min_dim) && (w > 0 && h > 0) {
+            let clamped_w = w.max(min_dim);
+            let clamped_h = h.max(min_dim);
+            pb.scale_simple(clamped_w, clamped_h, gdk_pixbuf::InterpType::Bilinear)
+                .unwrap_or(pb)
+        } else {
+            pb
+        }
+    })?;
+
+    let pw = pixbuf.width().max(1);
+    let ph = pixbuf.height().max(1);
+    let texture = gdk::Texture::for_pixbuf(&pixbuf);
     Some((texture, pw, ph))
 }
 
 fn create_attachment_visual(attachment: &DraftAttachment, size: i32) -> gtk::Widget {
-    let scale_size = if size > 32 { 128 } else { 48 };
-    if let Some((texture, pw, ph)) = load_attachment_texture(attachment, scale_size) {
+    if let Some((texture, pw, ph)) = load_attachment_texture(attachment, size) {
         let pic = gtk::Picture::for_paintable(&texture);
         pic.set_can_shrink(true);
-        pic.set_content_fit(gtk::ContentFit::ScaleDown);
-        let min_dim = if size <= 20 { 10 } else { 16 };
-        let (target_w, target_h) = if pw >= ph {
-            (size, ((size * ph) / pw).max(min_dim))
-        } else {
-            (((size * pw) / ph).max(min_dim), size)
-        };
-        pic.set_width_request(target_w);
-        pic.set_height_request(target_h);
+        pic.set_content_fit(gtk::ContentFit::Contain);
+        pic.set_width_request(pw);
+        pic.set_height_request(ph);
         pic.set_halign(gtk::Align::Center);
         pic.set_valign(gtk::Align::Center);
+        pic.set_hexpand(false);
+        pic.set_vexpand(false);
         if size > 32 {
             pic.add_css_class("attachment-card-thumbnail");
         } else {
@@ -6144,6 +6228,7 @@ fn create_attachment_visual(attachment: &DraftAttachment, size: i32) -> gtk::Wid
     let icon = gtk::Image::from_icon_name(icon_name);
     icon.set_pixel_size(if size > 32 { 48 } else { size });
     icon.set_opacity(0.85);
+    icon.set_halign(gtk::Align::Center);
     icon.set_valign(gtk::Align::Center);
     icon.upcast()
 }
@@ -6321,14 +6406,15 @@ fn create_attachment_card(
 ) -> gtk::FlowBoxChild {
     let child = gtk::FlowBoxChild::new();
     child.set_css_classes(&["attachment-flow-child"]);
-    child.set_hexpand(true);
+    child.set_hexpand(false);
+    child.set_halign(gtk::Align::Center);
     child.set_focusable(true);
     child.set_focus_on_click(true);
     child.set_widget_name(&attachment.path);
 
     let overlay = gtk::Overlay::builder()
         .valign(gtk::Align::Start)
-        .halign(gtk::Align::Fill)
+        .halign(gtk::Align::Center)
         .build();
     overlay.set_widget_name(&attachment.path);
 
@@ -6337,24 +6423,36 @@ fn create_attachment_card(
         .spacing(4)
         .css_classes(vec!["attachment-card"])
         .valign(gtk::Align::Start)
-        .halign(gtk::Align::Fill)
+        .halign(gtk::Align::Center)
+        .width_request(96)
         .focusable(false)
         .tooltip_text(&format!("{} ({})", attachment.filename, format_size(attachment.size)))
         .build();
     card.set_widget_name(&attachment.path);
     card.set_cursor_from_name(Some("pointer"));
 
-    let visual = create_attachment_visual(attachment, 56);
-    visual.set_halign(gtk::Align::Center);
-    visual.set_margin_top(4);
-    visual.set_margin_bottom(2);
-    card.append(&visual);
+    let visual_box = gtk::CenterBox::builder()
+        .width_request(64)
+        .height_request(64)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .css_classes(vec!["attachment-card-visual-box"])
+        .margin_top(4)
+        .margin_bottom(2)
+        .build();
+    let visual = create_attachment_visual(attachment, 64);
+    visual_box.set_center_widget(Some(&visual));
+    card.append(&visual_box);
 
     let lbl_name = gtk::Label::builder()
         .label(&attachment.filename)
         .ellipsize(gtk::pango::EllipsizeMode::Middle)
         .lines(2)
+        .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
         .max_width_chars(14)
+        .width_chars(11)
+        .height_request(34)
         .css_classes(vec!["attachment-card-label"])
         .halign(gtk::Align::Center)
         .justify(gtk::Justification::Center)
@@ -6364,6 +6462,8 @@ fn create_attachment_card(
     let size_str = format_size(attachment.size);
     let lbl_size = gtk::Label::builder()
         .label(&size_str)
+        .single_line_mode(true)
+        .height_request(16)
         .css_classes(vec!["dim-label", "caption", "attachment-card-size"])
         .halign(gtk::Align::Center)
         .build();
@@ -6377,8 +6477,8 @@ fn create_attachment_card(
         .css_classes(vec!["flat", "circular", "attachment-card-remove-btn"])
         .valign(gtk::Align::Start)
         .halign(gtk::Align::End)
-        .margin_top(3)
-        .margin_end(3)
+        .margin_top(2)
+        .margin_end(2)
         .focusable(false)
         .build();
     set_accessible_label(&btn_remove, &crate::i18n::gettext("Remove attachment"));
@@ -6498,10 +6598,13 @@ fn create_attachment_list_row(
         .halign(gtk::Align::Center)
         .valign(gtk::Align::Center)
         .build();
-    let visual = create_attachment_visual(attachment, 16);
-    visual.set_halign(gtk::Align::Center);
-    visual.set_valign(gtk::Align::Center);
-    visual_box.append(&visual);
+    let icon_name = attachment_icon_name(&attachment.mime_type, &attachment.filename);
+    let icon = gtk::Image::from_icon_name(icon_name);
+    icon.set_pixel_size(16);
+    icon.set_opacity(0.85);
+    icon.set_halign(gtk::Align::Center);
+    icon.set_valign(gtk::Align::Center);
+    visual_box.append(&icon);
     row_box.append(&visual_box);
 
     let lbl_name = gtk::Label::builder()
@@ -9300,8 +9403,13 @@ mod tests {
         if let Some(chip_box) = dialog.imp().attachment_bar_chip_box.borrow().as_ref() {
             assert!(chip_box.first_child().is_some(), "Bottom bar chip box should have child");
         }
-        assert!(dialog.imp().attachment_bar_separator.borrow().as_ref().unwrap().is_visible());
-        assert!(dialog.imp().attachment_bar_add_btn.borrow().as_ref().unwrap().is_visible());
+        assert!(!dialog.imp().attachment_bar_separator.borrow().as_ref().unwrap().is_visible());
+        assert!(!dialog.imp().attachment_bar_add_btn.borrow().as_ref().unwrap().is_visible(), "add_btn hidden when collapsed");
+        dialog.set_attachment_expanded(true);
+        assert!(dialog.imp().attachment_bar_add_btn.borrow().as_ref().unwrap().is_visible(), "add_btn visible when expanded");
+        assert!(dialog.imp().attachment_sheet_handle_btn.borrow().as_ref().unwrap().is_visible(), "handle_btn visible when expanded");
+        dialog.set_attachment_expanded(false);
+        assert!(!dialog.imp().attachment_sheet_handle_btn.borrow().as_ref().unwrap().is_visible(), "handle_btn hidden when collapsed");
 
         // Test compact mode for mobile / narrow view (<= 600sp) vs Desktop (> 600sp)
         assert!(!dialog.is_attachment_table_compact());
@@ -9429,7 +9537,35 @@ mod tests {
         let chip_pdf_first = chip_pdf_box.first_child().expect("chip pdf first child");
         assert!(chip_pdf_first.downcast_ref::<gtk::Image>().is_some(), "Chip for PDF should have an Image icon visual");
 
+        let card = create_attachment_card(&att_img, dialog.downgrade());
+        let overlay = card.child().and_downcast::<gtk::Overlay>().expect("overlay");
+        let card_box = overlay.child().and_downcast::<gtk::Box>().expect("card box");
+        let visual_box = card_box.first_child().and_downcast::<gtk::CenterBox>().expect("visual center box");
+        assert!(visual_box.has_css_class("attachment-card-visual-box"));
+        let center_visual = visual_box.center_widget().expect("center widget");
+        let pic = center_visual.downcast_ref::<gtk::Picture>().expect("picture");
+        assert_eq!(pic.content_fit(), gtk::ContentFit::Contain);
+        assert_eq!(pic.halign(), gtk::Align::Center);
+        assert_eq!(pic.valign(), gtk::Align::Center);
+
         let _ = std::fs::remove_file(&tmp_img);
+
+        let tmp_wide = std::env::temp_dir().join("meridian_test_wide.png");
+        let wide_pixbuf = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, 100, 10).unwrap();
+        wide_pixbuf.savev(&tmp_wide, "png", &[]).unwrap();
+        let att_wide = DraftAttachment {
+            path: tmp_wide.to_string_lossy().to_string(),
+            filename: "wide_banner.png".to_string(),
+            mime_type: "image/png".to_string(),
+            size: 1000,
+            content_id: None,
+            embedded_content_base64: String::new(),
+        };
+        let visual_wide = create_attachment_visual(&att_wide, 64);
+        let pic_wide = visual_wide.downcast_ref::<gtk::Picture>().expect("wide picture");
+        assert_eq!(pic_wide.width_request(), 64);
+        assert_eq!(pic_wide.height_request(), 6);
+        let _ = std::fs::remove_file(&tmp_wide);
 
         dialog.close();
         while context.iteration(false) {}
