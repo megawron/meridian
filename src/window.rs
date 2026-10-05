@@ -4021,6 +4021,11 @@ impl MeridianWindow {
             glib::idle_add_local_once(move || {
                 ensure_module_loaded_for_initial(&active_view);
             });
+        } else {
+            let ensure_module_loaded_for_calendar = Rc::clone(&ensure_module_loaded);
+            glib::timeout_add_local_once(std::time::Duration::from_millis(350), move || {
+                ensure_module_loaded_for_calendar("calendar");
+            });
         }
     }
 
