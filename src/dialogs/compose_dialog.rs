@@ -1028,6 +1028,25 @@ impl ComposeDialog {
 
         // ── Header bar ──────────────────────────────────────────────────────
         let header_bar = adw::HeaderBar::new();
+        header_bar.set_show_end_title_buttons(false);
+        header_bar.set_show_start_title_buttons(false);
+
+        let btn_close = gtk::Button::builder()
+            .icon_name("window-close-symbolic")
+            .tooltip_text(&crate::i18n::gettext("Close composer (Ctrl+W)"))
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .margin_end(6)
+            .build();
+        set_accessible_label(&btn_close, &crate::i18n::gettext("Close composer"));
+        btn_close.connect_clicked(glib::clone!(
+            #[weak(rename_to = dialog)]
+            self,
+            move |_| {
+                dialog.close();
+            }
+        ));
+        header_bar.pack_start(&btn_close);
 
         let btn_open_in_new_window = gtk::Button::builder()
             .icon_name("window-new-symbolic")
@@ -1044,13 +1063,6 @@ impl ComposeDialog {
         ));
         header_bar.pack_start(&btn_open_in_new_window);
         self.imp().btn_open_in_new_window.replace(Some(btn_open_in_new_window));
-
-        let btn_close = gtk::Button::builder()
-            .icon_name("window-close-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Close composer (Ctrl+W)"))
-            .css_classes(vec!["flat"])
-            .build();
-        set_accessible_label(&btn_close, &crate::i18n::gettext("Close composer"));
 
         let btn_attach = gtk::Button::builder()
             .icon_name("mail-attachment-symbolic")
@@ -1100,6 +1112,7 @@ impl ComposeDialog {
             .orientation(gtk::Orientation::Horizontal)
             .css_classes(vec!["linked"])
             .valign(gtk::Align::Center)
+            .margin_end(6)
             .build();
         draft_actions.append(&btn_discard);
         draft_actions.append(&btn_save_draft);
@@ -3702,7 +3715,7 @@ impl ComposeDialog {
             }
         });
         group.add_action(&action_close);
-        btn_close.set_action_name(Some("compose.close"));
+        let _ = &btn_close;
 
         let action_new_message = gio::SimpleAction::new("new-message", None);
         let dialog_for_new = self.downgrade();
