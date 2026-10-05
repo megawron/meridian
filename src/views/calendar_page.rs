@@ -723,6 +723,9 @@ struct IndexedEventMeta {
     start_min: u16,
     end_min: u16,
     is_single_day: bool,
+    sort_start: Option<NaiveDateTime>,
+    sort_end: Option<NaiveDateTime>,
+    summary_lowercase: String,
 }
 
 #[derive(Debug, Clone)]
@@ -793,6 +796,9 @@ impl CalendarSnapshotIndex {
                     (0, 1440, false)
                 }
             };
+            let sort_start = displayed_event_datetime(&event.start);
+            let sort_end = displayed_event_datetime(&event.end);
+            let summary_lowercase = event.summary.to_lowercase();
             metas.push(IndexedEventMeta {
                 identity,
                 display_range,
@@ -803,6 +809,9 @@ impl CalendarSnapshotIndex {
                 start_min,
                 end_min,
                 is_single_day,
+                sort_start,
+                sort_end,
+                summary_lowercase,
             });
         }
 
@@ -843,12 +852,19 @@ impl CalendarSnapshotIndex {
             }
         }
 
-        index.all_event_indices.sort_by(|left, right| {
-            compare_event_list_order(
-                &index.snapshot.events[*left],
-                &index.snapshot.events[*right],
-            )
-            .then_with(|| left.cmp(right))
+        index.all_event_indices.sort_by(|&left, &right| {
+            let meta_l = &index.metas[left];
+            let meta_r = &index.metas[right];
+            compare_optional_order(meta_l.sort_start, meta_r.sort_start)
+                .then_with(|| compare_optional_order(meta_l.sort_end, meta_r.sort_end))
+                .then_with(|| meta_l.summary_lowercase.cmp(&meta_r.summary_lowercase))
+                .then_with(|| index.snapshot.events[left].summary.cmp(&index.snapshot.events[right].summary))
+                .then_with(|| index.snapshot.events[left].source_uid.cmp(&index.snapshot.events[right].source_uid))
+                .then_with(|| index.snapshot.events[left].uid.cmp(&index.snapshot.events[right].uid))
+                .then_with(|| meta_l.identity.cmp(&meta_r.identity))
+                .then_with(|| index.snapshot.events[left].source_display_name.cmp(&index.snapshot.events[right].source_display_name))
+                .then_with(|| index.snapshot.events[left].component.cmp(&index.snapshot.events[right].component))
+                .then_with(|| left.cmp(&right))
         });
 
         index
@@ -954,11 +970,21 @@ impl CalendarSnapshotIndex {
 #[derive(Debug, Clone)]
 struct ListProjectionPlan {
     events: Vec<CalendarEventRecord>,
+    prepared: Vec<PreparedCalendarListRow>,
+}
+
+#[derive(Debug, Clone)]
+struct AgendaProjectionPlan {
+    items: Vec<PreparedAgendaItem>,
+    visible_range: CalendarDateRange,
+    total_height: i32,
+    is_empty: bool,
 }
 
 #[derive(Debug, Clone)]
 enum CalendarProjectionPlan {
     List(ListProjectionPlan),
+    Agenda(AgendaProjectionPlan),
 }
 
 #[derive(Debug)]
@@ -977,12 +1003,42 @@ fn build_list_projection_plan(
     category_filter: Option<&str>,
     hidden_sources: &HashSet<String>,
 ) -> ListProjectionPlan {
-    let events =
+    let events: Vec<CalendarEventRecord> =
         filtered_sorted_event_indices(index, search_query, category_filter, hidden_sources)
             .into_iter()
             .filter_map(|event_index| index.snapshot.events.get(event_index).cloned())
             .collect();
-    ListProjectionPlan { events }
+    let prepared = events.iter().map(prepare_calendar_list_row).collect();
+    ListProjectionPlan { events, prepared }
+}
+
+fn build_agenda_projection_plan(
+    index: &CalendarSnapshotIndex,
+    visible_range: CalendarDateRange,
+    search_query: &str,
+    category_filter: Option<&str>,
+    hidden_sources: &HashSet<String>,
+    today: NaiveDate,
+) -> AgendaProjectionPlan {
+    let events_by_date = indexed_events_by_date(
+        index,
+        visible_range,
+        search_query,
+        category_filter,
+        hidden_sources,
+    );
+    let items = build_prepared_agenda_items(&events_by_date, visible_range, today);
+    let is_empty = items.is_empty();
+    let total_height = items
+        .last()
+        .map(|it| (it.y() + it.height()).ceil() as i32)
+        .unwrap_or(0);
+    AgendaProjectionPlan {
+        items,
+        visible_range,
+        total_height,
+        is_empty,
+    }
 }
 
 fn calendar_view_from_name(value: &str) -> CalendarView {
@@ -1129,6 +1185,7 @@ mod imp {
         pub month_rendered_key: RefCell<Option<(NaiveDate, u64, String, Option<String>, usize, bool)>>,
         pub(crate) agenda_rendered_key: RefCell<Option<(CalendarDateRange, u64, String, Option<String>, usize)>>,
         pub year_rendered_key: RefCell<Option<(i32, u64, String, Option<String>, usize)>>,
+        pub(crate) calendar_list_rendered_key: RefCell<Option<(u64, String, Option<String>, usize)>>,
         pub(crate) mini_calendar_last_key: RefCell<Option<(CalendarView, NaiveDate, CalendarDateRange)>>,
         pub day_view: RefCell<Option<gtk::Box>>,
         pub week_view: RefCell<Option<gtk::Box>>,
@@ -1267,6 +1324,7 @@ mod imp {
                 month_rendered_key: RefCell::new(None),
                 agenda_rendered_key: RefCell::new(None),
                 year_rendered_key: RefCell::new(None),
+                calendar_list_rendered_key: RefCell::new(None),
                 mini_calendar_last_key: RefCell::new(None),
                 day_view: RefCell::new(None),
                 week_view: RefCell::new(None),
@@ -2793,6 +2851,8 @@ impl CalendarPage {
         let search_query = self.imp().calendar_search_query.borrow().clone();
         let category_filter = self.imp().calendar_category_filter.borrow().clone();
         let hidden_sources = self.imp().hidden_calendar_sources.borrow().clone();
+        let visible_range = self.current_calendar_viewport().visible_range;
+        let today = Local::now().date_naive();
         let page = self.downgrade();
         let (sender, receiver) = async_channel::bounded(1);
         std::thread::spawn({
@@ -2808,6 +2868,16 @@ impl CalendarPage {
                             &search_query,
                             category_filter.as_deref(),
                             &hidden_sources,
+                        )))
+                    }
+                    CalendarView::Agenda => {
+                        Ok(CalendarProjectionPlan::Agenda(build_agenda_projection_plan(
+                            &index,
+                            visible_range,
+                            &search_query,
+                            category_filter.as_deref(),
+                            &hidden_sources,
+                            today,
                         )))
                     }
                     _ => Err(gettext("There is no projection worker for this view")),
@@ -2944,6 +3014,7 @@ impl CalendarPage {
         };
         match plan {
             CalendarProjectionPlan::List(plan) => self.apply_list_projection_plan(load, plan),
+            CalendarProjectionPlan::Agenda(plan) => self.apply_agenda_projection_plan(load, plan),
         }
     }
 
@@ -2960,6 +3031,22 @@ impl CalendarPage {
                 if let Some(container) = self.imp().list_view.borrow().as_ref() {
                     clear_box(container);
                     container.append(&empty_period_row(&gettext("List view not available"), &message));
+                }
+            }
+            CalendarView::Agenda => {
+                if let Some(empty_box) = self
+                    .imp()
+                    .agenda_empty_box
+                    .borrow()
+                    .as_ref()
+                    .and_then(|w| w.downcast_ref::<gtk::Box>())
+                {
+                    clear_box(empty_box);
+                    empty_box.append(&empty_period_row(&gettext("Agenda view not available"), &message));
+                    empty_box.set_visible(true);
+                }
+                if let Some(scroll) = self.imp().agenda_scroll.borrow().as_ref() {
+                    scroll.set_visible(false);
                 }
             }
             _ => {}
@@ -7626,7 +7713,7 @@ impl CalendarPage {
                 .view_state
                 .borrow_mut()
                 .reconcile_event_selection(&list_events);
-        } else {
+        } else if !matches!(current_view, CalendarView::List | CalendarView::Agenda) {
             self.cancel_calendar_projection();
         }
         match current_view {
@@ -9059,11 +9146,18 @@ impl CalendarPage {
             return;
         }
 
-        let events_by_date = self.events_by_date(visible_range);
-        let today = Local::now().date_naive();
-        let items = build_prepared_agenda_items(&events_by_date, visible_range, today);
-        let is_empty = items.is_empty();
+        self.start_calendar_projection(CalendarView::Agenda);
+    }
 
+    fn apply_agenda_projection_plan(
+        &self,
+        load: CalendarProjectionLoad,
+        plan: AgendaProjectionPlan,
+    ) {
+        if !self.calendar_projection_is_current(&load) {
+            return;
+        }
+        let is_empty = plan.is_empty;
         if let Some(empty_box) = self
             .imp()
             .agenda_empty_box
@@ -9088,20 +9182,15 @@ impl CalendarPage {
             scroll.set_visible(!is_empty);
         }
 
-        let total_h = items
-            .last()
-            .map(|it| (it.y() + it.height()).ceil() as i32)
-            .unwrap_or(0);
-
         let selected_identity = self.imp().view_state.borrow().selected_event.clone();
         let reconciled_idx = if let Some(target_id) = selected_identity {
-            items.iter().position(|it| it.identity() == Some(&target_id))
+            plan.items.iter().position(|it| it.identity() == Some(&target_id))
         } else {
-            self.imp().agenda_selected_row.get().filter(|&idx| idx < items.len() && items[idx].is_event_row())
+            self.imp().agenda_selected_row.get().filter(|&idx| idx < plan.items.len() && plan.items[idx].is_event_row())
         };
         self.imp().agenda_selected_row.set(reconciled_idx);
         if let Some(idx) = reconciled_idx {
-            if let Some(id) = items[idx].identity() {
+            if let Some(id) = plan.items[idx].identity() {
                 self.imp()
                     .view_state
                     .borrow_mut()
@@ -9109,15 +9198,24 @@ impl CalendarPage {
             }
         }
 
-        self.imp().agenda_items.replace(items);
+        self.imp().agenda_items.replace(plan.items);
+        let key = (
+            plan.visible_range,
+            load.revision,
+            self.imp().calendar_search_query.borrow().clone(),
+            self.imp().calendar_category_filter.borrow().clone(),
+            self.imp().hidden_calendar_sources.borrow().len(),
+        );
         self.imp().agenda_rendered_key.replace(Some(key));
 
         if let Some(vadj) = self.imp().agenda_vadjustment.borrow().as_ref() {
-            vadj.set_upper(total_h.max(1) as f64);
+            vadj.set_upper(plan.total_height.max(1) as f64);
         }
         if let Some(canvas) = self.imp().agenda_canvas.borrow().as_ref() {
             canvas.queue_draw();
         }
+
+        self.finish_calendar_projection(&load);
     }
 
     fn set_current_year(&self, target_year: i32) {
@@ -10287,7 +10385,12 @@ impl CalendarPage {
         }
     }
 
-    fn populate_list_view(&self, _view: &gtk::Box, events: Vec<CalendarEventRecord>) {
+    fn populate_list_view(
+        &self,
+        _view: &gtk::Box,
+        events: Vec<CalendarEventRecord>,
+        prepared: Vec<PreparedCalendarListRow>,
+    ) {
         self.imp()
             .view_state
             .borrow_mut()
@@ -10338,7 +10441,6 @@ impl CalendarPage {
             }
         }
 
-        let prepared: Vec<PreparedCalendarListRow> = events.iter().map(prepare_calendar_list_row).collect();
         let total_h = (prepared.len() as f64 * 46.0).ceil() as i32;
         self.imp().calendar_list_events.replace(prepared);
 
@@ -10354,11 +10456,12 @@ impl CalendarPage {
     }
 
     fn refresh_list_view(&self) {
-        let Some(view) = self.imp().list_view.borrow().as_ref().cloned() else {
+        let Some(_view) = self.imp().list_view.borrow().as_ref().cloned() else {
             return;
         };
         self.imp().calendar_list_projection_count.set(None);
         if self.calendar_data_state() != CalendarDataState::Ready {
+            self.imp().calendar_list_rendered_key.replace(None);
             if let Some(empty_box) = self.imp().calendar_list_empty_box.borrow().as_ref().and_then(|w| w.downcast_ref::<gtk::Box>()) {
                 clear_box(empty_box);
                 empty_box.append(&self.calendar_state_row());
@@ -10369,23 +10472,34 @@ impl CalendarPage {
             }
             return;
         }
-        let Some(index) = self.imp().calendar_snapshot_index.borrow().as_ref().cloned() else {
-            self.populate_list_view(&view, Vec::new());
+        let Some(_index) = self.imp().calendar_snapshot_index.borrow().as_ref().cloned() else {
+            self.imp().calendar_list_rendered_key.replace(None);
+            self.populate_list_view(&_view, Vec::new(), Vec::new());
             return;
         };
 
         let search_query = self.imp().calendar_search_query.borrow().clone();
         let category_filter = self.imp().calendar_category_filter.borrow().clone();
         let hidden_sources = self.imp().hidden_calendar_sources.borrow().clone();
+        let revision = self.imp().calendar_revision.get();
+        let key = (revision, search_query, category_filter, hidden_sources.len());
 
-        let plan = build_list_projection_plan(
-            &index,
-            &search_query,
-            category_filter.as_deref(),
-            &hidden_sources,
-        );
+        if self.imp().calendar_list_rendered_key.borrow().as_ref() == Some(&key) {
+            let is_empty = self.imp().calendar_list_events.borrow().is_empty();
+            if let Some(scroll) = self.imp().calendar_list_scroll.borrow().as_ref() {
+                scroll.set_visible(!is_empty);
+            }
+            if let Some(empty_box) = self.imp().calendar_list_empty_box.borrow().as_ref() {
+                empty_box.set_visible(is_empty);
+            }
+            if let Some(canvas) = self.imp().calendar_list_canvas.borrow().as_ref() {
+                canvas.queue_draw();
+            }
+            self.refresh_period_label();
+            return;
+        }
 
-        self.populate_list_view(&view, plan.events);
+        self.start_calendar_projection(CalendarView::List);
         self.refresh_period_label();
     }
 
@@ -10396,7 +10510,14 @@ impl CalendarPage {
         if !self.calendar_projection_is_current(&load) {
             return;
         }
-        self.populate_list_view(&view, plan.events);
+        let key = (
+            load.revision,
+            self.imp().calendar_search_query.borrow().clone(),
+            self.imp().calendar_category_filter.borrow().clone(),
+            self.imp().hidden_calendar_sources.borrow().len(),
+        );
+        self.imp().calendar_list_rendered_key.replace(Some(key));
+        self.populate_list_view(&view, plan.events, plan.prepared);
         if self.finish_calendar_projection(&load) {
             self.refresh_period_label();
         }
@@ -13505,8 +13626,8 @@ fn prepare_calendar_list_row(event: &CalendarEventRecord) -> PreparedCalendarLis
         .into_iter()
         .next();
     let color_hex = event_color_for_record(event);
-    let color = if let Ok(c) = gdk::RGBA::parse(&color_hex) {
-        (c.red() as f64, c.green() as f64, c.blue() as f64)
+    let color = if let Some((r, g, b)) = parse_hex_color(&color_hex) {
+        (r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0)
     } else {
         (0.21, 0.52, 0.89)
     };
@@ -17317,6 +17438,13 @@ pub(crate) fn register_calendar_source_color(source_uid: &str, source_display_na
     }
 }
 
+#[cfg(test)]
+pub(crate) fn clear_calendar_source_color_registry() {
+    if let Ok(mut reg) = SOURCE_COLOR_REGISTRY.write() {
+        reg.clear();
+    }
+}
+
 pub(crate) fn calendar_source_color(source_uid: &str, source_display_name: &str) -> String {
     let uid = source_uid.trim();
     let name = source_display_name.trim();
@@ -17966,8 +18094,9 @@ fn compare_event_list_order(
     })
     .then_with(|| {
         left.summary
-            .to_lowercase()
-            .cmp(&right.summary.to_lowercase())
+            .chars()
+            .flat_map(char::to_lowercase)
+            .cmp(right.summary.chars().flat_map(char::to_lowercase))
     })
     .then_with(|| left.summary.cmp(&right.summary))
     .then_with(|| left.source_uid.cmp(&right.source_uid))
@@ -18080,14 +18209,15 @@ fn filtered_sorted_event_indices(
     category_filter: Option<&str>,
     hidden_sources: &HashSet<String>,
 ) -> Vec<usize> {
-    let mut indices = index
-        .all_event_indices()
-        .into_iter()
-        .filter(|event_index| {
+    index
+        .all_event_indices
+        .iter()
+        .copied()
+        .filter(|&event_index| {
             index
                 .snapshot
                 .events
-                .get(*event_index)
+                .get(event_index)
                 .is_some_and(|event| {
                     event_matches_calendar_filter(
                         event,
@@ -18097,15 +18227,7 @@ fn filtered_sorted_event_indices(
                     )
                 })
         })
-        .collect::<Vec<_>>();
-    indices.sort_by(|left, right| {
-        compare_event_list_order(
-            &index.snapshot.events[*left],
-            &index.snapshot.events[*right],
-        )
-        .then_with(|| left.cmp(right))
-    });
-    indices
+        .collect()
 }
 
 fn indexed_events_by_date(
@@ -22609,6 +22731,7 @@ mod tests {
 
     #[test]
     fn test_calendar_gnome_color_palette_and_unified_selection() {
+        clear_calendar_source_color_registry();
         // Verify GNOME HIG color palette compliance for fallbacks
         let holiday_col = calendar_source_color("test-holidays", "Holidays");
         assert_eq!(holiday_col, "#2ec27e", "Holidays should use GNOME Green 4");
@@ -23105,10 +23228,63 @@ mod tests {
         page.select_calendar_view(CalendarView::Year);
         assert_eq!(*page.imp().current_view.borrow(), CalendarView::Year);
 
+        page.select_calendar_view(CalendarView::List);
+        assert_eq!(*page.imp().current_view.borrow(), CalendarView::List);
+
         // Canvas widgets should remain stable and not get destroyed on view switches
         assert!(page.imp().year_canvas.borrow().is_some());
         assert!(page.imp().agenda_canvas.borrow().is_some());
         assert!(page.imp().month_canvas.borrow().is_some());
+        assert!(page.imp().calendar_list_canvas.borrow().is_some());
+    }
+
+    #[test]
+    fn test_calendar_view_switching_caching_and_zero_alloc_ordering() {
+        let ev1 = CalendarEventRecord {
+            uid: "ev-1".to_string(),
+            source_uid: "src-1".to_string(),
+            source_display_name: "Calendar".to_string(),
+            component: "BEGIN:VEVENT\r\nUID:ev-1\r\nDTSTART:20260915T140000\r\nDTEND:20260915T150000\r\nSUMMARY:Meeting Zebra\r\nEND:VEVENT\r\n".to_string(),
+            summary: "Meeting Zebra".to_string(),
+            start: "2026-09-15 14:00".to_string(),
+            end: "2026-09-15 15:00".to_string(),
+            location: String::new(),
+            description: String::new(),
+            all_day: false,
+        };
+        let ev2 = CalendarEventRecord {
+            uid: "ev-2".to_string(),
+            source_uid: "src-1".to_string(),
+            source_display_name: "Calendar".to_string(),
+            component: "BEGIN:VEVENT\r\nUID:ev-2\r\nDTSTART:20260915T090000\r\nDTEND:20260915T100000\r\nSUMMARY:breakfast apple\r\nEND:VEVENT\r\n".to_string(),
+            summary: "breakfast apple".to_string(),
+            start: "2026-09-15 09:00".to_string(),
+            end: "2026-09-15 10:00".to_string(),
+            location: String::new(),
+            description: String::new(),
+            all_day: false,
+        };
+
+        // compare_event_list_order should compare case-insensitively and chronologically
+        assert_eq!(compare_event_list_order(&ev2, &ev1), std::cmp::Ordering::Less);
+
+        // Index precomputes sorting
+        let snapshot = CalendarSnapshot {
+            events: vec![ev1.clone(), ev2.clone()],
+            tasks: Vec::new(),
+            memos: Vec::new(),
+        };
+        let index = CalendarSnapshotIndex::new(Arc::new(snapshot));
+        assert_eq!(index.all_event_indices, vec![1, 0]); // ev2 (09:00) before ev1 (14:00)
+
+        let hidden = HashSet::new();
+        let plan = build_list_projection_plan(&index, "", None, &hidden);
+        assert_eq!(plan.events.len(), 2);
+        assert_eq!(plan.events[0].uid, "ev-2");
+        assert_eq!(plan.events[1].uid, "ev-1");
+        assert_eq!(plan.prepared.len(), 2);
+        assert_eq!(plan.prepared[0].title, "breakfast apple");
+        assert_eq!(plan.prepared[1].title, "Meeting Zebra");
     }
 
 
