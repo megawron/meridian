@@ -1329,6 +1329,7 @@ button.composer-attach-btn {
   transition: background-color 150ms ease, opacity 150ms ease;
 }
 
+
 /* ── Drop Target Styling: Rounded Borders & Corner Clipping Fix ───────────── */
 /* GTK4 renders outline as a sharp 90-degree rectangle which gets clipped by  */
 /* rounded window/dialog/sheet corners. Replacing outline with inset box-shadow */
@@ -3079,7 +3080,6 @@ button.month-bar-chip.span-end {
 
 .appointment-timeline-container {
   background-color: @view_bg_color;
-  border-left: 1px solid alpha(@window_fg_color, 0.15);
   min-width: 260px;
 }
 
@@ -3274,33 +3274,48 @@ button.month-bar-chip.span-end {
 }
 
 .appointment-timeline-hour-label {
-  font-size: 0.88rem;
-  font-weight: 600;
-  color: alpha(@window_fg_color, 0.65);
-  padding: 2px 4px 0 6px;
-  min-width: 42px;
+  font-size: 0.76rem;
+  font-weight: 500;
+  color: alpha(@window_fg_color, 0.45);
+  padding: 1px 4px 0 4px;
+  min-width: 36px;
+}
+
+.appointment-timeline-hour-row separator {
+  opacity: 0.25;
 }
 
 .appointment-timeline-event {
-  border-radius: 5px;
-  padding: 3px 8px;
-  font-size: 0.92rem;
-  font-weight: 600;
-  color: #ffffff;
-  background-color: @accent_bg_color;
-  box-shadow: 0 1px 2px alpha(black, 0.15);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  border: none;
+  box-shadow: none;
 }
 
 .appointment-timeline-preview {
-  border-radius: 5px;
-  font-size: 0.92rem;
-  font-weight: 700;
-  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 0.82rem;
+  font-weight: 600;
 }
 
 .appointment-timeline-conflict {
-  outline: 1.5px solid #e01b24;
-  outline-offset: -1px;
+  border-left: 3px solid @warning_color;
+}
+
+.appointment-timeline-preview.appointment-timeline-conflict {
+  box-shadow: 0 0 0 2px alpha(@warning_color, 0.9);
+}
+
+.appointment-timeline-conflict-badge {
+  background-color: alpha(@warning_color, 0.14);
+  color: @warning_color;
+  border: none;
+  border-radius: 9999px;
+  padding: 3px 12px;
+  font-size: 0.78rem;
+  font-weight: 600;
 }
 
 /* ── Tasks Middle View (Libadwaita / GNOME HIG) ──────────────────────── */

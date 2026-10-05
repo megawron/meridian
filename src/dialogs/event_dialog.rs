@@ -630,7 +630,9 @@ fn create_room_picker_popover(
 fn update_day_schedule_timeline(
     all_day_box: &gtk::Box,
     timeline_fixed: &gtk::Fixed,
-    timeline_subtitle: &gtk::Label,
+    timeline_window_title: &adw::WindowTitle,
+    conflict_badge: &gtk::Label,
+    preview_slot: &Rc<RefCell<Option<(gtk::Label, bool, String)>>>,
     events_cache: &[CalendarEventRecord],
     date_str: &str,
     start_time_str: &str,
@@ -640,6 +642,8 @@ fn update_day_schedule_timeline(
     edit_uid: Option<&str>,
     selected_calendar_color: Option<&str>,
 ) {
+    preview_slot.replace(None);
+
     while let Some(child) = all_day_box.first_child() {
         all_day_box.remove(&child);
     }
@@ -648,12 +652,13 @@ fn update_day_schedule_timeline(
     }
 
     let Some(current_date) = parse_date_lenient(date_str) else {
-        timeline_subtitle.set_text("Ungültiges Datum");
+        timeline_window_title.set_subtitle("Ungültiges Datum");
         all_day_box.set_visible(false);
+        conflict_badge.set_visible(false);
         return;
     };
 
-    timeline_subtitle.set_text(&current_date.format("%A, %d. %B %Y").to_string());
+    timeline_window_title.set_subtitle(&current_date.format("%A, %d. %B %Y").to_string());
 
     let current_start_min = parse_time_to_minutes(start_time_str).unwrap_or(9 * 60);
     let current_end_min = parse_time_to_minutes(end_time_str).unwrap_or(current_start_min + 60);
@@ -704,14 +709,14 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
         if let Some(display) = gtk::gdk::Display::default() {
             let (bg, _, _, fg) = crate::views::calendar_page::pastel_colors_for_hex(color, is_dark);
             let border_rule = if is_preview {
-                format!("border: 2px solid {color}; font-weight: 700;")
+                format!("box-shadow: 0 0 0 2px {color}; font-weight: 600;")
             } else {
-                "border: 1px solid alpha(currentColor, 0.18); font-weight: 600;".to_string()
+                "border: none; font-weight: 500;".to_string()
             };
             let (radius, padding) = if is_all_day {
-                ("4px", "2px 6px")
+                ("4px", "3px 8px")
             } else {
-                ("5px", "2px 5px")
+                ("4px", "2px 6px")
             };
             let css = format!(
                 "label.{class_name} {{ background-color: {bg}; color: {fg}; {border_rule} border-radius: {radius}; padding: {padding}; }}"
@@ -741,16 +746,24 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
             if *is_preview {
                 classes.push("appointment-timeline-preview");
             }
+            let display_title = if title.trim().is_empty() {
+                crate::i18n::gettext("(Untitled)")
+            } else {
+                title.to_string()
+            };
             let ev_label = gtk::Label::builder()
-                .label(&format!("{title} (Ganztägig)"))
+                .label(&display_title)
                 .ellipsize(gtk::pango::EllipsizeMode::End)
                 .halign(gtk::Align::Fill)
                 .valign(gtk::Align::Start)
                 .width_request(TIMELINE_EVENTS_WIDTH as i32)
                 .height_request(24)
                 .css_classes(classes)
-                .tooltip_text(&format!("{title}\nGanztägiger Termin"))
+                .tooltip_text(&format!("{display_title}\nGanztägiger Termin"))
                 .build();
+            if *is_preview {
+                preview_slot.replace(Some((ev_label.clone(), true, String::new())));
+            }
             all_day_box.append(&ev_label);
         }
     }
@@ -823,6 +836,19 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
                 }
             }
         }
+    }
+
+    if conflicting_uids.is_empty() {
+        conflict_badge.set_visible(false);
+    } else {
+        let count = conflicting_uids.len();
+        let text = if count == 1 {
+            "⚠️ 1 Überschneidung".to_string()
+        } else {
+            format!("⚠️ {count} Überschneidungen")
+        };
+        conflict_badge.set_label(&text);
+        conflict_badge.set_visible(true);
     }
 
     // Overlapping clusters
@@ -921,13 +947,18 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
             let widget = gtk::Label::builder()
                 .label(&label_text)
                 .ellipsize(gtk::pango::EllipsizeMode::End)
-                .halign(gtk::Align::Start)
-                .valign(gtk::Align::Start)
+                .xalign(0.0)
+                .halign(gtk::Align::Fill)
+                .valign(gtk::Align::Fill)
                 .width_request(col_width as i32)
                 .height_request(h.max(20.0) as i32)
                 .css_classes(css_classes)
                 .tooltip_text(&tooltip)
                 .build();
+
+            if item.is_preview {
+                preview_slot.replace(Some((widget.clone(), false, time_prefix)));
+            }
 
             timeline_fixed.put(&widget, x, y);
         }
@@ -1091,9 +1122,13 @@ impl EventDialog {
         let edit_component = self.imp().edit_component.borrow().clone();
         let edit_uid = self.imp().edit_uid.borrow().clone();
         let edit_source_uid = self.imp().edit_source_uid.borrow().clone();
-        let toolbar_view = adw::ToolbarView::new();
+        let form_toolbar_view = adw::ToolbarView::new();
+        form_toolbar_view.set_hexpand(true);
+        form_toolbar_view.set_vexpand(true);
 
-        let header_bar = adw::HeaderBar::new();
+        let form_header_bar = adw::HeaderBar::new();
+        form_header_bar.set_show_end_title_buttons(false);
+        form_header_bar.set_show_start_title_buttons(false);
 
         let btn_open_in_new_window = gtk::Button::builder()
             .icon_name("window-new-symbolic")
@@ -1108,7 +1143,7 @@ impl EventDialog {
                 dialog.split_to_standalone_window();
             }
         ));
-        header_bar.pack_start(&btn_open_in_new_window);
+        form_header_bar.pack_start(&btn_open_in_new_window);
         self.imp().btn_open_in_new_window.replace(Some(btn_open_in_new_window));
 
         let btn_cancel = gtk::Button::builder()
@@ -1120,13 +1155,13 @@ impl EventDialog {
                 dialog.close();
             }
         });
-        header_bar.pack_start(&btn_cancel);
+        form_header_bar.pack_start(&btn_cancel);
 
         let btn_save = gtk::Button::builder()
-            .label("Speichern")
+            .label(if edit_uid.is_some() { "Speichern" } else { "Erstellen" })
             .css_classes(vec!["suggested-action"])
             .build();
-        header_bar.pack_end(&btn_save);
+        form_header_bar.pack_end(&btn_save);
 
         let window_title = adw::WindowTitle::builder()
             .title(if edit_uid.is_some() {
@@ -1135,19 +1170,8 @@ impl EventDialog {
                 "Neuer Termin"
             })
             .build();
-        header_bar.set_title_widget(Some(&window_title));
-        toolbar_view.add_top_bar(&header_bar);
-
-        // ════════════════════════════════════════════════════════════════════
-        // Form & Day Schedule Timeline Split Layout (GNOME HIG & Libadwaita)
-        // ════════════════════════════════════════════════════════════════════
-        // ════════════════════════════════════════════════════════════════════
-        let split_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(0)
-            .hexpand(true)
-            .vexpand(true)
-            .build();
+        form_header_bar.set_title_widget(Some(&window_title));
+        form_toolbar_view.add_top_bar(&form_header_bar);
 
         let scroll_general = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -1378,6 +1402,7 @@ impl EventDialog {
         }
         let group_alarms = adw::PreferencesGroup::builder()
             .title("Erinnerungen")
+            .description("Mehrere VALARM-Einträge; fremde Eigenschaften bleiben erhalten")
             .build();
         group_alarms.add(alarm_editor.widget());
         content_box.append(&group_alarms);
@@ -1409,7 +1434,7 @@ impl EventDialog {
             .build();
 
         let row_status = adw::ActionRow::builder()
-            .title("Status & Verfügbarkeit")
+            .title("Status und Verfügbarkeit")
             .build();
 
         let dropdown_status = gtk::DropDown::from_strings(&[
@@ -1565,41 +1590,42 @@ impl EventDialog {
             .child(&content_box)
             .build();
         scroll_general.set_child(Some(&clamp));
-        split_box.append(&scroll_general);
 
-        // Right: Day Schedule Timeline (fixed 260px width, no expansion)
-        let timeline_container = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .width_request(260)
-            .hexpand(false)
-            .halign(gtk::Align::End)
-            .css_classes(vec!["appointment-timeline-container"])
+        // Right: Day Schedule Timeline inside sidebar panel
+        let timeline_window_title = adw::WindowTitle::builder()
+            .title("Tagesplan")
+            .subtitle(&default_start.format("%A, %d. %B %Y").to_string())
             .build();
 
-        let timeline_title = gtk::Label::builder()
-            .label("Tagesplan")
-            .css_classes(vec!["heading"])
+        let timeline_header_bar = adw::HeaderBar::new();
+        timeline_header_bar.set_show_end_title_buttons(false);
+        timeline_header_bar.set_show_start_title_buttons(false);
+        timeline_header_bar.set_title_widget(Some(&timeline_window_title));
+
+        let timeline_toolbar_view = adw::ToolbarView::new();
+        timeline_toolbar_view.add_top_bar(&timeline_header_bar);
+        timeline_toolbar_view.set_hexpand(false);
+        timeline_toolbar_view.set_vexpand(true);
+        timeline_toolbar_view.set_width_request(260);
+        timeline_toolbar_view.add_css_class("appointment-timeline-container");
+
+        let conflict_badge = gtk::Label::builder()
+            .css_classes(vec!["appointment-timeline-conflict-badge"])
             .halign(gtk::Align::Center)
-            .margin_top(8)
-            .margin_bottom(2)
+            .margin_top(4)
+            .margin_bottom(4)
+            .visible(false)
             .build();
-        timeline_container.append(&timeline_title);
-
-        let timeline_subtitle = gtk::Label::builder()
-            .label(&default_start.format("%A, %d. %B %Y").to_string())
-            .css_classes(vec!["dim-label"])
-            .halign(gtk::Align::Center)
-            .margin_bottom(6)
-            .build();
-        timeline_container.append(&timeline_subtitle);
 
         let all_day_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(4)
+            .margin_start(6)
+            .margin_end(6)
+            .margin_top(6)
             .margin_bottom(6)
             .visible(false)
             .build();
-        timeline_container.append(&all_day_box);
 
         let scrolled_timeline = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -1653,25 +1679,50 @@ impl EventDialog {
         timeline_overlay.add_overlay(&timeline_fixed);
 
         scrolled_timeline.set_child(Some(&timeline_overlay));
-        timeline_container.append(&scrolled_timeline);
 
-        split_box.append(&timeline_container);
+        let timeline_content_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(0)
+            .hexpand(false)
+            .vexpand(true)
+            .build();
+        timeline_content_box.append(&conflict_badge);
+        timeline_content_box.append(&all_day_box);
+        timeline_content_box.append(&scrolled_timeline);
+        timeline_toolbar_view.set_content(Some(&timeline_content_box));
 
-        toolbar_view.set_content(Some(&split_box));
-        self.set_child(Some(&toolbar_view));
+        let split_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(0)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+
+        split_box.append(&form_toolbar_view);
+        let pane_sep = gtk::Separator::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .build();
+        split_box.append(&pane_sep);
+        split_box.append(&timeline_toolbar_view);
+
+        self.set_child(Some(&split_box));
 
         let bp = adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 680sp").unwrap());
-        bp.add_setter(&timeline_container, "visible", Some(&false.to_value()));
+        bp.add_setter(&timeline_toolbar_view, "visible", Some(&false.to_value()));
+        bp.add_setter(&pane_sep, "visible", Some(&false.to_value()));
         self.add_breakpoint(bp);
 
         // Timeline live updater
         let events_cache = Rc::new(RefCell::new(Vec::<CalendarEventRecord>::new()));
         let color_badge_provider = Rc::new(RefCell::new(None::<gtk::CssProvider>));
         let selected_source_color_for_timeline = Rc::clone(&selected_source_color);
+        let preview_slot = Rc::new(RefCell::new(None::<(gtk::Label, bool, String)>));
         let update_timeline = {
             let all_day_box = all_day_box.clone();
             let timeline_fixed = timeline_fixed.clone();
-            let timeline_subtitle = timeline_subtitle.clone();
+            let timeline_window_title = timeline_window_title.clone();
+            let conflict_badge = conflict_badge.clone();
+            let preview_slot = Rc::clone(&preview_slot);
             let events_cache = Rc::clone(&events_cache);
             let entry_start_date = entry_start_date.clone();
             let entry_start_time = entry_start_time.clone();
@@ -1707,7 +1758,9 @@ impl EventDialog {
                 update_day_schedule_timeline(
                     &all_day_box,
                     &timeline_fixed,
-                    &timeline_subtitle,
+                    &timeline_window_title,
+                    &conflict_badge,
+                    &preview_slot,
                     &events_cache.borrow(),
                     &entry_start_date.text(),
                     &entry_start_time.text(),
@@ -1760,11 +1813,11 @@ impl EventDialog {
 
         let window_title_clone = window_title.clone();
         let dialog_weak_title = self.downgrade();
-        let update_tl_title = update_timeline.clone();
+        let preview_slot_for_title = Rc::clone(&preview_slot);
         entry_title.connect_changed(move |entry| {
+            let text = entry.text();
+            let trimmed = text.trim();
             if let Some(dialog) = dialog_weak_title.upgrade() {
-                let text = entry.text();
-                let trimmed = text.trim();
                 if trimmed.is_empty() {
                     dialog.set_title("Termin — Keine Zusammenfassung");
                     window_title_clone.set_subtitle("");
@@ -1773,7 +1826,20 @@ impl EventDialog {
                     window_title_clone.set_subtitle(trimmed);
                 }
             }
-            update_tl_title();
+            if let Some((lbl, is_all_day, time_prefix)) = preview_slot_for_title.borrow().as_ref() {
+                let display = if trimmed.is_empty() {
+                    "Neuer Termin"
+                } else {
+                    trimmed
+                };
+                if *is_all_day {
+                    lbl.set_label(display);
+                    lbl.set_tooltip_text(Some(&format!("{display}\nGanztägiger Termin")));
+                } else {
+                    lbl.set_label(&format!("{time_prefix} {display}"));
+                    lbl.set_tooltip_text(Some(&format!("{display}\n(Vorschau des aktuellen Termins)")));
+                }
+            }
         });
 
         // Auto-scroll timeline to start hour
@@ -2617,19 +2683,6 @@ impl AlarmEditor {
             .orientation(gtk::Orientation::Vertical)
             .spacing(8)
             .build();
-        let heading = gtk::Label::builder()
-            .label("Erinnerungen")
-            .halign(gtk::Align::Start)
-            .css_classes(vec!["heading"])
-            .build();
-        root.append(&heading);
-        let description = gtk::Label::builder()
-            .label("Mehrere VALARM-Einträge; fremde Eigenschaften bleiben erhalten")
-            .halign(gtk::Align::Start)
-            .wrap(true)
-            .css_classes(vec!["dim-label"])
-            .build();
-        root.append(&description);
 
         let list = gtk::ListBox::new();
         list.set_selection_mode(gtk::SelectionMode::Single);
@@ -4628,6 +4681,16 @@ mod tests {
         assert!(dialog_src.contains("present_adaptive"));
         assert!(dialog_src.contains("split_to_standalone_window"));
         assert!(dialog_src.contains("btn_open_in_new_window"));
+    }
+
+    #[test]
+    fn test_event_dialog_split_header_and_fast_title_contract() {
+        let dialog_src = include_str!("event_dialog.rs");
+        // Verify split headerbar layout with save button at form header end and preview slot
+        assert!(dialog_src.contains("form_header_bar.pack_end(&btn_save)"));
+        assert!(dialog_src.contains("timeline_header_bar"));
+        assert!(dialog_src.contains("appointment-timeline-conflict-badge"));
+        assert!(dialog_src.contains("preview_slot"));
     }
 
     #[test]
