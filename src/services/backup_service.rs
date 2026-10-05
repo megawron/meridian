@@ -463,6 +463,8 @@ struct BackupSettings {
     composer_show_bcc: bool,
     #[serde(default = "default_composer_show_reply_to")]
     composer_show_reply_to: bool,
+    #[serde(default = "default_composer_show_format_toolbar")]
+    composer_show_format_toolbar: bool,
     #[serde(default = "default_composer_prompt_empty_subject")]
     composer_prompt_empty_subject: bool,
     #[serde(default = "default_composer_prompt_only_bcc")]
@@ -518,6 +520,10 @@ fn default_composer_show_bcc() -> bool {
 }
 
 fn default_composer_show_reply_to() -> bool {
+    false
+}
+
+fn default_composer_show_format_toolbar() -> bool {
     false
 }
 
@@ -1129,6 +1135,7 @@ impl BackupSettings {
             composer_show_cc: settings.composer_show_cc(),
             composer_show_bcc: settings.composer_show_bcc(),
             composer_show_reply_to: settings.composer_show_reply_to(),
+            composer_show_format_toolbar: settings.composer_show_format_toolbar(),
             composer_prompt_empty_subject: settings.composer_prompt_empty_subject(),
             composer_prompt_only_bcc: settings.composer_prompt_only_bcc(),
             composer_inline_spelling: settings.composer_inline_spelling(),
@@ -1422,6 +1429,7 @@ impl BackupSettings {
         settings.set_composer_show_cc(self.composer_show_cc);
         settings.set_composer_show_bcc(self.composer_show_bcc);
         settings.set_composer_show_reply_to(self.composer_show_reply_to);
+        settings.set_composer_show_format_toolbar(self.composer_show_format_toolbar);
         settings.set_composer_prompt_empty_subject(self.composer_prompt_empty_subject);
         settings.set_composer_prompt_only_bcc(self.composer_prompt_only_bcc);
         settings.set_composer_inline_spelling(self.composer_inline_spelling);
@@ -2215,6 +2223,7 @@ const BACKUP_SETTINGS_FIELDS: &[&str] = &[
     "composer_show_cc",
     "composer_show_bcc",
     "composer_show_reply_to",
+    "composer_show_format_toolbar",
     "composer_prompt_empty_subject",
     "composer_prompt_only_bcc",
     "composer_inline_spelling",
@@ -4264,6 +4273,7 @@ mod tests {
         settings.set_composer_show_cc(false);
         settings.set_composer_show_bcc(true);
         settings.set_composer_show_reply_to(true);
+        settings.set_composer_show_format_toolbar(true);
         settings.set_composer_prompt_empty_subject(false);
         settings.set_composer_prompt_only_bcc(false);
         settings.set_composer_inline_spelling(false);
@@ -4277,6 +4287,7 @@ mod tests {
         assert!(!backup.composer_show_cc);
         assert!(backup.composer_show_bcc);
         assert!(backup.composer_show_reply_to);
+        assert!(backup.composer_show_format_toolbar);
         assert!(!backup.composer_prompt_empty_subject);
         assert!(!backup.composer_prompt_only_bcc);
         assert!(!backup.composer_inline_spelling);
@@ -4304,6 +4315,7 @@ mod tests {
         assert!(!deserialized.composer_show_cc);
         assert!(deserialized.composer_show_bcc);
         assert!(deserialized.composer_show_reply_to);
+        assert!(deserialized.composer_show_format_toolbar);
         assert!(!deserialized.composer_prompt_empty_subject);
         assert!(!deserialized.composer_prompt_only_bcc);
         assert!(!deserialized.composer_inline_spelling);
@@ -4322,6 +4334,7 @@ mod tests {
         assert!(!fresh_settings.composer_show_cc());
         assert!(fresh_settings.composer_show_bcc());
         assert!(fresh_settings.composer_show_reply_to());
+        assert!(fresh_settings.composer_show_format_toolbar());
         assert!(!fresh_settings.composer_prompt_empty_subject());
         assert!(!fresh_settings.composer_prompt_only_bcc());
         assert!(!fresh_settings.composer_inline_spelling());

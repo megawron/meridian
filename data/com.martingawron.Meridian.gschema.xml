@@ -280,6 +280,10 @@
       <default>false</default>
       <summary>Show the Reply-To entry in composer</summary>
     </key>
+    <key name="composer-show-format-toolbar" type="b">
+      <default>false</default>
+      <summary>Show the formatting toolbar in composer</summary>
+    </key>
     <key name="composer-prompt-empty-subject" type="b">
       <default>true</default>
       <summary>Prompt for confirmation when sending a message with an empty subject</summary>

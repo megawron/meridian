@@ -1572,6 +1572,14 @@ impl AppSettings {
         self.set_boolean("composer-show-reply-to", value);
     }
 
+    pub fn composer_show_format_toolbar(&self) -> bool {
+        self.settings.boolean("composer-show-format-toolbar")
+    }
+
+    pub fn set_composer_show_format_toolbar(&self, value: bool) {
+        self.set_boolean("composer-show-format-toolbar", value);
+    }
+
     pub fn composer_track_recent_recipients(&self) -> bool {
         self.settings.boolean("composer-track-recent-recipients")
     }
@@ -3859,6 +3867,9 @@ impl AppSettings {
             "composer-show-reply-to" => {
                 self.set_composer_show_reply_to(parse_migrated_bool(key, value)?);
             }
+            "composer-show-format-toolbar" => {
+                self.set_composer_show_format_toolbar(parse_migrated_bool(key, value)?);
+            }
             "composer-prompt-empty-subject" => {
                 self.set_composer_prompt_empty_subject(parse_migrated_bool(key, value)?);
             }
@@ -4131,6 +4142,7 @@ impl AppSettings {
             "composer-show-cc",
             "composer-show-bcc",
             "composer-show-reply-to",
+            "composer-show-format-toolbar",
             "composer-prompt-empty-subject",
             "composer-prompt-only-bcc",
             "composer-inline-spelling",
@@ -5603,6 +5615,7 @@ mod tests {
         assert!(settings.composer_show_cc());
         assert!(!settings.composer_show_bcc());
         assert!(!settings.composer_show_reply_to());
+        assert!(!settings.composer_show_format_toolbar());
         assert!(settings.composer_prompt_empty_subject());
         assert!(settings.composer_prompt_only_bcc());
         assert!(settings.composer_inline_spelling());
@@ -5618,6 +5631,8 @@ mod tests {
         assert!(settings.composer_show_bcc());
         settings.set_composer_show_reply_to(true);
         assert!(settings.composer_show_reply_to());
+        settings.set_composer_show_format_toolbar(true);
+        assert!(settings.composer_show_format_toolbar());
         settings.set_composer_prompt_empty_subject(false);
         assert!(!settings.composer_prompt_empty_subject());
         settings.set_composer_prompt_only_bcc(false);
@@ -5661,6 +5676,7 @@ mod tests {
         assert!(reset.composer_show_cc());
         assert!(!reset.composer_show_bcc());
         assert!(!reset.composer_show_reply_to());
+        assert!(!reset.composer_show_format_toolbar());
         assert!(reset.composer_prompt_empty_subject());
         assert_eq!(reset.composer_reply_style(), "quoted");
         assert_eq!(reset.composer_forward_style(), "attached");

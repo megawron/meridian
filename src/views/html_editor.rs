@@ -76,6 +76,7 @@ mod imp {
         pub web_view: RefCell<Option<webkit6::WebView>>,
         pub web_context: RefCell<Option<webkit6::WebContext>>,
         pub format_toolbar: RefCell<Option<gtk::Box>>,
+        pub format_toolbar_revealer: RefCell<Option<gtk::Revealer>>,
         pub plain_text_mode: Cell<bool>,
         pub web_view_ready: Cell<bool>,
         pub pending_scripts: RefCell<Vec<String>>,
@@ -1316,6 +1317,11 @@ impl HtmlEditor {
         if let Some(toolbar) = self.imp().format_toolbar.borrow().as_ref() {
             toolbar.set_sensitive(!plain_text);
         }
+        if plain_text {
+            if let Some(revealer) = self.imp().format_toolbar_revealer.borrow().as_ref() {
+                revealer.set_reveal_child(false);
+            }
+        }
         let script = if plain_text {
             "document.body.textContent = document.body.innerText; document.body.style.whiteSpace = 'pre-wrap';"
                 .to_string()
@@ -1332,6 +1338,33 @@ impl HtmlEditor {
         };
         self.evaluate_or_queue(script);
         self.evaluate_or_queue(format!("window.__plainTextMode = {};", plain_text));
+    }
+
+    pub fn is_format_toolbar_visible(&self) -> bool {
+        self.imp()
+            .format_toolbar_revealer
+            .borrow()
+            .as_ref()
+            .map(|r| r.reveals_child())
+            .unwrap_or(false)
+    }
+
+    pub fn set_format_toolbar_visible(&self, visible: bool) {
+        if let Some(revealer) = self.imp().format_toolbar_revealer.borrow().as_ref() {
+            revealer.set_reveal_child(visible);
+        }
+    }
+
+    pub fn toggle_format_toolbar(&self) -> bool {
+        let new_state = !self.is_format_toolbar_visible();
+        self.set_format_toolbar_visible(new_state);
+        new_state
+    }
+
+    pub fn clear_selection(&self) {
+        self.evaluate_or_queue(
+            "const sel = window.getSelection(); if (sel && !sel.isCollapsed) { sel.collapseToStart(); }".to_string(),
+        );
     }
 
     fn evaluate_or_queue(&self, script: String) {
@@ -1564,8 +1597,22 @@ impl HtmlEditor {
             .child(&toolbar)
             .build();
 
-        vbox.append(&toolbar_scroll);
-        vbox.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        let toolbar_container = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        toolbar_container.append(&toolbar_scroll);
+        toolbar_container.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+        let toolbar_revealer = gtk::Revealer::builder()
+            .transition_type(gtk::RevealerTransitionType::SlideDown)
+            .transition_duration(180)
+            .reveal_child(false)
+            .child(&toolbar_container)
+            .build();
+
+        self.imp()
+            .format_toolbar_revealer
+            .replace(Some(toolbar_revealer.clone()));
+
+        vbox.append(&toolbar_revealer);
 
         // WebKit6 WebView Canvas
         let web_context = webkit6::WebContext::new();

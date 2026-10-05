@@ -57,6 +57,7 @@ pub use folder_subscriptions_dialog::FolderSubscriptionsDialog;
 pub use global_search_dialog::GlobalSearchDialog;
 pub use import_dialog::ImportDialog;
 pub use manage_groups_dialog::ManageGroupsDialog;
+#[allow(unused_imports)]
 pub use name_selector_dialog::NameSelectorDialog;
 pub use oof_dialog::OutOfOfficeDialog;
 pub use preferences_dialog::PreferencesDialog;
