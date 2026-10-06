@@ -3925,6 +3925,10 @@ impl TasksPage {
         }
     }
 
+    pub(crate) fn reload_task_sources(&self) {
+        start_task_source_discovery(self, None, false);
+    }
+
     pub(crate) fn refresh_tasks(&self) {
         if let (Some(task_list), Some(task_store), Some(empty_state)) = (
             self.imp().task_list.borrow().as_ref(),
@@ -8941,23 +8945,14 @@ fn show_task_table_context_menu(
     task: &TaskItemObject,
     rect: gdk::Rectangle,
 ) {
-    let popover = gtk::Popover::builder()
-        .has_arrow(false)
-        .pointing_to(&rect)
-        .build();
-    let menu_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(2)
-        .margin_start(6)
-        .margin_end(6)
-        .margin_top(6)
-        .margin_bottom(6)
-        .build();
+    let (popover, menu_box) = crate::views::create_context_popover(Some(&rect));
 
     // 1. Edit
-    let edit = gtk::Button::with_label(&gettext("Edit task"));
-    edit.set_halign(gtk::Align::Fill);
-    edit.add_css_class("flat");
+    let edit = crate::views::create_context_menu_button(
+        None,
+        &gettext("Edit Task"),
+        false,
+    );
     let popover_for_edit = popover.clone();
     let page_weak_edit = page.downgrade();
     let task_for_edit = task.clone();
@@ -8978,13 +8973,15 @@ fn show_task_table_context_menu(
     // 2. Toggle completion
     let completed = task_is_completed(task);
     let toggle_label = if completed {
-        gettext("Mark as incomplete")
+        gettext("Mark as Incomplete")
     } else {
-        gettext("Mark as completed")
+        gettext("Mark as Completed")
     };
-    let toggle = gtk::Button::with_label(&toggle_label);
-    toggle.set_halign(gtk::Align::Fill);
-    toggle.add_css_class("flat");
+    let toggle = crate::views::create_context_menu_button(
+        None,
+        &toggle_label,
+        false,
+    );
     toggle.set_sensitive(task_source_is_writable_on_page(page, &task.source_uid()));
     let popover_for_toggle = popover.clone();
     let page_weak_toggle = page.downgrade();
@@ -8997,11 +8994,14 @@ fn show_task_table_context_menu(
     });
     menu_box.append(&toggle);
 
+    menu_box.append(&crate::views::create_context_menu_separator());
+
     // 3. Delete
-    let delete = gtk::Button::with_label(&gettext("Delete task"));
-    delete.set_halign(gtk::Align::Fill);
-    delete.add_css_class("flat");
-    delete.add_css_class("destructive-action");
+    let delete = crate::views::create_context_menu_button(
+        None,
+        &gettext("Delete Task"),
+        true,
+    );
     delete.set_sensitive(task_source_is_writable_on_page(page, &task.source_uid()));
     let popover_for_delete = popover.clone();
     let page_weak_delete = page.downgrade();
@@ -9027,7 +9027,6 @@ fn show_task_table_context_menu(
     menu_box.append(&delete);
 
     popover.set_parent(anchor_widget);
-    popover.set_child(Some(&menu_box));
     popover.connect_closed(|p| {
         let p = p.clone();
         glib::idle_add_local_once(move || {
@@ -11824,22 +11823,14 @@ fn append_task_row(
             task_list_for_context.select_row(Some(&list_row));
         }
 
-        let popover = gtk::Popover::builder()
-            .has_arrow(false)
-            .pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1))
-            .build();
-        let menu_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(2)
-            .margin_start(6)
-            .margin_end(6)
-            .margin_top(6)
-            .margin_bottom(6)
-            .build();
+        let rect = gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+        let (popover, menu_box) = crate::views::create_context_popover(Some(&rect));
 
-        let edit = gtk::Button::with_label(&gettext("Edit task"));
-        edit.set_halign(gtk::Align::Fill);
-        edit.add_css_class("flat");
+        let edit = crate::views::create_context_menu_button(
+            None,
+            &gettext("Edit task"),
+            false,
+        );
         let popover_for_edit = popover.clone();
         let edit_button_for_menu = edit_button_for_context.clone();
         edit.connect_clicked(move |_| {
@@ -11853,9 +11844,11 @@ fn append_task_row(
         } else {
             gettext("Mark as completed")
         };
-        let toggle = gtk::Button::with_label(&toggle_label);
-        toggle.set_halign(gtk::Align::Fill);
-        toggle.add_css_class("flat");
+        let toggle = crate::views::create_context_menu_button(
+            None,
+            &toggle_label,
+            false,
+        );
         toggle.set_sensitive(!task_for_context.source_uid().is_empty());
         let popover_for_toggle = popover.clone();
         let check_for_menu = check_for_context.clone();
@@ -11865,9 +11858,11 @@ fn append_task_row(
         });
         menu_box.append(&toggle);
 
-        let export = gtk::Button::with_label(&gettext("Export as iCalendar"));
-        export.set_halign(gtk::Align::Fill);
-        export.add_css_class("flat");
+        let export = crate::views::create_context_menu_button(
+            None,
+            &gettext("Export as iCalendar"),
+            false,
+        );
         let popover_for_export = popover.clone();
         let export_button_for_menu = export_button_for_context.clone();
         export.connect_clicked(move |_| {
@@ -11876,10 +11871,13 @@ fn append_task_row(
         });
         menu_box.append(&export);
 
-        let delete = gtk::Button::with_label(&gettext("Delete task"));
-        delete.set_halign(gtk::Align::Fill);
-        delete.add_css_class("flat");
-        delete.add_css_class("destructive-action");
+        menu_box.append(&crate::views::create_context_menu_separator());
+
+        let delete = crate::views::create_context_menu_button(
+            None,
+            &gettext("Delete task"),
+            true,
+        );
         let popover_for_delete = popover.clone();
         let delete_button_for_menu = delete_button_for_context.clone();
         delete.connect_clicked(move |_| {
@@ -11888,7 +11886,6 @@ fn append_task_row(
         });
         menu_box.append(&delete);
 
-        popover.set_child(Some(&menu_box));
         popover.set_parent(&row_for_context);
         let popover_weak = popover.downgrade();
         popover.connect_closed(move |_| {

@@ -3560,22 +3560,14 @@ impl MemosPage {
             };
             memo_list_for_context.select_row(Some(&row));
 
-            let popover = gtk::Popover::builder()
-                .has_arrow(false)
-                .pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1))
-                .build();
-            let menu_box = gtk::Box::builder()
-                .orientation(gtk::Orientation::Vertical)
-                .spacing(2)
-                .margin_start(6)
-                .margin_end(6)
-                .margin_top(6)
-                .margin_bottom(6)
-                .build();
+            let rect = gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            let (popover, menu_box) = crate::views::create_context_popover(Some(&rect));
 
-            let save = gtk::Button::with_label(&crate::i18n::gettext("Save Note"));
-            save.set_halign(gtk::Align::Fill);
-            save.add_css_class("flat");
+            let save = crate::views::create_context_menu_button(
+                None,
+                &crate::i18n::gettext("Save Note"),
+                false,
+            );
             let popover_for_save = popover.clone();
             let save_button_for_menu = save_memo_btn_for_context.clone();
             save.connect_clicked(move |_| {
@@ -3584,9 +3576,11 @@ impl MemosPage {
             });
             menu_box.append(&save);
 
-            let export = gtk::Button::with_label(&crate::i18n::gettext("Export as iCalendar"));
-            export.set_halign(gtk::Align::Fill);
-            export.add_css_class("flat");
+            let export = crate::views::create_context_menu_button(
+                None,
+                &crate::i18n::gettext("Export as iCalendar"),
+                false,
+            );
             let popover_for_export = popover.clone();
             let export_button_for_menu = export_memo_btn_for_context.clone();
             export.connect_clicked(move |_| {
@@ -3595,10 +3589,13 @@ impl MemosPage {
             });
             menu_box.append(&export);
 
-            let delete = gtk::Button::with_label(&crate::i18n::gettext("Delete Note"));
-            delete.set_halign(gtk::Align::Fill);
-            delete.add_css_class("flat");
-            delete.add_css_class("destructive-action");
+            menu_box.append(&crate::views::create_context_menu_separator());
+
+            let delete = crate::views::create_context_menu_button(
+                None,
+                &crate::i18n::gettext("Delete Note"),
+                true,
+            );
             let popover_for_delete = popover.clone();
             let delete_button_for_menu = delete_memo_btn_for_context.clone();
             delete.connect_clicked(move |_| {
@@ -3607,7 +3604,6 @@ impl MemosPage {
             });
             menu_box.append(&delete);
 
-            popover.set_child(Some(&menu_box));
             popover.set_parent(&memo_list_for_context);
             let popover_weak = popover.downgrade();
             popover.connect_closed(move |_| {
@@ -4013,22 +4009,14 @@ impl MemosPage {
                     canvas_clone.queue_draw();
                 }
 
-                let popover = gtk::Popover::builder()
-                    .has_arrow(false)
-                    .pointing_to(&gdk::Rectangle::new(x as i32, y as i32, 1, 1))
-                    .build();
-                let menu_box = gtk::Box::builder()
-                    .orientation(gtk::Orientation::Vertical)
-                    .spacing(2)
-                    .margin_start(6)
-                    .margin_end(6)
-                    .margin_top(6)
-                    .margin_bottom(6)
-                    .build();
+                let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+                let (popover, menu_box) = crate::views::create_context_popover(Some(&rect));
 
-                let save = gtk::Button::with_label(&crate::i18n::gettext("Save Note"));
-                save.set_halign(gtk::Align::Fill);
-                save.add_css_class("flat");
+                let save = crate::views::create_context_menu_button(
+                    None,
+                    &crate::i18n::gettext("Save Note"),
+                    false,
+                );
                 let pop_save = popover.clone();
                 let save_btn = save_btn_for_ctx.clone();
                 save.connect_clicked(move |_| {
@@ -4037,9 +4025,11 @@ impl MemosPage {
                 });
                 menu_box.append(&save);
 
-                let export = gtk::Button::with_label(&crate::i18n::gettext("Export as iCalendar"));
-                export.set_halign(gtk::Align::Fill);
-                export.add_css_class("flat");
+                let export = crate::views::create_context_menu_button(
+                    None,
+                    &crate::i18n::gettext("Export as iCalendar"),
+                    false,
+                );
                 let pop_exp = popover.clone();
                 let exp_btn = export_btn_for_ctx.clone();
                 export.connect_clicked(move |_| {
@@ -4048,10 +4038,13 @@ impl MemosPage {
                 });
                 menu_box.append(&export);
 
-                let delete = gtk::Button::with_label(&crate::i18n::gettext("Delete Note"));
-                delete.set_halign(gtk::Align::Fill);
-                delete.add_css_class("flat");
-                delete.add_css_class("destructive-action");
+                menu_box.append(&crate::views::create_context_menu_separator());
+
+                let delete = crate::views::create_context_menu_button(
+                    None,
+                    &crate::i18n::gettext("Delete Note"),
+                    true,
+                );
                 let pop_del = popover.clone();
                 let del_btn = delete_btn_for_ctx.clone();
                 delete.connect_clicked(move |_| {
@@ -4060,7 +4053,6 @@ impl MemosPage {
                 });
                 menu_box.append(&delete);
 
-                popover.set_child(Some(&menu_box));
                 popover.set_parent(&canvas_clone);
                 let pop_weak = popover.downgrade();
                 popover.connect_closed(move |_| {
