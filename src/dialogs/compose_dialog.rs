@@ -257,6 +257,7 @@ mod imp {
         pub(crate) operation_cancel: RefCell<Option<Arc<CancellationToken>>>,
         pub transport_started: Cell<bool>,
         pub send_button: RefCell<Option<gtk::Button>>,
+        pub btn_close: RefCell<Option<gtk::Button>>,
         pub save_draft_button: RefCell<Option<gtk::Button>>,
         pub btn_discard: RefCell<Option<gtk::Button>>,
         pub cancel_operation_button: RefCell<Option<gtk::Button>>,
@@ -1041,7 +1042,7 @@ impl ComposeDialog {
         let btn_close = gtk::Button::builder()
             .label(&crate::i18n::gettext("Close"))
             .tooltip_text(&crate::i18n::gettext("Close and save draft (Ctrl+W)"))
-            .css_classes(vec!["flat"])
+            .css_classes(vec!["composer-close-btn"])
             .valign(gtk::Align::Center)
             .margin_end(6)
             .build();
@@ -1054,6 +1055,7 @@ impl ComposeDialog {
             }
         ));
         header_bar.pack_start(&btn_close);
+        self.imp().btn_close.replace(Some(btn_close.clone()));
 
         let btn_open_in_new_window = gtk::Button::builder()
             .icon_name("window-new-symbolic")
@@ -9799,6 +9801,12 @@ mod tests {
         };
         let dialog = ComposeDialog::new();
         while context.iteration(false) {}
+
+        // Verify close button has gray background styling and no flat class
+        let btn_close = dialog.imp().btn_close.borrow().clone().expect("close button exists");
+        assert!(btn_close.has_css_class("composer-close-btn"));
+        assert!(!btn_close.has_css_class("flat"));
+        assert_eq!(btn_close.label().as_deref(), Some("Close"));
 
         // Verify save draft floppy disk button is not packed into the header bar
         if let Some(btn) = dialog.imp().save_draft_button.borrow().as_ref() {

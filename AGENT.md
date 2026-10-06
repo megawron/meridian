@@ -20,12 +20,14 @@ All context menus across the entire application (Mail, Calendar, Tasks, Memos, C
 | Property | Standard Metric |
 |---|---|
 | **Typography** | Default application body font (`1.0rem` / Cantarell 11pt, weight `400`). Never shrunk. |
-| **Item Min-Height** | `30px` |
+| **Item Min-Height** | `30px` (or `28px` for compact table rows) |
 | **Item Padding** | `0 8px` (clean `8px` left/right padding, no phantom icon gap) |
 | **Hover Border-Radius** | `7px` |
 | **Popover Padding & Radius** | `12px` outer radius, `4px` inner margin around items |
 | **Separators** | `margin: 4px 0` |
 | **Destructive Actions** | Add `.destructive-action` class for delete/remove operations |
+| **Hierarchy** | Strictly single-level (flat). Never use submenus or multi-page navigation in context menus. |
+| **Scrolling** | Prohibited. Context menus must never scroll. Maximum 5–10 focused items. |
 
 ### 2.1 The GNOME HIG Rule on Menu Icons (Verbs vs. Nouns) & Left-Aligned Text
 

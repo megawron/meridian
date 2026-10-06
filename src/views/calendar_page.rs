@@ -10552,9 +10552,9 @@ impl CalendarPage {
         let card_pad_x = 6.0f64;
         let card_pad_top = 4.0f64;
         let card_pad_bottom = 4.0f64;
-        let header_h = 26.0f64;
+        let header_h = 28.0f64;
         let weekday_h = 18.0f64;
-        let cell_h = 23.0f64;
+        let cell_h = 24.0f64;
         let total_rows = 6usize;
 
         let col_offset = if show_week_numbers { 1 } else { 0 };
@@ -10690,7 +10690,7 @@ impl CalendarPage {
             }
 
             cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
-            cr.set_font_size(14.0);
+            cr.set_font_size(15.5);
             if is_header_hovered {
                 cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 1.0);
             } else {
@@ -10698,21 +10698,21 @@ impl CalendarPage {
             }
             if let Ok(ext) = cr.text_extents(&m_name) {
                 let tx = m.card_x + (m.card_w - ext.width()) / 2.0 - ext.x_bearing();
-                let ty = m.card_y + 18.0;
+                let ty = m.card_y + 19.5;
                 cr.move_to(tx, ty);
                 let _ = cr.show_text(&m_name);
             }
 
             // Weekday headers
-            cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
-            cr.set_font_size(10.0);
+            cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
+            cr.set_font_size(11.0);
             cr.set_source_rgba(fg, fg, fg, secondary_alpha);
 
             if layout.show_week_numbers {
                 let kw_x = m.card_x + 6.0;
                 if let Ok(ext) = cr.text_extents("KW") {
-                    let tx = kw_x + (m.cell_w - ext.width()) / 2.0;
-                    cr.move_to(tx, m.weekday_y + 13.0);
+                    let tx = kw_x + (m.cell_w - ext.width()) / 2.0 - ext.x_bearing();
+                    cr.move_to(tx, m.weekday_y + 13.5);
                     let _ = cr.show_text("KW");
                 }
             }
@@ -10720,8 +10720,8 @@ impl CalendarPage {
             for (col_i, &w_name) in weekday_names.iter().enumerate() {
                 let col_x = m.card_x + 6.0 + (col_i + m.col_offset) as f64 * m.cell_w;
                 if let Ok(ext) = cr.text_extents(w_name) {
-                    let tx = col_x + (m.cell_w - ext.width()) / 2.0;
-                    cr.move_to(tx, m.weekday_y + 13.0);
+                    let tx = col_x + (m.cell_w - ext.width()) / 2.0 - ext.x_bearing();
+                    cr.move_to(tx, m.weekday_y + 13.5);
                     let _ = cr.show_text(w_name);
                 }
             }
@@ -10743,7 +10743,7 @@ impl CalendarPage {
                     let kw_x = m.card_x + 6.0;
                     let cell_y = m.days_y + row as f64 * m.cell_h;
                     cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
-                    cr.set_font_size(9.5);
+                    cr.set_font_size(10.0);
                     cr.set_source_rgba(fg, fg, fg, secondary_alpha * 0.7);
                     if let Ok(ext) = cr.text_extents(&kw_str) {
                         let tx = kw_x + (m.cell_w - ext.width()) / 2.0 - ext.x_bearing();
@@ -10763,7 +10763,7 @@ impl CalendarPage {
                     let cell_y = m.days_y + row as f64 * m.cell_h;
                     let cx = cell_x + m.cell_w / 2.0;
                     let cy = cell_y + m.cell_h / 2.0;
-                    let radius = (m.cell_w.min(m.cell_h) / 2.0 - 1.5).clamp(9.0, 12.0);
+                    let radius = (m.cell_w.min(m.cell_h) / 2.0 - 1.0).clamp(10.0, 12.5);
 
                     let is_selected = selected_day == Some(cell_date);
                     let is_today = cell_date == today;
@@ -10796,7 +10796,7 @@ impl CalendarPage {
                             gtk::cairo::FontWeight::Normal
                         },
                     );
-                    cr.set_font_size(10.5);
+                    cr.set_font_size(12.0);
 
                     if is_today {
                         cr.set_source_rgb(1.0, 1.0, 1.0);
@@ -10807,7 +10807,7 @@ impl CalendarPage {
                     }
 
                     if let Ok(ext) = cr.text_extents(&day_str) {
-                        let text_cy = if event_count > 0 { cy - 1.2 } else { cy };
+                        let text_cy = if event_count > 0 { cy - 1.8 } else { cy };
                         let tx = cx - ext.width() / 2.0 - ext.x_bearing();
                         let ty = text_cy - ext.height() / 2.0 - ext.y_bearing();
                         cr.move_to(tx, ty);
@@ -10816,8 +10816,8 @@ impl CalendarPage {
 
                     // Event indicator dot
                     if event_count > 0 {
-                        let dot_y = cy + 7.0;
-                        cr.arc(cx, dot_y, 1.5, 0.0, 2.0 * std::f64::consts::PI);
+                        let dot_y = cy + 7.5;
+                        cr.arc(cx, dot_y, 1.6, 0.0, 2.0 * std::f64::consts::PI);
                         if is_today {
                             cr.set_source_rgba(1.0, 1.0, 1.0, 0.90);
                         } else if is_selected {
@@ -13268,18 +13268,18 @@ pub(crate) fn draw_month_canvas(
             if date.day() == 1 {
                 // Month badge pill (GNOME Calendar parity: "Oktober", "Januar", "November", etc.)
                 let month_name = CalendarPage::month_name(date.month());
-                cr.set_font_size((12.5 * font_scale).round());
+                cr.set_font_size((11.0 * font_scale).round());
                 cr.select_font_face(
                     "sans-serif",
                     gtk::cairo::FontSlant::Normal,
                     gtk::cairo::FontWeight::Bold,
                 );
                 if let Ok(ext) = cr.text_extents(&month_name) {
-                    let badge_h = (22.0 * font_scale).round();
-                    let badge_w = ext.width() + (20.0 * font_scale).round();
+                    let badge_h = (16.0 * font_scale).round();
+                    let badge_w = ext.width() + (12.0 * font_scale).round();
                     let badge_x = cell_x + 6.0;
                     let badge_y = cell_y + (day_header_h - badge_h) / 2.0;
-                    let radius = 6.0 * font_scale;
+                    let radius = 5.0 * font_scale;
                     draw_cairo_rounded_rect(cr, badge_x, badge_y, badge_w, badge_h, radius);
 
                     if is_today {
@@ -13317,15 +13317,15 @@ pub(crate) fn draw_month_canvas(
                     let _ = cr.show_text(&month_name);
                 }
             } else if is_today {
-                cr.set_font_size((13.5 * font_scale).round());
+                cr.set_font_size((11.5 * font_scale).round());
                 cr.select_font_face(
                     "sans-serif",
                     gtk::cairo::FontSlant::Normal,
                     gtk::cairo::FontWeight::Bold,
                 );
                 if let Ok(ext) = cr.text_extents(&day_str) {
-                    let badge_h = (22.0 * font_scale).round();
-                    let badge_w = (ext.width() + 14.0 * font_scale).round().max((22.0 * font_scale).round());
+                    let badge_h = (16.0 * font_scale).round();
+                    let badge_w = (ext.width() + 8.0 * font_scale).round().max(badge_h);
                     let badge_x = cell_x + 5.0;
                     let badge_y = cell_y + (day_header_h - badge_h) / 2.0;
                     let radius = badge_h / 2.0;

@@ -1364,24 +1364,21 @@ flowbox > flowboxchild.attachment-flow-child:selected {
   opacity: 1.0;
 }
 
-/* Circular close button on composer header (GNOME HIG standard titlebutton size) */
-button.composer-close-btn {
-  border-radius: 9999px;
-  min-width: 24px;
-  min-height: 24px;
-  padding: 0;
-  margin: 0;
+/* Close button on composer header with standard neutral gray resting background */
+button.composer-close-btn,
+headerbar button.composer-close-btn {
   background-color: alpha(currentColor, 0.08);
-  color: inherit;
   transition: background-color 150ms ease, opacity 150ms ease;
 }
 
-button.composer-close-btn:hover {
-  background-color: alpha(currentColor, 0.16);
+button.composer-close-btn:hover,
+headerbar button.composer-close-btn:hover {
+  background-color: alpha(currentColor, 0.15);
 }
 
-button.composer-close-btn:active {
-  background-color: alpha(currentColor, 0.24);
+button.composer-close-btn:active,
+headerbar button.composer-close-btn:active {
+  background-color: alpha(currentColor, 0.22);
 }
 
 /* Responsive attachment button on composer header */
@@ -2732,8 +2729,7 @@ button.calendar-popover-day-btn.today:not(.selected-day) {
   font-size: 1.15rem;
   font-weight: 500;
   color: alpha(@window_fg_color, 0.90);
-  background-color: @view_bg_color;
-  border-radius: 4px;
+  background-color: transparent;
   padding-right: 6px;
   padding-left: 4px;
   padding-top: 0;
@@ -3027,8 +3023,7 @@ button.month-bar-chip.span-end {
   font-size: 0.85rem;
   font-weight: 500;
   opacity: 0.85;
-  background-color: @view_bg_color;
-  border-radius: 4px;
+  background-color: transparent;
   padding-right: 6px;
   padding-left: 4px;
 }
@@ -3616,8 +3611,8 @@ button.month-bar-chip.span-end {
 }
 
 .contact-column-separator {
-  background-image: none !important;
-  background-color: transparent !important;
+  background-image: none;
+  background-color: transparent;
 }
 
 .contacts-table-canvas {
@@ -3837,6 +3832,18 @@ headerbar.sidebar-header:backdrop:dir(rtl) {
 
 .window-header-box {
   background-color: transparent;
+}
+
+/* Ensure the outer top-bar windowhandle doesn't apply opacity: 0.5 over headerbars with custom backgrounds (like sidebar-header).
+ * Instead, delegate the backdrop dimming filter directly to the inner headerbar windowhandle so custom background colors stay pure. */
+toolbarview > .top-bar:backdrop > windowhandle {
+  filter: none;
+  transition: none;
+}
+
+headerbar:backdrop > windowhandle {
+  filter: opacity(0.5);
+  transition: filter 200ms ease-in-out;
 }
 
 /* ── Mail Table & Agenda Overlay Scrollbars ────────────────────────────── */
@@ -4257,7 +4264,7 @@ headerbar {
   min-height: 40px;
 }
 
-headerbar:not(.mobile-screen headerbar) {
+window:not(.mobile-screen) headerbar {
   min-height: 40px;
   max-height: 40px;
 }
@@ -4267,7 +4274,7 @@ headerbar.sidebar-header {
   max-height: 40px;
 }
 
-headerbar:not(.mobile-screen headerbar) windowtitle {
+window:not(.mobile-screen) headerbar windowtitle {
   min-height: 28px;
   max-height: 32px;
 }

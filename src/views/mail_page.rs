@@ -18418,14 +18418,6 @@ impl MailPage {
             respond_section.append(Some(&gettext("Reply")), Some("win.reply"));
             respond_section.append(Some(&gettext("Reply to All")), Some("win.reply-all"));
             respond_section.append(Some(&gettext("Forward")), Some("win.forward"));
-
-            let forward_submenu = gio::Menu::new();
-            forward_submenu.append(Some(&gettext("Forward Inline")), Some("win.forward-inline"));
-            forward_submenu.append(Some(&gettext("Forward Quoted")), Some("win.forward-quoted"));
-            forward_submenu.append(Some(&gettext("Forward as Attachment")), Some("win.forward-attached"));
-            forward_submenu.append(Some(&gettext("Reply to List")), Some("win.reply-list"));
-            forward_submenu.append(Some(&gettext("Reply Alternative…")), Some("win.reply-alternative"));
-            respond_section.append_submenu(Some(&gettext("Forward As…")), &forward_submenu);
             menu.append_section(None, &respond_section);
 
             // Section 2: Organize / Triage
@@ -18435,35 +18427,13 @@ impl MailPage {
             triage_section.append(Some(&gettext("Toggle Flag")), Some("win.toggle-flag"));
             triage_section.append(Some(&gettext("Archive")), Some("win.archive"));
             triage_section.append(Some(&gettext("Move to Folder…")), Some("win.move-message"));
-            triage_section.append(Some(&gettext("Delete")), Some("win.delete"));
+            triage_section.append(Some(&gettext("Mark as Junk")), Some("win.mark-junk"));
             menu.append_section(None, &triage_section);
 
-            // Section 3: More Actions (Progressive Disclosure)
-            let more_section = gio::Menu::new();
-            let more_submenu = gio::Menu::new();
-
-            let labels_junk_section = gio::Menu::new();
-            labels_junk_section.append(Some(&gettext("Toggle Important")), Some("win.toggle-important"));
-            labels_junk_section.append(Some(&gettext("Edit Labels…")), Some("win.edit-labels"));
-            labels_junk_section.append(Some(&gettext("Copy to Folder…")), Some("win.copy-message"));
-            labels_junk_section.append(Some(&gettext("Mark as Junk")), Some("win.mark-junk"));
-            labels_junk_section.append(Some(&gettext("Mark as Not Junk")), Some("win.mark-not-junk"));
-            labels_junk_section.append(Some(&gettext("Undelete")), Some("win.undelete"));
-            more_submenu.append_section(None, &labels_junk_section);
-
-            let tools_section = gio::Menu::new();
-            tools_section.append(Some(&gettext("Add Sender to Address Book")), Some("win.add-sender-contact"));
-            tools_section.append(Some(&gettext("Edit as New Message")), Some("win.edit-as-new"));
-            tools_section.append(Some(&gettext("View Message Source")), Some("win.view-message-source"));
-            tools_section.append(Some(&gettext("Save as EML…")), Some("win.export"));
-            tools_section.append(Some(&gettext("Copy Message Link")), Some("win.copy-message-link"));
-            tools_section.append(Some(&gettext("Go to Containing Folder")), Some("win.goto-containing-folder"));
-            tools_section.append(Some(&gettext("Print…")), Some("win.mail-print"));
-            tools_section.append(Some(&gettext("Print Preview…")), Some("win.mail-print-preview"));
-            more_submenu.append_section(None, &tools_section);
-
-            more_section.append_submenu(Some(&gettext("More Actions…")), &more_submenu);
-            menu.append_section(None, &more_section);
+            // Section 3: Destructive
+            let delete_section = gio::Menu::new();
+            delete_section.append(Some(&gettext("Delete")), Some("win.delete"));
+            menu.append_section(None, &delete_section);
 
             *cached.borrow_mut() = Some(menu.clone());
             menu
