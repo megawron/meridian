@@ -196,8 +196,10 @@ pub fn sanitize_html_with_options(input: &str, allow_remote_resources: bool) -> 
 }
 
 /// SVG Data URI representing a minimalist, Libadwaita-inspired vector placeholder icon.
+/// Uses a continuous mountain ridgeline clipped to the inner frame and grouped opacity (0.55)
+/// so line intersections/overlaps never darken and strokes never protrude past rounded corners.
 pub const PLACEHOLDER_IMAGE_DATA_URI: &str =
-    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiIgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiBmaWxsPSJub25lIiBzdHJva2U9InJnYigxMzYsMTM2LDEzNikiIHN0cm9rZS13aWR0aD0iMS44IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxyZWN0IHg9IjQiIHk9IjUiIHdpZHRoPSIyNCIgaGVpZ2h0PSIyMiIgcng9IjQiIHN0cm9rZT0icmdiKDEzNiwxMzYsMTM2KSIgc3Ryb2tlLW9wYWNpdHk9IjAuNTUiLz48Y2lyY2xlIGN4PSIxMSIgY3k9IjEyIiByPSIyLjIiIGZpbGw9InJnYigxMzYsMTM2LDEzNikiIGZpbGwtb3BhY2l0eT0iMC41NSIgc3Ryb2tlPSJub25lIi8+PHBhdGggZD0iTTI4IDIybC03LTctOSA5IiBzdHJva2U9InJnYigxMzYsMTM2LDEzNikiIHN0cm9rZS1vcGFjaXR5PSIwLjU1Ii8+PHBhdGggZD0iTTE2IDIwbC0zLTMtOSA5IiBzdHJva2U9InJnYigxMzYsMTM2LDEzNikiIHN0cm9rZS1vcGFjaXR5PSIwLjU1Ii8+PC9zdmc+";
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiIgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiBmaWxsPSJub25lIiBzdHJva2U9InJnYigxMzYsMTM2LDEzNikiIHN0cm9rZS13aWR0aD0iMS44IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxkZWZzPjxjbGlwUGF0aCBpZD0iZiI+PHJlY3QgeD0iNCIgeT0iNSIgd2lkdGg9IjI0IiBoZWlnaHQ9IjIyIiByeD0iNCIvPjwvY2xpcFBhdGg+PC9kZWZzPjxnIG9wYWNpdHk9IjAuNTUiPjxyZWN0IHg9IjQiIHk9IjUiIHdpZHRoPSIyNCIgaGVpZ2h0PSIyMiIgcng9IjQiLz48Y2lyY2xlIGN4PSIxMSIgY3k9IjExLjUiIHI9IjIuMiIgZmlsbD0icmdiKDEzNiwxMzYsMTM2KSIgc3Ryb2tlPSJub25lIi8+PHBhdGggZD0iTTQgMjIuNSBMMTIuNSAxNi41IEwxNiAyMCBMMjEgMTUgTDI4IDIyIiBjbGlwLXBhdGg9InVybCgjZikiLz48L2c+PC9zdmc+";
 
 /// 1x1 Transparent GIF Data URI for invisible layout spacers.
 pub const TRANSPARENT_PIXEL_DATA_URI: &str =
@@ -2752,6 +2754,8 @@ Content-Type: text/html; charset=utf-8
         let decoded_str = std::str::from_utf8(&bytes).expect("Valid UTF-8 SVG string");
         assert!(decoded_str.starts_with("<svg "), "Must start with <svg tag");
         assert!(decoded_str.ends_with("</svg>"), "Must be closed with </svg> closing tag");
+        assert!(decoded_str.contains("<clipPath"), "Must contain clipPath to prevent protrusion");
+        assert!(decoded_str.contains("opacity=\"0.55\""), "Must use group opacity to avoid darker overlapping strokes");
     }
 
     #[test]

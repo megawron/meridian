@@ -124,6 +124,8 @@ const COMPOSER_ACTION_SHORTCUTS: &[(&str, &str)] = &[
     ("print", "<Control>p"),
     ("toggle-maximize", "<Alt>F10"),
     ("toggle-fullscreen", "F11"),
+    ("help", "<Control>question"),
+    ("help", "F1"),
 ];
 
 const COMPOSER_OPERATION_ACTIONS: &[&str] = &[
@@ -133,6 +135,7 @@ const COMPOSER_OPERATION_ACTIONS: &[&str] = &[
     "save-as-eml",
     "print",
     "print-preview",
+    "help",
     "close",
     "new-message",
     "attach",
@@ -1267,15 +1270,46 @@ impl ComposeDialog {
             .halign(gtk::Align::End)
             .visible(show_from)
             .build();
+        let make_clean_dropdown_factory = || -> gtk::SignalListItemFactory {
+            let factory = gtk::SignalListItemFactory::new();
+            factory.connect_setup(|_, list_item| {
+                if let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() {
+                    let label = gtk::Label::builder()
+                        .xalign(0.0)
+                        .halign(gtk::Align::Start)
+                        .ellipsize(gtk::pango::EllipsizeMode::End)
+                        .build();
+                    list_item.set_child(Some(&label));
+                }
+            });
+            factory.connect_bind(|_, list_item| {
+                if let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() {
+                    if let (Some(item), Some(label)) = (
+                        list_item.item().and_downcast::<gtk::StringObject>(),
+                        list_item.child().and_downcast::<gtk::Label>(),
+                    ) {
+                        label.set_label(&item.string());
+                    }
+                }
+            });
+            factory
+        };
+
         let source_model = gtk::StringList::new(&["Absender werden geladen…"]);
         let combo_from = gtk::DropDown::new(Some(source_model.clone()), None::<&gtk::Expression>);
         combo_from.set_hexpand(true);
+        combo_from.add_css_class("composer-dropdown");
+        combo_from.set_factory(Some(&make_clean_dropdown_factory()));
+        combo_from.set_list_factory(Some(&make_clean_dropdown_factory()));
 
         let sig_choices = load_signature_choices();
         let sig_names: Vec<&str> = sig_choices.iter().map(|c| c.name.as_str()).collect();
         let sig_model = gtk::StringList::new(&sig_names);
         let combo_signature = gtk::DropDown::new(Some(sig_model), None::<&gtk::Expression>);
         combo_signature.set_valign(gtk::Align::Center);
+        combo_signature.add_css_class("composer-dropdown");
+        combo_signature.set_factory(Some(&make_clean_dropdown_factory()));
+        combo_signature.set_list_factory(Some(&make_clean_dropdown_factory()));
 
         let lbl_signature = gtk::Label::builder()
             .label("Signatur:")
@@ -4027,6 +4061,19 @@ impl ComposeDialog {
             });
             group.add_action(&sig_action);
         }
+
+        let action_help = gio::SimpleAction::new("help", None);
+        let dialog_weak_help = self.downgrade();
+        action_help.connect_activate(move |_, _| {
+            if let Some(dialog) = dialog_weak_help.upgrade() {
+                let parent_win = dialog.root().and_downcast::<gtk::Window>();
+                crate::dialogs::show_shortcuts_dialog_for_view(
+                    parent_win.as_ref(),
+                    Some("composer"),
+                );
+            }
+        });
+        group.add_action(&action_help);
 
         self.insert_action_group("compose", Some(&group));
         self.imp().composer_action_group.replace(Some(group));

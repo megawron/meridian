@@ -677,9 +677,9 @@ fn update_day_schedule_timeline(
     let preview_color = selected_calendar_color.unwrap_or("#3584e4").to_string();
 
     // 1. All-day events
-    let mut all_day_items: Vec<(bool, String, String)> = Vec::new(); // (is_preview, title, color)
+    let mut all_day_items: Vec<(bool, String, String, String, String)> = Vec::new(); // (is_preview, title, color, location, description)
     if all_day {
-        all_day_items.push((true, display_title.to_string(), preview_color.clone()));
+        all_day_items.push((true, display_title.to_string(), preview_color.clone(), String::new(), String::new()));
     }
     for ev in events_cache {
         if Some(ev.uid.as_str()) == edit_uid {
@@ -689,7 +689,7 @@ fn update_day_schedule_timeline(
             let (_, _, ev_title) =
                 crate::views::calendar_page::event_occurrence_times_for_date(ev, current_date, 30);
             let color = crate::views::calendar_page::event_color_for_record(ev);
-            all_day_items.push((false, ev_title, color));
+            all_day_items.push((false, ev_title, color, ev.location.clone(), ev.description.clone()));
         }
     }
 
@@ -739,7 +739,7 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
         all_day_box.set_visible(false);
     } else {
         all_day_box.set_visible(true);
-        for (is_preview, title, color) in &all_day_items {
+        for (is_preview, title, color, loc, desc) in &all_day_items {
             let is_dark = adw::StyleManager::default().is_dark();
             let color_class = ensure_timeline_event_css(color, *is_preview, true, is_dark);
             let mut classes = vec!["appointment-timeline-event", color_class.as_str()];
@@ -751,6 +751,20 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
             } else {
                 title.to_string()
             };
+            let mut tooltip = format!("{display_title}\n{}", crate::i18n::gettext("All Day"));
+            if !loc.trim().is_empty() {
+                tooltip.push_str(&format!("\n📍 Ort: {}", loc.trim()));
+            }
+            if !desc.trim().is_empty() {
+                let desc_trimmed = desc.trim();
+                let short_desc = if desc_trimmed.chars().count() > 180 {
+                    let truncated: String = desc_trimmed.chars().take(177).collect();
+                    format!("{truncated}...")
+                } else {
+                    desc_trimmed.to_string()
+                };
+                tooltip.push_str(&format!("\n\n📝 Notizen:\n{short_desc}"));
+            }
             let ev_label = gtk::Label::builder()
                 .label(&display_title)
                 .ellipsize(gtk::pango::EllipsizeMode::End)
@@ -759,7 +773,7 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
                 .width_request(TIMELINE_EVENTS_WIDTH as i32)
                 .height_request(24)
                 .css_classes(classes)
-                .tooltip_text(&format!("{display_title}\nGanztägiger Termin"))
+                .tooltip_text(&tooltip)
                 .build();
             if *is_preview {
                 preview_slot.replace(Some((ev_label.clone(), true, String::new())));
@@ -776,6 +790,8 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
         title: String,
         color: String,
         uid: Option<String>,
+        location: String,
+        description: String,
     }
 
     let mut timed_items: Vec<DayTimelineTimedItem> = Vec::new();
@@ -795,6 +811,8 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
                 title: ev_title,
                 color,
                 uid: Some(ev.uid.clone()),
+                location: ev.location.clone(),
+                description: ev.description.clone(),
             });
         }
     }
@@ -807,6 +825,8 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
             title: display_title.to_string(),
             color: preview_color,
             uid: None,
+            location: String::new(),
+            description: String::new(),
         });
     }
 
@@ -919,19 +939,32 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
             let time_prefix = format_clock_minutes(item.start_min);
             let label_text = format!("{} {}", time_prefix, item.title);
 
-            let tooltip = format!(
+            let mut tooltip = format!(
                 "{}\n{}-{} Uhr{}",
                 item.title,
                 format_clock_minutes(item.start_min),
                 format_clock_minutes(item.end_min),
                 if is_conflict {
-                    "\n(Überschneidet sich mit anderem Termin)"
+                    "\n(⚠️ Überschneidet sich mit anderem Termin)"
                 } else if item.is_preview {
                     "\n(Vorschau des aktuellen Termins)"
                 } else {
                     ""
                 }
             );
+            if !item.location.trim().is_empty() {
+                tooltip.push_str(&format!("\n📍 Ort: {}", item.location.trim()));
+            }
+            if !item.description.trim().is_empty() {
+                let desc_trimmed = item.description.trim();
+                let short_desc = if desc_trimmed.chars().count() > 180 {
+                    let truncated: String = desc_trimmed.chars().take(177).collect();
+                    format!("{truncated}...")
+                } else {
+                    desc_trimmed.to_string()
+                };
+                tooltip.push_str(&format!("\n\n📝 Notizen:\n{short_desc}"));
+            }
 
             let mut css_classes = vec!["appointment-timeline-event"];
             if item.is_preview {
@@ -1590,6 +1623,7 @@ impl EventDialog {
             .child(&content_box)
             .build();
         scroll_general.set_child(Some(&clamp));
+        form_toolbar_view.set_content(Some(&scroll_general));
 
         // Right: Day Schedule Timeline inside sidebar panel
         let timeline_window_title = adw::WindowTitle::builder()
@@ -4681,6 +4715,7 @@ mod tests {
         assert!(dialog_src.contains("present_adaptive"));
         assert!(dialog_src.contains("split_to_standalone_window"));
         assert!(dialog_src.contains("btn_open_in_new_window"));
+        assert!(dialog_src.contains("form_toolbar_view.set_content(Some(&scroll_general))"));
     }
 
     #[test]

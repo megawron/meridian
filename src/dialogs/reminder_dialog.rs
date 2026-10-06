@@ -9,6 +9,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use crate::i18n::gettext;
 use crate::services::reminder_service::{
     ReminderDelivery, ReminderIdentity, deduplicate_deliveries,
 };
@@ -33,9 +34,52 @@ pub struct ReminderDialog {
     list: gtk::ListBox,
     empty_state: gtk::Label,
     error_label: gtk::Label,
+    dismiss_all_button: gtk::Button,
+    snooze_all_button: gtk::MenuButton,
     entries: Rc<RefCell<BTreeMap<String, ReminderEntry>>>,
     on_open: Rc<dyn Fn(ReminderDelivery) -> bool>,
     on_action: Rc<dyn Fn(ReminderDelivery, ReminderDialogAction) -> bool>,
+}
+
+fn create_snooze_popover<F>(on_select_duration: F) -> gtk::Popover
+where
+    F: Fn(i64) + 'static,
+{
+    let popover = gtk::Popover::new();
+    let box_widget = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(2)
+        .margin_start(4)
+        .margin_end(4)
+        .margin_top(4)
+        .margin_bottom(4)
+        .build();
+
+    let on_select = Rc::new(on_select_duration);
+    for (label, seconds) in [
+        (gettext("5 minutes"), 5 * 60),
+        (gettext("10 minutes"), 10 * 60),
+        (gettext("15 minutes"), 15 * 60),
+        (gettext("30 minutes"), 30 * 60),
+        (gettext("1 hour"), 60 * 60),
+        (gettext("1 day"), 24 * 60 * 60),
+    ] {
+        let btn = gtk::Button::builder()
+            .label(&label)
+            .css_classes(vec!["flat"])
+            .build();
+        let pop_weak = popover.downgrade();
+        let on_select = Rc::clone(&on_select);
+        btn.connect_clicked(move |_| {
+            if let Some(pop) = pop_weak.upgrade() {
+                pop.popdown();
+            }
+            on_select(seconds);
+        });
+        box_widget.append(&btn);
+    }
+    popover.set_child(Some(&box_widget));
+    popover
 }
 
 impl ReminderDialog {
@@ -46,7 +90,7 @@ impl ReminderDialog {
         Action: Fn(ReminderDelivery, ReminderDialogAction) -> bool + 'static,
     {
         let window = adw::Window::builder()
-            .title("Erinnerungen")
+            .title(&gettext("Reminders"))
             .default_width(720)
             .default_height(420)
             .build();
@@ -57,6 +101,65 @@ impl ReminderDialog {
         let header_bar = adw::HeaderBar::new();
         let toolbar_view = adw::ToolbarView::new();
         toolbar_view.add_top_bar(&header_bar);
+
+        let entries: Rc<RefCell<BTreeMap<String, ReminderEntry>>> =
+            Rc::new(RefCell::new(BTreeMap::new()));
+        let on_open = Rc::new(on_open);
+        let on_action = Rc::new(on_action);
+
+        let dismiss_all_button = gtk::Button::builder()
+            .label(&gettext("Dismiss All"))
+            .css_classes(vec!["destructive-action"])
+            .sensitive(false)
+            .build();
+
+        let snooze_all_button = gtk::MenuButton::builder()
+            .label(&gettext("Snooze All"))
+            .sensitive(false)
+            .build();
+        let snooze_all_popover = create_snooze_popover({
+            let entries = Rc::clone(&entries);
+            let on_action = Rc::clone(&on_action);
+            move |seconds| {
+                let to_snooze: Vec<ReminderDelivery> = entries
+                    .borrow()
+                    .values()
+                    .filter(|e| !e.busy.get())
+                    .map(|e| {
+                        e.busy.set(true);
+                        e.row.set_sensitive(false);
+                        e.delivery.clone()
+                    })
+                    .collect();
+                for delivery in to_snooze {
+                    on_action(delivery, ReminderDialogAction::Snooze(seconds));
+                }
+            }
+        });
+        snooze_all_button.set_popover(Some(&snooze_all_popover));
+
+        {
+            let entries = Rc::clone(&entries);
+            let on_action = Rc::clone(&on_action);
+            dismiss_all_button.connect_clicked(move |_| {
+                let to_dismiss: Vec<ReminderDelivery> = entries
+                    .borrow()
+                    .values()
+                    .filter(|e| !e.busy.get())
+                    .map(|e| {
+                        e.busy.set(true);
+                        e.row.set_sensitive(false);
+                        e.delivery.clone()
+                    })
+                    .collect();
+                for delivery in to_dismiss {
+                    on_action(delivery, ReminderDialogAction::Dismiss);
+                }
+            });
+        }
+
+        header_bar.pack_start(&dismiss_all_button);
+        header_bar.pack_end(&snooze_all_button);
 
         let list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
@@ -73,7 +176,7 @@ impl ReminderDialog {
             .build();
 
         let empty_state = gtk::Label::builder()
-            .label("Keine fälligen Erinnerungen")
+            .label(&gettext("No pending reminders"))
             .css_classes(vec!["dim-label"])
             .margin_top(24)
             .margin_bottom(24)
@@ -102,9 +205,11 @@ impl ReminderDialog {
             list,
             empty_state,
             error_label,
-            entries: Rc::new(RefCell::new(BTreeMap::new())),
-            on_open: Rc::new(on_open),
-            on_action: Rc::new(on_action),
+            dismiss_all_button,
+            snooze_all_button,
+            entries,
+            on_open,
+            on_action,
         }
     }
 
@@ -125,6 +230,13 @@ impl ReminderDialog {
         !self.entries.borrow().is_empty()
     }
 
+    fn update_action_sensitivity(&self) {
+        let has = self.has_entries();
+        self.empty_state.set_visible(!has);
+        self.dismiss_all_button.set_sensitive(has);
+        self.snooze_all_button.set_sensitive(has);
+    }
+
     pub fn finish_action(&self, target: &str, success: bool, error: Option<&str>) {
         let key = self
             .entries
@@ -142,7 +254,7 @@ impl ReminderDialog {
             if let Some(entry) = self.entries.borrow_mut().remove(&key) {
                 entry.row.unparent();
             }
-            self.empty_state.set_visible(!self.has_entries());
+            self.update_action_sensitivity();
             self.error_label.set_visible(false);
             if !self.has_entries() {
                 self.window.set_visible(false);
@@ -154,8 +266,8 @@ impl ReminderDialog {
             entry.busy.set(false);
             entry.row.set_sensitive(true);
         }
-        self.error_label
-            .set_label(error.unwrap_or("Reminder-Aktion konnte nicht gespeichert werden"));
+        let fallback = gettext("Could not save reminder action");
+        self.error_label.set_label(error.unwrap_or(&fallback));
         self.error_label.set_visible(true);
     }
 
@@ -174,8 +286,8 @@ impl ReminderDialog {
         if success {
             self.error_label.set_visible(false);
         } else {
-            self.error_label
-                .set_label(error.unwrap_or("Komponente konnte nicht geöffnet werden"));
+            let fallback = gettext("Could not open component");
+            self.error_label.set_label(error.unwrap_or(&fallback));
             self.error_label.set_visible(true);
         }
     }
@@ -190,12 +302,12 @@ impl ReminderDialog {
 
         for delivery in deduplicate_deliveries(deliveries) {
             let Ok(identity) = delivery.identity() else {
-                self.show_error("Reminder-Eintrag mit ungültiger Identität wurde verworfen");
+                self.show_error(&gettext("Reminder entry with invalid identity was discarded"));
                 continue;
             };
             let key = delivery.candidate.key.clone();
             let Ok(action_target) = delivery.action_target() else {
-                self.show_error("Reminder-Eintrag mit ungültigem Aktionsziel wurde verworfen");
+                self.show_error(&gettext("Reminder entry with invalid action target was discarded"));
                 continue;
             };
             let unchanged = self.entries.borrow().get(&key).is_some_and(|entry| {
@@ -220,27 +332,27 @@ impl ReminderDialog {
                 },
             );
         }
-        self.empty_state.set_visible(!self.has_entries());
+        self.update_action_sensitivity();
     }
 
     fn build_row(&self, delivery: ReminderDelivery) -> (gtk::ListBoxRow, Rc<Cell<bool>>) {
         let kind_label = delivery
             .identity()
             .map(|identity| match identity.kind {
-                crate::services::reminder_service::ReminderComponentKind::Event => "Termin",
-                crate::services::reminder_service::ReminderComponentKind::Task => "Aufgabe",
-                crate::services::reminder_service::ReminderComponentKind::Memo => "Notiz",
-                crate::services::reminder_service::ReminderComponentKind::Contact => "Kontakt",
+                crate::services::reminder_service::ReminderComponentKind::Event => gettext("Event"),
+                crate::services::reminder_service::ReminderComponentKind::Task => gettext("Task"),
+                crate::services::reminder_service::ReminderComponentKind::Memo => gettext("Memo"),
+                crate::services::reminder_service::ReminderComponentKind::Contact => gettext("Contact"),
             })
-            .unwrap_or("Reminder");
+            .unwrap_or_else(|_| gettext("Reminder"));
         let due_label = chrono::DateTime::from_timestamp(delivery.candidate.due_at, 0)
             .map(|timestamp| {
                 timestamp
                     .with_timezone(&chrono::Local)
-                    .format("%d.%m.%Y %H:%M")
+                    .format("%Y-%m-%d %H:%M")
                     .to_string()
             })
-            .unwrap_or_else(|| "Fällig".to_string());
+            .unwrap_or_else(|| gettext("Due"));
         let action_row = adw::ActionRow::builder()
             .title(&delivery.candidate.title)
             .subtitle(&format!("{kind_label} · {due_label}"))
@@ -250,14 +362,16 @@ impl ReminderDialog {
             .spacing(4)
             .valign(gtk::Align::Center)
             .build();
-        let open_button = gtk::Button::with_label("Öffnen");
-        let snooze_10_button = gtk::Button::with_label("10 min");
-        let snooze_hour_button = gtk::Button::with_label("1 h");
-        let dismiss_button = gtk::Button::with_label("Erledigt");
+        let open_button = gtk::Button::with_label(&gettext("Open"));
+        let snooze_10_button = gtk::Button::with_label(&gettext("10 min"));
+        let snooze_menu_button = gtk::MenuButton::builder()
+            .label(&gettext("Snooze…"))
+            .build();
+        let dismiss_button = gtk::Button::with_label(&gettext("Dismiss"));
         dismiss_button.add_css_class("destructive-action");
         controls.append(&open_button);
         controls.append(&snooze_10_button);
-        controls.append(&snooze_hour_button);
+        controls.append(&snooze_menu_button);
         controls.append(&dismiss_button);
         action_row.add_suffix(&controls);
 
@@ -281,21 +395,55 @@ impl ReminderDialog {
             }
         });
 
-        for (button, action) in [
-            (snooze_10_button, ReminderDialogAction::Snooze(10 * 60)),
-            (snooze_hour_button, ReminderDialogAction::Snooze(60 * 60)),
-            (dismiss_button, ReminderDialogAction::Dismiss),
-        ] {
+        // Quick 10m snooze
+        {
             let row_for_action = row.clone();
             let busy_for_action = Rc::clone(&busy);
             let on_action = Rc::clone(&self.on_action);
             let delivery_for_action = delivery.clone();
-            button.connect_clicked(move |_| {
+            snooze_10_button.connect_clicked(move |_| {
                 if busy_for_action.replace(true) {
                     return;
                 }
                 row_for_action.set_sensitive(false);
-                if !on_action(delivery_for_action.clone(), action) {
+                if !on_action(delivery_for_action.clone(), ReminderDialogAction::Snooze(10 * 60)) {
+                    busy_for_action.set(false);
+                    row_for_action.set_sensitive(true);
+                }
+            });
+        }
+
+        // Comprehensive snooze durations popover
+        {
+            let row_for_action = row.clone();
+            let busy_for_action = Rc::clone(&busy);
+            let on_action = Rc::clone(&self.on_action);
+            let delivery_for_action = delivery.clone();
+            let popover = create_snooze_popover(move |seconds| {
+                if busy_for_action.replace(true) {
+                    return;
+                }
+                row_for_action.set_sensitive(false);
+                if !on_action(delivery_for_action.clone(), ReminderDialogAction::Snooze(seconds)) {
+                    busy_for_action.set(false);
+                    row_for_action.set_sensitive(true);
+                }
+            });
+            snooze_menu_button.set_popover(Some(&popover));
+        }
+
+        // Dismiss
+        {
+            let row_for_action = row.clone();
+            let busy_for_action = Rc::clone(&busy);
+            let on_action = Rc::clone(&self.on_action);
+            let delivery_for_action = delivery.clone();
+            dismiss_button.connect_clicked(move |_| {
+                if busy_for_action.replace(true) {
+                    return;
+                }
+                row_for_action.set_sensitive(false);
+                if !on_action(delivery_for_action.clone(), ReminderDialogAction::Dismiss) {
                     busy_for_action.set(false);
                     row_for_action.set_sensitive(true);
                 }

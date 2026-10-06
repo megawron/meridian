@@ -553,49 +553,84 @@ impl PreferencesDialog {
 
         let mut visible_eds_sources = Vec::new();
         for source in eds_sources {
+            let uid_lower = source.uid.to_ascii_lowercase();
+            let name_lower = source.display_name.to_ascii_lowercase();
+            let backend_lower = source.backend_name.to_ascii_lowercase();
+
+            // Filter out system/pseudo sources (News and Blogs, On This Computer, Search Folders, etc.)
+            if matches!(
+                backend_lower.as_str(),
+                "rss" | "vfolder" | "maildir" | "local" | "none"
+            ) || uid_lower == "rss"
+                || uid_lower == "vfolder"
+                || uid_lower == "local"
+                || name_lower.contains("news and blogs")
+                || name_lower.contains("news & blogs")
+                || name_lower.contains("computer")
+                || name_lower.contains("search folders")
+                || name_lower.contains("suchordner")
+            {
+                continue;
+            }
+
             let is_shared = shared_profiles.iter().any(|p| {
                 source.display_name == p.display_name
                     || (!p.email.is_empty() && source.display_name.contains(&p.email))
                     || source.uid == p.id
                     || source.uid.contains(&crate::services::account_config_service::eds_source_uid_for_email(&p.email))
             });
-            if !is_shared {
+            // If already shown in non-shared local profiles, do not duplicate
+            let is_local = profiles.iter().any(|p| {
+                !p.is_shared_mailbox
+                    && (source.uid == p.id
+                        || source.uid == format!("eds:{}", p.id)
+                        || p.id == format!("eds:{}", source.uid)
+                        || (!p.email.is_empty() && source.display_name.eq_ignore_ascii_case(&p.email))
+                        || (!p.email.is_empty() && source.display_name.contains(&p.email))
+                        || source.display_name.eq_ignore_ascii_case(&p.display_name))
+            });
+            if !is_shared && !is_local {
                 visible_eds_sources.push(source);
             }
         }
 
         if visible_eds_sources.is_empty() && shared_profiles.is_empty() {
-            let no_accounts = adw::ActionRow::builder()
-                .title("No active accounts found")
-                .subtitle("Use \"Add New Account…\" or \"Open Shared Mailbox…\"")
-                .build();
-            let icon_no_accounts = gtk::Image::from_icon_name("dialog-information-symbolic");
-            no_accounts.add_prefix(&icon_no_accounts);
-            group.add(&no_accounts);
-            self.imp()
-                .managed_account_rows
-                .borrow_mut()
-                .push(no_accounts.upcast());
+            if profiles.is_empty() {
+                let no_accounts = adw::ActionRow::builder()
+                    .title("No active accounts found")
+                    .subtitle("Use \"Add New Account…\" or \"Open Shared Mailbox…\"")
+                    .build();
+                let icon_no_accounts = gtk::Image::from_icon_name("dialog-information-symbolic");
+                no_accounts.add_prefix(&icon_no_accounts);
+                group.add(&no_accounts);
+                self.imp()
+                    .managed_account_rows
+                    .borrow_mut()
+                    .push(no_accounts.upcast());
+            }
             return;
         }
 
         // 1. Regular EDS mail sources
         for source in visible_eds_sources {
             let backend = if source.backend_name.trim().is_empty() {
-                "unbekannter Backendtyp"
+                "IMAP".to_string()
             } else {
-                source.backend_name.trim()
+                source.backend_name.trim().to_uppercase()
             };
             let state = if source.enabled {
-                "aktiv"
+                crate::i18n::gettext("Active")
             } else {
-                "disabled"
+                crate::i18n::gettext("Disabled")
+            };
+            let subtitle = if source.display_name.contains('@') {
+                format!("{backend} · {state}")
+            } else {
+                format!("Online Account · {backend} · {state}")
             };
             let row = adw::ActionRow::builder()
                 .title(&source.display_name)
-                .subtitle(format!(
-                    "{backend} · {state} · EDS Account (Click for custom settings)"
-                ))
+                .subtitle(subtitle)
                 .activatable(true)
                 .build();
             let icon_mail = gtk::Image::from_icon_name("mail-read-symbolic");
@@ -1012,7 +1047,50 @@ impl PreferencesDialog {
 
         window.present();
     }
+}
 
+fn workday_time_options() -> gtk::StringList {
+    let list = gtk::StringList::new(&[]);
+    for hour in 0..24 {
+        for minute in [0, 30] {
+            list.append(&format!("{hour:02}:{minute:02}"));
+        }
+    }
+    list
+}
+
+fn minutes_to_workday_time_index(minutes: u32) -> u32 {
+    let clamped = minutes.min(1439);
+    let slot = (clamped + 15) / 30;
+    slot.min(47)
+}
+
+fn workday_time_index_to_minutes(index: u32) -> u32 {
+    (index.min(47)) * 30
+}
+
+fn sync_interval_seconds_list() -> &'static [u32] {
+    &[0, 60, 300, 600, 900, 1800, 3600, 86400]
+}
+
+fn sync_interval_to_index(seconds: u32) -> u32 {
+    let intervals = sync_interval_seconds_list();
+    if seconds == 0 {
+        return 0;
+    }
+    let mut best_idx = 2; // default 300s (5 min)
+    let mut best_diff = u32::MAX;
+    for (idx, &interval) in intervals.iter().enumerate().skip(1) {
+        let diff = (interval as i64 - seconds as i64).unsigned_abs() as u32;
+        if diff < best_diff {
+            best_diff = diff;
+            best_idx = idx;
+        }
+    }
+    best_idx as u32
+}
+
+impl PreferencesDialog {
     fn build_ui(&self) {
         let settings = AppSettings::try_new();
 
@@ -1038,8 +1116,8 @@ impl PreferencesDialog {
             .build();
 
         let group_accounts = adw::PreferencesGroup::builder()
-            .title("Email Accounts and Server Settings")
-            .description("Managed accounts and online services")
+            .title(&crate::i18n::gettext("Email Accounts"))
+            .description(&crate::i18n::gettext("Manage accounts and online services"))
             .build();
 
         let row_add_account = adw::ActionRow::builder()
@@ -1104,10 +1182,10 @@ impl PreferencesDialog {
         page_accounts.add(&group_accounts);
 
         let group_profiles = adw::PreferencesGroup::builder()
-            .title(&crate::i18n::gettext("Local Account Profiles"))
+            .title(&crate::i18n::gettext("Configured Accounts"))
             .description(
                 &crate::i18n::gettext(
-                    "Non-secret profiles for later account synchronization; passwords are not stored",
+                    "Manage default account, email identities, and display order",
                 ),
             )
             .build();
@@ -1503,9 +1581,93 @@ impl PreferencesDialog {
         page_accounts.add(&group_filters);
 
         let group_sync = adw::PreferencesGroup::builder()
-            .title(&crate::i18n::gettext("Synchronization"))
-            .description(&crate::i18n::gettext("Automatic update of mail folders"))
+            .title(&crate::i18n::gettext("Mail Synchronization"))
+            .description(&crate::i18n::gettext("Inbox update schedule and outbox delivery"))
             .build();
+
+        let sync_interval_model = gtk::StringList::new(&[]);
+        for opt in [
+            crate::i18n::gettext("Manually"),
+            crate::i18n::gettext("Every minute"),
+            crate::i18n::gettext("Every 5 minutes (Default)"),
+            crate::i18n::gettext("Every 10 minutes"),
+            crate::i18n::gettext("Every 15 minutes"),
+            crate::i18n::gettext("Every 30 minutes"),
+            crate::i18n::gettext("Hourly"),
+            crate::i18n::gettext("Daily"),
+        ] {
+            sync_interval_model.append(&opt);
+        }
+        let row_sync_interval = adw::ComboRow::builder()
+            .title(&crate::i18n::gettext("Check for new messages"))
+            .subtitle(&crate::i18n::gettext("Automatic email synchronization interval"))
+            .model(&sync_interval_model)
+            .build();
+        row_sync_interval.add_prefix(&gtk::Image::from_icon_name("mail-receive-symbolic"));
+
+        if let Some(settings) = settings.clone() {
+            let initial_secs = settings.mail_sync_interval_seconds();
+            row_sync_interval.set_selected(sync_interval_to_index(initial_secs));
+
+            let updating = std::rc::Rc::new(std::cell::Cell::new(false));
+            let updating_notify = updating.clone();
+            let settings_notify = settings.clone();
+            row_sync_interval.connect_selected_notify(move |row| {
+                if updating_notify.get() {
+                    return;
+                }
+                let idx = row.selected() as usize;
+                let secs = sync_interval_seconds_list().get(idx).copied().unwrap_or(300);
+                settings_notify.set_mail_sync_interval_seconds(secs);
+            });
+
+            let row_for_change = row_sync_interval.clone();
+            let updating_change = updating.clone();
+            settings.connect_changed(Some("mail-sync-interval"), move |s, _| {
+                let target = s.int("mail-sync-interval").max(0) as u32;
+                let expected_idx = sync_interval_to_index(target);
+                if row_for_change.selected() != expected_idx {
+                    updating_change.set(true);
+                    row_for_change.set_selected(expected_idx);
+                    updating_change.set(false);
+                }
+            });
+        }
+        group_sync.add(&row_sync_interval);
+
+        let row_flush_outbox = adw::SwitchRow::builder()
+            .title("Empty outbox when checking for mail")
+            .subtitle("Automatically sends queued messages in outbox when checking for new mail")
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_flush_outbox.set_active(settings.flush_outbox());
+            let settings_for_flush = settings.clone();
+            row_flush_outbox.connect_active_notify(move |switch| {
+                settings_for_flush.set_flush_outbox(switch.is_active());
+            });
+        }
+        group_sync.add(&row_flush_outbox);
+
+        let row_sync_message_limit = adw::SpinRow::with_range(25.0, 1_000.0, 25.0);
+        row_sync_message_limit.set_title("Messages to fetch per folder");
+        row_sync_message_limit.set_subtitle(
+            "Messages per fetch page; additional messages can be loaded with \"Load More\"",
+        );
+        row_sync_message_limit.set_digits(0);
+        row_sync_message_limit.set_snap_to_ticks(true);
+        if let Some(settings) = settings.clone() {
+            row_sync_message_limit.set_value(settings.mail_sync_message_limit() as f64);
+            row_sync_message_limit.connect_value_notify(move |row| {
+                settings.set_mail_sync_message_limit(row.value().round() as u32);
+            });
+        }
+        group_sync.add(&row_sync_message_limit);
+
+        let group_network_options = adw::PreferencesGroup::builder()
+            .title(&crate::i18n::gettext("Network Connection"))
+            .description(&crate::i18n::gettext("Offline connection settings and local mail store"))
+            .build();
+
         let row_offline_mode = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Offline Mode"))
             .subtitle(&crate::i18n::gettext(
@@ -1527,61 +1689,7 @@ impl PreferencesDialog {
                 }
             });
         }
-        group_sync.add(&row_offline_mode);
-
-        let row_flush_outbox = adw::SwitchRow::builder()
-            .title("Empty outbox when checking for mail")
-            .subtitle("Automatically sends queued messages in outbox when checking for new mail")
-            .build();
-        if let Some(settings) = settings.clone() {
-            row_flush_outbox.set_active(settings.flush_outbox());
-            let settings_for_flush = settings.clone();
-            row_flush_outbox.connect_active_notify(move |switch| {
-                settings_for_flush.set_flush_outbox(switch.is_active());
-            });
-        }
-        group_sync.add(&row_flush_outbox);
-
-        let row_sync_interval = adw::SpinRow::with_range(0.0, 86_400.0, 5.0);
-        row_sync_interval.set_title("Mail-Aktualisierungsintervall");
-        row_sync_interval.set_subtitle("seconds; 0 disables automatic refresh");
-        row_sync_interval.set_digits(0);
-        row_sync_interval.set_snap_to_ticks(true);
-        if let Some(settings) = settings.clone() {
-            row_sync_interval.set_value(settings.mail_sync_interval_seconds() as f64);
-            row_sync_interval.connect_value_notify(move |row| {
-                settings.set_mail_sync_interval_seconds(row.value().round() as u32);
-            });
-        }
-        group_sync.add(&row_sync_interval);
-
-        let row_sync_message_limit = adw::SpinRow::with_range(25.0, 1_000.0, 25.0);
-        row_sync_message_limit.set_title("Messages to fetch per folder");
-        row_sync_message_limit.set_subtitle(
-            "Messages per fetch page; additional messages can be loaded with \"Load More\"",
-        );
-        row_sync_message_limit.set_digits(0);
-        row_sync_message_limit.set_snap_to_ticks(true);
-        if let Some(settings) = settings.clone() {
-            row_sync_message_limit.set_value(settings.mail_sync_message_limit() as f64);
-            row_sync_message_limit.connect_value_notify(move |row| {
-                settings.set_mail_sync_message_limit(row.value().round() as u32);
-            });
-        }
-        group_sync.add(&row_sync_message_limit);
-
-        let row_draft_autosave = adw::SpinRow::with_range(0.0, 3_600.0, 5.0);
-        row_draft_autosave.set_title("Automatically save drafts");
-        row_draft_autosave.set_subtitle("seconds; 0 disables local autosave");
-        row_draft_autosave.set_digits(0);
-        row_draft_autosave.set_snap_to_ticks(true);
-        if let Some(settings) = settings.clone() {
-            row_draft_autosave.set_value(settings.draft_autosave_interval_seconds() as f64);
-            row_draft_autosave.connect_value_notify(move |row| {
-                settings.set_draft_autosave_interval_seconds(row.value().round() as u32);
-            });
-        }
-        group_sync.add(&row_draft_autosave);
+        group_network_options.add(&row_offline_mode);
 
         let row_local_mail = directory_picker_row(
             self,
@@ -1594,8 +1702,8 @@ impl PreferencesDialog {
             settings.clone(),
             |settings, path| settings.set_local_mail_directory(path),
         );
-        group_sync.add(&row_local_mail);
-        page_network.add(&group_sync);
+        group_network_options.add(&row_local_mail);
+        page_network.add(&group_network_options);
 
         let group_calendar_local = adw::PreferencesGroup::builder()
             .title("Local calendar sources and import")
@@ -4139,31 +4247,81 @@ impl PreferencesDialog {
         }
 
         let group_calendar_time = adw::PreferencesGroup::builder()
-            .title("Work hours and reminders")
-            .description("Times are stored as minutes past midnight; 0 minutes disables reminders")
+            .title(&crate::i18n::gettext("Working Hours"))
+            .description(&crate::i18n::gettext(
+                "Daily working hours shown in day and workweek views",
+            ))
             .build();
-        let row_workday_start = adw::SpinRow::with_range(0.0, 1_439.0, 15.0);
-        row_workday_start.set_title("Work Day Starts");
-        row_workday_start.set_subtitle("Minutes past midnight (e.g. 540 = 09:00)");
-        row_workday_start.set_digits(0);
-        row_workday_start.set_snap_to_ticks(true);
+
+        let workday_options = workday_time_options();
+        let row_workday_start = adw::ComboRow::builder()
+            .title("Work Day Starts")
+            .subtitle(&crate::i18n::gettext("Beginning of the working day"))
+            .model(&workday_options)
+            .build();
+        row_workday_start.add_prefix(&gtk::Image::from_icon_name("alarm-symbolic"));
+
         if let Some(settings) = settings.clone() {
-            row_workday_start.set_value(settings.calendar_workday_start_minutes() as f64);
-            row_workday_start.connect_value_notify(move |row| {
-                settings.set_calendar_workday_start_minutes(row.value().round() as u32);
+            let start_mins = settings.calendar_workday_start_minutes();
+            row_workday_start.set_selected(minutes_to_workday_time_index(start_mins));
+
+            let updating = std::rc::Rc::new(std::cell::Cell::new(false));
+            let updating_notify = updating.clone();
+            let settings_notify = settings.clone();
+            row_workday_start.connect_selected_notify(move |row| {
+                if updating_notify.get() {
+                    return;
+                }
+                let mins = workday_time_index_to_minutes(row.selected());
+                settings_notify.set_calendar_workday_start_minutes(mins);
+            });
+
+            let row_for_change = row_workday_start.clone();
+            let updating_change = updating.clone();
+            settings.connect_changed(Some("calendar-workday-start"), move |s, _| {
+                let target = s.int("calendar-workday-start").clamp(0, 1439) as u32;
+                let expected_idx = minutes_to_workday_time_index(target);
+                if row_for_change.selected() != expected_idx {
+                    updating_change.set(true);
+                    row_for_change.set_selected(expected_idx);
+                    updating_change.set(false);
+                }
             });
         }
         group_calendar_time.add(&row_workday_start);
 
-        let row_workday_end = adw::SpinRow::with_range(0.0, 1_439.0, 15.0);
-        row_workday_end.set_title("Work Day Ends");
-        row_workday_end.set_subtitle("Minutes past midnight (e.g. 1020 = 17:00)");
-        row_workday_end.set_digits(0);
-        row_workday_end.set_snap_to_ticks(true);
+        let row_workday_end = adw::ComboRow::builder()
+            .title("Work Day Ends")
+            .subtitle(&crate::i18n::gettext("End of the working day"))
+            .model(&workday_options)
+            .build();
+        row_workday_end.add_prefix(&gtk::Image::from_icon_name("alarm-symbolic"));
+
         if let Some(settings) = settings.clone() {
-            row_workday_end.set_value(settings.calendar_workday_end_minutes() as f64);
-            row_workday_end.connect_value_notify(move |row| {
-                settings.set_calendar_workday_end_minutes(row.value().round() as u32);
+            let end_mins = settings.calendar_workday_end_minutes();
+            row_workday_end.set_selected(minutes_to_workday_time_index(end_mins));
+
+            let updating = std::rc::Rc::new(std::cell::Cell::new(false));
+            let updating_notify = updating.clone();
+            let settings_notify = settings.clone();
+            row_workday_end.connect_selected_notify(move |row| {
+                if updating_notify.get() {
+                    return;
+                }
+                let mins = workday_time_index_to_minutes(row.selected());
+                settings_notify.set_calendar_workday_end_minutes(mins);
+            });
+
+            let row_for_change = row_workday_end.clone();
+            let updating_change = updating.clone();
+            settings.connect_changed(Some("calendar-workday-end"), move |s, _| {
+                let target = s.int("calendar-workday-end").clamp(0, 1439) as u32;
+                let expected_idx = minutes_to_workday_time_index(target);
+                if row_for_change.selected() != expected_idx {
+                    updating_change.set(true);
+                    row_for_change.set_selected(expected_idx);
+                    updating_change.set(false);
+                }
             });
         }
         group_calendar_time.add(&row_workday_end);
@@ -4999,10 +5157,13 @@ impl PreferencesDialog {
 
         let group_mail_labels = build_mail_labels_group(&self, settings.clone());
         let group_mail_junk = build_mail_junk_group(settings.clone());
+        let group_mail_notifications = build_mail_notifications_group(settings.clone());
 
         let page_mail_general = adw::PreferencesPage::builder().title("General").build();
+        page_mail_general.add(&group_sync);
         page_mail_general.add(&group_mail_reading);
         page_mail_general.add(&group_mail_behavior);
+        page_mail_general.add(&group_mail_notifications);
 
         let page_mail_html = adw::PreferencesPage::builder()
             .title("HTML-Mails")
@@ -7049,6 +7210,194 @@ fn build_mail_junk_group(settings: Option<AppSettings>) -> adw::PreferencesGroup
     group
 }
 
+fn build_mail_notifications_group(settings: Option<AppSettings>) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title(&crate::i18n::gettext("New Mail Notification"))
+        .description(&crate::i18n::gettext(
+            "Notification banners and sound alerts for incoming messages (like GNOME Evolution)",
+        ))
+        .build();
+
+    let row_notify = adw::SwitchRow::builder()
+        .title(&crate::i18n::gettext("Generate a notification for new messages"))
+        .subtitle(&crate::i18n::gettext("Display a desktop banner notification when new emails arrive"))
+        .build();
+
+    let row_only_inbox = adw::SwitchRow::builder()
+        .title(&crate::i18n::gettext("Notify only for Inbox folders"))
+        .subtitle(&crate::i18n::gettext("Ignore new messages arriving in other folders"))
+        .build();
+
+    let row_sound = adw::SwitchRow::builder()
+        .title(&crate::i18n::gettext("Play a sound for new messages"))
+        .subtitle(&crate::i18n::gettext("Audible alert when new messages arrive (throttled to once every 30 seconds)"))
+        .build();
+
+    let sound_types = gtk::StringList::new(&[
+        &crate::i18n::gettext("Freedesktop sound theme (message-new-email)"),
+        &crate::i18n::gettext("System beep"),
+        &crate::i18n::gettext("Custom sound file"),
+    ]);
+    let row_sound_type = adw::ComboRow::builder()
+        .title(&crate::i18n::gettext("Sound Type"))
+        .model(&sound_types)
+        .build();
+
+    let row_sound_file = adw::ActionRow::builder()
+        .title(&crate::i18n::gettext("Sound File"))
+        .subtitle(&crate::i18n::gettext("Path to audio file (.oga, .ogg, .wav)"))
+        .build();
+
+    let file_entry = gtk::Entry::builder()
+        .hexpand(true)
+        .valign(gtk::Align::Center)
+        .placeholder_text("/usr/share/sounds/...")
+        .build();
+
+    let choose_button = gtk::Button::builder()
+        .icon_name("document-open-symbolic")
+        .valign(gtk::Align::Center)
+        .tooltip_text(&crate::i18n::gettext("Select audio file"))
+        .build();
+
+    let play_button = gtk::Button::builder()
+        .icon_name("media-playback-start-symbolic")
+        .valign(gtk::Align::Center)
+        .tooltip_text(&crate::i18n::gettext("Preview sound"))
+        .build();
+
+    let file_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .build();
+    file_box.append(&file_entry);
+    file_box.append(&choose_button);
+    file_box.append(&play_button);
+    row_sound_file.add_suffix(&file_box);
+
+    if let Some(s) = settings {
+        row_notify.set_active(s.mail_notification_enabled());
+        row_only_inbox.set_active(s.mail_notification_only_inbox());
+        row_sound.set_active(s.mail_notification_sound_enabled());
+
+        let initial_sound_type = if s.mail_notification_sound_beep() {
+            1
+        } else if s.mail_notification_sound_play_file() {
+            2
+        } else {
+            0
+        };
+        row_sound_type.set_selected(initial_sound_type);
+        row_sound_type.set_sensitive(s.mail_notification_sound_enabled());
+        row_sound_file.set_visible(initial_sound_type == 2 && s.mail_notification_sound_enabled());
+
+        let sound_file_text = s.mail_notification_sound_file();
+        file_entry.set_text(&sound_file_text);
+
+        let s_notify = s.clone();
+        row_notify.connect_active_notify(move |row| {
+            s_notify.set_mail_notification_enabled(row.is_active());
+        });
+
+        let s_inbox = s.clone();
+        row_only_inbox.connect_active_notify(move |row| {
+            s_inbox.set_mail_notification_only_inbox(row.is_active());
+        });
+
+        let s_sound = s.clone();
+        let sound_type_row_weak = row_sound_type.downgrade();
+        let sound_file_row_weak = row_sound_file.downgrade();
+        row_sound.connect_active_notify(move |row| {
+            let active = row.is_active();
+            s_sound.set_mail_notification_sound_enabled(active);
+            if let Some(row_type) = sound_type_row_weak.upgrade() {
+                row_type.set_sensitive(active);
+                if let Some(row_file) = sound_file_row_weak.upgrade() {
+                    row_file.set_visible(active && row_type.selected() == 2);
+                }
+            }
+        });
+
+        let s_type = s.clone();
+        let sound_file_row_weak2 = row_sound_file.downgrade();
+        row_sound_type.connect_selected_notify(move |row| {
+            let selected = row.selected();
+            if let Some(row_file) = sound_file_row_weak2.upgrade() {
+                row_file.set_visible(selected == 2);
+            }
+            match selected {
+                1 => {
+                    s_type.set_mail_notification_sound_use_theme(false);
+                    s_type.set_mail_notification_sound_beep(true);
+                    s_type.set_mail_notification_sound_play_file(false);
+                }
+                2 => {
+                    s_type.set_mail_notification_sound_use_theme(false);
+                    s_type.set_mail_notification_sound_beep(false);
+                    s_type.set_mail_notification_sound_play_file(true);
+                }
+                _ => {
+                    s_type.set_mail_notification_sound_use_theme(true);
+                    s_type.set_mail_notification_sound_beep(false);
+                    s_type.set_mail_notification_sound_play_file(false);
+                }
+            }
+        });
+
+        let s_file = s.clone();
+        file_entry.connect_text_notify(move |entry| {
+            s_file.set_mail_notification_sound_file(&entry.text());
+        });
+
+        let file_entry_weak = file_entry.downgrade();
+        let s_chooser = s.clone();
+        choose_button.connect_clicked(move |btn| {
+            let root = btn.root().and_downcast::<gtk::Window>();
+            let filter = gtk::FileFilter::new();
+            filter.set_name(Some("Audio Files (*.oga, *.ogg, *.wav, *.mp3)"));
+            filter.add_pattern("*.oga");
+            filter.add_pattern("*.ogg");
+            filter.add_pattern("*.wav");
+            filter.add_pattern("*.mp3");
+
+            let dialog = gtk::FileDialog::builder()
+                .title(&crate::i18n::gettext("Select audio file"))
+                .modal(true)
+                .build();
+            let filters = gio::ListStore::new::<gtk::FileFilter>();
+            filters.append(&filter);
+            dialog.set_filters(Some(&filters));
+
+            let file_entry_weak = file_entry_weak.clone();
+            let s_chooser = s_chooser.clone();
+            dialog.open(root.as_ref(), None::<&gio::Cancellable>, move |result| {
+                if let Ok(file) = result {
+                    if let Some(path) = file.path() {
+                        let path_str = path.to_string_lossy().into_owned();
+                        if let Some(entry) = file_entry_weak.upgrade() {
+                            entry.set_text(&path_str);
+                        }
+                        s_chooser.set_mail_notification_sound_file(&path_str);
+                    }
+                }
+            });
+        });
+
+        let s_play = s.clone();
+        play_button.connect_clicked(move |_| {
+            crate::services::mail_notification_service::MailNotificationService::preview_notification_sound(&s_play);
+        });
+    }
+
+    group.add(&row_notify);
+    group.add(&row_only_inbox);
+    group.add(&row_sound);
+    group.add(&row_sound_type);
+    group.add(&row_sound_file);
+
+    group
+}
+
 fn selected_file_paths(model: &gio::ListModel) -> Vec<std::path::PathBuf> {
     (0..model.n_items())
         .filter_map(|index| {
@@ -8070,6 +8419,9 @@ mod tests {
 
     #[test]
     fn test_preferences_dialog_present_visible() {
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let Some(context) = crate::window::gtk_test_main_context() else {
             return;
         };
@@ -8086,6 +8438,128 @@ mod tests {
             dialog.is_visible(),
             "PreferencesDialog must become visible when presented to avoid trapping pointer events in modal backdrop"
         );
+    }
+
+    #[test]
+    fn test_workday_time_options_and_conversions() {
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        use super::{
+            minutes_to_workday_time_index, workday_time_index_to_minutes, workday_time_options,
+        };
+        use adw::prelude::*;
+
+        let options = workday_time_options();
+        assert_eq!(options.n_items(), 48);
+        assert_eq!(options.string(0).as_deref(), Some("00:00"));
+        assert_eq!(options.string(16).as_deref(), Some("08:00"));
+        assert_eq!(options.string(18).as_deref(), Some("09:00"));
+        assert_eq!(options.string(34).as_deref(), Some("17:00"));
+        assert_eq!(options.string(47).as_deref(), Some("23:30"));
+
+        // Exact conversions
+        assert_eq!(minutes_to_workday_time_index(0), 0);
+        assert_eq!(workday_time_index_to_minutes(0), 0);
+
+        assert_eq!(minutes_to_workday_time_index(540), 18);
+        assert_eq!(workday_time_index_to_minutes(18), 540);
+
+        assert_eq!(minutes_to_workday_time_index(1020), 34);
+        assert_eq!(workday_time_index_to_minutes(34), 1020);
+
+        // Clamping and rounding
+        assert_eq!(minutes_to_workday_time_index(535), 18);
+        assert_eq!(minutes_to_workday_time_index(554), 18);
+        assert_eq!(minutes_to_workday_time_index(555), 19);
+        assert_eq!(minutes_to_workday_time_index(2000), 47);
+        assert_eq!(workday_time_index_to_minutes(100), 1410);
+    }
+
+    #[test]
+    fn test_sync_interval_options_and_conversions() {
+        use super::{sync_interval_seconds_list, sync_interval_to_index};
+
+        let list = sync_interval_seconds_list();
+        assert_eq!(list.len(), 8);
+        assert_eq!(list, &[0, 60, 300, 600, 900, 1800, 3600, 86400]);
+
+        // Exact index matching
+        assert_eq!(sync_interval_to_index(0), 0); // Manually
+        assert_eq!(sync_interval_to_index(60), 1); // 1 min
+        assert_eq!(sync_interval_to_index(300), 2); // 5 min (default)
+        assert_eq!(sync_interval_to_index(600), 3); // 10 min
+        assert_eq!(sync_interval_to_index(900), 4); // 15 min
+        assert_eq!(sync_interval_to_index(1800), 5); // 30 min
+        assert_eq!(sync_interval_to_index(3600), 6); // Hourly
+        assert_eq!(sync_interval_to_index(86400), 7); // Daily
+
+        // Nearest neighbor matching
+        assert_eq!(sync_interval_to_index(70), 1);
+        assert_eq!(sync_interval_to_index(280), 2);
+        assert_eq!(sync_interval_to_index(650), 3);
+        assert_eq!(sync_interval_to_index(100_000), 7);
+    }
+
+    #[test]
+    fn test_gnome_hig_workday_and_sync_interval_rows_exist_in_dialog() {
+        use adw::prelude::*;
+        use crate::services::AppSettings;
+
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let Some(settings) = AppSettings::try_new() else {
+            return;
+        };
+
+        settings.set_calendar_workday_start_minutes(540);
+        settings.set_calendar_workday_end_minutes(1020);
+        settings.set_mail_sync_interval_seconds(300);
+        while context.iteration(false) {}
+
+        let dialog = super::PreferencesDialog::new();
+        while context.iteration(false) {}
+        let widget = dialog.upcast_ref::<gtk::Widget>();
+
+        // Work Day Starts & Ends are ComboRows now
+        let row_start = find_combo_by_title(widget, "Work Day Starts")
+            .expect("Work Day Starts ComboRow must exist in Calendar page");
+        let row_end = find_combo_by_title(widget, "Work Day Ends")
+            .expect("Work Day Ends ComboRow must exist in Calendar page");
+
+        assert_eq!(row_start.selected(), 18, "540 min should select 09:00 (index 18)");
+        assert_eq!(row_end.selected(), 34, "1020 min should select 17:00 (index 34)");
+
+        // Mail sync interval ComboRow in General Mail page
+        let row_sync = find_combo_by_title(widget, "Check for new messages")
+            .expect("Check for new messages ComboRow must exist");
+        assert_eq!(row_sync.selected(), 2, "300s should select Every 5 minutes (index 2)");
+
+        // UI -> Settings reactivity
+        row_start.set_selected(16); // 08:00
+        while context.iteration(false) {}
+        assert_eq!(settings.calendar_workday_start_minutes(), 480);
+
+        row_end.set_selected(36); // 18:00
+        while context.iteration(false) {}
+        assert_eq!(settings.calendar_workday_end_minutes(), 1080);
+
+        row_sync.set_selected(3); // 10 min = 600s
+        while context.iteration(false) {}
+        assert_eq!(settings.mail_sync_interval_seconds(), 600);
+
+        // Reset
+        settings.set_calendar_workday_start_minutes(540);
+        settings.set_calendar_workday_end_minutes(1020);
+        settings.set_mail_sync_interval_seconds(300);
+        while context.iteration(false) {}
     }
 }
 

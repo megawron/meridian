@@ -180,21 +180,21 @@ pub enum ReminderIdentityError {
 impl std::fmt::Display for ReminderIdentityError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let message = match self {
-            Self::MalformedUri => "ungültige Reminder-URI",
-            Self::UnknownScheme => "unbekanntes Reminder-Schema",
-            Self::MissingParameter => "erforderlicher URI-Parameter fehlt",
-            Self::DuplicateParameter => "URI-Parameter doppelt vorhanden",
-            Self::UnknownParameter => "unbekannter URI-Parameter",
-            Self::EmptyValue => "leere Reminder-Identität",
-            Self::InvalidPercentEncoding => "ungültige Percent-Kodierung",
-            Self::InvalidUtf8 => "ungültige UTF-8-Kodierung",
-            Self::NonCanonicalEncoding => "nicht-kanonische Percent-Kodierung",
-            Self::ControlCharacter => "Steuerzeichen in Reminder-Identität",
-            Self::Traversal => "Traversal in Reminder-Identität",
-            Self::Oversized => "Reminder-Identität ist zu groß",
-            Self::InvalidActionTarget => "ungültiges Reminder-Aktionsziel",
-            Self::InvalidReminderKey => "ungültiger Reminder-Schlüssel",
-            Self::StaleAction => "veraltete Reminder-Aktion",
+            Self::MalformedUri => "invalid reminder URI",
+            Self::UnknownScheme => "unknown reminder scheme",
+            Self::MissingParameter => "required URI parameter missing",
+            Self::DuplicateParameter => "duplicate URI parameter",
+            Self::UnknownParameter => "unknown URI parameter",
+            Self::EmptyValue => "empty reminder identity",
+            Self::InvalidPercentEncoding => "invalid percent encoding",
+            Self::InvalidUtf8 => "invalid UTF-8 encoding",
+            Self::NonCanonicalEncoding => "non-canonical percent encoding",
+            Self::ControlCharacter => "control character in reminder identity",
+            Self::Traversal => "traversal in reminder identity",
+            Self::Oversized => "reminder identity is oversized",
+            Self::InvalidActionTarget => "invalid reminder action target",
+            Self::InvalidReminderKey => "invalid reminder key",
+            Self::StaleAction => "stale reminder action",
         };
         formatter.write_str(message)
     }
@@ -310,12 +310,12 @@ impl AlarmAction {
 
     pub fn label(&self) -> String {
         match self {
-            Self::Display => "Anzeige".to_string(),
-            Self::Audio => "Ton".to_string(),
-            Self::Email => "E-Mail".to_string(),
-            Self::Procedure => "Prozedur".to_string(),
-            Self::Unknown(value) if value.is_empty() => "Unbekannte Aktion".to_string(),
-            Self::Unknown(value) => format!("Unbekannte Aktion ({value})"),
+            Self::Display => "Display".to_string(),
+            Self::Audio => "Sound".to_string(),
+            Self::Email => "Email".to_string(),
+            Self::Procedure => "Procedure".to_string(),
+            Self::Unknown(value) if value.is_empty() => "Unknown action".to_string(),
+            Self::Unknown(value) => format!("Unknown action ({value})"),
         }
     }
 
@@ -460,10 +460,10 @@ impl AlarmTrigger {
                 ..
             } => {
                 let seconds = offset_seconds.unsigned_abs();
-                let direction = if *offset_seconds < 0 { "vor" } else { "nach" };
+                let direction = if *offset_seconds < 0 { "before" } else { "after" };
                 let anchor = match relation {
-                    AlarmRelation::Start => "Beginn",
-                    AlarmRelation::End => "Ende",
+                    AlarmRelation::Start => "start",
+                    AlarmRelation::End => "end",
                 };
                 format!(
                     "{} {} {}",
@@ -472,8 +472,8 @@ impl AlarmTrigger {
                     anchor
                 )
             }
-            Self::Absolute { value, .. } => format!("absolut {value}"),
-            Self::Unknown { .. } => "unbekannter Trigger".to_string(),
+            Self::Absolute { value, .. } => format!("absolute {value}"),
+            Self::Unknown { .. } => "unknown trigger".to_string(),
         }
     }
 
@@ -1096,13 +1096,30 @@ fn format_ical_duration(seconds: i64) -> String {
 
 fn format_duration_for_display(seconds: u64) -> String {
     if seconds % (24 * 60 * 60) == 0 {
-        format!("{} Tage", seconds / (24 * 60 * 60))
+        let days = seconds / (24 * 60 * 60);
+        if days == 1 {
+            "1 day".to_string()
+        } else {
+            format!("{days} days")
+        }
     } else if seconds % (60 * 60) == 0 {
-        format!("{} Stunden", seconds / (60 * 60))
+        let hours = seconds / (60 * 60);
+        if hours == 1 {
+            "1 hour".to_string()
+        } else {
+            format!("{hours} hours")
+        }
     } else if seconds % 60 == 0 {
-        format!("{} Minuten", seconds / 60)
+        let minutes = seconds / 60;
+        if minutes == 1 {
+            "1 minute".to_string()
+        } else {
+            format!("{minutes} minutes")
+        }
+    } else if seconds == 1 {
+        "1 second".to_string()
     } else {
-        format!("{seconds} Sekunden")
+        format!("{seconds} seconds")
     }
 }
 
@@ -2140,12 +2157,12 @@ pub fn contact_birthday_candidates(
         let name = if !record.contact.fn_name.trim().is_empty() {
             record.contact.fn_name.trim()
         } else {
-            "Kontakt"
+            "Contact"
         };
 
         let dates_to_check = [
-            ("Geburtstag", &record.contact.birthday, "bday"),
-            ("Jahrestag", &record.contact.anniversary, "anni"),
+            ("Birthday", &record.contact.birthday, "bday"),
+            ("Anniversary", &record.contact.anniversary, "anni"),
         ];
 
         for (label, date_str, kind_prefix) in dates_to_check {
@@ -3481,7 +3498,7 @@ mod tests {
         let bday_2026 = candidates.iter().find(|c| c.key.contains("bday-20260615"));
         assert!(bday_2026.is_some(), "should find 2026 birthday candidate");
         let bday = bday_2026.unwrap();
-        assert_eq!(bday.title, "Alice Smith: 36. Geburtstag");
+        assert_eq!(bday.title, "Alice Smith: 36. Birthday");
         assert_eq!(bday.kind, ReminderKind::Contact);
 
         // Check offset applied: due_at should be 9:00 - 900s (8:45) local time on 2026-06-15
@@ -3500,7 +3517,7 @@ mod tests {
         let anni_2026 = candidates.iter().find(|c| c.key.contains("anni-20261020"));
         assert!(anni_2026.is_some(), "should find 2026 anniversary candidate");
         let anni = anni_2026.unwrap();
-        assert_eq!(anni.title, "Alice Smith: 11. Jahrestag");
+        assert_eq!(anni.title, "Alice Smith: 11. Anniversary");
 
         // Leap year birthday: Feb 29 contact evaluated in non-leap year (e.g. 2025 or 2026)
         let leap_vcard = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Leap Baby\r\nBDAY:2004-02-29\r\nEND:VCARD\r\n";
@@ -3526,7 +3543,7 @@ mod tests {
         let noname_candidates = contact_birthday_candidates(&[noname_record], now, 0);
         let noname_candidate = noname_candidates.iter().find(|c| c.key.contains("20260615"));
         assert!(noname_candidate.is_some());
-        assert!(noname_candidate.unwrap().title.starts_with("Kontakt:"));
+        assert!(noname_candidate.unwrap().title.starts_with("Contact:"));
     }
 
     #[test]
@@ -3743,7 +3760,7 @@ mod tests {
             .iter()
             .find(|c| c.key.contains("20260228"))
             .expect("should find Feb 28 fallback candidate in non-leap year");
-        assert_eq!(cand_2026.title, "Leap Baby: 22. Geburtstag");
+        assert_eq!(cand_2026.title, "Leap Baby: 22. Birthday");
         assert!(
             !cands_2026.iter().any(|c| c.key.contains("20260229")),
             "must never generate Feb 29 candidate in non-leap year"
@@ -3755,7 +3772,7 @@ mod tests {
             .iter()
             .find(|c| c.key.contains("20280229"))
             .expect("should find Feb 29 candidate in leap year");
-        assert_eq!(cand_2028.title, "Leap Baby: 24. Geburtstag");
+        assert_eq!(cand_2028.title, "Leap Baby: 24. Birthday");
 
         // 2. Yearless leap day: --02-29
         let yearless_vcard = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Yearless Baby\r\nBDAY:--02-29\r\nEND:VCARD\r\n";
@@ -3773,7 +3790,7 @@ mod tests {
             .iter()
             .find(|c| c.key.contains("20260228"))
             .expect("should fall back to Feb 28 for yearless leap day");
-        assert_eq!(yearless_2026.title, "Yearless Baby: Geburtstag");
+        assert_eq!(yearless_2026.title, "Yearless Baby: Birthday");
 
         // In leap year 2028: generates Feb 29 without year prefix
         let yearless_cands_2028 = contact_birthday_candidates(&[yearless_record], now_2028, 0);
@@ -3781,7 +3798,7 @@ mod tests {
             .iter()
             .find(|c| c.key.contains("20280229"))
             .expect("should evaluate to Feb 29 in leap year for yearless leap day");
-        assert_eq!(yearless_2028.title, "Yearless Baby: Geburtstag");
+        assert_eq!(yearless_2028.title, "Yearless Baby: Birthday");
 
         // 3. Invalid Feb 30 and April 31: safely omitted without panic
         let invalid_vcard = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Invalid Dates\r\nBDAY:2000-02-30\r\nANNIVERSARY:2010-04-31\r\nEND:VCARD\r\n";
@@ -3811,7 +3828,7 @@ mod tests {
             .find(|c| c.key.contains("20260515"))
             .unwrap();
         assert_eq!(
-            future_2026.title, "Future Person: Geburtstag",
+            future_2026.title, "Future Person: Birthday",
             "future birth year must not cause negative underflow"
         );
 

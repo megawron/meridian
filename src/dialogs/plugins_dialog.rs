@@ -255,6 +255,7 @@ fn present_plugin_config_dialog<P: IsA<gtk::Widget>>(
             window.set_title(Some("E-Mail-Benachrichtigungen konfigurieren"));
             let group = adw::PreferencesGroup::builder()
                 .title("Benachrichtigungsverhalten")
+                .description("Benachrichtigungen und Signaltöne wie in Evolution konfigurieren")
                 .build();
 
             let row_unread = adw::SwitchRow::builder()
@@ -262,37 +263,74 @@ fn present_plugin_config_dialog<P: IsA<gtk::Widget>>(
                 .subtitle("Popup-Banner bei neuen ungelesenen Nachrichten anzeigen")
                 .build();
 
+            let row_inbox_only = adw::SwitchRow::builder()
+                .title("Nur für Posteingang benachrichtigen")
+                .subtitle("Nachrichten in anderen Ordnern ignorieren")
+                .build();
+
             let row_sound = adw::SwitchRow::builder()
                 .title("Klang abspielen")
-                .subtitle("Audiosignal bei Nachrichteneingang")
+                .subtitle("Audiosignal bei Nachrichteneingang (30s Drosselung)")
+                .build();
+
+            let row_sound_beep = adw::SwitchRow::builder()
+                .title("Signalton (Beep) verwenden")
+                .subtitle("System-Warnton statt Klangdatei oder Soundthema")
                 .build();
 
             let row_sound_file = adw::EntryRow::builder()
                 .title("Klangdatei (optional)")
-                .text(&settings.as_ref().map(|s| s.plugin_mail_notification_sound_file()).unwrap_or_default())
+                .text(&settings.as_ref().map(|s| s.mail_notification_sound_file()).unwrap_or_default())
                 .build();
 
             if let Some(s) = &settings {
-                row_unread.set_active(s.plugin_mail_notification_notify_unread());
+                row_unread.set_active(s.mail_notification_enabled());
                 let s_unread = s.clone();
                 row_unread.connect_active_notify(move |row| {
-                    s_unread.set_plugin_mail_notification_notify_unread(row.is_active());
+                    s_unread.set_mail_notification_enabled(row.is_active());
                 });
 
-                row_sound.set_active(s.plugin_mail_notification_sound());
+                row_inbox_only.set_active(s.mail_notification_only_inbox());
+                let s_inbox = s.clone();
+                row_inbox_only.connect_active_notify(move |row| {
+                    s_inbox.set_mail_notification_only_inbox(row.is_active());
+                });
+
+                row_sound.set_active(s.mail_notification_sound_enabled());
                 let s_sound = s.clone();
                 row_sound.connect_active_notify(move |row| {
-                    s_sound.set_plugin_mail_notification_sound(row.is_active());
+                    s_sound.set_mail_notification_sound_enabled(row.is_active());
+                });
+
+                row_sound_beep.set_active(s.mail_notification_sound_beep());
+                let s_beep = s.clone();
+                row_sound_beep.connect_active_notify(move |row| {
+                    s_beep.set_mail_notification_sound_beep(row.is_active());
+                    if row.is_active() {
+                        s_beep.set_mail_notification_sound_play_file(false);
+                        s_beep.set_mail_notification_sound_use_theme(false);
+                    } else {
+                        s_beep.set_mail_notification_sound_use_theme(true);
+                    }
                 });
 
                 let s_file = s.clone();
                 row_sound_file.connect_apply(move |entry| {
-                    s_file.set_plugin_mail_notification_sound_file(&entry.text());
+                    let path = entry.text().trim().to_string();
+                    let has_path = !path.is_empty();
+                    s_file.set_mail_notification_sound_file(&path);
+                    s_file.set_mail_notification_sound_play_file(has_path);
+                    if has_path {
+                        s_file.set_mail_notification_sound_beep(false);
+                        s_file.set_mail_notification_sound_use_theme(false);
+                    }
                 });
             }
 
             group.add(&row_unread);
+            group.add(&row_inbox_only);
             group.add(&row_sound);
+            group.add(&row_sound_beep);
             group.add(&row_sound_file);
             pref_page.add(&group);
         }

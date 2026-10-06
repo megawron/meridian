@@ -249,11 +249,14 @@ fn extract_source(
         .filter(|s| !s.trim().is_empty());
 
     let Some(data) = source_props.get("Data").and_then(value_to_string) else {
+        let parent_ok = property_parent
+            .as_deref()
+            .map_or(true, |p| is_parent_service_enabled(p, kind));
         return kind.matches_interfaces(interfaces).then_some((
             uid,
             property_display_name,
             property_backend_name,
-            property_enabled,
+            property_enabled && parent_ok,
             property_writable,
             property_parent,
             property_color,
@@ -272,7 +275,10 @@ fn extract_source(
         &uid,
     )
     .map(|(display_name, backend_name, enabled, writable, parent, color, foreign_mail)| {
-        (uid, display_name, backend_name, enabled, writable, parent, color.or(property_color), foreign_mail)
+        let parent_ok = parent
+            .as_deref()
+            .map_or(true, |p| is_parent_service_enabled(p, kind));
+        (uid, display_name, backend_name, enabled && parent_ok, writable, parent, color.or(property_color), foreign_mail)
     })
 }
 
@@ -680,6 +686,97 @@ fn load_configured_account_collections_uncached() -> Vec<EdsAccountCollection> {
     collections
 }
 
+/// Check whether a parent source / collection has enabled a specific groupware service (Mail, Calendar, Contacts).
+pub fn is_parent_service_enabled(parent_uid: &str, kind: EdsSourceKind) -> bool {
+    let collections = load_configured_account_collections();
+    if let Some(col) = collections.iter().find(|c| c.uid == parent_uid) {
+        if !col.enabled {
+            return false;
+        }
+        return match kind {
+            EdsSourceKind::Mail => col.mail_enabled,
+            EdsSourceKind::Calendar => col.calendar_enabled,
+            EdsSourceKind::AddressBook => col.contacts_enabled,
+        };
+    }
+    let dirs = [
+        glib::user_config_dir().join("evolution/sources"),
+        glib::home_dir().join(".var/app/org.gnome.Evolution/config/evolution/sources"),
+    ];
+    for dir in &dirs {
+        let path = dir.join(format!("{parent_uid}.source"));
+        if path.is_file() {
+            let kf = KeyFile::new();
+            if kf.load_from_file(&path, KeyFileFlags::NONE).is_ok() {
+                if !kf.boolean("Data Source", "Enabled").unwrap_or(true) {
+                    return false;
+                }
+                if kf.has_group("Collection") {
+                    return match kind {
+                        EdsSourceKind::Mail => kf.boolean("Collection", "MailEnabled").unwrap_or(true),
+                        EdsSourceKind::Calendar => kf.boolean("Collection", "CalendarEnabled").unwrap_or(true),
+                        EdsSourceKind::AddressBook => kf.boolean("Collection", "ContactsEnabled").unwrap_or(true),
+                    };
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Check whether a source UID (standalone, child, or collection) is enabled for a specific service.
+pub fn is_source_enabled_for_service(source_uid: &str, kind: EdsSourceKind) -> bool {
+    let clean = source_uid.strip_suffix("-mail").unwrap_or(source_uid);
+    let dirs = [
+        glib::user_config_dir().join("evolution/sources"),
+        glib::home_dir().join(".var/app/org.gnome.Evolution/config/evolution/sources"),
+    ];
+    let mut found = false;
+    for dir in &dirs {
+        for name in [source_uid, clean] {
+            let path = dir.join(format!("{name}.source"));
+            if path.is_file() {
+                found = true;
+                let kf = KeyFile::new();
+                if kf.load_from_file(&path, KeyFileFlags::NONE).is_ok() {
+                    if !kf.boolean("Data Source", "Enabled").unwrap_or(true) {
+                        return false;
+                    }
+                    if kf.has_group("Collection") {
+                        let service_enabled = match kind {
+                            EdsSourceKind::Mail => kf.boolean("Collection", "MailEnabled").unwrap_or(true),
+                            EdsSourceKind::Calendar => kf.boolean("Collection", "CalendarEnabled").unwrap_or(true),
+                            EdsSourceKind::AddressBook => kf.boolean("Collection", "ContactsEnabled").unwrap_or(true),
+                        };
+                        if !service_enabled {
+                            return false;
+                        }
+                    }
+                    if let Ok(parent) = kf.string("Data Source", "Parent") {
+                        let parent = parent.trim();
+                        if !parent.is_empty() && !is_parent_service_enabled(parent, kind) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+            }
+        }
+    }
+    let profiles = crate::services::account_config_service::AccountConfigStore::default().load();
+    if let Some(profile) = profiles.iter().find(|p| {
+        p.id == source_uid
+            || p.id.strip_prefix("eds:") == Some(source_uid)
+            || p.id == clean
+            || p.id.strip_prefix("eds:") == Some(clean)
+            || p.email.eq_ignore_ascii_case(source_uid)
+            || p.email.eq_ignore_ascii_case(clean)
+    }) {
+        return profile.enabled;
+    }
+    !found
+}
+
 /// Resolve the parent account or group name for a source UID.
 pub fn resolve_source_parent_name(uid: &str) -> String {
     if let Ok(guard) = PARENT_NAME_CACHE.read() {
@@ -937,6 +1034,17 @@ async fn get_goa_mail_accounts() -> Result<Vec<EdsSource>, EdsServiceError> {
             .any(|interface| interface.as_str() == "org.gnome.OnlineAccounts.Mail");
         if has_mail_interface {
             if let Some(account_props) = interfaces.get("org.gnome.OnlineAccounts.Account") {
+                let is_mail_disabled = account_props
+                    .get("MailDisabled")
+                    .and_then(value_to_bool)
+                    .unwrap_or(false);
+                let is_locked = account_props
+                    .get("IsLocked")
+                    .and_then(value_to_bool)
+                    .unwrap_or(false);
+                if is_mail_disabled || is_locked {
+                    continue;
+                }
                 let uid = path
                     .as_str()
                     .rsplit('/')
@@ -998,6 +1106,17 @@ async fn get_goa_calendar_accounts() -> Result<Vec<EdsSource>, EdsServiceError> 
             .any(|interface| interface.as_str() == "org.gnome.OnlineAccounts.Calendar");
         if has_cal_interface {
             if let Some(account_props) = interfaces.get("org.gnome.OnlineAccounts.Account") {
+                let is_cal_disabled = account_props
+                    .get("CalendarDisabled")
+                    .and_then(value_to_bool)
+                    .unwrap_or(false);
+                let is_locked = account_props
+                    .get("IsLocked")
+                    .and_then(value_to_bool)
+                    .unwrap_or(false);
+                if is_cal_disabled || is_locked {
+                    continue;
+                }
                 let uid = path
                     .as_str()
                     .rsplit('/')
@@ -1090,6 +1209,17 @@ async fn get_goa_contacts_accounts() -> Result<Vec<EdsSource>, EdsServiceError> 
             .any(|interface| interface.as_str() == "org.gnome.OnlineAccounts.Contacts");
         if has_contacts_interface {
             if let Some(account_props) = interfaces.get("org.gnome.OnlineAccounts.Account") {
+                let is_contacts_disabled = account_props
+                    .get("ContactsDisabled")
+                    .and_then(value_to_bool)
+                    .unwrap_or(false);
+                let is_locked = account_props
+                    .get("IsLocked")
+                    .and_then(value_to_bool)
+                    .unwrap_or(false);
+                if is_contacts_disabled || is_locked {
+                    continue;
+                }
                 let uid = path
                     .as_str()
                     .rsplit('/')
@@ -1183,8 +1313,11 @@ pub async fn list_address_book_sources() -> Result<Vec<EdsSource>, EdsServiceErr
         Err(error) => (Vec::new(), Some(error)),
     };
 
-    // Filter out shared/delegate mailboxes which do not have address books
+    // Filter out disabled sources and shared/delegate mailboxes which do not have address books
     sources.retain(|s| {
+        if !s.enabled {
+            return false;
+        }
         let parent = s.parent_name.as_deref().unwrap_or("");
         let fm = s.foreign_mail.as_deref().unwrap_or("");
         !is_shared_or_delegate_mailbox(parent)
@@ -1218,9 +1351,12 @@ pub async fn list_address_book_sources() -> Result<Vec<EdsSource>, EdsServiceErr
         }
     }
 
-    // Add all cached sources discovered from Evolution SQLite caches
+    // Add all cached sources discovered from Evolution SQLite caches if still enabled
     let cached_sources = crate::services::evolution_contact_cache::list_cached_address_book_sources();
     for cached in cached_sources {
+        if !is_source_enabled_for_service(&cached.uid, EdsSourceKind::AddressBook) {
+            continue;
+        }
         let parent = cached.parent_name.as_deref().unwrap_or("");
         if is_shared_or_delegate_mailbox(parent) || is_shared_or_delegate_mailbox(&cached.display_name) {
             continue;
@@ -1238,7 +1374,7 @@ pub async fn list_address_book_sources() -> Result<Vec<EdsSource>, EdsServiceErr
     }
 
     for collection in load_configured_account_collections() {
-        if !collection.contacts_enabled || is_shared_or_delegate_mailbox(&collection.display_name) || is_shared_or_delegate_mailbox(&collection.uid) {
+        if !collection.enabled || !collection.contacts_enabled || is_shared_or_delegate_mailbox(&collection.display_name) || is_shared_or_delegate_mailbox(&collection.uid) {
             continue;
         }
         let account_name = collection.display_name.clone();
