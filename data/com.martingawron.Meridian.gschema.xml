@@ -53,6 +53,11 @@
       <default>true</default>
       <summary>Scroll month view by a week instead of a month</summary>
     </key>
+    <key name="calendar-month-view-rows" type="i">
+      <default>6</default>
+      <range min="5" max="6"/>
+      <summary>Number of weeks shown in month view (5 for compact, 6 to display all months completely)</summary>
+    </key>
     <key name="calendar-second-zone" type="s">
       <default>''</default>
       <summary>Second time zone for day and workweek views</summary>
@@ -227,6 +232,14 @@
     <key name="calendar-tag-vpane-position" type="i">
       <default>320</default>
       <summary>Width/position of the Tasks and Memos pane</summary>
+    </key>
+    <key name="calendar-show-agenda-preview" type="b">
+      <default>true</default>
+      <summary>Show appointment details preview pane in the Agenda view</summary>
+    </key>
+    <key name="calendar-agenda-preview-position" type="i">
+      <default>380</default>
+      <summary>Width/position of the Agenda appointment details preview pane</summary>
     </key>
     <key name="auto-load-remote-images" type="b">
       <default>false</default>
@@ -1065,6 +1078,46 @@
     <key name="junk-custom-header-value" type="s">
       <default>'YES'</default>
       <summary>Custom spam header expected value</summary>
+    </key>
+    <key name="mail-notification-enabled" type="b">
+      <default>true</default>
+      <summary>Enable new mail desktop notifications</summary>
+      <description>Show desktop notifications when new mail arrives.</description>
+    </key>
+    <key name="mail-notification-only-inbox" type="b">
+      <default>true</default>
+      <summary>Notify new messages for Inbox only</summary>
+      <description>Whether to notify new messages in Inbox folder only.</description>
+    </key>
+    <key name="mail-notification-sound-enabled" type="b">
+      <default>true</default>
+      <summary>Enable audible notifications when new messages arrive</summary>
+      <description>Whether to make a sound when new messages arrive.</description>
+    </key>
+    <key name="mail-notification-sound-beep" type="b">
+      <default>false</default>
+      <summary>Whether to emit a beep</summary>
+      <description>Whether to emit a beep when new messages arrive.</description>
+    </key>
+    <key name="mail-notification-sound-file" type="s">
+      <default>''</default>
+      <summary>Sound filename to be played</summary>
+      <description>Sound file to be played when new messages arrive, if mail-notification-sound-play-file is true.</description>
+    </key>
+    <key name="mail-notification-sound-play-file" type="b">
+      <default>false</default>
+      <summary>Whether to play a sound file</summary>
+      <description>Whether to play a sound file when new messages arrive.</description>
+    </key>
+    <key name="mail-notification-sound-use-theme" type="b">
+      <default>true</default>
+      <summary>Use sound theme</summary>
+      <description>Play themed sound (message-new-email) when new messages arrive, if not in beep mode.</description>
+    </key>
+    <key name="mail-notification-not-accounts" type="as">
+      <default>[]</default>
+      <summary>Do not notify for these accounts</summary>
+      <description>Contains UIDs of accounts for which the notifications should be avoided.</description>
     </key>
   </schema>
 </schemalist>

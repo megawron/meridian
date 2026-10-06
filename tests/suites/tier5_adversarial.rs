@@ -487,8 +487,8 @@ fn tier5_adversarial_factory_reset_all_198_schema_keys_integrity() {
     let all_keys = schema.list_keys();
     assert_eq!(
         all_keys.len(),
-        229,
-        "Canonical schema must define exactly 229 configuration keys"
+        241,
+        "Canonical schema must define exactly 241 configuration keys"
     );
 
     // Capture initial default snapshot

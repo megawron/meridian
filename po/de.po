@@ -3,6 +3,7 @@ msgstr ""
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-09-20 02:40+0200\n"
 "Content-Type: text/plain; charset=UTF-8\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
 #: src/action_contract.rs:134
 #, fuzzy
@@ -8196,4 +8197,74 @@ msgstr "Weitere Empfänger (Cc)…"
 
 msgid "Undisclosed recipients (Bcc)…"
 msgstr "Verdeckte Empfänger (Bcc)…"
+
+msgid "New email in Meridian"
+msgstr "Neue E-Mail in Meridian"
+
+msgid "You have received %d new message."
+msgid_plural "You have received %d new messages."
+msgstr[0] "Sie haben %d neue Nachricht erhalten."
+msgstr[1] "Sie haben %d neue Nachrichten erhalten."
+
+msgid "From: %s"
+msgstr "Von: %s"
+
+msgid "Subject: %s"
+msgstr "Betreff: %s"
+
+msgid "Folder: %s"
+msgstr "Ordner: %s"
+
+msgid "(and %d more)"
+msgid_plural "(and %d more)"
+msgstr[0] "(und %d weitere)"
+msgstr[1] "(und %d weitere)"
+
+msgid "Show %s"
+msgstr "%s anzeigen"
+
+msgid "New Mail Notification"
+msgstr "E-Mail-Benachrichtigungen"
+
+msgid "Notification banners and sound alerts for incoming messages (like GNOME Evolution)"
+msgstr "Benachrichtigungsbanner und akustische Hinweise bei neuen Nachrichten (wie in GNOME Evolution)"
+
+msgid "Generate a notification for new messages"
+msgstr "Benachrichtigung bei neuen Nachrichten anzeigen"
+
+msgid "Display a desktop banner notification when new emails arrive"
+msgstr "Desktop-Banner anzeigen, wenn neue E-Mails eintreffen"
+
+msgid "Notify only for Inbox folders"
+msgstr "Nur für Posteingangsordner benachrichtigen"
+
+msgid "Ignore new messages arriving in other folders"
+msgstr "Neue Nachrichten in anderen Ordnern ignorieren"
+
+msgid "Play a sound for new messages"
+msgstr "Klang bei neuen Nachrichten abspielen"
+
+msgid "Audible alert when new messages arrive (throttled to once every 30 seconds)"
+msgstr "Audiosignal bei Nachrichteneingang (gedrosselt auf maximal alle 30 Sekunden)"
+
+msgid "Sound Type"
+msgstr "Klangart"
+
+msgid "Freedesktop sound theme (message-new-email)"
+msgstr "Freedesktop-Klangthema (message-new-email)"
+
+msgid "System beep"
+msgstr "Signalton (Beep)"
+
+msgid "Custom sound file"
+msgstr "Eigene Audiodatei"
+
+msgid "Sound File"
+msgstr "Klangdatei"
+
+msgid "Select audio file"
+msgstr "Audiodatei auswählen"
+
+msgid "Preview sound"
+msgstr "Klang abspielen"
 

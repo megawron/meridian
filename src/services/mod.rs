@@ -31,6 +31,7 @@ pub mod log_buffer;
 pub mod mail_composer_service;
 pub mod mail_filter_service;
 pub mod mail_metadata_service;
+pub mod mail_notification_service;
 pub mod mail_operations_service;
 pub mod mail_print_service;
 pub mod mail_store_service;
@@ -64,6 +65,8 @@ pub use recent_recipients_service::RecentRecipientsService;
 pub use calendar_store_service::CalendarStoreService;
 pub use contact_store_service::ContactStoreService;
 pub use mail_store_service::MailStoreService;
+#[allow(unused_imports)]
+pub use mail_notification_service::{MailNotificationService, NewMailSummary, NotificationActionTarget};
 pub use settings_service::AppSettings;
 
 fn non_empty_env_path(name: &str) -> Option<std::path::PathBuf> {

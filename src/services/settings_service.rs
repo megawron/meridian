@@ -128,10 +128,10 @@ pub(crate) fn normalize_mail_list_column_order(value: &str) -> Vec<String> {
 
 pub(crate) const CONTACT_TABLE_COLUMN_IDS: [&str; 6] = [
     "name",
-    "company",
-    "title",
     "email",
     "phone",
+    "company",
+    "title",
     "categories",
 ];
 
@@ -964,6 +964,103 @@ impl AppSettings {
         self.set_boolean("notifications-enabled", value);
     }
 
+    pub fn mail_notification_enabled(&self) -> bool {
+        self.settings.boolean("mail-notification-enabled")
+    }
+
+    pub fn set_mail_notification_enabled(&self, value: bool) {
+        self.set_boolean("mail-notification-enabled", value);
+    }
+
+    pub fn mail_notification_only_inbox(&self) -> bool {
+        self.settings.boolean("mail-notification-only-inbox")
+    }
+
+    pub fn set_mail_notification_only_inbox(&self, value: bool) {
+        self.set_boolean("mail-notification-only-inbox", value);
+    }
+
+    pub fn mail_notification_sound_enabled(&self) -> bool {
+        self.settings.boolean("mail-notification-sound-enabled")
+    }
+
+    pub fn set_mail_notification_sound_enabled(&self, value: bool) {
+        self.set_boolean("mail-notification-sound-enabled", value);
+    }
+
+    pub fn mail_notification_sound_beep(&self) -> bool {
+        self.settings.boolean("mail-notification-sound-beep")
+    }
+
+    pub fn set_mail_notification_sound_beep(&self, value: bool) {
+        self.set_boolean("mail-notification-sound-beep", value);
+    }
+
+    pub fn mail_notification_sound_file(&self) -> String {
+        self.settings.string("mail-notification-sound-file").to_string()
+    }
+
+    pub fn set_mail_notification_sound_file(&self, value: &str) {
+        if let Err(error) = self.settings.set_string("mail-notification-sound-file", value.trim()) {
+            tracing::warn!(%error, "Could not persist mail-notification-sound-file");
+        }
+    }
+
+    pub fn mail_notification_sound_play_file(&self) -> bool {
+        self.settings.boolean("mail-notification-sound-play-file")
+    }
+
+    pub fn set_mail_notification_sound_play_file(&self, value: bool) {
+        self.set_boolean("mail-notification-sound-play-file", value);
+    }
+
+    pub fn mail_notification_sound_use_theme(&self) -> bool {
+        self.settings.boolean("mail-notification-sound-use-theme")
+    }
+
+    pub fn set_mail_notification_sound_use_theme(&self, value: bool) {
+        self.set_boolean("mail-notification-sound-use-theme", value);
+    }
+
+    pub fn mail_notification_not_accounts(&self) -> Vec<String> {
+        self.settings
+            .strv("mail-notification-not-accounts")
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    pub fn set_mail_notification_not_accounts(&self, accounts: &[String]) {
+        let refs: Vec<&str> = accounts.iter().map(String::as_str).collect();
+        if let Err(error) = self.settings.set_strv("mail-notification-not-accounts", &*refs) {
+            tracing::warn!(%error, "Could not persist mail-notification-not-accounts");
+        }
+    }
+
+    pub fn plugin_mail_notification_notify_unread(&self) -> bool {
+        self.mail_notification_enabled()
+    }
+
+    pub fn set_plugin_mail_notification_notify_unread(&self, value: bool) {
+        self.set_mail_notification_enabled(value);
+    }
+
+    pub fn plugin_mail_notification_sound(&self) -> bool {
+        self.mail_notification_sound_enabled()
+    }
+
+    pub fn set_plugin_mail_notification_sound(&self, value: bool) {
+        self.set_mail_notification_sound_enabled(value);
+    }
+
+    pub fn plugin_mail_notification_sound_file(&self) -> String {
+        self.mail_notification_sound_file()
+    }
+
+    pub fn set_plugin_mail_notification_sound_file(&self, value: &str) {
+        self.set_mail_notification_sound_file(value);
+    }
+
     pub fn confirm_destructive_actions(&self) -> bool {
         self.settings.boolean("confirm-destructive-actions")
     }
@@ -995,6 +1092,55 @@ impl AppSettings {
 
     pub fn set_calendar_tag_vpane_position(&self, value: i32) {
         self.set_int("calendar-tag-vpane-position", value.clamp(100, 2000));
+    }
+
+    pub fn calendar_show_agenda_preview(&self) -> bool {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("calendar-show-agenda-preview"))
+            .unwrap_or(false);
+        if has_key {
+            self.settings.boolean("calendar-show-agenda-preview")
+        } else {
+            true
+        }
+    }
+
+    pub fn set_calendar_show_agenda_preview(&self, value: bool) {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("calendar-show-agenda-preview"))
+            .unwrap_or(false);
+        if has_key {
+            self.set_boolean("calendar-show-agenda-preview", value);
+        }
+    }
+
+    pub fn calendar_agenda_preview_position(&self) -> i32 {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("calendar-agenda-preview-position"))
+            .unwrap_or(false);
+        if has_key {
+            let val = self.settings.int("calendar-agenda-preview-position");
+            if val <= 0 { 380 } else { val }
+        } else {
+            380
+        }
+    }
+
+    pub fn set_calendar_agenda_preview_position(&self, value: i32) {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("calendar-agenda-preview-position"))
+            .unwrap_or(false);
+        if has_key {
+            self.set_int("calendar-agenda-preview-position", value.clamp(200, 2000));
+        }
     }
 
     pub fn calendar_hidden_sources(&self) -> Vec<String> {
@@ -1302,6 +1448,16 @@ impl AppSettings {
 
     pub fn set_calendar_month_scroll_by_week(&self, value: bool) {
         self.set_boolean("calendar-month-scroll-by-week", value);
+    }
+
+    pub fn calendar_month_view_rows(&self) -> i32 {
+        let val = self.settings.int("calendar-month-view-rows");
+        if val == 5 { 5 } else { 6 }
+    }
+
+    pub fn set_calendar_month_view_rows(&self, value: i32) {
+        let clamped = if value == 5 { 5 } else { 6 };
+        let _ = self.settings.set_int("calendar-month-view-rows", clamped);
     }
 
     pub fn calendar_second_zone(&self) -> String {
@@ -3387,6 +3543,27 @@ impl AppSettings {
             "notifications-enabled" => {
                 self.set_notifications_enabled(parse_migrated_bool(key, value)?);
             }
+            "mail-notification-enabled" => {
+                self.set_mail_notification_enabled(parse_migrated_bool(key, value)?);
+            }
+            "mail-notification-only-inbox" => {
+                self.set_mail_notification_only_inbox(parse_migrated_bool(key, value)?);
+            }
+            "mail-notification-sound-enabled" => {
+                self.set_mail_notification_sound_enabled(parse_migrated_bool(key, value)?);
+            }
+            "mail-notification-sound-beep" => {
+                self.set_mail_notification_sound_beep(parse_migrated_bool(key, value)?);
+            }
+            "mail-notification-sound-file" => {
+                self.set_mail_notification_sound_file(value);
+            }
+            "mail-notification-sound-play-file" => {
+                self.set_mail_notification_sound_play_file(parse_migrated_bool(key, value)?);
+            }
+            "mail-notification-sound-use-theme" => {
+                self.set_mail_notification_sound_use_theme(parse_migrated_bool(key, value)?);
+            }
             "confirm-destructive-actions" => {
                 self.set_confirm_destructive_actions(parse_migrated_bool(key, value)?);
             }
@@ -3413,6 +3590,13 @@ impl AppSettings {
             }
             "calendar-month-scroll-by-week" => {
                 self.set_calendar_month_scroll_by_week(parse_migrated_bool(key, value)?);
+            }
+            "calendar-month-view-rows" => {
+                let rows = parse_migrated_i32(key, value)?;
+                if !matches!(rows, 5 | 6) {
+                    return Err(format!("ungültige Zeilenanzahl für „{key}“ (erlaubt: 5 oder 6)"));
+                }
+                self.set_calendar_month_view_rows(rows);
             }
             "calendar-second-zone" => {
                 self.set_calendar_second_zone(value);
@@ -3977,12 +4161,21 @@ impl AppSettings {
             "hide-cancelled-tasks",
             "hide-cancelled-events",
             "notifications-enabled",
+            "mail-notification-enabled",
+            "mail-notification-only-inbox",
+            "mail-notification-sound-enabled",
+            "mail-notification-sound-beep",
+            "mail-notification-sound-file",
+            "mail-notification-sound-play-file",
+            "mail-notification-sound-use-theme",
+            "mail-notification-not-accounts",
             "confirm-destructive-actions",
             "debug-console-enabled",
             "calendar-show-week-numbers",
             "calendar-time-divisions",
             "calendar-compress-weekend",
             "calendar-month-scroll-by-week",
+            "calendar-month-view-rows",
             "calendar-second-zone",
             "calendar-second-zones",
             "calendar-hidden-sources",
@@ -6232,6 +6425,29 @@ mod tests {
         settings.set_time_format("24h");
         assert_eq!(settings.time_format(), "24h");
         assert_eq!(settings.resolved_time_format(), "24h");
+    }
+
+    #[test]
+    fn test_calendar_month_view_rows_default_and_toggle() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+
+        // Default should be 6 rows (displays all weeks of any month)
+        assert_eq!(settings.calendar_month_view_rows(), 6);
+
+        // Toggle to 5 rows (compact view)
+        settings.set_calendar_month_view_rows(5);
+        assert_eq!(settings.calendar_month_view_rows(), 5);
+
+        // Any out-of-range value should be clamped back to 6
+        settings.set_calendar_month_view_rows(4);
+        assert_eq!(settings.calendar_month_view_rows(), 6);
+        settings.set_calendar_month_view_rows(7);
+        assert_eq!(settings.calendar_month_view_rows(), 6);
+
+        // Back to 6 explicitly
+        settings.set_calendar_month_view_rows(6);
+        assert_eq!(settings.calendar_month_view_rows(), 6);
     }
 }
 
