@@ -269,7 +269,7 @@ mod imp {
         pub settings: RefCell<Option<AppSettings>>,
         pub on_send_success: RefCell<Option<Box<dyn Fn() + 'static>>>,
         pub btn_open_in_new_window: RefCell<Option<gtk::Button>>,
-        pub btn_attach_stack: RefCell<Option<gtk::Stack>>,
+        pub btn_attach: RefCell<Option<gtk::Button>>,
         pub is_modal: Cell<bool>,
         pub stored_parent: RefCell<Option<gtk::Widget>>,
     }
@@ -1036,14 +1036,11 @@ impl ComposeDialog {
         header_bar.set_show_start_title_buttons(false);
 
         let btn_close = gtk::Button::builder()
-            .icon_name("window-close-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Close (Ctrl+W)"))
-            .css_classes(vec!["circular", "composer-close-btn"])
+            .label(&crate::i18n::gettext("Close"))
+            .tooltip_text(&crate::i18n::gettext("Close and save draft (Ctrl+W)"))
+            .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
-            .halign(gtk::Align::Center)
-            .width_request(24)
-            .height_request(24)
-            .margin_end(12)
+            .margin_end(6)
             .build();
         set_accessible_label(&btn_close, &crate::i18n::gettext("Close"));
         btn_close.connect_clicked(glib::clone!(
@@ -1071,27 +1068,14 @@ impl ComposeDialog {
         header_bar.pack_start(&btn_open_in_new_window);
         self.imp().btn_open_in_new_window.replace(Some(btn_open_in_new_window));
 
-        let attach_lbl = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Attach"))
-            .build();
-        let attach_img = gtk::Image::from_icon_name("mail-attachment-symbolic");
-
-        let attach_stack = gtk::Stack::builder()
-            .transition_type(gtk::StackTransitionType::Crossfade)
-            .transition_duration(100)
-            .build();
-        attach_stack.add_named(&attach_lbl, Some("text"));
-        attach_stack.add_named(&attach_img, Some("icon"));
-        attach_stack.set_visible_child_name("text");
-
         let btn_attach = gtk::Button::builder()
-            .child(&attach_stack)
+            .icon_name("mail-attachment-symbolic")
             .tooltip_text(&crate::i18n::gettext("Add attachment… (Ctrl+M)"))
-            .css_classes(vec!["composer-attach-btn"])
+            .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&btn_attach, &crate::i18n::gettext("Add attachment"));
-        self.imp().btn_attach_stack.replace(Some(attach_stack.clone()));
+        self.imp().btn_attach.replace(Some(btn_attach.clone()));
 
         btn_attach.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
@@ -1140,9 +1124,8 @@ impl ComposeDialog {
             .build();
         set_accessible_label(&btn_send, &crate::i18n::gettext("Send email"));
 
-        // Header actions (packed right-to-left: Save draft, Send)
+        // Header actions (packed right-to-left: Send)
         header_bar.pack_end(&btn_send);
-        header_bar.pack_end(&btn_save_draft);
 
 
         let btn_priority = gtk::ToggleButton::builder()
@@ -1651,7 +1634,6 @@ impl ComposeDialog {
             if let Some(dialog) = dialog_weak_for_drop.upgrade() {
                 dialog.imp().user_typed_in_editor.set(true);
                 let is_plain = dialog.imp().html_editor.borrow().as_ref().map(|e| e.plain_text_mode()).unwrap_or(false);
-                let mut added_attachment = false;
                 for path in paths {
                     if !is_plain && crate::views::HtmlEditor::is_supported_image(&path) {
                         if let Some(editor) = dialog.imp().html_editor.borrow().as_ref() {
@@ -1666,19 +1648,15 @@ impl ComposeDialog {
                         }
                     }
                     dialog.add_attachment_path(&path);
-                    added_attachment = true;
                 }
-                if !added_attachment {
+                let was_auto_expanded = dialog.imp().drag_auto_expanded.get();
+                dialog.imp().drag_auto_expanded.set(false);
+                if was_auto_expanded {
                     dialog.set_attachment_expanded(false);
-                    dialog.show_attachment_bar_drag_hint(false);
-                    if dialog.imp().attachments.borrow().is_empty() {
-                        if let Some(bar) = dialog.imp().attachment_bar.borrow().as_ref() {
-                            bar.set_visible(false);
-                        }
-                    }
-                } else if dialog.imp().attachments.borrow().is_empty() {
+                }
+                dialog.show_attachment_bar_drag_hint(false);
+                if dialog.imp().attachments.borrow().is_empty() {
                     dialog.set_attachment_expanded(false);
-                    dialog.show_attachment_bar_drag_hint(false);
                     if let Some(bar) = dialog.imp().attachment_bar.borrow().as_ref() {
                         bar.set_visible(false);
                     }
@@ -2278,9 +2256,14 @@ impl ComposeDialog {
                         }
                     }
                 }
+                let was_auto_expanded = dialog.imp().drag_auto_expanded.get();
+                dialog.imp().drag_auto_expanded.set(false);
+                if was_auto_expanded {
+                    dialog.set_attachment_expanded(false);
+                }
+                dialog.show_attachment_bar_drag_hint(false);
                 if dialog.imp().attachments.borrow().is_empty() {
                     dialog.set_attachment_expanded(false);
-                    dialog.show_attachment_bar_drag_hint(false);
                     if let Some(bar) = dialog.imp().attachment_bar.borrow().as_ref() {
                         bar.set_visible(false);
                     }
@@ -2380,15 +2363,11 @@ impl ComposeDialog {
         let bp_narrow = adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 600sp").unwrap());
         bp_narrow.add_setter(&col_type, "visible", Some(&false.to_value()));
         bp_narrow.add_setter(&col_mod, "visible", Some(&false.to_value()));
-        bp_narrow.add_setter(&attach_stack, "visible-child-name", Some(&"icon".to_value()));
         let dialog_weak_for_bp_apply = self.downgrade();
         bp_narrow.connect_apply(move |_| {
             if let Some(dialog) = dialog_weak_for_bp_apply.upgrade() {
                 dialog.set_attachment_table_compact(true);
                 dialog.update_attachment_bar_chips();
-                if let Some(stack) = dialog.imp().btn_attach_stack.borrow().as_ref() {
-                    stack.set_visible_child_name("icon");
-                }
             }
         });
         let dialog_weak_for_bp_unapply = self.downgrade();
@@ -2396,9 +2375,6 @@ impl ComposeDialog {
             if let Some(dialog) = dialog_weak_for_bp_unapply.upgrade() {
                 dialog.set_attachment_table_compact(false);
                 dialog.update_attachment_bar_chips();
-                if let Some(stack) = dialog.imp().btn_attach_stack.borrow().as_ref() {
-                    stack.set_visible_child_name("text");
-                }
             }
         });
         self.add_breakpoint(bp_narrow);
@@ -4244,6 +4220,8 @@ impl ComposeDialog {
                 let draft_id = self.imp().draft_id.borrow().clone();
                 if !draft_id.is_empty() && !self.imp().local_draft_persisted.get() {
                     let _ = DraftStoreService::default().delete(&draft_id);
+                } else if self.imp().local_draft_persisted.get() {
+                    self.show_toast("Entwurf gespeichert");
                 }
                 false
             }
@@ -4253,47 +4231,14 @@ impl ComposeDialog {
                 );
                 true
             }
-            CloseRequestDecision::Prompt => {
+            CloseRequestDecision::SaveAndClose => {
                 if self.root().is_none() {
                     return false;
                 }
-                if self.imp().close_prompt_open.get() {
-                    return true;
+                self.imp().close_after_save.set(true);
+                if let Some(button) = self.imp().save_draft_button.borrow().as_ref() {
+                    button.emit_clicked();
                 }
-                self.imp().close_prompt_open.set(true);
-                let dialog_weak = self.downgrade();
-                let alert = adw::AlertDialog::new(
-                    Some(&crate::i18n::gettext("Discard draft?")),
-                    Some(&crate::i18n::gettext("Unsaved changes will be discarded.")),
-                );
-                alert.set_prefer_wide_layout(true);
-                alert.add_responses(&[
-                    ("cancel", &crate::i18n::gettext("Cancel")),
-                    ("discard", &crate::i18n::gettext("Discard")),
-                    ("save", &crate::i18n::gettext("Save Draft")),
-                ]);
-                alert.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
-                alert.set_response_appearance("save", adw::ResponseAppearance::Suggested);
-                alert.set_default_response(Some("save"));
-                alert.set_close_response("cancel");
-                alert.choose(self, None::<&gio::Cancellable>, move |response| {
-                    let Some(dialog) = dialog_weak.upgrade() else {
-                        return;
-                    };
-                    dialog.imp().close_prompt_open.set(false);
-                    match response.as_str() {
-                        "discard" => {
-                            dialog.discard_and_close();
-                        }
-                        "save" => {
-                            dialog.imp().close_after_save.set(true);
-                            if let Some(button) = dialog.imp().save_draft_button.borrow().as_ref() {
-                                button.emit_clicked();
-                            }
-                        }
-                        _ => {}
-                    }
-                });
                 true
             }
         }
@@ -5569,7 +5514,6 @@ impl ComposeDialog {
             embedded_content_base64: String::new(),
         };
         self.add_attachment(attachment);
-        self.set_attachment_expanded(true);
     }
 
     pub fn is_external_drag(&self, drop_target: Option<&gtk::DropTarget>) -> bool {
@@ -5682,7 +5626,6 @@ impl ComposeDialog {
                     }
                 }
                 let is_plain = dialog.imp().html_editor.borrow().as_ref().map(|e| e.plain_text_mode()).unwrap_or(false);
-                let mut added_attachment = false;
                 for path in paths {
                     if !is_plain && crate::views::HtmlEditor::is_supported_image(&path) {
                         if let Some(editor) = dialog.imp().html_editor.borrow().as_ref() {
@@ -5699,22 +5642,13 @@ impl ComposeDialog {
                     }
                     dialog.add_attachment_path(&path);
                     any_added = true;
-                    added_attachment = true;
                 }
-                if !added_attachment {
-                    if was_auto_expanded {
-                        dialog.set_attachment_expanded(false);
-                    }
-                    dialog.show_attachment_bar_drag_hint(false);
-                    if dialog.imp().attachments.borrow().is_empty() {
-                        dialog.set_attachment_expanded(false);
-                        if let Some(bar) = dialog.imp().attachment_bar.borrow().as_ref() {
-                            bar.set_visible(false);
-                        }
-                    }
-                } else if dialog.imp().attachments.borrow().is_empty() {
+                if was_auto_expanded {
                     dialog.set_attachment_expanded(false);
-                    dialog.show_attachment_bar_drag_hint(false);
+                }
+                dialog.show_attachment_bar_drag_hint(false);
+                if dialog.imp().attachments.borrow().is_empty() {
+                    dialog.set_attachment_expanded(false);
                     if let Some(bar) = dialog.imp().attachment_bar.borrow().as_ref() {
                         bar.set_visible(false);
                     }
@@ -6020,11 +5954,11 @@ impl ComposeDialog {
             780
         };
 
-        let max_chips = if win_w < 600 {
+        let max_chips = if win_w < 550 {
             1
-        } else if win_w < 850 {
+        } else if win_w < 750 {
             2
-        } else if win_w < 1100 {
+        } else if win_w < 1000 {
             3
         } else {
             4
@@ -8366,7 +8300,7 @@ fn compose_operation_can_start(operation: ComposeOperation) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CloseRequestDecision {
     Allow,
-    Prompt,
+    SaveAndClose,
     BlockOperation,
 }
 
@@ -8379,7 +8313,7 @@ fn close_request_decision(
     } else if !dirty {
         CloseRequestDecision::Allow
     } else {
-        CloseRequestDecision::Prompt
+        CloseRequestDecision::SaveAndClose
     }
 }
 
@@ -8403,7 +8337,7 @@ mod tests {
         );
         assert_eq!(
             close_request_decision(true, ComposeOperation::Idle),
-            CloseRequestDecision::Prompt
+            CloseRequestDecision::SaveAndClose
         );
         assert_eq!(
             close_request_decision(false, ComposeOperation::Sending),
@@ -9699,16 +9633,9 @@ mod tests {
             return;
         };
         let dialog = ComposeDialog::new();
-        let stack = dialog.imp().btn_attach_stack.borrow().as_ref().cloned().expect("btn_attach_stack exists");
-        assert_eq!(stack.visible_child_name().as_deref(), Some("text"));
-
-        // Simulate narrow screen breakpoint: switches to icon only
-        stack.set_visible_child_name("icon");
-        assert_eq!(stack.visible_child_name().as_deref(), Some("icon"));
-
-        // Restore wide screen: switches back to text only
-        stack.set_visible_child_name("text");
-        assert_eq!(stack.visible_child_name().as_deref(), Some("text"));
+        let btn = dialog.imp().btn_attach.borrow().as_ref().cloned().expect("btn_attach exists");
+        assert_eq!(btn.icon_name().as_deref(), Some("mail-attachment-symbolic"));
+        assert!(btn.has_css_class("flat"));
 
         dialog.close();
         while context.iteration(false) {}
@@ -9747,8 +9674,100 @@ mod tests {
         assert!(dialog.is_dirty());
         assert_eq!(
             close_request_decision(dialog.is_dirty(), dialog.imp().operation.get()),
-            CloseRequestDecision::Prompt
+            CloseRequestDecision::SaveAndClose
         );
+
+        dialog.close();
+        while context.iteration(false) {}
+    }
+
+    #[test]
+    fn test_add_attachment_path_defaults_to_collapsed_chips() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let dialog = ComposeDialog::new();
+        while context.iteration(false) {}
+
+        let temp_dir = std::env::temp_dir().join(format!("meridian-test-att-{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let file1 = temp_dir.join("test_report.pdf");
+        let file2 = temp_dir.join("test_sheet.xlsx");
+        let file3 = temp_dir.join("test_notes.txt");
+        std::fs::write(&file1, b"pdf content").unwrap();
+        std::fs::write(&file2, b"excel content").unwrap();
+        std::fs::write(&file3, b"notes content").unwrap();
+
+        // Adding 1st attachment keeps bar collapsed as chips
+        dialog.add_attachment_path(&file1);
+        while context.iteration(false) {}
+        assert_eq!(dialog.imp().attachments.borrow().len(), 1);
+        assert!(!dialog.imp().attachment_expanded.get(), "Must stay collapsed as chip");
+        if let Some(rev) = dialog.imp().attachment_detail_revealer.borrow().as_ref() {
+            assert!(!rev.reveals_child(), "Detail drawer must remain closed");
+        }
+        if let Some(chip_box) = dialog.imp().attachment_bar_chip_box.borrow().as_ref() {
+            assert!(chip_box.is_visible(), "Chip box must be visible");
+            assert_eq!(chip_box.first_child().is_some(), true);
+        }
+
+        // Adding 2nd and 3rd attachments still keeps bar collapsed as chips
+        dialog.add_attachment_path(&file2);
+        dialog.add_attachment_path(&file3);
+        while context.iteration(false) {}
+        assert_eq!(dialog.imp().attachments.borrow().len(), 3);
+        assert!(!dialog.imp().attachment_expanded.get(), "Must stay collapsed with 3 chips");
+        if let Some(rev) = dialog.imp().attachment_detail_revealer.borrow().as_ref() {
+            assert!(!rev.reveals_child(), "Detail drawer must still be closed");
+        }
+
+        // Manual toggle still expands properly
+        dialog.toggle_attachment_expanded();
+        while context.iteration(false) {}
+        assert!(dialog.imp().attachment_expanded.get());
+        if let Some(rev) = dialog.imp().attachment_detail_revealer.borrow().as_ref() {
+            assert!(rev.reveals_child());
+        }
+
+        // Collapse back
+        dialog.toggle_attachment_expanded();
+        while context.iteration(false) {}
+        assert!(!dialog.imp().attachment_expanded.get());
+
+        let _ = std::fs::remove_file(&file1);
+        let _ = std::fs::remove_file(&file2);
+        let _ = std::fs::remove_file(&file3);
+        let _ = std::fs::remove_dir(&temp_dir);
+
+        dialog.close();
+        while context.iteration(false) {}
+    }
+
+    #[test]
+    fn test_compose_dialog_close_button_label_and_autosave_on_close() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let dialog = ComposeDialog::new();
+        while context.iteration(false) {}
+
+        // Verify save draft floppy disk button is not packed into the header bar
+        if let Some(btn) = dialog.imp().save_draft_button.borrow().as_ref() {
+            assert!(btn.parent().is_none(), "Save draft floppy disk button should not be packed into header bar");
+        }
+
+        // When user types content, close_request_decision is SaveAndClose without any modal prompt
+        if let Some(entry) = dialog.imp().entry_subject.borrow().as_ref() {
+            entry.set_text("Test Subject");
+        }
+        assert!(dialog.is_dirty());
+        assert_eq!(
+            close_request_decision(dialog.is_dirty(), dialog.imp().operation.get()),
+            CloseRequestDecision::SaveAndClose
+        );
+        assert!(!dialog.imp().close_prompt_open.get());
 
         dialog.close();
         while context.iteration(false) {}
