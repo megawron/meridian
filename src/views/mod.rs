@@ -4,7 +4,8 @@
 
 pub(crate) mod accessibility;
 pub(crate) mod calendar_page;
-mod contacts_page;
+pub(crate) mod contacts_page;
+pub(crate) mod context_menu;
 mod html_editor;
 pub mod itip_banner;
 mod mail_page;
@@ -12,6 +13,8 @@ mod mail_viewer;
 mod mail_viewer_window;
 mod memos_page;
 mod tasks_page;
+
+pub(crate) use context_menu::*;
 
 pub use calendar_page::CalendarPage;
 #[allow(unused_imports)]
@@ -24,6 +27,7 @@ pub use html_editor::HtmlEditor;
 pub use itip_banner::ItipBanner;
 pub use mail_page::MailPage;
 pub(crate) use mail_page::MailDrillDownLevel;
+pub(crate) use mail_page::clean_name_for_avatar;
 pub(crate) use mail_page::set_button_icon_with_fallback;
 pub(crate) use mail_viewer::MailPrintDialogResult;
 pub use mail_viewer::MailViewer;
