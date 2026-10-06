@@ -597,7 +597,6 @@ pub(crate) fn draw_contact_table_canvas(
 pub enum ContactViewMode {
     #[default]
     Simple,
-    Cards,
     Table,
 }
 
@@ -628,7 +627,6 @@ mod imp {
     pub struct ContactsPage {
         pub current_view_mode: Cell<ContactViewMode>,
         pub simple_vpane_pos: Cell<i32>,
-        pub cards_vpane_pos: Cell<i32>,
         pub table_vpane_pos: Cell<i32>,
         pub ebook_monitor_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
         pub contact_search_cancel: RefCell<Option<Arc<AtomicBool>>>,
@@ -654,8 +652,6 @@ mod imp {
         pub contact_sort_desc: Cell<bool>,
         pub(crate) stored_contacts: RefCell<Option<Rc<RefCell<Vec<EBookContactRecord>>>>>,
         pub(crate) search_state: RefCell<Option<Rc<ContactPageSearchState>>>,
-        pub contact_cards_flow: RefCell<Option<gtk::FlowBox>>,
-        pub cards_scroll: RefCell<Option<gtk::ScrolledWindow>>,
         pub simple_list_scroll: RefCell<Option<gtk::ScrolledWindow>>,
         pub view_stack: RefCell<Option<gtk::Stack>>,
         pub alphabet_box: RefCell<Option<gtk::ListBox>>,
@@ -669,7 +665,6 @@ mod imp {
         pub outer_paned: RefCell<Option<gtk::Paned>>,
         pub reload_fn: RefCell<Option<ReloadContactsCallback>>,
         pub contact_preview_paned: RefCell<Option<gtk::Paned>>,
-        pub contact_preview_toggle: RefCell<Option<gtk::ToggleButton>>,
         pub contacts_sidebar_toggle: RefCell<Option<gtk::ToggleButton>>,
         pub collapsed_addressbook_groups: RefCell<HashSet<String>>,
         pub is_syncing_selection: Cell<bool>,
@@ -707,7 +702,6 @@ mod imp {
         fn constructed(&self) {
             self.parent_constructed();
             self.simple_vpane_pos.set(380);
-            self.cards_vpane_pos.set(580);
             self.table_vpane_pos.set(820);
             self.obj().set_vexpand(true);
             self.obj().set_hexpand(true);
@@ -1370,6 +1364,8 @@ impl ContactsPage {
             .has_arrow(true)
             .pointing_to(&gdk::Rectangle::new(x as i32, y as i32, 1, 1))
             .build();
+        popover.add_css_class("menu");
+        popover.add_css_class("context-menu");
         popover.set_parent(header);
 
         let content = gtk::Box::builder()
@@ -1424,32 +1420,10 @@ impl ContactsPage {
             content.append(&check);
         }
 
-        content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        content.append(&crate::views::create_context_menu_separator());
 
-        let make_popover_action_button = |icon_name: &str, label_text: &str| -> gtk::Button {
-            let btn = gtk::Button::builder()
-                .css_classes(vec!["flat"])
-                .halign(gtk::Align::Fill)
-                .build();
-            let row = gtk::Box::builder()
-                .orientation(gtk::Orientation::Horizontal)
-                .spacing(8)
-                .halign(gtk::Align::Start)
-                .hexpand(true)
-                .build();
-            let icon = gtk::Image::builder()
-                .icon_name(icon_name)
-                .css_classes(vec!["dim-label"])
-                .build();
-            let label = gtk::Label::builder()
-                .label(label_text)
-                .halign(gtk::Align::Start)
-                .xalign(0.0)
-                .build();
-            row.append(&icon);
-            row.append(&label);
-            btn.set_child(Some(&row));
-            btn
+        let make_popover_action_button = |_icon_name: &str, label_text: &str| -> gtk::Button {
+            crate::views::create_context_menu_button(None, label_text, false)
         };
 
         let reorder_btn = make_popover_action_button("view-column-symbolic", &crate::i18n::gettext("Customize column order…"));
@@ -1724,11 +1698,6 @@ impl ContactsPage {
                 detail_box.set_visible(visible);
             }
         }
-        if let Some(toggle) = self.imp().contact_preview_toggle.borrow().as_ref() {
-            if toggle.is_active() != visible {
-                toggle.set_active(visible);
-            }
-        }
         if let Some(settings) = AppSettings::try_new() {
             settings.set_contact_preview_visible(visible);
         }
@@ -1823,12 +1792,12 @@ impl ContactsPage {
 
     pub(crate) fn can_navigate_back(&self) -> bool {
         let imp = self.imp();
-        imp.is_mobile.get() && imp.is_detail_shown.get()
+        imp.is_detail_shown.get()
     }
 
     pub(crate) fn navigate_back(&self) -> bool {
         let imp = self.imp();
-        if imp.is_mobile.get() && imp.is_detail_shown.get() {
+        if imp.is_detail_shown.get() {
             imp.is_detail_shown.set(false);
             self.sync_contacts_layout_visibility();
             if let Some(win) = crate::window::find_meridian_window(self) {
@@ -1843,7 +1812,6 @@ impl ContactsPage {
     pub(crate) fn sync_contacts_layout_visibility(&self) {
         let imp = self.imp();
         let is_mobile = imp.is_mobile.get();
-        let is_tablet = imp.is_tablet.get();
         let Some(outer_paned) = imp.outer_paned.borrow().clone() else { return; };
         let Some(preview_paned) = imp.contact_preview_paned.borrow().clone() else { return; };
 
@@ -1876,23 +1844,41 @@ impl ContactsPage {
                     db.set_visible(false);
                 }
             }
-        } else if is_tablet {
-            if let Some(lc) = list_container.as_ref() {
-                lc.set_size_request(0, -1);
-                lc.set_visible(true);
-            }
-            if let Some(db) = detail_box.as_ref() {
-                db.set_size_request(0, -1);
-                db.set_visible(true);
-            }
         } else {
             if let Some(lc) = list_container.as_ref() {
                 lc.set_size_request(0, -1);
-                lc.set_visible(true);
             }
             if let Some(db) = detail_box.as_ref() {
                 db.set_size_request(0, -1);
-                db.set_visible(true);
+            }
+            match imp.current_view_mode.get() {
+                ContactViewMode::Table => {
+                    if imp.is_detail_shown.get() {
+                        if let Some(lc) = list_container.as_ref() {
+                            lc.set_visible(false);
+                        }
+                        if let Some(db) = detail_box.as_ref() {
+                            db.set_visible(true);
+                        }
+                    } else {
+                        if let Some(lc) = list_container.as_ref() {
+                            lc.set_visible(true);
+                        }
+                        if let Some(db) = detail_box.as_ref() {
+                            db.set_visible(false);
+                        }
+                    }
+                }
+                ContactViewMode::Simple => {
+                    if let Some(lc) = list_container.as_ref() {
+                        lc.set_visible(true);
+                    }
+                    if let Some(db) = detail_box.as_ref() {
+                        db.set_visible(true);
+                    }
+                    let pos = imp.simple_vpane_pos.get().max(320);
+                    preview_paned.set_position(pos);
+                }
             }
         }
 
@@ -1926,10 +1912,6 @@ impl ContactsPage {
         }
     }
 
-    pub fn contact_preview_toggle(&self) -> Option<gtk::ToggleButton> {
-        self.imp().contact_preview_toggle.borrow().clone()
-    }
-
     pub fn view_options_split_button(&self) -> Option<adw::SplitButton> {
         self.imp().view_options_split_btn.borrow().clone()
     }
@@ -1941,18 +1923,28 @@ impl ContactsPage {
     pub fn set_view_mode(&self, mode: ContactViewMode) {
         let imp = self.imp();
         imp.current_view_mode.set(mode);
+        imp.is_detail_shown.set(false);
         if let Some(stack) = imp.view_stack.borrow().as_ref() {
-            let (child_name, pos) = match mode {
-                ContactViewMode::Simple => ("simple", imp.simple_vpane_pos.get()),
-                ContactViewMode::Cards => ("cards", imp.cards_vpane_pos.get()),
-                ContactViewMode::Table => ("table", imp.table_vpane_pos.get()),
+            let child_name = match mode {
+                ContactViewMode::Simple => "simple",
+                ContactViewMode::Table => "table",
             };
             stack.set_visible_child_name(child_name);
-            if let Some(paned) = imp.contact_preview_paned.borrow().as_ref() {
-                paned.set_position(pos);
+        }
+        if let Some(settings) = AppSettings::try_new() {
+            let layout_str = match mode {
+                ContactViewMode::Simple => "vertical",
+                ContactViewMode::Table => "classic",
+            };
+            if settings.contact_layout() != layout_str {
+                settings.set_contact_layout(layout_str);
             }
         }
+        self.sync_contacts_layout_visibility();
         self.sync_view_split_button();
+        if let Some(win) = crate::window::find_meridian_window(self) {
+            win.sync_back_button();
+        }
     }
 
     pub(crate) fn sync_view_split_button(&self) {
@@ -1961,8 +1953,7 @@ impl ContactsPage {
         };
         let mode = self.imp().current_view_mode.get();
         let (icon_name, tooltip_text) = match mode {
-            ContactViewMode::Simple => ("view-list-symbolic", crate::i18n::gettext("Simple List")),
-            ContactViewMode::Cards => ("view-grid-symbolic", crate::i18n::gettext("Card View")),
+            ContactViewMode::Simple => ("view-list-symbolic", crate::i18n::gettext("Compact View")),
             ContactViewMode::Table => ("x-office-spreadsheet-symbolic", crate::i18n::gettext("Table View")),
         };
         split_btn.set_icon_name(icon_name);
@@ -2673,11 +2664,11 @@ impl ContactsPage {
             // selection.  Keep the detail pane single-contact specific, but
             // let the list retain a 0/1/n selection for batch-safe actions.
             .selection_mode(gtk::SelectionMode::Multiple)
-            .margin_start(12)
-            .margin_end(12)
-            .margin_top(12)
-            .margin_bottom(12)
-            .css_classes(vec!["boxed-list", "contact-list-view"])
+            .margin_start(0)
+            .margin_end(0)
+            .margin_top(0)
+            .margin_bottom(0)
+            .css_classes(vec!["contact-list-view"])
             .build();
         contact_list.set_sort_func(|left, right| unsafe {
             let value = |row: &gtk::ListBoxRow, key: &str| {
@@ -3080,7 +3071,13 @@ impl ContactsPage {
 
                 if n_press >= 2 {
                     select_contact_row(&contact_list_clone, &row.identity.source_uid, &row.identity.uid);
-                    if let Some(selected_row) = contact_list_clone.selected_row() {
+                    if page.imp().is_mobile.get() || page.current_view_mode() == ContactViewMode::Table {
+                        page.imp().is_detail_shown.set(true);
+                        page.sync_contacts_layout_visibility();
+                        if let Some(win) = crate::window::find_meridian_window(&page) {
+                            win.sync_back_button();
+                        }
+                    } else if let Some(selected_row) = contact_list_clone.selected_row() {
                         selected_row.activate();
                     }
                     return;
@@ -3108,7 +3105,7 @@ impl ContactsPage {
                     select_contact_row_ext(&contact_list_clone, &row.identity.source_uid, &row.identity.uid, true, false);
                     page.imp().contact_table_anchor_row.set(Some(row_idx));
                 }
-                if page.imp().is_mobile.get() {
+                if !shift && !ctrl && (page.imp().is_mobile.get() || page.current_view_mode() == ContactViewMode::Table) {
                     page.imp().is_detail_shown.set(true);
                     page.sync_contacts_layout_visibility();
                     if let Some(win) = crate::window::find_meridian_window(&page) {
@@ -3285,94 +3282,12 @@ impl ContactsPage {
         contact_table_box.append(&column_header_scroll);
         contact_table_box.append(&list_scroll);
 
-        let contact_cards_flow = gtk::FlowBox::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .valign(gtk::Align::Start)
-            .halign(gtk::Align::Fill)
-            .hexpand(true)
-            .max_children_per_line(12)
-            .min_children_per_line(1)
-            .selection_mode(gtk::SelectionMode::Single)
-            .homogeneous(true)
-            .column_spacing(10)
-            .row_spacing(10)
-            .margin_start(10)
-            .margin_end(10)
-            .margin_top(10)
-            .margin_bottom(10)
-            .css_classes(vec!["contact-cards-flow"])
-            .build();
-        self.imp().contact_cards_flow.replace(Some(contact_cards_flow.clone()));
-
-        contact_cards_flow.set_sort_func(|child_a, child_b| unsafe {
-            let key_a = child_a
-                .data::<String>("contact-sort-key")
-                .map(|v| v.as_ref().clone())
-                .unwrap_or_default();
-            let key_b = child_b
-                .data::<String>("contact-sort-key")
-                .map(|v| v.as_ref().clone())
-                .unwrap_or_default();
-            key_a.cmp(&key_b).into()
-        });
-
-        let search_state_cards = Rc::clone(&search_state);
-        contact_cards_flow.set_filter_func(move |child| unsafe {
-            let source_uid = child
-                .data::<String>("contact-source-uid")
-                .map(|value| value.as_ref().clone())
-                .unwrap_or_default();
-            let uid = child
-                .data::<String>("contact-id")
-                .map(|value| value.as_ref().clone())
-                .unwrap_or_default();
-            search_state_cards
-                .visible_identities
-                .borrow()
-                .contains(&ContactIdentity::new(source_uid, uid))
-        });
-
-        let contact_list_flow = contact_list.clone();
-        let page_weak_for_flow = self.downgrade();
-        contact_cards_flow.connect_selected_children_changed(move |flow| {
-            let Some(page) = page_weak_for_flow.upgrade() else {
-                return;
-            };
-            if page.imp().is_syncing_selection.get() {
-                return;
-            }
-            let selected = flow.selected_children();
-            if let Some(child) = selected.first() {
-                unsafe {
-                    if let (Some(source_uid), Some(uid)) = (
-                        child.data::<String>("contact-source-uid"),
-                        child.data::<String>("contact-id"),
-                    ) {
-                        select_contact_row(&contact_list_flow, source_uid.as_ref(), uid.as_ref());
-                    }
-                }
-            } else {
-                contact_list_flow.unselect_all();
-            }
-        });
-
-        let cards_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .child(&contact_cards_flow)
-            .vexpand(true)
-            .hexpand(true)
-            .margin_end(32)
-            .build();
-        self.imp().cards_scroll.replace(Some(cards_scroll.clone()));
-
         let view_stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
             .vexpand(true)
             .hexpand(true)
             .build();
         view_stack.add_named(&simple_list_scroll, Some("simple"));
-        view_stack.add_named(&cards_scroll, Some("cards"));
         view_stack.add_named(&contact_table_box, Some("table"));
         view_stack.set_visible_child_name("simple");
         self.imp().view_stack.replace(Some(view_stack.clone()));
@@ -3964,15 +3879,6 @@ impl ContactsPage {
                                         contacts.push(merged.clone());
                                     }
                                     append_contact_row(&contact_list_for_action, &merged);
-                                    if let Some(page) = page_weak_for_result.upgrade() {
-                                        if let Some(flow) = page.imp().contact_cards_flow.borrow().as_ref() {
-                                            remove_contact_card(flow, &primary_for_action.source_uid, &primary_for_action.uid);
-                                            for duplicate in &duplicates_for_action {
-                                                remove_contact_card(flow, &duplicate.source_uid, &duplicate.uid);
-                                            }
-                                            append_contact_card(flow, &merged);
-                                        }
-                                    }
                                     mark_duplicate_rows(
                                         &contact_list_for_action,
                                         &stored_contacts_for_action,
@@ -4585,22 +4491,14 @@ impl ContactsPage {
             contact_list_for_context.unselect_all();
             contact_list_for_context.select_row(Some(&row));
 
-            let popover = gtk::Popover::builder()
-                .has_arrow(false)
-                .pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1))
-                .build();
-            let menu_box = gtk::Box::builder()
-                .orientation(gtk::Orientation::Vertical)
-                .spacing(2)
-                .margin_start(6)
-                .margin_end(6)
-                .margin_top(6)
-                .margin_bottom(6)
-                .build();
+            let rect = gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            let (popover, menu_box) = crate::views::create_context_popover(Some(&rect));
 
-            let email = gtk::Button::with_label(&crate::i18n::gettext("Send email"));
-            email.set_halign(gtk::Align::Fill);
-            email.add_css_class("flat");
+            let email = crate::views::create_context_menu_button(
+                None,
+                &crate::i18n::gettext("Send email"),
+                false,
+            );
             let popover_for_email = popover.clone();
             let email_button_for_menu = email_btn_for_context.clone();
             email.connect_clicked(move |_| {
@@ -4609,9 +4507,11 @@ impl ContactsPage {
             });
             menu_box.append(&email);
 
-            let edit = gtk::Button::with_label(&crate::i18n::gettext("Edit contact"));
-            edit.set_halign(gtk::Align::Fill);
-            edit.add_css_class("flat");
+            let edit = crate::views::create_context_menu_button(
+                None,
+                &crate::i18n::gettext("Edit contact"),
+                false,
+            );
             let popover_for_edit = popover.clone();
             let edit_button_for_menu = edit_btn_for_context.clone();
             edit.connect_clicked(move |_| {
@@ -4620,9 +4520,11 @@ impl ContactsPage {
             });
             menu_box.append(&edit);
 
-            let export = gtk::Button::with_label(&crate::i18n::gettext("Export (vCard, CSV, LDIF)…"));
-            export.set_halign(gtk::Align::Fill);
-            export.add_css_class("flat");
+            let export = crate::views::create_context_menu_button(
+                None,
+                &crate::i18n::gettext("Export (vCard, CSV, LDIF)…"),
+                false,
+            );
             let popover_for_export = popover.clone();
             let export_button_for_menu = export_btn_for_context.clone();
             export.connect_clicked(move |_| {
@@ -4631,9 +4533,11 @@ impl ContactsPage {
             });
             menu_box.append(&export);
 
-            let print = gtk::Button::with_label(&crate::i18n::gettext("Print…"));
-            print.set_halign(gtk::Align::Fill);
-            print.add_css_class("flat");
+            let print = crate::views::create_context_menu_button(
+                None,
+                &crate::i18n::gettext("Print…"),
+                false,
+            );
             let popover_for_print = popover.clone();
             let print_button_for_menu = print_btn_for_context.clone();
             print.connect_clicked(move |_| {
@@ -4642,9 +4546,13 @@ impl ContactsPage {
             });
             menu_box.append(&print);
 
-            let copy_to_book = gtk::Button::with_label(&crate::i18n::gettext("Copy to address book…"));
-            copy_to_book.set_halign(gtk::Align::Fill);
-            copy_to_book.add_css_class("flat");
+            menu_box.append(&crate::views::create_context_menu_separator());
+
+            let copy_to_book = crate::views::create_context_menu_button(
+                None,
+                &crate::i18n::gettext("Copy to address book…"),
+                false,
+            );
             let popover_for_copy_to_book = popover.clone();
             let copy_to_book_button_for_menu = copy_to_book_btn_for_context.clone();
             copy_to_book.connect_clicked(move |_| {
@@ -4653,9 +4561,11 @@ impl ContactsPage {
             });
             menu_box.append(&copy_to_book);
 
-            let move_to_book = gtk::Button::with_label(&crate::i18n::gettext("Move to address book…"));
-            move_to_book.set_halign(gtk::Align::Fill);
-            move_to_book.add_css_class("flat");
+            let move_to_book = crate::views::create_context_menu_button(
+                None,
+                &crate::i18n::gettext("Move to address book…"),
+                false,
+            );
             let popover_for_move_to_book = popover.clone();
             let move_to_book_button_for_menu = move_to_book_btn_for_context.clone();
             move_to_book.connect_clicked(move |_| {
@@ -4664,9 +4574,11 @@ impl ContactsPage {
             });
             menu_box.append(&move_to_book);
 
-            let merge = gtk::Button::with_label(&crate::i18n::gettext("Merge duplicates"));
-            merge.set_halign(gtk::Align::Fill);
-            merge.add_css_class("flat");
+            let merge = crate::views::create_context_menu_button(
+                None,
+                &crate::i18n::gettext("Merge duplicates"),
+                false,
+            );
             let popover_for_merge = popover.clone();
             let merge_button_for_menu = merge_btn_for_context.clone();
             merge.connect_clicked(move |_| {
@@ -4675,10 +4587,13 @@ impl ContactsPage {
             });
             menu_box.append(&merge);
 
-            let delete = gtk::Button::with_label(&crate::i18n::gettext("Delete contact"));
-            delete.set_halign(gtk::Align::Fill);
-            delete.add_css_class("flat");
-            delete.add_css_class("destructive-action");
+            menu_box.append(&crate::views::create_context_menu_separator());
+
+            let delete = crate::views::create_context_menu_button(
+                None,
+                &crate::i18n::gettext("Delete contact"),
+                true,
+            );
             let popover_for_delete = popover.clone();
             let delete_button_for_menu = delete_btn_for_context.clone();
             delete.connect_clicked(move |_| {
@@ -4708,7 +4623,6 @@ impl ContactsPage {
                 Some(&move_to_book),
             );
 
-            popover.set_child(Some(&menu_box));
             popover.set_parent(&contact_list_for_context);
             let popover_weak = popover.downgrade();
             popover.connect_closed(move |_| {
@@ -4719,30 +4633,6 @@ impl ContactsPage {
             popover.popup();
         });
         contact_list.add_controller(context_click);
-
-        let preview_visible = AppSettings::try_new()
-            .map(|s| s.contact_preview_visible())
-            .unwrap_or(true);
-        let preview_toggle = gtk::ToggleButton::builder()
-            .icon_name("sidebar-show-right-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Toggle contact preview (Ctrl+M)"))
-            .active(preview_visible)
-            .css_classes(vec!["flat"])
-            .valign(gtk::Align::Center)
-            .build();
-        set_accessible_label(&preview_toggle, &crate::i18n::gettext("Toggle contact preview"));
-        self.imp()
-            .contact_preview_toggle
-            .replace(Some(preview_toggle.clone()));
-
-        let detail_box_for_toggle = detail_box.clone();
-        preview_toggle.connect_toggled(move |toggle| {
-            let is_active = toggle.is_active();
-            if let Some(settings) = AppSettings::try_new() {
-                settings.set_contact_preview_visible(is_active);
-            }
-            detail_box_for_toggle.set_visible(is_active);
-        });
 
         let sidebar_visible = AppSettings::try_new()
             .map(|s| s.mail_show_sidebar())
@@ -4785,7 +4675,6 @@ impl ContactsPage {
         let print_btn_for_key = print_btn.clone();
         let print_list_btn_for_key = print_list_btn.clone();
         let contact_list_for_key = contact_list.clone();
-        let preview_toggle_for_key = preview_toggle.clone();
         list_key_controller.connect_key_pressed(move |_, key, _, modifiers| {
             if (key == gtk::gdk::Key::Delete
                 || key == gtk::gdk::Key::BackSpace
@@ -4803,11 +4692,6 @@ impl ContactsPage {
             {
                 contact_list_for_key.select_all();
                 return glib::Propagation::Stop;
-            } else if (key == gtk::gdk::Key::m || key == gtk::gdk::Key::M)
-                && modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
-            {
-                preview_toggle_for_key.set_active(!preview_toggle_for_key.is_active());
-                return glib::Propagation::Stop;
             } else if (key == gtk::gdk::Key::p || key == gtk::gdk::Key::P)
                 && modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
             {
@@ -4824,17 +4708,10 @@ impl ContactsPage {
         contact_list.add_controller(list_key_controller);
 
         let page_key_controller = gtk::EventControllerKey::new();
-        let preview_toggle_for_page = preview_toggle.clone();
         let sidebar_toggle_for_key = sidebar_toggle.clone();
-        page_key_controller.connect_key_pressed(move |_, key, _, modifiers| {
+        page_key_controller.connect_key_pressed(move |_, key, _, _| {
             if key == gtk::gdk::Key::F9 {
                 sidebar_toggle_for_key.set_active(!sidebar_toggle_for_key.is_active());
-                return glib::Propagation::Stop;
-            }
-            if (key == gtk::gdk::Key::m || key == gtk::gdk::Key::M)
-                && modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
-            {
-                preview_toggle_for_page.set_active(!preview_toggle_for_page.is_active());
                 return glib::Propagation::Stop;
             }
             glib::Propagation::Proceed
@@ -5031,17 +4908,10 @@ impl ContactsPage {
 
         let btn_simple = gtk::ToggleButton::builder()
             .icon_name("view-list-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Simple List"))
+            .tooltip_text(&crate::i18n::gettext("Compact View"))
             .active(true)
             .build();
-        set_accessible_label(&btn_simple, &crate::i18n::gettext("Simple List"));
-
-        let btn_cards = gtk::ToggleButton::builder()
-            .icon_name("view-grid-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Card View"))
-            .group(&btn_simple)
-            .build();
-        set_accessible_label(&btn_cards, &crate::i18n::gettext("Card View"));
+        set_accessible_label(&btn_simple, &crate::i18n::gettext("Compact View"));
 
         let btn_table = gtk::ToggleButton::builder()
             .icon_name("x-office-spreadsheet-symbolic")
@@ -5051,7 +4921,6 @@ impl ContactsPage {
         set_accessible_label(&btn_table, &crate::i18n::gettext("Table View"));
 
         view_mode_box.append(&btn_simple);
-        view_mode_box.append(&btn_cards);
         view_mode_box.append(&btn_table);
         sec_view_box.append(&view_mode_box);
         popover_box.append(&sec_view_box);
@@ -5061,15 +4930,6 @@ impl ContactsPage {
             if btn.is_active() {
                 if let Some(page) = page_weak_s.upgrade() {
                     page.set_view_mode(ContactViewMode::Simple);
-                }
-            }
-        });
-
-        let page_weak_c = self.downgrade();
-        btn_cards.connect_toggled(move |btn| {
-            if btn.is_active() {
-                if let Some(page) = page_weak_c.upgrade() {
-                    page.set_view_mode(ContactViewMode::Cards);
                 }
             }
         });
@@ -5106,59 +4966,16 @@ impl ContactsPage {
         });
         popover_box.append(&btn_cols);
 
-        // 3. Preview Pane Switch
-        popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        let listbox = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .css_classes(vec!["view-options-list"])
-            .build();
-
-        let row_preview = adw::ActionRow::builder()
-            .title(&crate::i18n::gettext("Contact Preview"))
-            .subtitle(&crate::i18n::gettext("Show contact details pane"))
-            .activatable(true)
-            .build();
-        let initial_preview_vis = AppSettings::try_new()
-            .map(|s| s.contact_preview_visible())
-            .unwrap_or(true);
-        let switch_preview = gtk::Switch::builder()
-            .valign(gtk::Align::Center)
-            .active(initial_preview_vis)
-            .build();
-        row_preview.add_suffix(&switch_preview);
-        row_preview.set_activatable_widget(Some(&switch_preview));
-
-        let preview_toggle_weak = preview_toggle.downgrade();
-        switch_preview.connect_state_set(move |_, state| {
-            if let Some(settings) = AppSettings::try_new() {
-                if settings.contact_preview_visible() != state {
-                    settings.set_contact_preview_visible(state);
-                }
-            }
-            if let Some(toggle) = preview_toggle_weak.upgrade() {
-                if toggle.is_active() != state {
-                    toggle.set_active(state);
-                }
-            }
-            glib::Propagation::Proceed
-        });
-        listbox.append(&row_preview);
-        popover_box.append(&listbox);
-
         // Sync popover toggles on show
         let btn_s = btn_simple.clone();
-        let btn_c = btn_cards.clone();
         let btn_t = btn_table.clone();
-        let sw_prev = switch_preview.clone();
         let page_weak_pop = self.downgrade();
         options_popover.connect_show(move |_| {
             if let Some(page) = page_weak_pop.upgrade() {
                 match page.imp().current_view_mode.get() {
                     ContactViewMode::Simple => btn_s.set_active(true),
-                    ContactViewMode::Cards => btn_c.set_active(true),
                     ContactViewMode::Table => btn_t.set_active(true),
                 }
-                sw_prev.set_active(page.is_preview_visible());
             }
         });
 
@@ -5166,7 +4983,7 @@ impl ContactsPage {
         let str_view_opts = crate::i18n::gettext("View options");
         let split_btn = adw::SplitButton::builder()
             .icon_name("view-list-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Simple List"))
+            .tooltip_text(&crate::i18n::gettext("Compact View"))
             .dropdown_tooltip(&str_view_opts)
             .popover(&options_popover)
             .css_classes(vec!["flat"])
@@ -5180,8 +4997,7 @@ impl ContactsPage {
             if let Some(page) = page_weak_split.upgrade() {
                 let current = page.imp().current_view_mode.get();
                 let next = match current {
-                    ContactViewMode::Simple => ContactViewMode::Cards,
-                    ContactViewMode::Cards => ContactViewMode::Table,
+                    ContactViewMode::Simple => ContactViewMode::Table,
                     ContactViewMode::Table => ContactViewMode::Simple,
                 };
                 page.set_view_mode(next);
@@ -5367,9 +5183,17 @@ impl ContactsPage {
             &move_to_book_btn,
         );
 
-        let edit_btn_for_activate = edit_btn.clone();
+        let page_weak_for_activate = self.downgrade();
         contact_list.connect_row_activated(move |_, _| {
-            edit_btn_for_activate.activate();
+            if let Some(page) = page_weak_for_activate.upgrade() {
+                if page.imp().is_mobile.get() || page.current_view_mode() == ContactViewMode::Table {
+                    page.imp().is_detail_shown.set(true);
+                    page.sync_contacts_layout_visibility();
+                    if let Some(win) = crate::window::find_meridian_window(&page) {
+                        win.sync_back_button();
+                    }
+                }
+            }
         });
 
         let click_for_mobile_contact = gtk::GestureClick::new();
@@ -5386,12 +5210,6 @@ impl ContactsPage {
             }
         });
         contact_list.add_controller(click_for_mobile_contact);
-        if let Some(flow) = self.imp().contact_cards_flow.borrow().as_ref() {
-            let edit_btn_for_cards = edit_btn.clone();
-            flow.connect_child_activated(move |_, _| {
-                edit_btn_for_cards.activate();
-            });
-        }
 
         if let Some((cancel, receiver)) = EBookService::new().start_change_monitor() {
             *self.imp().ebook_monitor_cancel.borrow_mut() = Some(cancel);
@@ -5446,9 +5264,6 @@ impl ContactsPage {
                                     &change.source_uid,
                                      &change.uid,
                                 );
-                                if let Some(flow) = page.imp().contact_cards_flow.borrow().as_ref() {
-                                    remove_contact_card(flow, &change.source_uid, &change.uid);
-                                }
                                 if removed
                                     && selected_contact_for_monitor.borrow().as_ref().is_some_and(
                                         |contact| {
@@ -5471,9 +5286,6 @@ impl ContactsPage {
                                      email_row_for_monitor.set_subtitle(&crate::i18n::gettext("No contact selected"));
                                     page.imp().selected_identity.replace(None);
                                     contact_list_for_monitor.unselect_all();
-                                    if let Some(flow) = page.imp().contact_cards_flow.borrow().as_ref() {
-                                        flow.unselect_all();
-                                    }
                                 }
                             }
                             EBookChangeKind::Added | EBookChangeKind::Modified => {
@@ -5490,9 +5302,6 @@ impl ContactsPage {
                                         Rc::clone(&stored_contacts_for_monitor),
                                         record.clone(),
                                     );
-                                    if let Some(flow) = page.imp().contact_cards_flow.borrow().as_ref() {
-                                        upsert_contact_card(flow, &record);
-                                    }
                                     if was_selected {
                                         // Re-select after replacing the row.  This keeps the
                                         // detail pane and keyboard navigation attached to the
@@ -5502,9 +5311,6 @@ impl ContactsPage {
                                             &record.source_uid,
                                             &record.uid,
                                         );
-                                        if let Some(flow) = page.imp().contact_cards_flow.borrow().as_ref() {
-                                            select_contact_card(flow, &record.source_uid, &record.uid);
-                                        }
                                         *selected_contact_for_monitor.borrow_mut() =
                                             Some(record.clone());
                                         update_contact_detail(
@@ -5596,7 +5402,6 @@ impl ContactsPage {
                     if let Some(page) = page_weak_paned.upgrade() {
                         match page.imp().current_view_mode.get() {
                             ContactViewMode::Simple => page.imp().simple_vpane_pos.set(pos),
-                            ContactViewMode::Cards => page.imp().cards_vpane_pos.set(pos),
                             ContactViewMode::Table => page.imp().table_vpane_pos.set(pos),
                         }
                     }
@@ -5686,10 +5491,6 @@ impl ContactsPage {
         }
 
         if let Some(settings) = AppSettings::try_new() {
-            let initial_visible = settings.contact_preview_visible();
-            detail_box.set_visible(initial_visible);
-            preview_toggle.set_active(initial_visible);
-
             let page_weak_for_toolbar = self.downgrade();
             settings.connect_changed(Some("contact-show-toolbar"), move |settings, _| {
                 if let Some(page) = page_weak_for_toolbar.upgrade() {
@@ -5698,17 +5499,6 @@ impl ContactsPage {
                             toolbar.set_visible(settings.boolean("contact-show-toolbar"));
                         }
                     }
-                }
-            });
-
-
-            let detail_box_for_settings = detail_box.clone();
-            let preview_toggle_for_settings = preview_toggle.clone();
-            settings.connect_changed(Some("contact-preview-visible"), move |settings, _| {
-                let visible = settings.boolean("contact-preview-visible");
-                detail_box_for_settings.set_visible(visible);
-                if preview_toggle_for_settings.is_active() != visible {
-                    preview_toggle_for_settings.set_active(visible);
                 }
             });
 
@@ -5748,6 +5538,16 @@ impl ContactsPage {
                 }
             });
         }
+
+        let initial_layout = AppSettings::try_new()
+            .map(|s| s.contact_layout())
+            .unwrap_or_else(|| "vertical".to_string());
+        let initial_mode = if initial_layout == "classic" {
+            ContactViewMode::Table
+        } else {
+            ContactViewMode::Simple
+        };
+        self.set_view_mode(initial_mode);
 
         let root_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -5885,6 +5685,10 @@ impl ContactsPage {
     }
 }
 
+pub(crate) fn contact_url_encode(input: &str) -> String {
+    url_encode(input)
+}
+
 fn url_encode(input: &str) -> String {
     let mut out = String::with_capacity(input.len() * 3);
     for b in input.bytes() {
@@ -5918,26 +5722,24 @@ fn refresh_contacts(
         .borrow()
         .as_ref()
         .map(|contact| (contact.source_uid.clone(), contact.uid.clone()));
-    while let Some(row) = contact_list.row_at_index(0) {
-        contact_list.remove(&row);
-    }
-    if let Some(page) = page_weak.upgrade() {
-        if let Some(flow) = page.imp().contact_cards_flow.borrow().as_ref() {
-            while let Some(child) = flow.first_child() {
-                flow.remove(&child);
-            }
+
+    let has_existing = !stored_contacts.borrow().is_empty();
+    if !has_existing {
+        while let Some(row) = contact_list.row_at_index(0) {
+            contact_list.remove(&row);
         }
+        empty_state.set_label(&gettext("Loading contacts…"));
+        empty_state.set_visible(true);
     }
-    stored_contacts.borrow_mut().clear();
-    search_state.visible_identities.borrow_mut().clear();
-    *selected_contact.borrow_mut() = None;
-    empty_state.set_label(&gettext("Loading contacts…"));
-    empty_state.set_visible(true);
+
     if let Some(page) = page_weak.upgrade() {
         if page.imp().disposed.get() {
             return;
         }
-        page.imp().selected_identity.replace(None);
+        if !has_existing {
+            page.imp().selected_identity.replace(None);
+            *selected_contact.borrow_mut() = None;
+        }
         let request = search_state.generations.begin();
         page.imp()
             .contact_search_cancel
@@ -5950,13 +5752,26 @@ fn refresh_contacts(
         return;
     }
 
-    let (sender, receiver) = async_channel::bounded(1);
+    let (sender, receiver) = async_channel::bounded(2);
     std::thread::spawn(move || {
+        // Fast path 1: Instant SQLite cache snapshot (<10ms)
+        let fast_contacts = crate::services::evolution_contact_cache::load_contacts_from_evolution_sqlite_cache();
+        if !fast_contacts.is_empty() {
+            let fast_result = crate::services::ebook_service::EBookLoadResult {
+                contacts: fast_contacts,
+                origin: EBookDataOrigin::Local,
+                warning: None,
+            };
+            let _ = sender.send_blocking((fast_result, true));
+        }
+
+        // Full path 2: EDS native / remote address book sync
         let result = load_contacts_prefer_eds();
-        if let Err(error) = sender.send_blocking(result) {
+        if let Err(error) = sender.send_blocking((result, false)) {
             tracing::debug!(%error, "Contact refresh result was dropped");
         }
     });
+
     glib::spawn_future_local(async move {
         let is_current = || refresh_generation.get() == generation;
         let page_is_alive = || {
@@ -5964,16 +5779,16 @@ fn refresh_contacts(
                 .upgrade()
                 .is_some_and(|page| !page.imp().disposed.get())
         };
-        match receiver.recv().await {
-            Ok(result) => {
-                if !is_current() || !page_is_alive() {
-                    return;
-                }
-                let warning = result.warning.as_deref();
-                if let Some(warning) = warning {
-                    tracing::warn!(%warning, "Contact refresh completed with an EBook warning");
-                }
-                if result.contacts.is_empty() {
+        while let Ok((result, from_cache)) = receiver.recv().await {
+            if !is_current() || !page_is_alive() {
+                return;
+            }
+            let warning = result.warning.as_deref();
+            if let Some(warning) = warning {
+                tracing::warn!(%warning, "Contact refresh completed with an EBook warning");
+            }
+            if result.contacts.is_empty() {
+                if stored_contacts.borrow().is_empty() {
                     if let Some(page) = page_weak.upgrade() {
                         page.update_drawer_total(0);
                     }
@@ -5991,32 +5806,55 @@ fn refresh_contacts(
                         Rc::clone(&search_state),
                         Rc::clone(&stored_contacts),
                     );
+                }
+                if !from_cache {
+                    if let Some(page) = page_weak.upgrade() {
+                        if let Some(spinner) = page.imp().contact_search_spinner.borrow().as_ref() {
+                            spinner.stop();
+                            spinner.set_visible(false);
+                        }
+                    }
                     return;
                 }
-                let contact_count = result.contacts.len();
-                if let Some(page) = page_weak.upgrade() {
-                    page.update_drawer_total(contact_count);
+                continue;
+            }
+
+            let same_data = {
+                let current = stored_contacts.borrow();
+                current.len() == result.contacts.len()
+                    && current.iter().zip(&result.contacts).all(|(a, b)| {
+                        a.uid == b.uid
+                            && a.contact.fn_name == b.contact.fn_name
+                            && a.contact.email == b.contact.email
+                    })
+            };
+
+            let contact_count = result.contacts.len();
+            if let Some(page) = page_weak.upgrade() {
+                page.update_drawer_total(contact_count);
+                if !from_cache {
+                    if let Some(spinner) = page.imp().contact_search_spinner.borrow().as_ref() {
+                        spinner.stop();
+                        spinner.set_visible(false);
+                    }
                 }
-                empty_state.set_label(&contact_load_status_message(
-                    result.origin,
-                    contact_count,
-                    warning,
-                ));
-                // A successful clean load should not permanently consume
-                // sidebar height. Keep the state visible only when it carries
-                // an empty/error/warning message the user needs to see.
-                empty_state.set_visible(contact_status_needs_visibility(contact_count, warning));
+            }
+            empty_state.set_label(&contact_load_status_message(
+                result.origin,
+                contact_count,
+                warning,
+            ));
+            empty_state.set_visible(contact_status_needs_visibility(contact_count, warning));
+
+            if !same_data || contact_list.row_at_index(0).is_none() {
+                while let Some(row) = contact_list.row_at_index(0) {
+                    contact_list.remove(&row);
+                }
                 let contacts = result.contacts;
-                let flow_opt = page_weak
-                    .upgrade()
-                    .and_then(|p| p.imp().contact_cards_flow.borrow().clone());
                 let mut stored_ref = stored_contacts.borrow_mut();
+                *stored_ref = contacts.clone();
                 for record in &contacts {
                     append_contact_row(&contact_list, record);
-                    if let Some(flow) = flow_opt.as_ref() {
-                        append_contact_card(flow, record);
-                    }
-                    stored_ref.push(record.clone());
                 }
                 drop(stored_ref);
                 mark_duplicate_rows(&contact_list, &stored_contacts);
@@ -6028,12 +5866,6 @@ fn refresh_contacts(
                 );
                 if let Some((source_uid, uid)) = selected_identity.as_ref() {
                     select_contact_row(&contact_list, source_uid, uid);
-                    if let Some(flow) = page_weak
-                        .upgrade()
-                        .and_then(|p| p.imp().contact_cards_flow.borrow().clone())
-                    {
-                        select_contact_card(&flow, source_uid, uid);
-                    }
                 }
                 start_contact_search(
                     page_weak.clone(),
@@ -6042,23 +5874,15 @@ fn refresh_contacts(
                     Rc::clone(&stored_contacts),
                 );
             }
-            Err(error) => {
-                if !page_is_alive() {
-                    return;
-                }
-                empty_state.set_label(&gettext("Could not load contacts: {error}").replace("{error}", &error.to_string()));
-                refresh_contact_category_model(
-                    &category_model,
-                    &category_selector,
-                    &stored_contacts,
-                    &selected_category,
-                );
-                if let Some(page) = page_weak.upgrade() {
-                    if let Some(spinner) = page.imp().contact_search_spinner.borrow().as_ref() {
-                        spinner.stop();
-                        spinner.set_visible(false);
-                    }
-                }
+
+            if !from_cache {
+                return;
+            }
+        }
+        if let Some(page) = page_weak.upgrade() {
+            if let Some(spinner) = page.imp().contact_search_spinner.borrow().as_ref() {
+                spinner.stop();
+                spinner.set_visible(false);
             }
         }
     });
@@ -7534,9 +7358,6 @@ fn sync_contact_selection(
         [] => {
             *selected_contact.borrow_mut() = None;
             page.imp().selected_identity.replace(None);
-            if let Some(flow) = page.imp().contact_cards_flow.borrow().as_ref() {
-                flow.unselect_all();
-            }
             reset_contact_detail(
                 detail_avatar,
                 detail_name,
@@ -7554,9 +7375,6 @@ fn sync_contact_selection(
                     record.source_uid.clone(),
                     record.uid.clone(),
                 )));
-            if let Some(flow) = page.imp().contact_cards_flow.borrow().as_ref() {
-                select_contact_card(flow, &record.source_uid, &record.uid);
-            }
             update_contact_detail(
                 record,
                 detail_avatar,
@@ -7570,9 +7388,6 @@ fn sync_contact_selection(
         records => {
             *selected_contact.borrow_mut() = None;
             page.imp().selected_identity.replace(None);
-            if let Some(flow) = page.imp().contact_cards_flow.borrow().as_ref() {
-                flow.unselect_all();
-            }
             detail_avatar.set_text(Some(""));
             detail_avatar.set_custom_image(None::<&gdk::Texture>);
             let count = records.len();
@@ -7626,9 +7441,6 @@ fn sync_contact_selection(
 
 fn clear_contact_selection(page: &ContactsPage, contact_list: &gtk::ListBox) {
     contact_list.unselect_all();
-    if let Some(flow) = page.imp().contact_cards_flow.borrow().as_ref() {
-        flow.unselect_all();
-    }
     page.imp().selected_identity.replace(None);
     if let Some(pill) = page.imp().contact_actions_pill.borrow().as_ref() {
         pill.set_visible(false);
@@ -7738,24 +7550,7 @@ fn update_alphabet_pane(
                 .and_then(|stack| stack.visible_child_name())
                 .unwrap_or_else(|| glib::GString::from("simple"));
 
-            if current_view == "cards" {
-                if let (Some(flow), Some(cards_scroll)) = (
-                    page.imp().contact_cards_flow.borrow().as_ref(),
-                    page.imp().cards_scroll.borrow().as_ref(),
-                ) {
-                    if let Some(card_child) = find_card_child(flow, &s_uid, &u_id) {
-                        if card_child.is_mapped() {
-                            card_child.grab_focus();
-                            #[allow(deprecated)]
-                            let coords = card_child.translate_coordinates(flow, 0.0, 0.0);
-                            if let Some((_, y)) = coords {
-                                let vadj = cards_scroll.vadjustment();
-                                vadj.set_value(y.clamp(vadj.lower(), (vadj.upper() - vadj.page_size()).max(vadj.lower())));
-                            }
-                        }
-                    }
-                }
-            } else if current_view == "table" || current_view == "list" {
+            if current_view == "table" {
                 if let Some(scroll) = page.imp().list_scroll.borrow().as_ref() {
                     if let Some(layout) = page.imp().contact_table_layout.borrow().as_ref() {
                         let letter_upper: String = letter.to_uppercase().collect();
@@ -7805,9 +7600,6 @@ fn apply_contact_search_selection(
 ) {
     let selection_before_apply = selected_contact_identity(page, contact_list);
     contact_list.invalidate_filter();
-    if let Some(flow) = page.imp().contact_cards_flow.borrow().as_ref() {
-        flow.invalidate_filter();
-    }
     update_alphabet_pane(page, contact_list, search_state);
     page.refresh_table_canvas();
 
@@ -7827,8 +7619,6 @@ fn apply_contact_search_selection(
         );
         if !restored {
             clear_contact_selection(page, contact_list);
-        } else if let Some(flow) = page.imp().contact_cards_flow.borrow().as_ref() {
-            select_contact_card(flow, &current_identity.source_uid, &current_identity.uid);
         }
     }
 }
@@ -8253,16 +8043,20 @@ fn append_contact_row(contact_list: &gtk::ListBox, record: &EBookContactRecord) 
 
     let row_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
-        .spacing(12)
-        .margin_start(12)
-        .margin_end(12)
-        .margin_top(8)
-        .margin_bottom(8)
+        .spacing(10)
         .build();
+
+    let clean_name = crate::views::clean_name_for_avatar(&contact.fn_name);
+    let avatar_name = if clean_name.is_empty() {
+        &contact.fn_name
+    } else {
+        &clean_name
+    };
     let avatar = adw::Avatar::builder()
         .size(40)
-        .text(&contact.fn_name)
+        .text(avatar_name)
         .show_initials(true)
+        .valign(gtk::Align::Center)
         .build();
     set_avatar_photo(&avatar, contact.photo.as_ref());
     row_box.append(&avatar);
@@ -8273,6 +8067,15 @@ fn append_contact_row(contact_list: &gtk::ListBox, record: &EBookContactRecord) 
         .valign(gtk::Align::Center)
         .hexpand(true)
         .build();
+
+    // Line 1: Name + Category / List badge
+    let line1_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .valign(gtk::Align::Center)
+        .hexpand(true)
+        .build();
+
     let name = gtk::Label::builder()
         .label(&contact.fn_name)
         .halign(gtk::Align::Start)
@@ -8282,45 +8085,75 @@ fn append_contact_row(contact_list: &gtk::ListBox, record: &EBookContactRecord) 
         .lines(1)
         .width_chars(1)
         .build();
-    let email_text = contact_email_text(contact);
-    let mut subtitle_parts = Vec::new();
-    if !contact.org.is_empty() {
-        subtitle_parts.push(contact.org.as_str());
-    } else if !contact.title.is_empty() {
-        subtitle_parts.push(contact.title.as_str());
-    }
-    if !email_text.is_empty() {
-        subtitle_parts.push(email_text.as_str());
-    }
-    let subtitle_text = if subtitle_parts.is_empty() {
-        gettext("No contact details")
-    } else {
-        subtitle_parts.join(" • ")
-    };
-    let subtitle = gtk::Label::builder()
-        .label(&subtitle_text)
-        .halign(gtk::Align::Start)
-        .hexpand(true)
-        .css_classes(vec!["dim-label", "caption"])
-        .ellipsize(gtk::pango::EllipsizeMode::End)
-        .lines(1)
-        .width_chars(1)
-        .build();
-    info_box.append(&name);
-    info_box.append(&subtitle);
-    row_box.append(&info_box);
+    line1_box.append(&name);
 
-    if !contact.tel.is_empty() {
-        let phone_label = gtk::Label::builder()
-            .label(&contact.tel)
-            .halign(gtk::Align::End)
+    let badge_text = if contact.is_list {
+        Some(crate::i18n::gettext("List"))
+    } else if let Some(cat) = contact.categories.first().filter(|c| !c.trim().is_empty()) {
+        Some(cat.trim().to_string())
+    } else {
+        None
+    };
+    if let Some(text) = badge_text {
+        let badge = gtk::Label::builder()
+            .label(&text)
             .valign(gtk::Align::Center)
+            .halign(gtk::Align::End)
+            .css_classes(vec!["caption", "contact-row-badge"])
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .max_width_chars(14)
+            .build();
+        line1_box.append(&badge);
+    }
+    info_box.append(&line1_box);
+
+    // Line 2: Email (or phone)
+    let email_text = contact_email_text(contact);
+    let line2_text = if !email_text.is_empty() {
+        email_text.clone()
+    } else if !contact.tel.is_empty() {
+        contact.tel.clone()
+    } else {
+        String::new()
+    };
+    if !line2_text.is_empty() {
+        let line2_label = gtk::Label::builder()
+            .label(&line2_text)
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .lines(1)
+            .width_chars(1)
+            .build();
+        info_box.append(&line2_label);
+    }
+
+    // Line 3: Organization • Title (dim caption)
+    let mut meta_parts = Vec::new();
+    if !contact.org.trim().is_empty() {
+        meta_parts.push(contact.org.trim());
+    }
+    if !contact.title.trim().is_empty() {
+        meta_parts.push(contact.title.trim());
+    }
+    if !email_text.is_empty() && !contact.tel.trim().is_empty() && meta_parts.is_empty() {
+        meta_parts.push(contact.tel.trim());
+    }
+    let meta_text = meta_parts.join(" • ");
+    if !meta_text.is_empty() {
+        let meta_label = gtk::Label::builder()
+            .label(&meta_text)
+            .halign(gtk::Align::Start)
+            .hexpand(true)
             .css_classes(vec!["dim-label", "caption"])
             .ellipsize(gtk::pango::EllipsizeMode::End)
+            .lines(1)
+            .width_chars(1)
             .build();
-        row_box.append(&phone_label);
+        info_box.append(&meta_label);
     }
 
+    row_box.append(&info_box);
     row.set_child(Some(&row_box));
     contact_list.append(&row);
 }
@@ -8416,286 +8249,7 @@ pub(crate) fn contact_card_phones(contact: &VCardContact) -> Vec<ContactCardPhon
     result
 }
 
-fn append_contact_card(flow: &gtk::FlowBox, record: &EBookContactRecord) {
-    let contact = &record.contact;
-    let card_child = gtk::FlowBoxChild::new();
-    card_child.set_focusable(true);
-    card_child.add_css_class("contact-card-child");
-    card_child.set_size_request(200, 124);
-    card_child.set_halign(gtk::Align::Fill);
-    card_child.set_valign(gtk::Align::Fill);
-    card_child.set_hexpand(true);
-    card_child.set_hexpand_set(true);
-    card_child.set_vexpand(false);
-    card_child.set_vexpand_set(true);
 
-    unsafe {
-        let search_text = contact_record_search_text(record);
-        card_child.set_data("contact-name", contact.fn_name.clone());
-        card_child.set_data("contact-sort-key", contact_sort_key(contact));
-        card_child.set_data("contact-email", contact.email.clone());
-        card_child.set_data("contact-title", contact.title.clone());
-        card_child.set_data("contact-search", search_text);
-        card_child.set_data("contact-id", record.uid.clone());
-        card_child.set_data("contact-source-uid", record.source_uid.clone());
-        card_child.set_data("contact-source-name", record.source_display_name.clone());
-        card_child.set_data("contact-vcard", record.vcard.clone());
-        card_child.set_data("contact-categories", contact.categories.join("\u{1f}"));
-    }
-
-    let card_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(6)
-        .css_classes(vec!["card", "contact-card-box"])
-        .width_request(200)
-        .height_request(124)
-        .halign(gtk::Align::Fill)
-        .valign(gtk::Align::Fill)
-        .hexpand(true)
-        .vexpand(false)
-        .build();
-
-    let header_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(8)
-        .valign(gtk::Align::Center)
-        .hexpand(true)
-        .build();
-
-    let avatar = adw::Avatar::builder()
-        .size(38)
-        .text(&contact.fn_name)
-        .show_initials(true)
-        .build();
-    set_avatar_photo(&avatar, contact.photo.as_ref());
-    header_box.append(&avatar);
-
-    let title_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(2)
-        .valign(gtk::Align::Center)
-        .hexpand(true)
-        .build();
-
-    let name_label = gtk::Label::builder()
-        .label(&contact.fn_name)
-        .halign(gtk::Align::Start)
-        .hexpand(true)
-        .ellipsize(gtk::pango::EllipsizeMode::End)
-        .width_chars(1)
-        .max_width_chars(15)
-        .css_classes(vec!["contact-card-name"])
-        .lines(1)
-        .build();
-    title_box.append(&name_label);
-
-    let sub = if !contact.title.is_empty() && !contact.org.is_empty() {
-        format!("{} • {}", contact.title, contact.org)
-    } else if !contact.title.is_empty() {
-        contact.title.clone()
-    } else if !contact.org.is_empty() {
-        contact.org.clone()
-    } else {
-        String::new()
-    };
-    if !sub.is_empty() {
-        let sub_label = gtk::Label::builder()
-            .label(&sub)
-            .halign(gtk::Align::Start)
-            .hexpand(true)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .width_chars(1)
-            .max_width_chars(15)
-            .css_classes(vec!["dim-label", "contact-card-sub"])
-            .lines(1)
-            .build();
-        title_box.append(&sub_label);
-    }
-    header_box.append(&title_box);
-
-    if let Some(cat) = contact.categories.first().filter(|c| !c.trim().is_empty()) {
-        let badge = gtk::Label::builder()
-            .label(cat)
-            .valign(gtk::Align::Start)
-            .halign(gtk::Align::End)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .max_width_chars(8)
-            .width_chars(1)
-            .css_classes(vec!["caption", "contact-card-badge"])
-            .build();
-        header_box.append(&badge);
-    }
-
-    card_box.append(&header_box);
-
-    let details_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(4)
-        .valign(gtk::Align::Start)
-        .vexpand(false)
-        .hexpand(true)
-        .build();
-
-    let mut detail_rows = 0;
-    const MAX_DETAIL_ROWS: usize = 2;
-
-    let email_text = contact_email_text(contact);
-    if !email_text.is_empty() && detail_rows < MAX_DETAIL_ROWS {
-        let email_row = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(6)
-            .valign(gtk::Align::Center)
-            .hexpand(true)
-            .build();
-        let icon = gtk::Image::from_icon_name("mail-unread-symbolic");
-        icon.add_css_class("dim-label");
-        icon.set_pixel_size(14);
-        email_row.append(&icon);
-        let label = gtk::Label::builder()
-            .label(&email_text)
-            .halign(gtk::Align::Start)
-            .hexpand(true)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .width_chars(1)
-            .max_width_chars(17)
-            .css_classes(vec!["contact-card-detail-text"])
-            .lines(1)
-            .build();
-        email_row.append(&label);
-        details_box.append(&email_row);
-        detail_rows += 1;
-    }
-
-    let card_phones = contact_card_phones(contact);
-    for phone in card_phones {
-        if detail_rows >= MAX_DETAIL_ROWS {
-            break;
-        }
-        let phone_row = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(6)
-            .valign(gtk::Align::Center)
-            .hexpand(true)
-            .build();
-        let icon = gtk::Image::from_icon_name(phone.icon);
-        icon.add_css_class("dim-label");
-        icon.set_pixel_size(14);
-        phone_row.append(&icon);
-        let display_text = if phone.label.is_empty() {
-            phone.number
-        } else {
-            format!("{}: {}", phone.label, phone.number)
-        };
-        let label = gtk::Label::builder()
-            .label(&display_text)
-            .halign(gtk::Align::Start)
-            .hexpand(true)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .width_chars(1)
-            .max_width_chars(17)
-            .css_classes(vec!["contact-card-detail-text"])
-            .lines(1)
-            .build();
-        phone_row.append(&label);
-        details_box.append(&phone_row);
-        detail_rows += 1;
-    }
-
-    if detail_rows < MAX_DETAIL_ROWS {
-        if let Some(addr) = contact.addresses.first().filter(|a| !a.trim().is_empty()) {
-            let parts: Vec<&str> = addr.split(';').map(str::trim).filter(|p| !p.is_empty()).collect();
-            let display_addr = if parts.is_empty() {
-                addr.trim().replace('\n', ", ")
-            } else {
-                parts.join(", ")
-            };
-            if !display_addr.is_empty() {
-                let addr_row = gtk::Box::builder()
-                    .orientation(gtk::Orientation::Horizontal)
-                    .spacing(6)
-                    .valign(gtk::Align::Center)
-                    .hexpand(true)
-                    .build();
-                let icon = gtk::Image::from_icon_name("mark-location-symbolic");
-                icon.add_css_class("dim-label");
-                icon.set_pixel_size(14);
-                addr_row.append(&icon);
-                let label = gtk::Label::builder()
-                    .label(&display_addr)
-                    .halign(gtk::Align::Start)
-                    .hexpand(true)
-                    .ellipsize(gtk::pango::EllipsizeMode::End)
-                    .width_chars(1)
-                    .max_width_chars(17)
-                    .css_classes(vec!["contact-card-detail-text"])
-                    .lines(1)
-                    .build();
-                addr_row.append(&label);
-                details_box.append(&addr_row);
-            }
-        }
-    }
-
-    card_box.append(&details_box);
-    card_child.set_child(Some(&card_box));
-    flow.append(&card_child);
-}
-
-fn find_card_child(
-    flow: &gtk::FlowBox,
-    source_uid: &str,
-    uid: &str,
-) -> Option<gtk::FlowBoxChild> {
-    let mut child = flow.first_child();
-    while let Some(widget) = child {
-        child = widget.next_sibling();
-        let Ok(card_child) = widget.downcast::<gtk::FlowBoxChild>() else {
-            continue;
-        };
-        let matches = unsafe {
-            let row_source_uid = card_child
-                .data::<String>("contact-source-uid")
-                .map(|value| value.as_ref().clone())
-                .unwrap_or_default();
-            let row_uid = card_child
-                .data::<String>("contact-id")
-                .map(|value| value.as_ref().clone())
-                .unwrap_or_default();
-            row_source_uid == source_uid && row_uid == uid
-        };
-        if matches {
-            return Some(card_child);
-        }
-    }
-    None
-}
-
-fn select_contact_card(flow: &gtk::FlowBox, target_source_uid: &str, target_uid: &str) -> bool {
-    if let Some(card_child) = find_card_child(flow, target_source_uid, target_uid) {
-        if !card_child.is_selected() {
-            flow.unselect_all();
-            flow.select_child(&card_child);
-        }
-        true
-    } else {
-        flow.unselect_all();
-        false
-    }
-}
-
-fn remove_contact_card(flow: &gtk::FlowBox, source_uid: &str, uid: &str) -> bool {
-    if let Some(card_child) = find_card_child(flow, source_uid, uid) {
-        flow.remove(&card_child);
-        true
-    } else {
-        false
-    }
-}
-
-fn upsert_contact_card(flow: &gtk::FlowBox, record: &EBookContactRecord) {
-    remove_contact_card(flow, &record.source_uid, &record.uid);
-    append_contact_card(flow, record);
-}
 
 fn contact_record_search_text(record: &EBookContactRecord) -> String {
     normalize_contact_query(&field_values(&record.contact, ContactSearchField::AnyField).join(" "))
@@ -9001,7 +8555,7 @@ impl Default for ContactsPage {
 #[cfg(test)]
 mod tests {
     use super::{
-        ContactsPage,
+        ContactsPage, ContactViewMode, append_contact_row,
         ContactActionState, ContactIdentity, ContactPageSearchState, ContactSelectionRestore,
         ContactTransferKind, ContactVCardExportError, confirmed_contact_uid, contact_action_state,
         contact_category_matches, contact_detail_summary, contact_detail_summary_with_options,
@@ -9015,7 +8569,6 @@ mod tests {
         plan_contact_vcard_export, prepare_vcard_for_transfer, quick_field_for_index, quick_query,
         reduce_contact_delete_result, reduce_contact_transfer_result,
         should_restore_contact_selection, with_contact_outer_filters,
-        append_contact_card, find_card_child, select_contact_card, remove_contact_card, upsert_contact_card,
         contact_card_phones,
     };
     use crate::services::contact_export_service::ContactExportFormat;
@@ -9026,7 +8579,6 @@ mod tests {
     use crate::services::ebook_service::{EBookContactRecord, EBookDataOrigin};
     use crate::services::vcard_service::VCardContact;
     use gtk::prelude::*;
-    use gtk::prelude::FlowBoxChildExt;
     use std::cell::RefCell;
     use std::rc::Rc;
     use super::{
@@ -9943,7 +9495,7 @@ mod tests {
     }
 
     #[test]
-    fn test_contact_cards_flow_lifecycle() {
+    fn test_contact_view_mode_toggle_and_settings() {
         let _gtk_lock = crate::window::GTK_TEST_MUTEX
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -9951,40 +9503,28 @@ mod tests {
             return;
         };
 
-        let flow = gtk::FlowBox::new();
-        let mut contact =
-            VCardContact::new("Grace Hopper", "grace@example.test", "+49 123 4567", "US Navy");
-        contact.title = "Admiral".to_string();
-        contact.categories = vec!["Computer Science".to_string()];
-        contact.addresses = vec![";;Arlington;VA;;22202;USA".to_string()];
+        use adw::subclass::prelude::*;
+        let page = ContactsPage::new();
 
-        let rec = record("source-1", "uid-hopper", contact);
-        append_contact_card(&flow, &rec);
+        // Switch to Table
+        page.set_view_mode(ContactViewMode::Table);
+        assert_eq!(page.current_view_mode(), ContactViewMode::Table);
+        assert_eq!(
+            page.imp().view_stack.borrow().as_ref().and_then(|s| s.visible_child_name()).as_deref(),
+            Some("table")
+        );
 
-        let child = find_card_child(&flow, "source-1", "uid-hopper");
-        assert!(child.is_some());
-
-        assert!(select_contact_card(&flow, "source-1", "uid-hopper"));
-        assert_eq!(flow.selected_children().len(), 1);
-
-        assert!(!select_contact_card(&flow, "source-1", "non-existent"));
-
-        let mut updated_contact =
-            VCardContact::new("Grace Hopper", "grace.hopper@navy.mil", "+49 123 4567", "US Navy");
-        updated_contact.title = "Rear Admiral".to_string();
-        let updated_rec = record("source-1", "uid-hopper", updated_contact);
-        upsert_contact_card(&flow, &updated_rec);
-
-        let child_after = find_card_child(&flow, "source-1", "uid-hopper");
-        assert!(child_after.is_some());
-
-        assert!(remove_contact_card(&flow, "source-1", "uid-hopper"));
-        assert!(find_card_child(&flow, "source-1", "uid-hopper").is_none());
-        assert!(!remove_contact_card(&flow, "source-1", "uid-hopper"));
+        // Switch back to Simple
+        page.set_view_mode(ContactViewMode::Simple);
+        assert_eq!(page.current_view_mode(), ContactViewMode::Simple);
+        assert_eq!(
+            page.imp().view_stack.borrow().as_ref().and_then(|s| s.visible_child_name()).as_deref(),
+            Some("simple")
+        );
     }
 
     #[test]
-    fn test_contact_card_selection_idempotency_and_sync() {
+    fn test_contact_compact_row_3_line_hierarchy() {
         let _gtk_lock = crate::window::GTK_TEST_MUTEX
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -9992,28 +9532,33 @@ mod tests {
             return;
         };
 
-        use gtk::prelude::FlowBoxChildExt;
-        let flow = gtk::FlowBox::new();
-        let contact = VCardContact::new("Alan Turing", "alan@bletchley.test", "+44 1908 12345", "Government");
-        let rec = record("source-1", "uid-turing", contact);
-        append_contact_card(&flow, &rec);
+        let list = gtk::ListBox::new();
+        let mut contact = VCardContact::new("Grace Hopper", "grace@navy.mil", "+1 703 1234", "US Navy");
+        contact.title = "Rear Admiral".to_string();
+        contact.categories = vec!["Computer Science".to_string()];
+        let rec = record("source-1", "uid-grace", contact);
 
-        let child = find_card_child(&flow, "source-1", "uid-turing").expect("card child exists");
-        let card_box = child.child().and_then(|w| w.downcast::<gtk::Box>().ok()).expect("card box exists");
-        assert_eq!(card_box.width_request(), 200);
-        assert_eq!(card_box.height_request(), 124);
+        append_contact_row(&list, &rec);
+        let row = list.row_at_index(0).expect("row at 0 exists");
+        let row_box = row.child().and_then(|w| w.downcast::<gtk::Box>().ok()).expect("row_box exists");
 
-        // First select
-        assert!(select_contact_card(&flow, "source-1", "uid-turing"));
-        assert!(child.is_selected());
+        // Verify avatar (first child)
+        let avatar = row_box.first_child().and_then(|w| w.downcast::<adw::Avatar>().ok()).expect("avatar exists");
+        assert_eq!(avatar.size(), 40);
 
-        // Idempotent re-select: should not crash or unselect
-        assert!(select_contact_card(&flow, "source-1", "uid-turing"));
-        assert!(child.is_selected());
+        // Verify info_box (second child)
+        let info_box = row_box.last_child().and_then(|w| w.downcast::<gtk::Box>().ok()).expect("info_box exists");
+        assert_eq!(info_box.orientation(), gtk::Orientation::Vertical);
 
-        // Select non-existent
-        assert!(!select_contact_card(&flow, "source-1", "missing"));
-        assert!(!child.is_selected());
+        // Line 1: box containing Name + Badge
+        let line1 = info_box.first_child().and_then(|w| w.downcast::<gtk::Box>().ok()).expect("line1 exists");
+        let name_lbl = line1.first_child().and_then(|w| w.downcast::<gtk::Label>().ok()).expect("name label exists");
+        assert_eq!(name_lbl.label().as_str(), "Grace Hopper");
+        assert!(name_lbl.has_css_class("heading"));
+
+        let badge_lbl = line1.last_child().and_then(|w| w.downcast::<gtk::Label>().ok()).expect("badge label exists");
+        assert_eq!(badge_lbl.label().as_str(), "Computer Science");
+        assert!(badge_lbl.has_css_class("contact-row-badge"));
     }
 
     #[test]
@@ -10080,7 +9625,7 @@ mod tests {
     }
 
     #[test]
-    fn test_contact_card_multiple_phones_and_dimensions() {
+    fn test_contact_table_drilldown_and_back_navigation() {
         let _gtk_lock = crate::window::GTK_TEST_MUTEX
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -10088,125 +9633,26 @@ mod tests {
             return;
         };
 
-        use crate::services::vcard_service::VCardProperty;
-        let flow = gtk::FlowBox::new();
-        let mut contact = VCardContact::new("Ada Lovelace", "ada.lovelace.countess@computing-history.org", "", "Pioneer");
-        contact.phone_properties = vec![
-            VCardProperty {
-                property: "TEL;TYPE=WORK".to_string(),
-                value: "+44 20 7946 0991".to_string(),
-                raw_value: "+44 20 7946 0991".to_string(),
-            },
-            VCardProperty {
-                property: "TEL;TYPE=HOME".to_string(),
-                value: "+44 1483 123456".to_string(),
-                raw_value: "+44 1483 123456".to_string(),
-            },
-        ];
-        contact.phones = vec!["+44 20 7946 0991".to_string(), "+44 1483 123456".to_string()];
-        let rec = record("source-1", "uid-ada", contact);
-        append_contact_card(&flow, &rec);
-
-        let child = find_card_child(&flow, "source-1", "uid-ada").expect("Ada card child exists");
-        let card_box = child.child().and_then(|w| w.downcast::<gtk::Box>().ok()).expect("card box exists");
-        assert_eq!(card_box.width_request(), 200);
-        assert_eq!(card_box.height_request(), 124);
-        assert_eq!(child.halign(), gtk::Align::Fill);
-        assert_eq!(child.valign(), gtk::Align::Fill);
-        assert!(child.hexpands());
-        assert_eq!(card_box.halign(), gtk::Align::Fill);
-        assert_eq!(card_box.valign(), gtk::Align::Fill);
-        assert!(card_box.hexpands());
-    }
-
-    #[test]
-    fn test_contact_cards_flow_grid_properties() {
-        let _gtk_lock = crate::window::GTK_TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let Some(_context) = crate::window::gtk_test_main_context() else {
-            return;
-        };
-
-        use glib::subclass::prelude::ObjectSubclassIsExt;
+        use adw::subclass::prelude::*;
         let page = ContactsPage::new();
-        let flow = page.imp().contact_cards_flow.borrow().clone().expect("flow exists");
-        assert!(flow.is_homogeneous(), "FlowBox must be homogeneous so all cards have identical format");
-        assert_eq!(flow.halign(), gtk::Align::Fill, "FlowBox must have halign Fill so it spans the full viewport width");
-        assert!(flow.hexpands(), "FlowBox must hexpand to fill ScrolledWindow");
-        assert_eq!(flow.orientation(), gtk::Orientation::Horizontal);
-    }
+        page.set_view_mode(ContactViewMode::Table);
 
-    #[test]
-    fn test_flow_allocation_columns() {
-        let _gtk_lock = crate::window::GTK_TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let Some(_context) = crate::window::gtk_test_main_context() else {
-            return;
-        };
+        // Initially not drilled down
+        assert!(!page.can_navigate_back());
+        assert!(!page.imp().is_detail_shown.get());
 
-        use glib::subclass::prelude::ObjectSubclassIsExt;
-        let page = ContactsPage::new();
-        let flow = page.imp().contact_cards_flow.borrow().clone().expect("flow exists");
+        // When a row is activated / clicked in Table view, drill down occurs
+        page.imp().is_detail_shown.set(true);
+        page.sync_contacts_layout_visibility();
+        assert!(page.can_navigate_back());
 
-        let contact1 = VCardContact::new("Willy %", "", "Mobil: +491738334242", "");
-        let rec1 = record("s1", "u1", contact1);
-        let contact2 = VCardContact::new("Zoë (Cukaff)", "", "Mobil: +4915225739618", "");
-        let rec2 = record("s1", "u2", contact2);
+        // Back navigation returns to full-width table
+        assert!(page.navigate_back());
+        assert!(!page.can_navigate_back());
+        assert!(!page.imp().is_detail_shown.get());
 
-        append_contact_card(&flow, &rec1);
-        append_contact_card(&flow, &rec2);
-
-        let window = gtk::Window::builder()
-            .default_width(1200)
-            .default_height(800)
-            .child(&page)
-            .build();
-        window.present();
-
-        for _ in 0..10 {
-            _context.iteration(false);
-        }
-
-        let mut max_child_min = 0;
-        let mut max_child_nat = 0;
-        let mut child_count = 0;
-        let mut curr = flow.first_child();
-        while let Some(c) = curr {
-            child_count += 1;
-            let (c_min, c_nat, _, _) = c.measure(gtk::Orientation::Horizontal, -1);
-            if c_min > max_child_min {
-                max_child_min = c_min;
-            }
-            if c_nat > max_child_nat {
-                max_child_nat = c_nat;
-            }
-            curr = c.next_sibling();
-        }
-
-        assert!(child_count > 0, "flow must have children");
-        assert!(
-            max_child_nat <= 220,
-            "max_child_nat ({max_child_nat}) must be <= 220 to allow multi-column layout at standard window widths"
-        );
-
-        // At 250px width (narrower than 2 cards, but >= min 226px), exactly 1 column
-        let (h_single, _, _, _) = flow.measure(gtk::Orientation::Vertical, 250);
-
-        // At 500px width, must wrap to at least 2 columns (height roughly halved)
-        let (h_500, _, _, _) = flow.measure(gtk::Orientation::Vertical, 500);
-        assert!(
-            h_500 <= (h_single * 6) / 10,
-            "At 500px, FlowBox must wrap to 2 columns: h_500={h_500}, h_single={h_single}"
-        );
-
-        // At 700px width (user's window size), must wrap to at least 3 columns
-        let (h_700, _, _, _) = flow.measure(gtk::Orientation::Vertical, 700);
-        assert!(
-            h_700 <= (h_single * 4) / 10,
-            "At 700px, FlowBox must wrap to at least 3 columns: h_700={h_700}, h_single={h_single}"
-        );
+        // Subsequent navigate_back returns false
+        assert!(!page.navigate_back());
     }
 
     #[test]
@@ -10544,12 +9990,9 @@ mod tests {
         let view_stack = page.imp().view_stack.borrow().clone().expect("view stack exists");
         assert_eq!(view_stack.visible_child_name().as_deref(), Some("simple"));
         assert!(page.imp().simple_list_scroll.borrow().is_some());
-        assert!(page.imp().cards_scroll.borrow().is_some());
         assert!(page.imp().list_scroll.borrow().is_some());
 
         // Test switching views
-        view_stack.set_visible_child_name("cards");
-        assert_eq!(view_stack.visible_child_name().as_deref(), Some("cards"));
         view_stack.set_visible_child_name("table");
         assert_eq!(view_stack.visible_child_name().as_deref(), Some("table"));
         view_stack.set_visible_child_name("simple");

@@ -691,46 +691,10 @@ where
     FProps: Fn() + 'static,
     FGroups: Fn() + 'static,
 {
-    let popover_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(2)
-        .margin_start(6)
-        .margin_end(6)
-        .margin_top(6)
-        .margin_bottom(6)
-        .build();
+    let (popover, popover_box) = crate::views::create_context_popover(None);
 
-    let popover = gtk::Popover::builder().child(&popover_box).build();
-
-    let make_btn = |icon_name: &str, label_text: &str| -> gtk::Button {
-        let btn = gtk::Button::builder()
-            .css_classes(vec!["flat"])
-            .halign(gtk::Align::Fill)
-            .build();
-        let row = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(10)
-            .margin_start(6)
-            .margin_end(6)
-            .margin_top(4)
-            .margin_bottom(4)
-            .halign(gtk::Align::Start)
-            .hexpand(true)
-            .build();
-        let icon = gtk::Image::builder()
-            .icon_name(icon_name)
-            .pixel_size(16)
-            .css_classes(vec!["dim-label"])
-            .build();
-        let label = gtk::Label::builder()
-            .label(label_text)
-            .halign(gtk::Align::Start)
-            .xalign(0.0)
-            .build();
-        row.append(&icon);
-        row.append(&label);
-        btn.set_child(Some(&row));
-        btn
+    let make_btn = |_icon_name: &str, label_text: &str| -> gtk::Button {
+        crate::views::create_context_menu_button(None, label_text, false)
     };
 
     let btn_exclusive = make_btn(
@@ -775,7 +739,7 @@ where
     }
 
     if on_properties.is_some() || on_manage_groups.is_some() {
-        popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        popover_box.append(&crate::views::create_context_menu_separator());
     }
 
     if let Some(on_properties) = on_properties {
@@ -842,7 +806,7 @@ where
         .popover(&popover)
         .css_classes(vec!["flat", "circular"])
         .valign(gtk::Align::Center)
-        .tooltip_text("Optionen")
+        .tooltip_text(&crate::i18n::gettext("Options"))
         .build()
 }
 
