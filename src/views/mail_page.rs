@@ -226,6 +226,76 @@ impl MailLayout {
     }
 }
 
+pub(crate) fn account_sources_match(source_a: &str, source_b: &str) -> bool {
+    let a = source_a.trim();
+    let b = source_b.trim();
+    if a.eq_ignore_ascii_case(b) {
+        return true;
+    }
+    let canon_a = MailPage::canonical_account_uid(a);
+    let canon_b = MailPage::canonical_account_uid(b);
+    if canon_a.eq_ignore_ascii_case(canon_b) {
+        return true;
+    }
+    fn strip_acc(s: &str) -> &str {
+        s.strip_prefix("account:").unwrap_or(s)
+    }
+    if strip_acc(canon_a).eq_ignore_ascii_case(strip_acc(canon_b)) {
+        return true;
+    }
+    let profiles = crate::services::account_config_service::AccountConfigStore::default().load();
+    for profile in &profiles {
+        let matches_a = profile.id.eq_ignore_ascii_case(a)
+            || profile.id.eq_ignore_ascii_case(canon_a)
+            || strip_acc(&profile.id).eq_ignore_ascii_case(strip_acc(canon_a))
+            || profile.email.eq_ignore_ascii_case(a)
+            || profile.email.eq_ignore_ascii_case(canon_a);
+        let matches_b = profile.id.eq_ignore_ascii_case(b)
+            || profile.id.eq_ignore_ascii_case(canon_b)
+            || strip_acc(&profile.id).eq_ignore_ascii_case(strip_acc(canon_b))
+            || profile.email.eq_ignore_ascii_case(b)
+            || profile.email.eq_ignore_ascii_case(canon_b);
+        if matches_a && matches_b {
+            return true;
+        }
+    }
+    false
+}
+
+pub(crate) fn folder_names_match(a: &str, b: &str) -> bool {
+    let a = a.trim();
+    let b = b.trim();
+    if a.eq_ignore_ascii_case(b) {
+        return true;
+    }
+    let is_inbox_a = a.eq_ignore_ascii_case("inbox") || a.eq_ignore_ascii_case("posteingang");
+    let is_inbox_b = b.eq_ignore_ascii_case("inbox") || b.eq_ignore_ascii_case("posteingang");
+    if is_inbox_a && is_inbox_b {
+        return true;
+    }
+    let is_sent_a = a.eq_ignore_ascii_case("sent") || a.eq_ignore_ascii_case("sent items") || a.eq_ignore_ascii_case("gesendete elemente") || a.eq_ignore_ascii_case("gesendet");
+    let is_sent_b = b.eq_ignore_ascii_case("sent") || b.eq_ignore_ascii_case("sent items") || b.eq_ignore_ascii_case("gesendete elemente") || b.eq_ignore_ascii_case("gesendet");
+    if is_sent_a && is_sent_b {
+        return true;
+    }
+    let is_trash_a = a.eq_ignore_ascii_case("trash") || a.eq_ignore_ascii_case("deleted items") || a.eq_ignore_ascii_case("gelöschte elemente") || a.eq_ignore_ascii_case("papierkorb");
+    let is_trash_b = b.eq_ignore_ascii_case("trash") || b.eq_ignore_ascii_case("deleted items") || b.eq_ignore_ascii_case("gelöschte elemente") || b.eq_ignore_ascii_case("papierkorb");
+    if is_trash_a && is_trash_b {
+        return true;
+    }
+    let is_drafts_a = a.eq_ignore_ascii_case("drafts") || a.eq_ignore_ascii_case("draft") || a.eq_ignore_ascii_case("entwürfe");
+    let is_drafts_b = b.eq_ignore_ascii_case("drafts") || b.eq_ignore_ascii_case("draft") || b.eq_ignore_ascii_case("entwürfe");
+    if is_drafts_a && is_drafts_b {
+        return true;
+    }
+    let is_junk_a = a.eq_ignore_ascii_case("junk") || a.eq_ignore_ascii_case("junk-e-mail") || a.eq_ignore_ascii_case("spam");
+    let is_junk_b = b.eq_ignore_ascii_case("junk") || b.eq_ignore_ascii_case("junk-e-mail") || b.eq_ignore_ascii_case("spam");
+    if is_junk_a && is_junk_b {
+        return true;
+    }
+    false
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FolderSelection {
     folder_id: String,
@@ -285,11 +355,11 @@ impl FolderSelection {
             return message
                 .backend_location()
                 .map(|location| {
-                    location.source_uid == source_uid
+                    account_sources_match(&location.source_uid, source_uid)
                         && self
                             .folder_name
                             .as_deref()
-                            .is_none_or(|folder_name| location.folder_name == folder_name)
+                            .is_none_or(|folder_name| folder_names_match(&location.folder_name, folder_name))
                 })
                 .unwrap_or(false);
         }
@@ -445,9 +515,12 @@ impl Default for FolderSelection {
 }
 
 fn folder_path_is_within(folder_name: &str, parent_name: &str) -> bool {
-    folder_name == parent_name
+    folder_names_match(folder_name, parent_name)
         || folder_name
             .strip_prefix(parent_name)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+        || folder_name.to_lowercase()
+            .strip_prefix(&parent_name.to_lowercase())
             .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
@@ -463,11 +536,14 @@ fn folder_selection_matches_with_subfolders(
         let Some(location) = message.backend_location() else {
             return false;
         };
+        if !account_sources_match(&location.source_uid, source_uid) {
+            return false;
+        }
         let Some(parent_name) = selection.folder_name.as_deref() else {
-            return location.source_uid == source_uid;
+            return true;
         };
-        return location.source_uid == source_uid
-            && folder_path_is_within(&location.folder_name, parent_name);
+        return folder_names_match(&location.folder_name, parent_name)
+            || folder_path_is_within(&location.folder_name, parent_name);
     }
 
     let parent_folder_id = match selection.folder_id.as_str() {
@@ -2860,12 +2936,15 @@ pub(crate) fn avatar_color_for_name(name: &str) -> (f64, f64, f64) {
     AVATAR_PALETTE[(hash as usize) % AVATAR_PALETTE.len()]
 }
 
+pub(crate) fn clean_name_for_avatar(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_alphanumeric() || c.is_whitespace() { c } else { ' ' })
+        .collect::<String>()
+}
+
 pub(crate) fn extract_initials(name: &str) -> String {
-    let clean = name.trim();
-    if clean.is_empty() {
-        return "?".to_string();
-    }
-    let parts: Vec<&str> = clean.split_whitespace().collect();
+    let cleaned = clean_name_for_avatar(name);
+    let parts: Vec<&str> = cleaned.split_whitespace().collect();
     if parts.is_empty() {
         "?".to_string()
     } else if parts.len() == 1 {
@@ -6245,6 +6324,8 @@ mod imp {
         pub dynamic_folder_index: RefCell<Option<Rc<RefCell<HashMap<String, FolderObject>>>>>,
         pub dynamic_folder_expanded: RefCell<HashSet<String>>,
         pub(crate) mail_folder_summaries: RefCell<Vec<CamelFolderSummary>>,
+        pub(crate) known_unread_message_ids: RefCell<HashSet<String>>,
+        pub(crate) initial_mail_load_completed: Cell<bool>,
         pub crypto_status_caption: RefCell<Option<gtk::Label>>,
         pub crypto_status_chip: RefCell<Option<gtk::Box>>,
         pub crypto_status_routine: Cell<bool>,
@@ -7349,6 +7430,14 @@ impl MailPage {
         if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
             filter.changed(gtk::FilterChange::Different);
         }
+    }
+
+    pub(crate) fn has_active_search(&self) -> bool {
+        self.imp()
+            .search_entry
+            .borrow()
+            .as_ref()
+            .map_or(false, |entry| !entry.text().trim().is_empty())
     }
 
     fn set_crypto_status_routine(&self, routine: bool) {
@@ -11988,6 +12077,9 @@ impl MailPage {
 
         let count = commands.len();
         self.execute_mail_batch(commands, &crate::i18n::gettext("Mark all as read"))?;
+        if let Some(app) = gio::Application::default() {
+            crate::services::mail_notification_service::MailNotificationService::withdraw_notification(&app);
+        }
         Ok(count)
     }
 
@@ -12449,6 +12541,7 @@ impl MailPage {
     }
 
     pub fn mark_message_read(&self, message: &MailMessageObject) -> Result<bool, MailOperationError> {
+        self.imp().known_unread_message_ids.borrow_mut().remove(&message.id());
         message.set_unread(false);
 
         let command = MailCommand::set_message_state(
@@ -12477,6 +12570,156 @@ impl MailPage {
             }
         }
         Ok(any_marked)
+    }
+
+    pub fn mark_message_read_by_id(&self, message_id: &str) -> bool {
+        if let Some(store) = self.imp().message_store.borrow().as_ref() {
+            for index in 0..store.n_items() {
+                if let Some(message) = store.item(index).and_downcast::<MailMessageObject>() {
+                    if message.id() == message_id {
+                        let _ = self.mark_message_read(&message);
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    pub fn mark_message_read_by_location(
+        &self,
+        source_uid: &str,
+        folder_name: &str,
+        message_uid: &str,
+    ) -> bool {
+        if let Some(store) = self.imp().message_store.borrow().as_ref() {
+            for index in 0..store.n_items() {
+                if let Some(message) = store.item(index).and_downcast::<MailMessageObject>() {
+                    if let Some(loc) = message.backend_location() {
+                        if loc.source_uid == source_uid
+                            && loc.folder_name == folder_name
+                            && loc.message_uid == message_uid
+                        {
+                            let _ = self.mark_message_read(&message);
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        let location = crate::services::mail_store_service::MailBackendLocation {
+            source_uid: source_uid.to_string(),
+            folder_name: folder_name.to_string(),
+            message_uid: message_uid.to_string(),
+            message_id: None,
+        };
+        let id = format!("eds:{source_uid}:{folder_name}:{message_uid}");
+        let command = MailCommand::set_message_state(
+            id,
+            Some(location),
+            true,
+            false,
+            false,
+            false,
+        );
+        if self.execute_mail_command(command).is_ok() {
+            self.apply_camel_folder_counter_delta(source_uid, folder_name, -1, 0);
+            self.refresh_unread_counters();
+            self.queue_mail_table_draw();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn open_folder_and_select_message(
+        &self,
+        source_uid: &str,
+        folder_name: &str,
+        message_uid: Option<&str>,
+        message_id: Option<&str>,
+    ) {
+        let summaries = self.imp().mail_folder_summaries.borrow();
+        let target = summaries
+            .iter()
+            .find(|f| f.source_uid == source_uid && f.folder_name == folder_name)
+            .map(|f| FolderSelection {
+                folder_id: f.folder_id.clone(),
+                source_uid: Some(f.source_uid.clone()),
+                folder_name: Some(f.folder_name.clone()),
+            })
+            .unwrap_or_else(|| FolderSelection {
+                folder_id: format!("eds:{source_uid}:{folder_name}"),
+                source_uid: Some(source_uid.to_string()),
+                folder_name: Some(folder_name.to_string()),
+            });
+        drop(summaries);
+
+        let target_differs = self.active_folder_selection() != target;
+        if target_differs {
+            if let Some(selection) = self.imp().folder_selection.borrow().as_ref() {
+                selection.replace(target.clone());
+            }
+            self.select_folder_row(&target);
+            if let Some(search_list) = self.imp().search_list.borrow().as_ref() {
+                search_list.unselect_all();
+            }
+            if let Some(search_entry) = self.imp().search_entry.borrow().as_ref() {
+                search_entry.set_text("");
+            }
+            if let Some(message_filter) = self.imp().message_filter_state.borrow().as_ref() {
+                message_filter.set(MessageFilter::All);
+            }
+            if let Some(query) = self.imp().search_query.borrow().as_ref() {
+                query.replace(MessageSearchQuery::default());
+            }
+            if let Some(quick_filter) = self.imp().quick_filter.borrow().as_ref() {
+                quick_filter.set_selected(0);
+            }
+            if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
+                filter.changed(gtk::FilterChange::Different);
+            }
+            if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
+                filter.changed(gtk::FilterChange::Different);
+            }
+
+            if target.is_remote() {
+                self.start_mail_load(
+                    MailLoadRequest {
+                        source_uid: target.source_uid.clone(),
+                        folder_name: target.folder_name.clone(),
+                        offset: 0,
+                        max_messages_per_folder: configured_mail_page_limit(),
+                        graph_cursors: HashMap::new(),
+                    },
+                    true,
+                );
+            }
+        }
+
+        let search_target_id = message_id
+            .map(|s| s.to_string())
+            .or_else(|| message_uid.map(|uid| format!("eds:{source_uid}:{folder_name}:{uid}")));
+
+        if let Some(target_id) = search_target_id {
+            let page = self.downgrade();
+            let mut attempts = 0u8;
+            glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+                let Some(page) = page.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                if page.select_search_result(&target_id) {
+                    return glib::ControlFlow::Break;
+                }
+                attempts = attempts.saturating_add(1);
+                if attempts > 30 {
+                    glib::ControlFlow::Break
+                } else {
+                    glib::ControlFlow::Continue
+                }
+            });
+        }
     }
 
     pub fn toggle_selected_flagged(&self) -> Result<bool, MailOperationError> {
@@ -15298,6 +15541,103 @@ impl MailPage {
             };
             let is_account_root = row.depth() == 0;
             if !folder.selectable() || is_account_root {
+                if is_account_root {
+                    row.set_expanded(true);
+                    let selected_pos = selection.selected();
+                    let target_source_uid = folder.source_uid().unwrap_or_default();
+
+                    // Find target child inbox or first child in dynamic_folder_children
+                    let mut inbox_folder_name = "Posteingang".to_string();
+                    let root_id = folder.id();
+                    if let Some(children_rc) = page.imp().dynamic_folder_children.borrow().as_ref() {
+                        if let Some(child_store) = children_rc.borrow().get(&root_id) {
+                            for i in 0..child_store.n_items() {
+                                if let Some(cf) = child_store.item(i).and_downcast::<FolderObject>() {
+                                    if cf.selectable() {
+                                        let name = cf.folder_name().unwrap_or_default();
+                                        if name.eq_ignore_ascii_case("inbox") || name.eq_ignore_ascii_case("posteingang") {
+                                            inbox_folder_name = name;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Directly activate the inbox selection and start loading
+                    let folder_selection = FolderSelection {
+                        folder_id: Self::dynamic_folder_key(&target_source_uid, &inbox_folder_name),
+                        source_uid: Some(target_source_uid.clone()),
+                        folder_name: Some(inbox_folder_name.clone()),
+                    };
+                    if let Some(current) = page.imp().folder_selection.borrow().as_ref() {
+                        current.replace(folder_selection.clone());
+                    }
+                    page.update_drawer_header_with_selection(&folder_selection, None);
+                    if let Some(folder_list) = page.imp().folder_list.borrow().as_ref() {
+                        folder_list.unselect_all();
+                    }
+                    if let Some(unified_list) = page.imp().unified_folder_list.borrow().as_ref() {
+                        unified_list.unselect_all();
+                    }
+                    if let Some(search_list) = page.imp().search_list.borrow().as_ref() {
+                        search_list.unselect_all();
+                    }
+                    if let Some(search_entry) = page.imp().search_entry.borrow().as_ref() {
+                        search_entry.set_text("");
+                    }
+                    if let Some(filter_state) = page.imp().message_filter_state.borrow().as_ref() {
+                        filter_state.set(MessageFilter::All);
+                    }
+                    if let Some(query) = page.imp().search_query.borrow().as_ref() {
+                        query.replace(MessageSearchQuery::default());
+                    }
+                    if let Some(quick_filter) = page.imp().quick_filter.borrow().as_ref() {
+                        quick_filter.set_selected(0);
+                    }
+                    if let Some(filter) = page.imp().message_filter.borrow().as_ref() {
+                        filter.changed(gtk::FilterChange::Different);
+                    }
+                    if let Some(filter) = page.imp().thread_filter.borrow().as_ref() {
+                        filter.changed(gtk::FilterChange::Different);
+                    }
+                    page.start_mail_load(
+                        MailLoadRequest {
+                            source_uid: Some(target_source_uid),
+                            folder_name: Some(inbox_folder_name.clone()),
+                            offset: 0,
+                            max_messages_per_folder: configured_mail_page_limit(),
+                            graph_cursors: HashMap::new(),
+                        },
+                        true,
+                    );
+
+                    // Defer UI selection highlight to next tick when GTK has expanded the tree rows
+                    let selection_clone = selection.clone();
+                    let inbox_target = inbox_folder_name.to_lowercase();
+                    glib::idle_add_local_once(move || {
+                        if let Some(model) = selection_clone.model() {
+                            let total = model.n_items();
+                            for next_pos in (selected_pos + 1)..total {
+                                if let Some(next_row) = model.item(next_pos).and_downcast::<gtk::TreeListRow>() {
+                                    if next_row.depth() == 0 {
+                                        break;
+                                    }
+                                    if let Some(child_folder) = next_row.item().and_downcast::<FolderObject>() {
+                                        if child_folder.selectable() {
+                                            let name = child_folder.folder_name().unwrap_or_default().to_lowercase();
+                                            if name == inbox_target || name == "inbox" || name == "posteingang" {
+                                                selection_clone.set_selected(next_pos);
+                                                return;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
                 return;
             }
             let Some(source_uid) = folder.source_uid() else {
@@ -18432,6 +18772,8 @@ impl MailPage {
             .has_arrow(true)
             .pointing_to(&gdk::Rectangle::new(x as i32, y as i32, 1, 1))
             .build();
+        popover.add_css_class("menu");
+        popover.add_css_class("context-menu");
         popover.set_parent(header);
 
         let content = gtk::Box::builder()
@@ -18527,30 +18869,37 @@ impl MailPage {
             content.append(&check);
         }
 
-        content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        content.append(&crate::views::create_context_menu_separator());
 
         let make_popover_action_button = |icon_name: &str, label_text: &str| -> gtk::Button {
             let btn = gtk::Button::builder()
-                .css_classes(vec!["flat"])
+                .has_frame(false)
                 .halign(gtk::Align::Fill)
+                .css_classes(vec!["flat", "context-menu-item"])
                 .build();
             let row = gtk::Box::builder()
                 .orientation(gtk::Orientation::Horizontal)
                 .spacing(8)
-                .halign(gtk::Align::Start)
-                .hexpand(true)
+                .margin_start(4)
+                .margin_end(4)
+                .margin_top(2)
+                .margin_bottom(2)
+                .valign(gtk::Align::Center)
                 .build();
-            let icon = gtk::Image::builder()
+            let img = gtk::Image::builder()
                 .icon_name(icon_name)
+                .pixel_size(16)
+                .valign(gtk::Align::Center)
                 .css_classes(vec!["dim-label"])
                 .build();
-            let label = gtk::Label::builder()
+            let lbl = gtk::Label::builder()
                 .label(label_text)
-                .halign(gtk::Align::Start)
                 .xalign(0.0)
+                .hexpand(true)
+                .valign(gtk::Align::Center)
                 .build();
-            row.append(&icon);
-            row.append(&label);
+            row.append(&img);
+            row.append(&lbl);
             btn.set_child(Some(&row));
             btn
         };
@@ -24637,7 +24986,7 @@ impl MailPage {
             .replace(Some(mail_subject_label.clone()));
 
         let mail_subject_revealer = gtk::Revealer::builder()
-            .transition_type(gtk::RevealerTransitionType::SlideUp)
+            .transition_type(gtk::RevealerTransitionType::SlideDown)
             .transition_duration(200)
             .reveal_child(true)
             .child(&mail_subject_label)
@@ -24859,7 +25208,7 @@ impl MailPage {
         modern_recipient_line.append(&modern_recipient_left_box);
 
         let modern_recipient_revealer = gtk::Revealer::builder()
-            .transition_type(gtk::RevealerTransitionType::SlideUp)
+            .transition_type(gtk::RevealerTransitionType::SlideDown)
             .transition_duration(200)
             .reveal_child(true)
             .child(&modern_recipient_line)
@@ -26004,6 +26353,14 @@ impl MailPage {
                             },
                         );
                     }
+
+                    // If this exact message is already rendered in the viewer and body is loaded,
+                    // avoid clearing the viewer, re-parsing MIME, and re-rendering.
+                    if mail_viewer.imp().current_message_id.borrow().as_deref() == Some(msg.id().as_str())
+                        && !msg.is_preview_only()
+                    {
+                        return;
+                    }
                     let was_unread = msg.is_unread();
                     let settings = AppSettings::try_new();
                     let mark_read_on_selection = settings
@@ -26166,7 +26523,9 @@ impl MailPage {
                                             parsed.attachments,
                                             searchable_body_text,
                                         );
-                                        page.invalidate_message_filters();
+                                        if page.has_active_search() {
+                                            page.invalidate_message_filters();
+                                        }
                                         let user_emails = page.user_account_emails();
                                         Self::render_message_content(
                                             &current,
@@ -26276,7 +26635,9 @@ impl MailPage {
                                             parsed.attachments,
                                             Some(searchable),
                                         );
-                                        page.invalidate_message_filters();
+                                        if page.has_active_search() {
+                                            page.invalidate_message_filters();
+                                        }
                                         page.refresh_normal_headers_for_message(Some(&current));
                                         page.refresh_all_headers_for_message(Some(&current));
                                         let user_emails = page.user_account_emails();
@@ -26608,51 +26969,14 @@ fn show_attachment_chip_context_menu(
     content: &std::sync::Arc<[u8]>,
     parent_window: Option<&gtk::Window>,
 ) {
-    let popover = gtk::Popover::builder()
-        .has_arrow(false)
-        .pointing_to(&gdk::Rectangle::new(x as i32, y as i32, 1, 1))
-        .build();
-    let menu_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(2)
-        .margin_start(6)
-        .margin_end(6)
-        .margin_top(6)
-        .margin_bottom(6)
-        .build();
+    let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+    let (popover, menu_box) = crate::views::create_context_popover(Some(&rect));
 
-    let make_menu_btn = |icon_name: &str, label_text: &str| -> gtk::Button {
-        let btn = gtk::Button::builder()
-            .css_classes(vec!["flat"])
-            .halign(gtk::Align::Fill)
-            .build();
-        let row = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(10)
-            .margin_start(6)
-            .margin_end(6)
-            .margin_top(4)
-            .margin_bottom(4)
-            .halign(gtk::Align::Start)
-            .hexpand(true)
-            .build();
-        let icon = gtk::Image::builder()
-            .icon_name(icon_name)
-            .pixel_size(16)
-            .css_classes(vec!["dim-label"])
-            .build();
-        let label = gtk::Label::builder()
-            .label(label_text)
-            .halign(gtk::Align::Start)
-            .xalign(0.0)
-            .build();
-        row.append(&icon);
-        row.append(&label);
-        btn.set_child(Some(&row));
-        btn
-    };
-
-    let btn_open = make_menu_btn("document-open-symbolic", &gettext("Open Attachment"));
+    let btn_open = crate::views::create_context_menu_button(
+        None,
+        &gettext("Open Attachment"),
+        false,
+    );
     let pop_open = popover.clone();
     let fname_open = filename.to_string();
     let cont_open = content.clone();
@@ -26671,7 +26995,11 @@ fn show_attachment_chip_context_menu(
     });
     menu_box.append(&btn_open);
 
-    let btn_save = make_menu_btn("document-save-symbolic", &gettext("Save As…"));
+    let btn_save = crate::views::create_context_menu_button(
+        None,
+        &gettext("Save As…"),
+        false,
+    );
     let pop_save = popover.clone();
     let fname_save = filename.to_string();
     let cont_save = content.clone();
@@ -26702,9 +27030,13 @@ fn show_attachment_chip_context_menu(
     });
     menu_box.append(&btn_save);
 
-    menu_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    menu_box.append(&crate::views::create_context_menu_separator());
 
-    let btn_copy = make_menu_btn("edit-copy-symbolic", &gettext("Copy Filename"));
+    let btn_copy = crate::views::create_context_menu_button(
+        None,
+        &gettext("Copy Filename"),
+        false,
+    );
     let pop_copy = popover.clone();
     let fname_copy = filename.to_string();
     let chip_for_copy = chip.clone();
@@ -26715,7 +27047,6 @@ fn show_attachment_chip_context_menu(
     menu_box.append(&btn_copy);
 
     popover.set_parent(chip);
-    popover.set_child(Some(&menu_box));
     popover.connect_closed(|p| {
         let p = p.clone();
         glib::idle_add_local_once(move || {
@@ -29646,14 +29977,119 @@ impl MailPage {
                         unread_delta,
                         total_delta,
                     );
-                    let mut structure_changed = false;
-                    if let Some(store) = page.imp().message_store.borrow().as_ref() {
-                        if !removed_ids.is_empty() {
-                            Self::remove_message_ids(store, &removed_ids);
-                            structure_changed = true;
+
+                    // Check for new incoming unread messages to trigger notifications
+                    let new_unread_messages: Vec<&crate::services::mail_store_service::ParsedMail> = messages
+                        .iter()
+                        .filter(|m| {
+                            if !m.is_unread {
+                                return false;
+                            }
+                            let uid = m.backend_location.as_ref().map(|loc| &loc.message_uid);
+                            uid.map_or(false, |u| {
+                                change_for_result.added_uids.contains(u)
+                                    || change_for_result.recent_uids.contains(u)
+                                    || !previous_unread.contains_key(u)
+                            })
+                        })
+                        .collect();
+
+                    if !new_unread_messages.is_empty() {
+                        let source_display_name = page
+                            .imp()
+                            .mail_folder_summaries
+                            .borrow()
+                            .iter()
+                            .find(|f| f.source_uid == change_for_result.source_uid)
+                            .map(|f| f.source_display_name.clone());
+                        let folder_display_name = page
+                            .imp()
+                            .mail_folder_summaries
+                            .borrow()
+                            .iter()
+                            .find(|f| {
+                                f.source_uid == change_for_result.source_uid
+                                    && f.folder_name == change_for_result.folder_name
+                            })
+                            .map(|f| f.display_name.clone());
+
+                        let latest_msg = new_unread_messages.last().copied();
+                        let latest_sender = latest_msg.and_then(|m| {
+                            let name = m.sender_name.trim();
+                            let email = m.sender_email.trim();
+                            if !name.is_empty() {
+                                Some(name.to_string())
+                            } else if !email.is_empty() {
+                                Some(email.to_string())
+                            } else {
+                                None
+                            }
+                        });
+                        let latest_subject = latest_msg.and_then(|m| {
+                            let sub = m.subject.trim();
+                            if !sub.is_empty() {
+                                Some(sub.to_string())
+                            } else {
+                                None
+                            }
+                        });
+                        let latest_message_uid = latest_msg.and_then(|m| {
+                            m.backend_location.as_ref().map(|loc| loc.message_uid.clone())
+                        });
+                        let latest_message_id = latest_msg.map(|m| m.id.clone());
+
+                        let is_inbox = crate::services::mail_notification_service::MailNotificationService::is_inbox_folder(
+                            &change_for_result.folder_name,
+                        );
+
+                        let summary = crate::services::mail_notification_service::NewMailSummary {
+                            source_uid: change_for_result.source_uid.clone(),
+                            source_display_name,
+                            folder_name: change_for_result.folder_name.clone(),
+                            folder_display_name,
+                            is_inbox,
+                            new_messages_count: new_unread_messages.len(),
+                            latest_message_uid,
+                            latest_message_id,
+                            latest_sender,
+                            latest_subject,
+                        };
+
+                        if let Some(app) = gio::Application::default() {
+                            crate::services::mail_notification_service::MailNotificationService::notify_new_mail(
+                                &app,
+                                summary,
+                            );
                         }
-                        if page.replace_or_append_messages(store, messages, searchable_body_texts) {
-                            structure_changed = true;
+
+                        {
+                            let mut known = page.imp().known_unread_message_ids.borrow_mut();
+                            for m in &new_unread_messages {
+                                known.insert(m.id.clone());
+                            }
+                        }
+                    }
+
+                    let is_active_folder = page
+                        .imp()
+                        .active_request
+                        .borrow()
+                        .as_ref()
+                        .map_or(false, |req| {
+                            req.folder_name.as_deref() == Some(&change_for_result.folder_name)
+                                && req.source_uid.as_deref() == Some(&change_for_result.source_uid)
+                        });
+
+                    let mut structure_changed = false;
+                    if is_active_folder {
+                        if let Some(store) = page.imp().message_store.borrow().as_ref() {
+                            if !removed_ids.is_empty() {
+                                Self::remove_message_ids(store, &removed_ids);
+                                structure_changed = true;
+                            }
+                            if page.replace_or_append_messages(store, messages, searchable_body_texts) {
+                                structure_changed = true;
+                            }
                         }
                     }
                     if structure_changed {
@@ -29992,6 +30428,9 @@ impl MailPage {
     }
 
     pub fn reload_mail_accounts(&self) {
+        self.imp().cached_account_emails.replace(None);
+        self.imp().mail_folder_summaries.borrow_mut().clear();
+        crate::services::camel_mail_service::clear_mail_load_cache();
         if let Some(source_store) = self
             .imp()
             .source_selection
@@ -30003,7 +30442,9 @@ impl MailPage {
             source_store.remove_all();
             let configured_accounts = AccountConfigStore::default().load();
             for profile in &configured_accounts {
-                source_store.append(&EdsSourceObject::from_account_profile(profile));
+                if profile.enabled {
+                    source_store.append(&EdsSourceObject::from_account_profile(profile));
+                }
             }
             let (tx, rx) = async_channel::bounded::<eds_service::EdsSourceDiscovery>(1);
             std::thread::spawn(move || {
@@ -30019,10 +30460,12 @@ impl MailPage {
                         EdsSourceOrigin::Empty => gettext("No accounts available"),
                     };
                     for source in &discovery.sources {
-                        source_store_copy.append(&EdsSourceObject::from_source_with_origin(
-                            source,
-                            &source_origin,
-                        ));
+                        if source.enabled {
+                            source_store_copy.append(&EdsSourceObject::from_source_with_origin(
+                                source,
+                                &source_origin,
+                            ));
+                        }
                     }
                 }
             });
@@ -30202,7 +30645,12 @@ impl MailPage {
                         Some(page_limit),
                     )
                     .unwrap_or_default();
-                    if !sqlite_msgs.is_empty() || !sqlite_folders.is_empty() {
+                    let should_send_fast_path = if !folder_to_load.is_empty() {
+                        !sqlite_msgs.is_empty()
+                    } else {
+                        !sqlite_msgs.is_empty() || !sqlite_folders.is_empty()
+                    };
+                    if should_send_fast_path {
                         let fast_load = camel_mail_service::CamelMailLoad {
                             messages: sqlite_msgs,
                             folders: sqlite_folders,
@@ -30284,13 +30732,13 @@ impl MailPage {
                 if generation_is_current(page.imp().load_generation.get(), generation) {
                     page.imp().mail_backend_load_pending.set(false);
                     page.cancel_pending_mail_apply();
-                    page.apply_mail_load(
-                        request,
-                        MailPageLoadResult::Error(
-                            gettext("Mail loading was cancelled."),
-                        ),
-                        replace,
-                    );
+                    page.imp().mail_loading.set(false);
+                    if let Some(button) = page.imp().refresh_button.borrow().as_ref() {
+                        button.set_sensitive(true);
+                    }
+                    if let Some(button) = page.imp().load_more_button.borrow().as_ref() {
+                        button.set_sensitive(true);
+                    }
                 }
             }
         });
@@ -30866,6 +31314,116 @@ impl MailPage {
             self.clear_batch_selection();
         }
 
+        let unread_messages: Vec<&ParsedMail> = match &result {
+            MailPageLoadResult::Camel { camel, .. } => {
+                camel.messages.iter().filter(|m| m.is_unread).collect()
+            }
+            MailPageLoadResult::Combined {
+                camel,
+                local_messages,
+                local_deleted_ids,
+                ..
+            } => camel
+                .messages
+                .iter()
+                .chain(local_messages.iter())
+                .filter(|m| m.is_unread && !local_deleted_ids.contains(&m.id))
+                .collect(),
+            MailPageLoadResult::Local {
+                messages,
+                local_deleted_ids,
+                ..
+            } => messages
+                .iter()
+                .filter(|m| m.is_unread && !local_deleted_ids.contains(&m.id))
+                .collect(),
+            MailPageLoadResult::Error(_) => Vec::new(),
+        };
+
+        if !self.imp().initial_mail_load_completed.get() {
+            let mut known = self.imp().known_unread_message_ids.borrow_mut();
+            for m in &unread_messages {
+                known.insert(m.id.clone());
+            }
+            self.imp().initial_mail_load_completed.set(true);
+        } else if !unread_messages.is_empty() {
+            let mut new_unreads = Vec::new();
+            {
+                let mut known = self.imp().known_unread_message_ids.borrow_mut();
+                for m in &unread_messages {
+                    if known.insert(m.id.clone()) {
+                        new_unreads.push(*m);
+                    }
+                }
+            }
+            if !new_unreads.is_empty() {
+                let source_uid = request.source_uid.clone().unwrap_or_default();
+                let folder_name = request.folder_name.clone().unwrap_or_else(|| "INBOX".to_string());
+                let source_display_name = self
+                    .imp()
+                    .mail_folder_summaries
+                    .borrow()
+                    .iter()
+                    .find(|f| f.source_uid == source_uid)
+                    .map(|f| f.source_display_name.clone());
+                let folder_display_name = self
+                    .imp()
+                    .mail_folder_summaries
+                    .borrow()
+                    .iter()
+                    .find(|f| f.source_uid == source_uid && f.folder_name == folder_name)
+                    .map(|f| f.display_name.clone());
+
+                let latest_msg = new_unreads.last().copied();
+                let latest_sender = latest_msg.and_then(|m| {
+                    let name = m.sender_name.trim();
+                    let email = m.sender_email.trim();
+                    if !name.is_empty() {
+                        Some(name.to_string())
+                    } else if !email.is_empty() {
+                        Some(email.to_string())
+                    } else {
+                        None
+                    }
+                });
+                let latest_subject = latest_msg.and_then(|m| {
+                    let sub = m.subject.trim();
+                    if !sub.is_empty() {
+                        Some(sub.to_string())
+                    } else {
+                        None
+                    }
+                });
+                let latest_message_uid = latest_msg.and_then(|m| {
+                    m.backend_location.as_ref().map(|loc| loc.message_uid.clone())
+                });
+                let latest_message_id = latest_msg.map(|m| m.id.clone());
+                let is_inbox = crate::services::mail_notification_service::MailNotificationService::is_inbox_folder(
+                    &folder_name,
+                );
+
+                let summary = crate::services::mail_notification_service::NewMailSummary {
+                    source_uid,
+                    source_display_name,
+                    folder_name,
+                    folder_display_name,
+                    is_inbox,
+                    new_messages_count: new_unreads.len(),
+                    latest_message_uid,
+                    latest_message_id,
+                    latest_sender,
+                    latest_subject,
+                };
+
+                if let Some(app) = gio::Application::default() {
+                    crate::services::mail_notification_service::MailNotificationService::notify_new_mail(
+                        &app,
+                        summary,
+                    );
+                }
+            }
+        }
+
         match result {
             MailPageLoadResult::Combined {
                 camel,
@@ -30932,7 +31490,15 @@ impl MailPage {
             }
             MailPageLoadResult::Error(error) => {
                 self.imp().mail_loading.set(false);
-                if replace {
+                let has_existing = self
+                    .imp()
+                    .message_store
+                    .borrow()
+                    .as_ref()
+                    .map(|s| s.n_items() > 0)
+                    .unwrap_or(false);
+                let is_cancelled = error.contains("cancelled") || error.contains("abgebrochen");
+                if replace && !has_existing && !is_cancelled {
                     if let Some(store) = self.imp().message_store.borrow().as_ref() {
                         store.remove_all();
                     }
@@ -30957,8 +31523,10 @@ impl MailPage {
                     button.set_visible(false);
                     button.set_sensitive(true);
                 }
-                if let Some(state) = self.imp().message_state.borrow().as_ref() {
-                    state.set_label(&gettext("Account synchronization not possible: {error}").replace("{error}", &error));
+                if !has_existing {
+                    if let Some(state) = self.imp().message_state.borrow().as_ref() {
+                        state.set_label(&gettext("Account synchronization not possible: {error}").replace("{error}", &error));
+                    }
                 }
                 tracing::warn!(%error, "Mail backend load failed");
             }
@@ -30968,13 +31536,14 @@ impl MailPage {
     fn begin_pending_mail_apply(&self, mut pending: PendingMailApply) {
         let store = self.imp().message_store.borrow().clone();
         if let Some(store) = store.as_ref() {
-            if pending.replace {
-                store.remove_all();
-            }
-            for index in 0..store.n_items() {
-                if let Some(message) = store.item(index).and_downcast::<MailMessageObject>() {
-                    pending.existing_ids.insert(message.id());
+            if !pending.replace {
+                for index in 0..store.n_items() {
+                    if let Some(message) = store.item(index).and_downcast::<MailMessageObject>() {
+                        pending.existing_ids.insert(message.id());
+                    }
                 }
+            } else {
+                store.remove_all();
             }
         }
 
@@ -31619,7 +32188,23 @@ impl MailPage {
                 self.select_message_after_reload(&completion.previous_selection);
             } else if let Some(selected_folder) = selected_folder {
                 if selected_folder.is_remote() {
-                    self.select_folder_row(&selected_folder);
+                    let folder_valid = if let Some(src) = selected_folder.source_uid.as_deref() {
+                        let canon = Self::canonical_account_uid(src);
+                        self.imp().mail_folder_summaries.borrow().iter().any(|f| {
+                            Self::canonical_account_uid(&f.source_uid) == canon
+                        })
+                    } else {
+                        true
+                    };
+                    if folder_valid {
+                        self.select_folder_row(&selected_folder);
+                    } else {
+                        let fallback = FolderSelection::configured_initial();
+                        if let Some(selection) = self.imp().folder_selection.borrow().as_ref() {
+                            selection.replace(fallback.clone());
+                        }
+                        self.select_folder_row(&fallback);
+                    }
                 }
                 self.select_message_after_reload(&completion.previous_selection);
             } else {
@@ -37334,6 +37919,26 @@ mod tests {
     }
 
     #[test]
+    fn test_account_sources_match_and_folder_names_match() {
+        assert!(account_sources_match("eds:87c49708b1798f1a1e691578893f0904c503ede2", "87c49708b1798f1a1e691578893f0904c503ede2"));
+        assert!(account_sources_match("account:edv@acme-corp.example", "edv@acme-corp.example"));
+        assert!(account_sources_match("edv@acme-corp.example", "account:edv@acme-corp.example"));
+        assert!(account_sources_match("account:edv@acme-corp.example", "eds:account:edv@acme-corp.example"));
+
+        assert!(folder_names_match("Posteingang", "inbox"));
+        assert!(folder_names_match("inbox", "posteingang"));
+        assert!(folder_names_match("INBOX", "Posteingang"));
+        assert!(folder_names_match("Gesendete Elemente", "sent items"));
+        assert!(folder_names_match("sent", "gesendet"));
+        assert!(folder_names_match("Entwürfe", "drafts"));
+        assert!(folder_names_match("Gelöschte Elemente", "trash"));
+        assert!(folder_names_match("Junk-E-Mail", "junk"));
+        assert!(folder_names_match("Junk-E-Mail", "spam"));
+        assert!(folder_names_match("CustomFolder", "customfolder"));
+        assert!(!folder_names_match("Posteingang", "Gesendete Elemente"));
+    }
+
+    #[test]
     fn test_mail_folder_deduplication_and_canonical_account_uids() {
         // 1. Canonical UID helper strips "eds:" prefix uniformly
         assert_eq!(MailPage::canonical_account_uid("eds:87c49708b1798f1a1e691578893f0904c503ede2"), "87c49708b1798f1a1e691578893f0904c503ede2");
@@ -38321,6 +38926,8 @@ mod tests {
         assert_eq!(extract_initials("Wolfgang Fisher"), "WF");
         assert_eq!(extract_initials("Peter Weber"), "PW");
         assert_eq!(extract_initials("Elsa"), "EL");
+        assert_eq!(extract_initials("Philip [Mainz]"), "PM");
+        assert_eq!(extract_initials("Marvin (Oberfunker) P..."), "MP");
     }
 
     #[test]
@@ -40943,8 +41550,8 @@ mod tests {
         // 3. Date / time label has increased 0.94rem size and 0.85 contrast
         assert!(css.contains("font-size: 0.94rem;\n  font-weight: 500;\n  color: alpha(@window_fg_color, 0.85);"));
 
-        // 4. Details toggle has 26px min-height to prevent @ glyph clipping
-        assert!(css.contains(".mail-details-toggle {\n  font-size: 0.96rem;\n  padding: 1px 6px 2px 6px;\n  min-height: 26px;"));
+        // 4. Details toggle has 1.0rem font-size, 28px min-height, and 3px padding to prevent glyph clipping and font hinting artifacts
+        assert!(css.contains("button.mail-details-toggle,\n.mail-details-toggle {\n  font-size: 1.0rem;\n  padding: 3px 6px 3px 6px;\n  min-height: 28px;"));
 
         // 5. Code setup in mail_page.rs
         let mail_source = include_str!("mail_page.rs");

@@ -136,6 +136,12 @@ pub fn discover_meridian_mail_caches() -> Vec<MeridianAccountCache> {
                 let db_path = path.join("folders.db");
                 if db_path.is_file() {
                     let source_uid = entry.file_name().to_string_lossy().to_string();
+                    if !crate::services::eds_service::is_source_enabled_for_service(
+                        &source_uid,
+                        crate::services::eds_service::EdsSourceKind::Mail,
+                    ) {
+                        continue;
+                    }
                     if !results.iter().any(|r: &MeridianAccountCache| r.source_uid == source_uid) {
                         let display_name = resolve_source_display_name(&source_uid, &home)
                             .unwrap_or_else(|| "E-Mail-Konto".to_string());
@@ -280,6 +286,15 @@ impl SqliteDb {
         let map = self.query_folders_map()?;
         let target_lower = target_folder.trim().to_lowercase();
 
+        // 0. Empty folder name defaults to inbox
+        if target_lower.is_empty() {
+            for cand in ["posteingang", "inbox", "[gmail]/alle nachrichten"] {
+                if let Some(res) = map.get(cand) {
+                    return Ok(Some(res.clone()));
+                }
+            }
+        }
+
         // 1. Exact or lower match
         if let Some(res) = map.get(&target_lower) {
             return Ok(Some(res.clone()));
@@ -303,19 +318,19 @@ impl SqliteDb {
                 ),
                 (
                     &["gesendet", "gesendete elemente", "sent", "sent items"],
-                    &["[gmail]/gesendet", "gesendet", "sent", "sent items"],
+                    &["[gmail]/gesendet", "gesendet", "sent", "sent items", "gesendete elemente"],
                 ),
                 (
                     &["entwürfe", "entwuerfe", "drafts"],
-                    &["[gmail]/entwürfe", "entwürfe", "drafts"],
+                    &["[gmail]/entwürfe", "entwürfe", "entwuerfe", "drafts"],
                 ),
                 (
                     &["papierkorb", "trash", "gelöschte elemente"],
-                    &["[gmail]/papierkorb", "papierkorb", "trash"],
+                    &["[gmail]/papierkorb", "papierkorb", "trash", "gelöschte elemente"],
                 ),
                 (
                     &["spam", "junk", "junk-e-mail"],
-                    &["[gmail]/spam", "spam", "junk"],
+                    &["[gmail]/spam", "spam", "junk", "junk-e-mail"],
                 ),
                 (
                     &["markiert", "starred"],
@@ -342,10 +357,12 @@ impl SqliteDb {
             }
         }
 
-        // 3. Substring matching
-        for (key, res) in &map {
-            if norm(key).contains(&target_norm) || target_norm.contains(&norm(key)) {
-                return Ok(Some(res.clone()));
+        // 3. Substring matching (only if non-empty to prevent matching arbitrary map items)
+        if !target_norm.is_empty() {
+            for (key, res) in &map {
+                if norm(key).contains(&target_norm) || target_norm.contains(&norm(key)) {
+                    return Ok(Some(res.clone()));
+                }
             }
         }
 

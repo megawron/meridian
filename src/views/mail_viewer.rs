@@ -4729,46 +4729,49 @@ mod tests {
     }
 
     #[test]
-    fn test_fideapi_html_renders_without_being_hidden() {
-        let fide_path = std::path::Path::new("/tmp/meridian-test/fixture-a.eml");
-        if let Ok(bytes) = std::fs::read(fide_path) {
-            let parsed = crate::services::mail_store_service::parse_rfc822_bytes(
-                "fide-test",
-                "inbox",
-                &bytes,
-                false,
-            );
-            assert!(parsed.is_some(), "fideapi.eml must parse successfully");
-            let parsed = parsed.unwrap();
-            assert!(!parsed.html_body.is_empty(), "fideapi.eml must have an HTML body");
+    fn test_sanitized_notification_html_renders_without_being_hidden() {
+        let synthetic_eml = b"From: notifications@example.com\r\n\
+To: user@example.com\r\n\
+Subject: Security Notification\r\n\
+Content-Type: text/html; charset=utf-8\r\n\
+\r\n\
+<html><body><div style=\"background:#ffffff\"><p>Account security event details</p></div></body></html>";
+        let parsed = crate::services::mail_store_service::parse_rfc822_bytes(
+            "notification-test",
+            "inbox",
+            synthetic_eml,
+            false,
+        );
+        assert!(parsed.is_some(), "Synthetic notification email must parse successfully");
+        let parsed = parsed.unwrap();
+        assert!(!parsed.html_body.is_empty(), "Parsed email must have an HTML body");
 
-            let plan = super::prepare_mail_body(&parsed.html_body, None, true, false, true);
-            assert!(!plan.used_fallback, "fideapi.eml must not fall back to plain text");
-            assert!(!plan.body.is_empty(), "fideapi.eml sanitized body must not be empty");
+        let plan = super::prepare_mail_body(&parsed.html_body, None, true, false, true);
+        assert!(!plan.used_fallback, "Sanitized body must not fall back to plain text");
+        assert!(!plan.body.is_empty(), "Sanitized body must not be empty");
 
-            let doc = super::compose_sanitized_mail_document(
-                &plan.body,
-                true,
-                false,
-                false,
-                "system-ui, sans-serif",
-                16,
-                true,
-                &[
-                    "#729FCF".to_string(),
-                    "#AD7FA8".to_string(),
-                    "#8AE234".to_string(),
-                    "#FCAF3E".to_string(),
-                    "#E9B96E".to_string(),
-                ],
-            );
-            assert!(doc.contains("Sie haben einige Google-Kontodaten mit FideAPI geteilt") || doc.contains("Google-Kontodaten"));
-            assert!(!doc.contains("style*=\"color:transparent"), "doc must not contain color:transparent override rule");
-        }
+        let doc = super::compose_sanitized_mail_document(
+            &plan.body,
+            true,
+            false,
+            false,
+            "system-ui, sans-serif",
+            16,
+            true,
+            &[
+                "#729FCF".to_string(),
+                "#AD7FA8".to_string(),
+                "#8AE234".to_string(),
+                "#FCAF3E".to_string(),
+                "#E9B96E".to_string(),
+            ],
+        );
+        assert!(doc.contains("Account security event details"));
+        assert!(!doc.contains("style*=\"color:transparent"), "doc must not contain color:transparent override rule");
     }
 
     #[test]
-    fn test_flink_and_xai_render() {
+    fn test_zero_font_and_preheader_suppression_renders() {
         assert!(
             !super::USER_MAIL_OVERRIDE_CSS.contains("font-size: 0px")
                 && !super::USER_MAIL_OVERRIDE_CSS.contains("font-size:0px")
@@ -4781,76 +4784,40 @@ mod tests {
             "USER_MAIL_OVERRIDE_CSS must not hide elements matching wildcard max-height:0 as it breaks tables"
         );
 
-        for filename in &["flink.eml", "xai.eml"] {
-            let path = std::path::Path::new("/tmp/meridian-test").join(filename);
-            if let Ok(bytes) = std::fs::read(&path) {
-                let parsed = crate::services::mail_store_service::parse_rfc822_bytes(
-                    "test",
-                    "inbox",
-                    &bytes,
-                    false,
-                );
-                assert!(parsed.is_some(), "{filename} must parse");
-                let parsed = parsed.unwrap();
-                let plan = super::prepare_mail_body(&parsed.html_body, None, true, false, true);
-                assert!(!plan.used_fallback, "{filename} must not fall back to plain text");
-                assert!(!plan.body.is_empty(), "{filename} body must not be empty");
-                let doc = super::compose_sanitized_mail_document(
-                    &plan.body,
-                    true,
-                    false,
-                    false,
-                    "system-ui, sans-serif",
-                    16,
-                    true,
-                    &[
-                        "#729FCF".to_string(),
-                        "#AD7FA8".to_string(),
-                        "#8AE234".to_string(),
-                        "#FCAF3E".to_string(),
-                        "#E9B96E".to_string(),
-                    ],
-                );
-                if *filename == "flink.eml" {
-                    assert!(
-                        doc.contains("Asian Weeks") || doc.contains("Discover Asian Weeks"),
-                        "flink.eml doc must contain its content"
-                    );
-                } else if *filename == "xai.eml" {
-                    assert!(
-                        doc.contains("Introducing the Voice Agent Builder") || doc.contains("Voice Agent Builder"),
-                        "xai.eml doc must contain its content"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn test_karr_dump() {
-        let path = std::path::Path::new("/tmp/meridian-test/fixture-d.eml");
-        if let Ok(bytes) = std::fs::read(&path) {
-            let parsed = crate::services::mail_store_service::parse_rfc822_bytes("test", "inbox", &bytes, false).unwrap();
-            let plan = super::prepare_mail_body(&parsed.html_body, None, true, true, true);
-            let colors = [
+        let synthetic_eml = b"From: newsletter@example.com\r\n\
+To: user@example.com\r\n\
+Subject: Newsletter\r\n\
+Content-Type: text/html; charset=utf-8\r\n\
+\r\n\
+<html><body><div style=\"font-size: 0px; max-height: 0px;\">Preheader text</div><table width=\"100%\"><tr><td>Content body</td></tr></table></body></html>";
+        let parsed = crate::services::mail_store_service::parse_rfc822_bytes(
+            "newsletter-test",
+            "inbox",
+            synthetic_eml,
+            false,
+        );
+        assert!(parsed.is_some(), "Synthetic newsletter must parse");
+        let parsed = parsed.unwrap();
+        let plan = super::prepare_mail_body(&parsed.html_body, None, true, false, true);
+        assert!(!plan.used_fallback, "Newsletter must not fall back to plain text");
+        assert!(!plan.body.is_empty(), "Newsletter body must not be empty");
+        let doc = super::compose_sanitized_mail_document(
+            &plan.body,
+            true,
+            false,
+            false,
+            "system-ui, sans-serif",
+            16,
+            true,
+            &[
                 "#729FCF".to_string(),
                 "#AD7FA8".to_string(),
                 "#8AE234".to_string(),
                 "#FCAF3E".to_string(),
                 "#E9B96E".to_string(),
-            ];
-            let doc = super::compose_sanitized_mail_document(
-                &plan.body,
-                true,
-                false,
-                true,
-                "system-ui, sans-serif",
-                16,
-                true,
-                &colors,
-            );
-            std::fs::write("/tmp/karr_rendered.html", &doc).unwrap();
-        }
+            ],
+        );
+        assert!(doc.contains("Content body"), "Document must contain main body content");
     }
 
     #[test]
@@ -4890,7 +4857,7 @@ mod tests {
     }
 
     #[test]
-    fn test_brevo_mail_renders_without_oversized_images() {
+    fn test_fixed_width_table_renders_without_oversized_images() {
         assert!(
             !super::USER_MAIL_OVERRIDE_CSS.contains("table[width], table[style*=\"width\"] {\n  width: 100% !important;"),
             "USER_MAIL_OVERRIDE_CSS must not force fixed-width tables to width: 100% !important as it expands email logos and icons"
@@ -4904,47 +4871,50 @@ mod tests {
             "USER_MAIL_OVERRIDE_CSS must not force box-sizing: border-box on * as it breaks email button height and vertical padding"
         );
 
-        let brevo_path = std::path::Path::new("/tmp/meridian-test/fixture-e.eml");
-        if let Ok(bytes) = std::fs::read(brevo_path) {
-            let parsed = crate::services::mail_store_service::parse_rfc822_bytes(
-                "brevo-test",
-                "inbox",
-                &bytes,
-                false,
-            );
-            assert!(parsed.is_some(), "brevo.eml must parse successfully");
-            let parsed = parsed.unwrap();
-            assert!(!parsed.html_body.is_empty(), "brevo.eml must have an HTML body");
+        let synthetic_eml = b"From: info@example.com\r\n\
+To: user@example.com\r\n\
+Subject: Table Layout Test\r\n\
+Content-Type: text/html; charset=utf-8\r\n\
+\r\n\
+<html><body><table width=\"120\"><tr><td width=\"24\"><img src=\"https://example.com/icon.png\" width=\"24\" height=\"24\">Icon</td></tr></table></body></html>";
+        let parsed = crate::services::mail_store_service::parse_rfc822_bytes(
+            "table-test",
+            "inbox",
+            synthetic_eml,
+            false,
+        );
+        assert!(parsed.is_some(), "Synthetic table mail must parse successfully");
+        let parsed = parsed.unwrap();
+        assert!(!parsed.html_body.is_empty(), "Parsed email must have an HTML body");
 
-            let plan = super::prepare_mail_body(&parsed.html_body, None, true, false, true);
-            assert!(!plan.used_fallback, "brevo.eml must not fall back to plain text");
-            assert!(!plan.body.is_empty(), "brevo.eml sanitized body must not be empty");
+        let plan = super::prepare_mail_body(&parsed.html_body, None, true, false, true);
+        assert!(!plan.used_fallback, "Sanitized body must not fall back to plain text");
+        assert!(!plan.body.is_empty(), "Sanitized body must not be empty");
 
-            let doc = super::compose_sanitized_mail_document(
-                &plan.body,
-                true,
-                false,
-                false,
-                "system-ui, sans-serif",
-                16,
-                true,
-                &[
-                    "#729FCF".to_string(),
-                    "#AD7FA8".to_string(),
-                    "#8AE234".to_string(),
-                    "#FCAF3E".to_string(),
-                    "#E9B96E".to_string(),
-                ],
-            );
-            assert!(
-                doc.contains("width=\"24\"") && doc.contains("width=\"120\""),
-                "brevo.eml document must retain fixed-width container tables for eye icon and logo"
-            );
-        }
+        let doc = super::compose_sanitized_mail_document(
+            &plan.body,
+            true,
+            false,
+            false,
+            "system-ui, sans-serif",
+            16,
+            true,
+            &[
+                "#729FCF".to_string(),
+                "#AD7FA8".to_string(),
+                "#8AE234".to_string(),
+                "#FCAF3E".to_string(),
+                "#E9B96E".to_string(),
+            ],
+        );
+        assert!(
+            doc.contains("width=\"24\"") && doc.contains("width=\"120\""),
+            "Document must retain fixed-width container tables for eye icon and logo"
+        );
     }
 
     #[test]
-    fn test_karr_eml_renders_without_oversized_images() {
+    fn test_author_inline_max_width_retained_on_images() {
         assert!(
             !super::USER_MAIL_OVERRIDE_CSS.contains("img, video, iframe, canvas, svg {\n  max-width: 100% !important;"),
             "USER_MAIL_OVERRIDE_CSS must not force max-width: 100% !important on images as it overrides author inline max-width"
@@ -4954,101 +4924,74 @@ mod tests {
             "USER_MAIL_OVERRIDE_CSS must ensure headings line-height is 1.25"
         );
 
-        let karr_path = std::path::Path::new("/tmp/meridian-test/fixture-d.eml");
-        if let Ok(bytes) = std::fs::read(karr_path) {
-            let parsed = crate::services::mail_store_service::parse_rfc822_bytes(
-                "karr-test",
-                "inbox",
-                &bytes,
-                false,
-            );
-            assert!(parsed.is_some(), "karr.eml must parse successfully");
-            let parsed = parsed.unwrap();
-            assert!(!parsed.html_body.is_empty(), "karr.eml must have an HTML body");
+        let synthetic_eml = b"From: info@example.com\r\n\
+To: user@example.com\r\n\
+Subject: Max-Width Test\r\n\
+Content-Type: text/html; charset=utf-8\r\n\
+\r\n\
+<html><body><img src=\"https://example.com/logo.png\" style=\"max-width: 126.69px; width: 126.69px;\" width=\"127\"></body></html>";
+        let parsed = crate::services::mail_store_service::parse_rfc822_bytes(
+            "maxwidth-test",
+            "inbox",
+            synthetic_eml,
+            false,
+        );
+        assert!(parsed.is_some(), "Synthetic max-width mail must parse successfully");
+        let parsed = parsed.unwrap();
+        assert!(!parsed.html_body.is_empty(), "Parsed email must have an HTML body");
 
-            let plan = super::prepare_mail_body(&parsed.html_body, None, true, true, true);
-            assert!(!plan.used_fallback, "karr.eml must not fall back to plain text");
-            assert!(!plan.body.is_empty(), "karr.eml sanitized body must not be empty");
+        let plan = super::prepare_mail_body(&parsed.html_body, None, true, true, true);
+        assert!(!plan.used_fallback, "Sanitized body must not fall back to plain text");
+        assert!(!plan.body.is_empty(), "Sanitized body must not be empty");
 
-            let doc = super::compose_sanitized_mail_document(
-                &plan.body,
-                true,
-                true,
-                false,
-                "system-ui, sans-serif",
-                16,
-                true,
-                &[
-                    "#729FCF".to_string(),
-                    "#AD7FA8".to_string(),
-                    "#8AE234".to_string(),
-                    "#FCAF3E".to_string(),
-                    "#E9B96E".to_string(),
-                ],
-            );
-            assert!(
-                doc.contains("max-width: 126.69px") || doc.contains("max-width: 127.6px") || doc.contains("width=\"126.69\"") || doc.contains("width=\"127\""),
-                "karr.eml document must retain author inline max-width constraints on images"
-            );
-        }
+        let doc = super::compose_sanitized_mail_document(
+            &plan.body,
+            true,
+            true,
+            false,
+            "system-ui, sans-serif",
+            16,
+            true,
+            &[
+                "#729FCF".to_string(),
+                "#AD7FA8".to_string(),
+                "#8AE234".to_string(),
+                "#FCAF3E".to_string(),
+                "#E9B96E".to_string(),
+            ],
+        );
+        assert!(
+            doc.contains("max-width: 126.69px") || doc.contains("width=\"126.69\"") || doc.contains("width=\"127\""),
+            "Document must retain author inline max-width constraints on images"
+        );
     }
 
     #[test]
-    fn test_google_eml_dark_mode_inversion() {
-        let google_path = std::path::Path::new("/tmp/meridian-test/Meridian/google.eml");
-        if let Ok(bytes) = std::fs::read(google_path) {
-            let parsed = crate::services::mail_store_service::parse_rfc822_bytes("test", "inbox", &bytes, false)
-                .expect("google.eml must parse successfully");
-            let plan = super::prepare_mail_body(&parsed.html_body, None, true, true, true);
-            let colors = test_citation_colors();
-            let doc = super::compose_sanitized_mail_document(
-                &plan.body,
-                true,
-                true,
-                true,
-                "sans-serif",
-                14,
-                false,
-                &colors,
-            );
-            assert!(doc.contains("color-scheme: dark"));
-            assert!(doc.contains("filter: invert(100%) hue-rotate(180deg)"));
-            assert!(doc.contains("background-color: #e1e1e1"));
-            assert!(doc.contains("img, video, canvas, svg, iframe, input[type=\"image\"]"));
-        }
-    }
-
-    #[test]
-    fn test_eml_files_dark_mode_smart_inversion() {
-        for eml_filename in &["1.eml", "2.eml", "3.eml"] {
-            let eml_path = std::path::Path::new("/tmp/meridian-test/Meridian").join(eml_filename);
-            if let Ok(bytes) = std::fs::read(&eml_path) {
-                let parsed = crate::services::mail_store_service::parse_rfc822_bytes("test", "inbox", &bytes, false)
-                    .unwrap_or_else(|| panic!("{} must parse successfully", eml_filename));
-                let plan = super::prepare_mail_body(&parsed.html_body, None, true, true, true);
-                let colors = test_citation_colors();
-                let doc = super::compose_sanitized_mail_document(
-                    &plan.body,
-                    true,
-                    true,
-                    true,
-                    "sans-serif",
-                    14,
-                    false,
-                    &colors,
-                );
-                assert!(
-                    doc.contains("filter: invert(100%) hue-rotate(180deg)"),
-                    "{} must have smart inversion applied in dark mode",
-                    eml_filename
-                );
-                assert!(
-                    doc.contains("background-color: #e1e1e1"),
-                    "{} must have #e1e1e1 background-color in dark mode inversion",
-                    eml_filename
-                );
-            }
-        }
+    fn test_synthetic_mail_dark_mode_smart_inversion() {
+        let synthetic_eml = b"From: info@example.com\r\n\
+To: user@example.com\r\n\
+Subject: Dark Mode Test\r\n\
+Content-Type: text/html; charset=utf-8\r\n\
+\r\n\
+<html><body style=\"background-color: #ffffff; color: #000000;\"><p>Dark mode test message</p><img src=\"https://example.com/sample.png\"></body></html>";
+        let parsed = crate::services::mail_store_service::parse_rfc822_bytes("test", "inbox", synthetic_eml, false)
+            .expect("Synthetic mail must parse successfully");
+        let plan = super::prepare_mail_body(&parsed.html_body, None, true, true, true);
+        let colors = test_citation_colors();
+        let doc = super::compose_sanitized_mail_document(
+            &plan.body,
+            true,
+            true,
+            true,
+            "sans-serif",
+            14,
+            false,
+            &colors,
+        );
+        assert!(doc.contains("color-scheme: dark"));
+        assert!(doc.contains("filter: invert(100%) hue-rotate(180deg)"));
+        assert!(doc.contains("background-color: #e1e1e1"));
+        assert!(doc.contains("img, video, canvas, svg, iframe, input[type=\"image\"]"));
     }
 
     #[test]
