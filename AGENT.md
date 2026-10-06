@@ -20,20 +20,21 @@ All context menus across the entire application (Mail, Calendar, Tasks, Memos, C
 | Property | Standard Metric |
 |---|---|
 | **Typography** | Default application body font (`1.0rem` / Cantarell 11pt, weight `400`). Never shrunk. |
-| **Item Min-Height** | `32px` (strictly follows Libadwaita `_menus.scss` `modelbutton` standard) |
-| **Item Padding** | `0 12px` (horizontal `12px`, vertically centered) |
-| **Hover Border-Radius** | `9px` (`$menu_radius`) |
-| **Popover Padding & Radius** | `15px` outer radius, `6px` inner margin around the stack |
-| **Separators** | `margin: 6px 0` |
+| **Item Min-Height** | `30px` |
+| **Item Padding** | `0 8px` (clean `8px` left/right padding, no phantom icon gap) |
+| **Hover Border-Radius** | `7px` |
+| **Popover Padding & Radius** | `12px` outer radius, `4px` inner margin around items |
+| **Separators** | `margin: 4px 0` |
 | **Destructive Actions** | Add `.destructive-action` class for delete/remove operations |
 
-### 2.1 The GNOME HIG Rule on Menu Icons (Verbs vs. Nouns)
+### 2.1 The GNOME HIG Rule on Menu Icons (Verbs vs. Nouns) & Left-Aligned Text
 
 The official GNOME HIG has a strict, deliberate rule regarding icons in menus:
 - **No Icons for Verbs (Actions)**: Standard menu actions representing verbs (*Reply*, *Forward*, *Save*, *Copy*, *Delete*, *Edit*) **should NOT have icons**. Icons next to every action item create visual noise/clutter and hinder scanning. GNOME core apps (Nautilus, Geary, Calendar) deliberately use clean, text-only labels for standard actions.
+- **No Phantom Icon Spacing**: When an action menu is text-only, text MUST be aligned cleanly to the left (`padding: 0 8px`, `margin: 0`). Never reserve empty 16px/24px indentations where an icon would have been.
 - **Icons for Nouns (Objects) Only**: Icons in menus are reserved for items representing concrete objects or data types (e.g. file formats, contact avatars, calendar category color dots, external accounts).
 - **Inline Button Bars**: When icons are desired for basic actions (like *Cut | Copy | Paste* or *Text Formatting*), GNOME HIG recommends placing them in a compact horizontal button strip at the top of the popover (`box.inline-buttons`), rather than vertical rows with text.
-- **If Icons are Present**: When an icon is used (e.g. for objects), it MUST be a `16px` symbolic icon with `8px` spacing to the label and `dim-label` styling.
+- **If Icons are Present**: When an icon is used (e.g. for objects), it MUST be a `16px` symbolic icon with `6px` spacing to the label and `dim-label` styling.
 
 ---
 

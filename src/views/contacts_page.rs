@@ -1370,11 +1370,11 @@ impl ContactsPage {
 
         let content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(4)
-            .margin_start(8)
-            .margin_end(8)
-            .margin_top(6)
-            .margin_bottom(6)
+            .spacing(2)
+            .margin_start(4)
+            .margin_end(4)
+            .margin_top(4)
+            .margin_bottom(4)
             .build();
 
         let title = gtk::Label::builder()

@@ -13,11 +13,7 @@ pub fn create_context_popover(pointing_to: Option<&gdk::Rectangle>) -> (gtk::Pop
 
     let menu_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(2)
-        .margin_start(6)
-        .margin_end(6)
-        .margin_top(6)
-        .margin_bottom(6)
+        .spacing(1)
         .build();
 
     popover.set_child(Some(&menu_box));
@@ -25,7 +21,7 @@ pub fn create_context_popover(pointing_to: Option<&gdk::Rectangle>) -> (gtk::Pop
 }
 
 /// Creates a standard Libadwaita-compliant menu item button for context menus.
-/// Metrics: min-height 32px, padding 0 12px, border-radius 9px, 16px symbolic icon, standard body font.
+/// Metrics: min-height 30px, padding 0 8px, border-radius 7px, standard body font.
 pub fn create_context_menu_button(
     icon_name: Option<&str>,
     label_text: &str,
@@ -53,11 +49,7 @@ pub fn create_context_menu_button_with_shortcut(
 
     let hbox = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
-        .spacing(8)
-        .margin_start(4)
-        .margin_end(4)
-        .margin_top(2)
-        .margin_bottom(2)
+        .spacing(6)
         .valign(gtk::Align::Center)
         .build();
 
