@@ -39,7 +39,7 @@ use crate::services::reminder_service::{
 };
 use crate::services::search_engine::SearchTarget;
 use crate::views::accessibility::set_accessible_label;
-use crate::views::{CalendarPage, ContactsPage, MailPage, MemosPage, TasksPage};
+use crate::views::{CalendarPage, CalendarView, ContactsPage, MailPage, MemosPage, TasksPage};
 use std::time::Instant;
 
 pub const MIN_SIDEBAR_WIDTH: i32 = 240;
@@ -60,6 +60,7 @@ mod imp {
         pub sidebar_close_button: RefCell<Option<gtk::Button>>,
         pub restore_sidebar_button: RefCell<Option<gtk::Button>>,
         pub right_sidebar_toggle: RefCell<Option<gtk::ToggleButton>>,
+        pub agenda_preview_toggle: RefCell<Option<gtk::ToggleButton>>,
         pub mail_view_options_button: RefCell<Option<adw::SplitButton>>,
         pub contacts_view_options_button: RefCell<Option<adw::SplitButton>>,
         pub sidebar_visible: Cell<bool>,
@@ -92,6 +93,9 @@ mod imp {
         pub is_tablet: Cell<bool>,
         pub is_compact: Cell<bool>,
         pub is_medium: Cell<bool>,
+        pub(crate) account_file_monitors: RefCell<Vec<gio::FileMonitor>>,
+        pub(crate) account_bus_subscriptions: RefCell<Vec<gio::SignalSubscriptionId>>,
+        pub(crate) account_reload_source: RefCell<Option<glib::SourceId>>,
     }
 
     #[glib::object_subclass]
@@ -123,6 +127,7 @@ mod imp {
 
             window.setup_layout();
             window.setup_actions();
+            window.setup_account_monitoring();
 
             if std::env::var("MERIDIAN_OPEN_DEBUG_CONSOLE").or_else(|_| std::env::var("EVOLUTION_OPEN_DEBUG_CONSOLE")).is_ok() {
                 window.set_debug_console_open(true);
@@ -140,6 +145,17 @@ mod imp {
     impl WindowImpl for MeridianWindow {
         fn close_request(&self) -> glib::Propagation {
             let window = self.obj();
+            if let Some(source) = self.account_reload_source.borrow_mut().take() {
+                source.remove();
+            }
+            for monitor in self.account_file_monitors.borrow_mut().drain(..) {
+                monitor.cancel();
+            }
+            if let Ok(bus) = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) {
+                for sub in self.account_bus_subscriptions.borrow_mut().drain(..) {
+                    bus.signal_unsubscribe(sub);
+                }
+            }
             window.imp().transport_service.stop();
             if let Some(source) = self.transport_status_source.borrow_mut().take() {
                 source.remove();
@@ -618,7 +634,7 @@ impl MeridianWindow {
         }
     }
 
-    fn mail_page(&self) -> Option<MailPage> {
+    pub(crate) fn mail_page(&self) -> Option<MailPage> {
         self.imp()
             .view_stack
             .borrow()
@@ -628,6 +644,12 @@ impl MeridianWindow {
                     .child_by_name("mail")
                     .and_then(|widget| widget.downcast::<MailPage>().ok())
             })
+    }
+
+    pub(crate) fn switch_to_view(&self, view_name: &str) {
+        if let Some(view_stack) = self.imp().view_stack.borrow().as_ref() {
+            view_stack.set_visible_child_name(view_name);
+        }
     }
 
     fn tasks_page(&self) -> Option<TasksPage> {
@@ -1079,6 +1101,24 @@ impl MeridianWindow {
             let is_vis = self.is_active_view_right_panel_visible();
             if toggle.is_active() != is_vis {
                 toggle.set_active(is_vis);
+            }
+        }
+
+        if let Some(agenda_btn) = self.imp().agenda_preview_toggle.borrow().as_ref() {
+            let is_agenda_view = self.active_view_name().as_str() == "calendar"
+                && self
+                    .calendar_page()
+                    .map(|p| p.current_calendar_view() == CalendarView::Agenda)
+                    .unwrap_or(false);
+            let should_show = is_agenda_view && !self.imp().is_mobile.get();
+            agenda_btn.set_visible(should_show);
+            if should_show {
+                if let Some(page) = self.calendar_page() {
+                    let is_vis = page.is_agenda_detail_visible();
+                    if agenda_btn.is_active() != is_vis {
+                        agenda_btn.set_active(is_vis);
+                    }
+                }
             }
         }
     }
@@ -1915,6 +1955,8 @@ impl MeridianWindow {
 
     pub(crate) fn reload_accounts(&self) {
         crate::services::eds_service::invalidate_account_collections_cache();
+        crate::services::camel_mail_service::reset_global_session();
+        crate::services::camel_mail_service::clear_mail_load_cache();
         if let Some(mail_page) = self.mail_page() {
             mail_page.reload_mail_accounts();
         }
@@ -1924,8 +1966,138 @@ impl MeridianWindow {
         if let Some(calendar_page) = self.calendar_page() {
             calendar_page.reload_calendar_sources();
         }
+        if let Some(tasks_page) = self.tasks_page() {
+            tasks_page.reload_task_sources();
+        }
         if let Some(memos_page) = self.memos_page() {
             memos_page.reload_memo_sources();
+        }
+    }
+
+    pub(crate) fn setup_account_monitoring(&self) {
+        let window = self.clone();
+        let trigger_reload = move || {
+            let window = window.clone();
+            if let Some(source) = window.imp().account_reload_source.borrow_mut().take() {
+                source.remove();
+            }
+            let w_timeout = window.clone();
+            let source_id = glib::timeout_add_local_once(
+                std::time::Duration::from_millis(150),
+                move || {
+                    w_timeout.imp().account_reload_source.borrow_mut().take();
+                    tracing::info!("Account configuration or EDS source changed, reloading accounts across all views");
+                    w_timeout.reload_accounts();
+                },
+            );
+            window.imp().account_reload_source.replace(Some(source_id));
+        };
+
+        // 1. File monitoring on Evolution sources directory
+        let mut source_dirs = Vec::new();
+        let config_sources = glib::user_config_dir().join("evolution/sources");
+        source_dirs.push(config_sources);
+
+        let home = glib::home_dir();
+        let flatpak_sources = home.join(".var/app/org.gnome.Evolution/config/evolution/sources");
+        if flatpak_sources.exists() {
+            source_dirs.push(flatpak_sources);
+        }
+
+        let mut monitors = Vec::new();
+        for dir in source_dirs {
+            let file = gio::File::for_path(&dir);
+            match file.monitor_directory(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE) {
+                Ok(monitor) => {
+                    let trigger = trigger_reload.clone();
+                    monitor.connect_changed(move |_mon, _file, _other_file, _event| {
+                        trigger();
+                    });
+                    monitors.push(monitor);
+                    tracing::debug!(path = ?dir, "Monitoring account sources directory for changes");
+                }
+                Err(err) => {
+                    tracing::debug!(path = ?dir, ?err, "Could not monitor account sources directory");
+                }
+            }
+        }
+        self.imp().account_file_monitors.replace(monitors);
+
+        // 2. D-Bus signal subscription for GOA and EDS
+        let window_weak = self.downgrade();
+        match gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) {
+            Ok(bus) => {
+                let trigger_for_dbus = {
+                    let window_weak = window_weak.clone();
+                    move || {
+                        if let Some(w) = window_weak.upgrade() {
+                            if let Some(source) = w.imp().account_reload_source.borrow_mut().take() {
+                                source.remove();
+                            }
+                            let w_timeout = w.clone();
+                            let source_id = glib::timeout_add_local_once(
+                                std::time::Duration::from_millis(150),
+                                move || {
+                                    w_timeout.imp().account_reload_source.borrow_mut().take();
+                                    tracing::info!("D-Bus account change detected, reloading accounts");
+                                    w_timeout.reload_accounts();
+                                },
+                            );
+                            w.imp().account_reload_source.replace(Some(source_id));
+                        }
+                    }
+                };
+
+                let mut subs = Vec::new();
+
+                // GOA ObjectManager (InterfacesAdded / InterfacesRemoved)
+                let trigger1 = trigger_for_dbus.clone();
+                subs.push(bus.signal_subscribe(
+                    Some("org.gnome.OnlineAccounts"),
+                    Some("org.freedesktop.DBus.ObjectManager"),
+                    None,
+                    Some("/org/gnome/OnlineAccounts"),
+                    None,
+                    gio::DBusSignalFlags::NONE,
+                    move |_conn, _sender, _path, _iface, _signal, _params| {
+                        trigger1();
+                    },
+                ));
+
+                // GOA PropertiesChanged (e.g. MailDisabled / CalendarDisabled toggles)
+                let trigger2 = trigger_for_dbus.clone();
+                subs.push(bus.signal_subscribe(
+                    Some("org.gnome.OnlineAccounts"),
+                    Some("org.freedesktop.DBus.Properties"),
+                    Some("PropertiesChanged"),
+                    None,
+                    None,
+                    gio::DBusSignalFlags::NONE,
+                    move |_conn, _sender, _path, _iface, _signal, _params| {
+                        trigger2();
+                    },
+                ));
+
+                // EDS SourceManager ObjectManager
+                let trigger3 = trigger_for_dbus.clone();
+                subs.push(bus.signal_subscribe(
+                    Some("org.gnome.evolution.dataserver.Sources5"),
+                    Some("org.freedesktop.DBus.ObjectManager"),
+                    None,
+                    None,
+                    None,
+                    gio::DBusSignalFlags::NONE,
+                    move |_conn, _sender, _path, _iface, _signal, _params| {
+                        trigger3();
+                    },
+                ));
+
+                self.imp().account_bus_subscriptions.replace(subs);
+                tracing::debug!("D-Bus subscriptions for GOA and EDS source changes established");
+            }
+            Err(err) => {
+                tracing::warn!(?err, "Could not connect to session D-Bus for account change monitoring");
+            }
         }
     }
 
@@ -3608,8 +3780,29 @@ impl MeridianWindow {
         });
         self.imp().right_sidebar_toggle.replace(Some(right_sidebar_toggle.clone()));
 
+        let agenda_preview_toggle = gtk::ToggleButton::builder()
+            .icon_name("layout-sidebar-right-symbolic")
+            .tooltip_text(&crate::i18n::gettext("Toggle event details (Ctrl+Shift+D)"))
+            .css_classes(vec!["flat"])
+            .visible(false)
+            .build();
+        set_accessible_label(&agenda_preview_toggle, &crate::i18n::gettext("Event details"));
+        let win_weak_agenda = self.downgrade();
+        agenda_preview_toggle.connect_toggled(move |btn| {
+            if let Some(win) = win_weak_agenda.upgrade() {
+                if let Some(page) = win.calendar_page() {
+                    let active = btn.is_active();
+                    if active != page.is_agenda_detail_visible() {
+                        page.set_agenda_detail_visible(active);
+                    }
+                }
+            }
+        });
+        self.imp().agenda_preview_toggle.replace(Some(agenda_preview_toggle.clone()));
+
         header_bar.pack_end(&menu_button);
         header_bar.pack_end(&right_sidebar_toggle);
+        header_bar.pack_end(&agenda_preview_toggle);
         if let Some(view_btn) = mail_page.view_options_split_button() {
             let is_initially_mail = view_stack.visible_child_name().as_deref() == Some("mail");
             view_btn.set_visible(is_initially_mail);
@@ -3635,6 +3828,7 @@ impl MeridianWindow {
             for key in &[
                 "mail-show-todo-bar",
                 "calendar-show-tag-vpane",
+                "calendar-show-agenda-preview",
                 "contact-preview-visible",
                 "task-preview-visible",
                 "memo-preview-visible",
@@ -3991,6 +4185,39 @@ impl MeridianWindow {
                 if let Some(win) = win_weak_for_key.upgrade() {
                     if win.handle_navigate_back() {
                         return glib::Propagation::Stop;
+                    }
+                }
+            }
+            if keyval == gdk::Key::question
+                && !modifier.contains(gdk::ModifierType::CONTROL_MASK)
+                && !modifier.contains(gdk::ModifierType::ALT_MASK)
+            {
+                if let Some(win) = win_weak_for_key.upgrade() {
+                    let is_typing = gtk::prelude::GtkWindowExt::focus(&win)
+                        .map(|w| w.is::<gtk::Editable>() || w.is::<gtk::TextView>())
+                        .unwrap_or(false);
+                    if !is_typing {
+                        crate::dialogs::show_shortcuts_dialog_for_view(
+                            Some(&win),
+                            Some(&win.active_view_name()),
+                        );
+                        return glib::Propagation::Stop;
+                    }
+                }
+            }
+            if (keyval == gdk::Key::d || keyval == gdk::Key::D)
+                && modifier.contains(gdk::ModifierType::CONTROL_MASK)
+                && modifier.contains(gdk::ModifierType::SHIFT_MASK)
+            {
+                if let Some(win) = win_weak_for_key.upgrade() {
+                    if win.active_view_name().as_str() == "calendar" {
+                        if let Some(page) = win.calendar_page() {
+                            if page.current_calendar_view() == CalendarView::Agenda {
+                                let cur = page.is_agenda_detail_visible();
+                                page.set_agenda_detail_visible(!cur);
+                                return glib::Propagation::Stop;
+                            }
+                        }
                     }
                 }
             }
@@ -5153,7 +5380,10 @@ impl MeridianWindow {
             #[weak(rename_to = win)]
             self,
             move |_, _| {
-                crate::dialogs::show_shortcuts_dialog(&win);
+                crate::dialogs::show_shortcuts_dialog_for_view(
+                    Some(&win),
+                    Some(&win.active_view_name()),
+                );
             }
         ));
         self.add_action(&action_shortcuts);
@@ -7770,6 +8000,20 @@ mod tests {
         // On desktop, right panel toggle is visible
         assert!(right_toggle.is_visible());
 
+        let agenda_toggle = window
+            .imp()
+            .agenda_preview_toggle
+            .borrow()
+            .clone()
+            .expect("agenda_preview_toggle should exist");
+
+        assert_eq!(
+            agenda_toggle.icon_name().as_deref(),
+            Some("layout-sidebar-right-symbolic")
+        );
+        // Initially in mail view, agenda preview toggle must be hidden
+        assert!(!agenda_toggle.is_visible());
+
         // In mobile mode, right panel toggle is hidden
         window.set_screen_mode(true, false);
         assert!(!right_toggle.is_visible());
@@ -8363,6 +8607,27 @@ mod tests {
         assert!(!mail_btn.property::<bool>("visible"), "Mail view options button must be hidden in contacts view");
 
         window.set_active_view(&original_active_view);
+    }
+
+    #[test]
+    fn test_show_help_overlay_action_presents_shortcuts_window() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
+
+        assert!(window.has_action("show-help-overlay"));
+        let action = window
+            .lookup_action("show-help-overlay")
+            .expect("show-help-overlay action must be present on MeridianWindow");
+        assert!(action.property::<bool>("enabled"));
+
+        // Activating action creates and presents the shortcuts window for active view
+        action.activate(None);
     }
 }
 

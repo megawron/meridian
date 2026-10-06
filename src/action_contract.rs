@@ -51,8 +51,35 @@ pub(crate) struct MenuActionSpec {
     pub action: &'static str,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ShortcutSection {
+    Mail,
+    Composer,
+    Calendar,
+    ContactsTasks,
+    General,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum ShortcutGroup {
+    // Mail
+    MailNavigation,
+    MailMessage,
+    MailOrganize,
+    MailView,
+    // Composer
+    ComposerSend,
+    ComposerEditing,
+    // Calendar
+    CalendarEvents,
+    // Contacts & Tasks
+    Contacts,
+    TasksMemos,
+    // General
+    GeneralModules,
+    GeneralApp,
+    GeneralPanes,
+    // Backward compatibility variants
     General,
     Mail,
     Calendar,
@@ -61,6 +88,7 @@ pub(crate) enum ShortcutGroup {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ShortcutSpec {
+    pub section: ShortcutSection,
     pub group: ShortcutGroup,
     pub title: &'static str,
     pub action: &'static str,
@@ -297,210 +325,352 @@ pub(crate) const PRIMARY_MENU_ACTIONS: &[MenuActionSpec] = menu_specs! {
 };
 
 pub(crate) const SHORTCUTS: &[ShortcutSpec] = &[
+    // ── Mail: Navigation & Search ──
     ShortcutSpec {
-        group: ShortcutGroup::General,
-        title: "Open Preferences",
-        action: "app.preferences",
-    },
-    ShortcutSpec {
-        group: ShortcutGroup::General,
-        title: "Show Keyboard Shortcuts",
-        action: "win.show-help-overlay",
-    },
-    ShortcutSpec {
-        group: ShortcutGroup::General,
-        title: "Quit",
-        action: "app.quit",
-    },
-    ShortcutSpec {
-        group: ShortcutGroup::General,
-        title: "Refresh Mail",
-        action: "win.refresh-mail",
-    },
-    ShortcutSpec {
-        group: ShortcutGroup::General,
-        title: "Toggle Sidebar",
-        action: "win.toggle-sidebar",
-    },
-    ShortcutSpec {
-        group: ShortcutGroup::General,
-        title: "Toggle Statusbar",
-        action: "win.toggle-statusbar",
-    },
-    ShortcutSpec {
-        group: ShortcutGroup::General,
-        title: "Toggle Developer Console",
-        action: "win.toggle-debug-console",
-    },
-    ShortcutSpec {
-        group: ShortcutGroup::General,
-        title: "Focus Search",
-        action: "win.search",
-    },
-    ShortcutSpec {
-        group: ShortcutGroup::General,
-        title: "Global Search",
-        action: "app.global-search",
-    },
-    ShortcutSpec {
-        group: ShortcutGroup::General,
-        title: "Undo",
-        action: "win.undo",
-    },
-    ShortcutSpec {
-        group: ShortcutGroup::General,
-        title: "Redo",
-        action: "win.redo",
-    },
-    ShortcutSpec {
-        group: ShortcutGroup::Mail,
-        title: "Compose New Message",
-        action: "win.new",
-    },
-    ShortcutSpec {
-        group: ShortcutGroup::Mail,
-        title: "Reply",
-        action: "win.reply",
-    },
-    ShortcutSpec {
-        group: ShortcutGroup::Mail,
-        title: "Reply All",
-        action: "win.reply-all",
-    },
-    ShortcutSpec {
-        group: ShortcutGroup::Mail,
-        title: "Forward",
-        action: "win.forward",
-    },
-    ShortcutSpec {
-        group: ShortcutGroup::Mail,
-        title: "Delete Message",
-        action: "win.delete",
-    },
-    ShortcutSpec {
-        group: ShortcutGroup::Mail,
-        title: "Select All Messages",
-        action: "win.select-all-mail",
-    },
-    ShortcutSpec {
-        group: ShortcutGroup::Mail,
-        title: "Toggle Important",
-        action: "win.toggle-important",
-    },
-    ShortcutSpec {
-        group: ShortcutGroup::Mail,
-        title: "Mark as Read",
-        action: "win.mark-read",
-    },
-    ShortcutSpec {
-        group: ShortcutGroup::Mail,
-        title: "Mark as Unread",
-        action: "win.mark-unread",
-    },
-    ShortcutSpec {
-        group: ShortcutGroup::Mail,
-        title: "Move Message",
-        action: "win.move-message",
-    },
-    ShortcutSpec {
-        group: ShortcutGroup::Mail,
-        title: "Copy Message",
-        action: "win.copy-message",
-    },
-    ShortcutSpec {
-        group: ShortcutGroup::Mail,
-        title: "View Message Source",
-        action: "win.view-message-source",
-    },
-    ShortcutSpec {
-        group: ShortcutGroup::Mail,
-        title: "Apply Filters",
-        action: "win.apply-filters",
-    },
-    ShortcutSpec {
-        group: ShortcutGroup::Mail,
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailNavigation,
         title: "Next Message",
         action: "win.mail-next",
     },
     ShortcutSpec {
-        group: ShortcutGroup::Mail,
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailNavigation,
         title: "Previous Message",
         action: "win.mail-prev",
     },
     ShortcutSpec {
-        group: ShortcutGroup::Mail,
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailNavigation,
         title: "Next Unread Message",
         action: "win.mail-next-unread",
     },
     ShortcutSpec {
-        group: ShortcutGroup::Mail,
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailNavigation,
         title: "Previous Unread Message",
         action: "win.mail-prev-unread",
     },
     ShortcutSpec {
-        group: ShortcutGroup::Mail,
-        title: "Toggle Preview Window",
-        action: "win.toggle-preview",
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailNavigation,
+        title: "Focus Search",
+        action: "win.search",
     },
     ShortcutSpec {
-        group: ShortcutGroup::Mail,
-        title: "Group by Thread",
-        action: "win.toggle-mail-threading",
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailNavigation,
+        title: "Refresh Mail",
+        action: "win.refresh-mail",
     },
     ShortcutSpec {
-        group: ShortcutGroup::Mail,
-        title: "Find in Message",
-        action: "win.find-in-message",
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailNavigation,
+        title: "Send & Receive All",
+        action: "win.mail-send-receive",
     },
     ShortcutSpec {
-        group: ShortcutGroup::Mail,
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailNavigation,
+        title: "Apply Filters",
+        action: "win.apply-filters",
+    },
+
+    // ── Mail: Message Actions ──
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailMessage,
+        title: "Compose New Message",
+        action: "win.new",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailMessage,
+        title: "Reply",
+        action: "win.reply",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailMessage,
+        title: "Reply All",
+        action: "win.reply-all",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailMessage,
+        title: "Forward",
+        action: "win.forward",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailMessage,
+        title: "Archive Message",
+        action: "win.archive",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailMessage,
+        title: "Delete Message",
+        action: "win.delete",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailMessage,
+        title: "Undelete Message",
+        action: "win.undelete",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailMessage,
+        title: "Move to Folder",
+        action: "win.move-message",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailMessage,
+        title: "Copy to Folder",
+        action: "win.copy-message",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailMessage,
+        title: "Export Selected Email",
+        action: "win.export",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailMessage,
         title: "Print Message",
         action: "win.mail-print",
     },
     ShortcutSpec {
-        group: ShortcutGroup::Mail,
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailMessage,
+        title: "Find in Message",
+        action: "win.find-in-message",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailMessage,
+        title: "View Message Source",
+        action: "win.view-message-source",
+    },
+
+    // ── Mail: Organize & Flags ──
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailOrganize,
+        title: "Mark as Read",
+        action: "win.mark-read",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailOrganize,
+        title: "Mark as Unread",
+        action: "win.mark-unread",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailOrganize,
+        title: "Mark All as Read",
+        action: "win.mark-all-read",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailOrganize,
+        title: "Mark Conversation as Read",
+        action: "win.mark-thread-read",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailOrganize,
+        title: "Toggle Important",
+        action: "win.toggle-important",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailOrganize,
+        title: "Mark as Junk",
+        action: "win.mark-junk",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailOrganize,
+        title: "Mark as Not Junk",
+        action: "win.mark-not-junk",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailOrganize,
+        title: "Select All Messages",
+        action: "win.select-all-mail",
+    },
+
+    // ── Mail: View & Zoom ──
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailView,
+        title: "Toggle Preview Window",
+        action: "win.toggle-preview",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailView,
+        title: "Group by Thread",
+        action: "win.toggle-mail-threading",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailView,
+        title: "Expand All Conversations",
+        action: "win.expand-all-threads",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailView,
+        title: "Collapse All Conversations",
+        action: "win.collapse-all-threads",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailView,
         title: "Zoom In",
         action: "win.zoom-in",
     },
     ShortcutSpec {
-        group: ShortcutGroup::Mail,
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailView,
         title: "Zoom Out",
         action: "win.zoom-out",
     },
     ShortcutSpec {
-        group: ShortcutGroup::Mail,
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailView,
         title: "Normal Size",
         action: "win.zoom-reset",
     },
+
+    // ── Calendar ──
     ShortcutSpec {
-        group: ShortcutGroup::Modules,
+        section: ShortcutSection::Calendar,
+        group: ShortcutGroup::CalendarEvents,
+        title: "Purge Old Events",
+        action: "win.purge-calendar",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Calendar,
+        group: ShortcutGroup::CalendarEvents,
+        title: "Switch to Calendar",
+        action: "win.switch-calendar",
+    },
+
+    // ── Contacts & Tasks ──
+    ShortcutSpec {
+        section: ShortcutSection::ContactsTasks,
+        group: ShortcutGroup::Contacts,
+        title: "Switch to Contacts",
+        action: "win.switch-contacts",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::ContactsTasks,
+        group: ShortcutGroup::TasksMemos,
+        title: "Switch to Tasks",
+        action: "win.switch-tasks",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::ContactsTasks,
+        group: ShortcutGroup::TasksMemos,
+        title: "Switch to Memos",
+        action: "win.switch-memos",
+    },
+
+    // ── General: Modules ──
+    ShortcutSpec {
+        section: ShortcutSection::General,
+        group: ShortcutGroup::GeneralModules,
         title: "Mail",
         action: "win.switch-mail",
     },
     ShortcutSpec {
-        group: ShortcutGroup::Modules,
+        section: ShortcutSection::General,
+        group: ShortcutGroup::GeneralModules,
         title: "Calendar",
         action: "win.switch-calendar",
     },
     ShortcutSpec {
-        group: ShortcutGroup::Modules,
+        section: ShortcutSection::General,
+        group: ShortcutGroup::GeneralModules,
         title: "Contacts",
         action: "win.switch-contacts",
     },
     ShortcutSpec {
-        group: ShortcutGroup::Modules,
+        section: ShortcutSection::General,
+        group: ShortcutGroup::GeneralModules,
         title: "Tasks",
         action: "win.switch-tasks",
     },
     ShortcutSpec {
-        group: ShortcutGroup::Modules,
+        section: ShortcutSection::General,
+        group: ShortcutGroup::GeneralModules,
         title: "Memos",
         action: "win.switch-memos",
     },
+
+    // ── General: Application ──
     ShortcutSpec {
-        group: ShortcutGroup::Calendar,
-        title: "Purge Old Events",
-        action: "win.purge-calendar",
+        section: ShortcutSection::General,
+        group: ShortcutGroup::GeneralApp,
+        title: "Global Search",
+        action: "app.global-search",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::General,
+        group: ShortcutGroup::GeneralApp,
+        title: "Open Preferences",
+        action: "app.preferences",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::General,
+        group: ShortcutGroup::GeneralApp,
+        title: "Show Keyboard Shortcuts",
+        action: "win.show-help-overlay",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::General,
+        group: ShortcutGroup::GeneralApp,
+        title: "Undo",
+        action: "win.undo",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::General,
+        group: ShortcutGroup::GeneralApp,
+        title: "Redo",
+        action: "win.redo",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::General,
+        group: ShortcutGroup::GeneralApp,
+        title: "Quit",
+        action: "app.quit",
+    },
+
+    // ── General: Panes & Views ──
+    ShortcutSpec {
+        section: ShortcutSection::General,
+        group: ShortcutGroup::GeneralPanes,
+        title: "Toggle Sidebar",
+        action: "win.toggle-sidebar",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::General,
+        group: ShortcutGroup::GeneralPanes,
+        title: "Toggle Statusbar",
+        action: "win.toggle-statusbar",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::General,
+        group: ShortcutGroup::GeneralPanes,
+        title: "Toggle Developer Console",
+        action: "win.toggle-debug-console",
     },
 ];
 

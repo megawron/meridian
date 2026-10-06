@@ -26,7 +26,7 @@ pub(crate) const ACCELERATOR_BINDINGS: &[(&str, &[&str])] = &[
     ("app.quit", &["<Ctrl>Q"]),
     ("app.global-search", &["<Ctrl><Shift>G"]),
     ("app.preferences", &["<Ctrl>comma"]),
-    ("win.show-help-overlay", &["<Ctrl>question"]),
+    ("win.show-help-overlay", &["<Ctrl>question", "F1", "<Ctrl>slash"]),
     ("win.search", &["<Ctrl>F"]),
     ("win.refresh-mail", &["F5"]),
     ("win.mail-send-receive", &["F12"]),
@@ -83,6 +83,12 @@ pub(crate) fn primary_accelerator(action: &str) -> Option<&'static str> {
     ACCELERATOR_BINDINGS
         .iter()
         .find_map(|(candidate, accelerators)| (*candidate == action).then(|| accelerators[0]))
+}
+
+pub(crate) fn all_accelerators(action: &str) -> Option<&'static [&'static str]> {
+    ACCELERATOR_BINDINGS
+        .iter()
+        .find_map(|(candidate, accelerators)| (*candidate == action).then_some(*accelerators))
 }
 
 #[cfg(test)]
@@ -572,8 +578,12 @@ impl MeridianApplication {
     }
 
     fn setup_reminder_actions(&self) {
+        self.add_snooze_action("snooze-reminder-5m", 5 * 60);
         self.add_snooze_action("snooze-reminder-10m", 10 * 60);
+        self.add_snooze_action("snooze-reminder-15m", 15 * 60);
+        self.add_snooze_action("snooze-reminder-30m", 30 * 60);
         self.add_snooze_action("snooze-reminder-1h", 60 * 60);
+        self.add_snooze_action("snooze-reminder-1d", 24 * 60 * 60);
 
         let action = gio::SimpleAction::new("dismiss-reminder", Some(glib::VariantTy::STRING));
         action.connect_activate(glib::clone!(
@@ -597,13 +607,80 @@ impl MeridianApplication {
                     return;
                 };
                 let Ok(target) = parse_reminder_action_target(target) else {
-                    app.show_reminder_error("Ungültiges Reminder-Aktionsziel");
+                    app.show_reminder_error(&gettext("Invalid reminder action target"));
                     return;
                 };
                 app.route_component_identity(target.identity, None);
             }
         ));
         self.add_action(&action);
+
+        let action = gio::SimpleAction::new("open-mail", Some(glib::VariantTy::STRING));
+        action.connect_activate(glib::clone!(
+            #[weak(rename_to = app)]
+            self,
+            move |_, parameter| {
+                let Some(target) = parameter.and_then(|value| value.str()) else {
+                    return;
+                };
+                app.open_mail_from_notification(target);
+            }
+        ));
+        self.add_action(&action);
+
+        let action = gio::SimpleAction::new("mark-mail-read", Some(glib::VariantTy::STRING));
+        action.connect_activate(glib::clone!(
+            #[weak(rename_to = app)]
+            self,
+            move |_, parameter| {
+                let Some(target) = parameter.and_then(|value| value.str()) else {
+                    return;
+                };
+                app.mark_mail_read_from_notification(target);
+            }
+        ));
+        self.add_action(&action);
+    }
+
+    fn open_mail_from_notification(&self, target_str: &str) {
+        crate::services::mail_notification_service::MailNotificationService::withdraw_notification(self);
+        let window = self.main_window();
+        window.present();
+        window.switch_to_view("mail");
+        let Some(target) =
+            crate::services::mail_notification_service::NotificationActionTarget::parse(target_str)
+        else {
+            return;
+        };
+        if let Some(mail_page) = window.mail_page() {
+            mail_page.open_folder_and_select_message(
+                &target.source_uid,
+                &target.folder_name,
+                target.message_uid.as_deref(),
+                target.message_id.as_deref(),
+            );
+        }
+    }
+
+    fn mark_mail_read_from_notification(&self, target_str: &str) {
+        crate::services::mail_notification_service::MailNotificationService::withdraw_notification(self);
+        let Some(target) =
+            crate::services::mail_notification_service::NotificationActionTarget::parse(target_str)
+        else {
+            return;
+        };
+        let window = self.main_window();
+        if let Some(mail_page) = window.mail_page() {
+            if let Some(message_uid) = target.message_uid.as_deref() {
+                mail_page.mark_message_read_by_location(
+                    &target.source_uid,
+                    &target.folder_name,
+                    message_uid,
+                );
+            } else if let Some(message_id) = target.message_id.as_deref() {
+                mail_page.mark_message_read_by_id(message_id);
+            }
+        }
     }
 
     fn add_snooze_action(&self, name: &str, seconds: i64) {
@@ -644,7 +721,7 @@ impl MeridianApplication {
         let identity = match parse_reminder_deep_link(uri) {
             Ok(identity) => identity,
             Err(error) => {
-                self.show_reminder_error(&format!("Reminder-Link nicht geöffnet: {error}"));
+                self.show_reminder_error(&format!("{}: {error}", gettext("Could not open reminder link")));
                 return false;
             }
         };
@@ -657,7 +734,7 @@ impl MeridianApplication {
         expected_kind: Option<ReminderComponentKind>,
     ) -> bool {
         if expected_kind.is_some_and(|kind| identity.kind != kind) {
-            self.show_reminder_error("Reminder-Link passt nicht zur angeforderten Komponente");
+            self.show_reminder_error(&gettext("Reminder link does not match the requested component"));
             return false;
         }
         let window = self.main_window();
@@ -667,8 +744,12 @@ impl MeridianApplication {
 
     fn set_reminder_action_sensitivity(&self, enabled: bool) {
         for name in [
+            "snooze-reminder-5m",
             "snooze-reminder-10m",
+            "snooze-reminder-15m",
+            "snooze-reminder-30m",
             "snooze-reminder-1h",
+            "snooze-reminder-1d",
             "dismiss-reminder",
         ] {
             if let Some(action) = self
@@ -685,7 +766,7 @@ impl MeridianApplication {
         let target = match parse_reminder_action_target(target) {
             Ok(target) => target,
             Err(error) => {
-                self.show_reminder_error(&format!("Reminder-Aktion abgewiesen: {error}"));
+                self.show_reminder_error(&format!("{}: {error}", gettext("Reminder action rejected")));
                 return false;
             }
         };
@@ -713,7 +794,7 @@ impl MeridianApplication {
                         } else {
                             Err(std::io::Error::new(
                                 std::io::ErrorKind::Other,
-                                "Reminder-Aktion ist veraltet",
+                                "Reminder action is stale",
                             ))
                         }
                     })?,
@@ -725,7 +806,7 @@ impl MeridianApplication {
                         } else {
                             Err(std::io::Error::new(
                                 std::io::ErrorKind::Other,
-                                "Reminder-Aktion ist veraltet",
+                                "Reminder action is stale",
                             ))
                         }
                     })?,
@@ -752,7 +833,7 @@ impl MeridianApplication {
                     window.finish_reminder_action(&raw_target, false, Some(message));
                 }
                 Err(error) => {
-                    let message = format!("Reminder-Aktion abgebrochen: {error}");
+                    let message = format!("{}: {error}", gettext("Reminder action cancelled"));
                     window.finish_reminder_action(&raw_target, false, Some(message));
                 }
             }
@@ -810,19 +891,37 @@ impl MeridianApplication {
             .unwrap_or(900);
         let (sender, receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
-            // Calendar files and reminder state can be large and are not part
-            // of the first GTK frame.  Keep all filesystem/parsing work off
-            // the main context; only the final desktop notifications return
-            // to GTK below.
+            // Calendar and contact data can be large and are not part of the first GTK
+            // frame. Keep all filesystem/parsing/EDS D-Bus work off the main context;
+            // only the final desktop notifications and dialog presentation return to GTK.
             let scheduler = ReminderScheduler::new(SystemClock);
             let now = scheduler.now();
-            let snapshot = reminder_service::calendar_store_for_worker(local_calendar_directory)
-                .load_snapshot();
+            let mut snapshot = crate::services::ecal_service::load_snapshot_prefer_eds().snapshot;
+            if let Some(ref dir) = local_calendar_directory {
+                let local = reminder_service::calendar_store_for_worker(Some(dir.clone())).load_snapshot();
+                snapshot.events.extend(local.events);
+                snapshot.tasks.extend(local.tasks);
+                snapshot.memos.extend(local.memos);
+            }
             let mut candidates = reminder_service::candidates_from_snapshot(&snapshot, now);
             if use_ba_reminder {
-                let contact_store =
-                    reminder_service::contact_store_for_worker(local_contact_directory);
-                let contacts = contact_store.load_contacts();
+                let mut contacts: Vec<crate::services::contact_store_service::LocalContactRecord> =
+                    crate::services::ebook_service::load_contacts_prefer_eds()
+                        .contacts
+                        .into_iter()
+                        .map(|c| crate::services::contact_store_service::LocalContactRecord {
+                            id: c.uid,
+                            contact: c.contact,
+                            vcard: c.vcard,
+                        })
+                        .collect();
+                if let Some(ref dir) = local_contact_directory {
+                    let local = reminder_service::contact_store_for_worker(Some(dir.clone())).load_contacts();
+                    contacts.extend(local);
+                }
+                let mut seen_ids = std::collections::HashSet::new();
+                contacts.retain(|c| seen_ids.insert(c.id.clone()));
+
                 let ba_candidates = reminder_service::contact_birthday_candidates(
                     &contacts,
                     now,
@@ -849,7 +948,8 @@ impl MeridianApplication {
                 Ok(Ok(due)) => due,
                 Ok(Err(error)) => {
                     app.show_reminder_error(&format!(
-                        "Reminder-Zustand nicht gespeichert: {error}"
+                        "{}: {error}",
+                        gettext("Could not save reminder state")
                     ));
                     return;
                 }
@@ -906,6 +1006,7 @@ impl MeridianApplication {
             if !delivered.is_empty() {
                 let window = app.main_window();
                 window.present_reminders(delivered.clone());
+                crate::services::mail_notification_service::MailNotificationService::play_alarm_sound();
                 std::thread::spawn(move || {
                     let Ok(mut store) = ReminderStore::new() else {
                         tracing::debug!("Portable reminder state is unavailable after delivery");
@@ -955,6 +1056,7 @@ impl Default for MeridianApplication {
 
 #[cfg(test)]
 mod tests {
+    use gio::prelude::*;
     use std::collections::HashMap;
 
     use super::ACCELERATOR_BINDINGS;
@@ -1000,6 +1102,8 @@ mod tests {
         assert_eq!(accelerators_for("win.undelete"), &["<Ctrl><Shift>D"]);
         assert_eq!(accelerators_for("win.mark-all-read"), &["<Ctrl><Shift>M"]);
         assert_eq!(accelerators_for("win.purge-calendar"), &["<Ctrl>E"]);
+        assert!(accelerators_for("win.show-help-overlay").contains(&"F1"));
+        assert!(accelerators_for("win.show-help-overlay").contains(&"<Ctrl>question"));
     }
 
     #[test]
@@ -1052,5 +1156,17 @@ mod tests {
                 "Icon {size} must start with standard PNG magic header"
             );
         }
+    }
+
+    #[test]
+    fn test_mail_notification_actions_registered() {
+        let _lock = crate::window::GTK_TEST_MUTEX.lock().unwrap();
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let app = super::MeridianApplication::new();
+        app.setup_actions();
+        assert!(app.lookup_action("open-mail").is_some());
+        assert!(app.lookup_action("mark-mail-read").is_some());
     }
 }
