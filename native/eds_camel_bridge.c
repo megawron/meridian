@@ -513,6 +513,15 @@ eds_camel_ref_session (ESourceRegistry *registry)
     return res;
 }
 
+void
+meridian_eds_camel_reset_global_session (void)
+{
+    g_mutex_lock (&global_session_lock);
+    g_clear_object (&global_session);
+    g_clear_object (&global_registry);
+    g_mutex_unlock (&global_session_lock);
+}
+
 static void
 eds_camel_session_configure_service_for_source (EdsCamelSession *session,
                                                 ESource *source,
@@ -2013,10 +2022,13 @@ load_source (LoadContext *context,
 
     ensure_foreign_folders_for_ews_store (store, session ? session->registry : NULL, cancellable);
 
+    CamelStoreGetFolderInfoFlags folder_info_flags = CAMEL_STORE_FOLDER_INFO_RECURSIVE;
+    if (!folder_name || !*folder_name) {
+        folder_info_flags |= CAMEL_STORE_FOLDER_INFO_REFRESH;
+    }
     folder_info = camel_store_get_folder_info_sync (
         store, NULL,
-        CAMEL_STORE_FOLDER_INFO_RECURSIVE |
-        CAMEL_STORE_FOLDER_INFO_REFRESH,
+        folder_info_flags,
         cancellable, &error);
     if (!folder_info) {
         context->failed_sources++;
@@ -3274,6 +3286,7 @@ struct _MeridianEdsCamelWatcher {
     gulong source_removed_id;
     gulong source_enabled_id;
     gulong source_disabled_id;
+    gulong source_changed_id;
 };
 
 static char **
@@ -3596,7 +3609,8 @@ watcher_source_added_cb (ESourceRegistry *registry,
     (void) registry;
     if (!watcher || watcher->stopping)
         return;
-    if (!e_source_has_extension (source, E_SOURCE_EXTENSION_MAIL_ACCOUNT))
+    if (!e_source_has_extension (source, E_SOURCE_EXTENSION_MAIL_ACCOUNT) &&
+        !e_source_has_extension (source, E_SOURCE_EXTENSION_COLLECTION))
         return;
     if (!e_source_get_enabled (source))
         return;
@@ -3614,7 +3628,8 @@ watcher_source_removed_cb (ESourceRegistry *registry,
     (void) registry;
     if (!watcher || watcher->stopping)
         return;
-    if (!e_source_has_extension (source, E_SOURCE_EXTENSION_MAIL_ACCOUNT))
+    if (!e_source_has_extension (source, E_SOURCE_EXTENSION_MAIL_ACCOUNT) &&
+        !e_source_has_extension (source, E_SOURCE_EXTENSION_COLLECTION))
         return;
     queue_watcher_source_event (
         watcher, MERIDIAN_EDS_CAMEL_SOURCE_REMOVED,
@@ -3630,7 +3645,8 @@ watcher_source_enabled_cb (ESourceRegistry *registry,
     (void) registry;
     if (!watcher || watcher->stopping)
         return;
-    if (!e_source_has_extension (source, E_SOURCE_EXTENSION_MAIL_ACCOUNT))
+    if (!e_source_has_extension (source, E_SOURCE_EXTENSION_MAIL_ACCOUNT) &&
+        !e_source_has_extension (source, E_SOURCE_EXTENSION_COLLECTION))
         return;
     queue_watcher_source_event (
         watcher, MERIDIAN_EDS_CAMEL_SOURCE_ENABLED,
@@ -3646,10 +3662,28 @@ watcher_source_disabled_cb (ESourceRegistry *registry,
     (void) registry;
     if (!watcher || watcher->stopping)
         return;
-    if (!e_source_has_extension (source, E_SOURCE_EXTENSION_MAIL_ACCOUNT))
+    if (!e_source_has_extension (source, E_SOURCE_EXTENSION_MAIL_ACCOUNT) &&
+        !e_source_has_extension (source, E_SOURCE_EXTENSION_COLLECTION))
         return;
     queue_watcher_source_event (
         watcher, MERIDIAN_EDS_CAMEL_SOURCE_DISABLED,
+        e_source_get_uid (source), e_source_get_display_name (source));
+}
+
+static void
+watcher_source_changed_cb (ESourceRegistry *registry,
+                           ESource *source,
+                           gpointer user_data)
+{
+    MeridianEdsCamelWatcher *watcher = user_data;
+    (void) registry;
+    if (!watcher || watcher->stopping)
+        return;
+    if (!e_source_has_extension (source, E_SOURCE_EXTENSION_MAIL_ACCOUNT) &&
+        !e_source_has_extension (source, E_SOURCE_EXTENSION_COLLECTION))
+        return;
+    queue_watcher_source_event (
+        watcher, MERIDIAN_EDS_CAMEL_SOURCE_CHANGED,
         e_source_get_uid (source), e_source_get_display_name (source));
 }
 
@@ -3778,6 +3812,9 @@ meridian_eds_camel_watcher_new (const char *source_uid,
     watcher->source_disabled_id = g_signal_connect (
         watcher->registry, "source-disabled",
         G_CALLBACK (watcher_source_disabled_cb), watcher);
+    watcher->source_changed_id = g_signal_connect (
+        watcher->registry, "source-changed",
+        G_CALLBACK (watcher_source_changed_cb), watcher);
 
     g_clear_object (&cancellable);
     g_list_free_full (sources, g_object_unref);
@@ -3866,10 +3903,13 @@ meridian_eds_camel_watcher_free (MeridianEdsCamelWatcher *watcher)
         g_signal_handler_disconnect (watcher->registry, watcher->source_enabled_id);
     if (watcher->source_disabled_id && watcher->registry)
         g_signal_handler_disconnect (watcher->registry, watcher->source_disabled_id);
+    if (watcher->source_changed_id && watcher->registry)
+        g_signal_handler_disconnect (watcher->registry, watcher->source_changed_id);
     watcher->source_added_id = 0;
     watcher->source_removed_id = 0;
     watcher->source_enabled_id = 0;
     watcher->source_disabled_id = 0;
+    watcher->source_changed_id = 0;
 
     for (ii = 0; ii < watcher->folders->len; ii++) {
         CamelWatcherFolder *watch_folder = g_ptr_array_index (

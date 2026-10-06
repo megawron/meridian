@@ -364,6 +364,8 @@ void meridian_eds_camel_free_uids(
     char **uids,
     size_t count);
 
+void meridian_eds_camel_reset_global_session(void);
+
 #ifdef __cplusplus
 }
 #endif

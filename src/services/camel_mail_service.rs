@@ -380,6 +380,11 @@ pub(crate) fn load_mail_load_cache() -> Option<CamelMailLoad> {
     Some(cached)
 }
 
+pub(crate) fn clear_mail_load_cache() {
+    let path = mail_cache_path();
+    let _ = std::fs::remove_file(path);
+}
+
 /// Portable Exchange fallback.  It deliberately returns the same plain
 /// records as the native Camel adapter, so the mail page, threading, search,
 /// flags and folder UI do not need a second remote-only model.  The initial
@@ -1621,6 +1626,15 @@ mod ffi {
             uids: *mut *mut c_char,
             count: usize,
         );
+
+        pub(super) fn meridian_eds_camel_reset_global_session();
+    }
+}
+
+pub(crate) fn reset_global_session() {
+    #[cfg(eds_camel_bridge)]
+    unsafe {
+        ffi::meridian_eds_camel_reset_global_session();
     }
 }
 

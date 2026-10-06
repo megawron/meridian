@@ -98,8 +98,8 @@ load_source_worker (gpointer data)
     const gchar *display_name;
 
     display_name = e_source_get_display_name (res->source);
-    /* Connect with an 8-second timeout so remote EWS/Exchange address books have time to authenticate */
-    client = E_BOOK_CLIENT (e_book_client_connect_sync (res->source, 8, NULL, &error));
+    /* Connect with a 4-second timeout so remote EWS/Exchange address books have time to authenticate */
+    client = E_BOOK_CLIENT (e_book_client_connect_sync (res->source, 4, NULL, &error));
     if (!client) {
         res->success = FALSE;
         if (error) {
