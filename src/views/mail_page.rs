@@ -15651,6 +15651,16 @@ impl MailPage {
                 source_uid: Some(source_uid.clone()),
                 folder_name: folder_name.clone(),
             };
+            let already_same = page
+                .imp()
+                .folder_selection
+                .borrow()
+                .as_ref()
+                .map(|cur| *cur.borrow() == folder_selection)
+                .unwrap_or(false);
+            if already_same && (page.imp().mail_loading.get() || page.imp().mail_incremental_loading.get()) {
+                return;
+            }
             if let Some(current) = page.imp().folder_selection.borrow().as_ref() {
                 current.replace(folder_selection.clone());
             }
@@ -18778,11 +18788,11 @@ impl MailPage {
 
         let content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(4)
-            .margin_start(8)
-            .margin_end(8)
-            .margin_top(6)
-            .margin_bottom(6)
+            .spacing(2)
+            .margin_start(4)
+            .margin_end(4)
+            .margin_top(4)
+            .margin_bottom(4)
             .build();
 
         let title = gtk::Label::builder()
@@ -26354,11 +26364,9 @@ impl MailPage {
                         );
                     }
 
-                    // If this exact message is already rendered in the viewer and body is loaded,
-                    // avoid clearing the viewer, re-parsing MIME, and re-rendering.
-                    if mail_viewer.imp().current_message_id.borrow().as_deref() == Some(msg.id().as_str())
-                        && !msg.is_preview_only()
-                    {
+                    // If this exact message is already rendered or currently loading in the viewer,
+                    // avoid cancelling in-flight loading, clearing the viewer, and re-rendering.
+                    if mail_viewer.imp().current_message_id.borrow().as_deref() == Some(msg.id().as_str()) {
                         return;
                     }
                     let was_unread = msg.is_unread();
@@ -29781,8 +29789,7 @@ impl MailPage {
                         return;
                     }
                     camel_mail_service::CamelChangeKind::SourceChanged => {
-                        tracing::info!(source_uid = %change.source_uid, "Account updated");
-                        self.reload_mail_accounts();
+                        tracing::debug!(source_uid = %change.source_uid, "Source property changed, ignoring");
                         return;
                     }
                     _ => {}

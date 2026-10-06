@@ -3286,7 +3286,6 @@ struct _MeridianEdsCamelWatcher {
     gulong source_removed_id;
     gulong source_enabled_id;
     gulong source_disabled_id;
-    gulong source_changed_id;
 };
 
 static char **
@@ -3670,23 +3669,6 @@ watcher_source_disabled_cb (ESourceRegistry *registry,
         e_source_get_uid (source), e_source_get_display_name (source));
 }
 
-static void
-watcher_source_changed_cb (ESourceRegistry *registry,
-                           ESource *source,
-                           gpointer user_data)
-{
-    MeridianEdsCamelWatcher *watcher = user_data;
-    (void) registry;
-    if (!watcher || watcher->stopping)
-        return;
-    if (!e_source_has_extension (source, E_SOURCE_EXTENSION_MAIL_ACCOUNT) &&
-        !e_source_has_extension (source, E_SOURCE_EXTENSION_COLLECTION))
-        return;
-    queue_watcher_source_event (
-        watcher, MERIDIAN_EDS_CAMEL_SOURCE_CHANGED,
-        e_source_get_uid (source), e_source_get_display_name (source));
-}
-
 int
 meridian_eds_camel_watcher_new (const char *source_uid,
                                  MeridianEdsCamelWatcher **out_watcher,
@@ -3812,9 +3794,6 @@ meridian_eds_camel_watcher_new (const char *source_uid,
     watcher->source_disabled_id = g_signal_connect (
         watcher->registry, "source-disabled",
         G_CALLBACK (watcher_source_disabled_cb), watcher);
-    watcher->source_changed_id = g_signal_connect (
-        watcher->registry, "source-changed",
-        G_CALLBACK (watcher_source_changed_cb), watcher);
 
     g_clear_object (&cancellable);
     g_list_free_full (sources, g_object_unref);
@@ -3903,13 +3882,10 @@ meridian_eds_camel_watcher_free (MeridianEdsCamelWatcher *watcher)
         g_signal_handler_disconnect (watcher->registry, watcher->source_enabled_id);
     if (watcher->source_disabled_id && watcher->registry)
         g_signal_handler_disconnect (watcher->registry, watcher->source_disabled_id);
-    if (watcher->source_changed_id && watcher->registry)
-        g_signal_handler_disconnect (watcher->registry, watcher->source_changed_id);
     watcher->source_added_id = 0;
     watcher->source_removed_id = 0;
     watcher->source_enabled_id = 0;
     watcher->source_disabled_id = 0;
-    watcher->source_changed_id = 0;
 
     for (ii = 0; ii < watcher->folders->len; ii++) {
         CamelWatcherFolder *watch_folder = g_ptr_array_index (
