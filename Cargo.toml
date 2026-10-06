@@ -1,5 +1,6 @@
 [workspace]
 members = ["src", "tests"]
+default-members = ["src"]
 resolver = "2"
 
 [workspace.package]

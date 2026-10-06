@@ -31,3 +31,7 @@ scratch/
 
 # Agent metadata
 .agents/
+
+# Confidential / Local email files
+*.eml
+*.msg
