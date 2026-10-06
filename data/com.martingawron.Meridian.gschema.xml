@@ -157,6 +157,11 @@
       <default>true</default>
       <summary>Show desktop notifications for local reminders</summary>
     </key>
+    <key name="reminder-sound-enabled" type="b">
+      <default>false</default>
+      <summary>Play sound when reminders are due</summary>
+      <description>Whether to play an audible alert when a calendar or task reminder is due.</description>
+    </key>
     <key name="confirm-destructive-actions" type="b">
       <default>true</default>
       <summary>Ask before destructive actions</summary>
@@ -1090,7 +1095,7 @@
       <description>Whether to notify new messages in Inbox folder only.</description>
     </key>
     <key name="mail-notification-sound-enabled" type="b">
-      <default>true</default>
+      <default>false</default>
       <summary>Enable audible notifications when new messages arrive</summary>
       <description>Whether to make a sound when new messages arrive.</description>
     </key>

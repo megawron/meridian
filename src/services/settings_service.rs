@@ -964,6 +964,14 @@ impl AppSettings {
         self.set_boolean("notifications-enabled", value);
     }
 
+    pub fn reminder_sound_enabled(&self) -> bool {
+        self.settings.boolean("reminder-sound-enabled")
+    }
+
+    pub fn set_reminder_sound_enabled(&self, value: bool) {
+        self.set_boolean("reminder-sound-enabled", value);
+    }
+
     pub fn mail_notification_enabled(&self) -> bool {
         self.settings.boolean("mail-notification-enabled")
     }
@@ -3543,6 +3551,9 @@ impl AppSettings {
             "notifications-enabled" => {
                 self.set_notifications_enabled(parse_migrated_bool(key, value)?);
             }
+            "reminder-sound-enabled" => {
+                self.set_reminder_sound_enabled(parse_migrated_bool(key, value)?);
+            }
             "mail-notification-enabled" => {
                 self.set_mail_notification_enabled(parse_migrated_bool(key, value)?);
             }
@@ -4161,6 +4172,7 @@ impl AppSettings {
             "hide-cancelled-tasks",
             "hide-cancelled-events",
             "notifications-enabled",
+            "reminder-sound-enabled",
             "mail-notification-enabled",
             "mail-notification-only-inbox",
             "mail-notification-sound-enabled",
@@ -6075,6 +6087,8 @@ mod tests {
         settings.set_calendar_week_start("sunday");
         settings.set_mark_read_timeout(3000);
         settings.set_composer_html(false);
+        settings.set_reminder_sound_enabled(true);
+        settings.set_mail_notification_sound_enabled(true);
 
         // Verify mutations were applied
         assert_eq!(settings.mail_show_statusbar(), false);
@@ -6086,6 +6100,8 @@ mod tests {
         assert_eq!(settings.calendar_week_start(), "sunday");
         assert_eq!(settings.mark_read_timeout(), 3000);
         assert_eq!(settings.composer_html(), false);
+        assert_eq!(settings.reminder_sound_enabled(), true);
+        assert_eq!(settings.mail_notification_sound_enabled(), true);
 
         // Reset all settings to defaults
         settings.reset_to_defaults();
@@ -6100,6 +6116,8 @@ mod tests {
         assert_eq!(settings.calendar_week_start(), "monday");
         assert_eq!(settings.mark_read_timeout(), 1500);
         assert_eq!(settings.composer_html(), true);
+        assert_eq!(settings.reminder_sound_enabled(), false);
+        assert_eq!(settings.mail_notification_sound_enabled(), false);
     }
 
     #[test]

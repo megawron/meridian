@@ -8268,3 +8268,105 @@ msgstr "Audiodatei auswählen"
 msgid "Preview sound"
 msgstr "Klang abspielen"
 
+msgid "Play sound for reminders"
+msgstr "Klang für Erinnerungen abspielen"
+
+msgid "Play an audible alert when a calendar or task reminder is due"
+msgstr "Akustischen Signalton abspielen, wenn eine Kalender- oder Aufgabenerinnerung fällig ist"
+
+msgid "Standard Plugins"
+msgstr "Standard-Plugins"
+
+msgid "Filter plugins…"
+msgstr "Plugins filtern…"
+
+msgid "Email Plugins"
+msgstr "E-Mail-Plugins"
+
+msgid "Spam & Junk Filter"
+msgstr "Spam- & Junk-Filter"
+
+msgid "Calendar & Meeting Invitations"
+msgstr "Kalender & Termineinladungen"
+
+msgid "Utilities & Editors"
+msgstr "Hilfsprogramme & Editoren"
+
+msgid "Configure"
+msgstr "Konfigurieren"
+
+msgid "Configure Attachment Reminder"
+msgstr "Anhang-Erinnerung konfigurieren"
+
+msgid "Reminder Keywords"
+msgstr "Erinnerungs-Schlüsselwörter"
+
+msgid "Warn before sending if any of these phrases appear in the message body but no attachment is present."
+msgstr "Wenn eine dieser Phrasen im Text vorkommt, aber kein Anhang vorhanden ist, warnt Evolution vor dem Senden."
+
+msgid "Reminder Enabled"
+msgstr "Erinnerung aktiv"
+
+msgid "Check for missing attachments when sending"
+msgstr "Beim Absenden auf vergessene Anhänge prüfen"
+
+msgid "Keywords (comma-separated)"
+msgstr "Schlüsselwörter (kommagetrennt)"
+
+msgid "Configure Email Notifications"
+msgstr "E-Mail-Benachrichtigungen konfigurieren"
+
+msgid "Notification Behavior"
+msgstr "Benachrichtigungsverhalten"
+
+msgid "Configure notifications and alert sounds like Evolution"
+msgstr "Benachrichtigungen und Signaltöne wie in Evolution konfigurieren"
+
+msgid "Desktop Notification"
+msgstr "Desktop-Benachrichtigung"
+
+msgid "Show notification popup when new unread messages arrive"
+msgstr "Popup-Banner bei neuen ungelesenen Nachrichten anzeigen"
+
+msgid "Notify for Inbox only"
+msgstr "Nur für Posteingang benachrichtigen"
+
+msgid "Ignore messages received in other folders"
+msgstr "Nachrichten in anderen Ordnern ignorieren"
+
+msgid "Play Sound"
+msgstr "Klang abspielen"
+
+msgid "Play an audio alert when new mail arrives (30-second throttle)"
+msgstr "Audiosignal bei Nachrichteneingang (30s Drosselung)"
+
+msgid "Use System Beep"
+msgstr "Signalton (Beep) verwenden"
+
+msgid "Play the system alert tone instead of a sound file or sound theme"
+msgstr "System-Warnton statt Klangdatei oder Soundthema verwenden"
+
+msgid "Sound file (optional)"
+msgstr "Klangdatei (optional)"
+
+msgid "Configure External Editor"
+msgstr "Externen Editor konfigurieren"
+
+msgid "Editor Command"
+msgstr "Editor-Befehl"
+
+msgid "Specify the command to launch the external text editor (%s will be replaced with the file path)."
+msgstr "Geben Sie den Befehl zum Starten des externen Texteditors an (%s wird durch den Dateipfad ersetzt)."
+
+msgid "Command line"
+msgstr "Befehlszeile"
+
+msgid "Plugin Information"
+msgstr "Plugin-Informationen"
+
+msgid "Default Settings"
+msgstr "Standardeinstellungen"
+
+msgid "No additional configuration is required for this plugin."
+msgstr "Für dieses Plugin sind keine zusätzlichen Parameter erforderlich."
+

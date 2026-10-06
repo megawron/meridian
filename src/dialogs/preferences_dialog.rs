@@ -4476,8 +4476,8 @@ impl PreferencesDialog {
         group_calendar_reminders.add(&row_ba_reminder_units);
 
         let row_hide_cancelled_events = adw::SwitchRow::builder()
-            .title("Hide cancelled events")
-            .subtitle("Do not show events with CANCELLED status in views")
+            .title(&crate::i18n::gettext("Hide cancelled events"))
+            .subtitle(&crate::i18n::gettext("Do not show events with CANCELLED status in views"))
             .build();
         if let Some(settings) = settings.clone() {
             row_hide_cancelled_events.set_active(settings.hide_cancelled_events());
@@ -4487,6 +4487,28 @@ impl PreferencesDialog {
             });
         }
         group_calendar_reminders.add(&row_hide_cancelled_events);
+
+        let row_reminder_sound = adw::SwitchRow::builder()
+            .title(&crate::i18n::gettext("Play sound for reminders"))
+            .subtitle(&crate::i18n::gettext(
+                "Play an audible alert when a calendar or task reminder is due",
+            ))
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_reminder_sound.set_active(settings.reminder_sound_enabled());
+            let settings_for_reminder_sound = settings.clone();
+            row_reminder_sound.connect_active_notify(move |row| {
+                settings_for_reminder_sound.set_reminder_sound_enabled(row.is_active());
+            });
+            let row_reminder_sound_ref = row_reminder_sound.clone();
+            settings.connect_changed(Some("reminder-sound-enabled"), move |s, _| {
+                let active = s.boolean("reminder-sound-enabled");
+                if row_reminder_sound_ref.is_active() != active {
+                    row_reminder_sound_ref.set_active(active);
+                }
+            });
+        }
+        group_calendar_reminders.add(&row_reminder_sound);
 
         let row_notifications = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Desktop Notifications"))

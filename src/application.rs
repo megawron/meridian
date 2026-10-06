@@ -1004,9 +1004,11 @@ impl MeridianApplication {
                 delivered.push(delivery);
             }
             if !delivered.is_empty() {
+                if AppSettings::try_new().is_some_and(|s| s.reminder_sound_enabled()) {
+                    crate::services::mail_notification_service::MailNotificationService::play_alarm_sound();
+                }
                 let window = app.main_window();
                 window.present_reminders(delivered.clone());
-                crate::services::mail_notification_service::MailNotificationService::play_alarm_sound();
                 std::thread::spawn(move || {
                     let Ok(mut store) = ReminderStore::new() else {
                         tracing::debug!("Portable reminder state is unavailable after delivery");
