@@ -2153,8 +2153,12 @@ meridian_eds_camel_load_messages (const char *source_uid,
             break;
 
         if (source_uid &&
-            !g_str_equal (source_uid, e_source_get_uid (source)))
+            !g_str_equal (source_uid, e_source_get_uid (source))) {
+            if (context.message_offset == 0) {
+                load_source (&context, session, source, "", cancellable);
+            }
             continue;
+        }
 
         load_source (&context, session, source, folder_name, cancellable);
     }

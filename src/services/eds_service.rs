@@ -599,6 +599,10 @@ fn load_configured_account_collections_uncached() -> Vec<EdsAccountCollection> {
         glib::home_dir().join(".var/app/org.gnome.Evolution/config/evolution/sources"),
     ];
     for dir in &dirs {
+        if dir.ends_with(".var/app/org.gnome.Evolution/config/evolution/sources") && !collections.is_empty() {
+            // Native configuration already exists; do not resurrect stale Flatpak collections
+            continue;
+        }
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -632,6 +636,27 @@ fn load_configured_account_collections_uncached() -> Vec<EdsAccountCollection> {
                     .map(|s| s.to_string())
                     .filter(|s| !s.trim().is_empty())
                     .unwrap_or_else(|| uid.clone());
+
+                // Skip shared or delegate mailboxes (e.g. EDV, datenimport, dev)
+                if is_shared_or_delegate_mailbox(&display_name) {
+                    continue;
+                }
+                if let Ok(email) = kf.string("Ews Backend", "Email") {
+                    if is_shared_or_delegate_mailbox(&email) {
+                        continue;
+                    }
+                }
+                if let Ok(identity) = kf.string("Collection", "Identity") {
+                    if is_shared_or_delegate_mailbox(&identity) {
+                        continue;
+                    }
+                }
+                if collections.iter().any(|c: &EdsAccountCollection| {
+                    c.uid == uid || c.display_name.eq_ignore_ascii_case(&display_name)
+                }) {
+                    continue;
+                }
+
                 let backend_name = kf
                     .string("Collection", "BackendName")
                     .map(|s| s.to_string())
@@ -777,34 +802,61 @@ pub fn is_source_enabled_for_service(source_uid: &str, kind: EdsSourceKind) -> b
     !found
 }
 
+/// Canonical display name for the local computer account group across all sidebars.
+pub fn canonical_local_group_name() -> String {
+    crate::i18n::gettext("On This Computer")
+}
+
+/// Check if a group name corresponds to the local computer / machine.
+pub fn is_local_group(name: &str) -> bool {
+    let lower = name.trim().to_lowercase();
+    lower.is_empty()
+        || lower == "on this computer"
+        || lower == "auf diesem computer"
+        || lower == "auf diesem rechner"
+        || lower == "local"
+        || lower == "local-stub"
+}
+
+/// Canonicalize any local group name variant ("On This Computer", "Auf diesem Computer", etc.)
+/// into the localized canonical string.
+pub fn canonical_group_name(name: &str) -> String {
+    if is_local_group(name) {
+        canonical_local_group_name()
+    } else {
+        name.trim().to_string()
+    }
+}
+
 /// Resolve the parent account or group name for a source UID.
 pub fn resolve_source_parent_name(uid: &str) -> String {
     if let Ok(guard) = PARENT_NAME_CACHE.read() {
         if let Some((instant, map)) = &*guard {
-            if instant.elapsed() < std::time::Duration::from_secs(4) {
+            if instant.elapsed() < std::time::Duration::from_secs(300) {
                 if let Some(name) = map.get(uid) {
-                    return name.clone();
+                    return canonical_group_name(name);
                 }
             }
         }
     }
     let name = resolve_source_parent_name_uncached(uid);
+    let canonical = canonical_group_name(&name);
     if let Ok(mut guard) = PARENT_NAME_CACHE.write() {
         if let Some((instant, map)) = guard.as_mut() {
-            if instant.elapsed() < std::time::Duration::from_secs(4) {
-                map.insert(uid.to_string(), name.clone());
+            if instant.elapsed() < std::time::Duration::from_secs(300) {
+                map.insert(uid.to_string(), canonical.clone());
             } else {
                 let mut new_map = std::collections::HashMap::new();
-                new_map.insert(uid.to_string(), name.clone());
+                new_map.insert(uid.to_string(), canonical.clone());
                 *guard = Some((std::time::Instant::now(), new_map));
             }
         } else {
             let mut new_map = std::collections::HashMap::new();
-            new_map.insert(uid.to_string(), name.clone());
+            new_map.insert(uid.to_string(), canonical.clone());
             *guard = Some((std::time::Instant::now(), new_map));
         }
     }
-    name
+    canonical
 }
 
 fn resolve_source_parent_name_uncached(uid: &str) -> String {
@@ -817,8 +869,15 @@ fn resolve_source_parent_name_uncached(uid: &str) -> String {
         .or_else(|| uid.strip_prefix("col-memos-"))
         .or_else(|| uid.strip_prefix("col-calendar-"))
         .unwrap_or(uid);
-    if clean_uid.starts_with("local-") || clean_uid == "local" || clean_uid == "system-calendar" {
-        return "Auf diesem Computer".to_string();
+    if clean_uid.starts_with("local-")
+        || clean_uid == "local"
+        || clean_uid == "system"
+        || clean_uid == "system-calendar"
+        || clean_uid == "system-task-list"
+        || clean_uid == "system-address-book"
+        || clean_uid == "system-memo-list"
+    {
+        return canonical_local_group_name();
     }
     // Check if clean_uid matches an account collection, immediately return its display name
     for col in load_configured_account_collections() {
@@ -831,7 +890,7 @@ fn resolve_source_parent_name_uncached(uid: &str) -> String {
     let cached_sources = crate::services::evolution_contact_cache::list_cached_address_book_sources();
     if let Some(cached) = cached_sources.iter().find(|s| s.uid == clean_uid) {
         if let Some(parent) = &cached.parent_name {
-            return parent.clone();
+            return canonical_group_name(parent);
         }
     }
 
@@ -864,7 +923,7 @@ fn resolve_source_parent_name_uncached(uid: &str) -> String {
                     let parent = parent.trim();
                     if !parent.is_empty() {
                         if parent == "local-stub" || parent == "local" {
-                            return crate::i18n::gettext("On This Computer");
+                            return canonical_local_group_name();
                         } else if parent == "contacts-stub" {
                             return crate::i18n::gettext("Contacts");
                         } else if let Some(dn) = resolve_source_name_from_disk(parent) {
@@ -899,7 +958,7 @@ fn resolve_source_parent_name_uncached(uid: &str) -> String {
     if let Some(dn) = resolve_source_name_from_disk(clean_uid) {
         return dn;
     }
-    "Auf diesem Computer".to_string()
+    canonical_local_group_name()
 }
 
 /// List EDS sources for one product area through the shared SourceManager
@@ -981,19 +1040,20 @@ pub async fn list_sources(kind: EdsSourceKind) -> Result<Vec<EdsSource>, EdsServ
                 }
             } else {
                 parent.and_then(|p| {
-                    if p == "local-stub" {
-                        Some(crate::i18n::gettext("On This Computer"))
+                    if p == "local-stub" || p == "local" {
+                        Some(canonical_local_group_name())
                     } else if p == "contacts-stub" {
                         Some(crate::i18n::gettext("Contacts"))
                     } else if let Some(dn) = display_name_by_uid.get(&p) {
-                        Some(dn.clone())
+                        Some(canonical_group_name(dn))
                     } else if let Some(dn) = resolve_source_name_from_disk(&p) {
-                        Some(dn)
+                        Some(canonical_group_name(&dn))
                     } else {
-                        Some(p)
+                        Some(canonical_group_name(&p))
                     }
                 })
             };
+            let parent_name = parent_name.map(|p| canonical_group_name(&p));
             let resolved_color = color.or_else(|| resolve_source_color_from_disk(&uid));
             sources.push(EdsSource {
                 uid,
@@ -1005,6 +1065,16 @@ pub async fn list_sources(kind: EdsSourceKind) -> Result<Vec<EdsSource>, EdsServ
                 color: resolved_color,
                 foreign_mail,
             });
+        }
+    }
+
+    if let Ok(mut guard) = PARENT_NAME_CACHE.write() {
+        let entry = guard.get_or_insert_with(|| (std::time::Instant::now(), std::collections::HashMap::new()));
+        entry.0 = std::time::Instant::now();
+        for s in &sources {
+            if let Some(p) = &s.parent_name {
+                entry.1.insert(s.uid.clone(), p.clone());
+            }
         }
     }
 
@@ -1292,7 +1362,11 @@ pub fn is_shared_or_delegate_mailbox(email_or_name: &str) -> bool {
 /// Normalize address book names to identify duplicates across English/German localizations.
 pub fn canonical_book_name(name: &str) -> &'static str {
     let trimmed = name.trim();
-    if trimmed.eq_ignore_ascii_case("contacts") || trimmed.eq_ignore_ascii_case("kontakte") {
+    if trimmed.eq_ignore_ascii_case("contacts")
+        || trimmed.eq_ignore_ascii_case("kontakte")
+        || trimmed.eq_ignore_ascii_case("personal")
+        || trimmed.eq_ignore_ascii_case("persönlich")
+    {
         "contacts"
     } else if trimmed.eq_ignore_ascii_case("global address list")
         || trimmed.eq_ignore_ascii_case("globales adressbuch")
@@ -1353,7 +1427,7 @@ pub async fn list_address_book_sources() -> Result<Vec<EdsSource>, EdsServiceErr
 
     // Add all cached sources discovered from Evolution SQLite caches if still enabled
     let cached_sources = crate::services::evolution_contact_cache::list_cached_address_book_sources();
-    for cached in cached_sources {
+    for mut cached in cached_sources {
         if !is_source_enabled_for_service(&cached.uid, EdsSourceKind::AddressBook) {
             continue;
         }
@@ -1361,10 +1435,13 @@ pub async fn list_address_book_sources() -> Result<Vec<EdsSource>, EdsServiceErr
         if is_shared_or_delegate_mailbox(parent) || is_shared_or_delegate_mailbox(&cached.display_name) {
             continue;
         }
+        let p_name = canonical_group_name(parent);
+        cached.parent_name = Some(p_name.clone());
         let c_kind = canonical_book_name(&cached.display_name);
         let is_dup = sources.iter().any(|s| {
+            let existing_p = canonical_group_name(s.parent_name.as_deref().unwrap_or(""));
             s.uid == cached.uid
-                || (s.parent_name.as_deref().unwrap_or("").eq_ignore_ascii_case(parent)
+                || (existing_p.eq_ignore_ascii_case(&p_name)
                     && (!c_kind.is_empty() && c_kind == canonical_book_name(&s.display_name)
                         || s.display_name.eq_ignore_ascii_case(&cached.display_name)))
         });
