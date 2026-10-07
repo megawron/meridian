@@ -123,6 +123,7 @@ pub fn build_reply_component(
     invitation: &ItipInvitation,
     attendee: &str,
     status: ItipReplyStatus,
+    comment: Option<&str>,
 ) -> Result<String, String> {
     if !matches!(invitation.method, ItipMethod::Request | ItipMethod::Add) {
         return Err("Für diese iTIP-Nachricht ist keine Antwort vorgesehen".to_string());
@@ -169,6 +170,12 @@ pub fn build_reply_component(
         &attendee,
         status,
     ));
+    if let Some(comment_text) = comment {
+        let clean = comment_text.trim().replace("\r\n", " ").replace('\n', " ");
+        if !clean.is_empty() {
+            lines.push(format!("COMMENT:{clean}"));
+        }
+    }
     lines.extend(["END:VEVENT".to_string(), "END:VCALENDAR".to_string()]);
     Ok(format!("{}\r\n", lines.join("\r\n")))
 }
@@ -325,7 +332,7 @@ fn ical_property_lines(raw: &str, target: &str) -> Vec<String> {
         .collect()
 }
 
-fn unfold_lines(raw: &str) -> Vec<String> {
+pub fn unfold_lines(raw: &str) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for line in raw.replace("\r\n", "\n").replace('\r', "\n").lines() {
         if line.starts_with(' ') || line.starts_with('\t') {
@@ -339,7 +346,7 @@ fn unfold_lines(raw: &str) -> Vec<String> {
     lines
 }
 
-fn unescape_ical_text(value: &str) -> String {
+pub fn unescape_ical_text(value: &str) -> String {
     value
         .replace("\\n", "\n")
         .replace("\\N", "\n")
@@ -693,12 +700,14 @@ mod tests {
             &invitation,
             "Person <person@example.test>",
             ItipReplyStatus::Accepted,
+            Some("Komme 5 Minuten später"),
         )
         .expect("reply should build");
         assert!(reply.contains("METHOD:REPLY\r\n"));
         assert!(reply.contains("UID:meeting-1\r\n"));
         assert!(reply.contains("DTSTART;TZID=Europe/Berlin:20260810T120000\r\n"));
         assert!(reply.contains("ATTENDEE;CN=Person;PARTSTAT=ACCEPTED:mailto:person@example.test"));
+        assert!(reply.contains("COMMENT:Komme 5 Minuten später\r\n"));
     }
 
     #[test]
@@ -708,8 +717,13 @@ mod tests {
         )
         .expect("invitation should parse");
         assert!(
-            build_reply_component(&invitation, "not-an-address", ItipReplyStatus::Declined)
-                .is_err()
+            build_reply_component(
+                &invitation,
+                "not-an-address",
+                ItipReplyStatus::Declined,
+                None,
+            )
+            .is_err()
         );
     }
 

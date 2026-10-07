@@ -501,6 +501,12 @@ impl MailViewerWindow {
 
         // ITIP calendar meeting banner
         let itip_banner = ItipBanner::new();
+        let win_weak = self.downgrade();
+        itip_banner.connect_action_toast(move |msg| {
+            if let Some(win) = win_weak.upgrade() {
+                win.show_toast(&msg);
+            }
+        });
         self.imp().itip_banner.replace(Some(itip_banner.clone()));
 
         // MailViewer
@@ -1136,9 +1142,25 @@ impl MailViewerWindow {
             }
         }
 
+        let has_itip = itip_invitation.is_some();
+        let body_plain = if has_itip {
+            let html = message.html_body();
+            if !html.trim().is_empty() {
+                Some(crate::services::html_sanitizer::html_to_plain_text(&html))
+            } else {
+                message.searchable_body_text().map(|s| s.to_string())
+            }
+        } else {
+            None
+        };
+
         let profiles = AccountConfigStore::default().load();
         let user_emails: Vec<&str> = profiles.iter().map(|p| p.email.as_str()).collect();
         banner.set_invitation(itip_invitation, &user_emails);
+        banner.set_email_body(body_plain.as_deref());
+        if let Some(viewer) = self.imp().mail_viewer.borrow().as_ref() {
+            viewer.set_visible(!has_itip);
+        }
     }
 
     fn check_crypto(&self, message: &MailMessageObject) {

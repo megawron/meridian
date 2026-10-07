@@ -553,6 +553,7 @@ impl MailViewer {
     /// Reset the viewer to the empty/placeholder state without flashing
     /// error fallbacks or unformatted plain text.
     pub fn clear(&self) {
+        self.set_visible(true);
         self.invalidate_message_search_context();
         self.imp().remote_images_allowed_for_current.set(false);
         self.imp().remote_images_blocked_for_current.set(false);
@@ -602,6 +603,7 @@ impl MailViewer {
     /// stale content, preliminary snippets, or empty-state warnings do not flash
     /// before the actual email body arrives.
     pub(crate) fn prepare_for_loading(&self, message_id: Option<&str>) {
+        self.set_visible(true);
         self.notify_scroll_offset(0.0);
         self.invalidate_message_search_context();
         self.imp().remote_images_allowed_for_current.set(false);
@@ -702,6 +704,7 @@ impl MailViewer {
                 || imp.current_fallback_text.borrow().as_deref() != fallback_text
         };
         if message_changed {
+            self.set_visible(true);
             self.imp().remote_images_allowed_for_current.set(false);
             self.imp().remote_images_blocked_for_current.set(false);
             self.imp().current_message_force_light.set(false);
@@ -959,6 +962,12 @@ impl MailViewer {
         self.imp().banner.set_revealed(remote_blocked);
         self.notify_remote_images_blocked(remote_blocked);
         self.set_fallback_text(&render_plan.visible_text);
+        let has_active_banner = self.has_visible_banner();
+        let is_empty_fallback = render_plan.used_fallback
+            && (render_plan.visible_text == crate::i18n::gettext("(The message has no displayable content.)")
+                || render_plan.visible_text == "(The message has no displayable content.)"
+                || render_plan.visible_text.trim().is_empty());
+        self.set_visible(!is_empty_fallback || has_active_banner);
         self.imp()
             .displayed_plaintext
             .replace(Some(DisplayedPlaintext {
@@ -1282,6 +1291,9 @@ impl MailViewer {
     pub fn set_trash_banner_visible(&self, visible: bool) {
         self.imp().trash_banner.set_visible(visible);
         self.imp().trash_banner.set_revealed(visible);
+        if visible {
+            self.set_visible(true);
+        }
         if let Some(ch) = self.imp().last_measured_content_height.get() {
             self.apply_adapted_height(ch);
         }
@@ -1290,6 +1302,9 @@ impl MailViewer {
     pub fn set_junk_banner_visible(&self, visible: bool) {
         self.imp().junk_banner.set_visible(visible);
         self.imp().junk_banner.set_revealed(visible);
+        if visible {
+            self.set_visible(true);
+        }
         if let Some(ch) = self.imp().last_measured_content_height.get() {
             self.apply_adapted_height(ch);
         }
@@ -4619,6 +4634,82 @@ mod tests {
         {
             assert!(!viewer.imp().webview_ready.get());
         }
+    }
+
+    #[test]
+    fn test_mail_viewer_hides_when_body_is_empty_fallback() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let viewer = super::MailViewer::new();
+        assert!(viewer.is_visible());
+
+        let plan = std::sync::Arc::new(super::prepare_mail_body("", None, true, false, true));
+        assert!(plan.used_fallback);
+        let key = super::RenderRequestKey {
+            source_generation: 1,
+            render_html: true,
+            remote_images_allowed: false,
+            preserve_image_layout: true,
+            force_dark_mode: false,
+            mail_font_family: "sans-serif".to_string(),
+            mail_font_size: 16,
+            citation_highlighting: true,
+            citation_colors: test_citation_colors(),
+        };
+        viewer.imp().source_generation.set(1);
+        viewer.imp().render_generation.set(1);
+        viewer.imp().last_render_key.replace(Some(key.clone()));
+        viewer.apply_rendered_mail(1, key, plan, "".into());
+
+        assert!(
+            !viewer.is_visible(),
+            "MailViewer must be hidden when mail body has empty fallback"
+        );
+
+        // Preparing for next message restores visibility
+        viewer.prepare_for_loading(Some("msg-next"));
+        assert!(
+            viewer.is_visible(),
+            "Preparing for loading must restore visibility"
+        );
+    }
+
+    #[test]
+    fn test_mail_viewer_stays_visible_when_trash_banner_present() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let viewer = super::MailViewer::new();
+        viewer.set_trash_banner_visible(true);
+
+        let plan = std::sync::Arc::new(super::prepare_mail_body("", None, true, false, true));
+        let key = super::RenderRequestKey {
+            source_generation: 1,
+            render_html: true,
+            remote_images_allowed: false,
+            preserve_image_layout: true,
+            force_dark_mode: false,
+            mail_font_family: "sans-serif".to_string(),
+            mail_font_size: 16,
+            citation_highlighting: true,
+            citation_colors: test_citation_colors(),
+        };
+        viewer.imp().source_generation.set(1);
+        viewer.imp().render_generation.set(1);
+        viewer.imp().last_render_key.replace(Some(key.clone()));
+        viewer.apply_rendered_mail(1, key, plan, "".into());
+
+        assert!(
+            viewer.is_visible(),
+            "MailViewer must remain visible when trash banner is active even if body is empty fallback"
+        );
     }
 
     #[test]
