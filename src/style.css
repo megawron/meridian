@@ -684,7 +684,7 @@ listview.navigation-sidebar {
 
 .mail-sidebar .mail-sidebar-row label {
   font-family: Cantarell, -apple-system, sans-serif;
-  font-size: 1rem;
+  font-size: 1.00rem;
   font-weight: 500;
   color: @window_fg_color;
 }
@@ -707,14 +707,14 @@ listview.navigation-sidebar {
 .mail-sidebar label.sidebar-section-header {
   font-weight: 700;
   color: @window_fg_color;
-  font-size: 1.05rem;
+  font-size: 1.00rem;
 }
 
 .mail-sidebar label.unread-heading,
 .mail-sidebar .mail-sidebar-row label.unread-heading {
   font-weight: 700;
   color: @window_fg_color;
-  font-size: 1rem;
+  font-size: 1.00rem;
 }
 
 .mail-sidebar listview row:selected label.unread-heading,
@@ -728,7 +728,7 @@ listview.navigation-sidebar {
 .mail-sidebar listview row,
 .mail-sidebar listbox row {
   min-height: 24px;
-  padding: 1px 4px;
+  padding: 1px 3px;
   margin: 0;
   border-radius: 4px;
 }
@@ -746,28 +746,44 @@ listview.navigation-sidebar {
 }
 
 .mail-sidebar .navigation-sidebar row:selected,
+.mail-sidebar .navigation-sidebar row:selected:hover,
 .mail-sidebar listview row:selected,
+.mail-sidebar listview row:selected:hover,
 .mail-sidebar listbox row:selected,
-.mail-sidebar .mail-sidebar-row.is-selected {
+.mail-sidebar listbox row:selected:hover,
+.mail-sidebar .mail-sidebar-row.is-selected,
+.mail-sidebar .mail-sidebar-row.is-selected:hover {
   background-color: @accent_bg_color;
   color: @accent_fg_color;
 }
 
 .mail-sidebar .navigation-sidebar row:selected label,
+.mail-sidebar .navigation-sidebar row:selected:hover label,
 .mail-sidebar .navigation-sidebar row:selected image,
+.mail-sidebar .navigation-sidebar row:selected:hover image,
 .mail-sidebar listview row:selected label,
+.mail-sidebar listview row:selected:hover label,
 .mail-sidebar listview row:selected image,
+.mail-sidebar listview row:selected:hover image,
 .mail-sidebar listbox row:selected label,
+.mail-sidebar listbox row:selected:hover label,
 .mail-sidebar listbox row:selected image,
+.mail-sidebar listbox row:selected:hover image,
 .mail-sidebar .mail-sidebar-row.is-selected label,
-.mail-sidebar .mail-sidebar-row.is-selected image {
+.mail-sidebar .mail-sidebar-row.is-selected:hover label,
+.mail-sidebar .mail-sidebar-row.is-selected image,
+.mail-sidebar .mail-sidebar-row.is-selected:hover image {
   color: @accent_fg_color;
 }
 
 .mail-sidebar .navigation-sidebar row:selected image.dim-label,
+.mail-sidebar .navigation-sidebar row:selected:hover image.dim-label,
 .mail-sidebar listview row:selected image.dim-label,
+.mail-sidebar listview row:selected:hover image.dim-label,
 .mail-sidebar listbox row:selected image.dim-label,
-.mail-sidebar .mail-sidebar-row.is-selected image.dim-label {
+.mail-sidebar listbox row:selected:hover image.dim-label,
+.mail-sidebar .mail-sidebar-row.is-selected image.dim-label,
+.mail-sidebar .mail-sidebar-row.is-selected:hover image.dim-label {
   color: @accent_fg_color;
   opacity: 1;
 }
@@ -828,11 +844,20 @@ listview.navigation-sidebar {
   margin-end: 2px;
 }
 
-.mail-sidebar listview row:hover treeexpander > expander,
-.mail-sidebar listview row:hover treeexpander > image,
-.mail-sidebar .navigation-sidebar row:hover treeexpander > expander,
-.mail-sidebar .navigation-sidebar row:hover treeexpander > image {
+.mail-sidebar listview row:hover:not(:selected) treeexpander > expander,
+.mail-sidebar listview row:hover:not(:selected) treeexpander > image,
+.mail-sidebar .navigation-sidebar row:hover:not(:selected) treeexpander > expander,
+.mail-sidebar .navigation-sidebar row:hover:not(:selected) treeexpander > image {
   color: alpha(@window_fg_color, 0.95);
+}
+
+.mail-sidebar listview row:selected:hover treeexpander > expander,
+.mail-sidebar listview row:selected:hover treeexpander > indent,
+.mail-sidebar listview row:selected:hover treeexpander > image,
+.mail-sidebar .navigation-sidebar row:selected:hover treeexpander > expander,
+.mail-sidebar .navigation-sidebar row:selected:hover treeexpander > indent,
+.mail-sidebar .navigation-sidebar row:selected:hover treeexpander > image {
+  color: @accent_fg_color;
 }
 
 .mail-sidebar treeexpander.account-root-expander,
@@ -862,7 +887,7 @@ listview.navigation-sidebar {
   border-radius: 0;
   background-color: transparent;
   color: @window_fg_color;
-  font-size: 0.95rem;
+  font-size: 0.90rem;
   font-weight: 700;
 }
 
@@ -877,6 +902,7 @@ listview.navigation-sidebar {
 .account-root-row,
 .mail-sidebar .mail-sidebar-row.account-root-row,
 .calendar-sidebar-group-row {
+  min-height: 24px;
   background-color: transparent;
   color: @window_fg_color;
   border-radius: 4px;
@@ -898,7 +924,7 @@ label.account-heading,
 .calendar-sidebar-group-row label {
   color: @window_fg_color;
   font-weight: 700;
-  font-size: 1.05rem;
+  font-size: 1.00rem;
 }
 
 .sidebar-account-row image,
@@ -2171,18 +2197,22 @@ splitview > .sidebar:backdrop {
   background-color: transparent;
 }
 
-/* ── Calendar & Tasks Sidebar (Matching Mail Sidebar Density & Parity) ── */
+/* ── Calendar, Tasks & Contacts Sidebar (Matching Mail Sidebar Density & Parity) ── */
 .calendar-sidebar,
-.tasks-sidebar {
+.tasks-sidebar,
+.contacts-sidebar {
   padding: 2px;
 }
 
 .calendar-sidebar .navigation-sidebar,
 .tasks-sidebar .navigation-sidebar,
+.contacts-sidebar .navigation-sidebar,
 .calendar-sidebar listview,
 .tasks-sidebar listview,
+.contacts-sidebar listview,
 .calendar-sidebar listbox,
-.tasks-sidebar listbox {
+.tasks-sidebar listbox,
+.contacts-sidebar listbox {
   padding: 0;
   margin: 0;
   background-color: transparent;
@@ -2190,26 +2220,33 @@ splitview > .sidebar:backdrop {
 
 .calendar-sidebar .navigation-sidebar row,
 .tasks-sidebar .navigation-sidebar row,
+.contacts-sidebar .navigation-sidebar row,
 .calendar-sidebar listview row,
 .tasks-sidebar listview row,
+.contacts-sidebar listview row,
 .calendar-sidebar listbox row,
 .tasks-sidebar listbox row,
+.contacts-sidebar listbox row,
 .calendar-sidebar-group-row,
-.calendar-sidebar-child-row {
+.calendar-sidebar-child-row,
+.sidebar-child-row {
   min-height: 24px;
-  padding: 1px 4px;
+  padding: 2px 3px;
   margin: 0;
   border-radius: 4px;
 }
 
 .calendar-sidebar .calendar-sidebar-row,
-.tasks-sidebar .calendar-sidebar-row {
+.tasks-sidebar .calendar-sidebar-row,
+.contacts-sidebar .calendar-sidebar-row,
+.contacts-sidebar .mail-sidebar-row {
   min-height: 24px;
   padding: 1px 2px;
   margin: 0;
 }
 
 .calendar-sidebar-group-row {
+  min-height: 24px;
   background-color: transparent;
   border-radius: 4px;
 }
@@ -2222,9 +2259,12 @@ splitview > .sidebar:backdrop {
 .calendar-sidebar .account-heading,
 .calendar-sidebar label.account-heading,
 .tasks-sidebar .account-heading,
-.tasks-sidebar label.account-heading {
+.tasks-sidebar label.account-heading,
+.contacts-sidebar .account-heading,
+.contacts-sidebar label.account-heading {
+  font-family: Cantarell, -apple-system, sans-serif;
   font-weight: 700;
-  font-size: 1.05rem;
+  font-size: 1.00rem;
   color: @window_fg_color;
 }
 
@@ -2232,22 +2272,55 @@ splitview > .sidebar:backdrop {
   color: @window_fg_color;
 }
 
-.calendar-sidebar-child-row {
+.calendar-sidebar-child-row,
+.sidebar-child-row {
   border-radius: 4px;
 }
 
-.calendar-sidebar-child-row label {
-  font-size: 1rem;
+.calendar-sidebar-child-row label,
+.sidebar-child-row label {
+  font-family: Cantarell, -apple-system, sans-serif;
+  font-size: 1.00rem;
+  font-weight: 500;
   color: @window_fg_color;
 }
 
-.calendar-sidebar-child-row image {
+.calendar-sidebar-child-row image,
+.sidebar-child-row image {
   min-width: 16px;
   min-height: 16px;
   color: @window_fg_color;
 }
 
-/* Compact checkbuttons in calendar sidebar (crisp 18px colored checkpoints without increasing 24px row height) */
+/* Prevent double padding when Box is inside ListBoxRow */
+.calendar-sidebar-child-row > box,
+.calendar-sidebar-group-row > box,
+.sidebar-account-row > box {
+  padding: 0;
+  margin: 0;
+}
+
+/* Compact options menu button in contacts sidebar (does not stretch 24px row) */
+.contacts-sidebar menubutton,
+.contacts-sidebar menubutton > button,
+.contacts-sidebar button.circular {
+  min-height: 18px;
+  min-width: 18px;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+.contacts-sidebar menubutton > button image,
+.contacts-sidebar button.circular image {
+  min-height: 14px;
+  min-width: 14px;
+  -gtk-icon-size: 14px;
+}
+
+/* Compact checkbuttons in calendar sidebar (crisp 18px colored checkpoints without increasing 26px row height) */
 .calendar-sidebar-child-row checkbutton {
   min-height: 18px;
   min-width: 18px;
@@ -2266,38 +2339,84 @@ splitview > .sidebar:backdrop {
 
 .calendar-sidebar .navigation-sidebar row:hover,
 .tasks-sidebar .navigation-sidebar row:hover,
+.contacts-sidebar .navigation-sidebar row:hover,
 .calendar-sidebar listbox row:hover,
-.tasks-sidebar listbox row:hover {
+.tasks-sidebar listbox row:hover,
+.contacts-sidebar listbox row:hover {
   background-color: alpha(@window_fg_color, 0.05);
 }
 
 .calendar-sidebar .navigation-sidebar row:selected,
+.calendar-sidebar .navigation-sidebar row:selected:hover,
 .tasks-sidebar .navigation-sidebar row:selected,
+.tasks-sidebar .navigation-sidebar row:selected:hover,
+.contacts-sidebar .navigation-sidebar row:selected,
+.contacts-sidebar .navigation-sidebar row:selected:hover,
 .calendar-sidebar listbox row:selected,
+.calendar-sidebar listbox row:selected:hover,
 .tasks-sidebar listbox row:selected,
-.calendar-sidebar-child-row:selected {
+.tasks-sidebar listbox row:selected:hover,
+.contacts-sidebar listbox row:selected,
+.contacts-sidebar listbox row:selected:hover,
+.calendar-sidebar-child-row:selected,
+.calendar-sidebar-child-row:selected:hover,
+.sidebar-child-row:selected,
+.sidebar-child-row:selected:hover {
   background-color: @accent_bg_color;
   color: @accent_fg_color;
 }
 
 .calendar-sidebar .navigation-sidebar row:selected label,
+.calendar-sidebar .navigation-sidebar row:selected:hover label,
 .tasks-sidebar .navigation-sidebar row:selected label,
+.tasks-sidebar .navigation-sidebar row:selected:hover label,
+.contacts-sidebar .navigation-sidebar row:selected label,
+.contacts-sidebar .navigation-sidebar row:selected:hover label,
 .calendar-sidebar .navigation-sidebar row:selected image,
+.calendar-sidebar .navigation-sidebar row:selected:hover image,
 .tasks-sidebar .navigation-sidebar row:selected image,
+.tasks-sidebar .navigation-sidebar row:selected:hover image,
+.contacts-sidebar .navigation-sidebar row:selected image,
+.contacts-sidebar .navigation-sidebar row:selected:hover image,
 .calendar-sidebar listbox row:selected label,
+.calendar-sidebar listbox row:selected:hover label,
 .tasks-sidebar listbox row:selected label,
+.tasks-sidebar listbox row:selected:hover label,
+.contacts-sidebar listbox row:selected label,
+.contacts-sidebar listbox row:selected:hover label,
 .calendar-sidebar listbox row:selected image,
+.calendar-sidebar listbox row:selected:hover image,
 .tasks-sidebar listbox row:selected image,
+.tasks-sidebar listbox row:selected:hover image,
+.contacts-sidebar listbox row:selected image,
+.contacts-sidebar listbox row:selected:hover image,
 .calendar-sidebar-child-row:selected label,
-.calendar-sidebar-child-row:selected image {
+.calendar-sidebar-child-row:selected:hover label,
+.calendar-sidebar-child-row:selected image,
+.calendar-sidebar-child-row:selected:hover image,
+.sidebar-child-row:selected label,
+.sidebar-child-row:selected:hover label,
+.sidebar-child-row:selected image,
+.sidebar-child-row:selected:hover image {
   color: @accent_fg_color;
 }
 
 .calendar-sidebar .navigation-sidebar row:selected image.dim-label,
+.calendar-sidebar .navigation-sidebar row:selected:hover image.dim-label,
 .tasks-sidebar .navigation-sidebar row:selected image.dim-label,
+.tasks-sidebar .navigation-sidebar row:selected:hover image.dim-label,
+.contacts-sidebar .navigation-sidebar row:selected image.dim-label,
+.contacts-sidebar .navigation-sidebar row:selected:hover image.dim-label,
 .calendar-sidebar listbox row:selected image.dim-label,
+.calendar-sidebar listbox row:selected:hover image.dim-label,
 .tasks-sidebar listbox row:selected image.dim-label,
-.calendar-sidebar-child-row:selected image.dim-label {
+.tasks-sidebar listbox row:selected:hover image.dim-label,
+.contacts-sidebar listbox row:selected image.dim-label,
+.contacts-sidebar listbox row:selected:hover image.dim-label,
+.calendar-sidebar-child-row:selected image.dim-label,
+.calendar-sidebar-child-row:selected:hover image.dim-label,
+.sidebar-child-row:selected image.dim-label,
+.sidebar-child-row:selected:hover image.dim-label {
   color: @accent_fg_color;
   opacity: 1;
 }
@@ -2316,7 +2435,7 @@ splitview > .sidebar:backdrop {
 }
 
 .sidebar-drawer-header label {
-  font-size: 1.05rem;
+  font-size: 1.00rem;
   font-weight: 700;
   color: @window_fg_color;
 }
@@ -2588,26 +2707,26 @@ button.calendar-popover-day-btn.today:not(.selected-day) {
 
 /* ── iTIP Meeting Invitation Banner ────────────────────────────────────────── */
 .itip-banner {
-  background-color: alpha(@card_bg_color, 0.95);
-  border: 1px solid alpha(@window_fg_color, 0.12);
-  border-left: 4px solid @accent_color;
-  border-radius: 8px;
-  padding: 12px 16px;
-  margin: 8px 16px;
+  background-color: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 4px 8px 12px 8px;
+  margin: 0;
+  box-shadow: none;
   transition: all 200ms ease;
 }
 
 .itip-banner.itip-cancelled {
-  border-left-color: @destructive_color;
+  border: none;
 }
 
 .itip-banner.itip-accepted {
-  border-left-color: #2ec27e;
+  border: none;
 }
 
 .itip-banner.is-compact {
-  padding: 6px 14px;
-  margin: 2px 16px 4px 16px;
+  padding: 2px 8px;
+  margin: 0;
 }
 
 .itip-banner.is-compact .title-3 {
@@ -2618,6 +2737,47 @@ button.calendar-popover-day-btn.today:not(.selected-day) {
   min-height: 28px;
   padding: 2px 10px;
   font-size: 0.8rem;
+}
+
+.itip-header-prompt {
+  font-size: 0.96rem;
+  font-weight: 600;
+  color: alpha(@window_fg_color, 0.88);
+  padding-bottom: 2px;
+}
+
+.itip-calendar-status-box {
+  background-color: transparent;
+  border: none;
+  padding: 2px 0;
+  font-size: 0.88rem;
+}
+
+.itip-sender-message-box {
+  background-color: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 4px 0;
+  margin-top: 2px;
+}
+
+.itip-sender-message-text {
+  font-size: 0.92rem;
+  line-height: 1.45;
+  color: @window_fg_color;
+}
+
+.itip-comment-view {
+  background-color: @card_bg_color;
+  border: 1px solid alpha(@window_fg_color, 0.12);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 0.88rem;
+}
+
+.itip-comment-view:focus-within {
+  border-color: @accent_color;
+  box-shadow: 0 0 0 1px @accent_color;
 }
 
 .itip-status-badge {
@@ -3850,7 +4010,9 @@ headerbar:backdrop > windowhandle {
 scrollbar.mail-table-overlay-scrollbar,
 scrollbar.vertical.mail-table-overlay-scrollbar,
 scrollbar.calendar-agenda-overlay-scrollbar,
-scrollbar.vertical.calendar-agenda-overlay-scrollbar {
+scrollbar.vertical.calendar-agenda-overlay-scrollbar,
+scrollbar.calendar-year-overlay-scrollbar,
+scrollbar.vertical.calendar-year-overlay-scrollbar {
   background: transparent;
   border: none;
   box-shadow: none;
@@ -3862,14 +4024,18 @@ scrollbar.vertical.calendar-agenda-overlay-scrollbar {
 scrollbar.mail-table-overlay-scrollbar:hover,
 scrollbar.vertical.mail-table-overlay-scrollbar:hover,
 scrollbar.calendar-agenda-overlay-scrollbar:hover,
-scrollbar.vertical.calendar-agenda-overlay-scrollbar:hover {
+scrollbar.vertical.calendar-agenda-overlay-scrollbar:hover,
+scrollbar.calendar-year-overlay-scrollbar:hover,
+scrollbar.vertical.calendar-year-overlay-scrollbar:hover {
   min-width: 7px;
 }
 
 scrollbar.mail-table-overlay-scrollbar trough,
 scrollbar.vertical.mail-table-overlay-scrollbar trough,
 scrollbar.calendar-agenda-overlay-scrollbar trough,
-scrollbar.vertical.calendar-agenda-overlay-scrollbar trough {
+scrollbar.vertical.calendar-agenda-overlay-scrollbar trough,
+scrollbar.calendar-year-overlay-scrollbar trough,
+scrollbar.vertical.calendar-year-overlay-scrollbar trough {
   background: transparent;
   border: none;
   box-shadow: none;
@@ -3881,14 +4047,18 @@ scrollbar.vertical.calendar-agenda-overlay-scrollbar trough {
 scrollbar.mail-table-overlay-scrollbar:hover trough,
 scrollbar.vertical.mail-table-overlay-scrollbar:hover trough,
 scrollbar.calendar-agenda-overlay-scrollbar:hover trough,
-scrollbar.vertical.calendar-agenda-overlay-scrollbar:hover trough {
+scrollbar.vertical.calendar-agenda-overlay-scrollbar:hover trough,
+scrollbar.calendar-year-overlay-scrollbar:hover trough,
+scrollbar.vertical.calendar-year-overlay-scrollbar:hover trough {
   min-width: 7px;
 }
 
 scrollbar.mail-table-overlay-scrollbar slider,
 scrollbar.vertical.mail-table-overlay-scrollbar slider,
 scrollbar.calendar-agenda-overlay-scrollbar slider,
-scrollbar.vertical.calendar-agenda-overlay-scrollbar slider {
+scrollbar.vertical.calendar-agenda-overlay-scrollbar slider,
+scrollbar.calendar-year-overlay-scrollbar slider,
+scrollbar.vertical.calendar-year-overlay-scrollbar slider {
   min-width: 5px;
   border-radius: 9999px;
   background-color: alpha(currentColor, 0.35);
@@ -3905,7 +4075,11 @@ scrollbar.mail-table-overlay-scrollbar slider:active,
 scrollbar.calendar-agenda-overlay-scrollbar:hover slider,
 scrollbar.calendar-agenda-overlay-scrollbar slider:hover,
 scrollbar.calendar-agenda-overlay-scrollbar:active slider,
-scrollbar.calendar-agenda-overlay-scrollbar slider:active {
+scrollbar.calendar-agenda-overlay-scrollbar slider:active,
+scrollbar.calendar-year-overlay-scrollbar:hover slider,
+scrollbar.calendar-year-overlay-scrollbar slider:hover,
+scrollbar.calendar-year-overlay-scrollbar:active slider,
+scrollbar.calendar-year-overlay-scrollbar slider:active {
   min-width: 7px;
   background-color: alpha(currentColor, 0.7);
 }
@@ -4257,6 +4431,8 @@ menubutton.mail-header-action-btn > button image {
   font-weight: 500;
   color: alpha(@window_fg_color, 0.85);
   margin-right: 2px;
+  padding-top: 2px;
+  padding-bottom: 2px;
 }
 
 /* Maintain consistent, standard 40px GNOME HIG height on all window headerbars */
@@ -4313,8 +4489,33 @@ headerbar viewswitcher button {
 }
 
 .mobile-screen listview row,
-.mobile-screen listbox row {
+.mobile-screen listbox row,
+.mobile-screen .navigation-sidebar row,
+.mobile-screen .mail-sidebar .mail-sidebar-row,
+.mobile-screen .calendar-sidebar-row,
+.mobile-screen .calendar-sidebar-child-row,
+.mobile-screen .calendar-sidebar-group-row,
+.mobile-screen .sidebar-account-row {
   min-height: 44px;
+  padding: 8px 12px;
+}
+
+.mobile-screen .mail-sidebar .mail-sidebar-row label,
+.mobile-screen .calendar-sidebar-child-row label,
+.mobile-screen .sidebar-child-row label,
+.mobile-screen .account-heading {
+  font-size: 1.05rem;
+}
+
+.mobile-screen .calendar-sidebar-child-row checkbutton {
+  min-height: 28px;
+  min-width: 28px;
+}
+
+.mobile-screen .calendar-sidebar-child-row checkbutton check {
+  min-height: 20px;
+  min-width: 20px;
+  -gtk-icon-size: 20px;
 }
 
 .compact-screen headerbar {
@@ -4541,5 +4742,45 @@ popover.image-options-popover button.flat {
 
 popover.image-options-popover button.flat:hover {
   background-color: alpha(currentColor, 0.08);
+}
+
+/* ── iTIP Day Schedule Timeline ─────────────────────────────────────── */
+.itip-day-timeline-expander {
+  border-radius: 8px;
+  margin-top: 4px;
+}
+
+.itip-day-timeline-container {
+  background-color: transparent;
+  border: none;
+  border-left: 1px solid alpha(@window_fg_color, 0.08);
+  padding: 0 0 0 16px;
+  min-width: 200px;
+  max-width: 300px;
+}
+
+.itip-timeline-scrolled {
+  background-color: transparent;
+  border: none;
+  border-radius: 0;
+}
+
+.itip-timeline-target-event {
+  box-shadow: 0 0 0 2px @accent_color;
+  font-weight: 600;
+}
+
+.itip-timeline-conflict-event {
+  box-shadow: 0 0 0 2px @warning_color !important;
+  border-left: 3px solid @warning_color;
+}
+
+.itip-timeline-target-all-day {
+  box-shadow: 0 0 0 2px @accent_color;
+  background-color: alpha(@accent_color, 0.15);
+  color: @accent_fg_color;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-weight: 600;
 }
 
