@@ -147,12 +147,13 @@ mod imp {
     use super::*;
     use std::cell::Cell;
     use std::cell::RefCell;
+    use std::collections::HashSet;
 
     #[derive(Debug, Default)]
     pub struct MeridianApplication {
         pub reminder_source: RefCell<Option<glib::SourceId>>,
         pub reminder_check_in_progress: Cell<bool>,
-        pub reminder_action_in_progress: Cell<bool>,
+        pub reminder_actions_in_flight: RefCell<HashSet<String>>,
     }
 
     #[glib::object_subclass]
@@ -744,25 +745,6 @@ impl MeridianApplication {
         window.open_component(identity)
     }
 
-    fn set_reminder_action_sensitivity(&self, enabled: bool) {
-        for name in [
-            "snooze-reminder-5m",
-            "snooze-reminder-10m",
-            "snooze-reminder-15m",
-            "snooze-reminder-30m",
-            "snooze-reminder-1h",
-            "snooze-reminder-1d",
-            "dismiss-reminder",
-        ] {
-            if let Some(action) = self
-                .lookup_action(name)
-                .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
-            {
-                action.set_enabled(enabled);
-            }
-        }
-    }
-
     fn apply_reminder_action(&self, target: &str, action: ReminderAction) -> bool {
         let raw_target = target.to_owned();
         let target = match parse_reminder_action_target(target) {
@@ -772,10 +754,13 @@ impl MeridianApplication {
                 return false;
             }
         };
-        if self.imp().reminder_action_in_progress.replace(true) {
-            return false;
+        {
+            let mut in_flight = self.imp().reminder_actions_in_flight.borrow_mut();
+            if in_flight.contains(&target.key) {
+                return false;
+            }
+            in_flight.insert(target.key.clone());
         }
-        self.set_reminder_action_sensitivity(false);
 
         let key = target.key.clone();
         let claim_token = target.claim_token.clone();
@@ -817,18 +802,18 @@ impl MeridianApplication {
         });
 
         let app = self.downgrade();
+        let action_key = target.key.clone();
         glib::spawn_future_local(async move {
             let result = receiver.recv().await;
             let Some(app) = app.upgrade() else {
                 return;
             };
-            app.imp().reminder_action_in_progress.set(false);
-            app.set_reminder_action_sensitivity(true);
+            app.imp().reminder_actions_in_flight.borrow_mut().remove(&action_key);
             let window = app.main_window();
             match result {
                 Ok(Ok(())) => {
                     window.finish_reminder_action(&raw_target, true, None);
-                    app.withdraw_notification(&reminder_notification_id(&target.key));
+                    app.withdraw_notification(&reminder_notification_id(&action_key));
                 }
                 Ok(Err(error)) => {
                     let message = error.to_string();

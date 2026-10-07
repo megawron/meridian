@@ -1661,7 +1661,7 @@ fn completed_delivery_is_current(state: &ReminderState, key: &str, token: &str, 
             // completion timestamp.  It is deliberately not actionable:
             // without an age there is no safe way to distinguish a live
             // notification from a stale one after restart.
-            .is_some_and(|completed_at| *completed_at > now.saturating_sub(MAX_CLAIM_SECONDS))
+            .is_some_and(|completed_at| *completed_at >= now.saturating_sub(MAX_LATE_SECONDS))
 }
 
 fn completed_delivery_action(state: &ReminderState, key: &str) -> Option<DeliveryAction> {
@@ -1840,6 +1840,15 @@ impl ReminderStore {
             state
                 .pending
                 .retain(|_, claim| claim.claimed_at > now.saturating_sub(MAX_CLAIM_SECONDS));
+            state
+                .delivery_completed_at
+                .retain(|_, completed_at| *completed_at > now.saturating_sub(MAX_LATE_SECONDS));
+            state
+                .delivery_tokens
+                .retain(|key, _| state.delivery_completed_at.contains_key(key));
+            state
+                .delivery_actions
+                .retain(|key, _| state.delivery_completed_at.contains_key(key));
             let mut deliveries = Vec::new();
             for candidate in due_reminders_from_state(state, candidates, now) {
                 if candidate.identity().is_err() {
@@ -4075,6 +4084,53 @@ mod tests {
 
         // Cleanup tempdir
         let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn delivered_reminders_remain_actionable_beyond_claim_lease_timeout() {
+        let path = temporary_path("delivered-actionable-timeout");
+        let candidate1 = test_candidate(ReminderComponentKind::Event, 1000);
+        let candidate2 = test_candidate(ReminderComponentKind::Task, 1000);
+        let mut store = ReminderStore::with_path(&path).unwrap();
+
+        // 1. Claim reminders at t = 1000
+        let deliveries = store
+            .claim_due_reminders(&[candidate1.clone(), candidate2.clone()], 1000)
+            .unwrap();
+        assert_eq!(deliveries.len(), 2);
+        let token1 = deliveries[0].claim_token.clone();
+        let token2 = deliveries[1].claim_token.clone();
+
+        // 2. Mark both delivered at t = 1000
+        assert!(store.mark_delivered_if_claimed_at(&candidate1.key, &token1, 1000).unwrap());
+        assert!(store.mark_delivered_if_claimed_at(&candidate2.key, &token2, 1000).unwrap());
+
+        // 3. Past MAX_CLAIM_SECONDS (e.g. 10 minutes later = t 1600):
+        // Delivered reminders must NOT be considered stale; user can dismiss and snooze
+        let now_later = 1000 + 600;
+        assert!(store.dismiss_if_current_at(&candidate1.key, &token1, now_later).unwrap());
+        assert!(store.snooze_if_current_at(&candidate2.key, &token2, 3000, now_later).unwrap());
+
+        // 4. Repeated actions are idempotent
+        assert!(store.dismiss_if_current_at(&candidate1.key, &token1, now_later + 1).unwrap());
+        assert!(store.snooze_if_current_at(&candidate2.key, &token2, 3000, now_later + 1).unwrap());
+
+        // 5. Cross-action rejection: dismissed reminder cannot be snoozed, and snoozed reminder cannot be dismissed
+        assert!(!store.snooze_if_current_at(&candidate1.key, &token1, 3500, now_later + 2).unwrap());
+        assert!(!store.dismiss_if_current_at(&candidate2.key, &token2, now_later + 2).unwrap());
+
+        // 6. Beyond MAX_LATE_SECONDS (e.g. 8 days later): delivery action is stale
+        let candidate3 = test_candidate(ReminderComponentKind::Memo, 2000);
+        let deliveries3 = store
+            .claim_due_reminders(&[candidate3.clone()], 2000)
+            .unwrap();
+        let token3 = deliveries3[0].claim_token.clone();
+        assert!(store.mark_delivered_if_claimed_at(&candidate3.key, &token3, 2000).unwrap());
+
+        let ancient_time = 2000 + MAX_LATE_SECONDS + 1;
+        assert!(!store.dismiss_if_current_at(&candidate3.key, &token3, ancient_time).unwrap());
+
+        let _ = fs::remove_file(path);
     }
 }
 

@@ -121,18 +121,21 @@ impl ReminderDialog {
             let entries = Rc::clone(&entries);
             let on_action = Rc::clone(&on_action);
             move |seconds| {
-                let to_snooze: Vec<ReminderDelivery> = entries
+                let to_snooze: Vec<(Rc<Cell<bool>>, gtk::ListBoxRow, ReminderDelivery)> = entries
                     .borrow()
                     .values()
                     .filter(|e| !e.busy.get())
                     .map(|e| {
                         e.busy.set(true);
                         e.row.set_sensitive(false);
-                        e.delivery.clone()
+                        (Rc::clone(&e.busy), e.row.clone(), e.delivery.clone())
                     })
                     .collect();
-                for delivery in to_snooze {
-                    on_action(delivery, ReminderDialogAction::Snooze(seconds));
+                for (busy, row, delivery) in to_snooze {
+                    if !on_action(delivery, ReminderDialogAction::Snooze(seconds)) {
+                        busy.set(false);
+                        row.set_sensitive(true);
+                    }
                 }
             }
         });
@@ -142,18 +145,21 @@ impl ReminderDialog {
             let entries = Rc::clone(&entries);
             let on_action = Rc::clone(&on_action);
             dismiss_all_button.connect_clicked(move |_| {
-                let to_dismiss: Vec<ReminderDelivery> = entries
+                let to_dismiss: Vec<(Rc<Cell<bool>>, gtk::ListBoxRow, ReminderDelivery)> = entries
                     .borrow()
                     .values()
                     .filter(|e| !e.busy.get())
                     .map(|e| {
                         e.busy.set(true);
                         e.row.set_sensitive(false);
-                        e.delivery.clone()
+                        (Rc::clone(&e.busy), e.row.clone(), e.delivery.clone())
                     })
                     .collect();
-                for delivery in to_dismiss {
-                    on_action(delivery, ReminderDialogAction::Dismiss);
+                for (busy, row, delivery) in to_dismiss {
+                    if !on_action(delivery, ReminderDialogAction::Dismiss) {
+                        busy.set(false);
+                        row.set_sensitive(true);
+                    }
                 }
             });
         }
