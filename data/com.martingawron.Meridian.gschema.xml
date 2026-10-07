@@ -162,6 +162,11 @@
       <summary>Play sound when reminders are due</summary>
       <description>Whether to play an audible alert when a calendar or task reminder is due.</description>
     </key>
+    <key name="reminder-notify-with-tray" type="b">
+      <default>true</default>
+      <summary>Show reminders in notification tray only</summary>
+      <description>When set to true, reminders are shown only as desktop notifications; when false, the reminders window is presented immediately.</description>
+    </key>
     <key name="confirm-destructive-actions" type="b">
       <default>true</default>
       <summary>Ask before destructive actions</summary>

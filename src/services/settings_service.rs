@@ -972,6 +972,14 @@ impl AppSettings {
         self.set_boolean("reminder-sound-enabled", value);
     }
 
+    pub fn reminder_notify_with_tray(&self) -> bool {
+        self.settings.boolean("reminder-notify-with-tray")
+    }
+
+    pub fn set_reminder_notify_with_tray(&self, value: bool) {
+        self.set_boolean("reminder-notify-with-tray", value);
+    }
+
     pub fn mail_notification_enabled(&self) -> bool {
         self.settings.boolean("mail-notification-enabled")
     }
@@ -3554,6 +3562,9 @@ impl AppSettings {
             "reminder-sound-enabled" => {
                 self.set_reminder_sound_enabled(parse_migrated_bool(key, value)?);
             }
+            "reminder-notify-with-tray" => {
+                self.set_reminder_notify_with_tray(parse_migrated_bool(key, value)?);
+            }
             "mail-notification-enabled" => {
                 self.set_mail_notification_enabled(parse_migrated_bool(key, value)?);
             }
@@ -4173,6 +4184,7 @@ impl AppSettings {
             "hide-cancelled-events",
             "notifications-enabled",
             "reminder-sound-enabled",
+            "reminder-notify-with-tray",
             "mail-notification-enabled",
             "mail-notification-only-inbox",
             "mail-notification-sound-enabled",
@@ -6088,6 +6100,7 @@ mod tests {
         settings.set_mark_read_timeout(3000);
         settings.set_composer_html(false);
         settings.set_reminder_sound_enabled(true);
+        settings.set_reminder_notify_with_tray(false);
         settings.set_mail_notification_sound_enabled(true);
 
         // Verify mutations were applied
@@ -6101,6 +6114,7 @@ mod tests {
         assert_eq!(settings.mark_read_timeout(), 3000);
         assert_eq!(settings.composer_html(), false);
         assert_eq!(settings.reminder_sound_enabled(), true);
+        assert_eq!(settings.reminder_notify_with_tray(), false);
         assert_eq!(settings.mail_notification_sound_enabled(), true);
 
         // Reset all settings to defaults
@@ -6117,6 +6131,7 @@ mod tests {
         assert_eq!(settings.mark_read_timeout(), 1500);
         assert_eq!(settings.composer_html(), true);
         assert_eq!(settings.reminder_sound_enabled(), false);
+        assert_eq!(settings.reminder_notify_with_tray(), true);
         assert_eq!(settings.mail_notification_sound_enabled(), false);
     }
 
