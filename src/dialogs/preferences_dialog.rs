@@ -4510,6 +4510,28 @@ impl PreferencesDialog {
         }
         group_calendar_reminders.add(&row_reminder_sound);
 
+        let row_reminder_tray = adw::SwitchRow::builder()
+            .title(&crate::i18n::gettext("Show reminders in notification tray only"))
+            .subtitle(&crate::i18n::gettext(
+                "Display reminders as notifications without automatically opening the dialog window",
+            ))
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_reminder_tray.set_active(settings.reminder_notify_with_tray());
+            let settings_for_tray = settings.clone();
+            row_reminder_tray.connect_active_notify(move |row| {
+                settings_for_tray.set_reminder_notify_with_tray(row.is_active());
+            });
+            let row_reminder_tray_ref = row_reminder_tray.clone();
+            settings.connect_changed(Some("reminder-notify-with-tray"), move |s, _| {
+                let active = s.boolean("reminder-notify-with-tray");
+                if row_reminder_tray_ref.is_active() != active {
+                    row_reminder_tray_ref.set_active(active);
+                }
+            });
+        }
+        group_calendar_reminders.add(&row_reminder_tray);
+
         let row_notifications = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Desktop Notifications"))
             .subtitle(

@@ -8370,3 +8370,9 @@ msgstr "Standardeinstellungen"
 msgid "No additional configuration is required for this plugin."
 msgstr "Für dieses Plugin sind keine zusätzlichen Parameter erforderlich."
 
+msgid "Show reminders in notification tray only"
+msgstr "Erinnerungen nur im Benachrichtigungsbereich anzeigen"
+
+msgid "Display reminders as notifications without automatically opening the dialog window"
+msgstr "Erinnerungen als Benachrichtigung anzeigen, ohne automatisch das Dialogfenster zu öffnen"
+
