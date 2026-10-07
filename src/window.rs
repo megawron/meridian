@@ -1398,6 +1398,7 @@ impl MeridianWindow {
 
         if let Some(page) = self.imp().mail_stack_page.borrow().as_ref() {
             page.set_badge_number(if show_counter { count } else { 0 });
+            page.set_needs_attention(show_counter && count > 0);
         }
 
         if show_counter && count > 0 {
@@ -8703,9 +8704,10 @@ mod tests {
         // Verify sync_unread_counter_and_title runs without panic
         window.sync_unread_counter_and_title();
 
-        // Check badge behavior: when no unread messages, badge_number is 0
+        // Check badge behavior: when no unread messages, badge_number is 0 and needs_attention is false
         if let Some(page) = mail_page {
             assert_eq!(page.badge_number(), 0);
+            assert!(!page.needs_attention());
         }
     }
 }

@@ -54,7 +54,8 @@ searchentry.error,
 }
 
 /* ── Badge (unread count) ──────────────────────────────────────────────── */
-.badge {
+label.badge,
+.badge:not(indicatorbin) {
   background-color: @accent_bg_color;
   color: @accent_fg_color;
   border-radius: 9999px;
@@ -63,6 +64,34 @@ searchentry.error,
   font-weight: 700;
   min-width: 18px;
   min-height: 18px;
+}
+
+/* ── ViewSwitcher / AdwIndicatorBin Unread Badge ──────────────────────── */
+indicatorbin,
+indicatorbin.badge {
+  background: none;
+  background-color: transparent;
+  border-radius: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+indicatorbin > indicator {
+  background-color: @accent_bg_color;
+  color: @accent_fg_color;
+  border-radius: 9999px;
+  min-width: 14px;
+  min-height: 14px;
+  margin: 1px;
+}
+
+indicatorbin > indicator > label {
+  color: @accent_fg_color;
+  font-size: 0.65rem;
+  font-weight: 800;
+  padding: 0 3px;
 }
 
 /* ── Message List ──────────────────────────────────────────────────────── */
