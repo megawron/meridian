@@ -2643,6 +2643,14 @@ impl AppSettings {
         self.set_boolean("mail-show-labels", value);
     }
 
+    pub fn mail_show_recipient_address(&self) -> bool {
+        self.settings.boolean("mail-show-recipient-address")
+    }
+
+    pub fn set_mail_show_recipient_address(&self, value: bool) {
+        self.set_boolean("mail-show-recipient-address", value);
+    }
+
     pub fn mail_show_size(&self) -> bool {
         self.settings.boolean("mail-show-size")
     }
@@ -3777,6 +3785,9 @@ impl AppSettings {
                 self.set_mail_show_preview_text(parse_migrated_bool(key, value)?);
             }
             "mail-show-labels" => self.set_mail_show_labels(parse_migrated_bool(key, value)?),
+            "mail-show-recipient-address" => {
+                self.set_mail_show_recipient_address(parse_migrated_bool(key, value)?);
+            }
             "mail-show-size" => self.set_mail_show_size(parse_migrated_bool(key, value)?),
             "mail-show-follow-up-due" => {
                 self.set_mail_show_follow_up_due(parse_migrated_bool(key, value)?);
@@ -4269,6 +4280,7 @@ impl AppSettings {
             "mail-show-attachment",
             "mail-show-preview-text",
             "mail-show-labels",
+            "mail-show-recipient-address",
             "mail-labels",
             "mail-show-size",
             "mail-show-follow-up-due",

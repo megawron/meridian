@@ -328,9 +328,19 @@ impl FolderSelection {
     }
 
     fn configured_initial() -> Self {
+        let unified_enabled = AppSettings::try_new()
+            .map(|settings| settings.mail_enable_unified_inbox())
+            .unwrap_or(true);
         let folder_id = AppSettings::try_new()
             .map(|settings| settings.mail_default_folder())
-            .unwrap_or_else(|| "all".to_string());
+            .unwrap_or_else(|| "inbox".to_string());
+        if unified_enabled {
+            match folder_id.as_str() {
+                "inbox" | "all" => return Self::from_folder_id("unified_inbox"),
+                "sent" => return Self::from_folder_id("unified_sent"),
+                _ => {}
+            }
+        }
         Self::from_folder_id(&folder_id)
     }
 
@@ -1541,6 +1551,39 @@ fn parse_single_address(item: &str) -> (String, String) {
     (email.clone(), email)
 }
 
+pub(crate) fn format_recipient_display(raw: &str, show_address: bool) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let recipients = parse_email_recipients(trimmed);
+    if recipients.is_empty() {
+        return trimmed.to_string();
+    }
+    recipients
+        .into_iter()
+        .map(|(name, email)| {
+            if show_address {
+                if email.contains('@') {
+                    email
+                } else if !name.trim().is_empty() {
+                    name
+                } else {
+                    email
+                }
+            } else {
+                if !name.trim().is_empty() {
+                    name
+                } else {
+                    email
+                }
+            }
+        })
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn extract_emails_from_text(text: &str) -> Vec<String> {
     let mut emails = Vec::new();
     for token in text.split(|c: char| {
@@ -1789,7 +1832,7 @@ fn mail_list_uses_wide_messages(profile: &str, order: &[String]) -> bool {
 }
 
 fn mail_list_profile_allows_column(profile: &str, wide_messages: bool, column: &str) -> bool {
-    if column == "important" {
+    if column == "important" || (column == "preview" && profile != "cards") {
         return false;
     }
     match profile {
@@ -1802,7 +1845,7 @@ fn mail_list_profile_allows_column(profile: &str, wide_messages: bool, column: &
         _ => match column {
             "messages" => wide_messages,
             "sender" | "subject" => !wide_messages,
-            "important" => false,
+            "important" | "preview" | "follow-up-due" | "location" => false,
             _ => true,
         },
     }
@@ -1986,13 +2029,39 @@ pub(crate) fn compute_table_columns_geometry(
     let w_flagged = if show_flagged { FIXED_ICON_WIDTH } else { 0.0 };
     let w_follow_up = if show_follow_up { FIXED_ICON_WIDTH } else { 0.0 };
     let w_avatar = if show_avatar { FIXED_ICON_WIDTH } else { 0.0 };
-    let w_sender = if show_sender { sender_width.max(60.0) + sep_width } else { 0.0 };
-    let w_recipient = if show_recipient { recipient_width.max(60.0) + sep_width } else { 0.0 };
-    let w_date = if show_date { date_width.max(60.0) + sep_width } else { 0.0 };
+    let sep_after_subject = if (show_date || show_size) && sep_width > 0.0 { sep_width } else { 0.0 };
+    let w_date = if show_date { date_width.max(60.0) } else { 0.0 };
     let w_size = if show_size { size_width.max(40.0) } else { 0.0 };
 
-    let total_non_subject = w_status + w_attachment + w_flagged + w_follow_up + w_avatar + w_sender + w_recipient + w_date + w_size;
-    let w_subject = (total_width - total_non_subject).max(60.0);
+    let fixed_non_text = w_status + w_attachment + w_flagged + w_follow_up + w_avatar + sep_after_subject + w_date + w_size;
+    let avail_for_text = (total_width - fixed_non_text).max(60.0);
+
+    let sep_sender = if show_sender { sep_width } else { 0.0 };
+    let sep_recipient = if show_recipient { sep_width } else { 0.0 };
+    let text_seps = sep_sender + sep_recipient;
+    let net_text_avail = (avail_for_text - text_seps).max(60.0);
+
+    let pref_sender = if show_sender { sender_width.max(60.0) } else { 0.0 };
+    let pref_recipient = if show_recipient { recipient_width.max(60.0) } else { 0.0 };
+
+    let min_subject = 100.0;
+    let threshold = pref_sender + pref_recipient + min_subject;
+
+    let (actual_sender_w, actual_recipient_w, w_subject) = if net_text_avail >= threshold {
+        let actual_s = pref_sender;
+        let actual_r = pref_recipient;
+        let subj = (net_text_avail - actual_s - actual_r).max(60.0);
+        (actual_s, actual_r, subj)
+    } else {
+        let scale = net_text_avail / threshold;
+        let actual_s = if show_sender { (pref_sender * scale).max(60.0) } else { 0.0 };
+        let actual_r = if show_recipient { (pref_recipient * scale).max(60.0) } else { 0.0 };
+        let subj = (net_text_avail - actual_s - actual_r).max(60.0);
+        (actual_s, actual_r, subj)
+    };
+
+    let w_sender = if show_sender { actual_sender_w + sep_sender } else { 0.0 };
+    let w_recipient = if show_recipient { actual_recipient_w + sep_recipient } else { 0.0 };
 
     let default_order = [
         "status",
@@ -2054,7 +2123,6 @@ pub(crate) fn compute_table_columns_geometry(
             resolved_order.insert(new_subj_pos + 1, "size");
         }
     }
-
     let mut geom = TableColumnsGeometry::default();
     let mut cur_x = 0.0;
 
@@ -2081,23 +2149,19 @@ pub(crate) fn compute_table_columns_geometry(
                 cur_x += w_avatar;
             }
             "sender" => {
-                let actual_w = if show_sender { sender_width.max(60.0) } else { 0.0 };
-                geom.sender = ColumnRect { x: cur_x, width: actual_w };
+                geom.sender = ColumnRect { x: cur_x, width: actual_sender_w };
                 cur_x += w_sender;
             }
             "recipient" => {
-                let actual_w = if show_recipient { recipient_width.max(60.0) } else { 0.0 };
-                geom.recipient = ColumnRect { x: cur_x, width: actual_w };
+                geom.recipient = ColumnRect { x: cur_x, width: actual_recipient_w };
                 cur_x += w_recipient;
             }
             "subject" => {
                 geom.subject = ColumnRect { x: cur_x, width: w_subject };
-                cur_x += w_subject;
+                cur_x += w_subject + sep_after_subject;
             }
             "date" => {
-                let actual_w = if show_date { date_width.max(60.0) } else { 0.0 };
-                let x = if show_date && sep_width > 0.0 { cur_x + sep_width } else { cur_x };
-                geom.date = ColumnRect { x, width: actual_w };
+                geom.date = ColumnRect { x: cur_x, width: w_date };
                 cur_x += w_date;
             }
             "size" => {
@@ -2306,7 +2370,10 @@ impl PreparedMailTableLayout {
             w += self.size_width;
         }
         if self.show_date {
-            w += self.date_width + self.sep_width;
+            w += self.date_width;
+        }
+        if (self.show_date || self.show_size) && self.sep_width > 0.0 {
+            w += self.sep_width;
         }
         w
     }
@@ -2316,10 +2383,10 @@ impl PreparedMailTableLayout {
     }
 
     pub fn col_date_sep_x(&self) -> f64 {
-        (self.col_date_x() - self.sep_width).max(self.col_subject_x() + self.col_subject_w())
+        self.col_subject_x() + self.col_subject_w()
     }
     pub fn col_date_sep_w(&self) -> f64 {
-        if self.show_date {
+        if (self.show_date || self.show_size) && self.sep_width > 0.0 {
             self.sep_width
         } else {
             0.0
@@ -2411,10 +2478,10 @@ pub(crate) fn prepare_mail_table_layout_from_rows(
         row.y = (i as f64) * row_height;
         row.height = row_height;
         if row.markup_dark.is_empty() {
-            row.markup_dark = format_mail_table_subject_markup(&row.subject, &row.snippet, row.is_unread, true, true, row.is_important);
+            row.markup_dark = format_mail_table_subject_markup(&row.subject, &row.snippet, &row.labels, row.is_unread, true, true, true, row.is_important);
         }
         if row.markup_light.is_empty() {
-            row.markup_light = format_mail_table_subject_markup(&row.subject, &row.snippet, row.is_unread, true, false, row.is_important);
+            row.markup_light = format_mail_table_subject_markup(&row.subject, &row.snippet, &row.labels, row.is_unread, true, true, false, row.is_important);
         }
     }
     let height = (rows.len() as f64 * row_height).max(40.0);
@@ -2552,8 +2619,9 @@ pub(crate) fn prepare_mail_table_layout(
         let snippet = msg.preview_snippet();
         let is_unread = msg.is_unread();
         let is_important = msg.is_important();
-        let markup_dark = format_mail_table_subject_markup(&subject, &snippet, is_unread, true, true, is_important);
-        let markup_light = format_mail_table_subject_markup(&subject, &snippet, is_unread, true, false, is_important);
+        let labels = msg.labels();
+        let markup_dark = format_mail_table_subject_markup(&subject, &snippet, &labels, is_unread, true, true, true, is_important);
+        let markup_light = format_mail_table_subject_markup(&subject, &snippet, &labels, is_unread, true, true, false, is_important);
 
         rows.push(PreparedMailTableRow {
             model_index: i as usize,
@@ -3031,11 +3099,55 @@ pub(crate) fn draw_cairo_avatar_circle(
 pub(crate) const DEFAULT_IMPORTANT_FG_COLOR_LIGHT: &str = "#A7453E";
 pub(crate) const DEFAULT_IMPORTANT_FG_COLOR_DARK: &str = "#FF6B6B";
 
+fn format_table_labels_markup(
+    labels: &[String],
+    is_dark: bool,
+) -> String {
+    if labels.is_empty() {
+        return String::new();
+    }
+    let configured = AppSettings::try_new()
+        .map(|s| s.mail_labels())
+        .unwrap_or_else(crate::services::settings_service::MailLabelDefinition::default_labels);
+
+    let default_color = if is_dark { "#9a9996" } else { "#5f6368" };
+
+    let mut parts = Vec::new();
+    for lbl in labels {
+        let trimmed = lbl.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let (display_name, color) = if let Some(def) = configured.iter().find(|d| {
+            d.tag.eq_ignore_ascii_case(trimmed)
+                || d.name.eq_ignore_ascii_case(trimmed)
+                || d.display_name().eq_ignore_ascii_case(trimmed)
+        }) {
+            (def.display_name(), def.color.clone())
+        } else if let Some(stripped) = trimmed
+            .strip_prefix("$Label")
+            .or_else(|| trimmed.strip_prefix("$label"))
+        {
+            (stripped.replace('_', " ").trim().to_string(), default_color.to_string())
+        } else {
+            (trimmed.replace('_', " "), default_color.to_string())
+        };
+
+        if !display_name.is_empty() {
+            let esc = glib::markup_escape_text(&display_name);
+            parts.push(format!(r#"<span foreground="{color}" weight="bold">[{esc}]</span>"#));
+        }
+    }
+    parts.join(" ")
+}
+
 pub(crate) fn format_mail_table_subject_markup(
     raw_subject: &str,
     raw_snippet: &str,
+    labels: &[String],
     is_unread: bool,
     show_preview_text: bool,
+    show_labels: bool,
     is_dark: bool,
     is_important: bool,
 ) -> String {
@@ -3064,6 +3176,17 @@ pub(crate) fn format_mail_table_subject_markup(
     };
     let esc_subj = glib::markup_escape_text(&subject_display);
 
+    let labels_markup = if show_labels && !labels.is_empty() {
+        format_table_labels_markup(labels, is_dark)
+    } else {
+        String::new()
+    };
+    let labels_suffix = if !labels_markup.is_empty() {
+        format!(" {labels_markup}")
+    } else {
+        String::new()
+    };
+
     let clean_snip = if raw_snippet.contains('\n') || raw_snippet.contains('\r') {
         raw_snippet.split_whitespace().collect::<Vec<_>>().join(" ")
     } else {
@@ -3082,17 +3205,17 @@ pub(crate) fn format_mail_table_subject_markup(
         let esc_snip = glib::markup_escape_text(&clean_snip);
         if is_unread {
             format!(
-                r#"<span foreground="{unread_hex}" weight="bold">{esc_subj}</span> <span foreground="{dim_hex}" weight="normal">- {esc_snip}</span>"#
+                r#"<span foreground="{unread_hex}" weight="bold">{esc_subj}</span>{labels_suffix} <span foreground="{dim_hex}" weight="normal">- {esc_snip}</span>"#
             )
         } else {
             format!(
-                r#"<span foreground="{read_hex}" weight="medium">{esc_subj}</span> <span foreground="{dim_hex}" weight="normal">- {esc_snip}</span>"#
+                r#"<span foreground="{read_hex}" weight="medium">{esc_subj}</span>{labels_suffix} <span foreground="{dim_hex}" weight="normal">- {esc_snip}</span>"#
             )
         }
     } else {
         let subj_hex = if is_unread { unread_hex } else { read_hex };
         let weight = if is_unread { "bold" } else { "medium" };
-        format!(r#"<span foreground="{subj_hex}" weight="{weight}">{esc_subj}</span>"#)
+        format!(r#"<span foreground="{subj_hex}" weight="{weight}">{esc_subj}</span>{labels_suffix}"#)
     }
 }
 
@@ -5574,6 +5697,15 @@ fn mail_root_sort_record(
     }
 }
 
+#[derive(Clone)]
+pub struct UnreadCountCallback(pub Rc<dyn Fn(u32)>);
+
+impl std::fmt::Debug for UnreadCountCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("UnreadCountCallback")
+    }
+}
+
 /// State for applying a backend result to GTK models without monopolising the
 /// main context.  EDS/Camel already runs in a worker; this is the second half
 /// of the same boundary: creating GObjects, list-model entries and thread
@@ -5605,6 +5737,9 @@ struct PendingMailApply {
     graph_search_state: Option<GraphSearchState>,
     graph_search_next_cursor: Option<String>,
     local_reason: Option<String>,
+    is_same_folder_refresh: bool,
+    existing_messages: HashMap<String, MailMessageObject>,
+    incoming_ids: HashSet<String>,
 }
 
 struct PendingMailCompletion {
@@ -5793,6 +5928,7 @@ impl PendingMailApply {
         pending_search: Option<String>,
         generation: u64,
         graph_search_state: Option<GraphSearchState>,
+        is_same_folder_refresh: bool,
     ) -> Self {
         let status = format_camel_status(&camel);
         let has_more = if camel.is_graph {
@@ -5844,6 +5980,9 @@ impl PendingMailApply {
             graph_search_state,
             graph_search_next_cursor,
             local_reason: None,
+            is_same_folder_refresh,
+            existing_messages: HashMap::new(),
+            incoming_ids: HashSet::new(),
         }
     }
 
@@ -5857,6 +5996,7 @@ impl PendingMailApply {
         replace: bool,
         previous_selection: MailSelectionAnchor,
         generation: u64,
+        is_same_folder_refresh: bool,
     ) -> Self {
         Self {
             started: Instant::now(),
@@ -5885,6 +6025,9 @@ impl PendingMailApply {
             graph_search_state: None,
             graph_search_next_cursor: None,
             local_reason: Some(reason),
+            is_same_folder_refresh,
+            existing_messages: HashMap::new(),
+            incoming_ids: HashSet::new(),
         }
     }
 }
@@ -6326,6 +6469,8 @@ mod imp {
         pub(crate) mail_folder_summaries: RefCell<Vec<CamelFolderSummary>>,
         pub(crate) known_unread_message_ids: RefCell<HashSet<String>>,
         pub(crate) initial_mail_load_completed: Cell<bool>,
+        pub is_same_folder_refresh: Cell<bool>,
+        pub on_unread_count_changed: RefCell<Option<UnreadCountCallback>>,
         pub crypto_status_caption: RefCell<Option<gtk::Label>>,
         pub crypto_status_chip: RefCell<Option<gtk::Box>>,
         pub crypto_status_routine: Cell<bool>,
@@ -8305,6 +8450,7 @@ impl MailPage {
                 "mail-show-avatar",
                 "mail-show-sender",
                 "mail-show-recipient",
+                "mail-show-recipient-address",
                 "mail-show-date",
                 "mail-show-preview-text",
                 "mail-show-labels",
@@ -8542,7 +8688,18 @@ impl MailPage {
     }
 
     fn apply_default_folder(&self, folder_id: &str) {
-        let selection = FolderSelection::from_folder_id(folder_id);
+        let unified_enabled = AppSettings::try_new()
+            .map(|settings| settings.mail_enable_unified_inbox())
+            .unwrap_or(true);
+        let selection = if unified_enabled {
+            match folder_id {
+                "inbox" | "all" => FolderSelection::from_folder_id("unified_inbox"),
+                "sent" => FolderSelection::from_folder_id("unified_sent"),
+                other => FolderSelection::from_folder_id(other),
+            }
+        } else {
+            FolderSelection::from_folder_id(folder_id)
+        };
         if let Some(current) = self.imp().folder_selection.borrow().as_ref() {
             current.replace(selection.clone());
         }
@@ -11242,9 +11399,40 @@ impl MailPage {
         counts
     }
 
+    pub fn total_inbox_unread_count(&self) -> u32 {
+        let mut total = 0u32;
+        let camel_folders = self.imp().mail_folder_summaries.borrow();
+        for folder in camel_folders.iter() {
+            let is_inbox = crate::services::mail_notification_service::MailNotificationService::is_inbox_folder(&folder.folder_name)
+                || crate::services::mail_notification_service::MailNotificationService::is_inbox_folder(&folder.display_name);
+            if is_inbox {
+                total = total.saturating_add(folder.unread_count);
+            }
+        }
+        if camel_folders.is_empty() {
+            let local_counts = self.current_local_folder_counts();
+            for (folder_id, (unread, _)) in local_counts {
+                if folder_id.eq_ignore_ascii_case("inbox") || folder_id == "unified_inbox" {
+                    total = total.saturating_add(unread);
+                }
+            }
+        }
+        total
+    }
+
+    pub fn set_on_unread_count_changed<F: Fn(u32) + 'static>(&self, callback: F) {
+        self.imp()
+            .on_unread_count_changed
+            .replace(Some(UnreadCountCallback(Rc::new(callback))));
+    }
+
     fn refresh_unread_counters(&self) {
         let Some(folder_list) = self.imp().folder_list.borrow().as_ref().cloned() else {
             self.refresh_search_folder_counts();
+            let total = self.total_inbox_unread_count();
+            if let Some(cb) = self.imp().on_unread_count_changed.borrow().as_ref() {
+                (cb.0)(total);
+            }
             return;
         };
         let local_counts = self.current_local_folder_counts();
@@ -11255,6 +11443,11 @@ impl MailPage {
             self.update_camel_folder_counts(&folder_list, &camel_folders, Some(&local_counts));
         }
         self.refresh_search_folder_counts();
+
+        let total = self.total_inbox_unread_count();
+        if let Some(cb) = self.imp().on_unread_count_changed.borrow().as_ref() {
+            (cb.0)(total);
+        }
     }
 
     fn selected_message(&self) -> Option<MailMessageObject> {
@@ -17222,7 +17415,14 @@ impl MailPage {
         }
         let mut current_sel = self.active_folder_selection();
         let mut auto_selected_inbox = false;
-        if current_sel.source_uid.is_none() {
+        let unified_is_visible = self
+            .imp()
+            .unified_folder_section
+            .borrow()
+            .as_ref()
+            .map(|s| s.is_visible())
+            .unwrap_or(false);
+        if !current_sel.is_unified() && current_sel.source_uid.is_none() && !unified_is_visible {
             if let Some(dynamic_selection) = self.imp().dynamic_folder_selection.borrow().as_ref() {
                 for i in 0..dynamic_selection.n_items() {
                     if let Some(row) = dynamic_selection.item(i).and_downcast::<gtk::TreeListRow>() {
@@ -17757,9 +17957,79 @@ impl MailPage {
         self.update_drawer_header_with_selection(&selection, None);
     }
 
-    fn select_folder_row(&self, selection: &FolderSelection) {
+    pub(crate) fn has_sidebar_folder_selected(&self) -> bool {
         if let Some(unified_list) = self.imp().unified_folder_list.borrow().as_ref() {
-            if selection.folder_id.starts_with("unified_") {
+            if self
+                .imp()
+                .unified_folder_section
+                .borrow()
+                .as_ref()
+                .map(|s| s.is_visible())
+                .unwrap_or(false)
+                && unified_list.selected_row().is_some()
+            {
+                return true;
+            }
+        }
+        if let Some(folder_list) = self.imp().folder_list.borrow().as_ref() {
+            if self
+                .imp()
+                .local_folder_section
+                .borrow()
+                .as_ref()
+                .map(|s| s.is_visible())
+                .unwrap_or(false)
+                && folder_list.selected_row().is_some()
+            {
+                return true;
+            }
+        }
+        if let Some(dynamic_selection) = self.imp().dynamic_folder_selection.borrow().as_ref() {
+            let pos = dynamic_selection.selected();
+            if pos != gtk::INVALID_LIST_POSITION {
+                if let Some(row) = dynamic_selection.item(pos).and_downcast::<gtk::TreeListRow>() {
+                    if let Some(folder) = row.item().and_downcast::<FolderObject>() {
+                        if folder.selectable() && row.depth() > 0 {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    fn select_folder_row(&self, selection: &FolderSelection) {
+        let unified_is_visible = self
+            .imp()
+            .unified_folder_section
+            .borrow()
+            .as_ref()
+            .map(|s| s.is_visible())
+            .unwrap_or(false);
+
+        let local_section_visible = self
+            .imp()
+            .local_folder_section
+            .borrow()
+            .as_ref()
+            .map(|s| s.is_visible())
+            .unwrap_or(false);
+
+        let target_unified_id = if selection.folder_id.starts_with("unified_") {
+            Some(selection.folder_id.clone())
+        } else if unified_is_visible && selection.source_uid.is_none() {
+            match selection.folder_id.as_str() {
+                "inbox" | "all" => Some("unified_inbox".to_string()),
+                "sent" => Some("unified_sent".to_string()),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        if let Some(unified_list) = self.imp().unified_folder_list.borrow().as_ref() {
+            if let Some(ref target_id) = target_unified_id {
                 self.imp().updating_folder_rows.set(true);
                 let mut matching_row = None;
                 for index in 0..unified_list.observe_children().n_items() {
@@ -17773,24 +18043,26 @@ impl MailPage {
                         row.data::<String>("folder-id")
                             .map(|p| p.as_ref().clone())
                     };
-                    if row_id.as_deref() == Some(&selection.folder_id) {
+                    if row_id.as_deref() == Some(target_id.as_str()) {
                         matching_row = Some(row);
                         break;
                     }
                 }
-                unified_list.select_row(matching_row.as_ref());
-                if let Some(folder_list) = self.imp().folder_list.borrow().as_ref() {
-                    folder_list.unselect_all();
+                if let Some(row) = matching_row {
+                    unified_list.select_row(Some(&row));
+                    if let Some(folder_list) = self.imp().folder_list.borrow().as_ref() {
+                        folder_list.unselect_all();
+                    }
+                    if let Some(dynamic_selection) = self.imp().dynamic_folder_selection.borrow().as_ref() {
+                        dynamic_selection.set_selected(gtk::INVALID_LIST_POSITION);
+                    }
+                    if let Some(search_list) = self.imp().search_list.borrow().as_ref() {
+                        search_list.unselect_all();
+                    }
+                    self.imp().updating_folder_rows.set(false);
+                    self.update_drawer_header_with_selection(selection, None);
+                    return;
                 }
-                if let Some(dynamic_selection) = self.imp().dynamic_folder_selection.borrow().as_ref() {
-                    dynamic_selection.set_selected(gtk::INVALID_LIST_POSITION);
-                }
-                if let Some(search_list) = self.imp().search_list.borrow().as_ref() {
-                    search_list.unselect_all();
-                }
-                self.imp().updating_folder_rows.set(false);
-                self.update_drawer_header_with_selection(selection, None);
-                return;
             } else {
                 unified_list.unselect_all();
             }
@@ -17802,22 +18074,27 @@ impl MailPage {
 
         self.imp().updating_folder_rows.set(true);
         let mut matching_row = None;
-        for index in 0..folder_list.observe_children().n_items() {
-            let Some(row) = folder_list
-                .row_at_index(index as i32)
-                .and_downcast::<gtk::ListBoxRow>()
-            else {
-                continue;
-            };
-            if Self::folder_row_data(&row)
-                .map(|data| data.selection() == *selection)
-                .unwrap_or(false)
-            {
-                matching_row = Some(row);
-                break;
+        if local_section_visible {
+            for index in 0..folder_list.observe_children().n_items() {
+                let Some(row) = folder_list
+                    .row_at_index(index as i32)
+                    .and_downcast::<gtk::ListBoxRow>()
+                else {
+                    continue;
+                };
+                if Self::folder_row_data(&row)
+                    .map(|data| data.selection() == *selection)
+                    .unwrap_or(false)
+                {
+                    matching_row = Some(row);
+                    break;
+                }
             }
+            folder_list.select_row(matching_row.as_ref());
+        } else {
+            folder_list.unselect_all();
         }
-        folder_list.select_row(matching_row.as_ref());
+
         if let Some(dynamic_selection) = self
             .imp()
             .dynamic_folder_selection
@@ -17884,6 +18161,8 @@ impl MailPage {
                         self.persist_dynamic_folder_expanded(&expanded_snapshot);
                     }
                 }
+
+                let mut matched_index = None;
                 for index in 0..dynamic_selection.n_items() {
                     let Some(row) = dynamic_selection
                         .item(index)
@@ -17912,18 +18191,91 @@ impl MailPage {
                     ) {
                         sel_src == cur_src
                             && selection.folder_name.as_deref() == current.folder_name.as_deref()
+                    } else if folder.id() == selection.folder_id {
+                        true
+                    } else if selection.source_uid.is_none() && folder.selectable() {
+                        let f_name = folder.folder_name().unwrap_or_default().to_lowercase();
+                        let f_display = folder.name().to_lowercase();
+                        let sel_id = selection.folder_id.to_lowercase();
+                        match sel_id.as_str() {
+                            "inbox" | "all" => f_name == "inbox" || f_name == "posteingang" || f_display == "posteingang" || f_display == "inbox",
+                            "sent" => f_name.contains("sent") || f_name.contains("gesendet") || f_display.contains("gesendet") || f_display.contains("sent"),
+                            "drafts" => f_name.contains("draft") || f_name.contains("entw") || f_display.contains("entw") || f_display.contains("draft"),
+                            "trash" => f_name.contains("trash") || f_name.contains("papierkorb") || f_name.contains("gelöscht") || f_display.contains("papierkorb") || f_display.contains("gelöscht"),
+                            "archive" => f_name.contains("archiv") || f_display.contains("archiv"),
+                            "spam" => f_name.contains("junk") || f_name.contains("spam") || f_display.contains("junk") || f_display.contains("spam"),
+                            _ => f_name == sel_id || f_display == sel_id,
+                        }
                     } else {
-                        folder.id() == selection.folder_id
+                        false
                     };
                     if is_match {
-                        dynamic_selection.set_selected(index);
+                        matched_index = Some(index);
                         break;
+                    }
+                }
+
+                if let Some(index) = matched_index {
+                    dynamic_selection.set_selected(index);
+                } else if matching_row.is_none() && !unified_is_visible {
+                    for index in 0..dynamic_selection.n_items() {
+                        let Some(row) = dynamic_selection.item(index).and_downcast::<gtk::TreeListRow>() else {
+                            continue;
+                        };
+                        let Some(folder) = row.item().and_downcast::<FolderObject>() else {
+                            continue;
+                        };
+                        if folder.selectable() {
+                            dynamic_selection.set_selected(index);
+                            break;
+                        }
                     }
                 }
             }
         }
+
+        // Guarantee there is always a visible selected folder in the sidebar
+        if !self.has_sidebar_folder_selected() {
+            if unified_is_visible {
+                if let Some(unified_list) = self.imp().unified_folder_list.borrow().as_ref() {
+                    if let Some(row) = unified_list.row_at_index(0).and_downcast::<gtk::ListBoxRow>() {
+                        unified_list.select_row(Some(&row));
+                    }
+                }
+            } else if let Some(dynamic_selection) = self.imp().dynamic_folder_selection.borrow().as_ref() {
+                for index in 0..dynamic_selection.n_items() {
+                    let Some(row) = dynamic_selection.item(index).and_downcast::<gtk::TreeListRow>() else {
+                        continue;
+                    };
+                    let Some(folder) = row.item().and_downcast::<FolderObject>() else {
+                        continue;
+                    };
+                    if folder.selectable() {
+                        dynamic_selection.set_selected(index);
+                        break;
+                    }
+                }
+            } else if local_section_visible {
+                if let Some(row) = folder_list.row_at_index(1).and_downcast::<gtk::ListBoxRow>() {
+                    folder_list.select_row(Some(&row));
+                }
+            }
+        }
+
         self.imp().updating_folder_rows.set(false);
         self.update_drawer_header_with_selection(selection, None);
+
+        // Defer one check to next idle cycle to handle asynchronous TreeListModel row expansion
+        let page_weak = self.downgrade();
+        let sel_clone = selection.clone();
+        glib::idle_add_local_once(move || {
+            let Some(page) = page_weak.upgrade() else {
+                return;
+            };
+            if !page.has_sidebar_folder_selected() {
+                page.select_folder_row(&sel_clone);
+            }
+        });
     }
 
     fn build_unified_mail_toolbar(&self) -> gtk::Box {
@@ -18492,6 +18844,9 @@ impl MailPage {
             });
         for column in order {
             if let Some(widget) = children.remove(&format!("mail-column-{column}")) {
+                if matches!(column.as_str(), "preview" | "follow-up-due" | "location" | "important") {
+                    widget.set_visible(false);
+                }
                 container.append(&widget);
                 if column == "sender" {
                     if let Some(sep) = children.remove("mail-column-sep-sender") {
@@ -18509,7 +18864,10 @@ impl MailPage {
             }
         }
         let spacer = children.remove("mail-column-scrollbar-spacer");
-        for (_, widget) in children {
+        for (name, widget) in children {
+            if matches!(name.as_str(), "mail-column-preview" | "mail-column-follow-up-due" | "mail-column-location" | "mail-column-important") {
+                widget.set_visible(false);
+            }
             container.append(&widget);
         }
         if let Some(spacer) = spacer {
@@ -18624,16 +18982,44 @@ impl MailPage {
             .css_classes(vec!["boxed-list"])
             .build();
 
+        const TABLE_REORDERABLE_COLUMNS: [&str; 10] = [
+            "status",
+            "attachment",
+            "flagged",
+            "follow-up",
+            "avatar",
+            "sender",
+            "recipient",
+            "subject",
+            "date",
+            "size",
+        ];
+
         let settings = AppSettings::try_new();
-        let initial_order: Vec<String> = settings
-            .as_ref()
-            .map(|s| s.mail_list_column_order())
-            .unwrap_or_else(|| {
-                crate::services::settings_service::MAIL_LIST_COLUMN_IDS
-                    .iter()
-                    .map(|id| (*id).to_string())
-                    .collect()
-            });
+        let initial_order: Vec<String> = {
+            let current = settings
+                .as_ref()
+                .map(|s| s.mail_list_column_order())
+                .unwrap_or_else(|| {
+                    crate::services::settings_service::MAIL_LIST_COLUMN_IDS
+                        .iter()
+                        .map(|id| (*id).to_string())
+                        .collect()
+                });
+            let mut filtered = Vec::new();
+            for col in current {
+                if TABLE_REORDERABLE_COLUMNS.contains(&col.as_str()) && !filtered.contains(&col) {
+                    filtered.push(col);
+                }
+            }
+            for col in TABLE_REORDERABLE_COLUMNS {
+                let s = col.to_string();
+                if !filtered.contains(&s) {
+                    filtered.push(s);
+                }
+            }
+            filtered
+        };
 
         let order_state = Rc::new(RefCell::new(initial_order));
         let page_weak = self.downgrade();
@@ -18658,13 +19044,8 @@ impl MailPage {
                     "subject" => gettext("Subject"),
                     "date" => gettext("Date"),
                     "follow-up" => gettext("Follow-up"),
-                    "important" => gettext("Importance"),
                     "avatar" => gettext("Avatar"),
-                    "preview" => gettext("Preview"),
                     "size" => gettext("Size"),
-                    "follow-up-due" => gettext("Due by"),
-                    "location" => gettext("Location"),
-                    "messages" => gettext("Messages"),
                     _ => column.clone(),
                 };
                 let row = adw::ActionRow::builder()
@@ -18696,10 +19077,16 @@ impl MailPage {
                             return;
                         };
                         state_rc.borrow_mut().swap(index, target);
-                        let order = state_rc.borrow().clone();
+                        let mut full_order = state_rc.borrow().clone();
+                        for id in crate::services::settings_service::MAIL_LIST_COLUMN_IDS {
+                            let s = id.to_string();
+                            if !full_order.contains(&s) {
+                                full_order.push(s);
+                            }
+                        }
                         if let Some(settings) = settings_cloned.as_ref() {
                             settings.set_mail_list_view_profile("custom");
-                            settings.set_mail_list_column_order(&order);
+                            settings.set_mail_list_column_order(&full_order);
                         }
                         if let Some(page) = page_weak_cloned.upgrade() {
                             page.rebuild_mail_column_layout();
@@ -18725,14 +19112,21 @@ impl MailPage {
         let settings_for_reset = settings.clone();
         let page_for_reset = page_weak.clone();
         reset_btn.connect_clicked(move |_| {
-            let defaults: Vec<String> = crate::services::settings_service::MAIL_LIST_COLUMN_IDS
+            let defaults: Vec<String> = TABLE_REORDERABLE_COLUMNS
                 .iter()
                 .map(|id| (*id).to_string())
                 .collect();
             *state_for_reset.borrow_mut() = defaults.clone();
+            let mut full_defaults = defaults;
+            for id in crate::services::settings_service::MAIL_LIST_COLUMN_IDS {
+                let s = id.to_string();
+                if !full_defaults.contains(&s) {
+                    full_defaults.push(s);
+                }
+            }
             if let Some(settings) = settings_for_reset.as_ref() {
                 settings.set_mail_list_view_profile("custom");
-                settings.set_mail_list_column_order(&defaults);
+                settings.set_mail_list_column_order(&full_defaults);
             }
             if let Some(page) = page_for_reset.upgrade() {
                 page.rebuild_mail_column_layout();
@@ -18774,7 +19168,7 @@ impl MailPage {
 
         let settings = AppSettings::try_new();
 
-        let column_toggles: [(&'static str, String); 13] = [
+        let column_toggles: [(&'static str, String); 9] = [
             ("mail-show-status", gettext("Status")),
             ("mail-show-attachment", gettext("Attachments")),
             ("mail-show-flagged", gettext("Star")),
@@ -18782,72 +19176,90 @@ impl MailPage {
             ("mail-show-sender", gettext("Sender")),
             ("mail-show-recipient", gettext("Recipient")),
             ("mail-show-date", gettext("Date")),
-            ("mail-show-preview-text", gettext("Preview text")),
-            ("mail-show-avatar", gettext("Avatar")),
-            ("mail-show-labels", gettext("Labels")),
             ("mail-show-size", gettext("Size")),
-            ("mail-show-follow-up-due", gettext("Due by")),
-            ("mail-show-location", gettext("Location")),
+            ("mail-show-avatar", gettext("Avatar")),
+        ];
+
+        let content_toggles: [(&'static str, String); 3] = [
+            ("mail-show-preview-text", gettext("Preview text")),
+            ("mail-show-labels", gettext("Labels")),
+            ("mail-show-recipient-address", gettext("Recipient address")),
         ];
 
         let page_weak = self.downgrade();
-        for (key, label) in column_toggles {
-            let active = if let Some(ref s) = settings {
-                match key {
-                    "mail-show-status" => s.mail_show_status(),
-                    "mail-show-flagged" => s.mail_show_flagged(),
-                    "mail-show-follow-up" => s.mail_show_follow_up(),
-                    "mail-show-sender" => s.mail_show_sender(),
-                    "mail-show-recipient" => s.mail_show_recipient(),
-                    "mail-show-date" => s.mail_show_date(),
-                    "mail-show-attachment" => s.mail_show_attachment(),
-                    "mail-show-preview-text" => s.mail_show_preview_text(),
-                    "mail-show-avatar" => s.mail_show_avatar(),
-                    "mail-show-labels" => s.mail_show_labels(),
-                    "mail-show-size" => s.mail_show_size(),
-                    "mail-show-follow-up-due" => s.mail_show_follow_up_due(),
-                    "mail-show-location" => s.mail_show_location(),
-                    _ => false,
-                }
-            } else {
-                false
-            };
+        let add_toggles = |container: &gtk::Box, toggles: &[(&'static str, String)]| {
+            for (key, label) in toggles {
+                let active = if let Some(ref s) = settings {
+                    match *key {
+                        "mail-show-status" => s.mail_show_status(),
+                        "mail-show-flagged" => s.mail_show_flagged(),
+                        "mail-show-follow-up" => s.mail_show_follow_up(),
+                        "mail-show-sender" => s.mail_show_sender(),
+                        "mail-show-recipient" => s.mail_show_recipient(),
+                        "mail-show-date" => s.mail_show_date(),
+                        "mail-show-attachment" => s.mail_show_attachment(),
+                        "mail-show-preview-text" => s.mail_show_preview_text(),
+                        "mail-show-avatar" => s.mail_show_avatar(),
+                        "mail-show-labels" => s.mail_show_labels(),
+                        "mail-show-recipient-address" => s.mail_show_recipient_address(),
+                        "mail-show-size" => s.mail_show_size(),
+                        _ => false,
+                    }
+                } else {
+                    false
+                };
 
-            let check = gtk::CheckButton::builder()
-                .label(&label)
-                .active(active)
-                .build();
-            let key_str = key;
-            let settings_cloned = settings.clone();
-            let page_for_chk = page_weak.clone();
-            check.connect_toggled(move |btn| {
-                if let Some(ref s) = settings_cloned {
-                    match key_str {
-                        "mail-show-status" => s.set_mail_show_status(btn.is_active()),
-                        "mail-show-flagged" => s.set_mail_show_flagged(btn.is_active()),
-                        "mail-show-follow-up" => s.set_mail_show_follow_up(btn.is_active()),
-                        "mail-show-sender" => s.set_mail_show_sender(btn.is_active()),
-                        "mail-show-recipient" => s.set_mail_show_recipient(btn.is_active()),
-                        "mail-show-date" => s.set_mail_show_date(btn.is_active()),
-                        "mail-show-attachment" => s.set_mail_show_attachment(btn.is_active()),
-                        "mail-show-preview-text" => s.set_mail_show_preview_text(btn.is_active()),
-                        "mail-show-avatar" => s.set_mail_show_avatar(btn.is_active()),
-                        "mail-show-labels" => s.set_mail_show_labels(btn.is_active()),
-                        "mail-show-size" => s.set_mail_show_size(btn.is_active()),
-                        "mail-show-follow-up-due" => s.set_mail_show_follow_up_due(btn.is_active()),
-                        "mail-show-location" => s.set_mail_show_location(btn.is_active()),
-                        _ => {}
+                let check = gtk::CheckButton::builder()
+                    .label(label)
+                    .active(active)
+                    .build();
+                let key_str = *key;
+                let settings_cloned = settings.clone();
+                let page_for_chk = page_weak.clone();
+                check.connect_toggled(move |btn| {
+                    if let Some(ref s) = settings_cloned {
+                        match key_str {
+                            "mail-show-status" => s.set_mail_show_status(btn.is_active()),
+                            "mail-show-flagged" => s.set_mail_show_flagged(btn.is_active()),
+                            "mail-show-follow-up" => s.set_mail_show_follow_up(btn.is_active()),
+                            "mail-show-sender" => s.set_mail_show_sender(btn.is_active()),
+                            "mail-show-recipient" => s.set_mail_show_recipient(btn.is_active()),
+                            "mail-show-date" => s.set_mail_show_date(btn.is_active()),
+                            "mail-show-attachment" => s.set_mail_show_attachment(btn.is_active()),
+                            "mail-show-preview-text" => s.set_mail_show_preview_text(btn.is_active()),
+                            "mail-show-avatar" => s.set_mail_show_avatar(btn.is_active()),
+                            "mail-show-labels" => s.set_mail_show_labels(btn.is_active()),
+                            "mail-show-recipient-address" => {
+                                s.set_mail_show_recipient_address(btn.is_active())
+                            }
+                            "mail-show-size" => s.set_mail_show_size(btn.is_active()),
+                            _ => {}
+                        }
                     }
-                }
-                if let Some(page) = page_for_chk.upgrade() {
-                    if key_str == "mail-show-avatar" {
-                        page.refresh_sender_avatars();
+                    if let Some(page) = page_for_chk.upgrade() {
+                        if key_str == "mail-show-avatar" {
+                            page.refresh_sender_avatars();
+                        }
+                        page.rebuild_mail_column_layout();
                     }
-                    page.rebuild_mail_column_layout();
-                }
-            });
-            content.append(&check);
-        }
+                });
+                container.append(&check);
+            }
+        };
+
+        add_toggles(&content, &column_toggles);
+
+        content.append(&crate::views::create_context_menu_separator());
+
+        let content_section_title = gtk::Label::builder()
+            .label(&gettext("Details"))
+            .halign(gtk::Align::Start)
+            .margin_top(4)
+            .css_classes(vec!["heading"])
+            .build();
+        content.append(&content_section_title);
+
+        add_toggles(&content, &content_toggles);
 
         content.append(&crate::views::create_context_menu_separator());
 
@@ -19016,21 +19428,9 @@ impl MailPage {
             .as_ref()
             .map(AppSettings::mail_show_follow_up)
             .unwrap_or(true);
-        let show_preview = settings
-            .as_ref()
-            .map(AppSettings::mail_show_preview_text)
-            .unwrap_or(false);
         let show_size = settings
             .as_ref()
             .map(AppSettings::mail_show_size)
-            .unwrap_or(false);
-        let show_follow_up_due = settings
-            .as_ref()
-            .map(AppSettings::mail_show_follow_up_due)
-            .unwrap_or(false);
-        let show_location = settings
-            .as_ref()
-            .map(AppSettings::mail_show_location)
             .unwrap_or(false);
         let sender_width = settings
             .as_ref()
@@ -19131,22 +19531,20 @@ impl MailPage {
             }
         }
         if let Some(preview) = Self::mail_column_child(&header, "preview") {
-            preview.set_visible(
-                mail_list_profile_allows_column(&profile, wide_messages, "preview") && show_preview,
-            );
+            preview.set_visible(false);
         }
         let date_width = settings
             .as_ref()
             .map(AppSettings::mail_date_column_width)
             .unwrap_or(MAIL_DATE_COLUMN_WIDTH);
+        let date_visible =
+            mail_list_profile_allows_column(&profile, wide_messages, "date") && show_date;
+        let size_visible = (mail_list_profile_allows_column(&profile, wide_messages, "size") || show_size)
+            && show_size
+            && !wide_messages;
         if let Some(date) = Self::mail_column_child(&header, "date") {
-            let visible =
-                mail_list_profile_allows_column(&profile, wide_messages, "date") && show_date;
-            date.set_visible(visible);
+            date.set_visible(date_visible);
             date.set_width_request(date_width);
-            if let Some(sep) = self.imp().date_separator.borrow().as_ref() {
-                sep.set_visible(visible);
-            }
             if let Some(lbl) = Self::cell_label(&date) {
                 lbl.set_label(&self.mail_header_sort_label(&gettext("Date"), MailSortField::Date));
                 let align_left = AppSettings::try_new()
@@ -19156,34 +19554,20 @@ impl MailPage {
                 lbl.set_xalign(if align_left { 0.0 } else { 1.0 });
             }
         }
+        if let Some(sep) = self.imp().date_separator.borrow().as_ref() {
+            sep.set_visible(date_visible || size_visible);
+        }
         if let Some(size) = Self::mail_column_child(&header, "size") {
-            let visible = (mail_list_profile_allows_column(&profile, wide_messages, "size") || show_size)
-                && show_size
-                && !wide_messages;
-            size.set_visible(visible);
+            size.set_visible(size_visible);
             if let Some(lbl) = Self::cell_label(&size) {
                 lbl.set_label(&self.mail_header_sort_label(&gettext("Size"), MailSortField::Size));
             }
         }
         if let Some(due) = Self::mail_column_child(&header, "follow-up-due") {
-            due.set_visible(
-                mail_list_profile_allows_column(&profile, wide_messages, "follow-up-due")
-                    && show_follow_up_due,
-            );
-            if let Some(lbl) = Self::cell_label(&due) {
-                lbl.set_label(
-                    &self.mail_header_sort_label(&gettext("Due by"), MailSortField::FollowUpDue),
-                );
-            }
+            due.set_visible(false);
         }
         if let Some(location) = Self::mail_column_child(&header, "location") {
-            location.set_visible(
-                mail_list_profile_allows_column(&profile, wide_messages, "location")
-                    && show_location,
-            );
-            if let Some(lbl) = Self::cell_label(&location) {
-                lbl.set_label(&self.mail_header_sort_label(&gettext("Location"), MailSortField::Location));
-            }
+            location.set_visible(false);
         }
         if let Some(canvas) = self.imp().mail_table_canvas.borrow().as_ref() {
             canvas.queue_draw();
@@ -19266,6 +19650,23 @@ impl MailPage {
             && (l.sender_width - sender_w).abs() < 0.5
             && (l.recipient_width - recipient_w).abs() < 0.5
             && (l.date_width - date_w).abs() < 0.5
+    }
+
+    fn sync_mail_column_header_widths(&self, geom: &TableColumnsGeometry) {
+        if let Some(header) = self.imp().mail_column_header.borrow().as_ref() {
+            if let Some(sender_col) = Self::mail_column_child(header, "sender") {
+                sender_col.set_width_request(geom.sender.width.round() as i32);
+            }
+            if let Some(recipient_col) = Self::mail_column_child(header, "recipient") {
+                recipient_col.set_width_request(geom.recipient.width.round() as i32);
+            }
+            if let Some(date_col) = Self::mail_column_child(header, "date") {
+                date_col.set_width_request(geom.date.width.round() as i32);
+            }
+            if let Some(size_col) = Self::mail_column_child(header, "size") {
+                size_col.set_width_request(geom.size.width.round() as i32);
+            }
+        }
     }
 
     pub(crate) fn apply_mail_column_widths(
@@ -19493,6 +19894,11 @@ impl MailPage {
             .map(|s| s.mail_show_preview_text())
             .unwrap_or(true);
 
+        let show_recipient_address = settings
+            .as_ref()
+            .map(|s| s.mail_show_recipient_address())
+            .unwrap_or(false);
+
         let sender_width = self.imp().mail_sender_width.get() as f64;
         let recipient_width = self.imp().mail_recipient_width.get() as f64;
         let date_width = self.imp().mail_date_width.get() as f64;
@@ -19561,8 +19967,9 @@ impl MailPage {
             let snippet = msg.preview_snippet();
             let is_unread = msg.is_unread();
             let is_important = msg.is_important();
-            let markup_dark = format_mail_table_subject_markup(&subject, &snippet, is_unread, show_preview_text, true, is_important);
-            let markup_light = format_mail_table_subject_markup(&subject, &snippet, is_unread, show_preview_text, false, is_important);
+            let labels = msg.labels();
+            let markup_dark = format_mail_table_subject_markup(&subject, &snippet, &labels, is_unread, show_preview_text, show_labels, true, is_important);
+            let markup_light = format_mail_table_subject_markup(&subject, &snippet, &labels, is_unread, show_preview_text, show_labels, false, is_important);
 
             rows.push(PreparedMailTableRow {
                 model_index: i as usize,
@@ -19581,7 +19988,7 @@ impl MailPage {
                 has_attachments: msg.attachment_count() > 0,
                 sender: msg.sender_name(),
                 sender_email: msg.sender_email(),
-                recipient: msg.recipient_to(),
+                recipient: format_recipient_display(&msg.recipient_to(), show_recipient_address),
                 subject,
                 snippet,
                 date,
@@ -19591,7 +19998,7 @@ impl MailPage {
                 height: row_height,
                 markup_dark,
                 markup_light,
-                labels: msg.labels(),
+                labels,
                 thread_size: msg.thread_size(),
                 account_color: if show_account_pip {
                     account_color_for_message(&msg)
@@ -19631,6 +20038,8 @@ impl MailPage {
             size_width,
             sep_width,
         );
+
+        self.sync_mail_column_header_widths(&geom);
 
         PreparedMailTableLayout {
             rows,
@@ -20157,6 +20566,7 @@ impl MailPage {
             .orientation(gtk::Orientation::Horizontal)
             .width_request(MAIL_PREVIEW_COLUMN_WIDTH)
             .halign(gtk::Align::Start)
+            .visible(false)
             .css_classes(vec!["mail-column-header-cell"])
             .build();
         let preview_label = gtk::Label::builder()
@@ -20174,6 +20584,8 @@ impl MailPage {
             .orientation(gtk::Orientation::Horizontal)
             .width_request(MAIL_SIZE_COLUMN_WIDTH)
             .halign(gtk::Align::Fill)
+            .hexpand(false)
+            .overflow(gtk::Overflow::Hidden)
             .css_classes(vec!["mail-column-header-cell", "date-cell"])
             .build();
         size_column.append(
@@ -20191,6 +20603,7 @@ impl MailPage {
             .orientation(gtk::Orientation::Horizontal)
             .width_request(MAIL_DUE_COLUMN_WIDTH)
             .halign(gtk::Align::Fill)
+            .visible(false)
             .css_classes(vec!["mail-column-header-cell", "date-cell"])
             .build();
         due_column.append(
@@ -20208,6 +20621,7 @@ impl MailPage {
             .orientation(gtk::Orientation::Horizontal)
             .width_request(MAIL_LOCATION_COLUMN_WIDTH)
             .halign(gtk::Align::Fill)
+            .visible(false)
             .css_classes(vec!["mail-column-header-cell"])
             .build();
         location_column.append(
@@ -25164,7 +25578,6 @@ impl MailPage {
             .css_classes(vec!["mail-preview-date-label"])
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
-            .single_line_mode(true)
             .build();
 
         let modern_date_revealer = gtk::Revealer::builder()
@@ -26199,13 +26612,16 @@ impl MailPage {
             }
         });
         let detail_for_reply = detail_view.downgrade();
-        itip_banner.connect_reply_draft_saved(move |invitation, status| {
+        itip_banner.connect_reply_draft_saved(move |invitation, status, comment, send_reply| {
+            if !send_reply {
+                return;
+            }
             let invitation = invitation.clone();
             let detail_for_reply = detail_for_reply.clone();
             glib::spawn_future_local(async move {
                 let (sender, receiver) = async_channel::bounded(1);
                 std::thread::spawn(move || {
-                    let res = save_itip_reply_draft(&invitation, status);
+                    let res = save_itip_reply_draft(&invitation, status, comment.as_deref());
                     let _ = sender.send_blocking(res);
                 });
                 if let Ok(Ok(draft_id)) = receiver.recv().await {
@@ -26706,7 +27122,9 @@ impl MailPage {
                 if itip_invitation.is_none() {
                     itip_invitation = Some(invitation.clone());
                 }
-                append_itip_invitation(attachment_bar, invitation);
+                if itip_banner.is_none() {
+                    append_itip_invitation(attachment_bar, invitation);
+                }
             }
         }
 
@@ -26721,10 +27139,25 @@ impl MailPage {
             }
         }
 
+        let has_itip = itip_invitation.is_some();
+        let body_plain = if has_itip {
+            let html = message.html_body();
+            if !html.trim().is_empty() {
+                Some(crate::services::html_sanitizer::html_to_plain_text(&html))
+            } else {
+                message.searchable_body_text().map(|s| s.to_string())
+            }
+        } else {
+            None
+        };
+
         if let Some(banner) = itip_banner {
             let email_refs: Vec<&str> = user_emails.iter().map(|s| s.as_str()).collect();
             banner.set_invitation(itip_invitation, &email_refs);
+            banner.set_email_body(body_plain.as_deref());
         }
+
+        mail_viewer.set_visible(!has_itip);
 
         let inline_images = attachments
             .iter()
@@ -30558,6 +30991,14 @@ impl MailPage {
         let load_startup_cache = self.imp().load_generation.get() == 0;
         let generation = self.imp().load_generation.get().wrapping_add(1);
         self.imp().load_generation.set(generation);
+        let is_same_folder_refresh = replace
+            && self.imp().active_request.borrow().as_ref().map_or(false, |active| {
+                active.source_uid == request.source_uid
+                    && active.folder_name == request.folder_name
+                    && request.offset == 0
+            });
+        self.imp().is_same_folder_refresh.set(is_same_folder_refresh);
+
         // A replacing request represents the user's current target before its
         // worker returns, so refresh cannot jump back to the old folder. A
         // paging cursor, however, advances only after successful apply; a
@@ -31401,6 +31842,8 @@ impl MailPage {
             }
         }
 
+        let is_same_folder_refresh = replace && self.imp().is_same_folder_refresh.get();
+
         match result {
             MailPageLoadResult::Combined {
                 camel,
@@ -31421,6 +31864,7 @@ impl MailPage {
                     pending_search,
                     self.imp().load_generation.get(),
                     graph_search_state.clone(),
+                    is_same_folder_refresh,
                 ));
             }
             MailPageLoadResult::Camel {
@@ -31444,6 +31888,7 @@ impl MailPage {
                     pending_search,
                     self.imp().load_generation.get(),
                     graph_search_state,
+                    is_same_folder_refresh,
                 ));
             }
             MailPageLoadResult::Local {
@@ -31463,6 +31908,7 @@ impl MailPage {
                     replace,
                     previous_selection,
                     self.imp().load_generation.get(),
+                    is_same_folder_refresh,
                 ));
             }
             MailPageLoadResult::Error(error) => {
@@ -31513,7 +31959,14 @@ impl MailPage {
     fn begin_pending_mail_apply(&self, mut pending: PendingMailApply) {
         let store = self.imp().message_store.borrow().clone();
         if let Some(store) = store.as_ref() {
-            if !pending.replace {
+            if pending.is_same_folder_refresh {
+                for index in 0..store.n_items() {
+                    if let Some(message) = store.item(index).and_downcast::<MailMessageObject>() {
+                        pending.existing_messages.insert(message.id(), message.clone());
+                        pending.existing_ids.insert(message.id());
+                    }
+                }
+            } else if !pending.replace {
                 for index in 0..store.n_items() {
                     if let Some(message) = store.item(index).and_downcast::<MailMessageObject>() {
                         pending.existing_ids.insert(message.id());
@@ -31724,7 +32177,30 @@ impl MailPage {
                     counts.0 = counts.0.saturating_add(1);
                 }
             }
-            if pending.existing_ids.insert(record.id.clone()) {
+            if pending.is_same_folder_refresh {
+                pending.incoming_ids.insert(record.id.clone());
+                if let Some(existing) = pending.existing_messages.get(&record.id) {
+                    existing.set_unread(record.is_unread);
+                    existing.set_flagged(record.is_flagged);
+                    existing.set_important(record.is_important);
+                    existing.set_replied(record.is_replied);
+                    existing.set_forwarded(record.is_forwarded);
+                    existing.set_deleted(is_deleted_local);
+                    existing.set_follow_up(record.follow_up.clone());
+                    existing.set_labels(record.labels.clone());
+                } else if pending.existing_ids.insert(record.id.clone()) {
+                    let searchable_body_text = pending
+                        .searchable_body_texts
+                        .remove(&parsed_mail_identity(&record));
+                    let object = record.into_object();
+                    object.set_deleted(is_deleted_local);
+                    if let Some(searchable_body_text) = searchable_body_text {
+                        object.set_searchable_body_text(searchable_body_text);
+                    }
+                    objects.push(object.upcast::<glib::Object>());
+                    pending.appended = pending.appended.saturating_add(1);
+                }
+            } else if pending.existing_ids.insert(record.id.clone()) {
                 let searchable_body_text = pending
                     .searchable_body_texts
                     .remove(&parsed_mail_identity(&record));
@@ -31762,6 +32238,20 @@ impl MailPage {
     }
 
     fn finish_pending_mail_apply(&self, pending: &PendingMailApply) {
+        if pending.is_same_folder_refresh {
+            let mut removed_ids = HashSet::new();
+            for id in pending.existing_messages.keys() {
+                if !pending.incoming_ids.contains(id) {
+                    removed_ids.insert(id.clone());
+                }
+            }
+            if !removed_ids.is_empty() {
+                if let Some(store) = self.imp().message_store.borrow().as_ref() {
+                    Self::remove_message_ids(store, &removed_ids);
+                }
+            }
+        }
+
         let is_local = pending.result_kind == "local";
         let mut visible_local_folders = pending.local_folders.clone();
         visible_local_folders.extend(
@@ -32101,27 +32591,24 @@ impl MailPage {
                 else {
                     return true;
                 };
-                if state.root_store.is_none() {
-                    root_store.remove_all();
-                    if let Some(members_for_model) = self.imp().thread_members.borrow().as_ref() {
-                        members_for_model.replace(state.thread_members.clone());
-                    }
-                    if let Some(children_for_model) = self.imp().thread_children.borrow().as_ref() {
-                        children_for_model.replace(state.thread_children.clone());
-                    }
-                    self.imp()
-                        .thread_context_members_generation
-                        .set(Some(state.generation));
-                    state.root_store = Some(root_store.clone());
+                if let Some(members_for_model) = self.imp().thread_members.borrow().as_ref() {
+                    members_for_model.replace(state.thread_members.clone());
                 }
-                let end = (state.root_index + MAIL_MODEL_CHUNK_SIZE).min(state.roots.len());
-                for root in &state.roots[state.root_index..end] {
-                    root_store.append(root);
+                if let Some(children_for_model) = self.imp().thread_children.borrow().as_ref() {
+                    children_for_model.replace(state.thread_children.clone());
                 }
-                state.root_index = end;
-                if state.root_index < state.roots.len() {
-                    return false;
-                }
+                self.imp()
+                    .thread_context_members_generation
+                    .set(Some(state.generation));
+
+                let root_objects: Vec<glib::Object> = state
+                    .roots
+                    .iter()
+                    .cloned()
+                    .map(|r| r.upcast::<glib::Object>())
+                    .collect();
+                root_store.splice(0, root_store.n_items(), &root_objects);
+
                 if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
                     filter.changed(gtk::FilterChange::Different);
                 }
@@ -32182,9 +32669,16 @@ impl MailPage {
                         }
                         self.select_folder_row(&fallback);
                     }
+                } else {
+                    self.select_folder_row(&selected_folder);
                 }
                 self.select_message_after_reload(&completion.previous_selection);
             } else {
+                let fallback = FolderSelection::configured_initial();
+                if let Some(selection) = self.imp().folder_selection.borrow().as_ref() {
+                    selection.replace(fallback.clone());
+                }
+                self.select_folder_row(&fallback);
                 self.select_message_after_reload(&completion.previous_selection);
             }
         } else {
@@ -32728,7 +33222,7 @@ fn connect_itip_reply_button(
         let invitation = invitation.clone();
         let (sender, receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
-            let result = save_itip_reply_draft(&invitation, status);
+            let result = save_itip_reply_draft(&invitation, status, None);
             if let Err(error) = sender.send_blocking(result) {
                 tracing::debug!(%error, "iTIP response draft result was dropped");
             }
@@ -32769,6 +33263,7 @@ fn connect_itip_reply_button(
 fn save_itip_reply_draft(
     invitation: &ItipInvitation,
     status: ItipReplyStatus,
+    comment: Option<&str>,
 ) -> Result<String, String> {
     let profiles = AccountConfigStore::default().load();
     let preferred = AppSettings::try_new()
@@ -32790,7 +33285,7 @@ fn save_itip_reply_draft(
     })?;
     let organizer = normalize_attendee_address(&invitation.organizer)
         .ok_or_else(|| gettext("The invitation does not have a valid organizer"))?;
-    let component = build_reply_component(invitation, &attendee, status)?;
+    let component = build_reply_component(invitation, &attendee, status, comment)?;
     let organizer_mailbox = organizer.trim_start_matches("mailto:").to_string();
     let summary = if invitation.event.summary.trim().is_empty() {
         &gettext("Calendar Invitation")
@@ -32802,6 +33297,15 @@ fn save_itip_reply_draft(
         invitation.event.uid,
         attendee.trim_start_matches("mailto:")
     );
+    let mut body_text = format!(
+        "{}: {}\n\n{}",
+        status.as_str(),
+        summary,
+        gettext("The iTIP reply was prepared as a text/calendar draft.")
+    );
+    if let Some(comment_str) = comment.map(str::trim).filter(|s| !s.is_empty()) {
+        body_text.push_str(&format!("\n\n{}: {}", gettext("Comment"), comment_str));
+    }
     let draft = DraftMessage {
         id: draft_id.clone(),
         from: profile.email.clone(),
@@ -32811,12 +33315,7 @@ fn save_itip_reply_draft(
         cc: String::new(),
         bcc: String::new(),
         subject: format!("Re: {summary}"),
-        html_body: format!(
-            "{}: {}\n\n{}",
-            status.as_str(),
-            summary,
-            gettext("The iTIP reply was prepared as a text/calendar draft.")
-        ),
+        html_body: body_text,
         plain_text: true,
         updated_at: Utc::now().to_rfc3339(),
         attachments: Vec::new(),
@@ -36700,8 +37199,10 @@ mod tests {
         let markup = format_mail_table_subject_markup(
             "Multi-line\r\nSubject   with\nbreaks",
             "This is the body\r\npreview text",
+            &[],
             true,
             true,
+            false,
             false,
             false,
         );
@@ -36715,6 +37216,8 @@ mod tests {
         let markup_no_snippet = format_mail_table_subject_markup(
             "Project Update",
             "Ignored snippet text",
+            &[],
+            false,
             false,
             false,
             false,
@@ -36728,8 +37231,10 @@ mod tests {
         let markup_read_with_snip = format_mail_table_subject_markup(
             "Meeting Notes",
             "Here are the notes from today",
+            &[],
             false,
             true,
+            false,
             false,
             false,
         );
@@ -36740,8 +37245,10 @@ mod tests {
         let markup_empty = format_mail_table_subject_markup(
             "   \n  ",
             "Some preview",
+            &[],
             false,
             true,
+            false,
             false,
             false,
         );
@@ -36752,8 +37259,10 @@ mod tests {
         let markup_escaped = format_mail_table_subject_markup(
             "Alpha & Beta <Gamma>",
             "1 < 2 && 3 > 2",
+            &[],
             false,
             true,
+            false,
             false,
             false,
         );
@@ -36764,8 +37273,10 @@ mod tests {
         let markup_keine_nachricht = format_mail_table_subject_markup(
             "Important Update",
             "(Keine Nachricht)",
+            &[],
             false,
             true,
+            false,
             false,
             false,
         );
@@ -36777,8 +37288,10 @@ mod tests {
         let markup_imp_light = format_mail_table_subject_markup(
             "Urgent Server Alert",
             "Please check immediately",
+            &[],
             false,
             true,
+            false,
             false,
             true,
         );
@@ -36787,12 +37300,147 @@ mod tests {
         let markup_imp_dark = format_mail_table_subject_markup(
             "Urgent Server Alert",
             "Please check immediately",
+            &[],
             true,
             true,
+            false,
             true,
             true,
         );
         assert!(markup_imp_dark.contains("foreground=\"#FF6B6B\""));
+
+        // Labels rendered in table mode when show_labels is true
+        let labels = vec!["$Labelwork".to_string(), "Important".to_string()];
+        let markup_with_labels = format_mail_table_subject_markup(
+            "Roadmap 2027",
+            "Preview of next year",
+            &labels,
+            true,
+            true,
+            true,
+            false,
+            false,
+        );
+        assert!(markup_with_labels.contains("[Work]"));
+        assert!(markup_with_labels.contains("[Important]"));
+        assert!(markup_with_labels.contains("Roadmap 2027"));
+
+        // Labels hidden when show_labels is false
+        let markup_labels_hidden = format_mail_table_subject_markup(
+            "Roadmap 2027",
+            "Preview of next year",
+            &labels,
+            true,
+            true,
+            false,
+            false,
+            false,
+        );
+        assert!(!markup_labels_hidden.contains("[Work]"));
+        assert!(!markup_labels_hidden.contains("[Important]"));
+        assert!(markup_labels_hidden.contains("Roadmap 2027"));
+    }
+
+    #[test]
+    fn test_format_recipient_display() {
+        // 1. Single recipient with name and email:
+        // When show_address is false: display name
+        assert_eq!(
+            format_recipient_display("Max Jensen <MJensen@corp.local>", false),
+            "Max Jensen"
+        );
+        // When show_address is true: pure email
+        assert_eq!(
+            format_recipient_display("Max Jensen <MJensen@corp.local>", true),
+            "mjensen@corp.local"
+        );
+
+        // 2. Email only (no display name): shows email in both cases
+        assert_eq!(
+            format_recipient_display("support@example.com", false),
+            "support@example.com"
+        );
+        assert_eq!(
+            format_recipient_display("support@example.com", true),
+            "support@example.com"
+        );
+
+        // 3. Multiple recipients:
+        let multi = "Max Jensen <MJensen@corp.local>, Anna Schmidt <anna@example.com>";
+        assert_eq!(
+            format_recipient_display(multi, false),
+            "Max Jensen, Anna Schmidt"
+        );
+        assert_eq!(
+            format_recipient_display(multi, true),
+            "mjensen@corp.local, anna@example.com"
+        );
+
+        // 4. Empty string
+        assert_eq!(format_recipient_display("", false), "");
+        assert_eq!(format_recipient_display("   ", true), "");
+    }
+
+    #[test]
+    fn test_smart_responsive_column_scaling() {
+        let order = vec![
+            "status".to_string(),
+            "sender".to_string(),
+            "recipient".to_string(),
+            "subject".to_string(),
+            "date".to_string(),
+        ];
+
+        // Wide layout (1000px): ample space -> sender & recipient retain full 180px
+        let geom_wide = compute_table_columns_geometry(
+            &order,
+            1000.0,
+            true,  // status (28)
+            false,
+            false,
+            false,
+            false,
+            true,  // sender
+            180.0,
+            true,  // recipient
+            180.0,
+            true,  // date (120)
+            120.0,
+            false, // size
+            0.0,
+            6.0,   // sep_width
+        );
+        assert_eq!(geom_wide.sender.width, 180.0);
+        assert_eq!(geom_wide.recipient.width, 180.0);
+        assert!(geom_wide.subject.width > 250.0);
+
+        // Narrow layout (450px): constrained -> sender & recipient scale down proportionally,
+        // ensuring subject is not crushed to 60px minimum!
+        let geom_narrow = compute_table_columns_geometry(
+            &order,
+            450.0,
+            true,  // status (28)
+            false,
+            false,
+            false,
+            false,
+            true,  // sender
+            180.0,
+            true,  // recipient
+            180.0,
+            true,  // date (120)
+            120.0,
+            false, // size
+            0.0,
+            6.0,   // sep_width
+        );
+        assert!(geom_narrow.sender.width < 180.0);
+        assert!(geom_narrow.sender.width >= 60.0);
+        assert!(geom_narrow.recipient.width < 180.0);
+        assert!(geom_narrow.recipient.width >= 60.0);
+        assert!(geom_narrow.subject.width >= 60.0);
+        // Date stays fixed at 120 so timestamps are not truncated
+        assert_eq!(geom_narrow.date.width, 120.0);
     }
 
     #[test]
@@ -41669,6 +42317,162 @@ mod tests {
         assert!(source.contains("root_store.sort(move |a, b|"));
         assert!(source.contains("Self::account_order_maps()"));
         assert!(source.contains("Self::compare_account_roots("));
+    }
+
+    #[test]
+    fn test_sidebar_startup_folder_selection_contract() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        // 1. Test configured_initial behavior
+        let initial = FolderSelection::configured_initial();
+        assert_eq!(initial.folder_id, "unified_inbox");
+        assert!(initial.is_unified());
+
+        // 2. Test code contracts ensuring sidebar selection is always guaranteed
+        let source = include_str!("mail_page.rs");
+        assert!(source.contains("pub(crate) fn has_sidebar_folder_selected(&self) -> bool"));
+        assert!(source.contains("target_unified_id"));
+        assert!(source.contains("local_section_visible"));
+        assert!(source.contains("if !self.has_sidebar_folder_selected()"));
+    }
+
+    #[test]
+    fn test_toggling_size_column_does_not_show_preview_column() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        // 1. Profile allows column contract
+        assert!(!mail_list_profile_allows_column("custom", false, "preview"));
+        assert!(!mail_list_profile_allows_column("messages", false, "preview"));
+        assert!(!mail_list_profile_allows_column("wide", true, "preview"));
+        assert!(mail_list_profile_allows_column("cards", false, "preview"));
+        assert!(mail_list_profile_allows_column("custom", false, "size"));
+        assert!(mail_list_profile_allows_column("custom", false, "recipient"));
+        assert!(!mail_list_profile_allows_column("custom", false, "follow-up-due"));
+        assert!(!mail_list_profile_allows_column("custom", false, "location"));
+
+        // 2. GTK header visibility contract
+        let page = MailPage::new();
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_mail_list_view_profile("custom");
+            settings.set_mail_show_size(true);
+            settings.set_mail_show_preview_text(true);
+
+            page.rebuild_mail_column_layout();
+
+            if let Some(header) = page.imp().mail_column_header.borrow().as_ref() {
+                let size_col = MailPage::mail_column_child(header, "size");
+                assert!(size_col.is_some(), "Size column widget must exist in header");
+                assert!(size_col.unwrap().is_visible(), "Size column header must be visible when enabled");
+
+                let preview_col = MailPage::mail_column_child(header, "preview");
+                assert!(preview_col.is_some(), "Preview column widget exists in header");
+                assert!(!preview_col.unwrap().is_visible(), "Preview column header must NEVER be visible in table mode");
+            }
+        }
+    }
+
+    #[test]
+    fn test_table_columns_geometry_matches_header_with_size_enabled() {
+        // 1. User configures Size before Date (as in screenshot)
+        let order_size_first = vec![
+            "status".to_string(),
+            "attachment".to_string(),
+            "follow-up".to_string(),
+            "avatar".to_string(),
+            "sender".to_string(),
+            "subject".to_string(),
+            "size".to_string(),
+            "date".to_string(),
+            "preview".to_string(),
+        ];
+        let total_w = 800.0;
+        let geom_size_first = compute_table_columns_geometry(
+            &order_size_first,
+            total_w,
+            true,  // status
+            true,  // attachment
+            false, // flagged
+            true,  // follow-up
+            true,  // avatar
+            true,  // sender
+            180.0, // sender_width
+            false, // recipient
+            180.0, // recipient_width
+            true,  // date
+            130.0, // date_width
+            true,  // size
+            82.0,  // size_width
+            6.0,   // sep_width
+        );
+
+        // Size must precede Date after Subject
+        assert!(geom_size_first.subject.x < geom_size_first.size.x);
+        assert!(geom_size_first.size.x < geom_size_first.date.x);
+        assert_eq!(geom_size_first.size.width, 82.0);
+        assert_eq!(geom_size_first.date.width, 130.0);
+
+        // Subject width: 800 - (112 + 186 + 6 + 82 + 130) = 284px
+        assert_eq!(geom_size_first.subject.width, 284.0);
+        // Size starts right after subject + sep (x = geom.subject.x + geom.subject.width + sep)
+        assert_eq!(geom_size_first.size.x, geom_size_first.subject.x + geom_size_first.subject.width + 6.0);
+        // Date starts right after size
+        assert_eq!(geom_size_first.date.x, geom_size_first.size.x + geom_size_first.size.width);
+        // Table canvas ends exactly at total_w
+        assert_eq!(geom_size_first.date.x + geom_size_first.date.width, total_w);
+
+        // 2. User configures Date before Size
+        let order_date_first = vec![
+            "status".to_string(),
+            "attachment".to_string(),
+            "follow-up".to_string(),
+            "avatar".to_string(),
+            "sender".to_string(),
+            "subject".to_string(),
+            "date".to_string(),
+            "size".to_string(),
+            "preview".to_string(),
+        ];
+        let geom_date_first = compute_table_columns_geometry(
+            &order_date_first,
+            total_w,
+            true,
+            true,
+            false,
+            true,
+            true,
+            true,
+            180.0,
+            false,
+            180.0,
+            true,
+            130.0,
+            true,
+            82.0,
+            6.0,
+        );
+
+        // Date must precede Size after Subject
+        assert!(geom_date_first.subject.x < geom_date_first.date.x);
+        assert!(geom_date_first.date.x < geom_date_first.size.x);
+        assert_eq!(geom_date_first.date.width, 130.0);
+        assert_eq!(geom_date_first.size.width, 82.0);
+
+        // Date starts right after subject + sep
+        assert_eq!(geom_date_first.date.x, geom_date_first.subject.x + geom_date_first.subject.width + 6.0);
+        // Size starts right after date
+        assert_eq!(geom_date_first.size.x, geom_date_first.date.x + geom_date_first.date.width);
+        // Table canvas ends exactly at total_w
+        assert_eq!(geom_date_first.size.x + geom_date_first.size.width, total_w);
     }
 }
 

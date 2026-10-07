@@ -8430,4 +8430,7 @@ msgstr "Ungelesene E-Mails in der Titelleiste anzeigen"
 msgid "Displays the unread counter in the window title and on the Mail tab"
 msgstr "Zeigt die Anzahl ungelesener Nachrichten im Fenstertitel und auf dem Mail-Reiter an"
 
+msgid "Recipient address"
+msgstr "Empfängeradresse"
+
 

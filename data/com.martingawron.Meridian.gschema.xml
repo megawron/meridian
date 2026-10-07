@@ -540,6 +540,11 @@
       <default>true</default>
       <summary>Show app-owned labels in the mail list</summary>
     </key>
+    <key name="mail-show-recipient-address" type="b">
+      <default>false</default>
+      <summary>Show pure email address instead of name in recipient column</summary>
+      <description>Whether to show email addresses instead of display names in the recipient column.</description>
+    </key>
     <key name="mail-labels" type="as">
       <default>['Important:#EF2929|$Labelimportant', 'Work:#F57900|$Labelwork', 'Personal:#4E9A06|$Labelpersonal', 'To Do:#3465A4|$Labeltodo', 'Later:#75507B|$Labellater']</default>
       <summary>List of mail labels and their associated colors and tags</summary>
