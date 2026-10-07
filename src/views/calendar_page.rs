@@ -1168,9 +1168,14 @@ fn persist_calendar_view(view: CalendarView, settings: Option<&AppSettings>) {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct MonthHoverTarget {
-    pub(crate) uid: String,
-    pub(crate) occurrence_date: NaiveDate,
+pub(crate) enum MonthHoverTarget {
+    Event {
+        uid: String,
+        occurrence_date: NaiveDate,
+    },
+    Overflow {
+        date: NaiveDate,
+    },
 }
 
 // ─── GObject Subclass ───────────────────────────────────────────────────────
@@ -1208,7 +1213,7 @@ mod imp {
         pub(crate) month_drag_selection: RefCell<Option<MonthDragSelection>>,
         pub month_hovered_date: RefCell<Option<NaiveDate>>,
         pub(crate) month_hovered_target: RefCell<Option<MonthHoverTarget>>,
-        pub(crate) month_rendered_key: RefCell<Option<(NaiveDate, CalendarDateRange, u64, String, Option<String>, usize, bool)>>,
+        pub(crate) month_rendered_key: RefCell<Option<(NaiveDate, CalendarDateRange, u64, String, Option<String>, usize, bool, i32)>>,
         pub(crate) agenda_rendered_key: RefCell<Option<(CalendarDateRange, u64, String, Option<String>, usize)>>,
         pub year_rendered_key: RefCell<Option<(i32, u64, String, Option<String>, usize)>>,
         pub(crate) calendar_list_rendered_key: RefCell<Option<(u64, String, Option<String>, usize)>>,
@@ -1319,6 +1324,7 @@ mod imp {
         pub(super) calendar_mutation_gate: RefCell<CalendarMutationGate>,
         pub(super) calendar_list_projection_count: Cell<Option<usize>>,
         pub(super) calendar_reload_debounce: RefCell<Option<glib::SourceId>>,
+        pub(crate) zoom_toast: RefCell<Option<adw::Toast>>,
     }
 
     impl Default for CalendarPage {
@@ -1471,6 +1477,7 @@ mod imp {
                 calendar_mutation_gate: RefCell::new(CalendarMutationGate::default()),
                 calendar_list_projection_count: Cell::new(None),
                 calendar_reload_debounce: RefCell::new(None),
+                zoom_toast: RefCell::new(None),
             }
         }
     }
@@ -1917,16 +1924,16 @@ impl CalendarPage {
             return;
         }
         if let Some(vadj) = self.imp().agenda_vadjustment.borrow().as_ref() {
-            let item_top = if idx > 0 && !items_ref[idx - 1].is_event_row() {
-                items_ref[idx - 1].y()
-            } else {
-                items_ref[idx].y()
-            };
+            let day_header_y = items_ref[..=idx]
+                .iter()
+                .rfind(|it| !it.is_event_row())
+                .map(|it| it.y())
+                .unwrap_or(items_ref[idx].y());
             let item_bot = items_ref[idx].y() + items_ref[idx].height();
             let cur_scroll = vadj.value();
             let page_size = vadj.page_size();
-            if item_top < cur_scroll {
-                vadj.set_value(item_top);
+            if day_header_y < cur_scroll {
+                vadj.set_value(day_header_y);
             } else if item_bot > cur_scroll + page_size {
                 vadj.set_value((item_bot - page_size).max(0.0));
             }
@@ -2060,6 +2067,77 @@ impl CalendarPage {
                 btn.set_active(visible);
             }
         }
+    }
+
+    pub fn zoom_in(&self) {
+        self.adjust_chip_scale(0.10);
+    }
+
+    pub fn zoom_out(&self) {
+        self.adjust_chip_scale(-0.10);
+    }
+
+    pub fn zoom_reset(&self) {
+        self.set_chip_scale(1.0);
+    }
+
+    pub fn adjust_chip_scale(&self, delta: f64) {
+        let current = configured_chip_scale();
+        self.set_chip_scale(current + delta);
+    }
+
+    pub(crate) fn show_zoom_toast(&self, message: &str) {
+        if let Some(existing) = self.imp().zoom_toast.borrow().as_ref() {
+            existing.set_title(message);
+            existing.set_timeout(1);
+            return;
+        }
+
+        if let Some(root) = self.root() {
+            if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
+                let toast = adw::Toast::new(message);
+                toast.set_timeout(1);
+                let weak_toast = toast.downgrade();
+                let weak_self = self.downgrade();
+                toast.connect_dismissed(move |_| {
+                    if let Some(page) = weak_self.upgrade() {
+                        let mut stored = page.imp().zoom_toast.borrow_mut();
+                        if let Some(active) = stored.as_ref() {
+                            if let Some(t) = weak_toast.upgrade() {
+                                if active == &t {
+                                    *stored = None;
+                                }
+                            } else {
+                                *stored = None;
+                            }
+                        }
+                    }
+                });
+                *self.imp().zoom_toast.borrow_mut() = Some(toast.clone());
+                window.add_toast(&toast);
+                return;
+            }
+        }
+        tracing::warn!(%message, "Calendar UI zoom scale");
+    }
+
+    pub fn dismiss_zoom_toast(&self) {
+        if let Some(toast) = self.imp().zoom_toast.borrow_mut().take() {
+            toast.dismiss();
+        }
+    }
+
+    pub fn set_chip_scale(&self, target: f64) {
+        let clamped = target.clamp(0.75, 1.50);
+        let rounded = (clamped * 100.0).round() / 100.0;
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_calendar_chip_scale(rounded);
+        }
+        self.imp().month_rendered_key.take();
+        self.refresh_calendar_views();
+        let percent = (rounded * 100.0).round() as i32;
+        let msg = format!("{}: {percent}%", gettext("Calendar scale"));
+        self.show_zoom_toast(&msg);
     }
 
     pub(crate) fn focus_search(&self) {
@@ -4635,15 +4713,19 @@ impl CalendarPage {
                 drawing_area.set_cursor_from_name(desired_cursor);
             }
 
-            // Keep month_hovered_target updated without queue_draw redraw flickering
             let new_target = match hit {
-                Some(MonthCanvasHit::Event { event, occurrence_date, .. }) => Some(MonthHoverTarget {
+                Some(MonthCanvasHit::Event { event, occurrence_date, .. }) => Some(MonthHoverTarget::Event {
                     uid: event.uid.clone(),
                     occurrence_date,
                 }),
+                Some(MonthCanvasHit::Overflow { date }) => Some(MonthHoverTarget::Overflow { date }),
                 _ => None,
             };
-            *page.imp().month_hovered_target.borrow_mut() = new_target;
+            let old_target = page.imp().month_hovered_target.borrow().clone();
+            if new_target != old_target {
+                *page.imp().month_hovered_target.borrow_mut() = new_target;
+                drawing_area.queue_draw();
+            }
         });
         let page_weak_leave = self.downgrade();
         let current_cursor_leave = current_month_cursor.clone();
@@ -4654,7 +4736,10 @@ impl CalendarPage {
                 current_cursor_leave.set(None);
                 drawing_area.set_cursor_from_name(None);
             }
-            *page.imp().month_hovered_target.borrow_mut() = None;
+            if page.imp().month_hovered_target.borrow().is_some() {
+                *page.imp().month_hovered_target.borrow_mut() = None;
+                drawing_area.queue_draw();
+            }
         });
         month_canvas.add_controller(motion_controller);
 
@@ -4698,8 +4783,23 @@ impl CalendarPage {
         // Key Controller (Keyboard navigation)
         let key_controller = gtk::EventControllerKey::new();
         let page_weak_key = self.downgrade();
-        key_controller.connect_key_pressed(move |_, keyval, _, _| {
+        key_controller.connect_key_pressed(move |_, keyval, _, modifier| {
             let Some(page) = page_weak_key.upgrade() else { return glib::Propagation::Proceed };
+
+            if modifier.contains(gdk::ModifierType::CONTROL_MASK) {
+                if keyval == gdk::Key::plus || keyval == gdk::Key::equal || keyval == gdk::Key::KP_Add {
+                    page.zoom_in();
+                    return glib::Propagation::Stop;
+                }
+                if keyval == gdk::Key::minus || keyval == gdk::Key::KP_Subtract {
+                    page.zoom_out();
+                    return glib::Propagation::Stop;
+                }
+                if keyval == gdk::Key::_0 || keyval == gdk::Key::KP_0 {
+                    page.zoom_reset();
+                    return glib::Propagation::Stop;
+                }
+            }
 
             if keyval == gdk::Key::Delete || keyval == gdk::Key::BackSpace {
                 let selected_identity = page.imp().view_state.borrow().selected_event.clone();
@@ -4851,9 +4951,18 @@ impl CalendarPage {
             self,
             #[upgrade_or]
             glib::Propagation::Proceed,
-            move |_, _, dy| {
+            move |controller, _, dy| {
                 if *page.imp().current_view.borrow() != CalendarView::Month {
                     return glib::Propagation::Proceed;
+                }
+
+                if controller.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) {
+                    if dy < 0.0 {
+                        page.zoom_in();
+                    } else if dy > 0.0 {
+                        page.zoom_out();
+                    }
+                    return glib::Propagation::Stop;
                 }
 
                 let now = std::time::Instant::now();
@@ -6320,6 +6429,8 @@ impl CalendarPage {
                 "calendar-compress-weekend",
                 "calendar-month-scroll-by-week",
                 "calendar-month-view-rows",
+                "calendar-dim-past-events",
+                "calendar-chip-scale",
                 "calendar-second-zone",
                 "hide-cancelled-events",
                 "default-calendar-source",
@@ -7126,6 +7237,7 @@ impl CalendarPage {
     }
 
     fn select_calendar_view(&self, view: CalendarView) {
+        self.dismiss_zoom_toast();
         if self.imp().syncing_calendar_view.get() {
             return;
         }
@@ -7190,6 +7302,7 @@ impl CalendarPage {
     }
 
     fn sync_calendar_view_from_settings(&self) {
+        self.dismiss_zoom_toast();
         if self.imp().syncing_calendar_view.get() {
             return;
         }
@@ -8327,6 +8440,7 @@ impl CalendarPage {
     /// - If the user is already in a time-based view (Day, WorkWeek, Week), that view is preserved.
     /// - If the user is in an overview mode (Month, Year, List), switch to Week view so time slots and neighbouring events are immediately visible.
     pub fn navigate_to_date_contextual(&self, date: NaiveDate) {
+        self.dismiss_zoom_toast();
         let current = *self.imp().current_view.borrow();
         if matches!(current, CalendarView::Month | CalendarView::Year | CalendarView::List) {
             self.select_calendar_view(CalendarView::Week);
@@ -9010,6 +9124,13 @@ impl CalendarPage {
                 let height = height_i32 as f64;
                 let is_dark = adw::StyleManager::default().is_dark();
 
+                if let Ok(mut font_options) = gtk::cairo::FontOptions::new() {
+                    font_options.set_antialias(gtk::cairo::Antialias::Subpixel);
+                    font_options.set_hint_style(gtk::cairo::HintStyle::Full);
+                    font_options.set_hint_metrics(gtk::cairo::HintMetrics::On);
+                    cr.set_font_options(&font_options);
+                }
+
                 // 1. Grid lines (delicate and clean, matching GNOME Calendar - no grey background tint)
                 let workday_y1 = (workday_start as f64 / 1440.0) * height;
                 let workday_y2 = (workday_end as f64 / 1440.0) * height;
@@ -9107,8 +9228,18 @@ impl CalendarPage {
                 }
 
                 // 4. Event chips
+                let current_today = Local::now().date_naive();
+                let now_min = if let Some(page) = page_weak_draw.upgrade() {
+                    page.imp().current_time_minute.get()
+                } else {
+                    let now = Local::now().time();
+                    (now.hour() * 60 + now.minute()) as f64 + (now.second() as f64 / 60.0)
+                };
+                let dim_past = configured_dim_past_events();
+
                 let hovered_idx = hovered_chip_draw.get();
                 for (idx, chip) in placed_chips_draw.borrow().iter().enumerate() {
+                    let is_past = dim_past && is_time_grid_chip_past(chip, target_date, current_today, now_min, interval_minutes);
                     draw_time_grid_chip(
                         cr,
                         chip,
@@ -9116,18 +9247,12 @@ impl CalendarPage {
                         slot_height as f64,
                         hovered_idx == Some(idx),
                         is_dark,
+                        is_past,
                     );
                 }
 
                 // 5. Current-time red indicator line
-                let current_today = Local::now().date_naive();
                 if target_date == current_today {
-                    let now_min = if let Some(page) = page_weak_draw.upgrade() {
-                        page.imp().current_time_minute.get()
-                    } else {
-                        let now = Local::now().time();
-                        (now.hour() * 60 + now.minute()) as f64 + (now.second() as f64 / 60.0)
-                    };
                     draw_current_time_indicator_line(cr, width, height, now_min);
                 }
             });
@@ -9814,19 +9939,11 @@ impl CalendarPage {
                 if self.imp().agenda_needs_initial_scroll.get() {
                     self.imp().agenda_needs_initial_scroll.set(false);
                     let anchor_date = self.current_calendar_viewport().anchor_date;
-                    let target_y = if let Some(idx) = reconciled_idx {
-                        if idx > 0 && !items[idx - 1].is_event_row() {
-                            items[idx - 1].y()
-                        } else {
-                            items.get(idx).map(|it| it.y()).unwrap_or(0.0)
-                        }
-                    } else {
-                        items
-                            .iter()
-                            .find(|it| it.date() >= anchor_date)
-                            .map(|it| it.y())
-                            .unwrap_or(0.0)
-                    };
+                    let target_y = items
+                        .iter()
+                        .find(|it| !it.is_event_row() && it.date() >= anchor_date)
+                        .map(|it| it.y())
+                        .unwrap_or(0.0);
                     let page_size = vadj.page_size();
                     let upper = vadj.upper();
                     let max_val = (upper - page_size).max(0.0);
@@ -9956,19 +10073,11 @@ impl CalendarPage {
                 self.imp().agenda_needs_initial_scroll.set(false);
                 let anchor_date = self.current_calendar_viewport().anchor_date;
                 let items_ref = self.imp().agenda_items.borrow();
-                let target_y = if let Some(idx) = reconciled_idx {
-                    if idx > 0 && !items_ref[idx - 1].is_event_row() {
-                        items_ref[idx - 1].y()
-                    } else {
-                        items_ref.get(idx).map(|it| it.y()).unwrap_or(0.0)
-                    }
-                } else {
-                    items_ref
-                        .iter()
-                        .find(|it| it.date() >= anchor_date)
-                        .map(|it| it.y())
-                        .unwrap_or(0.0)
-                };
+                let target_y = items_ref
+                    .iter()
+                    .find(|it| !it.is_event_row() && it.date() >= anchor_date)
+                    .map(|it| it.y())
+                    .unwrap_or(0.0);
                 drop(items_ref);
                 let page_size = vadj.page_size();
                 let upper = vadj.upper();
@@ -11470,13 +11579,23 @@ impl CalendarPage {
     }
 
     fn refresh_month_grid(&self) {
-        let viewport = self.current_calendar_viewport();
+        let anchor = *self.imp().current_date.borrow();
+        let first_weekday = configured_first_weekday();
+        let viewport = {
+            let state_vp = self.imp().view_state.borrow().viewport();
+            if state_vp.view == CalendarView::Month && state_vp.visible_range.len_days() >= 28 {
+                state_vp
+            } else {
+                CalendarViewport::for_view(CalendarView::Month, anchor, first_weekday)
+            }
+        };
         let query = self.imp().calendar_search_query.borrow().clone();
         let category = self.imp().calendar_category_filter.borrow().clone();
         let hidden_count = self.imp().hidden_calendar_sources.borrow().len();
         let revision = self.imp().calendar_revision.get();
         let is_dark = adw::StyleManager::default().is_dark();
-        let key = (viewport.anchor_date, viewport.visible_range, revision, query, category, hidden_count, is_dark);
+        let scale_pct = (configured_chip_scale() * 100.0).round() as i32;
+        let key = (viewport.anchor_date, viewport.visible_range, revision, query, category, hidden_count, is_dark, scale_pct);
 
         if self.imp().month_rendered_key.borrow().as_ref() == Some(&key)
             && self.imp().month_layout.borrow().is_some()
@@ -12856,6 +12975,7 @@ pub(crate) struct PreparedMonthLayout {
     pub(crate) show_week_numbers: bool,
     pub(crate) workdays: HashSet<Weekday>,
     pub(crate) compress_weekend: bool,
+    pub(crate) dim_past_events: bool,
     pub(crate) weeks: Vec<PreparedMonthWeek>,
     pub(crate) weekday_names_full: Vec<String>,
     pub(crate) weekday_names_short: Vec<String>,
@@ -13002,10 +13122,32 @@ pub(crate) fn prepare_month_layout(
         show_week_numbers,
         workdays: workdays.clone(),
         compress_weekend,
+        dim_past_events: configured_dim_past_events(),
         weeks,
         weekday_names_full: weekday_names_full.iter().map(|s| s.to_string()).collect(),
         weekday_names_short: weekday_names_short.iter().map(|s| s.to_string()).collect(),
     }
+}
+
+pub(crate) fn month_layout_metrics(row_h: f64, chip_scale: f64) -> (f64, f64, f64, usize) {
+    let scale = chip_scale.clamp(0.75, 1.50);
+    let target_chip_h = (22.0 * scale).round();
+    let chip_gap = (2.0 * scale).round().max(1.0);
+    let target_step = target_chip_h + chip_gap;
+    let pad_base = 3.0;
+
+    let usable = (row_h - 2.0 * pad_base).max(20.0);
+    let total_lines = (((usable + chip_gap) / target_step).floor() as usize).max(2);
+    let max_tracks = total_lines.saturating_sub(1);
+
+    let total_gaps = max_tracks as f64 * chip_gap;
+    let avail = (row_h - 2.0 * pad_base - total_gaps).max(total_lines as f64 * 12.0);
+    let line_h = (avail / total_lines as f64).floor();
+    let chip_h = line_h;
+    let chip_step = chip_h + chip_gap;
+    let day_header_h = pad_base + line_h + chip_gap;
+
+    (day_header_h, chip_h, chip_step, max_tracks)
 }
 
 pub(crate) fn hit_test_month_canvas(
@@ -13023,11 +13165,8 @@ pub(crate) fn hit_test_month_canvas(
     let max_row = (num_rows as usize).saturating_sub(1);
     let col_w = grid_w / 7.0;
     let row_h = grid_h / num_rows;
-    let day_header_h = 22.0;
-    let chip_h = 18.0;
-    let chip_step = 20.0;
-    let usable_h = (row_h - day_header_h - 4.0).max(0.0);
-    let max_tracks = ((usable_h / chip_step).floor() as usize).max(1);
+    let chip_scale = configured_chip_scale();
+    let (day_header_h, chip_h, chip_step, max_tracks) = month_layout_metrics(row_h, chip_scale);
 
     if y < header_h {
         if layout.show_week_numbers && x < kw_w {
@@ -13066,8 +13205,10 @@ pub(crate) fn hit_test_month_canvas(
 
         // Overflow hit test (only when events in this column exceed available tracks)
         if col_event_counts[col] > max_tracks {
+            let of_x = kw_w + col as f64 * col_w + 3.0;
+            let of_w = col_w - 6.0;
             let of_y = cell_y + day_header_h + (max_tracks.saturating_sub(1)) as f64 * chip_step;
-            if y >= of_y && y <= of_y + chip_h {
+            if x >= of_x && x <= of_x + of_w && y >= of_y && y <= of_y + chip_h {
                 return Some(MonthCanvasHit::Overflow { date });
             }
         }
@@ -13144,7 +13285,7 @@ pub(crate) fn draw_month_canvas(
     layout: &PreparedMonthLayout,
     selected_time_slot: Option<SelectedTimeSlot>,
     drag_selection: Option<MonthDragSelection>,
-    _hovered_target: Option<&MonthHoverTarget>,
+    hovered_target: Option<&MonthHoverTarget>,
     is_dark: bool,
 ) {
     let font_scale = crate::views::accessibility::get_system_font_scale();
@@ -13156,11 +13297,9 @@ pub(crate) fn draw_month_canvas(
     let num_rows = (layout.visible_dates.len() / 7).max(1) as f64;
     let col_w = grid_w / 7.0;
     let row_h = grid_h / num_rows;
-    let day_header_h = 22.0;
-    let chip_h = 18.0;
-    let chip_step = 20.0;
-    let usable_h = (row_h - day_header_h - 4.0).max(0.0);
-    let max_tracks = ((usable_h / chip_step).floor() as usize).max(1);
+    let chip_scale = configured_chip_scale();
+    let (day_header_h, chip_h, chip_step, max_tracks) = month_layout_metrics(row_h, chip_scale);
+    let now_dt = Local::now().naive_local();
 
     if let Ok(mut font_options) = gtk::cairo::FontOptions::new() {
         font_options.set_antialias(gtk::cairo::Antialias::Subpixel);
@@ -13407,20 +13546,25 @@ pub(crate) fn draw_month_canvas(
             let is_today = date == layout.today;
             let day_str = date.day().to_string();
 
+            let pad_top = (day_header_h - chip_step).max(0.0);
+            let header_top = cell_y + pad_top;
+            let header_h = chip_h;
+
             if date.day() == 1 {
                 // Month badge pill (GNOME Calendar parity: "Oktober", "Januar", "November", etc.)
                 let month_name = CalendarPage::month_name(date.month());
-                cr.set_font_size((11.0 * font_scale).round());
+                let num_font_size = (chip_h * 0.52 * font_scale).round().clamp(10.0, 22.0);
+                cr.set_font_size(num_font_size);
                 cr.select_font_face(
                     "sans-serif",
                     gtk::cairo::FontSlant::Normal,
                     gtk::cairo::FontWeight::Bold,
                 );
                 if let Ok(ext) = cr.text_extents(&month_name) {
-                    let badge_h = (16.0 * font_scale).round();
+                    let badge_h = (chip_h * 0.82).round().clamp(14.0, (header_h - 2.0).max(14.0));
                     let badge_w = ext.width() + (12.0 * font_scale).round();
                     let badge_x = cell_x + 6.0;
-                    let badge_y = cell_y + (day_header_h - badge_h) / 2.0;
+                    let badge_y = (header_top + (header_h - badge_h) / 2.0).round();
                     let radius = 5.0 * font_scale;
                     draw_cairo_rounded_rect(cr, badge_x, badge_y, badge_w, badge_h, radius);
 
@@ -13459,17 +13603,18 @@ pub(crate) fn draw_month_canvas(
                     let _ = cr.show_text(&month_name);
                 }
             } else if is_today {
-                cr.set_font_size((11.5 * font_scale).round());
+                let num_font_size = (chip_h * 0.55 * font_scale).round().clamp(11.0, 22.0);
+                cr.set_font_size(num_font_size);
                 cr.select_font_face(
                     "sans-serif",
                     gtk::cairo::FontSlant::Normal,
                     gtk::cairo::FontWeight::Bold,
                 );
                 if let Ok(ext) = cr.text_extents(&day_str) {
-                    let badge_h = (16.0 * font_scale).round();
+                    let badge_h = (chip_h * 0.82).round().clamp(14.0, (header_h - 2.0).max(14.0));
                     let badge_w = (ext.width() + 8.0 * font_scale).round().max(badge_h);
                     let badge_x = cell_x + 5.0;
-                    let badge_y = cell_y + (day_header_h - badge_h) / 2.0;
+                    let badge_y = (header_top + (header_h - badge_h) / 2.0).round();
                     let radius = badge_h / 2.0;
                     draw_cairo_rounded_rect(cr, badge_x, badge_y, badge_w, badge_h, radius);
                     cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 1.0);
@@ -13482,6 +13627,8 @@ pub(crate) fn draw_month_canvas(
                     let _ = cr.show_text(&day_str);
                 }
             } else {
+                let num_font_size = (chip_h * if outside_month { 0.55 } else { 0.60 } * font_scale).round().clamp(11.0, 22.0);
+                cr.set_font_size(num_font_size);
                 if outside_month {
                     if is_dark {
                         cr.set_source_rgba(1.0, 1.0, 1.0, 0.38);
@@ -13493,7 +13640,6 @@ pub(crate) fn draw_month_canvas(
                         gtk::cairo::FontSlant::Normal,
                         gtk::cairo::FontWeight::Normal,
                     );
-                    cr.set_font_size((13.0 * font_scale).round());
                 } else {
                     if is_dark {
                         cr.set_source_rgba(1.0, 1.0, 1.0, 0.92);
@@ -13505,11 +13651,10 @@ pub(crate) fn draw_month_canvas(
                         gtk::cairo::FontSlant::Normal,
                         gtk::cairo::FontWeight::Bold,
                     );
-                    cr.set_font_size((14.0 * font_scale).round());
                 }
                 if let Ok(ext) = cr.text_extents(&day_str) {
                     let tx = (cell_x + 16.0 * font_scale - ext.width() / 2.0 - ext.x_bearing()).round();
-                    let ty = (cell_y + (day_header_h - ext.height()) / 2.0 - ext.y_bearing()).round();
+                    let ty = (header_top + (header_h - ext.height()) / 2.0 - ext.y_bearing()).round();
                     cr.move_to(tx, ty);
                     let _ = cr.show_text(&day_str);
                 }
@@ -13552,6 +13697,11 @@ pub(crate) fn draw_month_canvas(
             let (bg_r, bg_g, bg_b) =
                 parse_hex_color(&bar.bg_hex).unwrap_or(if is_dark { (40, 60, 84) } else { (205, 224, 248) });
 
+            let is_past = layout.dim_past_events && !bar.all_day && is_month_bar_past(bar, layout.today, now_dt);
+            if is_past {
+                cr.push_group();
+            }
+
             if bar.all_day {
                 // Multi-day / all-day event chip with optional continuation
                 draw_month_event_bar(
@@ -13572,7 +13722,9 @@ pub(crate) fn draw_month_canvas(
                 );
                 let _ = cr.fill();
 
-                // 6.0px solid left accent stripe (if not continuing from previous week)
+                let stripe_w = (6.0 * chip_scale).max(4.0).round();
+
+                // Solid left accent stripe (if not continuing from previous week)
                 if !bar.continues_left {
                     let _ = cr.save();
                     draw_month_event_bar(
@@ -13586,7 +13738,7 @@ pub(crate) fn draw_month_canvas(
                         bar.continues_right,
                     );
                     let _ = cr.clip();
-                    cr.rectangle(bar_x, bar_y, 6.0, chip_h);
+                    cr.rectangle(bar_x, bar_y, stripe_w, chip_h);
                     cr.set_source_rgba(
                         col_r as f64 / 255.0,
                         col_g as f64 / 255.0,
@@ -13600,8 +13752,8 @@ pub(crate) fn draw_month_canvas(
                 let (txt_r, txt_g, txt_b) =
                     parse_hex_color(&bar.fg_hex).unwrap_or(if is_dark { (255, 255, 255) } else { (46, 52, 54) });
 
-                let text_pad_left = if bar.continues_left { 6.0 } else { 11.0 };
-                let text_pad_right = 6.0;
+                let text_pad_left = if bar.continues_left { (6.0 * chip_scale).round() } else { (stripe_w + (5.0 * chip_scale).round()).round() };
+                let text_pad_right = (6.0 * chip_scale).round();
                 let text_x = (bar_x + text_pad_left).round();
                 let max_text_w = (bar_w - text_pad_left - text_pad_right).max(0.0);
 
@@ -13615,11 +13767,11 @@ pub(crate) fn draw_month_canvas(
                     txt_b as f64 / 255.0,
                     1.0,
                 );
-                cr.set_font_size((11.5 * font_scale).round());
+                cr.set_font_size((12.0 * font_scale * chip_scale).round());
                 cr.select_font_face(
-                    "sans-serif",
+                    "Sans",
                     gtk::cairo::FontSlant::Normal,
-                    gtk::cairo::FontWeight::Bold,
+                    gtk::cairo::FontWeight::Normal,
                 );
                 let trunc = truncate_cairo_text(cr, &bar.event.summary, max_text_w);
                 if let Ok(ext) = cr.text_extents(&trunc) {
@@ -13629,7 +13781,7 @@ pub(crate) fn draw_month_canvas(
                 }
                 let _ = cr.restore();
             } else {
-                // Timed / Single-day event chip (GNOME Calendar parity: chip with 6px left stripe, bold title on left, time on right)
+                // Timed / Single-day event chip (GNOME Calendar parity: chip with left stripe, title on left, time on right)
                 draw_cairo_rounded_rect(cr, bar_x, bar_y, bar_w, chip_h, 6.0);
                 cr.set_source_rgba(
                     bg_r as f64 / 255.0,
@@ -13639,11 +13791,13 @@ pub(crate) fn draw_month_canvas(
                 );
                 let _ = cr.fill();
 
-                // 6.0px solid left accent stripe
+                let stripe_w = (6.0 * chip_scale).max(4.0).round();
+
+                // Solid left accent stripe
                 let _ = cr.save();
                 draw_cairo_rounded_rect(cr, bar_x, bar_y, bar_w, chip_h, 6.0);
                 let _ = cr.clip();
-                cr.rectangle(bar_x, bar_y, 6.0, chip_h);
+                cr.rectangle(bar_x, bar_y, stripe_w, chip_h);
                 cr.set_source_rgba(
                     col_r as f64 / 255.0,
                     col_g as f64 / 255.0,
@@ -13659,30 +13813,31 @@ pub(crate) fn draw_month_canvas(
                 // Right-aligned time string (if present)
                 let mut time_width = 0.0;
                 if let Some(ref t) = bar.time_str {
-                    cr.set_font_size((10.5 * font_scale).round());
+                    cr.set_font_size((10.5 * font_scale * chip_scale).round());
                     cr.select_font_face(
-                        "sans-serif",
+                        "Sans",
                         gtk::cairo::FontSlant::Normal,
                         gtk::cairo::FontWeight::Normal,
                     );
                     if let Ok(ext) = cr.text_extents(t) {
-                        time_width = ext.width() + 6.0;
-                        let tx = (bar_x + bar_w - ext.width() - 5.0 - ext.x_bearing()).round();
+                        time_width = ext.width() + (6.0 * chip_scale).round();
+                        let tx = (bar_x + bar_w - ext.width() - (5.0 * chip_scale).round() - ext.x_bearing()).round();
                         let ty = (bar_y + (chip_h - ext.height()) / 2.0 - ext.y_bearing()).round();
                         cr.set_source_rgba(
                             txt_r as f64 / 255.0,
                             txt_g as f64 / 255.0,
                             txt_b as f64 / 255.0,
-                            0.85,
+                            0.80,
                         );
                         cr.move_to(tx, ty);
                         let _ = cr.show_text(t);
                     }
                 }
 
-                // Left-aligned title string (bold and pixel-aligned for crispness)
-                let text_x = (bar_x + 11.0).round();
-                let max_text_w = (bar_w - 11.0 - time_width - 3.0).max(0.0);
+                // Left-aligned title string (crisp and pixel-aligned)
+                let text_pad_left = (stripe_w + (5.0 * chip_scale).round()).round();
+                let text_x = (bar_x + text_pad_left).round();
+                let max_text_w = (bar_w - text_pad_left - time_width - (3.0 * chip_scale).round()).max(0.0);
 
                 let _ = cr.save();
                 cr.rectangle(text_x, bar_y, max_text_w, chip_h);
@@ -13694,11 +13849,11 @@ pub(crate) fn draw_month_canvas(
                     txt_b as f64 / 255.0,
                     1.0,
                 );
-                cr.set_font_size((11.5 * font_scale).round());
+                cr.set_font_size((12.0 * font_scale * chip_scale).round());
                 cr.select_font_face(
-                    "sans-serif",
+                    "Sans",
                     gtk::cairo::FontSlant::Normal,
-                    gtk::cairo::FontWeight::Bold,
+                    gtk::cairo::FontWeight::Normal,
                 );
                 let trunc = truncate_cairo_text(cr, &bar.event.summary, max_text_w);
                 if let Ok(ext) = cr.text_extents(&trunc) {
@@ -13707,6 +13862,11 @@ pub(crate) fn draw_month_canvas(
                     let _ = cr.show_text(&trunc);
                 }
                 let _ = cr.restore();
+            }
+
+            if is_past {
+                let _ = cr.pop_group_to_source();
+                let _ = cr.paint_with_alpha(0.55);
             }
         }
 
@@ -13718,21 +13878,51 @@ pub(crate) fn draw_month_canvas(
                 let of_count = total.saturating_sub(shown_before);
                 if of_count > 0 {
                     let cell_x = kw_w + col as f64 * col_w;
+                    let of_x = cell_x + 3.0;
+                    let of_w = col_w - 6.0;
                     let of_y = cell_y + day_header_h + shown_before as f64 * chip_step;
+                    let of_h = chip_h;
+
+                    let date_idx = row * 7 + col;
+                    let is_hovered = layout.visible_dates.get(date_idx).map_or(false, |&d| {
+                        matches!(hovered_target, Some(MonthHoverTarget::Overflow { date }) if *date == d)
+                    });
+
+                    // Evolution-style flush pill chip
+                    draw_cairo_rounded_rect(cr, of_x, of_y, of_w, of_h, 6.0);
+                    if is_dark {
+                        if is_hovered {
+                            cr.set_source_rgba(1.0, 1.0, 1.0, 0.18);
+                        } else {
+                            cr.set_source_rgba(1.0, 1.0, 1.0, 0.08);
+                        }
+                    } else {
+                        if is_hovered {
+                            cr.set_source_rgba(0.0, 0.0, 0.0, 0.12);
+                        } else {
+                            cr.set_source_rgba(0.0, 0.0, 0.0, 0.05);
+                        }
+                    }
+                    let _ = cr.fill();
+
                     let of_text = format!("+{}", of_count);
-                    cr.set_font_size(11.0);
+                    cr.set_font_size((11.0 * font_scale * chip_scale).round());
                     cr.select_font_face(
-                        "sans-serif",
+                        "Sans",
                         gtk::cairo::FontSlant::Normal,
-                        gtk::cairo::FontWeight::Bold,
+                        if is_hovered {
+                            gtk::cairo::FontWeight::Bold
+                        } else {
+                            gtk::cairo::FontWeight::Normal
+                        },
                     );
                     if is_dark {
-                        cr.set_source_rgba(1.0, 1.0, 1.0, 0.55);
+                        cr.set_source_rgba(1.0, 1.0, 1.0, if is_hovered { 0.95 } else { 0.65 });
                     } else {
-                        cr.set_source_rgba(0.0, 0.0, 0.0, 0.55);
+                        cr.set_source_rgba(0.0, 0.0, 0.0, if is_hovered { 0.90 } else { 0.60 });
                     }
                     if let Ok(ext) = cr.text_extents(&of_text) {
-                        let tx = (cell_x + 8.0 - ext.x_bearing()).round();
+                        let tx = (of_x + (8.0 * chip_scale).round() - ext.x_bearing()).round();
                         let ty = (of_y + (chip_h - ext.height()) / 2.0 - ext.y_bearing()).round();
                         cr.move_to(tx, ty);
                         let _ = cr.show_text(&of_text);
@@ -13846,14 +14036,14 @@ fn truncate_cairo_text(cr: &gtk::cairo::Context, text: &str, max_width: f64) -> 
     res
 }
 
-#[derive(Clone)]
-struct PlacedTimeGridChip {
-    event: CalendarEventRecord,
-    start_slot: usize,
-    row_span: usize,
-    col_idx: usize,
-    total_cols: usize,
-    time_text: String,
+#[derive(Clone, Debug)]
+pub(crate) struct PlacedTimeGridChip {
+    pub(crate) event: CalendarEventRecord,
+    pub(crate) start_slot: usize,
+    pub(crate) row_span: usize,
+    pub(crate) col_idx: usize,
+    pub(crate) total_cols: usize,
+    pub(crate) time_text: String,
 }
 
 #[derive(Clone, Debug)]
@@ -14048,7 +14238,12 @@ fn draw_time_grid_chip(
     slot_height: f64,
     is_hovered: bool,
     is_dark: bool,
+    is_past: bool,
 ) {
+    if is_past {
+        cr.push_group();
+    }
+
     let (x, y, w, h) = chip_rect_coordinates(chip, width, slot_height);
     let color_hex = event_color_for_record(&chip.event);
     let (bg_hex, hov_hex, _, fg_hex) = pastel_colors_for_hex(&color_hex, is_dark);
@@ -14061,8 +14256,9 @@ fn draw_time_grid_chip(
     let (stripe_r, stripe_g, stripe_b) =
         parse_hex_color(&color_hex).unwrap_or((53, 132, 228));
 
+    let chip_scale = configured_chip_scale();
     let card_radius = 6.0;
-    let stripe_w = 6.0;
+    let stripe_w = (6.0 * chip_scale).max(4.0).round();
 
     // 1. Soft pastel background (GNOME Calendar style)
     draw_cairo_rounded_rect(cr, x, y, w, h, card_radius);
@@ -14095,8 +14291,8 @@ fn draw_time_grid_chip(
         chip.event.summary.as_str()
     };
 
-    let text_x = x + stripe_w + 5.0;
-    let max_text_w = (w - stripe_w - 9.0).max(10.0);
+    let text_x = x + stripe_w + (5.0 * chip_scale).round();
+    let max_text_w = (w - stripe_w - (9.0 * chip_scale).round()).max(10.0);
 
     let _ = cr.save();
     // Clip to chip interior
@@ -14108,27 +14304,27 @@ fn draw_time_grid_chip(
     if chip.row_span >= 2 && h >= 28.0 {
         // Multi-line (GNOME Calendar layout: Start time on top, Title bold below)
         cr.select_font_face(
-            "sans-serif",
+            "Sans",
             gtk::cairo::FontSlant::Normal,
             gtk::cairo::FontWeight::Normal,
         );
-        cr.set_font_size(10.0);
+        cr.set_font_size((10.5 * chip_scale).round());
         cr.set_source_rgba(
             fg_r as f64 / 255.0,
             fg_g as f64 / 255.0,
             fg_b as f64 / 255.0,
-            0.75,
+            0.80,
         );
         let trunc_time = truncate_cairo_text(cr, start_time, max_text_w);
-        cr.move_to(text_x, y + 12.0);
+        cr.move_to(text_x.round(), (y + (12.0 * chip_scale).round()).round());
         let _ = cr.show_text(&trunc_time);
 
         cr.select_font_face(
-            "sans-serif",
+            "Sans",
             gtk::cairo::FontSlant::Normal,
-            gtk::cairo::FontWeight::Bold,
+            gtk::cairo::FontWeight::Normal,
         );
-        cr.set_font_size(11.5);
+        cr.set_font_size((12.5 * chip_scale).round());
         cr.set_source_rgba(
             fg_r as f64 / 255.0,
             fg_g as f64 / 255.0,
@@ -14136,16 +14332,16 @@ fn draw_time_grid_chip(
             1.0,
         );
         let trunc_title = truncate_cairo_text(cr, title, max_text_w);
-        cr.move_to(text_x, y + 25.0);
+        cr.move_to(text_x.round(), (y + (25.0 * chip_scale).round()).round());
         let _ = cr.show_text(&trunc_title);
     } else {
         // Single-line: "08:00 Meeting..."
         cr.select_font_face(
-            "sans-serif",
+            "Sans",
             gtk::cairo::FontSlant::Normal,
-            gtk::cairo::FontWeight::Bold,
+            gtk::cairo::FontWeight::Normal,
         );
-        cr.set_font_size(11.0);
+        cr.set_font_size((12.0 * chip_scale).round());
         cr.set_source_rgba(
             fg_r as f64 / 255.0,
             fg_g as f64 / 255.0,
@@ -14154,7 +14350,7 @@ fn draw_time_grid_chip(
         );
         let single_line = format!("{} {}", start_time, title);
         let trunc = truncate_cairo_text(cr, &single_line, max_text_w);
-        cr.move_to(text_x, y + (h / 2.0 + 4.0).floor());
+        cr.move_to(text_x.round(), (y + (h / 2.0 + 4.0)).round());
         let _ = cr.show_text(&trunc);
     }
 
@@ -14168,6 +14364,11 @@ fn draw_time_grid_chip(
         draw_cairo_rounded_rect(cr, handle_x, handle_y, handle_w, 2.5, 1.25);
         cr.set_source_rgba(fg_r as f64 / 255.0, fg_g as f64 / 255.0, fg_b as f64 / 255.0, 0.40);
         let _ = cr.fill();
+    }
+
+    if is_past {
+        let _ = cr.pop_group_to_source();
+        let _ = cr.paint_with_alpha(0.55);
     }
 }
 
@@ -14445,8 +14646,18 @@ pub(crate) fn draw_agenda_canvas(
         return;
     }
 
+    if let Ok(mut font_options) = gtk::cairo::FontOptions::new() {
+        font_options.set_antialias(gtk::cairo::Antialias::Subpixel);
+        font_options.set_hint_style(gtk::cairo::HintStyle::Full);
+        font_options.set_hint_metrics(gtk::cairo::HintMetrics::On);
+        cr.set_font_options(&font_options);
+    }
+
     let start_idx = items.partition_point(|it| (it.y() + it.height()) < clip_y1);
     let end_idx = (items.partition_point(|it| it.y() <= clip_y2) + 1).min(items.len());
+    let dim_past = configured_dim_past_events();
+    let today = Local::now().date_naive();
+    let now_dt = Local::now().naive_local();
 
     let fg = if is_dark { 1.0 } else { 0.0 };
     let primary_alpha = if is_dark { 0.95 } else { 0.90 };
@@ -14488,6 +14699,11 @@ pub(crate) fn draw_agenda_canvas(
                 let is_selected = selected_idx == Some(idx);
                 let is_hovered = hovered_idx == Some(idx);
                 let is_running = is_event_running_now(record, *date);
+                let is_past = dim_past && !is_selected && is_agenda_event_past(record, *date, today, now_dt);
+
+                if is_past {
+                    cr.push_group();
+                }
 
                 // 1. Background (Selection / Hover)
                 if is_selected {
@@ -14619,6 +14835,11 @@ pub(crate) fn draw_agenda_canvas(
                     let _ = cr.show_text(&trunc_sub);
                 }
                 let _ = cr.restore();
+
+                if is_past {
+                    let _ = cr.pop_group_to_source();
+                    let _ = cr.paint_with_alpha(0.55);
+                }
             }
         }
     }
@@ -16199,6 +16420,18 @@ fn configured_compress_weekend() -> bool {
     AppSettings::try_new()
         .map(|settings| settings.calendar_compress_weekend())
         .unwrap_or(true)
+}
+
+fn configured_dim_past_events() -> bool {
+    AppSettings::try_new()
+        .map(|settings| settings.calendar_dim_past_events())
+        .unwrap_or(true)
+}
+
+fn configured_chip_scale() -> f64 {
+    AppSettings::try_new()
+        .map(|settings| settings.calendar_chip_scale())
+        .unwrap_or(1.0)
 }
 
 fn configured_month_scroll_by_week() -> bool {
@@ -18111,19 +18344,33 @@ fn calendar_grid_event_chip(
     let color = event_color_for_record(event);
 
     if is_all_day {
+        let chip_scale = configured_chip_scale();
+        let chip_h = (22.0 * chip_scale).round() as i32;
         let chip_button = gtk::Button::builder()
             .halign(gtk::Align::Fill)
             .valign(gtk::Align::Start)
             .hexpand(true)
             .vexpand(false)
-            .height_request(20)
+            .height_request(chip_h)
             .css_classes(vec!["flat", "calendar-grid-event", "all-day-chip"])
             .build();
+
+        let dim_past = page
+            .imp()
+            .settings
+            .borrow()
+            .as_ref()
+            .map(|s| s.calendar_dim_past_events())
+            .unwrap_or_else(configured_dim_past_events);
+        let today = Local::now().date_naive();
+        if dim_past && is_allday_event_in_past_for_date(event, day, today) {
+            chip_button.set_opacity(0.55);
+        }
 
         let drawing_area = gtk::DrawingArea::builder()
             .hexpand(true)
             .vexpand(true)
-            .height_request(20)
+            .height_request(chip_h)
             .build();
 
         let ev_draw = event.clone();
@@ -18146,6 +18393,13 @@ fn calendar_grid_event_chip(
             let (txt_r, txt_g, txt_b) =
                 parse_hex_color(&fg_hex).unwrap_or(if is_dark { (255, 255, 255) } else { (46, 52, 54) });
 
+            if let Ok(mut font_options) = gtk::cairo::FontOptions::new() {
+                font_options.set_antialias(gtk::cairo::Antialias::Subpixel);
+                font_options.set_hint_style(gtk::cairo::HintStyle::Full);
+                font_options.set_hint_metrics(gtk::cairo::HintMetrics::On);
+                cr.set_font_options(&font_options);
+            }
+
             draw_month_event_bar(cr, 0.0, 0.0, w, h, 6.0, continues_left, continues_right);
             cr.set_source_rgba(
                 bg_r as f64 / 255.0,
@@ -18155,14 +18409,16 @@ fn calendar_grid_event_chip(
             );
             let _ = cr.fill();
 
-            // 6.0px solid left accent stripe (if not continuing from previous week)
+            let stripe_w = (6.0 * chip_scale).max(4.0).round();
+
+            // Solid left accent stripe (if not continuing from previous week)
             if !continues_left {
                 let _ = cr.save();
                 draw_month_event_bar(cr, 0.0, 0.0, w, h, 6.0, continues_left, continues_right);
                 let _ = cr.clip();
                 let (stripe_r, stripe_g, stripe_b) =
                     parse_hex_color(&color_draw).unwrap_or((53, 132, 228));
-                cr.rectangle(0.0, 0.0, 6.0, h);
+                cr.rectangle(0.0, 0.0, stripe_w, h);
                 cr.set_source_rgba(
                     stripe_r as f64 / 255.0,
                     stripe_g as f64 / 255.0,
@@ -18174,9 +18430,9 @@ fn calendar_grid_event_chip(
             }
 
             let arrow_w = (h / 2.5).clamp(4.0, 6.0).min(w / 3.0);
-            let pad_left = if continues_left { arrow_w + 3.0 } else { 11.0 };
-            let pad_right = if continues_right { arrow_w + 3.0 } else { 5.0 };
-            let text_x = pad_left;
+            let pad_left = if continues_left { arrow_w + 3.0 } else { stripe_w + (5.0 * chip_scale).round() };
+            let pad_right = if continues_right { arrow_w + 3.0 } else { (5.0 * chip_scale).round() };
+            let text_x = pad_left.round();
             let max_text_w = (w - pad_left - pad_right).max(0.0);
 
             let _ = cr.save();
@@ -18184,8 +18440,8 @@ fn calendar_grid_event_chip(
             let _ = cr.clip();
 
             cr.set_source_rgba(txt_r as f64 / 255.0, txt_g as f64 / 255.0, txt_b as f64 / 255.0, 1.0);
-            cr.set_font_size(11.5);
-            cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+            cr.set_font_size((12.0 * chip_scale).round());
+            cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
 
             let untitled = crate::i18n::gettext("(Untitled)");
             let summary_str = if ev_draw.summary.trim().is_empty() {
@@ -18195,7 +18451,7 @@ fn calendar_grid_event_chip(
             };
             let trunc = truncate_cairo_text(cr, summary_str, max_text_w);
             if let Ok(ext) = cr.text_extents(&trunc) {
-                let ty = (h - ext.height()) / 2.0 - ext.y_bearing();
+                let ty = ((h - ext.height()) / 2.0 - ext.y_bearing()).round();
                 cr.move_to(text_x, ty);
                 let _ = cr.show_text(&trunc);
             }
@@ -18318,6 +18574,28 @@ fn calendar_grid_event_chip(
             .height_request(-1)
             .css_classes(vec!["flat", "calendar-grid-event", chip_class.as_str()])
             .build();
+
+        let dim_past = page
+            .imp()
+            .settings
+            .borrow()
+            .as_ref()
+            .map(|s| s.calendar_dim_past_events())
+            .unwrap_or_else(configured_dim_past_events);
+        let today = Local::now().date_naive();
+        let now_dt = Local::now().naive_local();
+        let is_past = if day < today {
+            true
+        } else if day > today {
+            false
+        } else {
+            let (_, end_min, _) = event_occurrence_times_for_date(event, day, 30);
+            let now_min = (now_dt.hour() * 60 + now_dt.minute()) as f64;
+            (end_min as f64) <= now_min
+        };
+        if dim_past && is_past {
+            chip_button.set_opacity(0.55);
+        }
 
         let text = if row_span >= 2 {
             format!(
@@ -18889,6 +19167,153 @@ fn event_display_range(event: &CalendarEventRecord) -> Option<CalendarDateRange>
         start_datetime.date(),
         end.max(start_datetime.date().succ_opt()?),
     ))
+}
+
+pub(crate) fn is_allday_event_in_past_for_date(
+    event: &CalendarEventRecord,
+    target_date: NaiveDate,
+    today: NaiveDate,
+) -> bool {
+    if target_date > today {
+        return false;
+    }
+
+    let range = event_occurrence_range_for_date(event, target_date)
+        .or_else(|| event_display_range(event));
+    if let Some(r) = range {
+        r.last_inclusive() < today
+    } else if let Some(d) = event_start_date(event) {
+        d < today
+    } else {
+        target_date < today
+    }
+}
+
+pub(crate) fn is_allday_event_in_past(event: &CalendarEventRecord, today: NaiveDate) -> bool {
+    let range = event_display_range(event);
+    if let Some(r) = range {
+        r.last_inclusive() < today
+    } else if let Some(d) = event_start_date(event) {
+        d < today
+    } else {
+        false
+    }
+}
+
+pub(crate) fn is_time_grid_chip_past(
+    chip: &PlacedTimeGridChip,
+    target_date: NaiveDate,
+    today: NaiveDate,
+    now_min: f64,
+    interval_minutes: i32,
+) -> bool {
+    if target_date < today {
+        true
+    } else if target_date > today {
+        false
+    } else {
+        let interval_u32 = interval_minutes.max(1) as u32;
+        let end_min = ((chip.start_slot + chip.row_span) as u32 * interval_u32).min(1440);
+        (end_min as f64) <= now_min
+    }
+}
+
+pub(crate) fn is_month_bar_past(
+    bar: &PreparedMonthEventBar,
+    today: NaiveDate,
+    now_dt: NaiveDateTime,
+) -> bool {
+    // Multi-day and all-day event bars in the month view are never dimmed
+    if bar.all_day || bar.end_col > bar.start_col || bar.continues_left || bar.continues_right {
+        return false;
+    }
+
+    if bar.occurrence_date > today {
+        return false;
+    }
+
+    if bar.occurrence_date == today {
+        if bar.all_day || bar.event.all_day {
+            return false;
+        }
+        let range = event_occurrence_range_for_date(&bar.event, today)
+            .or_else(|| event_display_range(&bar.event));
+        if let Some(r) = range {
+            if r.len_days() > 1 {
+                return false;
+            }
+        }
+        let (_, end_min, _) = event_occurrence_times_for_date(&bar.event, today, 30);
+        let now_min = (now_dt.hour() * 60 + now_dt.minute()) as f64;
+        return (end_min as f64) <= now_min;
+    }
+
+    // bar.occurrence_date < today:
+    // Check if this event is multi-day and still reaches into today or the future.
+    let range = event_occurrence_range_for_date(&bar.event, bar.occurrence_date)
+        .or_else(|| event_display_range(&bar.event));
+
+    if let Some(r) = range {
+        if r.last_inclusive() > today {
+            return false;
+        } else if r.last_inclusive() == today {
+            if bar.all_day || r.len_days() > 1 || bar.event.all_day {
+                return false;
+            }
+            let (_, end_min, _) = event_occurrence_times_for_date(&bar.event, today, 30);
+            let now_min = (now_dt.hour() * 60 + now_dt.minute()) as f64;
+            return (end_min as f64) <= now_min;
+        }
+    }
+
+    true
+}
+
+pub(crate) fn is_agenda_event_past(
+    record: &CalendarEventRecord,
+    date: NaiveDate,
+    today: NaiveDate,
+    now_dt: NaiveDateTime,
+) -> bool {
+    if date > today {
+        return false;
+    }
+
+    if date == today {
+        if record.all_day {
+            return false;
+        }
+        let range = event_occurrence_range_for_date(record, today)
+            .or_else(|| event_display_range(record));
+        if let Some(r) = range {
+            if r.len_days() > 1 {
+                return false;
+            }
+        }
+        let (_, end_min, _) = event_occurrence_times_for_date(record, today, 30);
+        let now_min = (now_dt.hour() * 60 + now_dt.minute()) as f64;
+        return (end_min as f64) <= now_min;
+    }
+
+    // date < today:
+    // Check if this event is multi-day and still reaches into today or future.
+    let range = event_occurrence_range_for_date(record, date)
+        .or_else(|| event_display_range(record));
+
+    if let Some(r) = range {
+        if r.last_inclusive() > today {
+            return false;
+        } else if r.last_inclusive() == today {
+            if record.all_day || r.len_days() > 1 {
+                return false;
+            }
+            let (_, end_min, _) = event_occurrence_times_for_date(record, today, 30);
+            let now_min = (now_dt.hour() * 60 + now_dt.minute()) as f64;
+            return (end_min as f64) <= now_min;
+        }
+    }
+
+    true
 }
 
 pub(crate) fn event_occurrence_range_for_date(
@@ -23476,10 +23901,10 @@ mod tests {
         let css_class = ensure_event_chip_css_class("#1a73e8", &bg_light, "#d0e0f8", "#b8d4f4", &fg_light);
         assert!(css_class.starts_with("cal-chip-"));
 
-        // Verify source has 6px stripe and no weekend/offhours grey backgrounds
+        // Verify source has 6px base stripe and no weekend/offhours grey backgrounds
         let src = include_str!("calendar_page.rs");
         let impl_src = src.split("mod tests").next().unwrap();
-        assert!(impl_src.contains("let stripe_w = 6.0;"));
+        assert!(impl_src.contains("let stripe_w = (6.0 * chip_scale).max(4.0).round();"));
         assert!(impl_src.contains("border-left: 6px solid {base_hex}; border-radius: 6px;"));
         assert!(!impl_src.contains("is_weekend"));
         assert!(!impl_src.contains("offhours_alpha"));
@@ -24959,15 +25384,125 @@ mod tests {
         }
 
         // When hovering occurrence 0, only occurrence 0 evaluates is_hovered == true
-        let hover_target = MonthHoverTarget {
+        let hover_target = MonthHoverTarget::Event {
             uid: "recurring-daily-uid".to_string(),
             occurrence_date: days[0],
         };
-        let occ_0_is_hovered = hover_target.uid == event_bars[0].event.uid && hover_target.occurrence_date == event_bars[0].occurrence_date;
-        let occ_1_is_hovered = hover_target.uid == event_bars[1].event.uid && hover_target.occurrence_date == event_bars[1].occurrence_date;
+        let occ_0_is_hovered = match &hover_target {
+            MonthHoverTarget::Event { uid, occurrence_date } => {
+                uid == &event_bars[0].event.uid && occurrence_date == &event_bars[0].occurrence_date
+            }
+            _ => false,
+        };
+        let occ_1_is_hovered = match &hover_target {
+            MonthHoverTarget::Event { uid, occurrence_date } => {
+                uid == &event_bars[1].event.uid && occurrence_date == &event_bars[1].occurrence_date
+            }
+            _ => false,
+        };
 
         assert!(occ_0_is_hovered, "Occurrence 0 must be hovered");
         assert!(!occ_1_is_hovered, "Occurrence 1 must NOT be hovered when hovering occurrence 0");
+    }
+
+    #[test]
+    fn test_month_overflow_chip_flush_geometry_and_hover() {
+        let monday = NaiveDate::from_ymd_opt(2026, 10, 5).unwrap();
+        let viewport = CalendarViewport::for_view(CalendarView::Month, monday, Weekday::Mon);
+        let days: Vec<NaiveDate> = viewport.visible_range.dates().collect();
+
+        // Populate day 0 with 5 events so it overflows (max_tracks = 3 for row_h=100.0)
+        let mut events_by_date = BTreeMap::new();
+        for i in 0..5 {
+            let ev = CalendarEventRecord {
+                uid: format!("ev-{i}"),
+                source_uid: "s1".to_string(),
+                source_display_name: "Work".to_string(),
+                component: "BEGIN:VEVENT\nEND:VEVENT".to_string(),
+                summary: format!("Event {i}"),
+                start: format!("{}T09:00:00", days[0].format("%Y-%m-%d")),
+                end: format!("{}T10:00:00", days[0].format("%Y-%m-%d")),
+                location: String::new(),
+                description: String::new(),
+                all_day: false,
+            };
+            events_by_date.entry(days[0]).or_insert_with(Vec::new).push(ev);
+        }
+
+        let workdays: HashSet<Weekday> = [Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri].into_iter().collect();
+        let weekday_names_full = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"];
+        let weekday_names_short = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+
+        let layout = prepare_month_layout(
+            &viewport,
+            &events_by_date,
+            days[0],
+            false,
+            &workdays,
+            false,
+            &weekday_names_full,
+            &weekday_names_short,
+            false,
+            6,
+        );
+
+        let width = 736.0;
+        let height = 628.0;
+        let kw_w = 0.0;
+        let col_w = (width - kw_w) / 7.0;
+        let num_rows = (layout.visible_dates.len() / 7).max(1) as f64;
+        let row_h = (height - 28.0) / num_rows;
+
+        for chip_scale in [0.75, 1.0, 1.25, 1.50] {
+            let (_day_header_h, chip_h, _chip_step, _max_tracks) = month_layout_metrics(row_h, chip_scale);
+
+            let cell_x = kw_w + 0.0 * col_w;
+            let expected_of_x = cell_x + 3.0;
+            let expected_of_w = col_w - 6.0;
+
+            // An event bar on track 0 in that same column has the exact same horizontal geometry
+            let expected_bar_x = cell_x + 3.0;
+            let expected_bar_w = col_w - 6.0;
+
+            assert_eq!(expected_of_x, expected_bar_x, "Overflow chip must be horizontally flush with event chip");
+            assert_eq!(expected_of_w, expected_bar_w, "Overflow chip width must exactly match event chip width");
+            assert!(chip_h >= 14.0, "Overflow chip height must be at least 14px");
+            assert_eq!(_chip_step, chip_h + (2.0 * chip_scale).round().max(1.0));
+        }
+
+        // Test hit testing with current configured chip scale
+        let default_scale = configured_chip_scale();
+        let (day_header_h, chip_h, chip_step, max_tracks) = month_layout_metrics(row_h, default_scale);
+        let shown_before = max_tracks.saturating_sub(1);
+        let cell_x = kw_w + 0.0 * col_w;
+        let of_x = cell_x + 3.0;
+        let of_y = 28.0 + day_header_h + shown_before as f64 * chip_step;
+
+        // Hit test on the overflow chip center
+        let hit = hit_test_month_canvas(of_x + 10.0, of_y + chip_h / 2.0, width, height, &layout);
+        match hit {
+            Some(MonthCanvasHit::Overflow { date }) => {
+                assert_eq!(date, days[0], "Hit test must correctly detect overflow chip on day 0");
+            }
+            other => panic!("Expected MonthCanvasHit::Overflow, got {other:?}"),
+        }
+
+        // Hit test in the 3px margin outside the chip must NOT hit the overflow chip
+        let hit_margin = hit_test_month_canvas(cell_x + 1.0, of_y + chip_h / 2.0, width, height, &layout);
+        match hit_margin {
+            Some(MonthCanvasHit::DayCell { date }) => {
+                assert_eq!(date, days[0]);
+            }
+            Some(MonthCanvasHit::Overflow { .. }) => {
+                panic!("Overflow hit test should NOT trigger in cell margin");
+            }
+            _ => {}
+        }
+
+        // Test MonthHoverTarget equality
+        let overflow_target = MonthHoverTarget::Overflow { date: days[0] };
+        assert_eq!(overflow_target, MonthHoverTarget::Overflow { date: days[0] });
+        assert_ne!(overflow_target, MonthHoverTarget::Overflow { date: days[1] });
     }
 
     #[test]
@@ -25671,8 +26206,76 @@ mod tests {
         // 3. User manually selects tomorrow's event (row 3) -> follow becomes false
         page.imp().agenda_follow_current.set(false);
         page.imp().agenda_selected_row.set(Some(3));
+        page.imp().view_state.borrow_mut().select_event(CalendarEventIdentity::from_event(&event_tomorrow), Some(3));
         let resolved_manual = page.resolve_agenda_selection_index(&items);
         assert_eq!(resolved_manual, Some(3), "Manual user selection must be preserved when follow is false");
+    }
+
+    #[test]
+    fn test_agenda_initial_scroll_targets_today_date_header() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else { return; };
+        let page = CalendarPage::new();
+        page.select_calendar_view(CalendarView::Agenda);
+
+        let today = Local::now().date_naive();
+        let yesterday = today.pred_opt().unwrap();
+
+        let event_today = CalendarEventRecord {
+            uid: "evt-today-allday".to_string(),
+            source_uid: "source-1".to_string(),
+            source_display_name: "Work".to_string(),
+            component: "BEGIN:VEVENT\nUID:evt-today-allday\nSUMMARY:Urlaub Woody\nEND:VEVENT".to_string(),
+            summary: "Urlaub Woody".to_string(),
+            start: today.format("%Y-%m-%d").to_string(),
+            end: today.format("%Y-%m-%d").to_string(),
+            location: "".to_string(),
+            description: "".to_string(),
+            all_day: true,
+        };
+
+        let items = vec![
+            PreparedAgendaItem::DateHeader {
+                date: yesterday,
+                text: "Yesterday".to_string(),
+                is_today: false,
+                y: 0.0,
+                height: 36.0,
+            },
+            PreparedAgendaItem::DateHeader {
+                date: today,
+                text: "Today".to_string(),
+                is_today: true,
+                y: 82.0,
+                height: 36.0,
+            },
+            PreparedAgendaItem::EventRow {
+                identity: CalendarEventIdentity::from_event(&event_today),
+                date: today,
+                time_str: "All Day".to_string(),
+                title: "Urlaub Woody".to_string(),
+                sub: "".to_string(),
+                category: None,
+                color: (0.0, 0.5, 1.0),
+                record: event_today.clone(),
+                y: 118.0,
+                height: 46.0,
+            },
+        ];
+
+        page.imp().agenda_items.replace(items);
+        let visible_range = page.current_calendar_viewport().visible_range;
+        let revision = page.imp().calendar_revision.get();
+        let key = (visible_range, revision, String::new(), None, 0);
+        page.imp().agenda_rendered_key.replace(Some(key));
+
+        // When switching or clicking Today, agenda_needs_initial_scroll is set to true
+        page.imp().agenda_needs_initial_scroll.set(true);
+        page.refresh_agenda_view();
+
+        // Vadjustment value must scroll exactly to Today's DateHeader at y=82.0, NOT below it!
+        let vadj = page.imp().agenda_vadjustment.borrow().as_ref().cloned().expect("vadj");
+        assert_eq!(vadj.value(), 82.0, "Vadjustment must scroll to Today's DateHeader (82.0) so all-day events are visible below it");
     }
 
     #[test]
@@ -25835,6 +26438,257 @@ mod tests {
             let ptr = surface.to_glib_none().0 as *mut std::ffi::c_void;
             cairo_surface_write_to_png(ptr, filename.as_ptr());
         }
+    }
+
+    #[test]
+    fn test_calendar_dim_past_events_temporal_logic() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 7).unwrap(); // Wednesday
+        let yesterday = today.pred_opt().unwrap();
+        let tomorrow = today.succ_opt().unwrap();
+        let now_dt = NaiveDateTime::new(today, chrono::NaiveTime::from_hms_opt(14, 0, 0).unwrap());
+        let now_min = 14.0 * 60.0; // 14:00 = 840 min
+
+        // 1. All-day events
+        let past_allday = CalendarEventRecord {
+            uid: "past-allday".to_string(),
+            source_uid: "s1".to_string(),
+            source_display_name: "Work".to_string(),
+            component: format!("BEGIN:VEVENT\nUID:past-allday\nDTSTART;VALUE=DATE:{}\nDTEND;VALUE=DATE:{}\nSUMMARY:Past Day\nEND:VEVENT",
+                yesterday.format("%Y%m%d"), today.format("%Y%m%d")),
+            summary: "Past Day".to_string(),
+            start: yesterday.format("%Y-%m-%d").to_string(),
+            end: today.format("%Y-%m-%d").to_string(),
+            location: "".to_string(),
+            description: "".to_string(),
+            all_day: true,
+        };
+        assert!(is_allday_event_in_past(&past_allday, today), "Yesterday's all-day event must be past");
+
+        let ongoing_allday = CalendarEventRecord {
+            uid: "ongoing-allday".to_string(),
+            source_uid: "s1".to_string(),
+            source_display_name: "Work".to_string(),
+            component: format!("BEGIN:VEVENT\nUID:ongoing-allday\nDTSTART;VALUE=DATE:{}\nDTEND;VALUE=DATE:{}\nSUMMARY:Ongoing Vacation\nEND:VEVENT",
+                yesterday.format("%Y%m%d"), tomorrow.format("%Y%m%d")),
+            summary: "Ongoing Vacation".to_string(),
+            start: yesterday.format("%Y-%m-%d").to_string(),
+            end: tomorrow.format("%Y-%m-%d").to_string(),
+            location: "".to_string(),
+            description: "".to_string(),
+            all_day: true,
+        };
+        assert!(!is_allday_event_in_past(&ongoing_allday, today), "Ongoing multi-day event must NOT be past");
+
+        let future_allday = CalendarEventRecord {
+            uid: "future-allday".to_string(),
+            source_uid: "s1".to_string(),
+            source_display_name: "Work".to_string(),
+            component: format!("BEGIN:VEVENT\nUID:future-allday\nDTSTART;VALUE=DATE:{}\nDTEND;VALUE=DATE:{}\nSUMMARY:Future Day\nEND:VEVENT",
+                tomorrow.format("%Y%m%d"), tomorrow.succ_opt().unwrap().format("%Y%m%d")),
+            summary: "Future Day".to_string(),
+            start: tomorrow.format("%Y-%m-%d").to_string(),
+            end: tomorrow.succ_opt().unwrap().format("%Y-%m-%d").to_string(),
+            location: "".to_string(),
+            description: "".to_string(),
+            all_day: true,
+        };
+        assert!(!is_allday_event_in_past(&future_allday, today), "Future all-day event must NOT be past");
+
+        // 2. Time grid chips (interval 30 min)
+        // Chip A: Yesterday -> always past
+        let chip_yesterday = PlacedTimeGridChip {
+            event: past_allday.clone(),
+            start_slot: 16, // 08:00
+            row_span: 2,   // 09:00
+            col_idx: 0,
+            total_cols: 1,
+            time_text: "08:00–09:00".to_string(),
+        };
+        assert!(is_time_grid_chip_past(&chip_yesterday, yesterday, today, now_min, 30));
+
+        // Chip B: Today 08:00–09:00 (ended at 09:00, current time is 14:00) -> past
+        let chip_today_morning = PlacedTimeGridChip {
+            event: past_allday.clone(),
+            start_slot: 16, // 08:00
+            row_span: 2,   // 09:00 = slot 18 = 540 min <= 840 min
+            col_idx: 0,
+            total_cols: 1,
+            time_text: "08:00–09:00".to_string(),
+        };
+        assert!(is_time_grid_chip_past(&chip_today_morning, today, today, now_min, 30), "Today's finished morning event must be past");
+
+        // Chip C: Today 13:00–15:00 (ends at 15:00, current time is 14:00) -> NOT past
+        let chip_today_ongoing = PlacedTimeGridChip {
+            event: ongoing_allday.clone(),
+            start_slot: 26, // 13:00
+            row_span: 4,   // 15:00 = slot 30 = 900 min > 840 min
+            col_idx: 0,
+            total_cols: 1,
+            time_text: "13:00–15:00".to_string(),
+        };
+        assert!(!is_time_grid_chip_past(&chip_today_ongoing, today, today, now_min, 30), "Today's ongoing afternoon event must NOT be past");
+
+        // Chip D: Tomorrow 08:00–09:00 -> NOT past
+        assert!(!is_time_grid_chip_past(&chip_yesterday, tomorrow, today, now_min, 30), "Tomorrow's event must NOT be past");
+
+        // 3. Month bar past logic
+        let bar_yesterday = PreparedMonthEventBar {
+            event: past_allday.clone(),
+            track: 0,
+            start_col: 0,
+            end_col: 0,
+            continues_left: false,
+            continues_right: false,
+            all_day: false,
+            time_str: Some("08:00".to_string()),
+            bg_hex: "#ffffff".to_string(),
+            hov_hex: "#ffffff".to_string(),
+            fg_hex: "#000000".to_string(),
+            color_hex: "#3584e4".to_string(),
+            occurrence_date: yesterday,
+        };
+        assert!(is_month_bar_past(&bar_yesterday, today, now_dt), "Month bar from yesterday must be past");
+
+        let bar_future = PreparedMonthEventBar {
+            occurrence_date: tomorrow,
+            ..bar_yesterday.clone()
+        };
+        assert!(!is_month_bar_past(&bar_future, today, now_dt), "Month bar from tomorrow must NOT be past");
+
+        // 4. Agenda past logic
+        assert!(is_agenda_event_past(&past_allday, yesterday, today, now_dt));
+        assert!(!is_agenda_event_past(&ongoing_allday, today, today, now_dt));
+        assert!(!is_agenda_event_past(&future_allday, tomorrow, today, now_dt));
+
+        // 5. Multi-day event spanning across multiple weeks and into today / future
+        let multi_week_ongoing = CalendarEventRecord {
+            uid: "multi-week-ongoing".to_string(),
+            source_uid: "s1".to_string(),
+            source_display_name: "Work".to_string(),
+            component: "BEGIN:VEVENT\nUID:multi-week-ongoing\nDTSTART;VALUE=DATE:20260928\nDTEND;VALUE=DATE:20261011\nSUMMARY:Vacation Across Weeks\nEND:VEVENT".to_string(),
+            summary: "Vacation Across Weeks".to_string(),
+            start: "2026-09-28".to_string(),
+            end: "2026-10-11".to_string(),
+            location: "".to_string(),
+            description: "".to_string(),
+            all_day: true,
+        };
+
+        // A bar in week 1 (occurrence_date = 2026-09-28) for an event reaching into week 2 (today = 2026-10-07)
+        let bar_week1 = PreparedMonthEventBar {
+            event: multi_week_ongoing.clone(),
+            track: 0,
+            start_col: 0,
+            end_col: 6,
+            continues_left: false,
+            continues_right: true,
+            all_day: true,
+            time_str: None,
+            bg_hex: "#ffffff".to_string(),
+            hov_hex: "#ffffff".to_string(),
+            fg_hex: "#000000".to_string(),
+            color_hex: "#3584e4".to_string(),
+            occurrence_date: NaiveDate::from_ymd_opt(2026, 9, 28).unwrap(),
+        };
+        assert!(!is_month_bar_past(&bar_week1, today, now_dt), "Ongoing multi-week event must NOT be past in week 1");
+
+        // A bar in week 2 (occurrence_date = 2026-09-28 or 2026-10-05)
+        let bar_week2 = PreparedMonthEventBar {
+            occurrence_date: NaiveDate::from_ymd_opt(2026, 10, 5).unwrap(),
+            continues_left: true,
+            continues_right: false,
+            ..bar_week1.clone()
+        };
+        assert!(!is_month_bar_past(&bar_week2, today, now_dt), "Ongoing multi-week event must NOT be past in week 2");
+
+        // A multi-day event that ended yesterday (e.g., 2026-09-28 to 2026-10-07 where DTEND is exclusive -> last day was yesterday)
+        let multi_day_finished = CalendarEventRecord {
+            uid: "multi-day-finished".to_string(),
+            source_uid: "s1".to_string(),
+            source_display_name: "Work".to_string(),
+            component: format!("BEGIN:VEVENT\nUID:multi-day-finished\nDTSTART;VALUE=DATE:20260928\nDTEND;VALUE=DATE:{}\nSUMMARY:Finished Vacation\nEND:VEVENT",
+                today.format("%Y%m%d")),
+            summary: "Finished Vacation".to_string(),
+            start: "2026-09-28".to_string(),
+            end: today.format("%Y-%m-%d").to_string(),
+            location: "".to_string(),
+            description: "".to_string(),
+            all_day: true,
+        };
+        let bar_finished = PreparedMonthEventBar {
+            event: multi_day_finished.clone(),
+            occurrence_date: NaiveDate::from_ymd_opt(2026, 9, 28).unwrap(),
+            ..bar_week1.clone()
+        };
+        assert!(!is_month_bar_past(&bar_finished, today, now_dt), "Multi-day event in month view is never dimmed");
+
+        // An ongoing multi-day event in week view all-day header on yesterday's date
+        assert!(!is_allday_event_in_past_for_date(&multi_week_ongoing, yesterday, today), "Ongoing multi-week event must NOT be past on yesterday's date in week header");
+
+        // An ongoing multi-day event in agenda view on yesterday's date
+        assert!(!is_agenda_event_past(&multi_week_ongoing, yesterday, today, now_dt), "Ongoing multi-week event must NOT be past on yesterday's date in agenda view");
+    }
+
+    #[test]
+    fn test_calendar_chip_scale_metrics_and_clamping() {
+        let row_h = 160.0;
+
+        // 1. Default scale 1.0 (Comfortable 24px flush chip, 26px step)
+        let (header_h, chip_h, step, tracks) = month_layout_metrics(row_h, 1.0);
+        assert_eq!(chip_h, 24.0);
+        assert_eq!(step, 26.0);
+        assert_eq!(header_h, 29.0);
+        assert_eq!(tracks, 5, "At 1.0 scale, 160px row fits 5 event tracks");
+
+        // 2. Compact scale 0.75 (High-density 17px chip, 19px step)
+        let (header_h_c, chip_h_c, step_c, tracks_c) = month_layout_metrics(row_h, 0.75);
+        assert_eq!(chip_h_c, 17.0);
+        assert_eq!(step_c, 19.0);
+        assert_eq!(header_h_c, 22.0);
+        assert_eq!(tracks_c, 7, "At 0.75 scale, 160px row fits 7 event tracks");
+
+        // 3. GNOME Calendar comfortable scale 1.15 (~29px flush chip)
+        let (header_h_g, chip_h_g, step_g, tracks_g) = month_layout_metrics(row_h, 1.15);
+        assert_eq!(chip_h_g, 29.0);
+        assert_eq!(step_g, 31.0);
+        assert_eq!(header_h_g, 34.0);
+        assert_eq!(tracks_g, 4, "At 1.15 scale, 160px row fits 4 event tracks");
+
+        // 4. Clamping bounds (0.75 ..= 1.50)
+        let metrics_under = month_layout_metrics(row_h, 0.20);
+        let metrics_min = month_layout_metrics(row_h, 0.75);
+        assert_eq!(metrics_under, metrics_min, "Scale below 0.75 must be clamped to 0.75");
+
+        let metrics_over = month_layout_metrics(row_h, 2.50);
+        let metrics_max = month_layout_metrics(row_h, 1.50);
+        assert_eq!(metrics_over, metrics_max, "Scale above 1.50 must be clamped to 1.50");
+    }
+
+    #[test]
+    fn test_calendar_zoom_toast_lifecycle() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let page = CalendarPage::new();
+        assert!(page.imp().zoom_toast.borrow().is_none(), "Initially no zoom toast");
+
+        // Simulate an active zoom toast in zoom_toast cell
+        let toast = adw::Toast::new("Calendar scale: 100%");
+        toast.set_timeout(1);
+        *page.imp().zoom_toast.borrow_mut() = Some(toast.clone());
+
+        // Updating title in place:
+        page.show_zoom_toast("Calendar scale: 125%");
+        assert_eq!(toast.title().as_deref(), Some("Calendar scale: 125%"), "Existing toast title must be updated in-place");
+        assert_eq!(toast.timeout(), 1, "Zoom toast timeout must be 1s");
+
+        // Dismissing toast:
+        page.dismiss_zoom_toast();
+        assert!(page.imp().zoom_toast.borrow().is_none(), "Dismissing must clear zoom_toast reference");
     }
 }
 

@@ -1476,6 +1476,29 @@ impl AppSettings {
         let _ = self.settings.set_int("calendar-month-view-rows", clamped);
     }
 
+    pub fn calendar_dim_past_events(&self) -> bool {
+        self.settings.boolean("calendar-dim-past-events")
+    }
+
+    pub fn set_calendar_dim_past_events(&self, value: bool) {
+        self.set_boolean("calendar-dim-past-events", value);
+    }
+
+    pub fn calendar_chip_scale(&self) -> f64 {
+        let val = self.settings.double("calendar-chip-scale");
+        if val.is_finite() && val >= 0.75 && val <= 1.50 {
+            val
+        } else {
+            1.0
+        }
+    }
+
+    pub fn set_calendar_chip_scale(&self, value: f64) {
+        let clamped = value.clamp(0.75, 1.50);
+        let rounded = (clamped * 100.0).round() / 100.0;
+        let _ = self.settings.set_double("calendar-chip-scale", rounded);
+    }
+
     pub fn calendar_second_zone(&self) -> String {
         self.settings.string("calendar-second-zone").to_string()
     }
@@ -3636,6 +3659,13 @@ impl AppSettings {
                 }
                 self.set_calendar_month_view_rows(rows);
             }
+            "calendar-dim-past-events" => {
+                self.set_calendar_dim_past_events(parse_migrated_bool(key, value)?);
+            }
+            "calendar-chip-scale" => {
+                let scale: f64 = value.parse().map_err(|e| format!("ungültiger Wert für „{key}“: {e}"))?;
+                self.set_calendar_chip_scale(scale);
+            }
             "calendar-second-zone" => {
                 self.set_calendar_second_zone(value);
             }
@@ -4219,6 +4249,8 @@ impl AppSettings {
             "calendar-compress-weekend",
             "calendar-month-scroll-by-week",
             "calendar-month-view-rows",
+            "calendar-dim-past-events",
+            "calendar-chip-scale",
             "calendar-second-zone",
             "calendar-second-zones",
             "calendar-hidden-sources",

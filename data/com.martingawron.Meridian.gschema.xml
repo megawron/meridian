@@ -58,6 +58,17 @@
       <range min="5" max="6"/>
       <summary>Number of weeks shown in month view (5 for compact, 6 to display all months completely)</summary>
     </key>
+    <key name="calendar-dim-past-events" type="b">
+      <default>true</default>
+      <summary>Dim past calendar events</summary>
+      <description>Display past events semi-transparently to distinguish them from upcoming events.</description>
+    </key>
+    <key name="calendar-chip-scale" type="d">
+      <default>1.0</default>
+      <range min="0.75" max="1.50"/>
+      <summary>Scaling factor for calendar event chips</summary>
+      <description>Multiplier for calendar event chip height, spacing, and typography.</description>
+    </key>
     <key name="calendar-second-zone" type="s">
       <default>''</default>
       <summary>Second time zone for day and workweek views</summary>

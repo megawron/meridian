@@ -90,6 +90,7 @@ mod imp {
         pub view_switcher: RefCell<Option<adw::ViewSwitcher>>,
         pub window_title: RefCell<Option<adw::WindowTitle>>,
         pub mail_stack_page: RefCell<Option<adw::ViewStackPage>>,
+        pub mail_switcher_badges: RefCell<Vec<gtk::Label>>,
         pub is_mobile: Cell<bool>,
         pub is_tablet: Cell<bool>,
         pub is_compact: Cell<bool>,
@@ -372,6 +373,9 @@ impl MeridianWindow {
     }
 
     pub fn set_active_view(&self, view_name: &str) {
+        if let Some(cal) = self.calendar_page() {
+            cal.dismiss_zoom_toast();
+        }
         if let Some(stack) = self.imp().view_stack.borrow().as_ref() {
             stack.set_visible_child_name(view_name);
         }
@@ -1397,8 +1401,21 @@ impl MeridianWindow {
             .unwrap_or(true);
 
         if let Some(page) = self.imp().mail_stack_page.borrow().as_ref() {
-            page.set_badge_number(if show_counter { count } else { 0 });
-            page.set_needs_attention(show_counter && count > 0);
+            // Keep native badge_number at 0 so AdwIndicatorBin does not draw an overlay badge over the icon
+            page.set_badge_number(0);
+            page.set_needs_attention(false);
+        }
+
+        let badge_text = if count > 999 {
+            "999+".to_string()
+        } else {
+            count.to_string()
+        };
+
+        let visible = show_counter && count > 0;
+        for badge in self.imp().mail_switcher_badges.borrow().iter() {
+            badge.set_label(&badge_text);
+            badge.set_visible(visible);
         }
 
         if show_counter && count > 0 {
@@ -4084,6 +4101,15 @@ impl MeridianWindow {
             .view_switcher_bar
             .replace(Some(view_switcher_bar.clone()));
 
+        let mut switcher_badges = Vec::new();
+        if let Some(badge) = Self::attach_mail_switcher_badge(&view_switcher, "Mail") {
+            switcher_badges.push(badge);
+        }
+        if let Some(badge) = Self::attach_mail_switcher_badge(&view_switcher_bar, "Mail") {
+            switcher_badges.push(badge);
+        }
+        self.imp().mail_switcher_badges.replace(switcher_badges);
+
         let header_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(0)
@@ -4309,6 +4335,41 @@ impl MeridianWindow {
                 ensure_module_loaded_for_calendar("calendar");
             });
         }
+    }
+
+    fn attach_mail_switcher_badge(container: &impl IsA<gtk::Widget>, title: &str) -> Option<gtk::Label> {
+        fn find_mail_wide_box(widget: &gtk::Widget, title: &str) -> Option<gtk::Box> {
+            if let Some(b) = widget.downcast_ref::<gtk::Box>() {
+                if b.has_css_class("wide") {
+                    let mut child = b.first_child();
+                    while let Some(c) = child {
+                        if let Some(lbl) = c.downcast_ref::<gtk::Label>() {
+                            if lbl.label() == title {
+                                return Some(b.clone());
+                            }
+                        }
+                        child = c.next_sibling();
+                    }
+                }
+            }
+            let mut child = widget.first_child();
+            while let Some(c) = child {
+                if let Some(found) = find_mail_wide_box(&c, title) {
+                    return Some(found);
+                }
+                child = c.next_sibling();
+            }
+            None
+        }
+
+        let wide_box = find_mail_wide_box(container.as_ref(), title)?;
+        let badge = gtk::Label::builder()
+            .css_classes(vec!["mail-tab-badge"])
+            .visible(false)
+            .valign(gtk::Align::Center)
+            .build();
+        wide_box.append(&badge);
+        Some(badge)
     }
 
     fn lazy_module_bin(title: &str) -> adw::Bin {
@@ -5769,7 +5830,11 @@ impl MeridianWindow {
             #[weak(rename_to = win)]
             self,
             move |_, _| {
-                if let Some(mail_page) = win.mail_page() {
+                if win.active_view_name().as_str() == "calendar" {
+                    if let Some(calendar_page) = win.calendar_page() {
+                        calendar_page.zoom_in();
+                    }
+                } else if let Some(mail_page) = win.mail_page() {
                     mail_page.zoom_in();
                 }
             }
@@ -5781,7 +5846,11 @@ impl MeridianWindow {
             #[weak(rename_to = win)]
             self,
             move |_, _| {
-                if let Some(mail_page) = win.mail_page() {
+                if win.active_view_name().as_str() == "calendar" {
+                    if let Some(calendar_page) = win.calendar_page() {
+                        calendar_page.zoom_out();
+                    }
+                } else if let Some(mail_page) = win.mail_page() {
                     mail_page.zoom_out();
                 }
             }
@@ -5793,7 +5862,11 @@ impl MeridianWindow {
             #[weak(rename_to = win)]
             self,
             move |_, _| {
-                if let Some(mail_page) = win.mail_page() {
+                if win.active_view_name().as_str() == "calendar" {
+                    if let Some(calendar_page) = win.calendar_page() {
+                        calendar_page.zoom_reset();
+                    }
+                } else if let Some(mail_page) = win.mail_page() {
                     mail_page.zoom_reset();
                 }
             }
@@ -8708,6 +8781,14 @@ mod tests {
         if let Some(page) = mail_page {
             assert_eq!(page.badge_number(), 0);
             assert!(!page.needs_attention());
+        }
+
+        // Verify custom trailing pill badges in ViewSwitcher
+        let badges = window.imp().mail_switcher_badges.borrow().clone();
+        assert!(!badges.is_empty(), "mail_switcher_badges must have at least one badge attached");
+        for b in &badges {
+            assert!(!b.is_visible(), "Badge must be hidden when unread count is 0");
+            assert!(b.has_css_class("mail-tab-badge"), "Badge must have mail-tab-badge class");
         }
     }
 }

@@ -94,6 +94,24 @@ indicatorbin > indicator > label {
   padding: 0 3px;
 }
 
+/* ── ViewSwitcher Mail Tab Unread Badge (Trailing Pill) ───────────────── */
+label.mail-tab-badge {
+  background-color: alpha(@accent_bg_color, 0.18);
+  color: #1c71d8;
+  border-radius: 9999px;
+  padding: 1px 7px;
+  font-size: 0.70rem;
+  font-weight: 800;
+  margin-left: 5px;
+}
+
+@media (prefers-color-scheme: dark) {
+  label.mail-tab-badge {
+    background-color: alpha(@accent_bg_color, 0.28);
+    color: #78aeed;
+  }
+}
+
 /* ── Message List ──────────────────────────────────────────────────────── */
 .message-list row {
   min-height: 22px;

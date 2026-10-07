@@ -4100,6 +4100,18 @@ impl PreferencesDialog {
         }
         group_calendar_view.add(&row_month_scroll_by_week);
 
+        let row_dim_past_events = adw::SwitchRow::builder()
+            .title("Dim past events")
+            .subtitle("Display past events semi-transparently")
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_dim_past_events.set_active(settings.calendar_dim_past_events());
+            row_dim_past_events.connect_active_notify(move |row| {
+                settings.set_calendar_dim_past_events(row.is_active());
+            });
+        }
+        group_calendar_view.add(&row_dim_past_events);
+
         let row_date_format = adw::ComboRow::builder()
             .title("Date Format")
             .subtitle("Display in calendar overviews and agenda")
