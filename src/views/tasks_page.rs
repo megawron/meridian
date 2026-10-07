@@ -4050,7 +4050,7 @@ impl TasksPage {
                 let child_box = gtk::Box::builder()
                     .orientation(gtk::Orientation::Horizontal)
                     .spacing(6)
-                    .margin_start(12)
+                    .margin_start(14)
                     .margin_end(6)
                     .css_classes(vec!["calendar-sidebar-row", "calendar-sidebar-child-row"])
                     .build();
@@ -4489,18 +4489,17 @@ impl TasksPage {
 
         let sidebar_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(4)
+            .spacing(0)
             .margin_start(0)
             .margin_end(0)
-            .margin_top(4)
-            .margin_bottom(4)
+            .margin_top(0)
+            .margin_bottom(0)
             .css_classes(vec!["calendar-sidebar", "tasks-sidebar"])
             .build();
 
         let task_source_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
             .css_classes(vec!["navigation-sidebar"])
-            .margin_top(4)
             .build();
         self.imp()
             .task_source_list
@@ -12027,6 +12026,9 @@ fn initial_sync_task_sources() -> Vec<ECalSourceCapability> {
         });
     }
     for profile in crate::services::account_config_service::AccountConfigStore::default().load() {
+        if !profile.enabled || profile.is_shared_mailbox || profile.open_mailbox_other_user {
+            continue;
+        }
         let task_uid = format!("account-tasks-{}", profile.id);
         if !sources.iter().any(|s| s.source_uid == task_uid) {
             sources.push(ECalSourceCapability {
@@ -12055,13 +12057,19 @@ fn apply_task_sources(
 ) {
     let mut source_parents: Vec<String> = sources
         .iter()
-        .map(|s| crate::services::eds_service::resolve_source_parent_name(&s.source_uid))
+        .map(|s| {
+            let parent = crate::services::eds_service::resolve_source_parent_name(&s.source_uid);
+            crate::services::eds_service::canonical_group_name(&parent)
+        })
         .collect();
 
     // Discover configured account collections (Google, EWS, GOA, etc.) so every
     // account configured and displayed in Mail is also represented in the Tasks
     // sidebar with its own account group and task list.
     for collection in crate::services::eds_service::load_configured_account_collections() {
+        if !collection.enabled || !collection.calendar_enabled || crate::services::eds_service::is_shared_or_delegate_mailbox(&collection.display_name) {
+            continue;
+        }
         let account_name = collection.display_name.clone();
         let already_represented = sources.iter().enumerate().any(|(idx, s)| {
             source_parents.get(idx).is_some_and(|p| p == &account_name)
@@ -12090,11 +12098,17 @@ fn apply_task_sources(
     }
 
     for profile in crate::services::account_config_service::AccountConfigStore::default().load() {
+        if !profile.enabled || profile.is_shared_mailbox || profile.open_mailbox_other_user {
+            continue;
+        }
         let account_name = if !profile.display_name.trim().is_empty() {
             profile.display_name.clone()
         } else {
             profile.email.clone()
         };
+        if crate::services::eds_service::is_shared_or_delegate_mailbox(&account_name) {
+            continue;
+        }
         let already_represented = sources.iter().enumerate().any(|(idx, s)| {
             source_parents.get(idx).is_some_and(|p| p == &account_name)
                 || s.display_name == account_name
@@ -12198,11 +12212,7 @@ fn apply_task_sources(
             continue;
         }
         let parent_name = crate::services::eds_service::resolve_source_parent_name(&source.source_uid);
-        let group = if parent_name.trim().is_empty() {
-            gettext("On This Computer")
-        } else {
-            parent_name
-        };
+        let group = crate::services::eds_service::canonical_group_name(&parent_name);
         let color = calendar_source_color(&source.source_uid, &group);
         items.push(
             SourceSelectorItem::new(
@@ -12218,7 +12228,7 @@ fn apply_task_sources(
     }
     if CalendarStoreService::new().is_writable() && !items.iter().any(|i| i.uid == "local-calendar") {
         let local_name = gettext("Local Task List");
-        let group_name = gettext("On This Computer");
+        let group_name = crate::services::eds_service::canonical_local_group_name();
         let color = calendar_source_color("local-calendar", &local_name);
         items.push(
             SourceSelectorItem::new(
@@ -12323,6 +12333,8 @@ fn start_task_source_discovery(
 
     let page_weak = page.downgrade();
     glib::spawn_future_local(async move {
+        // Pre-fetch calendar/task sources via D-Bus to ensure PARENT_NAME_CACHE has authoritative account parents from EDS
+        let _ = crate::services::eds_service::list_sources(crate::services::eds_service::EdsSourceKind::Calendar).await;
         let (sources, warning) = match receiver.recv().await {
             Ok(Ok(discovery)) => (discovery.sources, discovery.warning),
             Ok(Err(error)) => {

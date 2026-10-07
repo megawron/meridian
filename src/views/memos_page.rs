@@ -1347,7 +1347,7 @@ impl MemosPage {
                 let child_box = gtk::Box::builder()
                     .orientation(gtk::Orientation::Horizontal)
                     .spacing(6)
-                    .margin_start(12)
+                    .margin_start(14)
                     .margin_end(6)
                     .css_classes(vec!["calendar-sidebar-row", "calendar-sidebar-child-row"])
                     .build();
@@ -1462,11 +1462,7 @@ impl MemosPage {
         for source in sources {
             let color = calendar_source_color(&source.uid, &source.display_name);
             let parent_name = crate::services::eds_service::resolve_source_parent_name(&source.uid);
-            let group = if parent_name.trim().is_empty() {
-                "Auf diesem Computer".to_string()
-            } else {
-                parent_name
-            };
+            let group = crate::services::eds_service::canonical_group_name(&parent_name);
             if source.available {
                 available_sources.insert(source.uid.clone());
             } else {
