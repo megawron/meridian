@@ -157,11 +157,11 @@ impl SourceSelectorItem {
         let backend = backend_name.into();
         let is_local = uid.starts_with("local-") || backend == "local";
         let group_name = if is_local || backend == "local" {
-            "Auf diesem Computer".to_string()
+            crate::services::eds_service::canonical_local_group_name()
         } else if !backend.is_empty() {
-            backend.clone()
+            crate::services::eds_service::canonical_group_name(&backend)
         } else {
-            "Auf diesem Computer".to_string()
+            crate::services::eds_service::canonical_local_group_name()
         };
         Self {
             uid,
@@ -182,7 +182,7 @@ impl SourceSelectorItem {
     }
 
     pub fn with_group(mut self, group: impl Into<String>) -> Self {
-        self.group_name = group.into();
+        self.group_name = crate::services::eds_service::canonical_group_name(&group.into());
         self
     }
 }
@@ -329,7 +329,10 @@ impl SourceSelector {
     }
 
     pub fn set_groups_order(&mut self, order: &[String]) {
-        self.groups_order = order.to_vec();
+        self.groups_order = order
+            .iter()
+            .map(|g| crate::services::eds_service::canonical_group_name(g))
+            .collect();
     }
 
     pub fn hidden_groups(&self) -> Vec<String> {
@@ -339,20 +342,25 @@ impl SourceSelector {
     }
 
     pub fn set_hidden_groups(&mut self, hidden: &[String]) {
-        self.hidden_groups = hidden.iter().cloned().collect();
+        self.hidden_groups = hidden
+            .iter()
+            .map(|g| crate::services::eds_service::canonical_group_name(g))
+            .collect();
         self.deselect_sources_in_hidden_groups();
     }
 
     pub fn is_group_hidden(&self, name: &str) -> bool {
-        self.hidden_groups.contains(name)
+        let canonical = crate::services::eds_service::canonical_group_name(name);
+        self.hidden_groups.contains(&canonical)
     }
 
     pub fn set_group_hidden(&mut self, name: &str, hidden: bool) {
+        let canonical = crate::services::eds_service::canonical_group_name(name);
         if hidden {
-            self.hidden_groups.insert(name.to_string());
+            self.hidden_groups.insert(canonical);
             self.deselect_sources_in_hidden_groups();
         } else {
-            self.hidden_groups.remove(name);
+            self.hidden_groups.remove(&canonical);
         }
     }
 
@@ -377,7 +385,7 @@ impl SourceSelector {
             }
         }
         if known.is_empty() {
-            known.push("Auf diesem Computer".to_string());
+            known.push(crate::services::eds_service::canonical_local_group_name());
         }
 
         // Order according to self.groups_order
@@ -485,7 +493,7 @@ impl SourceSelector {
         self.hidden_groups.remove(name);
         for s in &mut self.sources {
             if s.group_name == name {
-                s.group_name = "Auf diesem Computer".to_string();
+                s.group_name = crate::services::eds_service::canonical_local_group_name();
             }
         }
         true
@@ -543,10 +551,16 @@ impl SourceSelector {
         let default_uid = self.domain.read_default_source(settings);
 
         let hidden_groups = self.domain.read_hidden_groups(settings);
-        self.hidden_groups = hidden_groups.into_iter().collect();
+        self.hidden_groups = hidden_groups
+            .into_iter()
+            .map(|g| crate::services::eds_service::canonical_group_name(&g))
+            .collect();
 
         let groups_order = self.domain.read_groups_order(settings);
-        self.groups_order = groups_order;
+        self.groups_order = groups_order
+            .into_iter()
+            .map(|g| crate::services::eds_service::canonical_group_name(&g))
+            .collect();
 
         self.selected_uids.clear();
         for source in &self.sources {
@@ -621,7 +635,7 @@ impl SourceSelector {
                 if old_color.is_some() {
                     source.color = old_color.clone();
                 }
-                if !old_group.is_empty() && old_group != "On This Computer" {
+                if !old_group.is_empty() && !crate::services::eds_service::is_local_group(old_group) {
                     source.group_name = old_group.clone();
                 }
             }
@@ -961,7 +975,8 @@ pub(crate) mod tests {
 
         let groups = selector.ordered_groups();
         assert_eq!(groups.len(), 3);
-        assert_eq!(groups[0].name, "Auf diesem Computer");
+        assert!(crate::services::eds_service::is_local_group(&groups[0].name));
+        let local_group = groups[0].name.clone();
         assert_eq!(groups[1].name, "Arbeit");
         assert_eq!(groups[2].name, "Abonnements");
 
@@ -969,7 +984,7 @@ pub(crate) mod tests {
         assert!(selector.move_group_up(1));
         let groups_after_up = selector.ordered_groups();
         assert_eq!(groups_after_up[0].name, "Arbeit");
-        assert_eq!(groups_after_up[1].name, "Auf diesem Computer");
+        assert_eq!(groups_after_up[1].name, local_group);
         assert_eq!(groups_after_up[2].name, "Abonnements");
 
         // Cannot move index 0 up
@@ -978,7 +993,7 @@ pub(crate) mod tests {
         // Move index 0 down
         assert!(selector.move_group_down(0));
         let groups_after_down = selector.ordered_groups();
-        assert_eq!(groups_after_down[0].name, "Auf diesem Computer");
+        assert_eq!(groups_after_down[0].name, local_group);
         assert_eq!(groups_after_down[1].name, "Arbeit");
 
         // Cannot move last index down
@@ -1075,13 +1090,15 @@ pub(crate) mod tests {
             let mut selector = SourceSelector::new(SourceDomain::Calendar);
             selector.update_sources(sample_sources());
 
+            assert!(crate::services::eds_service::is_local_group(&selector.ordered_groups()[0].name));
+            let local_group = selector.ordered_groups()[0].name.clone();
             // Select only local-cal, set it as primary, reorder groups, hide "Abonnements"
             selector.select_exclusive("local-cal");
             selector.set_primary("local-cal");
             selector.set_group_hidden("Abonnements", true);
             selector.set_groups_order(&[
                 "Arbeit".to_string(),
-                "Auf diesem Computer".to_string(),
+                local_group.clone(),
                 "Abonnements".to_string(),
             ]);
             selector.save_to_settings(&settings);
@@ -1098,7 +1115,7 @@ pub(crate) mod tests {
                 fresh.groups_order(),
                 &[
                     "Arbeit".to_string(),
-                    "Auf diesem Computer".to_string(),
+                    local_group,
                     "Abonnements".to_string()
                 ]
             );

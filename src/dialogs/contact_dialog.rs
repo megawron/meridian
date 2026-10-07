@@ -225,22 +225,6 @@ impl ContactDialog {
             .build();
         source_row.set_sensitive(edit_uid.is_none());
         group_general.add(&source_row);
-        let settings_for_default_address_book = AppSettings::try_new();
-        let source_uids_for_selection = Rc::clone(&source_uids);
-        source_row.connect_selected_notify(move |row| {
-            let Some(settings) = settings_for_default_address_book.as_ref() else {
-                return;
-            };
-            let Some(source_uid) = source_uids_for_selection
-                .borrow()
-                .get(row.selected() as usize)
-                .cloned()
-            else {
-                return;
-            };
-            settings.set_default_address_book_source_uid(&source_uid);
-        });
-
         content_box.append(&group_general);
 
         // Group 2: Contact Methods
@@ -740,10 +724,7 @@ impl ContactDialog {
                 uids.push(source.uid);
             }
 
-            let preferred_uid = edit_source_uid_for_load
-                .as_deref()
-                .or(preferred_source_uid.as_deref());
-            if let Some(uid) = preferred_uid.filter(|uid| {
+            if let Some(uid) = edit_source_uid_for_load.as_deref().filter(|uid| {
                 !uid.trim().is_empty() && !uids.iter().any(|candidate| candidate == *uid)
             }) {
                 names.push(format!("Nicht verfügbare Quelle · {uid}"));
@@ -764,7 +745,17 @@ impl ContactDialog {
             let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
             source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
             source_uids_for_load.replace(uids.clone());
-            if let Some(uid) = preferred_uid {
+            let target_uid = edit_source_uid_for_load
+                .as_deref()
+                .or_else(|| preferred_source_uid.as_deref().filter(|uid| uids.iter().any(|c| c == *uid)))
+                .or_else(|| {
+                    if local_addressbook_available {
+                        Some("local-addressbook")
+                    } else {
+                        uids.first().map(String::as_str)
+                    }
+                });
+            if let Some(uid) = target_uid {
                 if let Some(index) = uids.iter().position(|candidate| candidate == uid) {
                     source_row_for_load.set_selected(index as u32);
                 }
@@ -961,19 +952,6 @@ impl ContactDialog {
             .build();
         source_row.set_sensitive(edit_uid.is_none());
         list_group.add(&source_row);
-        let source_uids_for_settings = Rc::clone(&source_uids);
-        let settings_for_source = AppSettings::try_new();
-        source_row.connect_selected_notify(move |row| {
-            let Some(settings) = settings_for_source.as_ref() else {
-                return;
-            };
-            if let Some(source_uid) = source_uids_for_settings
-                .borrow()
-                .get(row.selected() as usize)
-            {
-                settings.set_default_address_book_source_uid(source_uid);
-            }
-        });
 
         let show_addresses = adw::SwitchRow::builder()
             .title("Mitgliederadressen anzeigen")

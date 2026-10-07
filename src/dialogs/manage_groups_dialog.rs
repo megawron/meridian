@@ -337,28 +337,29 @@ mod tests {
 
     #[test]
     fn manage_groups_working_selector_mutations() {
+        let local_group = crate::services::eds_service::canonical_local_group_name();
         let mut selector = SourceSelector::new(SourceDomain::Calendar);
         selector.update_sources(vec![
-            SourceSelectorItem::new("c1", "Privat", "local", true, true).with_group("Auf diesem Computer"),
+            SourceSelectorItem::new("c1", "Privat", "local", true, true).with_group(&local_group),
             SourceSelectorItem::new("c2", "Arbeit", "caldav", true, true).with_group("CalDAV Server"),
         ]);
 
         // Verify initial groups
         let groups = selector.ordered_groups();
         assert_eq!(groups.len(), 2);
-        assert_eq!(groups[0].name, "Auf diesem Computer");
+        assert_eq!(groups[0].name, local_group);
         assert_eq!(groups[1].name, "CalDAV Server");
 
         // Simulate dialog action: move down
         assert!(selector.move_group_down(0));
         let updated = selector.ordered_groups();
         assert_eq!(updated[0].name, "CalDAV Server");
-        assert_eq!(updated[1].name, "Auf diesem Computer");
+        assert_eq!(updated[1].name, local_group);
 
         // Simulate dialog action: hide group
         selector.set_group_hidden("CalDAV Server", true);
         assert!(selector.is_group_hidden("CalDAV Server"));
-        assert!(!selector.is_group_hidden("Auf diesem Computer"));
+        assert!(!selector.is_group_hidden(&local_group));
 
         // Simulate dialog action: add custom group
         assert!(selector.add_custom_group("Verein"));
