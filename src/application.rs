@@ -198,7 +198,9 @@ mod imp {
 
             tracing::debug!("Presenting main window after synchronous UI construction");
             window.present();
-            window.present_existing_reminders();
+            if AppSettings::try_new().is_some_and(|s| !s.reminder_notify_with_tray()) {
+                window.present_existing_reminders();
+            }
             tracing::debug!("Main window presented");
 
             if std::env::args().any(|a| a == "--compose") {
@@ -1007,8 +1009,10 @@ impl MeridianApplication {
                 if AppSettings::try_new().is_some_and(|s| s.reminder_sound_enabled()) {
                     crate::services::mail_notification_service::MailNotificationService::play_alarm_sound();
                 }
+                let show_dialog = AppSettings::try_new()
+                    .is_some_and(|s| !s.reminder_notify_with_tray());
                 let window = app.main_window();
-                window.present_reminders(delivered.clone());
+                window.present_reminders(delivered.clone(), show_dialog);
                 std::thread::spawn(move || {
                     let Ok(mut store) = ReminderStore::new() else {
                         tracing::debug!("Portable reminder state is unavailable after delivery");

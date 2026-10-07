@@ -383,7 +383,7 @@ impl MeridianWindow {
         self.imp().search_button.borrow().clone()
     }
 
-    pub(crate) fn present_reminders(&self, deliveries: Vec<ReminderDelivery>) {
+    pub(crate) fn present_reminders(&self, deliveries: Vec<ReminderDelivery>, show_dialog: bool) {
         let dialog = if let Some(dialog) = self.imp().reminder_dialog.borrow().as_ref() {
             dialog.clone()
         } else {
@@ -425,7 +425,7 @@ impl MeridianWindow {
             self.imp().reminder_dialog.replace(Some(dialog.clone()));
             dialog
         };
-        dialog.present_deliveries(&deliveries);
+        dialog.update_deliveries(&deliveries, show_dialog);
     }
 
     pub(crate) fn present_existing_reminders(&self) {

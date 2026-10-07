@@ -213,11 +213,15 @@ impl ReminderDialog {
         }
     }
 
-    pub fn present_deliveries(&self, deliveries: &[ReminderDelivery]) {
+    pub fn update_deliveries(&self, deliveries: &[ReminderDelivery], present_if_hidden: bool) {
         self.replace_deliveries(deliveries);
-        if self.has_entries() {
+        if self.has_entries() && (present_if_hidden || self.window.is_visible()) {
             self.window.present();
         }
+    }
+
+    pub fn present_deliveries(&self, deliveries: &[ReminderDelivery]) {
+        self.update_deliveries(deliveries, true);
     }
 
     pub fn present_existing(&self) {
