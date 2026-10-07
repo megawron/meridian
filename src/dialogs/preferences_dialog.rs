@@ -7319,7 +7319,7 @@ fn build_mail_notifications_group(settings: Option<AppSettings>) -> adw::Prefere
     file_box.append(&play_button);
     row_sound_file.add_suffix(&file_box);
 
-    if let Some(s) = settings {
+    if let Some(s) = settings.as_ref() {
         row_notify.set_active(s.mail_notification_enabled());
         row_only_inbox.set_active(s.mail_notification_only_inbox());
         row_sound.set_active(s.mail_notification_sound_enabled());
@@ -7433,8 +7433,23 @@ fn build_mail_notifications_group(settings: Option<AppSettings>) -> adw::Prefere
         });
     }
 
+    let row_titlebar_counter = adw::SwitchRow::builder()
+        .title(&crate::i18n::gettext("Show unread email count in title bar"))
+        .subtitle(&crate::i18n::gettext(
+            "Displays the unread counter in the window title and on the Mail tab",
+        ))
+        .build();
+    if let Some(s) = settings.as_ref() {
+        row_titlebar_counter.set_active(s.show_window_title_unread_counter());
+        let s_counter = s.clone();
+        row_titlebar_counter.connect_active_notify(move |row| {
+            s_counter.set_show_window_title_unread_counter(row.is_active());
+        });
+    }
+
     group.add(&row_notify);
     group.add(&row_only_inbox);
+    group.add(&row_titlebar_counter);
     group.add(&row_sound);
     group.add(&row_sound_type);
     group.add(&row_sound_file);

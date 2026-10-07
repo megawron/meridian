@@ -54,7 +54,7 @@
       <summary>Scroll month view by a week instead of a month</summary>
     </key>
     <key name="calendar-month-view-rows" type="i">
-      <default>6</default>
+      <default>5</default>
       <range min="5" max="6"/>
       <summary>Number of weeks shown in month view (5 for compact, 6 to display all months completely)</summary>
     </key>
@@ -662,6 +662,10 @@
     <key name="mail-sync-interval" type="i">
       <default>300</default>
       <summary>Mail synchronization interval in seconds (0 disables automatic synchronization)</summary>
+    </key>
+    <key name="show-window-title-unread-counter" type="b">
+      <default>true</default>
+      <summary>Show unread email count in window title bar and tab</summary>
     </key>
     <key name="mail-sync-message-limit" type="i">
       <default>100</default>

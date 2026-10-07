@@ -1468,11 +1468,11 @@ impl AppSettings {
 
     pub fn calendar_month_view_rows(&self) -> i32 {
         let val = self.settings.int("calendar-month-view-rows");
-        if val == 5 { 5 } else { 6 }
+        if val == 6 { 6 } else { 5 }
     }
 
     pub fn set_calendar_month_view_rows(&self, value: i32) {
-        let clamped = if value == 5 { 5 } else { 6 };
+        let clamped = if value == 6 { 6 } else { 5 };
         let _ = self.settings.set_int("calendar-month-view-rows", clamped);
     }
 
@@ -2358,6 +2358,14 @@ impl AppSettings {
 
     pub fn set_mail_sync_interval_seconds(&self, value: u32) {
         self.set_int("mail-sync-interval", value.min(86_400) as i32);
+    }
+
+    pub fn show_window_title_unread_counter(&self) -> bool {
+        self.settings.boolean("show-window-title-unread-counter")
+    }
+
+    pub fn set_show_window_title_unread_counter(&self, value: bool) {
+        self.set_boolean("show-window-title-unread-counter", value);
     }
 
     /// Number of messages fetched for each remote folder page.
@@ -4283,6 +4291,7 @@ impl AppSettings {
             "smime-recipient-certificates",
             "smime-ca-file",
             "mail-sync-interval",
+            "show-window-title-unread-counter",
             "mail-sync-message-limit",
             "draft-autosave-interval",
             "append-signature",
@@ -6102,6 +6111,7 @@ mod tests {
         settings.set_reminder_sound_enabled(true);
         settings.set_reminder_notify_with_tray(false);
         settings.set_mail_notification_sound_enabled(true);
+        settings.set_show_window_title_unread_counter(false);
 
         // Verify mutations were applied
         assert_eq!(settings.mail_show_statusbar(), false);
@@ -6116,6 +6126,7 @@ mod tests {
         assert_eq!(settings.reminder_sound_enabled(), true);
         assert_eq!(settings.reminder_notify_with_tray(), false);
         assert_eq!(settings.mail_notification_sound_enabled(), true);
+        assert_eq!(settings.show_window_title_unread_counter(), false);
 
         // Reset all settings to defaults
         settings.reset_to_defaults();
@@ -6133,6 +6144,7 @@ mod tests {
         assert_eq!(settings.reminder_sound_enabled(), false);
         assert_eq!(settings.reminder_notify_with_tray(), true);
         assert_eq!(settings.mail_notification_sound_enabled(), false);
+        assert_eq!(settings.show_window_title_unread_counter(), true);
     }
 
     #[test]
@@ -6465,22 +6477,26 @@ mod tests {
         let backend = gio::memory_settings_backend_new();
         let settings = settings_with_backend(&backend);
 
-        // Default should be 6 rows (displays all weeks of any month)
-        assert_eq!(settings.calendar_month_view_rows(), 6);
-
-        // Toggle to 5 rows (compact view)
-        settings.set_calendar_month_view_rows(5);
+        // Default should be 5 rows (GNOME Calendar parity)
         assert_eq!(settings.calendar_month_view_rows(), 5);
 
-        // Any out-of-range value should be clamped back to 6
+        // Toggle to 6 rows (displays 6 weeks)
+        settings.set_calendar_month_view_rows(6);
+        assert_eq!(settings.calendar_month_view_rows(), 6);
+
+        // Any out-of-range value should be clamped back to 5
         settings.set_calendar_month_view_rows(4);
-        assert_eq!(settings.calendar_month_view_rows(), 6);
+        assert_eq!(settings.calendar_month_view_rows(), 5);
         settings.set_calendar_month_view_rows(7);
-        assert_eq!(settings.calendar_month_view_rows(), 6);
+        assert_eq!(settings.calendar_month_view_rows(), 5);
 
         // Back to 6 explicitly
         settings.set_calendar_month_view_rows(6);
         assert_eq!(settings.calendar_month_view_rows(), 6);
+
+        // Back to 5 explicitly
+        settings.set_calendar_month_view_rows(5);
+        assert_eq!(settings.calendar_month_view_rows(), 5);
     }
 }
 

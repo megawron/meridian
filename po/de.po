@@ -1155,7 +1155,7 @@ msgstr ""
 #: src/views/calendar_page.rs:6290 src/views/calendar_page.rs:6341
 #: src/views/contacts_page.rs:1283 and 5 more
 msgid "On This Computer"
-msgstr "Auf diesem Rechner"
+msgstr "Auf diesem Computer"
 
 #: src/views/calendar_page.rs:6331 src/views/calendar_page.rs:6335
 #: src/views/calendar_page.rs:15596
@@ -8375,4 +8375,59 @@ msgstr "Erinnerungen nur im Benachrichtigungsbereich anzeigen"
 
 msgid "Display reminders as notifications without automatically opening the dialog window"
 msgstr "Erinnerungen als Benachrichtigung anzeigen, ohne automatisch das Dialogfenster zu öffnen"
+
+msgid "requests your presence at the following meeting:"
+msgstr "bittet um Ihre Teilnahme an folgendem Treffen:"
+
+msgid "The meeting has been cancelled:"
+msgstr "Das Treffen wurde abgesagt:"
+
+msgid "Meeting invitation:"
+msgstr "Besprechungseinladung:"
+
+msgid "Send reply to organizer"
+msgstr "Antwort an Organisator senden"
+
+msgid "Show time as free"
+msgstr "Zeit als frei anzeigen"
+
+msgid "Preserve my reminder"
+msgstr "Meine Erinnerung beibehalten"
+
+msgid "Open Calendar"
+msgstr "Kalender öffnen"
+
+msgid "Import as Event"
+msgstr "Als Termin importieren"
+
+msgid "Message from sender:"
+msgstr "Nachricht des Absenders:"
+
+msgid "Checking calendar status…"
+msgstr "Kalenderstatus wird überprüft …"
+
+msgid "No matching appointment found in your calendars"
+msgstr "Kein passender Termin in Ihren Kalendern gefunden"
+
+msgid "Found the appointment in the calendar '{name}' as accepted"
+msgstr "Termin im Kalender „{name}“ als angenommen gefunden"
+
+msgid "Found the appointment in the calendar '{name}' as tentative"
+msgstr "Termin im Kalender „{name}“ als mit Vorbehalt angenommen gefunden"
+
+msgid "Found the appointment in the calendar '{name}' as declined"
+msgstr "Termin im Kalender „{name}“ als abgelehnt gefunden"
+
+msgid "Found the appointment in the calendar '{name}'"
+msgstr "Termin im Kalender „{name}“ gefunden"
+
+msgid "This invitation is read-only because you are the organizer or have already processed it"
+msgstr "Diese Einladung ist schreibgeschützt, da Sie der Organisator sind oder sie bereits bearbeitet haben"
+
+msgid "Show unread email count in title bar"
+msgstr "Ungelesene E-Mails in der Titelleiste anzeigen"
+
+msgid "Displays the unread counter in the window title and on the Mail tab"
+msgstr "Zeigt die Anzahl ungelesener Nachrichten im Fenstertitel und auf dem Mail-Reiter an"
+
 

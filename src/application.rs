@@ -329,6 +329,18 @@ impl MeridianApplication {
                 "meridian-view-table-symbolic.svg",
                 include_str!("../data/icons/hicolor/scalable/actions/meridian-view-table-symbolic.svg"),
             ),
+            (
+                "calendar-today-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/calendar-today-symbolic.svg"),
+            ),
+            (
+                "go-today-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/go-today-symbolic.svg"),
+            ),
+            (
+                "layout-sidebar-right-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/layout-sidebar-right-symbolic.svg"),
+            ),
         ];
 
         for (filename, content) in icons {

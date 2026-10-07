@@ -89,6 +89,7 @@ mod imp {
         pub view_switcher_bar: RefCell<Option<adw::ViewSwitcherBar>>,
         pub view_switcher: RefCell<Option<adw::ViewSwitcher>>,
         pub window_title: RefCell<Option<adw::WindowTitle>>,
+        pub mail_stack_page: RefCell<Option<adw::ViewStackPage>>,
         pub is_mobile: Cell<bool>,
         pub is_tablet: Cell<bool>,
         pub is_compact: Cell<bool>,
@@ -685,7 +686,7 @@ impl MeridianWindow {
             view_stack.set_visible_child_name("calendar");
         }
         if let Some(calendar_page) = self.calendar_page() {
-            calendar_page.navigate_to_date(date);
+            calendar_page.navigate_to_date_contextual(date);
         }
     }
 
@@ -1229,9 +1230,16 @@ impl MeridianWindow {
                                     window_title.set_subtitle(&crate::i18n::gettext("Mail"));
                                 }
                                 crate::views::MailDrillDownLevel::Messages => {
-                                    let folder = mail
+                                    let mut folder = mail
                                         .selected_folder_display_name()
                                         .unwrap_or_else(|| crate::i18n::gettext("Inbox"));
+                                    let show_counter = AppSettings::try_new()
+                                        .map(|s| s.show_window_title_unread_counter())
+                                        .unwrap_or(true);
+                                    let count = mail.total_inbox_unread_count();
+                                    if show_counter && count > 0 {
+                                        folder = format!("{folder} ({count})");
+                                    }
                                     window_title.set_title(&folder);
                                     window_title.set_subtitle(&crate::i18n::gettext("Messages"));
                                 }
@@ -1327,9 +1335,16 @@ impl MeridianWindow {
                             window_title.set_title(&subj);
                             window_title.set_subtitle("");
                         } else {
-                            let folder = mail
+                            let mut folder = mail
                                 .selected_folder_display_name()
                                 .unwrap_or_else(|| crate::i18n::gettext("Inbox"));
+                            let show_counter = AppSettings::try_new()
+                                .map(|s| s.show_window_title_unread_counter())
+                                .unwrap_or(true);
+                            let count = mail.total_inbox_unread_count();
+                            if show_counter && count > 0 {
+                                folder = format!("{folder} ({count})");
+                            }
                             window_title.set_title(&folder);
                             window_title.set_subtitle("");
                         }
@@ -1343,10 +1358,17 @@ impl MeridianWindow {
                 }
             }
         } else if let Some(window_title) = self.imp().window_title.borrow().as_ref() {
-            window_title.set_title("");
+            let show_counter = AppSettings::try_new()
+                .map(|s| s.show_window_title_unread_counter())
+                .unwrap_or(true);
+            let count = self.mail_page().map(|p| p.total_inbox_unread_count()).unwrap_or(0);
+            if show_counter && count > 0 {
+                window_title.set_title(&format!("Meridian ({count})"));
+            } else {
+                window_title.set_title("Meridian");
+            }
             window_title.set_subtitle("");
         }
-
 
         if let Some(header_bar) = self.imp().header_bar.borrow().as_ref() {
             if is_mobile || self.imp().is_tablet.get() {
@@ -1366,6 +1388,25 @@ impl MeridianWindow {
                 }
             }
         }
+    }
+
+    pub(crate) fn sync_unread_counter_and_title(&self) {
+        let count = self.mail_page().map(|p| p.total_inbox_unread_count()).unwrap_or(0);
+        let show_counter = AppSettings::try_new()
+            .map(|s| s.show_window_title_unread_counter())
+            .unwrap_or(true);
+
+        if let Some(page) = self.imp().mail_stack_page.borrow().as_ref() {
+            page.set_badge_number(if show_counter { count } else { 0 });
+        }
+
+        if show_counter && count > 0 {
+            self.set_title(Some(&format!("Meridian ({count})")));
+        } else {
+            self.set_title(Some("Meridian"));
+        }
+
+        self.sync_back_button();
     }
 
     pub(crate) fn handle_navigate_back(&self) -> bool {
@@ -3235,7 +3276,14 @@ impl MeridianWindow {
         view_stack.set_halign(gtk::Align::Fill);
 
         let mail_page = MailPage::new();
-        view_stack.add_titled_with_icon(&mail_page, Some("mail"), "Mail", "mail-unread-symbolic");
+        let mail_stack_page = view_stack.add_titled_with_icon(&mail_page, Some("mail"), "Mail", "mail-unread-symbolic");
+        self.imp().mail_stack_page.replace(Some(mail_stack_page));
+        let win_weak_unread = self.downgrade();
+        mail_page.set_on_unread_count_changed(move |_count| {
+            if let Some(win) = win_weak_unread.upgrade() {
+                win.sync_unread_counter_and_title();
+            }
+        });
         tracing::debug!(
             elapsed_ms = setup_started.elapsed().as_millis() as u64,
             "Mail page added to view stack"
@@ -3753,6 +3801,12 @@ impl MeridianWindow {
             settings.connect_changed(Some("switcher-location"), move |_, _| {
                 update_cb();
             });
+            let win_weak_counter = self.downgrade();
+            settings.connect_changed(Some("show-window-title-unread-counter"), move |_, _| {
+                if let Some(win) = win_weak_counter.upgrade() {
+                    win.sync_unread_counter_and_title();
+                }
+            });
         }
 
         let menu_model = Self::build_primary_menu();
@@ -3781,7 +3835,7 @@ impl MeridianWindow {
         self.imp().right_sidebar_toggle.replace(Some(right_sidebar_toggle.clone()));
 
         let agenda_preview_toggle = gtk::ToggleButton::builder()
-            .icon_name("layout-sidebar-right-symbolic")
+            .icon_name("sidebar-show-right-symbolic")
             .tooltip_text(&crate::i18n::gettext("Toggle event details (Ctrl+Shift+D)"))
             .css_classes(vec!["flat"])
             .visible(false)
@@ -4375,6 +4429,7 @@ impl MeridianWindow {
 
         let snapshot = self.imp().transport_service.snapshot();
         self.update_transport_presentation(&snapshot);
+        self.sync_unread_counter_and_title();
     }
 
     fn setup_actions(&self) {
@@ -8009,7 +8064,7 @@ mod tests {
 
         assert_eq!(
             agenda_toggle.icon_name().as_deref(),
-            Some("layout-sidebar-right-symbolic")
+            Some("sidebar-show-right-symbolic")
         );
         // Initially in mail view, agenda preview toggle must be hidden
         assert!(!agenda_toggle.is_visible());
@@ -8628,6 +8683,30 @@ mod tests {
 
         // Activating action creates and presents the shortcuts window for active view
         action.activate(None);
+    }
+
+    #[test]
+    fn test_window_title_and_badge_unread_sync() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+        let app = MeridianApplication::new();
+        let window = MeridianWindow::new(&app);
+
+        // Mail stack page must have been registered
+        let mail_page = window.imp().mail_stack_page.borrow().as_ref().cloned();
+        assert!(mail_page.is_some(), "mail_stack_page must be recorded on layout setup");
+
+        // Verify sync_unread_counter_and_title runs without panic
+        window.sync_unread_counter_and_title();
+
+        // Check badge behavior: when no unread messages, badge_number is 0
+        if let Some(page) = mail_page {
+            assert_eq!(page.badge_number(), 0);
+        }
     }
 }
 
