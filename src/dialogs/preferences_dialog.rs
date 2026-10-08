@@ -1090,6 +1090,265 @@ fn sync_interval_to_index(seconds: u32) -> u32 {
     best_idx as u32
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct SidePageDef {
+    pub id: &'static str,
+    pub title: &'static str,
+    pub icon: &'static str,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SideSectionDef {
+    pub section: &'static str,
+    pub pages: &'static [SidePageDef],
+}
+
+pub const SIDEBAR_SECTIONS: &[SideSectionDef] = &[
+    SideSectionDef {
+        section: "Accounts",
+        pages: &[
+            SidePageDef {
+                id: "accounts",
+                title: "Mail Accounts",
+                icon: "avatar-default-symbolic",
+            },
+            SidePageDef {
+                id: "contacts",
+                title: "Address Books",
+                icon: "x-office-address-book-symbolic",
+            },
+            SidePageDef {
+                id: "labels",
+                title: "Colors and Labels",
+                icon: "color-select-symbolic",
+            },
+            SidePageDef {
+                id: "certificates",
+                title: "Certificates & PGP",
+                icon: "security-high-symbolic",
+            },
+        ],
+    },
+    SideSectionDef {
+        section: "Settings",
+        pages: &[
+            SidePageDef {
+                id: "mail_general",
+                title: "General",
+                icon: "preferences-other-symbolic",
+            },
+            SidePageDef {
+                id: "appearance",
+                title: "Appearance",
+                icon: "preferences-desktop-appearance-symbolic",
+            },
+            SidePageDef {
+                id: "mail_layout",
+                title: "Message List & Layout",
+                icon: "view-list-symbolic",
+            },
+            SidePageDef {
+                id: "mail_reading",
+                title: "Reading & Display",
+                icon: "mail-read-symbolic",
+            },
+            SidePageDef {
+                id: "composer",
+                title: "Composing",
+                icon: "document-edit-symbolic",
+            },
+            SidePageDef {
+                id: "replies",
+                title: "Replies & Forwarding",
+                icon: "mail-reply-sender-symbolic",
+            },
+            SidePageDef {
+                id: "signatures",
+                title: "Signatures",
+                icon: "accessories-text-editor-symbolic",
+            },
+            SidePageDef {
+                id: "headers",
+                title: "Headers",
+                icon: "document-properties-symbolic",
+            },
+            SidePageDef {
+                id: "junk",
+                title: "Junk & Spam",
+                icon: "mail-mark-junk-symbolic",
+            },
+            SidePageDef {
+                id: "calendar",
+                title: "Calendar & Tasks",
+                icon: "x-office-calendar-symbolic",
+            },
+            SidePageDef {
+                id: "calendar_display",
+                title: "Display & Formats",
+                icon: "preferences-desktop-display-symbolic",
+            },
+            SidePageDef {
+                id: "network",
+                title: "Network & Proxy",
+                icon: "network-wired-symbolic",
+            },
+            SidePageDef {
+                id: "backup",
+                title: "Import and Backup",
+                icon: "drive-harddisk-symbolic",
+            },
+        ],
+    },
+];
+
+pub fn get_page_title(id: &str) -> Option<String> {
+    for sec in SIDEBAR_SECTIONS {
+        for page in sec.pages {
+            if page.id == id {
+                return Some(gettext(page.title));
+            }
+        }
+    }
+    None
+}
+
+pub fn select_sidebar_page(sidebar_list: &gtk::ListBox, page_id: &str) {
+    let target_name = format!("page:{page_id}");
+    let mut child = sidebar_list.first_child();
+    while let Some(c) = child {
+        if let Some(row) = c.downcast_ref::<gtk::ListBoxRow>() {
+            if row.widget_name() == target_name {
+                sidebar_list.select_row(Some(row));
+                break;
+            }
+        }
+        child = c.next_sibling();
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SearchHit {
+    pub page_id: &'static str,
+    pub title: String,
+    pub place: String,
+    pub haystack: String,
+    pub widget: glib::WeakRef<gtk::Widget>,
+}
+
+fn search_hit(page_id: &'static str, title: &str, subtitle: &str, place: &str, widget: &gtk::Widget) -> SearchHit {
+    let clean = |s: &str| s.replace("&amp;", "&").trim().to_string();
+    let title = clean(title);
+    let subtitle = clean(subtitle);
+    let haystack = format!("{title} {subtitle} {place}").to_lowercase();
+    SearchHit {
+        page_id,
+        title,
+        place: place.to_string(),
+        haystack,
+        widget: widget.downgrade(),
+    }
+}
+
+fn index_widget(page_id: &'static str, w: &gtk::Widget, place: &str, out: &mut Vec<SearchHit>) {
+    let mut place = place.to_string();
+    if let Some(group) = w.downcast_ref::<adw::PreferencesGroup>() {
+        let title = group.title();
+        if !title.is_empty() {
+            let desc = group.description().unwrap_or_default();
+            out.push(search_hit(page_id, &title, &desc, &place, w));
+            if !place.ends_with(title.as_str()) {
+                place = format!("{place} › {title}");
+            }
+        }
+    } else if let Some(row) = w.downcast_ref::<adw::PreferencesRow>() {
+        let title = row.title();
+        let subtitle = w
+            .downcast_ref::<adw::ActionRow>()
+            .and_then(|r| r.subtitle())
+            .or_else(|| w.downcast_ref::<adw::SwitchRow>().and_then(|r| r.subtitle()))
+            .or_else(|| w.downcast_ref::<adw::ExpanderRow>().map(|r| r.subtitle()))
+            .unwrap_or_default();
+        if !title.is_empty() {
+            out.push(search_hit(page_id, &title, &subtitle, &place, w));
+            if w.is::<adw::ExpanderRow>() {
+                place = format!("{place} › {title}");
+            } else {
+                return;
+            }
+        }
+    }
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        index_widget(page_id, &c, &place, out);
+        child = c.next_sibling();
+    }
+}
+
+pub fn build_search_index(pages: &gtk::Stack) -> Vec<SearchHit> {
+    let mut out = Vec::new();
+    for sec in SIDEBAR_SECTIONS {
+        for page in sec.pages {
+            let page_title = gettext(page.title);
+            let child = pages.child_by_name(page.id);
+            let target = child.clone().unwrap_or_else(|| pages.clone().upcast());
+            out.push(search_hit(page.id, &page_title, "", &gettext("Settings"), &target));
+            if let Some(child) = child {
+                index_widget(page.id, &child, &page_title, &mut out);
+            }
+        }
+    }
+    out
+}
+
+pub fn shown_in_hierarchy(w: &gtk::Widget) -> bool {
+    let mut cur = Some(w.clone());
+    while let Some(c) = cur {
+        if let Some(parent) = c.parent() {
+            if parent.is::<gtk::Stack>() {
+                return c.is_visible();
+            }
+        }
+        if !c.is_visible() {
+            return false;
+        }
+        cur = c.parent();
+    }
+    true
+}
+
+pub fn reveal_widget(w: &gtk::Widget) {
+    // 1. Expand any collapsed parent expander rows so child is visible in tree
+    let mut parent = w.parent();
+    while let Some(p) = parent {
+        if let Some(expander) = p.downcast_ref::<adw::ExpanderRow>() {
+            expander.set_expanded(true);
+        }
+        parent = p.parent();
+    }
+
+    // 2. Scroll into view inside parent ScrolledWindow
+    if let Some(sw) = w.ancestor(gtk::ScrolledWindow::static_type()).and_downcast::<gtk::ScrolledWindow>() {
+        let content = sw.child().map(|c| match c.downcast_ref::<gtk::Viewport>() {
+            Some(vp) => vp.child().unwrap_or(c.clone()),
+            None => c,
+        });
+        if let Some(content) = content {
+            if let Some(p) = w.compute_point(&content, &gtk::graphene::Point::new(0.0, 0.0)) {
+                let adj = sw.vadjustment();
+                let top = (f64::from(p.y()) - 24.0).clamp(adj.lower(), (adj.upper() - adj.page_size()).max(adj.lower()));
+                adj.set_value(top);
+            }
+        }
+    }
+
+    // 3. Highlight pulse
+    w.add_css_class("settings-search-hit");
+    let w = w.clone();
+    glib::timeout_add_local_once(std::time::Duration::from_millis(1600), move || {
+        w.remove_css_class("settings-search-hit");
+    });
+}
+
 impl PreferencesDialog {
     fn build_ui(&self) {
         let settings = AppSettings::try_new();
@@ -5196,105 +5455,65 @@ impl PreferencesDialog {
         page_certificates.add(&group_cert_management);
         page_certificates.add(&group_crypto);
 
-        // ── Construct 2-Column Sidebar + Top Horizontal Sub-Tabs Layout ──────
-
-        // Sub-Stack for Mail Preferences (General, HTML Messages, Labels, Headers, Junk, Confirmations)
-        let mail_sub_stack = gtk::Stack::builder()
-            .transition_type(gtk::StackTransitionType::SlideLeftRight)
-            .hexpand(true)
-            .vexpand(true)
-            .build();
-        let mail_sub_switcher = gtk::StackSwitcher::builder()
-            .stack(&mail_sub_stack)
-            .halign(gtk::Align::Center)
-            .margin_top(4)
-            .margin_bottom(8)
-            .build();
-
         let group_mail_labels = build_mail_labels_group(&self, settings.clone());
         let group_mail_junk = build_mail_junk_group(settings.clone());
         let group_mail_notifications = build_mail_notifications_group(settings.clone());
 
-        let page_mail_general = adw::PreferencesPage::builder().title("General").build();
+        let page_mail_general = adw::PreferencesPage::builder()
+            .title(&gettext("General"))
+            .icon_name("mail-inbox-symbolic")
+            .build();
         page_mail_general.add(&group_sync);
         page_mail_general.add(&group_mail_reading);
         page_mail_general.add(&group_mail_behavior);
         page_mail_general.add(&group_mail_notifications);
 
         let page_mail_html = adw::PreferencesPage::builder()
-            .title("HTML-Mails")
+            .title(&gettext("Reading & Display"))
+            .icon_name("mail-read-symbolic")
             .build();
         page_mail_html.add(&group_mail_html);
         page_mail_html.add(&group_citations);
-        let page_mail_labels = adw::PreferencesPage::builder().title("Colors and Labels").build();
+
+        let page_mail_labels = adw::PreferencesPage::builder()
+            .title(&gettext("Colors and Labels"))
+            .icon_name("color-select-symbolic")
+            .build();
         page_mail_labels.add(&group_mail_labels);
-        let page_mail_headers = adw::PreferencesPage::builder().title("Headers").build();
+
+        let page_mail_headers = adw::PreferencesPage::builder()
+            .title(&gettext("Headers"))
+            .icon_name("document-properties-symbolic")
+            .build();
         page_mail_headers.add(&group_mail_headers_mode);
         page_mail_headers.add(&group_mail_normal_headers);
-        let page_mail_junk = adw::PreferencesPage::builder().title("Junk and Spam").build();
+
+        let page_mail_junk = adw::PreferencesPage::builder()
+            .title(&gettext("Junk & Spam"))
+            .icon_name("mail-mark-junk-symbolic")
+            .build();
         page_mail_junk.add(&group_mail_junk);
+
         let page_mail_layout = adw::PreferencesPage::builder()
-            .title("List View and Layout")
+            .title(&gettext("Message List & Layout"))
+            .icon_name("view-list-symbolic")
             .build();
         page_mail_layout.add(&group_mail_window_layout);
         page_mail_layout.add(&group_mail_list);
 
-        mail_sub_stack.add_titled(&page_mail_general, Some("general"), "General");
-        mail_sub_stack.add_titled(&page_mail_html, Some("html"), "HTML Mail");
-        mail_sub_stack.add_titled(&page_mail_labels, Some("labels"), "Colors and Labels");
-        mail_sub_stack.add_titled(&page_mail_headers, Some("headers"), "Headers");
-        mail_sub_stack.add_titled(
-            &page_mail_layout,
-            Some("layout"),
-            "Listenansicht",
-        );
-
-        // Sub-Stack for Composer Preferences (General, Replies)
-        let composer_sub_stack = gtk::Stack::builder()
-            .transition_type(gtk::StackTransitionType::SlideLeftRight)
-            .hexpand(true)
-            .vexpand(true)
+        let page_composer_general = adw::PreferencesPage::builder()
+            .title(&gettext("Composing"))
+            .icon_name("document-edit-symbolic")
             .build();
-        let composer_sub_switcher = gtk::StackSwitcher::builder()
-            .stack(&composer_sub_stack)
-            .halign(gtk::Align::Center)
-            .margin_top(4)
-            .margin_bottom(8)
-            .build();
-
-        let page_composer_general = adw::PreferencesPage::builder().title("General").build();
         page_composer_general.add(&group_composer);
         page_composer_general.add(&group_composer_headers);
         page_composer_general.add(&group_composer_prompts);
-        let page_composer_replies = adw::PreferencesPage::builder().title("Replies").build();
+
+        let page_composer_replies = adw::PreferencesPage::builder()
+            .title(&gettext("Replies & Forwarding"))
+            .icon_name("mail-reply-sender-symbolic")
+            .build();
         page_composer_replies.add(&group_reply);
-
-        composer_sub_stack.add_titled(&page_composer_general, Some("general"), "General");
-        composer_sub_stack.add_titled(&page_composer_replies, Some("replies"), "Replies");
-
-        let composer_detail_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(4)
-            .hexpand(true)
-            .vexpand(true)
-            .build();
-        composer_detail_box.append(&composer_sub_switcher);
-        composer_detail_box.append(&composer_sub_stack);
-
-        mail_sub_stack.add_titled(&composer_detail_box, Some("composer"), "Verfassen");
-
-        if let Ok(sub) = std::env::var("MERIDIAN_PREF_SUBPAGE").or_else(|_| std::env::var("EVOLUTION_PREF_SUBPAGE")) {
-            mail_sub_stack.set_visible_child_name(&sub);
-        }
-
-        let mail_detail_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(4)
-            .hexpand(true)
-            .vexpand(true)
-            .build();
-        mail_detail_box.append(&mail_sub_switcher);
-        mail_detail_box.append(&mail_sub_stack);
 
         // ── Signatures Detail Box (GNOME HIG Dedicated Page) ────────────────
         let page_signatures = adw::PreferencesPage::builder()
@@ -5316,13 +5535,6 @@ impl PreferencesDialog {
 
         page_signatures.add(&group_signature_options);
 
-        let signatures_detail_box = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .child(&page_signatures)
-            .hexpand(true)
-            .vexpand(true)
-            .build();
 
         // Reactive signature list & selection updater
         let dialog_weak = self.downgrade();
@@ -5468,257 +5680,437 @@ impl PreferencesDialog {
             }
         });
 
-        // Sub-Stack for Calendar and Tasks (General, Display & Formats)
-        let calendar_sub_stack = gtk::Stack::builder()
-            .transition_type(gtk::StackTransitionType::SlideLeftRight)
-            .hexpand(true)
-            .vexpand(true)
-            .build();
-        let calendar_sub_switcher = gtk::StackSwitcher::builder()
-            .stack(&calendar_sub_stack)
-            .halign(gtk::Align::Center)
-            .margin_top(4)
-            .margin_bottom(8)
-            .build();
-
-        let page_calendar_general = adw::PreferencesPage::builder().title("General").build();
+        // ── Calendar and Tasks Pages ─────────────────────────────────────────
+        let page_calendar_general = adw::PreferencesPage::builder().title(&gettext("Calendar & Tasks")).build();
         page_calendar_general.add(&group_calendar_view);
         page_calendar_general.add(&group_calendar_days);
         page_calendar_general.add(&group_calendar_time);
         page_calendar_general.add(&group_calendar_reminders);
 
         let page_calendar_display = adw::PreferencesPage::builder()
-            .title("Display and Formats")
+            .title(&gettext("Display & Formats"))
             .build();
         page_calendar_display.add(&group_default_ecal_sources);
         page_calendar_display.add(&group_calendar_local);
         page_calendar_display.add(&group_categories);
         page_calendar_display.add(&group_task_memo_lists);
 
-        calendar_sub_stack.add_titled(&page_calendar_general, Some("general"), "General");
-        calendar_sub_stack.add_titled(&page_calendar_display, Some("display"), "Display and Formats");
-
-        let calendar_detail_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(4)
-            .hexpand(true)
-            .vexpand(true)
-            .build();
-        calendar_detail_box.append(&calendar_sub_switcher);
-        calendar_detail_box.append(&calendar_sub_stack);
-
-        // ── Construct Modern Libadwaita 6-Category Layout ───────────────────
-
-        // 1. Accounts & Identities detail box (Mail Accounts, Contacts)
-        let accounts_sub_stack = gtk::Stack::builder()
-            .transition_type(gtk::StackTransitionType::SlideLeftRight)
-            .hexpand(true)
-            .vexpand(true)
-            .build();
-        let accounts_sub_switcher = gtk::StackSwitcher::builder()
-            .stack(&accounts_sub_stack)
-            .halign(gtk::Align::Center)
-            .margin_top(4)
-            .margin_bottom(8)
-            .build();
-        accounts_sub_stack.add_titled(&page_accounts, Some("mail_accounts"), &gettext("Email Accounts"));
-        accounts_sub_stack.add_titled(&page_contacts, Some("contacts"), &gettext("Address Books"));
-
-        let accounts_detail_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(4)
-            .hexpand(true)
-            .vexpand(true)
-            .build();
-        accounts_detail_box.append(&accounts_sub_switcher);
-        accounts_detail_box.append(&accounts_sub_stack);
-
-        // 2. Appearance detail box (Theme & General)
-        let appearance_detail_box = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .child(&page_appearance)
+        // ── Detail Stack (17 Flattened Preferences Pages) ───────────────────
+        let detail_stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .hhomogeneous(false)
+            .vhomogeneous(false)
             .hexpand(true)
             .vexpand(true)
             .build();
 
-        // 3. Calendar & Tasks is already in calendar_detail_box
+        // Accounts
+        detail_stack.add_named(&page_accounts, Some("accounts"));
+        detail_stack.add_named(&page_contacts, Some("contacts"));
 
-        // 4. Security & Maintenance detail box (Certificates, Network & Sync, Backup)
-        let security_sub_stack = gtk::Stack::builder()
-            .transition_type(gtk::StackTransitionType::SlideLeftRight)
-            .hexpand(true)
-            .vexpand(true)
-            .build();
-        let security_sub_switcher = gtk::StackSwitcher::builder()
-            .stack(&security_sub_stack)
-            .halign(gtk::Align::Center)
-            .margin_top(4)
-            .margin_bottom(8)
-            .build();
-        security_sub_stack.add_titled(&page_certificates, Some("certificates"), &gettext("Certificates & PGP"));
-        security_sub_stack.add_titled(&page_mail_junk, Some("junk"), &gettext("Spam & Junk Filter"));
-        security_sub_stack.add_titled(&page_network, Some("network"), &gettext("Network & Proxy"));
-        security_sub_stack.add_titled(&page_backup, Some("backup"), &gettext("Backup & Import"));
+        // Mail
+        detail_stack.add_named(&page_mail_general, Some("mail_general"));
+        detail_stack.add_named(&page_mail_html, Some("mail_reading"));
+        detail_stack.add_named(&page_mail_layout, Some("mail_layout"));
+        detail_stack.add_named(&page_composer_general, Some("composer"));
+        detail_stack.add_named(&page_composer_replies, Some("replies"));
+        detail_stack.add_named(&page_signatures, Some("signatures"));
+        detail_stack.add_named(&page_mail_headers, Some("headers"));
+        detail_stack.add_named(&page_mail_labels, Some("labels"));
+        detail_stack.add_named(&page_mail_junk, Some("junk"));
 
-        let security_detail_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(4)
-            .hexpand(true)
-            .vexpand(true)
-            .build();
-        security_detail_box.append(&security_sub_switcher);
-        security_detail_box.append(&security_sub_stack);
+        // Calendar and Tasks
+        detail_stack.add_named(&page_calendar_general, Some("calendar"));
+        detail_stack.add_named(&page_calendar_display, Some("calendar_display"));
 
-        // Sidebar Category List (Left Column) - 6 GNOME HIG Categories
+        // System & Preferences
+        detail_stack.add_named(&page_appearance, Some("appearance"));
+        detail_stack.add_named(&page_certificates, Some("certificates"));
+        detail_stack.add_named(&page_network, Some("network"));
+        detail_stack.add_named(&page_backup, Some("backup"));
+
+        // ── Navigation Split View (Modern Libadwaita & GNOME HIG Parity) ────
+        let split = adw::NavigationSplitView::builder()
+            .min_sidebar_width(200.0)
+            .max_sidebar_width(280.0)
+            .sidebar_width_fraction(0.28)
+            .build();
+
+        // ── Sidebar Category List & NavigationPage ───────────────────────────
         let sidebar_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
-            .css_classes(vec!["navigation-sidebar"])
+            .css_classes(vec!["navigation-sidebar", "settings-side"])
             .build();
 
-        for (title, icon_name) in [
-            ("Accounts & Identities", "avatar-default-symbolic"),
-            ("Mail", "mail-inbox-symbolic"),
-            ("Signatures", "document-edit-symbolic"),
-            ("Calendar and Tasks", "x-office-calendar-symbolic"),
-            ("Appearance", "display-brightness-symbolic"),
-            ("Security & Maintenance", "security-high-symbolic"),
-        ] {
-            let row = adw::ActionRow::builder()
-                .title(title)
-                .use_markup(false)
-                .activatable(true)
-                .build();
-            let icon = gtk::Image::from_icon_name(icon_name);
-            row.add_prefix(&icon);
-            sidebar_list.append(&row);
+        for sec in SIDEBAR_SECTIONS {
+            let heading = gtk::ListBoxRow::new();
+            heading.set_selectable(false);
+            heading.set_activatable(false);
+            heading.add_css_class("settings-side-heading");
+            let label = gtk::Label::new(Some(&gettext(sec.section)));
+            label.set_xalign(0.0);
+            label.add_css_class("caption-heading");
+            label.add_css_class("dim-label");
+            heading.set_child(Some(&label));
+            sidebar_list.append(&heading);
+
+            for page in sec.pages {
+                let row = gtk::ListBoxRow::new();
+                row.set_widget_name(&format!("page:{}", page.id));
+                let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+                line.set_margin_start(8);
+                line.set_margin_end(8);
+                line.set_margin_top(6);
+                line.set_margin_bottom(6);
+                let icon = gtk::Image::from_icon_name(page.icon);
+                line.append(&icon);
+                let title_label = gtk::Label::new(Some(&gettext(page.title)));
+                title_label.set_xalign(0.0);
+                title_label.set_hexpand(true);
+                line.append(&title_label);
+                row.set_child(Some(&line));
+                sidebar_list.append(&row);
+            }
         }
 
-        let sidebar_scroll = gtk::ScrolledWindow::builder()
-            .width_request(230)
+        let sidebar_scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .child(&sidebar_list)
             .build();
 
-        // Right Detail Stack
-        let detail_stack = gtk::Stack::builder()
-            .transition_type(gtk::StackTransitionType::SlideLeftRight)
-            .hexpand(true)
-            .vexpand(true)
-            .margin_start(8)
-            .margin_end(8)
-            .margin_top(8)
-            .margin_bottom(8)
+        // ── Live Search Implementation (Hylki Pattern) ──────────────────────
+        let search_button = gtk::ToggleButton::builder()
+            .icon_name("edit-find-symbolic")
+            .tooltip_text(&gettext("Search Settings"))
             .build();
 
-        detail_stack.add_titled(&accounts_detail_box, Some("accounts"), "Accounts & Identities");
-        detail_stack.add_titled(&mail_detail_box, Some("mail"), "Mail");
-        detail_stack.add_titled(&signatures_detail_box, Some("signatures"), "Signatures");
-        detail_stack.add_titled(&calendar_detail_box, Some("calendar"), "Calendar and Tasks");
-        detail_stack.add_titled(&appearance_detail_box, Some("appearance"), "Appearance");
-        detail_stack.add_titled(&security_detail_box, Some("security"), "Security & Maintenance");
+        let search_entry = gtk::SearchEntry::builder()
+            .placeholder_text(&gettext("Search settings…"))
+            .hexpand(true)
+            .build();
 
-        let sidebar_for_nav = sidebar_list.downgrade();
-        let stack_for_nav = detail_stack.downgrade();
-        row_manage_signatures.connect_activated(move |_| {
-            if let Some(sidebar) = sidebar_for_nav.upgrade() {
-                if let Some(row) = sidebar.row_at_index(2) {
-                    sidebar.select_row(Some(&row));
-                }
-            }
-            if let Some(stack) = stack_for_nav.upgrade() {
-                stack.set_visible_child_name("signatures");
-            }
-        });
+        let search_bar = gtk::SearchBar::builder()
+            .child(&search_entry)
+            .build();
+        search_bar.connect_entry(&search_entry);
+        search_bar
+            .bind_property("search-mode-enabled", &search_button, "active")
+            .bidirectional()
+            .sync_create()
+            .build();
 
+        let results_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(vec!["navigation-sidebar"])
+            .build();
+
+        let results_scroller = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&results_list)
+            .build();
+
+        let empty_search_page = adw::StatusPage::builder()
+            .icon_name("edit-find-symbolic")
+            .title(&gettext("No Results"))
+            .description(&gettext("Try a different search term"))
+            .css_classes(vec!["compact"])
+            .build();
+
+        let side_stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .build();
+        side_stack.add_named(&sidebar_scroller, Some("pages"));
+        side_stack.add_named(&results_scroller, Some("results"));
+        side_stack.add_named(&empty_search_page, Some("empty"));
+
+        let side_header = adw::HeaderBar::builder()
+            .show_end_title_buttons(false)
+            .build();
+        let side_title = adw::WindowTitle::new(&gettext("Settings"), "");
+        side_header.set_title_widget(Some(&side_title));
+        side_header.pack_start(&search_button);
+
+        let side_toolbar = adw::ToolbarView::new();
+        side_toolbar.add_top_bar(&side_header);
+        side_toolbar.add_top_bar(&search_bar);
+        side_toolbar.set_content(Some(&side_stack));
+
+        let sidebar_page = adw::NavigationPage::builder()
+            .title(&gettext("Settings"))
+            .child(&side_toolbar)
+            .build();
+
+        // ── Content Page & Header (Libadwaita NavigationSplitView Parity) ────
+        let content_header = adw::HeaderBar::new();
+        let content_title = adw::WindowTitle::new(&gettext("General"), "");
+        content_header.set_title_widget(Some(&content_title));
+
+        let content_toolbar = adw::ToolbarView::new();
+        content_toolbar.add_top_bar(&content_header);
+        content_toolbar.set_content(Some(&detail_stack));
+
+        let content_page = adw::NavigationPage::builder()
+            .title(&gettext("General"))
+            .child(&content_toolbar)
+            .build();
+
+        split.set_sidebar(Some(&sidebar_page));
+        split.set_content(Some(&content_page));
+
+        // Close button responsiveness on narrow collapse:
+        split
+            .bind_property("collapsed", &side_header, "show-end-title-buttons")
+            .sync_create()
+            .build();
+
+        // Responsive 640sp breakpoint (single pane collapse on narrow windows)
+        let narrow_bp = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
+            adw::BreakpointConditionLengthType::MaxWidth,
+            640.0,
+            adw::LengthUnit::Sp,
+        ));
+        narrow_bp.add_setter(&split, "collapsed", Some(&true.to_value()));
+        self.add_breakpoint(narrow_bp);
+
+        // ── Interaction Wiring ──────────────────────────────────────────────
         let detail_stack_weak = detail_stack.downgrade();
+        let content_title_weak = content_title.downgrade();
+        let content_page_weak = content_page.downgrade();
+        let split_weak = split.downgrade();
+
         sidebar_list.connect_row_selected(move |_, row| {
             let Some(row) = row else { return };
-            let Some(stack) = detail_stack_weak.upgrade() else {
-                return;
-            };
-            let name = match row.index() {
-                0 => "accounts",
-                1 => "mail",
-                2 => "signatures",
-                3 => "calendar",
-                4 => "appearance",
-                5 => "security",
-                _ => "accounts",
-            };
-            stack.set_visible_child_name(name);
+            let name = row.widget_name();
+            let Some(page_id) = name.strip_prefix("page:") else { return };
+            if let Some(stack) = detail_stack_weak.upgrade() {
+                stack.set_visible_child_name(page_id);
+            }
+            let title = get_page_title(page_id).unwrap_or_else(|| page_id.to_string());
+            if let Some(ct) = content_title_weak.upgrade() {
+                ct.set_title(&title);
+            }
+            if let Some(cp) = content_page_weak.upgrade() {
+                cp.set_title(&title);
+            }
+            if let Some(s) = split_weak.upgrade() {
+                s.set_show_content(true);
+            }
         });
 
-        // Select default preferences page (Mail by default, or overridden via env)
-        let default_idx = if let Ok(page_name) = std::env::var("MERIDIAN_PREF_PAGE").or_else(|_| std::env::var("EVOLUTION_PREF_PAGE")) {
-            match page_name.as_str() {
-                "accounts" => {
-                    accounts_sub_stack.set_visible_child_name("mail_accounts");
-                    0
+        let search_index: Rc<RefCell<Option<Vec<SearchHit>>>> = Rc::new(RefCell::new(None));
+        let shown_hits: Rc<RefCell<Vec<SearchHit>>> = Rc::new(RefCell::new(Vec::new()));
+
+        let execute_search: Rc<dyn Fn(&str)> = {
+            let detail_stack_for_search = detail_stack.clone();
+            let side_stack_for_search = side_stack.clone();
+            let results_list_for_search = results_list.clone();
+            let search_index_for_search = search_index.clone();
+            let shown_hits_for_search = shown_hits.clone();
+            Rc::new(move |raw_text: &str| {
+                let query = raw_text.trim().to_lowercase();
+                if query.is_empty() {
+                    side_stack_for_search.set_visible_child_name("pages");
+                    return;
                 }
-                "contacts" => {
-                    accounts_sub_stack.set_visible_child_name("contacts");
-                    0
+                if search_index_for_search.borrow().is_none() {
+                    *search_index_for_search.borrow_mut() = Some(build_search_index(&detail_stack_for_search));
                 }
-                "mail" => {
-                    mail_sub_stack.set_visible_child_name("general");
-                    1
+                let words: Vec<&str> = query.split_whitespace().collect();
+                let index_ref = search_index_for_search.borrow();
+                let Some(index) = index_ref.as_ref() else { return };
+
+                let mut found: Vec<(u8, usize, &SearchHit)> = index
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, h)| words.iter().all(|w| h.haystack.contains(w)))
+                    .filter(|(_, h)| h.widget.upgrade().is_some_and(|w| shown_in_hierarchy(&w)))
+                    .map(|(i, h)| {
+                        let title_lower = h.title.to_lowercase();
+                        let rank = if title_lower.contains(&query) {
+                            0
+                        } else if words.iter().all(|w| title_lower.contains(w)) {
+                            1
+                        } else {
+                            2
+                        };
+                        (rank, i, h)
+                    })
+                    .collect();
+                found.sort_by_key(|(rank, i, _)| (*rank, *i));
+                found.truncate(60);
+
+                while let Some(row) = results_list_for_search.row_at_index(0) {
+                    results_list_for_search.remove(&row);
                 }
-                "composer" => {
-                    mail_sub_stack.set_visible_child_name("composer");
-                    1
+                let mut shown = shown_hits_for_search.borrow_mut();
+                shown.clear();
+
+                for (_, _, hit) in &found {
+                    let line = gtk::Box::new(gtk::Orientation::Vertical, 2);
+                    line.set_margin_start(8);
+                    line.set_margin_end(8);
+                    line.set_margin_top(6);
+                    line.set_margin_bottom(6);
+                    let title = gtk::Label::new(Some(&hit.title));
+                    title.set_xalign(0.0);
+                    title.set_wrap(true);
+                    let place = gtk::Label::new(Some(&hit.place));
+                    place.set_xalign(0.0);
+                    place.set_wrap(true);
+                    place.add_css_class("caption");
+                    place.add_css_class("dim-label");
+                    line.append(&title);
+                    line.append(&place);
+                    let row = gtk::ListBoxRow::new();
+                    row.set_child(Some(&line));
+                    results_list_for_search.append(&row);
+                    shown.push((*hit).clone());
                 }
-                "signatures" => 2,
-                "calendar" => 3,
-                "appearance" => 4,
-                "certificates" => {
-                    security_sub_stack.set_visible_child_name("certificates");
-                    5
-                }
-                "junk" => {
-                    security_sub_stack.set_visible_child_name("junk");
-                    5
-                }
-                "network" => {
-                    security_sub_stack.set_visible_child_name("network");
-                    5
-                }
-                "backup" | "security" => {
-                    security_sub_stack.set_visible_child_name("backup");
-                    5
-                }
-                _ => 1,
-            }
-        } else {
-            1
+
+                side_stack_for_search.set_visible_child_name(if shown.is_empty() {
+                    "empty"
+                } else {
+                    "results"
+                });
+            })
         };
-        if let Some(row) = sidebar_list.row_at_index(default_idx) {
-            sidebar_list.select_row(Some(&row));
-        }
 
-        let main_split = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .hexpand(true)
-            .vexpand(true)
-            .build();
-        main_split.append(&sidebar_scroll);
-        main_split.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        main_split.append(&detail_stack);
+        let search_cb = execute_search.clone();
+        search_entry.connect_search_changed(move |entry| {
+            search_cb(&entry.text());
+        });
 
-        let header_bar = adw::HeaderBar::builder()
-            .title_widget(&adw::WindowTitle::new(&gettext("Preferences"), ""))
-            .build();
+        let search_cb_changed = execute_search.clone();
+        search_entry.connect_changed(move |entry| {
+            search_cb_changed(&entry.text());
+        });
 
-        let content_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .hexpand(true)
-            .vexpand(true)
-            .build();
-        content_box.append(&header_bar);
-        content_box.append(&main_split);
+        let search_entry_for_bar = search_entry.clone();
+        let side_stack_for_bar = side_stack.clone();
+        search_bar.connect_search_mode_enabled_notify(move |bar| {
+            if !bar.is_search_mode() {
+                search_entry_for_bar.set_text("");
+                side_stack_for_bar.set_visible_child_name("pages");
+            }
+        });
 
-        self.set_child(Some(&content_box));
+        let shown_hits_for_pick = shown_hits.clone();
+        let sidebar_list_for_pick = sidebar_list.clone();
+        let detail_stack_for_pick = detail_stack.clone();
+        let content_title_for_pick = content_title.clone();
+        let content_page_for_pick = content_page.clone();
+        let split_for_pick = split.clone();
+
+        results_list.connect_row_activated(move |_, row| {
+            let idx = row.index() as usize;
+            let hit = shown_hits_for_pick.borrow().get(idx).cloned();
+            let Some(hit) = hit else { return };
+
+            detail_stack_for_pick.set_visible_child_name(hit.page_id);
+            let title = get_page_title(hit.page_id).unwrap_or_else(|| hit.page_id.to_string());
+            content_title_for_pick.set_title(&title);
+            content_page_for_pick.set_title(&title);
+            select_sidebar_page(&sidebar_list_for_pick, hit.page_id);
+            split_for_pick.set_show_content(true);
+
+            if let Some(target) = hit.widget.upgrade() {
+                reveal_widget(&target);
+            }
+        });
+
+        let shortcuts = gtk::ShortcutController::new();
+        shortcuts.set_scope(gtk::ShortcutScope::Global);
+
+        let search_bar_for_ctrl_f = search_bar.clone();
+        let search_entry_for_ctrl_f = search_entry.clone();
+        shortcuts.add_shortcut(gtk::Shortcut::new(
+            gtk::ShortcutTrigger::parse_string("<Control>f"),
+            Some(gtk::CallbackAction::new(move |_, _| {
+                let open = !search_bar_for_ctrl_f.is_search_mode();
+                search_bar_for_ctrl_f.set_search_mode(open);
+                if open {
+                    search_entry_for_ctrl_f.grab_focus();
+                }
+                glib::Propagation::Stop
+            })),
+        ));
+
+        let search_bar_for_escape = search_bar.clone();
+        shortcuts.add_shortcut(gtk::Shortcut::new(
+            gtk::ShortcutTrigger::parse_string("Escape"),
+            Some(gtk::CallbackAction::new(move |_, _| {
+                if search_bar_for_escape.is_search_mode() {
+                    search_bar_for_escape.set_search_mode(false);
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
+            })),
+        ));
+        self.add_controller(shortcuts);
+
+        let sidebar_for_nav = sidebar_list.downgrade();
+        let split_for_nav = split.downgrade();
+        row_manage_signatures.connect_activated(move |_| {
+            if let Some(sidebar) = sidebar_for_nav.upgrade() {
+                select_sidebar_page(&sidebar, "signatures");
+            }
+            if let Some(split) = split_for_nav.upgrade() {
+                split.set_show_content(true);
+            }
+        });
+
+        let env_page = std::env::var("MERIDIAN_PREF_PAGE")
+            .or_else(|_| std::env::var("EVOLUTION_PREF_PAGE"))
+            .ok();
+        let env_subpage = std::env::var("MERIDIAN_PREF_SUBPAGE")
+            .or_else(|_| std::env::var("EVOLUTION_PREF_SUBPAGE"))
+            .ok();
+
+        let initial_page_id = match (env_page.as_deref(), env_subpage.as_deref()) {
+            (Some("accounts"), Some("contacts")) => "contacts",
+            (Some("accounts"), _) => "accounts",
+            (Some("contacts"), _) => "contacts",
+            (Some("mail"), Some("composer")) => "composer",
+            (Some("mail"), Some("layout")) => "mail_layout",
+            (Some("mail"), Some("reading" | "html")) => "mail_reading",
+            (Some("mail"), Some("headers")) => "headers",
+            (Some("mail"), Some("labels")) => "labels",
+            (Some("mail"), Some("junk" | "spam")) => "junk",
+            (Some("mail"), _) => "mail_general",
+            (Some("mail_general"), _) => "mail_general",
+            (Some("mail_reading" | "reading" | "html"), _) => "mail_reading",
+            (Some("mail_layout" | "layout"), _) => "mail_layout",
+            (Some("composer"), _) => "composer",
+            (Some("replies"), _) => "replies",
+            (Some("signatures"), _) => "signatures",
+            (Some("headers"), _) => "headers",
+            (Some("labels"), _) => "labels",
+            (Some("junk" | "spam"), _) => "junk",
+            (Some("calendar"), Some("display")) => "calendar_display",
+            (Some("calendar"), _) => "calendar",
+            (Some("calendar_display" | "display"), _) => "calendar_display",
+            (Some("appearance" | "theme"), _) => "appearance",
+            (Some("certificates"), _) => "certificates",
+            (Some("network"), _) => "network",
+            (Some("backup"), _) => "backup",
+            (Some("security"), Some("certificates")) => "certificates",
+            (Some("security"), Some("junk")) => "junk",
+            (Some("security"), Some("network")) => "network",
+            (Some("security"), Some("backup")) => "backup",
+            (Some("security"), _) => "backup",
+            _ => "mail_general",
+        };
+
+        detail_stack.set_visible_child_name(initial_page_id);
+        let initial_title = get_page_title(initial_page_id).unwrap_or_else(|| initial_page_id.to_string());
+        content_title.set_title(&initial_title);
+        content_page.set_title(&initial_title);
+        select_sidebar_page(&sidebar_list, initial_page_id);
+
+        self.set_child(Some(&split));
     }
 
     fn show_toast(&self, message: &str) {
@@ -8632,7 +9024,277 @@ mod tests {
         settings.set_mail_sync_interval_seconds(300);
         while context.iteration(false) {}
     }
+
+    #[test]
+    fn test_sidebar_sections_and_page_definitions() {
+        use super::SIDEBAR_SECTIONS;
+
+        assert_eq!(SIDEBAR_SECTIONS.len(), 2, "Must have exactly 2 sidebar sections matching Hylki");
+        assert_eq!(SIDEBAR_SECTIONS[0].section, "Accounts");
+        assert_eq!(SIDEBAR_SECTIONS[1].section, "Settings");
+
+        let total_pages: usize = SIDEBAR_SECTIONS.iter().map(|s| s.pages.len()).sum();
+        assert_eq!(total_pages, 17, "Must define exactly 17 preferences pages");
+
+        let expected_ids = [
+            "accounts", "contacts", "labels", "certificates",
+            "mail_general", "appearance", "mail_layout", "mail_reading", "composer", "replies", "signatures", "headers", "junk",
+            "calendar", "calendar_display", "network", "backup",
+        ];
+
+        let actual_ids: Vec<&str> = SIDEBAR_SECTIONS
+            .iter()
+            .flat_map(|s| s.pages.iter().map(|p| p.id))
+            .collect();
+        assert_eq!(actual_ids, expected_ids);
+
+        for id in expected_ids {
+            assert!(
+                super::get_page_title(id).is_some(),
+                "get_page_title must return title for page id '{id}'"
+            );
+        }
+        assert!(super::get_page_title("non_existent_page_id").is_none());
+    }
+
+    #[test]
+    fn test_preferences_dialog_split_view_and_pages_stack_integration() {
+        use adw::prelude::*;
+
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let dialog = super::PreferencesDialog::new();
+        while context.iteration(false) {}
+
+        let child = dialog.child().expect("PreferencesDialog child must exist");
+        let split = child
+            .downcast::<adw::NavigationSplitView>()
+            .expect("Dialog child must be an adw::NavigationSplitView");
+
+        assert_eq!(split.min_sidebar_width(), 200.0);
+        assert_eq!(split.max_sidebar_width(), 280.0);
+        assert!((split.sidebar_width_fraction() - 0.28).abs() < 0.01);
+
+        // Sidebar navigation page
+        let sidebar_page = split.sidebar().expect("Sidebar page must exist");
+        let sidebar_toolbar = sidebar_page
+            .child()
+            .and_then(|w| w.downcast::<adw::ToolbarView>().ok())
+            .expect("Sidebar page child must be a ToolbarView");
+
+        let side_stack = sidebar_toolbar
+            .content()
+            .and_then(|w| w.downcast::<gtk::Stack>().ok())
+            .expect("Sidebar toolbar content must be a Stack");
+        assert!(side_stack.child_by_name("pages").is_some());
+        assert!(side_stack.child_by_name("results").is_some());
+        assert!(side_stack.child_by_name("empty").is_some());
+
+        // Content navigation page
+        let content_page = split.content().expect("Content page must exist");
+        let content_toolbar = content_page
+            .child()
+            .and_then(|w| w.downcast::<adw::ToolbarView>().ok())
+            .expect("Content page child must be a ToolbarView");
+
+        let detail_stack = content_toolbar
+            .content()
+            .and_then(|w| w.downcast::<gtk::Stack>().ok())
+            .expect("Content toolbar content must be a Stack");
+
+        // Verify all 17 pages exist in detail_stack
+        let expected_ids = [
+            "accounts", "contacts",
+            "mail_general", "mail_reading", "mail_layout", "composer", "replies", "signatures", "headers", "labels", "junk",
+            "calendar", "calendar_display",
+            "appearance", "certificates", "network", "backup",
+        ];
+        for id in expected_ids {
+            assert!(
+                detail_stack.child_by_name(id).is_some(),
+                "detail_stack must contain page '{id}'"
+            );
+        }
+
+        // Verify search indexer extracts entries from detail_stack
+        let search_index = super::build_search_index(&detail_stack);
+        assert!(
+            search_index.len() >= 30,
+            "Search index must index groups and rows, found {}",
+            search_index.len()
+        );
+
+        // Check search keyword hits
+        let autosave_hit = search_index.iter().find(|h| h.haystack.contains("drafts") || h.haystack.contains("autosave"));
+        assert!(autosave_hit.is_some(), "Search index must contain drafts/autosave row");
+        assert_eq!(autosave_hit.unwrap().page_id, "composer");
+
+        let theme_hit = search_index.iter().find(|h| h.haystack.contains("scheme") || h.haystack.contains("theme"));
+        assert!(theme_hit.is_some(), "Search index must contain theme/color scheme row");
+        assert_eq!(theme_hit.unwrap().page_id, "appearance");
+
+        // Verify SwitchRow subtitles are indexed
+        let notify_hit = search_index.iter().find(|h| h.haystack.contains("banner") || h.haystack.contains("desktop"));
+        assert!(notify_hit.is_some(), "SwitchRow subtitle must be indexed into haystack");
+
+        // Verify reveal_widget expands parent expander row
+        let expander = adw::ExpanderRow::builder().title("Test Expander").expanded(false).build();
+        let child_row = adw::ActionRow::builder().title("Target Inside Expander").build();
+        expander.add_row(&child_row);
+        assert!(!expander.is_expanded());
+        super::reveal_widget(child_row.upcast_ref());
+        assert!(expander.is_expanded(), "reveal_widget must automatically expand parent expander rows");
+    }
+
+    #[test]
+    fn test_preferences_dialog_page_selection_and_switch() {
+        use adw::prelude::*;
+
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let dialog = super::PreferencesDialog::new();
+        while context.iteration(false) {}
+
+        let split = dialog
+            .child()
+            .and_then(|w| w.downcast::<adw::NavigationSplitView>().ok())
+            .expect("Dialog child must be NavigationSplitView");
+
+        let content_page = split.content().unwrap();
+        let content_toolbar = content_page.child().and_then(|w| w.downcast::<adw::ToolbarView>().ok()).unwrap();
+        let detail_stack = content_toolbar.content().and_then(|w| w.downcast::<gtk::Stack>().ok()).unwrap();
+
+        let sidebar_page = split.sidebar().unwrap();
+        let sidebar_toolbar = sidebar_page.child().and_then(|w| w.downcast::<adw::ToolbarView>().ok()).unwrap();
+        let side_stack = sidebar_toolbar.content().and_then(|w| w.downcast::<gtk::Stack>().ok()).unwrap();
+        let pages_scroll = side_stack.child_by_name("pages").and_then(|w| w.downcast::<gtk::ScrolledWindow>().ok()).unwrap();
+        let sidebar_list = pages_scroll.child().and_then(|w| w.downcast::<gtk::ListBox>().ok()).unwrap();
+
+        // Switch to "signatures"
+        super::select_sidebar_page(&sidebar_list, "signatures");
+        while context.iteration(false) {}
+        assert_eq!(detail_stack.visible_child_name().as_deref(), Some("signatures"));
+
+        // Switch to "appearance"
+        super::select_sidebar_page(&sidebar_list, "appearance");
+        while context.iteration(false) {}
+        assert_eq!(detail_stack.visible_child_name().as_deref(), Some("appearance"));
+
+        // Switch to "calendar_display"
+        super::select_sidebar_page(&sidebar_list, "calendar_display");
+        while context.iteration(false) {}
+        assert_eq!(detail_stack.visible_child_name().as_deref(), Some("calendar_display"));
+
+        // Switch to "certificates"
+        super::select_sidebar_page(&sidebar_list, "certificates");
+        while context.iteration(false) {}
+        assert_eq!(detail_stack.visible_child_name().as_deref(), Some("certificates"));
+    }
+
+    #[test]
+    fn test_preferences_dialog_search_edge_cases_and_ranking() {
+        use adw::prelude::*;
+
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let dialog = super::PreferencesDialog::new();
+        while context.iteration(false) {}
+
+        let split = dialog.child().unwrap().downcast::<adw::NavigationSplitView>().unwrap();
+        let sidebar_page = split.sidebar().unwrap();
+        let sidebar_toolbar = sidebar_page.child().unwrap().downcast::<adw::ToolbarView>().unwrap();
+        let side_stack = sidebar_toolbar.content().unwrap().downcast::<gtk::Stack>().unwrap();
+
+        // Locate search bar and entry via recursive widget search
+        fn find_search_entry(widget: &gtk::Widget) -> Option<gtk::SearchEntry> {
+            if let Some(entry) = widget.downcast_ref::<gtk::SearchEntry>() {
+                return Some(entry.clone());
+            }
+            let mut child = widget.first_child();
+            while let Some(c) = child {
+                if let Some(found) = find_search_entry(&c) {
+                    return Some(found);
+                }
+                child = c.next_sibling();
+            }
+            None
+        }
+
+        let search_entry = find_search_entry(sidebar_toolbar.upcast_ref())
+            .expect("SearchEntry must be present in sidebar toolbar");
+
+        // Edge case 1: Whitespace query keeps categories visible
+        search_entry.set_text("   ");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        while context.iteration(false) {}
+        assert_eq!(side_stack.visible_child_name().as_deref(), Some("pages"));
+
+        // Edge case 2: Matching query switches stack to "results"
+        search_entry.set_text("drafts");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        while context.iteration(false) {}
+        assert_eq!(side_stack.visible_child_name().as_deref(), Some("results"));
+
+        // Searching for an item on an inactive page (e.g. "Color Scheme" from appearance page)
+        search_entry.set_text("Color Scheme");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        while context.iteration(false) {}
+        assert_eq!(side_stack.visible_child_name().as_deref(), Some("results"), "Searching for an item on an inactive page must yield results");
+
+        // Edge case 3: Mixed case matches same results
+        search_entry.set_text("DrAfTs");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        while context.iteration(false) {}
+        assert_eq!(side_stack.visible_child_name().as_deref(), Some("results"));
+
+        // Edge case 4: Nonexistent search term switches to "empty" status page
+        search_entry.set_text("xyz_non_existent_search_query_9999");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        while context.iteration(false) {}
+        assert_eq!(side_stack.visible_child_name().as_deref(), Some("empty"));
+
+        // Edge case 5: Clearing search restores pages stack
+        search_entry.set_text("");
+        while context.iteration(false) {}
+        assert_eq!(side_stack.visible_child_name().as_deref(), Some("pages"));
+
+        // Edge case 6: Navigation Split View content_header start title buttons enabled for back button
+        let content_page = split.content().unwrap();
+        let content_toolbar = content_page.child().unwrap().downcast::<adw::ToolbarView>().unwrap();
+        let mut content_child = content_toolbar.first_child();
+        let mut found_header = None;
+        while let Some(c) = content_child {
+            if let Some(h) = c.downcast_ref::<adw::HeaderBar>() {
+                found_header = Some(h.clone());
+                break;
+            }
+            content_child = c.next_sibling();
+        }
+        if let Some(header) = found_header {
+            assert!(
+                header.shows_start_title_buttons(),
+                "content_header must preserve start title buttons so back button is functional when collapsed"
+            );
+        }
+    }
 }
+
+
 
 
 
