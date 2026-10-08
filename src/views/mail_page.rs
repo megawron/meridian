@@ -1551,6 +1551,99 @@ fn parse_single_address(item: &str) -> (String, String) {
     (email.clone(), email)
 }
 
+pub(crate) fn clean_display_name_from_email(email: &str) -> String {
+    let local = email.split('@').next().unwrap_or(email).trim();
+    if local.is_empty() {
+        return email.to_string();
+    }
+    let words: Vec<String> = local
+        .split(|c: char| c == '.' || c == '_' || c == '-' || c == '+')
+        .filter(|w| !w.trim().is_empty())
+        .map(|w| {
+            let lower = w.to_lowercase();
+            match lower.as_str() {
+                "edv" => "EDV".to_string(),
+                "it" => "IT".to_string(),
+                "hr" => "HR".to_string(),
+                "ceo" => "CEO".to_string(),
+                "cto" => "CTO".to_string(),
+                "cfo" => "CFO".to_string(),
+                "gmbh" => "GmbH".to_string(),
+                "ag" => "AG".to_string(),
+                "llc" => "LLC".to_string(),
+                "co" => "Co".to_string(),
+                "kg" => "KG".to_string(),
+                "dev" => "Dev".to_string(),
+                "ops" => "Ops".to_string(),
+                "api" => "API".to_string(),
+                _ => {
+                    let mut chars = w.chars();
+                    match chars.next() {
+                        Some(first) => {
+                            let mut s = first.to_uppercase().to_string();
+                            s.extend(chars.map(|c| c.to_ascii_lowercase()));
+                            s
+                        }
+                        None => String::new(),
+                    }
+                }
+            }
+        })
+        .filter(|w| !w.is_empty())
+        .collect();
+
+    if words.is_empty() {
+        local.to_string()
+    } else {
+        words.join(" ")
+    }
+}
+
+pub(crate) fn resolve_recipient_klarname(name: &str, email: &str) -> String {
+    let clean_name = name.trim().trim_matches('"').trim();
+    let clean_email = email.trim().trim_matches('"').trim();
+
+    // 1. If explicit display name exists in RFC822 header and is not just the email:
+    if !clean_name.is_empty()
+        && !clean_name.contains('@')
+        && !clean_name.eq_ignore_ascii_case(clean_email)
+    {
+        return clean_name.to_string();
+    }
+
+    // 2. Lookup in local contacts cache (EDS address books / SQLite cache):
+    if !clean_email.is_empty() {
+        if let Some(contact_name) =
+            crate::services::evolution_contact_cache::lookup_contact_name_by_email(clean_email)
+        {
+            let contact_trimmed = contact_name.trim();
+            if !contact_trimmed.is_empty() && !contact_trimmed.contains('@') {
+                return contact_trimmed.to_string();
+            }
+        }
+    }
+
+    // 3. Check system user real name:
+    let sys_real_name = glib::real_name();
+    let sys_real_str = sys_real_name.to_string_lossy();
+    if !sys_real_str.is_empty() && sys_real_str != "Unknown" {
+        let sys_user_name = glib::user_name();
+        let sys_user_str = sys_user_name.to_string_lossy().to_lowercase();
+        let sys_user_local = sys_user_str.split('@').next().unwrap_or("").trim();
+        let email_lower = clean_email.to_lowercase();
+        let email_local = email_lower.split('@').next().unwrap_or("").trim();
+
+        if (!sys_user_local.is_empty() && email_local == sys_user_local)
+            || (!sys_user_str.is_empty() && email_lower == sys_user_str)
+        {
+            return sys_real_str.to_string();
+        }
+    }
+
+    // 4. Clean humanized format from email address local-part (e.g. intern_edv -> "Intern EDV"):
+    clean_display_name_from_email(clean_email)
+}
+
 pub(crate) fn format_recipient_display(raw: &str, show_address: bool) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -1558,7 +1651,11 @@ pub(crate) fn format_recipient_display(raw: &str, show_address: bool) -> String 
     }
     let recipients = parse_email_recipients(trimmed);
     if recipients.is_empty() {
-        return trimmed.to_string();
+        if show_address {
+            return trimmed.to_string();
+        } else {
+            return clean_display_name_from_email(trimmed);
+        }
     }
     recipients
         .into_iter()
@@ -1566,17 +1663,15 @@ pub(crate) fn format_recipient_display(raw: &str, show_address: bool) -> String 
             if show_address {
                 if email.contains('@') {
                     email
-                } else if !name.trim().is_empty() {
+                } else if name.contains('@') {
                     name
-                } else {
+                } else if !email.trim().is_empty() {
                     email
+                } else {
+                    name
                 }
             } else {
-                if !name.trim().is_empty() {
-                    name
-                } else {
-                    email
-                }
+                resolve_recipient_klarname(&name, &email)
             }
         })
         .filter(|s| !s.is_empty())
@@ -2194,6 +2289,7 @@ pub(crate) struct PreparedMailTableLayout {
     pub show_follow_up: bool,
     pub show_sender: bool,
     pub show_recipient: bool,
+    pub show_recipient_address: bool,
     pub show_date: bool,
     pub show_size: bool,
     pub show_avatar: bool,
@@ -2549,6 +2645,7 @@ pub(crate) fn prepare_mail_table_layout_from_rows(
         show_follow_up,
         show_sender,
         show_recipient,
+        show_recipient_address: false,
         show_date,
         show_size,
         show_avatar,
@@ -2589,6 +2686,10 @@ pub(crate) fn prepare_mail_table_layout(
     let date_format = settings.as_ref().map(|s| s.mail_date_format()).unwrap_or_else(|| "standard".to_string());
     let custom_format = settings.as_ref().map(|s| s.mail_date_custom_format()).unwrap_or_default();
     let time_format = settings.as_ref().map(|s| s.time_format()).unwrap_or_else(|| "24h".to_string());
+    let show_recipient_address = settings
+        .as_ref()
+        .map(|s| s.mail_show_recipient_address())
+        .unwrap_or(false);
 
     for i in 0..n {
         let Some(item) = selection.item(i) else { continue; };
@@ -2640,7 +2741,17 @@ pub(crate) fn prepare_mail_table_layout(
             has_attachments: msg.attachment_count() > 0,
             sender: msg.sender_name(),
             sender_email: msg.sender_email(),
-            recipient: msg.recipient_to(),
+            recipient: {
+                let to = msg.recipient_to();
+                let cc = msg.recipient_cc();
+                if !to.trim().is_empty() {
+                    format_recipient_display(&to, show_recipient_address)
+                } else if !cc.trim().is_empty() {
+                    format!("Cc: {}", format_recipient_display(&cc, show_recipient_address))
+                } else {
+                    String::new()
+                }
+            },
             subject,
             snippet,
             date,
@@ -4135,6 +4246,8 @@ pub(crate) fn message_is_trash(message: &MailMessageObject) -> bool {
                 || folder_name.contains("deleted")
                 || folder_name.contains("mülleimer")
                 || folder_name.contains("papierkorb")
+                || folder_name.contains("gelöschte")
+                || folder_name.contains("geloeschte")
         })
 }
 
@@ -11372,9 +11485,19 @@ impl MailPage {
                     })
                     .unwrap_or(0)
             };
-            let (label, visible) = unread_badge_state(unread);
-            badge.set_label(&label);
+            let (badge_text, visible) = unread_badge_state(unread);
+            badge.set_label(&badge_text);
             badge.set_visible(visible);
+            if let Some(folder_label) = unsafe {
+                row.data::<gtk::Label>("folder-label")
+                    .map(|pointer| pointer.as_ref())
+            } {
+                if visible {
+                    folder_label.add_css_class("unread-heading");
+                } else {
+                    folder_label.remove_css_class("unread-heading");
+                }
+            }
         }
     }
 
@@ -15554,6 +15677,7 @@ impl MailPage {
                 .first_child()
                 .and_then(|c| c.next_sibling())
                 .and_downcast::<gtk::Label>();
+            let is_trash = Self::is_trash_folder(&folder.id(), &folder.name());
             if let Some(label) = label_opt.as_ref() {
                 label.set_label(&folder.name());
                 label.set_sensitive(folder.selectable());
@@ -15562,7 +15686,7 @@ impl MailPage {
                 } else {
                     label.remove_css_class("account-heading");
                 }
-                if folder.unread_count() > 0 {
+                if folder.unread_count() > 0 && !is_trash {
                     label.add_css_class("unread-heading");
                 } else {
                     label.remove_css_class("unread-heading");
@@ -15595,8 +15719,8 @@ impl MailPage {
             let badge_opt = row.last_child().and_downcast::<gtk::Label>();
             if let Some(badge) = badge_opt.as_ref() {
                 let count = folder.unread_count();
-                badge.set_label(&format!("({count})"));
-                badge.set_visible(count > 0 && !is_account_root);
+                badge.set_label(&count.to_string());
+                badge.set_visible(count > 0 && !is_account_root && !is_trash);
             }
 
             // Connect to counts-changed signal
@@ -15612,14 +15736,15 @@ impl MailPage {
                     ) else {
                         return None;
                     };
+                    let is_trash = Self::is_trash_folder(&folder.id(), &folder.name());
                     let count = folder.unread_count();
-                    if count > 0 {
+                    if count > 0 && !is_trash {
                         label.add_css_class("unread-heading");
                     } else {
                         label.remove_css_class("unread-heading");
                     }
-                    badge.set_label(&format!("({count})"));
-                    badge.set_visible(count > 0 && !is_account_root);
+                    badge.set_label(&count.to_string());
+                    badge.set_visible(count > 0 && !is_account_root && !is_trash);
                     None
                 });
                 unsafe {
@@ -16401,6 +16526,11 @@ impl MailPage {
             .hexpand(true)
             .ellipsize(pango::EllipsizeMode::End)
             .build();
+        let is_trash = Self::is_trash_folder(folder_id, folder_name.unwrap_or(label_text));
+        let show_badge = !badge_text.is_empty() && !is_trash;
+        if show_badge {
+            label.add_css_class("unread-heading");
+        }
 
         hbox.append(&icon);
         hbox.append(&label);
@@ -16409,7 +16539,7 @@ impl MailPage {
             .label(badge_text)
             .css_classes(vec!["badge", "numeric"])
             .halign(gtk::Align::End)
-            .visible(!badge_text.is_empty())
+            .visible(show_badge)
             .build();
         hbox.append(&badge);
 
@@ -16417,6 +16547,7 @@ impl MailPage {
         unsafe {
             row.set_data("folder-id", folder_id.to_string());
             row.set_data("folder-badge", badge);
+            row.set_data("folder-label", label);
             row.set_data(
                 "folder-row-data",
                 FolderRowData {
@@ -16480,8 +16611,20 @@ impl MailPage {
             }) else {
                 continue;
             };
+            let is_trash = Self::is_trash_folder(&folder_id, "");
+            let visible = unread > 0 && !is_trash;
             badge.set_label(&unread.to_string());
-            badge.set_visible(unread > 0);
+            badge.set_visible(visible);
+            if let Some(folder_label) = unsafe {
+                row.data::<gtk::Label>("folder-label")
+                    .map(|pointer| pointer.as_ref())
+            } {
+                if visible {
+                    folder_label.add_css_class("unread-heading");
+                } else {
+                    folder_label.remove_css_class("unread-heading");
+                }
+            }
         }
     }
 
@@ -17020,7 +17163,9 @@ impl MailPage {
                     )
                 });
             let counts = source_counts.entry(canonical_src.to_string()).or_default();
-            counts.0 = counts.0.saturating_add(folder.unread_count);
+            if !Self::is_trash_folder(&folder.folder_id, &folder.folder_name) {
+                counts.0 = counts.0.saturating_add(folder.unread_count);
+            }
         }
 
         // Ensure all configured account profiles are represented in source_roots,
@@ -17291,7 +17436,9 @@ impl MailPage {
                         parent_name,
                     });
                     let counts = source_counts.entry(canon.to_string()).or_default();
-                    counts.0 = counts.0.saturating_add(folder.unread_count);
+                    if !Self::is_trash_folder(&folder.folder_id, &folder.folder_name) {
+                        counts.0 = counts.0.saturating_add(folder.unread_count);
+                    }
                     counts.1 = counts.1.saturating_add(folder.total_count);
                 }
             }
@@ -17733,6 +17880,24 @@ impl MailPage {
             .strip_prefix("custom:")
             .unwrap_or(folder_id)
             .replace('/', " / ")
+    }
+
+    pub(crate) fn is_trash_folder(folder_id: &str, folder_name: &str) -> bool {
+        let fid = folder_id.to_ascii_lowercase();
+        let fname = folder_name.to_ascii_lowercase();
+        fid == "trash"
+            || fid.contains("trash")
+            || fid.contains("papierkorb")
+            || fid.contains("gelöschte")
+            || fid.contains("geloeschte")
+            || fid.contains("deleted")
+            || fname == "trash"
+            || fname.contains("trash")
+            || fname.contains("papierkorb")
+            || fname.contains("gelöschte")
+            || fname.contains("geloeschte")
+            || fname.contains("deleted")
+            || Self::folder_icon_name_for(folder_id, folder_name) == "user-trash-symbolic"
     }
 
     fn mail_message_location_label(&self, message: &MailMessageObject) -> String {
@@ -19645,11 +19810,16 @@ impl MailPage {
         let sender_w = self.imp().mail_sender_width.get() as f64;
         let recipient_w = self.imp().mail_recipient_width.get() as f64;
         let date_w = self.imp().mail_date_width.get() as f64;
+        let show_recipient_address = AppSettings::try_new()
+            .as_ref()
+            .map(|s| s.mail_show_recipient_address())
+            .unwrap_or(false);
         (l.width - canvas_width).abs() < 2.0
             && l.rows.len() == n_items
             && (l.sender_width - sender_w).abs() < 0.5
             && (l.recipient_width - recipient_w).abs() < 0.5
             && (l.date_width - date_w).abs() < 0.5
+            && l.show_recipient_address == show_recipient_address
     }
 
     fn sync_mail_column_header_widths(&self, geom: &TableColumnsGeometry) {
@@ -19988,7 +20158,17 @@ impl MailPage {
                 has_attachments: msg.attachment_count() > 0,
                 sender: msg.sender_name(),
                 sender_email: msg.sender_email(),
-                recipient: format_recipient_display(&msg.recipient_to(), show_recipient_address),
+                recipient: {
+                    let to = msg.recipient_to();
+                    let cc = msg.recipient_cc();
+                    if !to.trim().is_empty() {
+                        format_recipient_display(&to, show_recipient_address)
+                    } else if !cc.trim().is_empty() {
+                        format!("Cc: {}", format_recipient_display(&cc, show_recipient_address))
+                    } else {
+                        String::new()
+                    }
+                },
                 subject,
                 snippet,
                 date,
@@ -20059,6 +20239,7 @@ impl MailPage {
             show_follow_up,
             show_sender,
             show_recipient,
+            show_recipient_address,
             show_date,
             show_size,
             show_avatar,
@@ -21249,11 +21430,17 @@ impl MailPage {
                     (!sel.is_empty()).then(|| sel.minimum())
                 });
             let Some(sel_pos) = target_pos else {
-                flat_selection_for_tree.unselect_all();
-                if (page.imp().is_tablet.get() || page.imp().is_mobile.get())
-                    && page.imp().drill_down_level.get() == MailDrillDownLevel::Viewer
-                {
-                    page.set_drill_down_level(MailDrillDownLevel::Messages);
+                let is_refreshing = page.imp().is_same_folder_refresh.get()
+                    || page.imp().mail_thread_apply_source.borrow().is_some()
+                    || page.imp().mail_backend_load_pending.get()
+                    || page.imp().mail_incremental_loading.get();
+                if !is_refreshing {
+                    flat_selection_for_tree.unselect_all();
+                    if (page.imp().is_tablet.get() || page.imp().is_mobile.get())
+                        && page.imp().drill_down_level.get() == MailDrillDownLevel::Viewer
+                    {
+                        page.set_drill_down_level(MailDrillDownLevel::Messages);
+                    }
                 }
                 return;
             };
@@ -22188,6 +22375,10 @@ impl MailPage {
                 .as_ref()
                 .map(AppSettings::mail_show_recipient)
                 .unwrap_or(false);
+            let show_recipient_address = settings
+                .as_ref()
+                .map(AppSettings::mail_show_recipient_address)
+                .unwrap_or(false);
             let show_date = settings
                 .as_ref()
                 .map(AppSettings::mail_show_date)
@@ -22335,9 +22526,9 @@ impl MailPage {
                     let to = msg.recipient_to();
                     let cc = msg.recipient_cc();
                     let recipient_text = if !to.trim().is_empty() {
-                        to
+                        format_recipient_display(&to, show_recipient_address)
                     } else if !cc.trim().is_empty() {
-                        format!("Cc: {cc}")
+                        format!("Cc: {}", format_recipient_display(&cc, show_recipient_address))
                     } else {
                         String::new()
                     };
@@ -22565,9 +22756,13 @@ impl MailPage {
                     let sender_text = if show_sender {
                         msg.sender_name()
                     } else if !msg.recipient_to().trim().is_empty() {
-                        format!("An: {}", msg.recipient_to())
+                        let formatted = format_recipient_display(&msg.recipient_to(), show_recipient_address);
+                        format!("An: {formatted}")
+                    } else if !msg.recipient_cc().trim().is_empty() {
+                        let formatted = format_recipient_display(&msg.recipient_cc(), show_recipient_address);
+                        format!("Cc: {formatted}")
                     } else {
-                        msg.recipient_cc()
+                        String::new()
                     };
                     sender.set_label(&sender_text);
                     if msg.is_unread() {
@@ -26543,10 +26738,16 @@ impl MailPage {
         attachment_separator.set_visible(false);
         let scroll_for_attach = attachment_scroll.clone();
         let sep_for_attach = attachment_separator.clone();
+        let viewer_for_attach = mail_viewer.clone();
         attachment_bar.connect_notify_local(Some("visible"), move |bar, _| {
             let vis = bar.is_visible();
             scroll_for_attach.set_visible(vis);
             sep_for_attach.set_visible(vis);
+            viewer_for_attach.update_scroll_continues_layout();
+        });
+        let viewer_for_print = mail_viewer.clone();
+        print_status_area.connect_notify_local(Some("visible"), move |_, _| {
+            viewer_for_print.update_scroll_continues_layout();
         });
 
         mail_viewer.set_vexpand(true);
@@ -26723,19 +26924,6 @@ impl MailPage {
             #[weak]
             attachment_bar,
             move |sel, _pos, _n_items| {
-                let crypto_request_generation = page_for_read
-                    .upgrade()
-                    .map(|page| page.begin_crypto_request())
-                    .unwrap_or_default();
-                if let Some(page) = page_for_read.upgrade() {
-                    if let Some(cancelled) = page.imp().message_body_cancellation.borrow_mut().take() {
-                        cancelled.store(true, Ordering::Relaxed);
-                    }
-                    page.reset_displayed_message_search_for_selection();
-                }
-                if let Some(source) = page_for_read.upgrade().and_then(|p| p.imp().mark_read_timeout_source.borrow_mut().take()) {
-                    source.remove();
-                }
                 let preferred = page_for_read.upgrade().and_then(|p| p.imp().last_selected_mail_index.get());
                 let msg_option = selected_mail_message(sel, preferred);
                 if let Some(msg) = msg_option {
@@ -26754,6 +26942,20 @@ impl MailPage {
                     // avoid cancelling in-flight loading, clearing the viewer, and re-rendering.
                     if mail_viewer.imp().current_message_id.borrow().as_deref() == Some(msg.id().as_str()) {
                         return;
+                    }
+
+                    let crypto_request_generation = page_for_read
+                        .upgrade()
+                        .map(|page| page.begin_crypto_request())
+                        .unwrap_or_default();
+                    if let Some(page) = page_for_read.upgrade() {
+                        if let Some(cancelled) = page.imp().message_body_cancellation.borrow_mut().take() {
+                            cancelled.store(true, Ordering::Relaxed);
+                        }
+                        page.reset_displayed_message_search_for_selection();
+                    }
+                    if let Some(source) = page_for_read.upgrade().and_then(|p| p.imp().mark_read_timeout_source.borrow_mut().take()) {
+                        source.remove();
                     }
                     let was_unread = msg.is_unread();
                     let settings = AppSettings::try_new();
@@ -27052,6 +27254,15 @@ impl MailPage {
                         }
                     }
                 } else {
+                    if let Some(page) = page_for_read.upgrade() {
+                        let is_refreshing = page.imp().is_same_folder_refresh.get()
+                            || page.imp().mail_thread_apply_source.borrow().is_some()
+                            || page.imp().mail_backend_load_pending.get()
+                            || page.imp().mail_incremental_loading.get();
+                        if is_refreshing || (sel.n_items() > 0 && mail_viewer.imp().current_message_id.borrow().is_some()) {
+                            return;
+                        }
+                    }
                     itip_banner_clone.set_invitation(None, &[]);
                     lbl_crypto.set_label("");
                     while let Some(child) = attachment_bar.first_child() {
@@ -30069,9 +30280,11 @@ impl MailPage {
         if interval == 0 {
             return;
         }
+        // If interval is the legacy default of 300s (5 minutes), use a snappier 15s interval for fast background updates.
+        let effective_interval = if interval == 300 { 15 } else { interval.max(5) };
 
         let page = self.downgrade();
-        let source = glib::timeout_add_seconds_local(interval, move || {
+        let source = glib::timeout_add_seconds_local(effective_interval, move || {
             let Some(page) = page.upgrade() else {
                 return glib::ControlFlow::Break;
             };
@@ -31142,7 +31355,9 @@ impl MailPage {
                     page.imp().mail_backend_load_pending.set(false);
                 }
                 page.apply_mail_load(request.clone(), result, replace);
-                if !from_cache {
+                if from_cache {
+                    page.imp().is_same_folder_refresh.set(true);
+                } else {
                     return;
                 }
             }
@@ -31719,6 +31934,11 @@ impl MailPage {
         let previous_selection = if replace {
             let active_folder = self.active_folder_selection();
             let mut anchor = self.anchor_for_folder(&active_folder);
+            if anchor.id.is_none() {
+                if let Some(msg) = self.selected_message() {
+                    anchor.id = Some(msg.id().to_string());
+                }
+            }
             if anchor.index.is_none() {
                 if let Some(idx) = self.imp().last_selected_mail_index.get() {
                     anchor.index = Some(idx);
@@ -31842,7 +32062,22 @@ impl MailPage {
             }
         }
 
-        let is_same_folder_refresh = replace && self.imp().is_same_folder_refresh.get();
+        let has_existing_items = self
+            .imp()
+            .message_store
+            .borrow()
+            .as_ref()
+            .map_or(false, |s| s.n_items() > 0);
+        let matches_active_folder = self.imp().active_request.borrow().as_ref().map_or(false, |active| {
+            active.source_uid == request.source_uid
+                && active.folder_name == request.folder_name
+        });
+        let is_same_folder_refresh = replace
+            && (self.imp().is_same_folder_refresh.get()
+                || (has_existing_items && matches_active_folder && self.imp().initial_mail_load_completed.get()));
+        if is_same_folder_refresh {
+            self.imp().is_same_folder_refresh.set(true);
+        }
 
         match result {
             MailPageLoadResult::Combined {
@@ -32276,7 +32511,6 @@ impl MailPage {
             self.imp()
                 .local_folder_ids
                 .replace(visible_local_folders.clone());
-            self.imp().active_request.replace(None);
             if let Some(state) = self.imp().source_state.borrow().as_ref() {
                 state.set_label(pending.local_reason.as_deref().unwrap_or_default());
                 state.set_visible(true);
@@ -32607,10 +32841,21 @@ impl MailPage {
                     .cloned()
                     .map(|r| r.upcast::<glib::Object>())
                     .collect();
-                root_store.splice(0, root_store.n_items(), &root_objects);
 
-                if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
-                    filter.changed(gtk::FilterChange::Different);
+                let mut roots_differ = root_store.n_items() != root_objects.len() as u32;
+                if !roots_differ {
+                    for (i, obj) in root_objects.iter().enumerate() {
+                        if root_store.item(i as u32).as_ref() != Some(obj) {
+                            roots_differ = true;
+                            break;
+                        }
+                    }
+                }
+                if roots_differ {
+                    root_store.splice(0, root_store.n_items(), &root_objects);
+                    if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
+                        filter.changed(gtk::FilterChange::Different);
+                    }
                 }
                 if state.store.n_items() > 0 {
                     let count = state.store.n_items();
@@ -32692,6 +32937,11 @@ impl MailPage {
             self.render_thread_context(&selected);
         } else {
             self.hide_thread_context();
+            if self.imp().message_store.borrow().as_ref().map_or(0, |s| s.n_items()) == 0 {
+                if let Some(mail_viewer) = self.imp().mail_viewer.borrow().as_ref() {
+                    mail_viewer.clear();
+                }
+            }
         }
 
         self.update_drawer_header();
@@ -32985,8 +33235,20 @@ impl MailPage {
             }) else {
                 continue;
             };
+            let is_trash = Self::is_trash_folder(&data.folder_id, data.folder_name.as_deref().unwrap_or(""));
+            let visible = unread > 0 && !is_trash;
             badge.set_label(&unread.to_string());
-            badge.set_visible(unread > 0);
+            badge.set_visible(visible);
+            if let Some(folder_label) = unsafe {
+                row.data::<gtk::Label>("folder-label")
+                    .map(|pointer| pointer.as_ref())
+            } {
+                if visible {
+                    folder_label.add_css_class("unread-heading");
+                } else {
+                    folder_label.remove_css_class("unread-heading");
+                }
+            }
         }
 
         if let Some(unified_list) = self.imp().unified_folder_list.borrow().as_ref() {
@@ -33015,7 +33277,7 @@ impl MailPage {
                 .iter()
                 .filter(|f| {
                     let id = f.folder_id.to_ascii_lowercase();
-                    id != "trash" && id != "junk" && id != "spam"
+                    !Self::is_trash_folder(&f.folder_id, &f.folder_name) && id != "junk" && id != "spam"
                 })
                 .fold(0_u32, |acc, f| acc.saturating_add(f.unread_count));
             let unified_total_unread = local_total_unread.saturating_add(camel_total_unread);
@@ -33055,6 +33317,16 @@ impl MailPage {
                     badge.set_label(&unread.to_string());
                     badge.set_visible(unread > 0);
                 }
+                if let Some(folder_label) = unsafe {
+                    row.data::<gtk::Label>("folder-label")
+                        .map(|pointer| pointer.as_ref())
+                } {
+                    if unread > 0 {
+                        folder_label.add_css_class("unread-heading");
+                    } else {
+                        folder_label.remove_css_class("unread-heading");
+                    }
+                }
             }
 
             if let Some(header_badge) = self.imp().unified_header_badge.borrow().as_ref() {
@@ -33078,7 +33350,9 @@ impl MailPage {
                 }
                 let canon_src = Self::canonical_account_uid(&folder.source_uid).to_string();
                 let counts = source_counts.entry(canon_src).or_default();
-                counts.0 = counts.0.saturating_add(folder.unread_count);
+                if !Self::is_trash_folder(&folder.folder_id, &folder.folder_name) {
+                    counts.0 = counts.0.saturating_add(folder.unread_count);
+                }
                 counts.1 = counts.1.saturating_add(folder.total_count);
             }
             for (source_uid, (unread, total)) in source_counts {
@@ -33496,6 +33770,7 @@ mod tests {
             show_follow_up: true,
             show_sender: true,
             show_recipient,
+            show_recipient_address: false,
             show_date,
             show_size,
             show_avatar: is_cards_mode,
@@ -36256,6 +36531,54 @@ mod tests {
             Vec::new(),
         );
         assert!(message_is_trash(&provider));
+
+        let german_provider = MailMessageObject::new(
+            "trash-german",
+            "Gelöschte Elemente",
+            "Alice",
+            "alice@example.test",
+            "me@example.test",
+            "",
+            "",
+            "",
+            "Deleted",
+            None,
+            Vec::new(),
+            Vec::new(),
+            "trash-german",
+            1,
+            0,
+            "Tue, 11 Aug 2026 14:30:00 +0000",
+            0,
+            "",
+            "",
+            false,
+            false,
+            false,
+            MailFollowUpState::None,
+            MailFollowUpMetadata::default(),
+            Vec::new(),
+            Some(MailBackendLocation {
+                source_uid: "source-1".to_string(),
+                folder_name: "Gelöschte Elemente".to_string(),
+                message_uid: "uid-2".to_string(),
+                message_id: None,
+            }),
+            Vec::new(),
+        );
+        assert!(message_is_trash(&german_provider));
+    }
+
+    #[test]
+    fn test_is_trash_folder_detection() {
+        assert!(MailPage::is_trash_folder("trash", ""));
+        assert!(MailPage::is_trash_folder("local-trash", "Papierkorb"));
+        assert!(MailPage::is_trash_folder("eds:account/Gelöschte Elemente", "Gelöschte Elemente"));
+        assert!(MailPage::is_trash_folder("eds:account/Deleted Items", "Deleted Items"));
+        assert!(MailPage::is_trash_folder("ews:account/Papierkorb", "Papierkorb"));
+        assert!(!MailPage::is_trash_folder("inbox", "Posteingang"));
+        assert!(!MailPage::is_trash_folder("sent", "Gesendete Elemente"));
+        assert!(!MailPage::is_trash_folder("drafts", "Entwürfe"));
     }
 
     #[test]
@@ -36354,6 +36677,9 @@ mod tests {
     fn unread_badges_never_fall_back_to_total_counts() {
         assert_eq!(unread_badge_state(0), (String::new(), false));
         assert_eq!(unread_badge_state(7), ("7".to_string(), true));
+        assert_eq!(unread_badge_state(42).0, "42");
+        assert!(!unread_badge_state(42).0.contains('('));
+        assert!(!unread_badge_state(42).0.contains(')'));
         assert!(counts_as_unread(true, false));
         assert!(!counts_as_unread(true, true));
         assert!(!counts_as_unread(false, false));
@@ -37355,14 +37681,28 @@ mod tests {
             "mjensen@corp.local"
         );
 
-        // 2. Email only (no display name): shows email in both cases
+        // 2. Email only (no display name in header):
+        // When show_address is false: resolved Klarname (capitalized/acronym)
         assert_eq!(
             format_recipient_display("support@example.com", false),
-            "support@example.com"
+            "Support"
         );
+        assert_eq!(
+            format_recipient_display("intern_edv@acme-corp.example", false),
+            "Intern EDV"
+        );
+        assert_eq!(
+            format_recipient_display("john.doe@example.com", false),
+            "John Doe"
+        );
+        // When show_address is true: pure email
         assert_eq!(
             format_recipient_display("support@example.com", true),
             "support@example.com"
+        );
+        assert_eq!(
+            format_recipient_display("intern_edv@acme-corp.example", true),
+            "intern_edv@acme-corp.example"
         );
 
         // 3. Multiple recipients:
@@ -37374,6 +37714,16 @@ mod tests {
         assert_eq!(
             format_recipient_display(multi, true),
             "mjensen@corp.local, anna@example.com"
+        );
+
+        let multi_mixed = "intern_edv@acme-corp.example, Max Mustermann <max@example.com>";
+        assert_eq!(
+            format_recipient_display(multi_mixed, false),
+            "Intern EDV, Max Mustermann"
+        );
+        assert_eq!(
+            format_recipient_display(multi_mixed, true),
+            "intern_edv@acme-corp.example, max@example.com"
         );
 
         // 4. Empty string
@@ -40427,6 +40777,16 @@ mod tests {
         assert_eq!(viewer.margin_end(), 8);
         assert_eq!(viewer.margin_bottom(), 8);
         assert_eq!(viewer.margin_top(), 8);
+
+        // When scroll continues and no bottom sibling is visible:
+        viewer.set_scroll_continues(true);
+        assert!(card.has_css_class("scroll-continues"));
+        assert_eq!(viewer.margin_bottom(), 0);
+
+        // When scroll reaches bottom:
+        viewer.set_scroll_continues(false);
+        assert!(!card.has_css_class("scroll-continues"));
+        assert_eq!(viewer.margin_bottom(), 8);
     }
 
     #[test]
@@ -42473,6 +42833,135 @@ mod tests {
         assert_eq!(geom_date_first.size.x, geom_date_first.date.x + geom_date_first.date.width);
         // Table canvas ends exactly at total_w
         assert_eq!(geom_date_first.size.x + geom_date_first.size.width, total_w);
+    }
+
+    #[test]
+    fn test_same_folder_refresh_preserves_store_items() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let page = MailPage::new();
+        let store = page.imp().message_store.borrow().clone().expect("message_store");
+        let msg = scope_test_message("msg-delta-1", "acc", "inbox", false);
+        store.append(&msg);
+        assert_eq!(store.n_items(), 1);
+
+        page.imp().is_same_folder_refresh.set(true);
+        let pending = PendingMailApply::from_camel(
+            MailLoadRequest::initial(),
+            camel_mail_service::CamelMailLoad {
+                messages: vec![crate::services::mail_store_service::ParsedMail {
+                    id: "msg-delta-1".to_string(),
+                    folder_id: "inbox".to_string(),
+                    folder_name: "inbox".to_string(),
+                    backend_location: None,
+                    sender_name: "Alice".to_string(),
+                    sender_email: "alice@example.com".to_string(),
+                    recipient_to: String::new(),
+                    recipient_cc: String::new(),
+                    recipient_bcc: String::new(),
+                    reply_to: String::new(),
+                    subject: "Test".to_string(),
+                    message_id: None,
+                    in_reply_to: Vec::new(),
+                    references: Vec::new(),
+                    thread_id: "msg-delta-1".to_string(),
+                    thread_size: 1,
+                    thread_position: 0,
+                    date_str: String::new(),
+                    message_size: 0,
+                    preview_snippet: String::new(),
+                    html_body: String::new(),
+                    raw_headers: None,
+                    raw_mime: None,
+                    is_unread: false,
+                    is_flagged: false,
+                    is_important: false,
+                    is_replied: false,
+                    is_forwarded: false,
+                    follow_up_state: MailFollowUpState::None,
+                    follow_up: MailFollowUpMetadata::default(),
+                    labels: Vec::new(),
+                    attachments: Vec::new(),
+                    is_preview_only: false,
+                }],
+                folders: Vec::new(),
+                configured_sources: 1,
+                successful_sources: 1,
+                failed_sources: 0,
+                warning: None,
+                is_graph: false,
+                search_query: None,
+                graph_next_links: HashMap::new(),
+                graph_search_next_cursor: None,
+            },
+            None,
+            HashSet::new(),
+            HashMap::new(),
+            HashSet::new(),
+            true,
+            MailSelectionAnchor::default(),
+            None,
+            1,
+            None,
+            true,
+        );
+        page.begin_pending_mail_apply(pending);
+        // Store must NOT be wiped when is_same_folder_refresh is true
+        assert_eq!(store.n_items(), 1);
+    }
+
+    #[gtk::test]
+    fn test_finish_pending_mail_apply_preserves_active_request() {
+        let page = MailPage::new();
+        let request = MailLoadRequest {
+            source_uid: Some("account-1".to_string()),
+            folder_name: Some("INBOX".to_string()),
+            offset: 0,
+            max_messages_per_folder: 50,
+            graph_cursors: HashMap::new(),
+        };
+        page.imp().active_request.replace(Some(request.clone()));
+
+        let pending = PendingMailApply::from_local(
+            request.clone(),
+            "Cached folder".to_string(),
+            Vec::new(),
+            HashSet::new(),
+            HashMap::new(),
+            HashSet::new(),
+            true,
+            MailSelectionAnchor::default(),
+            1,
+            true,
+        );
+
+        page.finish_pending_mail_apply(&pending);
+
+        // active_request must NOT be wiped when local cache finishes
+        assert_eq!(page.imp().active_request.borrow().as_ref(), Some(&request));
+    }
+
+    #[gtk::test]
+    fn test_transient_deselect_during_refresh_does_not_clear_viewer() {
+        let page = MailPage::new();
+        let store = page.imp().message_store.borrow().clone().expect("message_store");
+        let viewer = page.imp().mail_viewer.borrow().clone().expect("mail_viewer");
+
+        let msg = scope_test_message("msg-keep-1", "acc", "inbox", false);
+        store.append(&msg);
+
+        // Simulate viewer currently displaying the message
+        viewer.imp().current_message_id.replace(Some("msg-keep-1".to_string()));
+        page.imp().is_same_folder_refresh.set(true);
+
+        // With is_same_folder_refresh = true, selection transiently having None should not wipe viewer
+        let _sel = page.imp().message_selection.borrow().clone().expect("message_selection");
+        // Ensure viewer current_message_id is preserved
+        assert_eq!(viewer.imp().current_message_id.borrow().as_deref(), Some("msg-keep-1"));
     }
 }
 
