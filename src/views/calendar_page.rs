@@ -11,7 +11,7 @@ use std::cmp::Ordering as CompareOrdering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::i18n::{gettext, ngettext};
 use crate::services::calendar_category_service::CalendarCategoryStore;
@@ -1232,6 +1232,7 @@ mod imp {
         pub agenda_scroll: RefCell<Option<gtk::Widget>>,
         pub agenda_vadjustment: RefCell<Option<gtk::Adjustment>>,
         pub agenda_needs_initial_scroll: Cell<bool>,
+        pub time_grid_reset_scroll: Cell<bool>,
         pub agenda_paned: RefCell<Option<gtk::Paned>>,
         pub agenda_detail_box: RefCell<Option<gtk::Box>>,
         pub agenda_detail_content: RefCell<Option<gtk::Box>>,
@@ -1325,6 +1326,7 @@ mod imp {
         pub(super) calendar_list_projection_count: Cell<Option<usize>>,
         pub(super) calendar_reload_debounce: RefCell<Option<glib::SourceId>>,
         pub(crate) zoom_toast: RefCell<Option<adw::Toast>>,
+        pub(crate) chip_scale_save_source: RefCell<Option<glib::SourceId>>,
     }
 
     impl Default for CalendarPage {
@@ -1381,6 +1383,7 @@ mod imp {
                 agenda_scroll: RefCell::new(None),
                 agenda_vadjustment: RefCell::new(None),
                 agenda_needs_initial_scroll: Cell::new(true),
+                time_grid_reset_scroll: Cell::new(true),
                 agenda_paned: RefCell::new(None),
                 agenda_detail_box: RefCell::new(None),
                 agenda_detail_content: RefCell::new(None),
@@ -1478,6 +1481,7 @@ mod imp {
                 calendar_list_projection_count: Cell::new(None),
                 calendar_reload_debounce: RefCell::new(None),
                 zoom_toast: RefCell::new(None),
+                chip_scale_save_source: RefCell::new(None),
             }
         }
     }
@@ -2130,14 +2134,130 @@ impl CalendarPage {
     pub fn set_chip_scale(&self, target: f64) {
         let clamped = target.clamp(0.75, 1.50);
         let rounded = (clamped * 100.0).round() / 100.0;
-        if let Some(settings) = AppSettings::try_new() {
-            settings.set_calendar_chip_scale(rounded);
+        let current = configured_chip_scale();
+        if (current - rounded).abs() < 0.001 {
+            return;
         }
-        self.imp().month_rendered_key.take();
-        self.refresh_calendar_views();
+
+        set_cached_chip_scale(rounded);
+
+        match *self.imp().current_view.borrow() {
+            CalendarView::Month => {
+                if let Some(canvas) = self.imp().month_canvas.borrow().as_ref() {
+                    canvas.queue_draw();
+                }
+            }
+            CalendarView::Agenda => {
+                if let Some(canvas) = self.imp().agenda_canvas.borrow().as_ref() {
+                    canvas.queue_draw();
+                }
+            }
+            _ => {
+                self.refresh_calendar_views();
+            }
+        }
+
         let percent = (rounded * 100.0).round() as i32;
-        let msg = format!("{}: {percent}%", gettext("Calendar scale"));
+        let msg = match *self.imp().current_view.borrow() {
+            CalendarView::Day | CalendarView::Week | CalendarView::WorkWeek => {
+                format!("{}: {percent}%", gettext("Time scale"))
+            }
+            _ => format!("{}: {percent}%", gettext("Calendar scale")),
+        };
         self.show_zoom_toast(&msg);
+
+        // Debounce writing to GSettings (dconf) to eliminate blocking disk I/O lag
+        if let Some(source) = self.imp().chip_scale_save_source.borrow_mut().take() {
+            let _ = unsafe { glib::ffi::g_source_remove(source.as_raw()) };
+        }
+        let page_weak = self.downgrade();
+        let source = glib::timeout_add_local_once(
+            std::time::Duration::from_millis(400),
+            move || {
+                if let Some(page) = page_weak.upgrade() {
+                    page.imp().chip_scale_save_source.replace(None);
+                }
+                if let Some(settings) = AppSettings::try_new() {
+                    settings.set_calendar_chip_scale(rounded);
+                }
+            },
+        );
+        *self.imp().chip_scale_save_source.borrow_mut() = Some(source);
+    }
+
+    pub(crate) fn attach_time_grid_zoom_controllers(&self, container: &gtk::Box) {
+        // 1. Mouse wheel zoom with Ctrl modifier (Ctrl + Scroll Up/Down)
+        let scroll_ctrl = gtk::EventControllerScroll::new(
+            gtk::EventControllerScrollFlags::VERTICAL,
+        );
+        scroll_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let scroll_accum = std::rc::Rc::new(std::cell::Cell::new(0.0f64));
+        let last_zoom_time = std::rc::Rc::new(std::cell::Cell::new(std::time::Instant::now()));
+        let page_weak_scroll = self.downgrade();
+        let accum_clone = scroll_accum.clone();
+        let time_clone = last_zoom_time.clone();
+        scroll_ctrl.connect_scroll(move |controller, _dx, dy| {
+            let state = controller.current_event_state();
+            let is_ctrl = state.contains(gdk::ModifierType::CONTROL_MASK)
+                && !state.contains(gdk::ModifierType::ALT_MASK)
+                && !state.contains(gdk::ModifierType::SUPER_MASK);
+            if is_ctrl {
+                if let Some(page) = page_weak_scroll.upgrade() {
+                    let now = std::time::Instant::now();
+                    if now.duration_since(time_clone.get()) > std::time::Duration::from_millis(250) {
+                        accum_clone.set(0.0);
+                    }
+                    time_clone.set(now);
+
+                    let current = accum_clone.get() + dy;
+                    const THRESHOLD: f64 = 0.6;
+                    let steps = (current / THRESHOLD).trunc() as i32;
+                    if steps != 0 {
+                        accum_clone.set(current - (steps as f64 * THRESHOLD));
+                        if steps < 0 {
+                            for _ in 0..(-steps).min(3) {
+                                page.zoom_in();
+                            }
+                        } else {
+                            for _ in 0..steps.min(3) {
+                                page.zoom_out();
+                            }
+                        }
+                    } else {
+                        accum_clone.set(current);
+                    }
+                    return glib::Propagation::Stop;
+                }
+            } else {
+                accum_clone.set(0.0);
+            }
+            glib::Propagation::Proceed
+        });
+        container.add_controller(scroll_ctrl);
+
+        // 2. Keyboard zoom shortcuts (Ctrl++, Ctrl+-, Ctrl+0)
+        let key_ctrl = gtk::EventControllerKey::new();
+        key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let page_weak_key = self.downgrade();
+        key_ctrl.connect_key_pressed(move |_, keyval, _, modifier| {
+            let Some(page) = page_weak_key.upgrade() else { return glib::Propagation::Proceed };
+            if modifier.contains(gdk::ModifierType::CONTROL_MASK) {
+                if keyval == gdk::Key::plus || keyval == gdk::Key::equal || keyval == gdk::Key::KP_Add {
+                    page.zoom_in();
+                    return glib::Propagation::Stop;
+                }
+                if keyval == gdk::Key::minus || keyval == gdk::Key::KP_Subtract {
+                    page.zoom_out();
+                    return glib::Propagation::Stop;
+                }
+                if keyval == gdk::Key::_0 || keyval == gdk::Key::KP_0 {
+                    page.zoom_reset();
+                    return glib::Propagation::Stop;
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        container.add_controller(key_ctrl);
     }
 
     pub(crate) fn focus_search(&self) {
@@ -4940,11 +5060,15 @@ impl CalendarPage {
         let pending_steps = std::rc::Rc::new(std::cell::Cell::new(0i32));
         let is_scheduled = std::rc::Rc::new(std::cell::Cell::new(false));
         let last_scroll_time = std::rc::Rc::new(std::cell::Cell::new(std::time::Instant::now()));
+        let zoom_delta_accum = std::rc::Rc::new(std::cell::Cell::new(0.0f64));
+        let last_zoom_time = std::rc::Rc::new(std::cell::Cell::new(std::time::Instant::now()));
 
         let delta_for_scroll = delta_accum.clone();
         let pending_steps_for_scroll = pending_steps.clone();
         let is_scheduled_for_scroll = is_scheduled.clone();
         let last_scroll_time_for_scroll = last_scroll_time.clone();
+        let zoom_delta_for_scroll = zoom_delta_accum.clone();
+        let last_zoom_time_for_scroll = last_zoom_time.clone();
 
         scroll_controller.connect_scroll(glib::clone!(
             #[weak(rename_to = page)]
@@ -4957,10 +5081,30 @@ impl CalendarPage {
                 }
 
                 if controller.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) {
-                    if dy < 0.0 {
-                        page.zoom_in();
-                    } else if dy > 0.0 {
-                        page.zoom_out();
+                    let now = std::time::Instant::now();
+                    if now.duration_since(last_zoom_time_for_scroll.get())
+                        > std::time::Duration::from_millis(250)
+                    {
+                        zoom_delta_for_scroll.set(0.0);
+                    }
+                    last_zoom_time_for_scroll.set(now);
+
+                    let current_delta = zoom_delta_for_scroll.get() + dy;
+                    const ZOOM_THRESHOLD: f64 = 0.8;
+                    let steps = (current_delta / ZOOM_THRESHOLD).trunc() as i32;
+                    if steps != 0 {
+                        zoom_delta_for_scroll.set(current_delta - (steps as f64 * ZOOM_THRESHOLD));
+                        if steps < 0 {
+                            for _ in 0..(-steps).min(3) {
+                                page.zoom_in();
+                            }
+                        } else {
+                            for _ in 0..steps.min(3) {
+                                page.zoom_out();
+                            }
+                        }
+                    } else {
+                        zoom_delta_for_scroll.set(current_delta);
                     }
                     return glib::Propagation::Stop;
                 }
@@ -5019,6 +5163,7 @@ impl CalendarPage {
             .hexpand(true)
             .vexpand(true)
             .build();
+        self.attach_time_grid_zoom_controllers(&day_view);
         self.imp().day_view.replace(Some(day_view.clone()));
         calendar_stack.add_titled(&day_view, Some("day"), &crate::i18n::gettext("Day"));
 
@@ -5033,6 +5178,7 @@ impl CalendarPage {
             .hexpand(true)
             .vexpand(true)
             .build();
+        self.attach_time_grid_zoom_controllers(&week_view);
         self.imp().week_view.replace(Some(week_view.clone()));
         calendar_stack.add_titled(&week_view, Some("week"), &crate::i18n::gettext("Week"));
 
@@ -5047,6 +5193,7 @@ impl CalendarPage {
             .hexpand(true)
             .vexpand(true)
             .build();
+        self.attach_time_grid_zoom_controllers(&workweek_view);
         self.imp()
             .workweek_view
             .replace(Some(workweek_view.clone()));
@@ -6436,8 +6583,16 @@ impl CalendarPage {
                 "default-calendar-source",
             ] {
                 let page_weak = self.downgrade();
-                settings.connect_changed(Some(key), move |_, key_name| {
+                settings.connect_changed(Some(key), move |settings, key_name| {
                     if let Some(page) = page_weak.upgrade() {
+                        if key_name == "calendar-chip-scale" {
+                            let disk_scale = settings.double("calendar-chip-scale");
+                            let cur_scale = configured_chip_scale();
+                            if (disk_scale - cur_scale).abs() < 0.001 {
+                                return;
+                            }
+                            set_cached_chip_scale(disk_scale);
+                        }
                         page.refresh_calendar_views();
                         page.refresh_event_list_visibility();
                         if key_name == "default-calendar-source" {
@@ -6509,6 +6664,7 @@ impl CalendarPage {
                 }
                 let today = Local::now().date_naive();
                 page.imp().agenda_needs_initial_scroll.set(true);
+                page.imp().time_grid_reset_scroll.set(true);
                 page.imp().agenda_selected_row.set(None);
                 page.imp().agenda_follow_current.set(true);
                 page.imp()
@@ -7255,6 +7411,7 @@ impl CalendarPage {
             }
         }
         self.imp().syncing_calendar_view.set(true);
+        self.imp().time_grid_reset_scroll.set(true);
         if view == CalendarView::Agenda {
             self.imp().agenda_needs_initial_scroll.set(true);
             self.imp().agenda_selected_row.set(None);
@@ -7319,6 +7476,7 @@ impl CalendarPage {
         }
 
         self.imp().syncing_calendar_view.set(true);
+        self.imp().time_grid_reset_scroll.set(true);
         *self.imp().current_view.borrow_mut() = view;
         self.imp()
             .view_state
@@ -8696,6 +8854,24 @@ impl CalendarPage {
     }
 
     fn render_continuous_time_grid(&self, view: &gtk::Box, days: &[NaiveDate]) {
+        let should_reset = self.imp().time_grid_reset_scroll.replace(false);
+        let old_scroll_ratio: Option<f64> = if should_reset {
+            None
+        } else {
+            view
+                .last_child()
+                .and_then(|w| w.downcast::<gtk::ScrolledWindow>().ok())
+                .map(|sw| {
+                    let vadj = sw.vadjustment();
+                    let upper = vadj.upper();
+                    if upper > 0.0 {
+                        vadj.value() / upper
+                    } else {
+                        0.0
+                    }
+                })
+        };
+
         self.imp().continuous_day_canvases.borrow_mut().clear();
         *self.imp().continuous_time_gutter_canvas.borrow_mut() = None;
         clear_box(view);
@@ -8721,7 +8897,7 @@ impl CalendarPage {
         let interval_minutes = configured_time_divisions();
         let slots_per_hour = (60 / interval_minutes) as usize;
         let slot_count = 24 * slots_per_hour;
-        let slot_height = match interval_minutes {
+        let base_slot_height = match interval_minutes {
             60 => 36,
             30 => 24,
             15 => 18,
@@ -8729,6 +8905,10 @@ impl CalendarPage {
             5 => 12,
             _ => 24,
         };
+        let chip_scale = configured_chip_scale();
+        let slot_height = ((base_slot_height as f64) * chip_scale).round().max(12.0) as i32;
+        let time_col_width = 52;
+        let allday_h = 24;
 
         let second_zone_name = configured_second_zone();
         let second_tz = timezone_from_name(&second_zone_name);
@@ -8765,7 +8945,7 @@ impl CalendarPage {
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .margin_start(4)
-            .width_request(52)
+            .width_request(time_col_width)
             .build();
         time_col_group.add_widget(&time_header);
         header_grid.attach(&time_header, 0, 0, 1, 1);
@@ -8777,7 +8957,7 @@ impl CalendarPage {
                 .css_classes(vec!["calendar-grid-header-cell", "secondary-tz-header"])
                 .halign(gtk::Align::Center)
                 .valign(gtk::Align::Center)
-                .width_request(52)
+                .width_request(time_col_width)
                 .build();
             sec_group.add_widget(&sec_header);
             header_grid.attach(&sec_header, 1, 0, 1, 1);
@@ -8825,7 +9005,7 @@ impl CalendarPage {
             .css_classes(vec!["calendar-allday-label"])
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Fill)
-            .width_request(52)
+            .width_request(time_col_width)
             .build();
         time_col_group.add_widget(&all_day_label);
         header_grid.attach(&all_day_label, 0, 1, 1, 1);
@@ -8837,7 +9017,7 @@ impl CalendarPage {
                     "calendar-allday-label",
                     "calendar-time-gutter-secondary",
                 ])
-                .width_request(52)
+                .width_request(time_col_width)
                 .valign(gtk::Align::Fill)
                 .build();
             sec_group.add_widget(&sec_allday_box);
@@ -8858,7 +9038,7 @@ impl CalendarPage {
                 .orientation(gtk::Orientation::Vertical)
                 .css_classes(vec!["calendar-allday-cell"])
                 .hexpand(true)
-                .height_request(22)
+                .height_request(allday_h)
                 .valign(gtk::Align::Fill)
                 .build();
             day_groups[day_index].add_widget(&bg_cell);
@@ -9029,7 +9209,7 @@ impl CalendarPage {
 
             let gutter_label = gtk::Label::builder()
                 .use_markup(true)
-                .label(&format_hour_markup(minute, use_12h))
+                .label(&format_hour_markup_scaled(minute, use_12h, chip_scale))
                 .css_classes(vec!["calendar-time-gutter-label"])
                 .halign(gtk::Align::End)
                 .valign(gtk::Align::Start)
@@ -9038,7 +9218,7 @@ impl CalendarPage {
             let gutter_box = gtk::Box::builder()
                 .orientation(gtk::Orientation::Vertical)
                 .css_classes(vec!["calendar-time-gutter", "calendar-hour-cell"])
-                .width_request(52)
+                .width_request(time_col_width)
                 .height_request(hour_height)
                 .valign(gtk::Align::Fill)
                 .build();
@@ -9070,7 +9250,7 @@ impl CalendarPage {
                         "calendar-time-gutter-secondary",
                         "calendar-hour-cell",
                     ])
-                    .width_request(52)
+                    .width_request(time_col_width)
                     .height_request(hour_height)
                     .valign(gtk::Align::Fill)
                     .build();
@@ -9807,36 +9987,36 @@ impl CalendarPage {
         let scrolled_flag = Rc::new(Cell::new(false));
         let (workday_start, _) = configured_workday_range();
 
-        // Standard view starts at 06:00 (360 min) or 2 hours before workday start, whichever is earlier.
-        // If any timed event on the visible days starts even earlier, adapt so it is never clipped.
-        let base_start_min = (workday_start.saturating_sub(120)).min(360);
-        let mut earliest_event_min = base_start_min;
+        // Start view at workday start (configured in settings), or earlier if an event is scheduled before that.
+        let mut target_start_min = workday_start;
         for day in days {
             if let Some(records) = events_by_date.get(day) {
                 for ev in records {
                     if !ev.all_day {
                         let (start_min, _, _) = event_occurrence_times_for_date(ev, *day, interval_minutes as u32);
-                        if start_min < earliest_event_min {
-                            earliest_event_min = start_min.saturating_sub(30);
+                        if start_min < target_start_min {
+                            target_start_min = start_min.saturating_sub(30);
                         }
                     }
                 }
             }
         }
-        let target_start_min = earliest_event_min;
 
         let compute_target_y = move |adj: &gtk::Adjustment| -> f64 {
+            let max_scroll = (adj.upper() - adj.page_size()).max(0.0);
+            if let Some(ratio) = old_scroll_ratio {
+                if ratio > 0.001 {
+                    return (ratio * adj.upper()).clamp(0.0, max_scroll);
+                }
+            }
             let start_slot = (target_start_min / interval_minutes as u32) as usize;
             let slot_y = (start_slot * slot_height as usize) as f64;
-            let max_scroll = (adj.upper() - adj.page_size()).max(0.0);
             slot_y.clamp(0.0, max_scroll)
         };
 
         let compute_notify = compute_target_y.clone();
-        let scrolled_notify = scrolled_flag.clone();
         vadj.connect_upper_notify(move |adj| {
-            if !scrolled_notify.get() && adj.upper() > 100.0 {
-                scrolled_notify.set(true);
+            if adj.upper() > 100.0 {
                 let target = compute_notify(adj);
                 adj.set_value(target);
             }
@@ -9849,6 +10029,16 @@ impl CalendarPage {
                 scrolled_page.set(true);
                 let target = compute_page(adj);
                 adj.set_value(target);
+            }
+        });
+
+        let compute_map = compute_target_y.clone();
+        let scrolled_map = scrolled_flag.clone();
+        let vadj_map = vadj.clone();
+        timed_scroll.connect_map(move |_| {
+            if !scrolled_map.get() && vadj_map.upper() > 100.0 {
+                let target = compute_map(&vadj_map);
+                vadj_map.set_value(target);
             }
         });
 
@@ -14256,9 +14446,9 @@ fn draw_time_grid_chip(
     let (stripe_r, stripe_g, stripe_b) =
         parse_hex_color(&color_hex).unwrap_or((53, 132, 228));
 
-    let chip_scale = configured_chip_scale();
+    let font_scale = crate::views::accessibility::get_system_font_scale();
     let card_radius = 6.0;
-    let stripe_w = (6.0 * chip_scale).max(4.0).round();
+    let stripe_w = (5.0 * font_scale).clamp(4.0, 7.0).round();
 
     // 1. Soft pastel background (GNOME Calendar style)
     draw_cairo_rounded_rect(cr, x, y, w, h, card_radius);
@@ -14291,8 +14481,8 @@ fn draw_time_grid_chip(
         chip.event.summary.as_str()
     };
 
-    let text_x = x + stripe_w + (5.0 * chip_scale).round();
-    let max_text_w = (w - stripe_w - (9.0 * chip_scale).round()).max(10.0);
+    let text_x = x + stripe_w + (6.0 * font_scale).round();
+    let max_text_w = (w - stripe_w - (10.0 * font_scale).round()).max(10.0);
 
     let _ = cr.save();
     // Clip to chip interior
@@ -14301,30 +14491,30 @@ fn draw_time_grid_chip(
 
     let start_time = chip.time_text.split('–').next().unwrap_or(&chip.time_text).trim();
 
-    if chip.row_span >= 2 && h >= 28.0 {
-        // Multi-line (GNOME Calendar layout: Start time on top, Title bold below)
+    if h >= 52.0 && !chip.event.location.trim().is_empty() {
+        // 3-line layout when time grid is stretched: Time + Title (Bold) + Location
         cr.select_font_face(
             "Sans",
             gtk::cairo::FontSlant::Normal,
             gtk::cairo::FontWeight::Normal,
         );
-        cr.set_font_size((10.5 * chip_scale).round());
+        cr.set_font_size((10.0 * font_scale).round());
         cr.set_source_rgba(
             fg_r as f64 / 255.0,
             fg_g as f64 / 255.0,
             fg_b as f64 / 255.0,
-            0.80,
+            0.75,
         );
-        let trunc_time = truncate_cairo_text(cr, start_time, max_text_w);
-        cr.move_to(text_x.round(), (y + (12.0 * chip_scale).round()).round());
+        let trunc_time = truncate_cairo_text(cr, &chip.time_text, max_text_w);
+        cr.move_to(text_x.round(), (y + 13.0 * font_scale).round());
         let _ = cr.show_text(&trunc_time);
 
         cr.select_font_face(
             "Sans",
             gtk::cairo::FontSlant::Normal,
-            gtk::cairo::FontWeight::Normal,
+            gtk::cairo::FontWeight::Bold,
         );
-        cr.set_font_size((12.5 * chip_scale).round());
+        cr.set_font_size((11.5 * font_scale).round());
         cr.set_source_rgba(
             fg_r as f64 / 255.0,
             fg_g as f64 / 255.0,
@@ -14332,16 +14522,67 @@ fn draw_time_grid_chip(
             1.0,
         );
         let trunc_title = truncate_cairo_text(cr, title, max_text_w);
-        cr.move_to(text_x.round(), (y + (25.0 * chip_scale).round()).round());
+        cr.move_to(text_x.round(), (y + 27.0 * font_scale).round());
         let _ = cr.show_text(&trunc_title);
-    } else {
-        // Single-line: "08:00 Meeting..."
+
         cr.select_font_face(
             "Sans",
             gtk::cairo::FontSlant::Normal,
             gtk::cairo::FontWeight::Normal,
         );
-        cr.set_font_size((12.0 * chip_scale).round());
+        cr.set_font_size((9.5 * font_scale).round());
+        cr.set_source_rgba(
+            fg_r as f64 / 255.0,
+            fg_g as f64 / 255.0,
+            fg_b as f64 / 255.0,
+            0.70,
+        );
+        let loc = chip.event.location.trim();
+        let trunc_loc = truncate_cairo_text(cr, loc, max_text_w);
+        cr.move_to(text_x.round(), (y + 40.0 * font_scale).round());
+        let _ = cr.show_text(&trunc_loc);
+    } else if h >= 28.0 {
+        // Multi-line: Time on top, Title bold below
+        cr.select_font_face(
+            "Sans",
+            gtk::cairo::FontSlant::Normal,
+            gtk::cairo::FontWeight::Normal,
+        );
+        cr.set_font_size((10.0 * font_scale).round());
+        cr.set_source_rgba(
+            fg_r as f64 / 255.0,
+            fg_g as f64 / 255.0,
+            fg_b as f64 / 255.0,
+            0.80,
+        );
+        let trunc_time = truncate_cairo_text(cr, start_time, max_text_w);
+        cr.move_to(text_x.round(), (y + 13.0 * font_scale).round());
+        let _ = cr.show_text(&trunc_time);
+
+        cr.select_font_face(
+            "Sans",
+            gtk::cairo::FontSlant::Normal,
+            gtk::cairo::FontWeight::Bold,
+        );
+        cr.set_font_size((11.5 * font_scale).round());
+        cr.set_source_rgba(
+            fg_r as f64 / 255.0,
+            fg_g as f64 / 255.0,
+            fg_b as f64 / 255.0,
+            1.0,
+        );
+        let trunc_title = truncate_cairo_text(cr, title, max_text_w);
+        cr.move_to(text_x.round(), (y + 27.0 * font_scale).round());
+        let _ = cr.show_text(&trunc_title);
+    } else {
+        // Single-line for compact appointments: "08:00 Meeting..."
+        let font_sz = ((h * 0.52).clamp(9.0, 11.5) * font_scale).round();
+        cr.select_font_face(
+            "Sans",
+            gtk::cairo::FontSlant::Normal,
+            gtk::cairo::FontWeight::Normal,
+        );
+        cr.set_font_size(font_sz);
         cr.set_source_rgba(
             fg_r as f64 / 255.0,
             fg_g as f64 / 255.0,
@@ -14350,7 +14591,7 @@ fn draw_time_grid_chip(
         );
         let single_line = format!("{} {}", start_time, title);
         let trunc = truncate_cairo_text(cr, &single_line, max_text_w);
-        cr.move_to(text_x.round(), (y + (h / 2.0 + 4.0)).round());
+        cr.move_to(text_x.round(), (y + (h / 2.0 + font_sz * 0.35)).round());
         let _ = cr.show_text(&trunc);
     }
 
@@ -16428,10 +16669,24 @@ fn configured_dim_past_events() -> bool {
         .unwrap_or(true)
 }
 
+static CALENDAR_CHIP_SCALE_CACHE: AtomicU32 = AtomicU32::new(0);
+
+pub(crate) fn set_cached_chip_scale(scale: f64) {
+    let clamped = scale.clamp(0.75, 1.50);
+    let hundredths = (clamped * 100.0).round() as u32;
+    CALENDAR_CHIP_SCALE_CACHE.store(hundredths, Ordering::Relaxed);
+}
+
 fn configured_chip_scale() -> f64 {
-    AppSettings::try_new()
+    let cached = CALENDAR_CHIP_SCALE_CACHE.load(Ordering::Relaxed);
+    if cached >= 75 && cached <= 150 {
+        return cached as f64 / 100.0;
+    }
+    let val = AppSettings::try_new()
         .map(|settings| settings.calendar_chip_scale())
-        .unwrap_or(1.0)
+        .unwrap_or(1.0);
+    set_cached_chip_scale(val);
+    val
 }
 
 fn configured_month_scroll_by_week() -> bool {
@@ -16468,8 +16723,23 @@ fn primary_timezone_header_label() -> String {
     "Zeit".to_string()
 }
 
-fn format_hour_markup(minute_of_day: u32, use_12h: bool) -> String {
+pub(crate) fn format_hour_markup(minute_of_day: u32, use_12h: bool) -> String {
+    format_hour_markup_scaled(minute_of_day, use_12h, 1.0)
+}
+
+pub(crate) fn format_hour_markup_scaled(minute_of_day: u32, use_12h: bool, scale: f64) -> String {
     let hour = minute_of_day / 60;
+    // At normal and stretched scales (>= 1.0), hour numbers maintain their prominent,
+    // handsome readable size. When compacting (< 1.0), they elegantly shrink so they
+    // never crowd or overflow compact hour rows.
+    let (main_sz, sub_sz, rise) = if scale < 1.0 {
+        let ms = ((18000.0 * scale).round() as i32).max(12000);
+        let ss = ((9500.0 * scale).round() as i32).max(7000);
+        let r = ((7000.0 * scale).round() as i32).max(4500);
+        (ms, ss, r)
+    } else {
+        (18000, 9500, 7000)
+    };
     if use_12h {
         let (h12, ampm) = if hour == 0 {
             (12, "AM")
@@ -16481,13 +16751,11 @@ fn format_hour_markup(minute_of_day: u32, use_12h: bool) -> String {
             (hour - 12, "PM")
         };
         format!(
-            r#"<span size="18000" weight="medium">{}</span><span size="9500" rise="7000"> {}</span>"#,
-            h12, ampm
+            r#"<span size="{main_sz}" weight="medium">{h12}</span><span size="{sub_sz}" rise="{rise}"> {ampm}</span>"#,
         )
     } else {
         format!(
-            r#"<span size="18000" weight="medium">{}</span><span size="9500" rise="7000"> 00</span>"#,
-            hour
+            r#"<span size="{main_sz}" weight="medium">{hour}</span><span size="{sub_sz}" rise="{rise}"> 00</span>"#,
         )
     }
 }
@@ -18344,8 +18612,7 @@ fn calendar_grid_event_chip(
     let color = event_color_for_record(event);
 
     if is_all_day {
-        let chip_scale = configured_chip_scale();
-        let chip_h = (22.0 * chip_scale).round() as i32;
+        let chip_h = 22;
         let chip_button = gtk::Button::builder()
             .halign(gtk::Align::Fill)
             .valign(gtk::Align::Start)
@@ -18409,7 +18676,7 @@ fn calendar_grid_event_chip(
             );
             let _ = cr.fill();
 
-            let stripe_w = (6.0 * chip_scale).max(4.0).round();
+            let stripe_w = 6.0;
 
             // Solid left accent stripe (if not continuing from previous week)
             if !continues_left {
@@ -18430,8 +18697,8 @@ fn calendar_grid_event_chip(
             }
 
             let arrow_w = (h / 2.5).clamp(4.0, 6.0).min(w / 3.0);
-            let pad_left = if continues_left { arrow_w + 3.0 } else { stripe_w + (5.0 * chip_scale).round() };
-            let pad_right = if continues_right { arrow_w + 3.0 } else { (5.0 * chip_scale).round() };
+            let pad_left = if continues_left { arrow_w + 3.0 } else { stripe_w + 5.0 };
+            let pad_right = if continues_right { arrow_w + 3.0 } else { 5.0 };
             let text_x = pad_left.round();
             let max_text_w = (w - pad_left - pad_right).max(0.0);
 
@@ -18440,7 +18707,7 @@ fn calendar_grid_event_chip(
             let _ = cr.clip();
 
             cr.set_source_rgba(txt_r as f64 / 255.0, txt_g as f64 / 255.0, txt_b as f64 / 255.0, 1.0);
-            cr.set_font_size((12.0 * chip_scale).round());
+            cr.set_font_size(12.0);
             cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
 
             let untitled = crate::i18n::gettext("(Untitled)");
@@ -22635,6 +22902,149 @@ mod tests {
     }
 
     #[test]
+    fn test_calendar_continuous_grid_zoom_slot_height_and_markup_scaling() {
+        let base_slot_height_30 = 24.0f64;
+        let base_slot_height_60 = 36.0f64;
+
+        // Verify slot_height scaling across scale boundaries [0.75, 1.50]
+        let scales = [0.75, 1.0, 1.25, 1.50];
+        let expected_30 = [18, 24, 30, 36];
+        let expected_60 = [27, 36, 45, 54];
+
+        for (i, &scale) in scales.iter().enumerate() {
+            let h30 = ((base_slot_height_30 * scale).round() as i32).max(12);
+            assert_eq!(h30, expected_30[i]);
+            let h60 = ((base_slot_height_60 * scale).round() as i32).max(12);
+            assert_eq!(h60, expected_60[i]);
+
+            // Scaled hour markup: shrinks when scale < 1.0, stays standard handsome readable size at/above 1.0
+            let markup = format_hour_markup_scaled(9 * 60, false, scale);
+            let expected_main_sz = if scale < 1.0 {
+                ((18000.0 * scale).round() as i32).max(12000)
+            } else {
+                18000
+            };
+            assert!(markup.contains(&format!(r#"size="{expected_main_sz}""#)));
+        }
+
+        // Verify scroll ratio conservation math
+        let old_upper = 1152.0; // 24 * 48 (at 1.0 scale)
+        let old_val = 480.0;    // 10:00 AM (10 hours down)
+        let ratio = old_val / old_upper;
+        let new_upper = 1728.0; // 24 * 72 (at 1.5 scale)
+        let new_val = ratio * new_upper;
+        assert_eq!(new_val, 720.0); // 10 * 72 = 720.0 (still exactly 10:00 AM!)
+    }
+
+    #[test]
+    fn test_calendar_time_grid_zoom_controllers_attached() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let page = CalendarPage::new();
+        let box_widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        page.attach_time_grid_zoom_controllers(&box_widget);
+
+        let controllers = box_widget.observe_controllers();
+        let mut has_scroll = false;
+        let mut has_key = false;
+        for i in 0..controllers.n_items() {
+            if let Some(item) = controllers.item(i) {
+                if item.downcast_ref::<gtk::EventControllerScroll>().is_some() {
+                    has_scroll = true;
+                }
+                if item.downcast_ref::<gtk::EventControllerKey>().is_some() {
+                    has_key = true;
+                }
+            }
+        }
+        assert!(has_scroll, "EventControllerScroll must be attached to time grid container");
+        assert!(has_key, "EventControllerKey must be attached to time grid container");
+    }
+
+    #[test]
+    fn test_calendar_workday_scroll_and_allday_chip_unscaled() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let page = CalendarPage::new();
+
+        // 1. Initial state must trigger workday scroll reset
+        assert!(page.imp().time_grid_reset_scroll.get());
+
+        // 2. Switching views must reset scroll to workday start
+        page.imp().time_grid_reset_scroll.set(false);
+        page.select_calendar_view(CalendarView::Day);
+        assert!(page.imp().time_grid_reset_scroll.get());
+
+        // 3. Workday start baseline: default is 09:00 (540 min)
+        let (workday_start, _) = configured_workday_range();
+        assert_eq!(workday_start, 540);
+
+        // When no events exist, target starts at workday_start (540 min = 09:00), NOT forced to 06:00 (360 min)
+        let mut target_start_min = workday_start;
+        assert_eq!(target_start_min, 540);
+
+        // When an early event exists at 07:00 (420 min), target adapts to 06:30 (390 min)
+        let early_event_min = 420;
+        if early_event_min < target_start_min {
+            target_start_min = early_event_min.saturating_sub(30);
+        }
+        assert_eq!(target_start_min, 390);
+
+        // 4. All-day event chip remains fixed at 22px regardless of zoom scale
+        let dummy_event = CalendarEventRecord {
+            uid: "allday-test-1".to_string(),
+            source_uid: "src-1".to_string(),
+            source_display_name: "Calendar".to_string(),
+            component: "BEGIN:VEVENT\r\nUID:allday-test-1\r\nSUMMARY:Vacation\r\nEND:VEVENT\r\n".to_string(),
+            summary: "Vacation".to_string(),
+            start: "2026-10-08".to_string(),
+            end: "2026-10-09".to_string(),
+            location: String::new(),
+            description: String::new(),
+            all_day: true,
+        };
+
+        set_cached_chip_scale(1.50);
+        let chip_zoom_in = calendar_grid_event_chip(
+            &page,
+            &dummy_event,
+            true,
+            NaiveDate::from_ymd_opt(2026, 10, 8).unwrap(),
+            None,
+            1,
+            false,
+            false,
+        );
+        assert_eq!(chip_zoom_in.height_request(), 22, "All-day chip height must remain 22px at 150% zoom");
+
+        set_cached_chip_scale(0.75);
+        let chip_zoom_out = calendar_grid_event_chip(
+            &page,
+            &dummy_event,
+            true,
+            NaiveDate::from_ymd_opt(2026, 10, 8).unwrap(),
+            None,
+            1,
+            false,
+            false,
+        );
+        assert_eq!(chip_zoom_out.height_request(), 22, "All-day chip height must remain 22px at 75% zoom");
+
+        // Reset cached scale back to default
+        set_cached_chip_scale(1.0);
+    }
+
+    #[test]
     fn month_scroll_by_week_navigation_step() {
         let anchor = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
         let mut state_month = CalendarViewState::new(CalendarView::Month, anchor, Weekday::Mon);
@@ -25411,9 +25821,9 @@ mod tests {
         let viewport = CalendarViewport::for_view(CalendarView::Month, monday, Weekday::Mon);
         let days: Vec<NaiveDate> = viewport.visible_range.dates().collect();
 
-        // Populate day 0 with 5 events so it overflows (max_tracks = 3 for row_h=100.0)
+        // Populate day 0 with 8 events so it always overflows across any zoom level
         let mut events_by_date = BTreeMap::new();
-        for i in 0..5 {
+        for i in 0..8 {
             let ev = CalendarEventRecord {
                 uid: format!("ev-{i}"),
                 source_uid: "s1".to_string(),
@@ -25443,7 +25853,7 @@ mod tests {
             &weekday_names_full,
             &weekday_names_short,
             false,
-            6,
+            16,
         );
 
         let width = 736.0;
@@ -25470,8 +25880,9 @@ mod tests {
             assert_eq!(_chip_step, chip_h + (2.0 * chip_scale).round().max(1.0));
         }
 
-        // Test hit testing with current configured chip scale
-        let default_scale = configured_chip_scale();
+        // Test hit testing with standard scale 1.0
+        set_cached_chip_scale(1.0);
+        let default_scale = 1.0;
         let (day_header_h, chip_h, chip_step, max_tracks) = month_layout_metrics(row_h, default_scale);
         let shown_before = max_tracks.saturating_sub(1);
         let cell_x = kw_w + 0.0 * col_w;
@@ -26689,6 +27100,36 @@ mod tests {
         // Dismissing toast:
         page.dismiss_zoom_toast();
         assert!(page.imp().zoom_toast.borrow().is_none(), "Dismissing must clear zoom_toast reference");
+    }
+
+    #[test]
+    fn test_calendar_zoom_scale_debounced_save_and_source_cleanup() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let page = CalendarPage::new();
+        // 1. Rapid successive scale updates must not panic on canceling active timer
+        page.set_chip_scale(1.10);
+        assert!(page.imp().chip_scale_save_source.borrow().is_some());
+
+        page.set_chip_scale(1.20);
+        assert!(page.imp().chip_scale_save_source.borrow().is_some());
+
+        // 2. Allow debounce timeout (400ms) to fire
+        std::thread::sleep(std::time::Duration::from_millis(450));
+        while context.iteration(false) {}
+
+        // Timeout execution must clear source ID to None
+        assert!(page.imp().chip_scale_save_source.borrow().is_none(), "Timeout completion must clear source cell to None");
+
+        // 3. New scale update after timer fired must safely run without panicking on stale source
+        page.set_chip_scale(1.30);
+        assert!(page.imp().chip_scale_save_source.borrow().is_some());
+        page.set_chip_scale(1.0);
     }
 }
 

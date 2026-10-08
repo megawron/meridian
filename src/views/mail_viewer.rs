@@ -2296,21 +2296,25 @@ impl MailViewer {
         }
 
         let needed_total = (content_height + banner_extra).max(80);
+        let is_actually_short = needed_total <= 600
+            && available_height > 180
+            && needed_total + 100 <= available_height;
 
         tracing::debug!(
             content_height,
             needed_total,
             available_height,
-            is_short = needed_total < available_height,
+            is_short = is_actually_short,
             "Applying adapted mail viewer card height"
         );
 
-        if needed_total < available_height {
-            if self.imp().adapted_card_height.get() != Some(needed_total) {
-                self.imp().adapted_card_height.set(Some(needed_total));
+        if is_actually_short {
+            let clamped_h = needed_total.min(available_height.saturating_sub(100)).max(80);
+            if self.imp().adapted_card_height.get() != Some(clamped_h) {
+                self.imp().adapted_card_height.set(Some(clamped_h));
                 self.set_vexpand(false);
                 self.set_valign(gtk::Align::Start);
-                self.set_height_request(needed_total);
+                self.set_height_request(clamped_h);
             }
         } else if self.imp().adapted_card_height.get().is_some() {
             self.imp().adapted_card_height.set(None);

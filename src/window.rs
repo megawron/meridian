@@ -1394,16 +1394,15 @@ impl MeridianWindow {
         }
     }
 
-    pub(crate) fn sync_unread_counter_and_title(&self) {
-        let count = self.mail_page().map(|p| p.total_inbox_unread_count()).unwrap_or(0);
+    pub(crate) fn update_mail_unread_count(&self, count: u32) {
         let show_counter = AppSettings::try_new()
             .map(|s| s.show_window_title_unread_counter())
             .unwrap_or(true);
-
+        let has_unread = show_counter && count > 0;
         if let Some(page) = self.imp().mail_stack_page.borrow().as_ref() {
-            // Keep native badge_number at 0 so AdwIndicatorBin does not draw an overlay badge over the icon
+            // Keep native badge_number at 0 so AdwIndicatorBin renders a clean minimal attention dot instead of numbers
             page.set_badge_number(0);
-            page.set_needs_attention(false);
+            page.set_needs_attention(has_unread);
         }
 
         let badge_text = if count > 999 {
@@ -1412,10 +1411,10 @@ impl MeridianWindow {
             count.to_string()
         };
 
-        let visible = show_counter && count > 0;
+        // Minimal indicator: The trailing pill label is kept hidden in favor of the attention dot on the icon
         for badge in self.imp().mail_switcher_badges.borrow().iter() {
             badge.set_label(&badge_text);
-            badge.set_visible(visible);
+            badge.set_visible(false);
         }
 
         if show_counter && count > 0 {
@@ -1425,6 +1424,11 @@ impl MeridianWindow {
         }
 
         self.sync_back_button();
+    }
+
+    pub(crate) fn sync_unread_counter_and_title(&self) {
+        let count = self.mail_page().map(|p| p.total_inbox_unread_count()).unwrap_or(0);
+        self.update_mail_unread_count(count);
     }
 
     pub(crate) fn handle_navigate_back(&self) -> bool {
@@ -3292,6 +3296,8 @@ impl MeridianWindow {
         view_stack.set_hexpand(true);
         view_stack.set_valign(gtk::Align::Fill);
         view_stack.set_halign(gtk::Align::Fill);
+        view_stack.set_vhomogeneous(false);
+        view_stack.set_hhomogeneous(false);
 
         let mail_page = MailPage::new();
         let mail_stack_page = view_stack.add_titled_with_icon(&mail_page, Some("mail"), "Mail", "mail-unread-symbolic");
@@ -8778,17 +8784,32 @@ mod tests {
         window.sync_unread_counter_and_title();
 
         // Check badge behavior: when no unread messages, badge_number is 0 and needs_attention is false
-        if let Some(page) = mail_page {
+        if let Some(ref page) = mail_page {
             assert_eq!(page.badge_number(), 0);
             assert!(!page.needs_attention());
         }
 
-        // Verify custom trailing pill badges in ViewSwitcher
+        // Verify custom trailing pill badges in ViewSwitcher remain hidden in favor of minimal attention dot
         let badges = window.imp().mail_switcher_badges.borrow().clone();
         assert!(!badges.is_empty(), "mail_switcher_badges must have at least one badge attached");
         for b in &badges {
             assert!(!b.is_visible(), "Badge must be hidden when unread count is 0");
             assert!(b.has_css_class("mail-tab-badge"), "Badge must have mail-tab-badge class");
+        }
+
+        window.update_mail_unread_count(5);
+        if let Some(ref page) = mail_page {
+            assert!(page.needs_attention(), "needs_attention must be true when count > 0");
+            assert_eq!(page.badge_number(), 0);
+        }
+        for b in &badges {
+            assert!(!b.is_visible(), "Trailing text badge should remain hidden in favor of minimal attention dot");
+        }
+
+        window.update_mail_unread_count(0);
+        if let Some(ref page) = mail_page {
+            assert!(!page.needs_attention(), "needs_attention must be false when count is 0");
+            assert_eq!(page.badge_number(), 0);
         }
     }
 }
