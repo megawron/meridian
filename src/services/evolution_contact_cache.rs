@@ -509,6 +509,54 @@ pub fn load_contacts_from_meridian_sqlite_cache() -> Vec<EBookContactRecord> {
 #[allow(unused_imports)]
 pub use load_contacts_from_meridian_sqlite_cache as load_contacts_from_evolution_sqlite_cache;
 
+/// Look up contact's formatted full name by email address from local SQLite contact caches.
+static CONTACT_NAME_MAP: std::sync::RwLock<Option<HashMap<String, String>>> = std::sync::RwLock::new(None);
+
+pub fn lookup_contact_name_by_email(email: &str) -> Option<String> {
+    let clean_email = email.trim().to_lowercase();
+    if clean_email.is_empty() {
+        return None;
+    }
+
+    if let Ok(guard) = CONTACT_NAME_MAP.read() {
+        if let Some(ref map) = *guard {
+            return map.get(&clean_email).cloned();
+        }
+    }
+
+    let mut map = HashMap::new();
+    let records = load_contacts_from_meridian_sqlite_cache();
+    for rec in records {
+        let name = rec.contact.fn_name.trim();
+        if name.is_empty() || name.contains('@') {
+            continue;
+        }
+        let primary_email = rec.contact.email.trim().to_lowercase();
+        if !primary_email.is_empty() && !map.contains_key(&primary_email) {
+            map.insert(primary_email, name.to_string());
+        }
+        for em in &rec.contact.emails {
+            let e = em.trim().to_lowercase();
+            if !e.is_empty() && !map.contains_key(&e) {
+                map.insert(e, name.to_string());
+            }
+        }
+    }
+
+    let found = map.get(&clean_email).cloned();
+    if let Ok(mut guard) = CONTACT_NAME_MAP.write() {
+        *guard = Some(map);
+    }
+    found
+}
+
+/// Invalidate contact name cache when address book changes.
+pub fn invalidate_contact_name_cache() {
+    if let Ok(mut guard) = CONTACT_NAME_MAP.write() {
+        *guard = None;
+    }
+}
+
 /// List all address book sources discovered in Evolution caches, formatted as `EdsSource`.
 pub fn list_cached_address_book_sources() -> Vec<EdsSource> {
     let targets = discover_address_book_dbs();
