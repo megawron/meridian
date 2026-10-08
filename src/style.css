@@ -94,6 +94,16 @@ indicatorbin > indicator > label {
   padding: 0 3px;
 }
 
+/* ── ViewSwitcher Mail Tab Minimal Attention Indicator Dot ─────────────── */
+viewswitcher indicatorbin.needs-attention > indicator {
+  min-width: 8px;
+  min-height: 8px;
+  border-radius: 9999px;
+  background-color: @accent_bg_color;
+  outline: 2px solid @theme_bg_color;
+  outline-offset: -0.5px;
+}
+
 /* ── ViewSwitcher Mail Tab Unread Badge (Trailing Pill) ───────────────── */
 label.mail-tab-badge {
   background-color: alpha(@accent_bg_color, 0.18);
@@ -628,6 +638,14 @@ searchbar dropdown > button.combo,
   border-radius: 12px;
   border: 1px solid alpha(currentColor, 0.08);
   box-shadow: 0 1px 3px alpha(currentColor, 0.04);
+  transition: border-bottom-left-radius 150ms ease, border-bottom-right-radius 150ms ease;
+}
+
+.mail-preview-card.scroll-continues {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom: none;
+  box-shadow: none;
 }
 
 .mail-preview-card banner.mail-status-banner,
@@ -764,6 +782,7 @@ listview.navigation-sidebar {
   font-size: 1.00rem;
 }
 
+.mail-sidebar .navigation-sidebar row:selected label.unread-heading,
 .mail-sidebar listview row:selected label.unread-heading,
 .mail-sidebar listbox row:selected label.unread-heading,
 .mail-sidebar .mail-sidebar-row.is-selected label.unread-heading {
@@ -932,12 +951,14 @@ listview.navigation-sidebar {
   min-height: 0;
   padding: 0 4px;
   border-radius: 0;
+  background: transparent;
   background-color: transparent;
-  color: @window_fg_color;
-  font-size: 0.90rem;
-  font-weight: 700;
+  color: @accent_color;
+  font-size: 0.95rem;
+  font-weight: 800;
 }
 
+.mail-sidebar .navigation-sidebar row:selected .badge,
 .mail-sidebar listview row:selected .badge,
 .mail-sidebar listbox row:selected .badge,
 .mail-sidebar .mail-sidebar-row.is-selected .badge {
@@ -4830,4 +4851,24 @@ popover.image-options-popover button.flat:hover {
   padding: 3px 8px;
   font-weight: 600;
 }
+
+/* ── Settings Window & Sidebar (Libadwaita / Hylki Parity) ──────────────── */
+.settings-side-heading {
+  padding: 14px 12px 4px 12px;
+}
+
+.settings-side-heading:first-child {
+  padding-top: 6px;
+}
+
+.settings-side > row {
+  min-height: 36px;
+}
+
+.settings-search-hit {
+  background-color: alpha(@accent_bg_color, 0.20);
+  border-radius: 12px;
+  transition: background-color 400ms ease-out;
+}
+
 

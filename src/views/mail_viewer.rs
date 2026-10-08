@@ -53,6 +53,9 @@ mod imp {
         pub last_parent_height: Cell<i32>,
         #[cfg(target_os = "linux")]
         pub webview: RefCell<Option<webkit6::WebView>>,
+        pub(super) box_container: RefCell<Option<gtk::Box>>,
+        pub(super) raw_scroll_continues: Cell<bool>,
+        pub(super) effective_scroll_continues: Cell<bool>,
         #[cfg(target_os = "linux")]
         pub renderer_stack: RefCell<Option<gtk::Stack>>,
         pub fallback_view: RefCell<Option<gtk::TextView>>,
@@ -211,10 +214,98 @@ impl MailViewer {
         }
     }
 
+    pub fn set_scroll_continues(&self, continues: bool) {
+        self.imp().raw_scroll_continues.set(continues);
+        let effective = continues && !self.has_visible_bottom_sibling();
+        if self.imp().effective_scroll_continues.get() == effective {
+            return;
+        }
+        self.imp().effective_scroll_continues.set(effective);
+        if let Some(box_container) = self.imp().box_container.borrow().as_ref() {
+            if effective {
+                box_container.add_css_class("scroll-continues");
+            } else {
+                box_container.remove_css_class("scroll-continues");
+            }
+        }
+        self.set_margin_bottom(if effective { 0 } else { 8 });
+    }
+
+    pub fn has_visible_bottom_sibling(&self) -> bool {
+        if let Some(parent) = self.parent() {
+            let mut found_self = false;
+            let mut sibling = parent.first_child();
+            while let Some(child) = sibling {
+                if found_self {
+                    if child.is_visible() {
+                        return true;
+                    }
+                } else if child == *self.upcast_ref::<gtk::Widget>() {
+                    found_self = true;
+                }
+                sibling = child.next_sibling();
+            }
+        }
+        false
+    }
+
+    pub fn update_scroll_continues_layout(&self) {
+        let raw = self.imp().raw_scroll_continues.get();
+        self.set_scroll_continues(raw);
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn evaluate_scroll_continues(&self, webview: &webkit6::WebView) {
+        if self.imp().adapted_card_height.get().is_some() {
+            self.set_scroll_continues(false);
+            return;
+        }
+        let viewer_weak = self.downgrade();
+        let script = r#"
+(() => {
+    try {
+        const y = window.scrollY || (document.documentElement ? document.documentElement.scrollTop : 0) || 0;
+        const docEl = document.documentElement;
+        const body = document.body;
+        const scrollH = Math.max(
+            body ? body.scrollHeight : 0,
+            docEl ? docEl.scrollHeight : 0,
+            body ? body.offsetHeight : 0,
+            docEl ? docEl.offsetHeight : 0
+        );
+        const clientH = window.innerHeight;
+        const canScroll = (scrollH - clientH) > 15;
+        const atBottom = !canScroll || (y + clientH >= scrollH - 15);
+        return (canScroll && !atBottom) ? 1 : 0;
+    } catch (e) {
+        return 0;
+    }
+})()
+"#;
+        webview.evaluate_javascript(
+            script,
+            None,
+            Some("meridian-scroll-eval"),
+            None::<&gio::Cancellable>,
+            move |result| {
+                if let Ok(value) = result {
+                    if let Some(viewer) = viewer_weak.upgrade() {
+                        let continues = value.to_double() > 0.5;
+                        viewer.set_scroll_continues(continues);
+                    }
+                }
+            },
+        );
+    }
+
     fn build_ui(&self) {
         tracing::debug!("MailViewer construction started");
         self.set_overflow(gtk::Overflow::Hidden);
         self.set_hexpand(true);
+        self.set_margin_start(8);
+        self.set_margin_end(8);
+        self.set_margin_top(8);
+        self.set_margin_bottom(8);
         // Card styling (.card, .mail-preview-card) is placed on the inner
         // box_container rather than on `self` so that the background,
         // border-radius and box-shadow are drawn at the *constrained*
@@ -224,8 +315,11 @@ impl MailViewer {
             .orientation(gtk::Orientation::Vertical)
             .overflow(gtk::Overflow::Hidden)
             .hexpand(true)
+            .vexpand(true)
+            .valign(gtk::Align::Fill)
             .css_classes(vec!["card", "mail-preview-card"])
             .build();
+        self.imp().box_container.replace(Some(box_container.clone()));
 
         // ── 1. Privacy Banner for Remote Images ────────────────────────────
         let banner = adw::Banner::builder()
@@ -303,6 +397,23 @@ impl MailViewer {
         fallback_scroll.vadjustment().connect_value_changed(move |adj| {
             if let Some(viewer) = viewer_weak_fb.upgrade() {
                 viewer.notify_scroll_offset(adj.value());
+                let value = adj.value();
+                let upper = adj.upper();
+                let page_size = adj.page_size();
+                let can_scroll = upper > page_size + 15.0;
+                let at_bottom = !can_scroll || (value + page_size >= upper - 15.0);
+                viewer.set_scroll_continues(can_scroll && !at_bottom);
+            }
+        });
+        let viewer_weak_fb_ch = self.downgrade();
+        fallback_scroll.vadjustment().connect_changed(move |adj| {
+            if let Some(viewer) = viewer_weak_fb_ch.upgrade() {
+                let value = adj.value();
+                let upper = adj.upper();
+                let page_size = adj.page_size();
+                let can_scroll = upper > page_size + 15.0;
+                let at_bottom = !can_scroll || (value + page_size >= upper - 15.0);
+                viewer.set_scroll_continues(can_scroll && !at_bottom);
             }
         });
         self.imp()
@@ -596,6 +707,7 @@ impl MailViewer {
             view.buffer().set_text("");
         }
         self.notify_scroll_offset(0.0);
+        self.set_scroll_continues(false);
     }
 
     /// Prepare the viewer for asynchronous message body loading.
@@ -605,6 +717,7 @@ impl MailViewer {
     pub(crate) fn prepare_for_loading(&self, message_id: Option<&str>) {
         self.set_visible(true);
         self.notify_scroll_offset(0.0);
+        self.set_scroll_continues(false);
         self.invalidate_message_search_context();
         self.imp().remote_images_allowed_for_current.set(false);
         self.imp().remote_images_blocked_for_current.set(false);
@@ -1957,24 +2070,70 @@ impl MailViewer {
             "(() => {
                 let isCompact = false;
                 let ticking = false;
+                let lastContinues = null;
+
+                function checkScroll() {
+                    try {
+                        const y = window.scrollY || (document.documentElement ? document.documentElement.scrollTop : 0) || 0;
+                        if (!isCompact && y > 45) {
+                            isCompact = true;
+                            if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.meridianScroll) {
+                                window.webkit.messageHandlers.meridianScroll.postMessage(y);
+                            }
+                        } else if (isCompact && y < 15) {
+                            isCompact = false;
+                            if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.meridianScroll) {
+                                window.webkit.messageHandlers.meridianScroll.postMessage(y);
+                            }
+                        }
+
+                        const docEl = document.documentElement;
+                        const body = document.body;
+                        const scrollH = Math.max(
+                            body ? body.scrollHeight : 0,
+                            docEl ? docEl.scrollHeight : 0,
+                            body ? body.offsetHeight : 0,
+                            docEl ? docEl.offsetHeight : 0
+                        );
+                        const clientH = window.innerHeight;
+                        const canScroll = (scrollH - clientH) > 15;
+                        const atBottom = !canScroll || (y + clientH >= scrollH - 15);
+                        const continues = canScroll && !atBottom;
+
+                        if (continues !== lastContinues) {
+                            lastContinues = continues;
+                            if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.meridianScrollContinues) {
+                                window.webkit.messageHandlers.meridianScrollContinues.postMessage(continues ? 1 : 0);
+                            }
+                        }
+                    } catch (e) {}
+                }
+
                 window.addEventListener('scroll', () => {
                     if (!ticking) {
                         window.requestAnimationFrame(() => {
-                            try {
-                                const y = window.scrollY || document.documentElement.scrollTop || 0;
-                                if (!isCompact && y > 45) {
-                                    isCompact = true;
-                                    window.webkit.messageHandlers.meridianScroll.postMessage(y);
-                                } else if (isCompact && y < 15) {
-                                    isCompact = false;
-                                    window.webkit.messageHandlers.meridianScroll.postMessage(y);
-                                }
-                            } catch (e) {}
+                            checkScroll();
                             ticking = false;
                         });
                         ticking = true;
                     }
                 }, { passive: true });
+
+                window.addEventListener('resize', () => {
+                    checkScroll();
+                }, { passive: true });
+
+                if (window.ResizeObserver && document.body) {
+                    const ro = new ResizeObserver(() => {
+                        checkScroll();
+                    });
+                    ro.observe(document.body);
+                }
+                if (document.readyState === 'complete' || document.readyState === 'interactive') {
+                    setTimeout(checkScroll, 30);
+                } else {
+                    window.addEventListener('DOMContentLoaded', () => setTimeout(checkScroll, 30));
+                }
             })();",
             webkit6::UserContentInjectedFrames::TopFrame,
             webkit6::UserScriptInjectionTime::End,
@@ -1992,6 +2151,21 @@ impl MailViewer {
                     if let Some(js_val) = values.get(1).and_then(|v| v.get::<javascriptcore6::Value>().ok()) {
                         let offset_y = js_val.to_double();
                         viewer.notify_scroll_offset(offset_y);
+                    }
+                }
+                None
+            },
+        );
+        user_content_manager.register_script_message_handler("meridianScrollContinues", None);
+        let viewer_weak_continues = self.downgrade();
+        user_content_manager.connect_local(
+            "script-message-received::meridianScrollContinues",
+            false,
+            move |values| {
+                if let Some(viewer) = viewer_weak_continues.upgrade() {
+                    if let Some(js_val) = values.get(1).and_then(|v| v.get::<javascriptcore6::Value>().ok()) {
+                        let continues = js_val.to_double() > 0.5;
+                        viewer.set_scroll_continues(continues);
                     }
                 }
                 None
@@ -2021,11 +2195,13 @@ impl MailViewer {
                     viewer.imp().webview_ready.set(true);
                     viewer.show_renderer_ready();
                     viewer.adapt_card_height(webview);
+                    viewer.evaluate_scroll_continues(webview);
                     let viewer_weak_d1 = viewer.downgrade();
                     let wv_d1 = webview.clone();
                     glib::timeout_add_local_once(std::time::Duration::from_millis(60), move || {
                         if let Some(v) = viewer_weak_d1.upgrade() {
                             v.adapt_card_height(&wv_d1);
+                            v.evaluate_scroll_continues(&wv_d1);
                         }
                     });
                     let viewer_weak_d2 = viewer.downgrade();
@@ -2033,6 +2209,7 @@ impl MailViewer {
                     glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
                         if let Some(v) = viewer_weak_d2.upgrade() {
                             v.adapt_card_height(&wv_d2);
+                            v.evaluate_scroll_continues(&wv_d2);
                         }
                     });
                 }
@@ -2228,6 +2405,7 @@ impl MailViewer {
 
     pub fn apply_adapted_height(&self, content_height: i32) {
         if content_height <= 0 {
+            self.set_scroll_continues(false);
             if self.imp().adapted_card_height.get().is_some() {
                 self.imp().adapted_card_height.set(None);
                 self.set_vexpand(true);
@@ -2316,11 +2494,18 @@ impl MailViewer {
                 self.set_valign(gtk::Align::Start);
                 self.set_height_request(clamped_h);
             }
-        } else if self.imp().adapted_card_height.get().is_some() {
-            self.imp().adapted_card_height.set(None);
-            self.set_vexpand(true);
-            self.set_valign(gtk::Align::Fill);
-            self.set_height_request(-1);
+            self.set_scroll_continues(false);
+        } else {
+            if self.imp().adapted_card_height.get().is_some() {
+                self.imp().adapted_card_height.set(None);
+                self.set_vexpand(true);
+                self.set_valign(gtk::Align::Fill);
+                self.set_height_request(-1);
+            }
+            #[cfg(target_os = "linux")]
+            if let Some(wv) = self.imp().webview.borrow().as_ref() {
+                self.evaluate_scroll_continues(wv);
+            }
         }
     }
 
@@ -5180,6 +5365,51 @@ Content-Type: text/html; charset=utf-8\r\n\
             doc.contains("font-family: Cantarell, \"Adwaita Sans\", \"TestSans\", sans-serif;"),
             "Document baseline CSS must use the safe configured font family"
         );
+    }
+
+    #[test]
+    fn test_mail_viewer_scroll_continues_state() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let viewer = super::MailViewer::new();
+        let parent_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let sibling = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        sibling.set_visible(false);
+        parent_box.append(&viewer);
+        parent_box.append(&sibling);
+
+        assert_eq!(viewer.margin_bottom(), 8);
+        assert!(!viewer.has_visible_bottom_sibling());
+
+        // When scroll continues and bottom sibling is hidden:
+        viewer.set_scroll_continues(true);
+        assert_eq!(viewer.margin_bottom(), 0);
+
+        // When sibling becomes visible, update_scroll_continues_layout resets effective continues to false:
+        sibling.set_visible(true);
+        assert!(viewer.has_visible_bottom_sibling());
+        viewer.update_scroll_continues_layout();
+        assert_eq!(viewer.margin_bottom(), 8);
+
+        // Sibling hides again:
+        sibling.set_visible(false);
+        assert!(!viewer.has_visible_bottom_sibling());
+        viewer.update_scroll_continues_layout();
+        assert_eq!(viewer.margin_bottom(), 0);
+
+        // Reaching bottom:
+        viewer.set_scroll_continues(false);
+        assert_eq!(viewer.margin_bottom(), 8);
+
+        // Clear resets scroll_continues:
+        viewer.set_scroll_continues(true);
+        assert_eq!(viewer.margin_bottom(), 0);
+        viewer.clear();
+        assert_eq!(viewer.margin_bottom(), 8);
     }
 }
 
