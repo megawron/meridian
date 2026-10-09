@@ -1233,6 +1233,7 @@ mod imp {
         pub agenda_vadjustment: RefCell<Option<gtk::Adjustment>>,
         pub agenda_needs_initial_scroll: Cell<bool>,
         pub time_grid_reset_scroll: Cell<bool>,
+        pub time_grid_center_ratio: Cell<Option<f64>>,
         pub agenda_paned: RefCell<Option<gtk::Paned>>,
         pub agenda_detail_box: RefCell<Option<gtk::Box>>,
         pub agenda_detail_content: RefCell<Option<gtk::Box>>,
@@ -1384,6 +1385,7 @@ mod imp {
                 agenda_vadjustment: RefCell::new(None),
                 agenda_needs_initial_scroll: Cell::new(true),
                 time_grid_reset_scroll: Cell::new(true),
+                time_grid_center_ratio: Cell::new(None),
                 agenda_paned: RefCell::new(None),
                 agenda_detail_box: RefCell::new(None),
                 agenda_detail_content: RefCell::new(None),
@@ -2214,15 +2216,8 @@ impl CalendarPage {
                     let steps = (current / THRESHOLD).trunc() as i32;
                     if steps != 0 {
                         accum_clone.set(current - (steps as f64 * THRESHOLD));
-                        if steps < 0 {
-                            for _ in 0..(-steps).min(3) {
-                                page.zoom_in();
-                            }
-                        } else {
-                            for _ in 0..steps.min(3) {
-                                page.zoom_out();
-                            }
-                        }
+                        let delta_steps = (-steps).clamp(-3, 3);
+                        page.adjust_chip_scale(delta_steps as f64 * 0.10);
                     } else {
                         accum_clone.set(current);
                     }
@@ -6665,6 +6660,7 @@ impl CalendarPage {
                 let today = Local::now().date_naive();
                 page.imp().agenda_needs_initial_scroll.set(true);
                 page.imp().time_grid_reset_scroll.set(true);
+                page.imp().time_grid_center_ratio.set(None);
                 page.imp().agenda_selected_row.set(None);
                 page.imp().agenda_follow_current.set(true);
                 page.imp()
@@ -7412,6 +7408,7 @@ impl CalendarPage {
         }
         self.imp().syncing_calendar_view.set(true);
         self.imp().time_grid_reset_scroll.set(true);
+        self.imp().time_grid_center_ratio.set(None);
         if view == CalendarView::Agenda {
             self.imp().agenda_needs_initial_scroll.set(true);
             self.imp().agenda_selected_row.set(None);
@@ -7477,6 +7474,7 @@ impl CalendarPage {
 
         self.imp().syncing_calendar_view.set(true);
         self.imp().time_grid_reset_scroll.set(true);
+        self.imp().time_grid_center_ratio.set(None);
         *self.imp().current_view.borrow_mut() = view;
         self.imp()
             .view_state
@@ -8855,22 +8853,16 @@ impl CalendarPage {
 
     fn render_continuous_time_grid(&self, view: &gtk::Box, days: &[NaiveDate]) {
         let should_reset = self.imp().time_grid_reset_scroll.replace(false);
-        let old_scroll_ratio: Option<f64> = if should_reset {
-            None
-        } else {
-            view
-                .last_child()
-                .and_then(|w| w.downcast::<gtk::ScrolledWindow>().ok())
-                .map(|sw| {
-                    let vadj = sw.vadjustment();
-                    let upper = vadj.upper();
-                    if upper > 0.0 {
-                        vadj.value() / upper
-                    } else {
-                        0.0
-                    }
-                })
-        };
+        if should_reset {
+            self.imp().time_grid_center_ratio.set(None);
+        } else if let Some(sw) = view.last_child().and_then(|w| w.downcast::<gtk::ScrolledWindow>().ok()) {
+            let vadj = sw.vadjustment();
+            if vadj.upper() > 100.0 && vadj.page_size() > 50.0 {
+                let center_y = vadj.value() + (vadj.page_size() / 2.0);
+                let ratio = (center_y / vadj.upper()).clamp(0.0, 1.0);
+                self.imp().time_grid_center_ratio.set(Some(ratio));
+            }
+        }
 
         self.imp().continuous_day_canvases.borrow_mut().clear();
         *self.imp().continuous_time_gutter_canvas.borrow_mut() = None;
@@ -9984,73 +9976,91 @@ impl CalendarPage {
             .build();
 
         let vadj = timed_scroll.vadjustment();
-        let scrolled_flag = Rc::new(Cell::new(false));
         let (workday_start, _) = configured_workday_range();
+        let target_start_min = workday_start;
 
-        // Start view at workday start (configured in settings), or earlier if an event is scheduled before that.
-        let mut target_start_min = workday_start;
-        for day in days {
-            if let Some(records) = events_by_date.get(day) {
-                for ev in records {
-                    if !ev.all_day {
-                        let (start_min, _, _) = event_occurrence_times_for_date(ev, *day, interval_minutes as u32);
-                        if start_min < target_start_min {
-                            target_start_min = start_min.saturating_sub(30);
-                        }
-                    }
-                }
-            }
-        }
+        let center_ratio_captured = self.imp().time_grid_center_ratio.get();
+        let is_programmatic_scrolling = Rc::new(Cell::new(false));
 
         let compute_target_y = move |adj: &gtk::Adjustment| -> f64 {
             let max_scroll = (adj.upper() - adj.page_size()).max(0.0);
-            if let Some(ratio) = old_scroll_ratio {
-                if ratio > 0.001 {
-                    return (ratio * adj.upper()).clamp(0.0, max_scroll);
-                }
+            if let Some(center_ratio) = center_ratio_captured {
+                let center_y = center_ratio * adj.upper();
+                let page_size = if adj.page_size() > 50.0 {
+                    adj.page_size()
+                } else {
+                    (adj.upper() * 0.45).clamp(300.0, 700.0)
+                };
+                let top_y = center_y - (page_size / 2.0);
+                return top_y.clamp(0.0, max_scroll);
             }
+
+            // Initial placement: align top to configured workday start
             let start_slot = (target_start_min / interval_minutes as u32) as usize;
             let slot_y = (start_slot * slot_height as usize) as f64;
             slot_y.clamp(0.0, max_scroll)
         };
 
-        let compute_notify = compute_target_y.clone();
+        // When user scrolls manually, record the center of the viewport
+        let is_prog_changed = is_programmatic_scrolling.clone();
+        let page_weak_changed = self.downgrade();
+        vadj.connect_value_changed(move |adj| {
+            if is_prog_changed.get() {
+                return;
+            }
+            if adj.upper() > 100.0 && adj.page_size() > 50.0 {
+                let center_y = adj.value() + (adj.page_size() / 2.0);
+                let ratio = (center_y / adj.upper()).clamp(0.0, 1.0);
+                if let Some(page) = page_weak_changed.upgrade() {
+                    page.imp().time_grid_center_ratio.set(Some(ratio));
+                }
+            }
+        });
+
+        let apply_target_scroll = {
+            let compute_y = compute_target_y.clone();
+            let is_prog = is_programmatic_scrolling.clone();
+            let page_weak_apply = self.downgrade();
+            move |adj: &gtk::Adjustment| {
+                if adj.upper() > 100.0 {
+                    let target = compute_y(adj);
+                    is_prog.set(true);
+                    adj.set_value(target);
+                    is_prog.set(false);
+
+                    if let Some(page) = page_weak_apply.upgrade() {
+                        if page.imp().time_grid_center_ratio.get().is_none() && adj.page_size() > 50.0 {
+                            let center_y = target + (adj.page_size() / 2.0);
+                            let ratio = (center_y / adj.upper()).clamp(0.0, 1.0);
+                            page.imp().time_grid_center_ratio.set(Some(ratio));
+                        }
+                    }
+                }
+            }
+        };
+
+        let apply_notify = apply_target_scroll.clone();
         vadj.connect_upper_notify(move |adj| {
-            if adj.upper() > 100.0 {
-                let target = compute_notify(adj);
-                adj.set_value(target);
-            }
+            apply_notify(adj);
         });
 
-        let compute_page = compute_target_y.clone();
-        let scrolled_page = scrolled_flag.clone();
+        let apply_page = apply_target_scroll.clone();
         vadj.connect_page_size_notify(move |adj| {
-            if !scrolled_page.get() && adj.page_size() > 50.0 && adj.upper() > 100.0 {
-                scrolled_page.set(true);
-                let target = compute_page(adj);
-                adj.set_value(target);
+            if adj.page_size() > 50.0 {
+                apply_page(adj);
             }
         });
 
-        let compute_map = compute_target_y.clone();
-        let scrolled_map = scrolled_flag.clone();
+        let apply_map = apply_target_scroll.clone();
         let vadj_map = vadj.clone();
         timed_scroll.connect_map(move |_| {
-            if !scrolled_map.get() && vadj_map.upper() > 100.0 {
-                let target = compute_map(&vadj_map);
-                vadj_map.set_value(target);
-            }
+            apply_map(&vadj_map);
         });
 
+        let apply_idle = apply_target_scroll;
         let vadj_idle = vadj.clone();
-        let scrolled_idle = scrolled_flag.clone();
-        let compute_idle = compute_target_y;
         glib::idle_add_local_once(move || {
-            if !scrolled_idle.get() && vadj_idle.upper() > 0.0 {
-                scrolled_idle.set(true);
-                let target = compute_idle(&vadj_idle);
-                vadj_idle.set_value(target);
-            }
+            apply_idle(&vadj_idle);
         });
 
         view.append(&timed_scroll);
@@ -22977,28 +22987,45 @@ mod tests {
 
         let page = CalendarPage::new();
 
-        // 1. Initial state must trigger workday scroll reset
+        // 1. Initial state must trigger workday scroll reset and clear center ratio
         assert!(page.imp().time_grid_reset_scroll.get());
+        assert_eq!(page.imp().time_grid_center_ratio.get(), None);
 
-        // 2. Switching views must reset scroll to workday start
+        // 2. Switching views must reset scroll to workday start and clear center ratio
         page.imp().time_grid_reset_scroll.set(false);
-        page.select_calendar_view(CalendarView::Day);
+        page.imp().time_grid_center_ratio.set(Some(0.6));
+        page.select_calendar_view(CalendarView::Week);
         assert!(page.imp().time_grid_reset_scroll.get());
+        assert_eq!(page.imp().time_grid_center_ratio.get(), None);
 
-        // 3. Workday start baseline: default is 09:00 (540 min)
+        // 3. Workday start baseline: default is 09:00 (540 min = 9 * 60)
         let (workday_start, _) = configured_workday_range();
         assert_eq!(workday_start, 540);
 
-        // When no events exist, target starts at workday_start (540 min = 09:00), NOT forced to 06:00 (360 min)
-        let mut target_start_min = workday_start;
+        // Target start min directly uses workday start (e.g. 540 min), independent of arbitrary nighttime noise
+        let target_start_min = workday_start;
         assert_eq!(target_start_min, 540);
 
-        // When an early event exists at 07:00 (420 min), target adapts to 06:30 (390 min)
-        let early_event_min = 420;
-        if early_event_min < target_start_min {
-            target_start_min = early_event_min.saturating_sub(30);
-        }
-        assert_eq!(target_start_min, 390);
+        // 4. Center-anchored zoom math verification:
+        // Center ratio 0.55 (around 13:12 / 1:12 PM) must stay centered in the viewport across zoom levels
+        let center_ratio = 0.55f64;
+        let page_size = 600.0f64;
+
+        // Zoom level 1: upper = 1152 (1.0 scale)
+        let upper1 = 1152.0f64;
+        let top1 = (center_ratio * upper1 - (page_size / 2.0)).clamp(0.0, upper1 - page_size);
+        let center1 = (top1 + (page_size / 2.0)) / upper1;
+        assert!((center1 - center_ratio).abs() < 0.0001);
+
+        // Zoom level 2: upper = 1728 (1.5 scale)
+        let upper2 = 1728.0f64;
+        let top2 = (center_ratio * upper2 - (page_size / 2.0)).clamp(0.0, upper2 - page_size);
+        let center2 = (top2 + (page_size / 2.0)) / upper2;
+        assert!((center2 - center_ratio).abs() < 0.0001);
+
+        // Verify that top scroll was adjusted proportionally so the center did NOT jump to 0.0
+        assert!(top2 > top1);
+        assert!(top1 > 0.0);
 
         // 4. All-day event chip remains fixed at 22px regardless of zoom scale
         let dummy_event = CalendarEventRecord {

@@ -209,7 +209,21 @@ mod imp {
                 dialog.present_modal(&window);
             }
 
-            if std::env::args().any(|a| a == "--preferences") {
+            let is_preview = std::env::args().any(|a| a.starts_with("--settings-preview") || a.starts_with("--preferences-preview"));
+            if is_preview {
+                println!("\n╔═══════════════════════════════════════════════════════════════════════════════╗");
+                println!("║               MERIDIAN — LIBADWAITA PREFERENCES PREVIEW                     ║");
+                println!("║  Das weltbeste Einstellungsmenü (First Principles & GNOME HIG)                ║");
+                println!("║  NavigationSplitView · Live Search (<Ctrl>+F) · Responsive Breakpoint (<640sp)║");
+                println!("╚═══════════════════════════════════════════════════════════════════════════════╝\n");
+                let dialog = crate::dialogs::PreferencesDialog::new();
+                for arg in std::env::args() {
+                    if let Some(page) = arg.strip_prefix("--settings-preview=").or_else(|| arg.strip_prefix("--preferences-preview=")) {
+                        dialog.select_page(page);
+                    }
+                }
+                dialog.present(Some(&window));
+            } else if std::env::args().any(|a| a == "--preferences") {
                 let dialog = crate::dialogs::PreferencesDialog::new();
                 dialog.present(Some(&window));
             }

@@ -49,22 +49,24 @@ fn main() -> ExitCode {
     tracing::info!("Starting Meridian v{}", env!("CARGO_PKG_VERSION"));
 
     // Create and run the AdwApplication
-    let non_unique = std::env::args().any(|a| a == "--non-unique");
+    let is_preview = std::env::args().any(|a| a.starts_with("--settings-preview") || a.starts_with("--preferences-preview"));
+    let non_unique = is_preview || std::env::args().any(|a| a == "--non-unique");
     let flags = if non_unique {
         gio::ApplicationFlags::HANDLES_OPEN | gio::ApplicationFlags::NON_UNIQUE
     } else {
         gio::ApplicationFlags::HANDLES_OPEN
     };
     let app = MeridianApplication::with_flags(flags);
-    if non_unique {
-        let filtered: Vec<String> = std::env::args()
-            .filter(|a| a != "--non-unique" && a != "--compose" && a != "--preferences" && a != "--account-setup" && a != "--receiving")
-            .collect();
-        app.run_with_args(&filtered)
-    } else {
-        let filtered: Vec<String> = std::env::args()
-            .filter(|a| a != "--compose" && a != "--preferences" && a != "--account-setup" && a != "--receiving")
-            .collect();
-        app.run_with_args(&filtered)
-    }
+    let filtered: Vec<String> = std::env::args()
+        .filter(|a| {
+            !a.starts_with("--settings-preview")
+                && !a.starts_with("--preferences-preview")
+                && a != "--non-unique"
+                && a != "--compose"
+                && a != "--preferences"
+                && a != "--account-setup"
+                && a != "--receiving"
+        })
+        .collect();
+    app.run_with_args(&filtered)
 }

@@ -212,6 +212,10 @@ mod imp {
         pub managed_account_rows: RefCell<Vec<adw::PreferencesRow>>,
         pub local_profile_group: RefCell<Option<adw::PreferencesGroup>>,
         pub local_profile_rows: RefCell<Vec<adw::PreferencesRow>>,
+        pub detail_stack: RefCell<Option<gtk::Stack>>,
+        pub sidebar_list: RefCell<Option<gtk::ListBox>>,
+        pub content_title: RefCell<Option<adw::WindowTitle>>,
+        pub content_page: RefCell<Option<adw::NavigationPage>>,
     }
 
     #[glib::object_subclass]
@@ -226,6 +230,8 @@ mod imp {
             self.parent_constructed();
             self.obj().set_content_width(980);
             self.obj().set_content_height(720);
+            self.obj().set_width_request(360);
+            self.obj().set_height_request(400);
             self.obj().build_ui();
             self.obj().connect_closed(|dialog| {
                 if let Some(window) = crate::window::find_meridian_window(dialog) {
@@ -2953,6 +2959,33 @@ impl PreferencesDialog {
         }
         group_composer.add(&row_composer_html);
 
+        let row_composer_format_toolbar = adw::SwitchRow::builder()
+            .title(&crate::i18n::gettext("Formatierungsleiste immer anzeigen"))
+            .subtitle(&crate::i18n::gettext("Zeigt Schrift-, Textstil- und Listenwerkzeuge dauerhaft über dem Eingabebereich"))
+            .active(false)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_composer_format_toolbar.set_active(settings.composer_show_format_toolbar());
+            row_composer_format_toolbar.set_sensitive(settings.composer_html());
+            let s_ft = settings.clone();
+            row_composer_format_toolbar.connect_active_notify(move |row| {
+                s_ft.set_composer_show_format_toolbar(row.is_active());
+            });
+            let row_weak = row_composer_format_toolbar.downgrade();
+            settings.connect_changed(Some("composer-show-format-toolbar"), move |s, _| {
+                let Some(row) = row_weak.upgrade() else { return; };
+                let active = s.boolean("composer-show-format-toolbar");
+                if row.is_active() != active {
+                    row.set_active(active);
+                }
+            });
+            let r_ft = row_composer_format_toolbar.clone();
+            row_composer_html.connect_active_notify(move |row| {
+                r_ft.set_sensitive(row.is_active());
+            });
+        }
+        group_composer.add(&row_composer_format_toolbar);
+
         let row_request_read_receipt = adw::SwitchRow::builder()
             .title("Request read receipt")
             .subtitle(
@@ -3232,6 +3265,28 @@ impl PreferencesDialog {
         }
         group_composer_prompts.add(&row_prompt_only_bcc);
 
+        let row_track_recent_recipients = adw::SwitchRow::builder()
+            .title(&crate::i18n::gettext("Kürzlich verwendete Empfänger merken"))
+            .subtitle(&crate::i18n::gettext("Schlägt zuvor kontaktierte E-Mail-Adressen bei der Eingabe vor"))
+            .active(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_track_recent_recipients.set_active(settings.composer_track_recent_recipients());
+            let s_tr = settings.clone();
+            row_track_recent_recipients.connect_active_notify(move |row| {
+                s_tr.set_composer_track_recent_recipients(row.is_active());
+            });
+            let row_weak = row_track_recent_recipients.downgrade();
+            settings.connect_changed(Some("composer-track-recent-recipients"), move |s, _| {
+                let Some(row) = row_weak.upgrade() else { return; };
+                let active = s.boolean("composer-track-recent-recipients");
+                if row.is_active() != active {
+                    row.set_active(active);
+                }
+            });
+        }
+        group_composer_prompts.add(&row_track_recent_recipients);
+
         let group_signature_options = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Signature Options"))
             .description(&crate::i18n::gettext("Signature Placement and Formatting"))
@@ -3486,9 +3541,14 @@ impl PreferencesDialog {
             .description("Options for opening, reading, and marking emails")
             .build();
 
-        let group_mail_behavior = adw::PreferencesGroup::builder()
-            .title("Navigation and Default Folders")
-            .description("Keyboard navigation and startup behavior on open")
+        let group_mail_comfort = adw::PreferencesGroup::builder()
+            .title(&crate::i18n::gettext("Reading Comfort and Keyboard"))
+            .description(&crate::i18n::gettext("Keyboard navigation and reader shortcuts"))
+            .build();
+
+        let group_mail_startup = adw::PreferencesGroup::builder()
+            .title(&crate::i18n::gettext("Startup and Default Folder"))
+            .description(&crate::i18n::gettext("Default folder and behavior when opening mail"))
             .build();
 
         let group_mail_html = adw::PreferencesGroup::builder()
@@ -3533,6 +3593,28 @@ impl PreferencesDialog {
         }
         group_mail_html.add(&row_image_policy);
 
+        let row_preserve_image_layout = adw::SwitchRow::builder()
+            .title(&crate::i18n::gettext("Preserve image layout"))
+            .subtitle(&crate::i18n::gettext("Reserve image space while remote content is blocked"))
+            .active(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_preserve_image_layout.set_active(settings.mail_preserve_image_layout());
+            let s_pil = settings.clone();
+            row_preserve_image_layout.connect_active_notify(move |row| {
+                s_pil.set_mail_preserve_image_layout(row.is_active());
+            });
+            let row_weak = row_preserve_image_layout.downgrade();
+            settings.connect_changed(Some("mail-preserve-image-layout"), move |s, _| {
+                let Some(row) = row_weak.upgrade() else { return; };
+                let active = s.boolean("mail-preserve-image-layout");
+                if row.is_active() != active {
+                    row.set_active(active);
+                }
+            });
+        }
+        group_mail_html.add(&row_preserve_image_layout);
+
         let row_html_rendering = adw::SwitchRow::builder()
             .title("Render HTML messages")
             .subtitle("Disable for plain text display only")
@@ -3559,6 +3641,61 @@ impl PreferencesDialog {
             });
         }
         group_mail_reading.add(&row_mark_read);
+
+        let row_mark_seen_timeout = adw::ComboRow::builder()
+            .title(&crate::i18n::gettext("Mark as read delay"))
+            .subtitle(&crate::i18n::gettext("Delay after selecting a message before marking it as read"))
+            .model(&gtk::StringList::new(&[
+                &crate::i18n::gettext("Immediately (0 s)"),
+                &crate::i18n::gettext("After 1 second"),
+                &crate::i18n::gettext("After 1.5 seconds (Default)"),
+                &crate::i18n::gettext("After 3 seconds"),
+                &crate::i18n::gettext("After 5 seconds"),
+                &crate::i18n::gettext("After 10 seconds"),
+            ]))
+            .build();
+        if let Some(settings) = settings.clone() {
+            let timeout_to_idx = |ms: u32| -> u32 {
+                match ms {
+                    0 => 0,
+                    1..=1200 => 1,
+                    1201..=2000 => 2,
+                    2001..=4000 => 3,
+                    4001..=7500 => 4,
+                    _ => 5,
+                }
+            };
+            let idx_to_timeout = |idx: u32| -> u32 {
+                match idx {
+                    0 => 0,
+                    1 => 1000,
+                    2 => 1500,
+                    3 => 3000,
+                    4 => 5000,
+                    _ => 10000,
+                }
+            };
+            row_mark_seen_timeout.set_selected(timeout_to_idx(settings.mail_mark_seen_timeout()));
+            row_mark_seen_timeout.set_sensitive(settings.mail_mark_seen());
+            let s_mst = settings.clone();
+            row_mark_seen_timeout.connect_selected_notify(move |row| {
+                s_mst.set_mail_mark_seen_timeout(idx_to_timeout(row.selected()));
+            });
+            let row_weak = row_mark_seen_timeout.downgrade();
+            settings.connect_changed(Some("mail-mark-seen-timeout"), move |s, _| {
+                let Some(row) = row_weak.upgrade() else { return; };
+                let val = s.int("mail-mark-seen-timeout").max(0) as u32;
+                let target_idx = timeout_to_idx(val);
+                if row.selected() != target_idx {
+                    row.set_selected(target_idx);
+                }
+            });
+            let r_mst = row_mark_seen_timeout.clone();
+            row_mark_read.connect_active_notify(move |row| {
+                r_mst.set_sensitive(row.is_active());
+            });
+        }
+        group_mail_reading.add(&row_mark_seen_timeout);
 
         let row_mail_show_mark_read_actions = adw::SwitchRow::builder()
             .title("Show mark-read actions in toolbar")
@@ -3593,7 +3730,7 @@ impl PreferencesDialog {
                 settings.set_mail_caret_mode(row.is_active());
             });
         }
-        group_mail_behavior.add(&row_caret_mode);
+        group_mail_comfort.add(&row_caret_mode);
 
         let row_magic_spacebar = adw::SwitchRow::builder()
             .title("Magische Leertaste")
@@ -3606,7 +3743,7 @@ impl PreferencesDialog {
                 settings.set_mail_magic_spacebar(row.is_active());
             });
         }
-        group_mail_behavior.add(&row_magic_spacebar);
+        group_mail_comfort.add(&row_magic_spacebar);
 
         let row_show_real_date = adw::SwitchRow::builder()
             .title("Show full date")
@@ -3719,7 +3856,7 @@ impl PreferencesDialog {
                 });
             });
         }
-        group_mail_behavior.add(&row_mail_default_folder);
+        group_mail_startup.add(&row_mail_default_folder);
 
         let row_mail_layout = adw::ComboRow::builder()
             .title("Mail-Arbeitsweise")
@@ -3880,6 +4017,193 @@ impl PreferencesDialog {
             });
         }
         group_mail_window_layout.add(&row_mail_density);
+
+        let row_mail_unified_inbox = adw::SwitchRow::builder()
+            .title(&crate::i18n::gettext("Gemeinsamer Posteingang (Unified Inbox)"))
+            .subtitle(&crate::i18n::gettext(
+                "Kombiniert alle Posteingänge in der Seitenleiste (wird bei mehreren Konten aktiv)",
+            ))
+            .active(false)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_mail_unified_inbox.set_active(settings.mail_enable_unified_inbox());
+            let settings_for_unified = settings.clone();
+            row_mail_unified_inbox.connect_active_notify(move |row| {
+                settings_for_unified.set_mail_enable_unified_inbox(row.is_active());
+            });
+            let row_weak = row_mail_unified_inbox.downgrade();
+            settings.connect_changed(Some("mail-enable-unified-inbox"), move |s, _| {
+                let Some(row) = row_weak.upgrade() else { return; };
+                let active = s.boolean("mail-enable-unified-inbox");
+                if row.is_active() != active {
+                    row.set_active(active);
+                }
+            });
+        }
+        group_mail_window_layout.add(&row_mail_unified_inbox);
+
+        let group_mail_elements = adw::PreferencesGroup::builder()
+            .title(&crate::i18n::gettext("Elemente der Nachrichtenliste"))
+            .description(&crate::i18n::gettext(
+                "Sichtbare Indikatoren, Avatare und Vorschautexte in jeder Nachrichtenzeile",
+            ))
+            .build();
+
+        let row_mail_show_avatar = adw::SwitchRow::builder()
+            .title(&crate::i18n::gettext("Absender-Avatare anzeigen"))
+            .subtitle(&crate::i18n::gettext("Zeigt Profilbilder oder Namensinitialen in der Nachrichtenliste"))
+            .active(true)
+            .build();
+        let row_mail_fetch_remote_logos = adw::SwitchRow::builder()
+            .title(&crate::i18n::gettext("Firmenlogos abrufen (BIMI und Gravatar)"))
+            .subtitle(&crate::i18n::gettext("Lädt authentifizierte Markenlogos bekannter Absender über das Internet nach"))
+            .active(false)
+            .build();
+        let row_mail_show_preview_text = adw::SwitchRow::builder()
+            .title(&crate::i18n::gettext("Vorschautext in Liste"))
+            .subtitle(&crate::i18n::gettext("Zeigt eine Textzeile des Nachrichteninhalts unter dem Betreff"))
+            .active(true)
+            .build();
+        let row_mail_show_flagged = adw::SwitchRow::builder()
+            .title(&crate::i18n::gettext("Sternchen und Kennzeichnung"))
+            .subtitle(&crate::i18n::gettext("Zeigt Markierungs- und Wichtig-Symbole in der Liste"))
+            .active(true)
+            .build();
+        let row_mail_show_attachment = adw::SwitchRow::builder()
+            .title(&crate::i18n::gettext("Anhang-Symbol anzeigen"))
+            .subtitle(&crate::i18n::gettext("Kennzeichnet Nachrichten mit Anhängen durch eine Büroklammer"))
+            .active(true)
+            .build();
+        let row_mail_show_size = adw::SwitchRow::builder()
+            .title(&crate::i18n::gettext("Nachrichtengröße anzeigen"))
+            .subtitle(&crate::i18n::gettext("Zeigt die Speichergröße der Nachricht in der Liste an"))
+            .active(false)
+            .build();
+        let row_mail_show_labels = adw::SwitchRow::builder()
+            .title(&crate::i18n::gettext("Farbige Etiketten anzeigen"))
+            .subtitle(&crate::i18n::gettext("Zeigt Schlagwort-Farbpunkte in der Nachrichtenliste"))
+            .active(true)
+            .build();
+
+        if let Some(settings) = settings.clone() {
+            // Avatar
+            row_mail_show_avatar.set_active(settings.mail_show_avatar());
+            let s_av = settings.clone();
+            row_mail_show_avatar.connect_active_notify(move |row| {
+                s_av.set_mail_show_avatar(row.is_active());
+            });
+            let row_weak = row_mail_show_avatar.downgrade();
+            settings.connect_changed(Some("mail-show-avatar"), move |s, _| {
+                let Some(row) = row_weak.upgrade() else { return; };
+                let active = s.boolean("mail-show-avatar");
+                if row.is_active() != active {
+                    row.set_active(active);
+                }
+            });
+
+            // Remote logos
+            row_mail_fetch_remote_logos.set_active(settings.mail_fetch_remote_logos());
+            row_mail_fetch_remote_logos.set_sensitive(settings.mail_show_avatar());
+            let s_lg = settings.clone();
+            row_mail_fetch_remote_logos.connect_active_notify(move |row| {
+                s_lg.set_mail_fetch_remote_logos(row.is_active());
+            });
+            let row_weak = row_mail_fetch_remote_logos.downgrade();
+            settings.connect_changed(Some("mail-fetch-remote-logos"), move |s, _| {
+                let Some(row) = row_weak.upgrade() else { return; };
+                let active = s.boolean("mail-fetch-remote-logos");
+                if row.is_active() != active {
+                    row.set_active(active);
+                }
+            });
+            let r_lg = row_mail_fetch_remote_logos.clone();
+            row_mail_show_avatar.connect_active_notify(move |row| {
+                r_lg.set_sensitive(row.is_active());
+            });
+
+            // Preview text
+            row_mail_show_preview_text.set_active(settings.mail_show_preview_text());
+            let s_pt = settings.clone();
+            row_mail_show_preview_text.connect_active_notify(move |row| {
+                s_pt.set_mail_show_preview_text(row.is_active());
+            });
+            let row_weak = row_mail_show_preview_text.downgrade();
+            settings.connect_changed(Some("mail-show-preview-text"), move |s, _| {
+                let Some(row) = row_weak.upgrade() else { return; };
+                let active = s.boolean("mail-show-preview-text");
+                if row.is_active() != active {
+                    row.set_active(active);
+                }
+            });
+
+            // Flagged
+            row_mail_show_flagged.set_active(settings.mail_show_flagged());
+            let s_fl = settings.clone();
+            row_mail_show_flagged.connect_active_notify(move |row| {
+                s_fl.set_mail_show_flagged(row.is_active());
+            });
+            let row_weak = row_mail_show_flagged.downgrade();
+            settings.connect_changed(Some("mail-show-flagged"), move |s, _| {
+                let Some(row) = row_weak.upgrade() else { return; };
+                let active = s.boolean("mail-show-flagged");
+                if row.is_active() != active {
+                    row.set_active(active);
+                }
+            });
+
+            // Attachment
+            row_mail_show_attachment.set_active(settings.mail_show_attachment());
+            let s_at = settings.clone();
+            row_mail_show_attachment.connect_active_notify(move |row| {
+                s_at.set_mail_show_attachment(row.is_active());
+            });
+            let row_weak = row_mail_show_attachment.downgrade();
+            settings.connect_changed(Some("mail-show-attachment"), move |s, _| {
+                let Some(row) = row_weak.upgrade() else { return; };
+                let active = s.boolean("mail-show-attachment");
+                if row.is_active() != active {
+                    row.set_active(active);
+                }
+            });
+
+            // Size
+            row_mail_show_size.set_active(settings.mail_show_size());
+            let s_sz = settings.clone();
+            row_mail_show_size.connect_active_notify(move |row| {
+                s_sz.set_mail_show_size(row.is_active());
+            });
+            let row_weak = row_mail_show_size.downgrade();
+            settings.connect_changed(Some("mail-show-size"), move |s, _| {
+                let Some(row) = row_weak.upgrade() else { return; };
+                let active = s.boolean("mail-show-size");
+                if row.is_active() != active {
+                    row.set_active(active);
+                }
+            });
+
+            // Labels
+            row_mail_show_labels.set_active(settings.mail_show_labels());
+            let s_lbl = settings.clone();
+            row_mail_show_labels.connect_active_notify(move |row| {
+                s_lbl.set_mail_show_labels(row.is_active());
+            });
+            let row_weak = row_mail_show_labels.downgrade();
+            settings.connect_changed(Some("mail-show-labels"), move |s, _| {
+                let Some(row) = row_weak.upgrade() else { return; };
+                let active = s.boolean("mail-show-labels");
+                if row.is_active() != active {
+                    row.set_active(active);
+                }
+            });
+        }
+
+        group_mail_elements.add(&row_mail_show_avatar);
+        group_mail_elements.add(&row_mail_fetch_remote_logos);
+        group_mail_elements.add(&row_mail_show_preview_text);
+        group_mail_elements.add(&row_mail_show_flagged);
+        group_mail_elements.add(&row_mail_show_attachment);
+        group_mail_elements.add(&row_mail_show_size);
+        group_mail_elements.add(&row_mail_show_labels);
 
         let row_dark_mail = adw::SwitchRow::builder()
             .title("Adapt emails to dark style")
@@ -4069,6 +4393,33 @@ impl PreferencesDialog {
             });
         }
         group_mail_list.add(&row_mail_threading);
+
+        let row_mail_conversation_accordion = adw::SwitchRow::builder()
+            .title(&crate::i18n::gettext("Unterhaltungen automatisch aufklappen"))
+            .subtitle(&crate::i18n::gettext("Klappt ungelesene Nachrichten in Unterhaltungs-Threads automatisch auf"))
+            .active(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_mail_conversation_accordion.set_active(settings.mail_conversation_accordion());
+            row_mail_conversation_accordion.set_sensitive(settings.mail_threading());
+            let s_acc = settings.clone();
+            row_mail_conversation_accordion.connect_active_notify(move |row| {
+                s_acc.set_mail_conversation_accordion(row.is_active());
+            });
+            let row_weak = row_mail_conversation_accordion.downgrade();
+            settings.connect_changed(Some("mail-conversation-accordion"), move |s, _| {
+                let Some(row) = row_weak.upgrade() else { return; };
+                let active = s.boolean("mail-conversation-accordion");
+                if row.is_active() != active {
+                    row.set_active(active);
+                }
+            });
+            let r_acc = row_mail_conversation_accordion.clone();
+            row_mail_threading.connect_active_notify(move |row| {
+                r_acc.set_sensitive(row.is_active());
+            });
+        }
+        group_mail_list.add(&row_mail_conversation_accordion);
 
         let row_mail_date_format = adw::ComboRow::builder()
             .title("Date Format")
@@ -5463,16 +5814,17 @@ impl PreferencesDialog {
             .title(&gettext("General"))
             .icon_name("mail-inbox-symbolic")
             .build();
+        page_mail_general.add(&group_mail_startup);
         page_mail_general.add(&group_sync);
-        page_mail_general.add(&group_mail_reading);
-        page_mail_general.add(&group_mail_behavior);
         page_mail_general.add(&group_mail_notifications);
 
         let page_mail_html = adw::PreferencesPage::builder()
             .title(&gettext("Reading & Display"))
             .icon_name("mail-read-symbolic")
             .build();
+        page_mail_html.add(&group_mail_reading);
         page_mail_html.add(&group_mail_html);
+        page_mail_html.add(&group_mail_comfort);
         page_mail_html.add(&group_citations);
 
         let page_mail_labels = adw::PreferencesPage::builder()
@@ -5499,6 +5851,7 @@ impl PreferencesDialog {
             .icon_name("view-list-symbolic")
             .build();
         page_mail_layout.add(&group_mail_window_layout);
+        page_mail_layout.add(&group_mail_elements);
         page_mail_layout.add(&group_mail_list);
 
         let page_composer_general = adw::PreferencesPage::builder()
@@ -6110,7 +6463,28 @@ impl PreferencesDialog {
         content_page.set_title(&initial_title);
         select_sidebar_page(&sidebar_list, initial_page_id);
 
+        self.imp().detail_stack.replace(Some(detail_stack));
+        self.imp().sidebar_list.replace(Some(sidebar_list));
+        self.imp().content_title.replace(Some(content_title));
+        self.imp().content_page.replace(Some(content_page));
+
         self.set_child(Some(&split));
+    }
+
+    pub fn select_page(&self, target: &str) {
+        if let Some(stack) = self.imp().detail_stack.borrow().as_ref() {
+            stack.set_visible_child_name(target);
+        }
+        if let Some(sidebar) = self.imp().sidebar_list.borrow().as_ref() {
+            select_sidebar_page(sidebar, target);
+        }
+        let title = get_page_title(target).unwrap_or_else(|| target.to_string());
+        if let Some(ct) = self.imp().content_title.borrow().as_ref() {
+            ct.set_title(&title);
+        }
+        if let Some(cp) = self.imp().content_page.borrow().as_ref() {
+            cp.set_title(&title);
+        }
     }
 
     fn show_toast(&self, message: &str) {
@@ -9291,6 +9665,132 @@ mod tests {
                 "content_header must preserve start title buttons so back button is functional when collapsed"
             );
         }
+    }
+
+    #[test]
+    fn test_preferences_dialog_select_page_api() {
+        use glib::subclass::prelude::*;
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let dialog = super::PreferencesDialog::new();
+        while context.iteration(false) {}
+
+        dialog.select_page("calendar");
+        while context.iteration(false) {}
+
+        assert_eq!(
+            dialog.imp().detail_stack.borrow().as_ref().and_then(|s| s.visible_child_name()),
+            Some(glib::GString::from("calendar"))
+        );
+        assert_eq!(
+            dialog.imp().content_title.borrow().as_ref().map(|t| t.title().to_string()),
+            Some("Calendar & Tasks".to_string())
+        );
+
+        dialog.select_page("appearance");
+        while context.iteration(false) {}
+
+        assert_eq!(
+            dialog.imp().detail_stack.borrow().as_ref().and_then(|s| s.visible_child_name()),
+            Some(glib::GString::from("appearance"))
+        );
+    }
+
+    #[test]
+    fn test_preferences_dialog_mail_settings_coverage_and_reactivity() {
+        use adw::prelude::*;
+        use crate::services::AppSettings;
+
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let Some(settings) = AppSettings::try_new() else {
+            return;
+        };
+
+        // Reset settings
+        settings.set_mail_show_avatar(true);
+        settings.set_mail_fetch_remote_logos(false);
+        settings.set_mail_show_preview_text(true);
+        settings.set_mail_enable_unified_inbox(false);
+        settings.set_mail_conversation_accordion(true);
+        settings.set_mail_preserve_image_layout(true);
+        settings.set_mail_mark_seen_timeout(1500);
+        settings.set_composer_show_format_toolbar(false);
+        settings.set_composer_track_recent_recipients(true);
+        while context.iteration(false) {}
+
+        let dialog = super::PreferencesDialog::new();
+        while context.iteration(false) {}
+        let widget = dialog.upcast_ref::<gtk::Widget>();
+
+        // Verify widgets exist
+        let row_avatar = find_switch_by_title(widget, "Absender-Avatare anzeigen")
+            .expect("Absender-Avatare SwitchRow must exist");
+        let row_preview = find_switch_by_title(widget, "Vorschautext in Liste")
+            .expect("Vorschautext SwitchRow must exist");
+        let row_unified = find_switch_by_title(widget, "Gemeinsamer Posteingang (Unified Inbox)")
+            .expect("Unified Inbox SwitchRow must exist");
+        let row_accordion = find_switch_by_title(widget, "Unterhaltungen automatisch aufklappen")
+            .expect("Conversation accordion SwitchRow must exist");
+        let row_preserve_img = find_switch_by_title(widget, "Preserve image layout")
+            .expect("Preserve image layout SwitchRow must exist");
+        let row_timeout = find_combo_by_title(widget, "Mark as read delay")
+            .expect("Mark as read delay ComboRow must exist");
+        let row_fmt_toolbar = find_switch_by_title(widget, "Formatierungsleiste immer anzeigen")
+            .expect("Format toolbar SwitchRow must exist");
+        let row_track_recip = find_switch_by_title(widget, "Kürzlich verwendete Empfänger merken")
+            .expect("Track recent recipients SwitchRow must exist");
+
+        assert_eq!(row_avatar.is_active(), true);
+        assert_eq!(row_preview.is_active(), true);
+        assert_eq!(row_unified.is_active(), false);
+        assert_eq!(row_accordion.is_active(), true);
+        assert_eq!(row_preserve_img.is_active(), true);
+        assert_eq!(row_timeout.selected(), 2); // 1500ms -> index 2
+        assert_eq!(row_fmt_toolbar.is_active(), false);
+        assert_eq!(row_track_recip.is_active(), true);
+
+        // Test reactivity from UI to GSettings
+        row_unified.set_active(true);
+        while context.iteration(false) {}
+        assert_eq!(settings.mail_enable_unified_inbox(), true);
+
+        row_avatar.set_active(false);
+        while context.iteration(false) {}
+        assert_eq!(settings.mail_show_avatar(), false);
+
+        row_preview.set_active(false);
+        while context.iteration(false) {}
+        assert_eq!(settings.mail_show_preview_text(), false);
+
+        row_accordion.set_active(false);
+        while context.iteration(false) {}
+        assert_eq!(settings.mail_conversation_accordion(), false);
+
+        row_preserve_img.set_active(false);
+        while context.iteration(false) {}
+        assert_eq!(settings.mail_preserve_image_layout(), false);
+
+        row_timeout.set_selected(3); // 3000ms
+        while context.iteration(false) {}
+        assert_eq!(settings.mail_mark_seen_timeout(), 3000);
+
+        row_fmt_toolbar.set_active(true);
+        while context.iteration(false) {}
+        assert_eq!(settings.composer_show_format_toolbar(), true);
+
+        row_track_recip.set_active(false);
+        while context.iteration(false) {}
+        assert_eq!(settings.composer_track_recent_recipients(), false);
     }
 }
 
