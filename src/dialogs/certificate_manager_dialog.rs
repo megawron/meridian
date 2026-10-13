@@ -49,7 +49,7 @@ pub struct CertificateManagerDialog {
 impl CertificateManagerDialog {
     pub fn new<W: IsA<gtk::Widget>>(parent: Option<&W>) -> Self {
         let dialog = adw::Dialog::builder()
-            .title("Zertifikatsverwaltung")
+            .title(&gettext("Certificate Management"))
             .content_width(780)
             .content_height(600)
             .build();
@@ -64,12 +64,12 @@ impl CertificateManagerDialog {
 
         let search_toggle = gtk::ToggleButton::builder()
             .icon_name("system-search-symbolic")
-            .tooltip_text("Zertifikate suchen (Strg+F)")
+            .tooltip_text(&gettext("Search certificates (Ctrl+F)"))
             .build();
         header_bar.pack_start(&search_toggle);
 
         let btn_close = gtk::Button::builder()
-            .label("Schließen")
+            .label(&gettext("Close"))
             .build();
         header_bar.pack_end(&btn_close);
 
@@ -89,7 +89,7 @@ impl CertificateManagerDialog {
         // ── Search Bar Revealer ───────────────────────────────────────────────
         let search_bar = gtk::SearchBar::new();
         let search_entry = gtk::SearchEntry::builder()
-            .placeholder_text("Zertifikate nach Name, E-Mail, Aussteller oder Fingerabdruck durchsuchen…")
+            .placeholder_text(&gettext("Search certificates by name, email, issuer, or fingerprint…"))
             .hexpand(true)
             .build();
         search_bar.set_child(Some(&search_entry));
@@ -100,68 +100,68 @@ impl CertificateManagerDialog {
         search_bar.connect_entry(&search_entry);
         toolbar_view.add_top_bar(&search_bar);
 
-        // ── Tab 1: Ihre Zertifikate (Personal) ────────────────────────────────
+        // ── Tab 1: Your Certificates (Personal) ────────────────────────────────
         let (tab_personal, list_personal) = create_category_tab(
-            "Zertifikate zur persönlichen Identifizierung, zum Signieren von E-Mails und zur Entschlüsselung eingehender Nachrichten."
+            &gettext("Certificates for personal identification, email signing, and decrypting incoming messages.")
         );
-        let page_personal = view_stack.add_titled(&tab_personal, Some("personal"), "Ihre Zertifikate");
+        let page_personal = view_stack.add_titled(&tab_personal, Some("personal"), &gettext("Your Certificates"));
         page_personal.set_icon_name(Some("credentials-symbolic"));
 
-        // ── Tab 2: Kontakte (Contacts) ────────────────────────────────────────
+        // ── Tab 2: Contacts ────────────────────────────────────────
         let (tab_contact, list_contact) = create_category_tab(
-            "Zertifikate von Kontakten und Empfängern zur Verschlüsselung gesendeter Nachrichten."
+            &gettext("Certificates of contacts and recipients for encrypting outgoing messages.")
         );
-        let page_contact = view_stack.add_titled(&tab_contact, Some("contacts"), "Kontakte");
+        let page_contact = view_stack.add_titled(&tab_contact, Some("contacts"), &gettext("Contacts"));
         page_contact.set_icon_name(Some("avatar-default-symbolic"));
 
-        // ── Tab 3: Zertifizierungsstellen (Authorities) ───────────────────────
+        // ── Tab 3: Authorities ───────────────────────
         let (tab_authority, list_authority) = create_category_tab(
-            "Zertifizierungsstellen (CAs), denen zur Überprüfung von Website- und E-Mail-Zertifikaten vertraut wird."
+            &gettext("Certificate Authorities (CAs) trusted to verify website and email certificates.")
         );
-        let page_authority = view_stack.add_titled(&tab_authority, Some("authorities"), "Zertifizierungsstellen");
+        let page_authority = view_stack.add_titled(&tab_authority, Some("authorities"), &gettext("Authorities"));
         page_authority.set_icon_name(Some("security-high-symbolic"));
 
         // ── Bottom Action Bar ─────────────────────────────────────────────────
         let action_bar = gtk::ActionBar::new();
 
         let btn_import = gtk::Button::builder()
-            .label("Importieren…")
+            .label(&gettext("Import…"))
             .icon_name("document-open-symbolic")
-            .tooltip_text("Zertifikat oder PKCS#12-Schlüsselbund importieren")
+            .tooltip_text(&gettext("Import certificate or PKCS#12 bundle"))
             .build();
         action_bar.pack_start(&btn_import);
 
         let btn_export = gtk::Button::builder()
-            .label("Exportieren…")
+            .label(&gettext("Export…"))
             .icon_name("document-save-symbolic")
             .sensitive(false)
-            .tooltip_text("Ausgewähltes Zertifikat exportieren")
+            .tooltip_text(&gettext("Export selected certificate"))
             .build();
         action_bar.pack_start(&btn_export);
 
         let btn_details = gtk::Button::builder()
-            .label("Details anzeigen…")
+            .label(&gettext("View Details…"))
             .icon_name("dialog-information-symbolic")
             .css_classes(vec!["suggested-action"])
             .sensitive(false)
-            .tooltip_text("Vollständige Zertifikatseigenschaften und PEM anzeigen")
+            .tooltip_text(&gettext("View complete certificate properties and PEM"))
             .build();
         action_bar.pack_end(&btn_details);
 
         let btn_trust = gtk::Button::builder()
-            .label("Vertrauen bearbeiten…")
+            .label(&gettext("Edit Trust…"))
             .icon_name("channel-secure-symbolic")
             .sensitive(false)
-            .tooltip_text("Vertrauensstufe und Verwendungszwecke anpassen")
+            .tooltip_text(&gettext("Adjust trust level and purposes"))
             .build();
         action_bar.pack_end(&btn_trust);
 
         let btn_delete = gtk::Button::builder()
-            .label("Löschen")
+            .label(&gettext("Delete"))
             .icon_name("user-trash-symbolic")
             .css_classes(vec!["destructive-action"])
             .sensitive(false)
-            .tooltip_text("Ausgewähltes Zertifikat aus dem Speicher entfernen")
+            .tooltip_text(&gettext("Remove selected certificate from storage"))
             .build();
         action_bar.pack_end(&btn_delete);
 
@@ -399,17 +399,20 @@ fn populate_list_box(
         .collect();
 
     if filtered.is_empty() {
+        let (title, subtitle) = if query.is_empty() {
+            (
+                gettext("No certificates available in this category"),
+                gettext("Click “Import…” to add certificates."),
+            )
+        } else {
+            (
+                gettext("No certificates match the search query"),
+                gettext("Check the search query or clear the input."),
+            )
+        };
         let placeholder = adw::ActionRow::builder()
-            .title(if query.is_empty() {
-                "Keine Zertifikate in dieser Kategorie vorhanden"
-            } else {
-                "Keine Zertifikate stimmen mit der Suche überein"
-            })
-            .subtitle(if query.is_empty() {
-                "Klicken Sie auf »Importieren…«, um Zertifikate hinzuzufügen."
-            } else {
-                "Prüfen Sie den Suchbegriff oder löschen Sie die Eingabe."
-            })
+            .title(&title)
+            .subtitle(&subtitle)
             .build();
         placeholder.set_sensitive(false);
         list.append(&placeholder);
@@ -424,9 +427,9 @@ fn populate_list_box(
 
         // Subtitle: Email + Issuer
         let subtitle = if !cert.subject_email.is_empty() {
-            format!("{} · Ausgestellt von: {}", cert.subject_email, cert.issuer_cn)
+            format!("{} · {}: {}", cert.subject_email, gettext("Issued by"), cert.issuer_cn)
         } else {
-            format!("Ausgestellt von: {}", cert.issuer_cn)
+            format!("{}: {}", gettext("Issued by"), cert.issuer_cn)
         };
         row.set_subtitle(&subtitle);
 
@@ -449,33 +452,33 @@ fn populate_list_box(
         if cert.has_private_key {
             let key_badge = gtk::Image::builder()
                 .icon_name("dialog-password-symbolic")
-                .tooltip_text("Privater Schlüssel vorhanden")
+                .tooltip_text(&gettext("Private key present"))
                 .build();
             badge_box.append(&key_badge);
         }
 
         // Trust Level Badge
         let (trust_label, trust_class) = match cert.trust_level {
-            TrustLevel::AlwaysTrust => ("Immer vertraut", "success"),
+            TrustLevel::AlwaysTrust => (gettext("Always trusted"), "success"),
             TrustLevel::Trusted | TrustLevel::TrustForSigning | TrustLevel::TrustForEncryption => {
-                ("Vertrauenswürdig", "success")
+                (gettext("Trusted"), "success")
             }
-            TrustLevel::Marginal => ("Eingeschränkt", "warning"),
-            TrustLevel::Untrusted => ("Nicht vertraut", "error"),
-            TrustLevel::NeverTrust => ("Niemals vertraut", "error"),
-            TrustLevel::Unknown => ("Unbekannt", "dim-label"),
+            TrustLevel::Marginal => (gettext("Marginal"), "warning"),
+            TrustLevel::Untrusted => (gettext("Untrusted"), "error"),
+            TrustLevel::NeverTrust => (gettext("Never trusted"), "error"),
+            TrustLevel::Unknown => (gettext("Unknown"), "dim-label"),
         };
         let lbl_trust = gtk::Label::builder()
-            .label(trust_label)
+            .label(&trust_label)
             .css_classes(vec!["caption", trust_class])
             .build();
         badge_box.append(&lbl_trust);
 
         // Expiration Badge
         let (exp_label, exp_class) = if cert.is_expired {
-            ("Abgelaufen".to_string(), "error")
+            (gettext("Expired"), "error")
         } else {
-            (format!("Gültig bis {}", cert.not_after), "dim-label")
+            (format!("{} {}", gettext("Expires"), cert.not_after), "dim-label")
         };
         let lbl_exp = gtk::Label::builder()
             .label(&exp_label)
@@ -541,9 +544,10 @@ fn delete_selected_certificate(state: &Rc<RefCell<ManagerState>>) {
     let state_for_delete = Rc::clone(state);
     let cert_id = cert.id.clone();
     let prompt = adw::AlertDialog::new(
-        Some("Zertifikat löschen?"),
+        Some(&gettext("Delete Certificate?")),
         Some(&format!(
-            "Möchten Sie das Zertifikat »{}« wirklich unwiderruflich entfernen?",
+            "{}: “{}”?",
+            gettext("Are you sure you want to permanently delete the certificate"),
             cert.display_name
         )),
     );
@@ -554,7 +558,7 @@ fn delete_selected_certificate(state: &Rc<RefCell<ManagerState>>) {
         if response == "delete" {
             let s = state_for_delete.borrow();
             let _ = CertificateService::delete_certificate(&cert_id);
-            s.toast_overlay.add_toast(adw::Toast::new("Zertifikat erfolgreich entfernt"));
+            s.toast_overlay.add_toast(adw::Toast::new(&gettext("Certificate successfully deleted")));
             drop(s);
             state_for_delete.borrow_mut().selected_id = None;
             reload_all_lists(&state_for_delete);
@@ -567,12 +571,12 @@ fn delete_selected_certificate(state: &Rc<RefCell<ManagerState>>) {
 fn import_certificate_file(state: &Rc<RefCell<ManagerState>>) {
     let dialog = state.borrow().dialog.clone();
     let file_dialog = gtk::FileDialog::builder()
-        .title("Zertifikat importieren")
+        .title(&gettext("Import Certificate"))
         .modal(true)
         .build();
 
     let filter = gtk::FileFilter::new();
-    filter.set_name(Some("Alle Zertifikate (*.crt, *.pem, *.cer, *.p12, *.pfx, *.asc, *.gpg)"));
+    filter.set_name(Some(&gettext("All Certificates (*.crt, *.pem, *.cer, *.p12, *.pfx, *.asc, *.gpg)")));
     filter.add_pattern("*.crt");
     filter.add_pattern("*.pem");
     filter.add_pattern("*.cer");
@@ -600,7 +604,8 @@ fn import_certificate_file(state: &Rc<RefCell<ManagerState>>) {
                 match res {
                     Ok(rec) => {
                         state_for_prompt.borrow().toast_overlay.add_toast(adw::Toast::new(&format!(
-                            "Zertifikat »{}« erfolgreich importiert",
+                            "{}: “{}”",
+                            gettext("Successfully imported certificate"),
                             rec.display_name
                         )));
                         reload_all_lists(&state_for_prompt);
@@ -616,17 +621,18 @@ fn import_certificate_file(state: &Rc<RefCell<ManagerState>>) {
             match res {
                 Ok(rec) => {
                     state_for_result.borrow().toast_overlay.add_toast(adw::Toast::new(&format!(
-                        "Zertifikat »{}« erfolgreich importiert",
+                        "{}: “{}”",
+                        gettext("Successfully imported certificate"),
                         rec.display_name
                     )));
                     reload_all_lists(&state_for_result);
                 }
                 Err(err) => {
                     let alert = adw::AlertDialog::new(
-                        Some("Import fehlgeschlagen"),
-                        Some(&format!("Das Zertifikat konnte nicht importiert werden:\n\n{err}")),
+                        Some(&gettext("Import Failed")),
+                        Some(&format!("{}:\n\n{err}", gettext("The certificate could not be imported"))),
                     );
-                    alert.add_response("ok", "OK");
+                    alert.add_response("ok", &gettext("OK"));
                     alert.present(Some(&state_for_result.borrow().dialog));
                 }
             }
@@ -643,7 +649,7 @@ fn export_selected_certificate(state: &Rc<RefCell<ManagerState>>) {
     let Some(cert) = CertificateService::get_certificate(&id) else { return };
 
     let file_dialog = gtk::FileDialog::builder()
-        .title("Zertifikat exportieren")
+        .title(&gettext("Export Certificate"))
         .modal(true)
         .initial_name(&format!("{}.pem", cert.display_name.replace(' ', "_")))
         .build();
@@ -670,7 +676,7 @@ fn export_selected_certificate(state: &Rc<RefCell<ManagerState>>) {
                 match res {
                     Ok(_) => {
                         state_for_pass.borrow().toast_overlay.add_toast(adw::Toast::new(
-                            "Zertifikat erfolgreich als PKCS#12 exportiert",
+                            &gettext("Certificate successfully exported as PKCS#12"),
                         ));
                         Ok(())
                     }
@@ -690,13 +696,13 @@ fn export_selected_certificate(state: &Rc<RefCell<ManagerState>>) {
                 state_for_save
                     .borrow()
                     .toast_overlay
-                    .add_toast(adw::Toast::new("Zertifikat erfolgreich exportiert"));
+                    .add_toast(adw::Toast::new(&gettext("Certificate successfully exported")));
             } else if let Err(err) = res {
                 let alert = adw::AlertDialog::new(
-                    Some("Export fehlgeschlagen"),
-                    Some(&format!("Fehler beim Exportieren:\n\n{err}")),
+                    Some(&gettext("Export Failed")),
+                    Some(&format!("{}:\n\n{err}", gettext("Error exporting certificate"))),
                 );
-                alert.add_response("ok", "OK");
+                alert.add_response("ok", &gettext("OK"));
                 alert.present(Some(&state_for_save.borrow().dialog));
             }
         }
@@ -715,7 +721,7 @@ pub struct CertificateDetailsDialog {
 impl CertificateDetailsDialog {
     pub fn new(cert: &CertificateRecord) -> Self {
         let dialog = adw::Dialog::builder()
-            .title("Zertifikatsdetails")
+            .title(&gettext("Certificate Details"))
             .content_width(620)
             .content_height(680)
             .build();
@@ -727,12 +733,12 @@ impl CertificateDetailsDialog {
 
         let header_bar = adw::HeaderBar::new();
         let title_widget = adw::WindowTitle::builder()
-            .title("Zertifikatsdetails")
+            .title(&gettext("Certificate Details"))
             .subtitle(&cert.display_name)
             .build();
         header_bar.set_title_widget(Some(&title_widget));
 
-        let btn_close = gtk::Button::builder().label("Schließen").build();
+        let btn_close = gtk::Button::builder().label(&gettext("Close")).build();
         let dlg_close = dialog.downgrade();
         btn_close.connect_clicked(move |_| {
             if let Some(dlg) = dlg_close.upgrade() {
@@ -744,48 +750,48 @@ impl CertificateDetailsDialog {
 
         let page = adw::PreferencesPage::new();
 
-        // Group 1: Subject (Ausgestellt für)
+        // Group 1: Subject
         let group_subject = adw::PreferencesGroup::builder()
-            .title("Ausgestellt für (Inhaber / Subject)")
+            .title(&gettext("Issued to (Subject)"))
             .build();
-        add_detail_row(&group_subject, "Allgemeiner Name (CN)", &cert.subject_cn, true);
+        add_detail_row(&group_subject, &gettext("Common Name (CN)"), &cert.subject_cn, true);
         if !cert.subject_email.is_empty() {
-            add_detail_row(&group_subject, "E-Mail-Adresse", &cert.subject_email, true);
+            add_detail_row(&group_subject, &gettext("Email Address"), &cert.subject_email, true);
         }
         if !cert.subject_org.is_empty() {
-            add_detail_row(&group_subject, "Organisation (O)", &cert.subject_org, false);
+            add_detail_row(&group_subject, &gettext("Organization (O)"), &cert.subject_org, false);
         }
         if !cert.subject_ou.is_empty() {
-            add_detail_row(&group_subject, "Organisationseinheit (OU)", &cert.subject_ou, false);
+            add_detail_row(&group_subject, &gettext("Organizational Unit (OU)"), &cert.subject_ou, false);
         }
         page.add(&group_subject);
 
-        // Group 2: Issuer (Ausgestellt durch)
+        // Group 2: Issuer
         let group_issuer = adw::PreferencesGroup::builder()
-            .title("Ausgestellt durch (Aussteller / Issuer)")
+            .title(&gettext("Issued by (Issuer)"))
             .build();
-        add_detail_row(&group_issuer, "Aussteller-CN", &cert.issuer_cn, true);
+        add_detail_row(&group_issuer, &gettext("Issuer CN"), &cert.issuer_cn, true);
         if !cert.issuer_org.is_empty() {
-            add_detail_row(&group_issuer, "Aussteller-Organisation", &cert.issuer_org, false);
+            add_detail_row(&group_issuer, &gettext("Issuer Organization"), &cert.issuer_org, false);
         }
         page.add(&group_issuer);
 
         // Group 3: Validity
         let group_validity = adw::PreferencesGroup::builder()
-            .title("Gültigkeitszeitraum")
+            .title(&gettext("Validity Period"))
             .build();
-        add_detail_row(&group_validity, "Gültig ab", &cert.not_before, false);
-        add_detail_row(&group_validity, "Gültig bis", &cert.not_after, false);
+        add_detail_row(&group_validity, &gettext("Valid From"), &cert.not_before, false);
+        add_detail_row(&group_validity, &gettext("Valid To"), &cert.not_after, false);
         let status_row = adw::ActionRow::builder()
-            .title("Status")
+            .title(&gettext("Status"))
             .build();
         let (status_text, status_class) = if cert.is_expired {
-            ("Abgelaufen", "error")
+            (gettext("Expired"), "error")
         } else {
-            ("Gültig", "success")
+            (gettext("Valid"), "success")
         };
         let status_badge = gtk::Label::builder()
-            .label(status_text)
+            .label(&status_text)
             .valign(gtk::Align::Center)
             .css_classes(vec!["caption", status_class])
             .build();
@@ -795,20 +801,25 @@ impl CertificateDetailsDialog {
 
         // Group 4: Key & Security Identifiers
         let group_key = adw::PreferencesGroup::builder()
-            .title("Schlüssel & Sicherheitsmerkmale")
+            .title(&gettext("Key & Security Features"))
             .build();
-        add_detail_row(&group_key, "Seriennummer", &cert.serial_hex, true);
-        add_detail_row(&group_key, "SHA-256-Fingerabdruck", &cert.sha256_fingerprint, true);
+        add_detail_row(&group_key, &gettext("Serial Number"), &cert.serial_hex, true);
+        add_detail_row(&group_key, &gettext("SHA-256 Fingerprint"), &cert.sha256_fingerprint, true);
 
         let type_str = match cert.cert_type {
             CertType::Smime => "X.509 (S/MIME)",
             CertType::OpenPgp => "OpenPGP",
         };
-        add_detail_row(&group_key, "Zertifikatstyp", type_str, false);
+        add_detail_row(&group_key, &gettext("Certificate Type"), type_str, false);
 
+        let priv_key_str = if cert.has_private_key {
+            gettext("Present")
+        } else {
+            gettext("Not present")
+        };
         let key_row = adw::ActionRow::builder()
-            .title("Privater Schlüssel")
-            .subtitle(if cert.has_private_key { "Vorhanden" } else { "Nicht vorhanden" })
+            .title(&gettext("Private Key"))
+            .subtitle(&priv_key_str)
             .build();
         if cert.has_private_key {
             key_row.add_prefix(&gtk::Image::from_icon_name("dialog-password-symbolic"));
@@ -817,27 +828,27 @@ impl CertificateDetailsDialog {
 
         // Key Usage Expander
         let expander_usage = adw::ExpanderRow::builder()
-            .title("Verwendungszwecke (Key Usage)")
+            .title(&gettext("Key Usage"))
             .subtitle(cert.key_usage_flags.summary())
             .build();
-        add_usage_subrow(&expander_usage, "Digitale Signatur", cert.key_usage_flags.digital_signature);
-        add_usage_subrow(&expander_usage, "Nichtabstreitbarkeit (Non-Repudiation)", cert.key_usage_flags.non_repudiation);
-        add_usage_subrow(&expander_usage, "Schlüsselverschlüsselung", cert.key_usage_flags.key_encipherment);
-        add_usage_subrow(&expander_usage, "Datenverschlüsselung", cert.key_usage_flags.data_encipherment);
-        add_usage_subrow(&expander_usage, "Schlüsselvereinbarung (Key Agreement)", cert.key_usage_flags.key_agreement);
-        add_usage_subrow(&expander_usage, "Zertifikatsausstellung (KeyCertSign)", cert.key_usage_flags.key_cert_sign);
-        add_usage_subrow(&expander_usage, "Sperrlistenprüfung (CRLSign)", cert.key_usage_flags.crl_sign);
-        add_usage_subrow(&expander_usage, "E-Mail-Schutz (S/MIME)", cert.key_usage_flags.email_protection);
-        add_usage_subrow(&expander_usage, "Server-Authentifizierung (SSL/TLS)", cert.key_usage_flags.server_auth);
-        add_usage_subrow(&expander_usage, "Client-Authentifizierung", cert.key_usage_flags.client_auth);
-        add_usage_subrow(&expander_usage, "Code-Signierung", cert.key_usage_flags.code_signing);
+        add_usage_subrow(&expander_usage, &gettext("Digital Signature"), cert.key_usage_flags.digital_signature);
+        add_usage_subrow(&expander_usage, &gettext("Non-Repudiation"), cert.key_usage_flags.non_repudiation);
+        add_usage_subrow(&expander_usage, &gettext("Key Encipherment"), cert.key_usage_flags.key_encipherment);
+        add_usage_subrow(&expander_usage, &gettext("Data Encipherment"), cert.key_usage_flags.data_encipherment);
+        add_usage_subrow(&expander_usage, &gettext("Key Agreement"), cert.key_usage_flags.key_agreement);
+        add_usage_subrow(&expander_usage, &gettext("Certificate Signing (KeyCertSign)"), cert.key_usage_flags.key_cert_sign);
+        add_usage_subrow(&expander_usage, &gettext("CRL Signing (CRLSign)"), cert.key_usage_flags.crl_sign);
+        add_usage_subrow(&expander_usage, &gettext("Email Protection (S/MIME)"), cert.key_usage_flags.email_protection);
+        add_usage_subrow(&expander_usage, &gettext("Server Authentication (SSL/TLS)"), cert.key_usage_flags.server_auth);
+        add_usage_subrow(&expander_usage, &gettext("Client Authentication"), cert.key_usage_flags.client_auth);
+        add_usage_subrow(&expander_usage, &gettext("Code Signing"), cert.key_usage_flags.code_signing);
         group_key.add(&expander_usage);
 
         page.add(&group_key);
 
         // Group 5: Raw PEM Data
         let group_pem = adw::PreferencesGroup::builder()
-            .title("Rohdaten (PEM-Format)")
+            .title(&gettext("Raw Data (PEM Format)"))
             .build();
 
         let pem_box = gtk::Box::builder()
@@ -868,7 +879,7 @@ impl CertificateDetailsDialog {
         pem_box.append(&scrolled_pem);
 
         let btn_copy_pem = gtk::Button::builder()
-            .label("In Zwischenablage kopieren")
+            .label(&gettext("Copy to Clipboard"))
             .icon_name("edit-copy-symbolic")
             .halign(gtk::Align::End)
             .build();
@@ -877,7 +888,7 @@ impl CertificateDetailsDialog {
         let toast_overlay_copy = toast_overlay.clone();
         btn_copy_pem.connect_clicked(move |button| {
             button.display().clipboard().set_text(&pem_content);
-            toast_overlay_copy.add_toast(adw::Toast::new("PEM in Zwischenablage kopiert"));
+            toast_overlay_copy.add_toast(adw::Toast::new(&gettext("PEM copied to clipboard")));
         });
         pem_box.append(&btn_copy_pem);
         group_pem.add(&pem_box);
@@ -917,7 +928,7 @@ fn add_detail_row(group: &adw::PreferencesGroup, title: &str, value: &str, copya
             .icon_name("edit-copy-symbolic")
             .valign(gtk::Align::Center)
             .css_classes(vec!["flat"])
-            .tooltip_text("Wert kopieren")
+            .tooltip_text(&gettext("Copy value"))
             .build();
         let val_clone = value.to_string();
         copy_btn.connect_clicked(move |button| {
@@ -934,7 +945,7 @@ fn add_usage_subrow(expander: &adw::ExpanderRow, title: &str, enabled: bool) {
         .title(title)
         .build();
     let badge = gtk::Label::builder()
-        .label(if enabled { "Ja" } else { "Nein" })
+        .label(&if enabled { gettext("Yes") } else { gettext("No") })
         .css_classes(vec!["caption", if enabled { "success" } else { "dim-label" }])
         .valign(gtk::Align::Center)
         .build();
@@ -957,7 +968,7 @@ impl CertificateTrustDialog {
         F: Fn(TrustLevel, bool, bool, bool) + 'static,
     {
         let dialog = adw::Dialog::builder()
-            .title("Vertrauensstellung bearbeiten")
+            .title(&gettext("Edit Certificate Trust"))
             .content_width(540)
             .content_height(520)
             .build();
@@ -981,30 +992,38 @@ impl CertificateTrustDialog {
 
         // Info Banner
         let group_info = adw::PreferencesGroup::builder()
-            .title("Zertifikat")
+            .title(&gettext("Certificate"))
             .description(&format!(
-                "Bearbeiten Sie die Vertrauensregeln für »{}« (Aussteller: {}).",
-                cert.display_name, cert.issuer_cn
+                "{}: “{}” ({}: {}).",
+                gettext("Edit trust rules for"),
+                cert.display_name,
+                gettext("Issuer"),
+                cert.issuer_cn
             ))
             .build();
         page.add(&group_info);
 
         // Trust Level Combo
         let group_level = adw::PreferencesGroup::builder()
-            .title("Vertrauensstufe")
+            .title(&gettext("Trust Level"))
             .build();
 
+        let trust_item_always = gettext("Always trust");
+        let trust_item_trusted = gettext("Trusted (Default)");
+        let trust_item_marginal = gettext("Marginally trusted");
+        let trust_item_untrusted = gettext("Untrusted");
+        let trust_item_never = gettext("Never trust");
         let trust_items = [
-            "Immer vertrauen",
-            "Vertrauenswürdig (Standard)",
-            "Eingeschränkt vertrauenswürdig",
-            "Nicht vertrauenswürdig",
-            "Niemals vertrauen",
+            trust_item_always.as_str(),
+            trust_item_trusted.as_str(),
+            trust_item_marginal.as_str(),
+            trust_item_untrusted.as_str(),
+            trust_item_never.as_str(),
         ];
         let model = gtk::StringList::new(&trust_items);
         let combo_trust = adw::ComboRow::builder()
-            .title("Vertrauen")
-            .subtitle("Legt fest, wie das Zertifikat in kryptografischen Prüfungen bewertet wird")
+            .title(&gettext("Trust"))
+            .subtitle(&gettext("Determines how the certificate is evaluated in cryptographic checks"))
             .model(&model)
             .build();
 
@@ -1022,27 +1041,27 @@ impl CertificateTrustDialog {
 
         // Purpose Toggles (CA Usage)
         let group_purposes = adw::PreferencesGroup::builder()
-            .title("Verwendungszwecke")
-            .description("Geben Sie an, für welche Einsatzbereiche dieser Zertifizierungsstelle vertraut wird:")
+            .title(&gettext("Key Purposes"))
+            .description(&gettext("Specify the applications for which this certificate authority is trusted:"))
             .build();
 
         let switch_ssl = adw::SwitchRow::builder()
-            .title("Websites (SSL/TLS)")
-            .subtitle("Dieser Zertifizierungsstelle zum Identifizieren von Websites vertrauen")
+            .title(&gettext("Websites (SSL/TLS)"))
+            .subtitle(&gettext("Trust this CA to identify websites"))
             .active(cert.key_usage_flags.server_auth)
             .build();
         group_purposes.add(&switch_ssl);
 
         let switch_email = adw::SwitchRow::builder()
-            .title("E-Mail-Benutzer (S/MIME)")
-            .subtitle("Dieser Zertifizierungsstelle zum Identifizieren von E-Mail-Benutzern vertrauen")
+            .title(&gettext("Email Users (S/MIME)"))
+            .subtitle(&gettext("Trust this CA to identify email users"))
             .active(cert.key_usage_flags.email_protection)
             .build();
         group_purposes.add(&switch_email);
 
         let switch_code = adw::SwitchRow::builder()
-            .title("Softwarehersteller (Code-Signatur)")
-            .subtitle("Dieser Zertifizierungsstelle zum Identifizieren von Softwareherstellern vertrauen")
+            .title(&gettext("Software Developers (Code Signing)"))
+            .subtitle(&gettext("Trust this CA to identify software developers"))
             .active(cert.key_usage_flags.code_signing)
             .build();
         group_purposes.add(&switch_code);
@@ -1114,9 +1133,9 @@ impl PassphrasePromptDialog {
     where
         F: Fn(String) -> Result<(), String> + 'static,
     {
-        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("Zertifikat");
+        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("certificate");
         let dialog = adw::Dialog::builder()
-            .title("Passphrase erforderlich")
+            .title(&gettext("Passphrase Required"))
             .content_width(440)
             .content_height(260)
             .build();
@@ -1138,14 +1157,16 @@ impl PassphrasePromptDialog {
 
         let page = adw::PreferencesPage::new();
         let group = adw::PreferencesGroup::builder()
-            .title("PKCS#12-Schlüsselbund entschlüsseln")
+            .title(&gettext("Unlock PKCS#12 Bundle"))
             .description(&format!(
-                "Die Datei »{filename}« ist durch eine Passphrase geschützt. Bitte geben Sie das Kennwort ein, um den Import durchzuführen:"
+                "{}: “{filename}”. {}:",
+                gettext("The file is protected by a passphrase"),
+                gettext("Please enter the password to import it")
             ))
             .build();
 
         let row_pass = adw::PasswordEntryRow::builder()
-            .title("Passphrase")
+            .title(&gettext("Passphrase"))
             .build();
         group.add(&row_pass);
 
@@ -1184,7 +1205,7 @@ impl PassphrasePromptDialog {
                         }
                     }
                     Err(err) => {
-                        lbl_error.set_label(&format!("Fehler: {err}"));
+                        lbl_error.set_label(&format!("{}: {err}", gettext("Error")));
                         lbl_error.set_visible(true);
                     }
                 }
@@ -1208,7 +1229,7 @@ impl PassphrasePromptDialog {
         F: Fn(String) -> Result<(), String> + 'static,
     {
         let dialog = adw::Dialog::builder()
-            .title("Zertifikatsexport schützen")
+            .title(&gettext("Protect Certificate Export"))
             .content_width(440)
             .content_height(320)
             .build();
@@ -1230,17 +1251,17 @@ impl PassphrasePromptDialog {
 
         let page = adw::PreferencesPage::new();
         let group = adw::PreferencesGroup::builder()
-            .title("PKCS#12-Passphrase festlegen")
-            .description("Legen Sie ein Kennwort fest, um den privaten Schlüssel und das Zertifikat im exportierten Archiv zu verschlüsseln:")
+            .title(&gettext("Set PKCS#12 Passphrase"))
+            .description(&gettext("Set a password to encrypt the private key and certificate in the exported archive:"))
             .build();
 
         let row_pass1 = adw::PasswordEntryRow::builder()
-            .title("Neue Passphrase")
+            .title(&gettext("New Passphrase"))
             .build();
         group.add(&row_pass1);
 
         let row_pass2 = adw::PasswordEntryRow::builder()
-            .title("Passphrase wiederholen")
+            .title(&gettext("Repeat Passphrase"))
             .build();
         group.add(&row_pass2);
 
@@ -1269,7 +1290,7 @@ impl PassphrasePromptDialog {
             let p1 = row_pass1.text().to_string();
             let p2 = row_pass2.text().to_string();
             if p1 != p2 {
-                lbl_error.set_label("Die Passphrasen stimmen nicht überein.");
+                lbl_error.set_label(&gettext("The passphrases do not match."));
                 lbl_error.set_visible(true);
                 return;
             }
@@ -1280,7 +1301,7 @@ impl PassphrasePromptDialog {
                     }
                 }
                 Err(err) => {
-                    lbl_error.set_label(&format!("Fehler: {err}"));
+                    lbl_error.set_label(&format!("{}: {err}", gettext("Error")));
                     lbl_error.set_visible(true);
                 }
             }

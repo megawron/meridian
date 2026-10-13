@@ -112,6 +112,11 @@ impl ImportDialog {
             .title("Zu importierende Datei")
             .subtitle("Keine Datei ausgewählt")
             .build();
+        let icon_file = gtk::Image::builder()
+            .icon_name("document-open-symbolic")
+            .valign(gtk::Align::Center)
+            .build();
+        file_row.add_prefix(&icon_file);
 
         let choose_file_btn = gtk::Button::builder()
             .label("Durchsuchen …")
@@ -175,6 +180,11 @@ impl ImportDialog {
             .title("Gefundene Einträge")
             .subtitle("Noch keine Datei geladen")
             .build();
+        let icon_preview = gtk::Image::builder()
+            .icon_name("view-list-symbolic")
+            .valign(gtk::Align::Center)
+            .build();
+        preview_row.add_prefix(&icon_preview);
         group.add(&preview_row);
         *self.imp().preview_row.borrow_mut() = Some(preview_row);
 
@@ -187,6 +197,11 @@ impl ImportDialog {
         ]);
         target_dropdown.set_valign(gtk::Align::Center);
         let target_row = adw::ActionRow::builder().title("Zielkomponente").build();
+        let icon_target = gtk::Image::builder()
+            .icon_name("folder-symbolic")
+            .valign(gtk::Align::Center)
+            .build();
+        target_row.add_prefix(&icon_target);
         target_row.add_suffix(&target_dropdown);
         group.add(&target_row);
         *self.imp().target_dropdown.borrow_mut() = Some(target_dropdown);
@@ -201,6 +216,11 @@ impl ImportDialog {
             .title("Duplikat-Behandlung")
             .visible(false)
             .build();
+        let icon_policy = gtk::Image::builder()
+            .icon_name("edit-copy-symbolic")
+            .valign(gtk::Align::Center)
+            .build();
+        policy_row.add_prefix(&icon_policy);
         policy_row.add_suffix(&policy_dropdown);
         group.add(&policy_row);
         *self.imp().policy_dropdown.borrow_mut() = Some(policy_dropdown);

@@ -619,6 +619,7 @@ impl ComposeDialog {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn reply_to_message_with_style(
         sender: &str,
         reply_to: &str,
@@ -875,6 +876,7 @@ impl ComposeDialog {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn reply_all_message_with_style(
         sender: &str,
         reply_to: &str,
@@ -6992,6 +6994,265 @@ fn html_escape(value: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+pub(crate) fn format_sender_display_name(sender: &str) -> String {
+    let trimmed = sender.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if let Some(angle_start) = trimmed.find('<') {
+        let name_part = trimmed[..angle_start].trim();
+        let unquoted = name_part.trim_matches('"').trim();
+        if !unquoted.is_empty() {
+            return unquoted.to_string();
+        }
+        if let Some(angle_end) = trimmed[angle_start + 1..].find('>') {
+            let email_part = trimmed[angle_start + 1..angle_start + 1 + angle_end].trim();
+            if !email_part.is_empty() {
+                return email_part.to_string();
+            }
+        }
+    }
+    let unquoted = trimmed.trim_matches('"').trim();
+    unquoted.to_string()
+}
+
+fn is_german_locale() -> bool {
+    let locale = std::env::var("LC_TIME")
+        .or_else(|_| std::env::var("LC_ALL"))
+        .or_else(|_| std::env::var("LANG"))
+        .unwrap_or_default();
+    let lower = locale.to_lowercase();
+    if lower.starts_with("de") {
+        return true;
+    }
+    let tz = std::env::var("TZ").unwrap_or_default();
+    if tz.contains("Berlin") || tz.contains("Germany") {
+        return true;
+    }
+    if lower.starts_with("en") {
+        return false;
+    }
+    crate::i18n::gettext("Close") == "Schließen"
+}
+
+fn german_weekday_name(weekday: chrono::Weekday) -> &'static str {
+    match weekday {
+        chrono::Weekday::Mon => "Montag",
+        chrono::Weekday::Tue => "Dienstag",
+        chrono::Weekday::Wed => "Mittwoch",
+        chrono::Weekday::Thu => "Donnerstag",
+        chrono::Weekday::Fri => "Freitag",
+        chrono::Weekday::Sat => "Samstag",
+        chrono::Weekday::Sun => "Sonntag",
+    }
+}
+
+fn english_weekday_name(weekday: chrono::Weekday) -> &'static str {
+    match weekday {
+        chrono::Weekday::Mon => "Monday",
+        chrono::Weekday::Tue => "Tuesday",
+        chrono::Weekday::Wed => "Wednesday",
+        chrono::Weekday::Thu => "Thursday",
+        chrono::Weekday::Fri => "Friday",
+        chrono::Weekday::Sat => "Saturday",
+        chrono::Weekday::Sun => "Sunday",
+    }
+}
+
+pub(crate) fn format_reply_attribution(sender: &str, date: &str) -> String {
+    let display_name = format_sender_display_name(sender);
+    let parsed_dt = crate::views::parse_flexible_datetime(date);
+    let is_de = is_german_locale();
+
+    match (parsed_dt, is_de) {
+        (Some(dt), true) => {
+            let weekday = german_weekday_name(dt.weekday());
+            let date_str = dt.format("%d.%m.%Y");
+            let time_str = dt.format("%H:%M");
+            let tz_str = dt.format("%z");
+            if !display_name.is_empty() {
+                format!(
+                    "Am {weekday}, dem {date_str} um {time_str} {tz_str} schrieb {}:",
+                    html_escape(&display_name)
+                )
+            } else {
+                format!(
+                    "Am {weekday}, dem {date_str} um {time_str} {tz_str} schrieb der ursprüngliche Absender:"
+                )
+            }
+        }
+        (Some(dt), false) => {
+            let weekday = english_weekday_name(dt.weekday());
+            let date_str = dt.format("%Y-%m-%d");
+            let time_str = dt.format("%H:%M");
+            let tz_str = dt.format("%z");
+            if !display_name.is_empty() {
+                format!(
+                    "On {weekday}, {date_str} at {time_str} {tz_str}, {} wrote:",
+                    html_escape(&display_name)
+                )
+            } else {
+                format!(
+                    "On {weekday}, {date_str} at {time_str} {tz_str}, the original sender wrote:"
+                )
+            }
+        }
+        (None, true) => {
+            if !date.trim().is_empty() {
+                if !display_name.is_empty() {
+                    format!(
+                        "Am {} schrieb {}:",
+                        html_escape(date.trim()),
+                        html_escape(&display_name)
+                    )
+                } else {
+                    format!("Am {}:", html_escape(date.trim()))
+                }
+            } else if !display_name.is_empty() {
+                format!("{} schrieb:", html_escape(&display_name))
+            } else {
+                "Ursprüngliche Nachricht:".to_string()
+            }
+        }
+        (None, false) => {
+            if !date.trim().is_empty() {
+                if !display_name.is_empty() {
+                    format!(
+                        "On {}, {} wrote:",
+                        html_escape(date.trim()),
+                        html_escape(&display_name)
+                    )
+                } else {
+                    format!("On {}:", html_escape(date.trim()))
+                }
+            } else if !display_name.is_empty() {
+                format!("{} wrote:", html_escape(&display_name))
+            } else {
+                "Original Message:".to_string()
+            }
+        }
+    }
+}
+
+fn strip_outer_html_scaffolding(html: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    if let Some(body_start) = lower.find("<body") {
+        if let Some(tag_end) = html[body_start..].find('>') {
+            let start = body_start + tag_end + 1;
+            if let Some(body_end) = lower[start..].find("</body>") {
+                return html[start..start + body_end].to_string();
+            } else {
+                return html[start..].to_string();
+            }
+        }
+    }
+
+    let mut working = html.to_string();
+    let working_lower = working.to_ascii_lowercase();
+    if let Some(head_start) = working_lower.find("<head") {
+        if let Some(head_end) = working_lower[head_start..].find("</head>") {
+            let end_idx = head_start + head_end + 7;
+            working = format!("{}{}", &working[..head_start], &working[end_idx..]);
+        }
+    }
+
+    let mut clean = String::with_capacity(working.len());
+    let mut in_tag = false;
+    let mut tag_buf = String::new();
+
+    for ch in working.chars() {
+        if ch == '<' {
+            in_tag = true;
+            tag_buf.clear();
+            tag_buf.push(ch);
+            continue;
+        }
+        if in_tag {
+            tag_buf.push(ch);
+            if ch == '>' {
+                in_tag = false;
+                let tag_lower = tag_buf.to_ascii_lowercase();
+                if tag_lower.starts_with("<!doctype")
+                    || tag_lower.starts_with("<html")
+                    || tag_lower.starts_with("</html")
+                    || tag_lower.starts_with("<body")
+                    || tag_lower.starts_with("</body")
+                {
+                    // discard outer envelope tag
+                } else {
+                    clean.push_str(&tag_buf);
+                }
+            }
+            continue;
+        }
+        clean.push(ch);
+    }
+    clean
+}
+
+fn is_pure_pre_block(html: &str) -> bool {
+    let trimmed = html.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if !lower.starts_with("<pre") || !lower.ends_with("</pre>") {
+        return false;
+    }
+    let Some(first) = lower.find("<pre") else {
+        return false;
+    };
+    let after_first = &lower[first + 4..];
+    !after_first.contains("<pre")
+}
+
+fn extract_pre_content(html: &str) -> &str {
+    let trimmed = html.trim();
+    if let Some(gt) = trimmed.find('>') {
+        let after_gt = &trimmed[gt + 1..];
+        let lower = after_gt.to_ascii_lowercase();
+        if let Some(end_idx) = lower.rfind("</pre>") {
+            return &after_gt[..end_idx];
+        }
+    }
+    trimmed
+}
+
+fn convert_plain_lines_to_html(plain: &str) -> String {
+    let mut out = String::new();
+    let mut lines = plain.lines().peekable();
+    while let Some(line) = lines.next() {
+        let trimmed_line = line.trim_end_matches('\r');
+        out.push_str(trimmed_line);
+        if lines.peek().is_some() {
+            out.push_str("<br>");
+        }
+    }
+    out
+}
+
+pub(crate) fn prepare_quote_html(original_html: &str) -> String {
+    let trimmed = original_html.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let body_content = strip_outer_html_scaffolding(trimmed);
+    let sanitized = crate::services::html_sanitizer::sanitize_html(&body_content);
+    let sanitized_trimmed = sanitized.trim();
+    if sanitized_trimmed.is_empty() {
+        return String::new();
+    }
+
+    if is_pure_pre_block(sanitized_trimmed) {
+        let inner = extract_pre_content(sanitized_trimmed);
+        return convert_plain_lines_to_html(inner);
+    }
+
+    if !sanitized_trimmed.contains('<') {
+        return signature_plain_text_to_html(sanitized_trimmed);
+    }
+
+    sanitized_trimmed.to_string()
+}
+
 fn reply_body_html_with_style(
     sender: &str,
     original_to: &str,
@@ -7022,12 +7283,8 @@ fn reply_body_html_with_style(
         };
     }
 
-    let attribution = if sender.trim().is_empty() {
-        "der ursprünglichen Nachricht".to_string()
-    } else {
-        format!("{} schrieb", html_escape(sender.trim()))
-    };
-    let quoted = quote_as_safe_text(original_html);
+    let attribution = format_reply_attribution(sender, date);
+
     if style == "inline" {
         let mut headers = Vec::new();
         if !sender.trim().is_empty() {
@@ -7047,6 +7304,7 @@ fn reply_body_html_with_style(
         } else {
             format!("Ursprüngliche Nachricht:<br>{}", headers.join("<br>"))
         };
+        let quoted = prepare_quote_html(original_html);
         return if quoted.trim().is_empty() {
             if top_signature {
                 prefix
@@ -7054,19 +7312,33 @@ fn reply_body_html_with_style(
                 format!("{prefix}{suffix}")
             }
         } else {
-            format!("{prefix}<p>{header_block}</p><pre>{quoted}</pre>{suffix}")
+            format!("{prefix}<p>{header_block}</p><div>{quoted}</div>{suffix}")
         };
     }
 
-    let quoted = format_quoted_body(&quoted, style);
-    if quoted.is_empty() {
+    if style == "prefix" {
+        let quoted_text = quote_as_safe_text(original_html);
+        if quoted_text.trim().is_empty() {
+            return if top_signature {
+                prefix
+            } else {
+                format!("{prefix}{suffix}")
+            };
+        }
+        let quoted = format_quoted_body(&quoted_text, "prefix");
+        return format!("{prefix}<p>{attribution}</p>{quoted}{suffix}");
+    }
+
+    let quoted_html = prepare_quote_html(original_html);
+    if quoted_html.trim().is_empty() {
         if top_signature {
             prefix
         } else {
             format!("{prefix}{suffix}")
         }
     } else {
-        format!("{prefix}<p>{attribution}:</p>{quoted}{suffix}")
+        let quoted = format_quoted_body(&quoted_html, "blockquote");
+        format!("{prefix}<p>{attribution}</p>{quoted}{suffix}")
     }
 }
 
@@ -7111,21 +7383,39 @@ fn forward_body_html_with_style(
     } else {
         format!("Weitergeleitete Nachricht:<br>{}", headers.join("<br>"))
     };
-    let quoted = quote_as_safe_text(original_html);
-    let quoted = if quote_style == "inline" {
-        (!quoted.trim().is_empty())
-            .then(|| format!("<pre>{quoted}</pre>"))
-            .unwrap_or_default()
-    } else {
-        format_quoted_body(&quoted, quote_style)
-    };
-    if quoted.is_empty() {
+
+    if quote_style == "none" {
+        return if top_signature {
+            prefix
+        } else {
+            format!("{prefix}{suffix}")
+        };
+    }
+
+    if quote_style == "prefix" {
+        let quoted_text = quote_as_safe_text(original_html);
+        if quoted_text.trim().is_empty() {
+            return if top_signature {
+                prefix
+            } else {
+                format!("{prefix}{suffix}")
+            };
+        }
+        let quoted = format_quoted_body(&quoted_text, "prefix");
+        return format!("{prefix}<p>{header_block}</p>{quoted}{suffix}");
+    }
+
+    let quoted_html = prepare_quote_html(original_html);
+    if quoted_html.trim().is_empty() {
         if top_signature {
             prefix
         } else {
             format!("{prefix}{suffix}")
         }
+    } else if quote_style == "inline" {
+        format!("{prefix}<p>{header_block}</p><div>{quoted_html}</div>{suffix}")
     } else {
+        let quoted = format_quoted_body(&quoted_html, "blockquote");
         format!("{prefix}<p>{header_block}</p>{quoted}{suffix}")
     }
 }
@@ -7142,7 +7432,9 @@ fn format_quoted_body(quoted: &str, style: &str) -> String {
             .join("<br>");
         format!("<p>{lines}</p>")
     } else {
-        format!("<blockquote><pre>{quoted}</pre></blockquote>")
+        format!(
+            "<blockquote type=\"cite\" style=\"margin: 0 0 0 0.8ex; border-left: 2px solid #729fcf; padding-left: 1ex;\">{quoted}</blockquote>"
+        )
     }
 }
 
@@ -8703,7 +8995,7 @@ mod tests {
     fn quote_formatter_supports_blockquotes_and_prefixes() {
         assert_eq!(
             format_quoted_body("Hello\nWorld", "blockquote"),
-            "<blockquote><pre>Hello\nWorld</pre></blockquote>"
+            "<blockquote type=\"cite\" style=\"margin: 0 0 0 0.8ex; border-left: 2px solid #729fcf; padding-left: 1ex;\">Hello\nWorld</blockquote>"
         );
         assert_eq!(
             format_quoted_body("Hello\nWorld", "prefix"),
@@ -8731,7 +9023,7 @@ mod tests {
             "prefix",
         );
 
-        assert!(inline.contains("<pre>Hello\nWorld</pre>"));
+        assert!(inline.contains("<p>Hello<br/>World</p>") || inline.contains("<p>Hello<br>World</p>"));
         assert!(!inline.contains("&gt; Hello"));
         assert!(quoted.contains("&gt; Hello<br>&gt; World"));
         assert!(inline.contains("Weitergeleitete Nachricht:"));
@@ -8767,11 +9059,79 @@ mod tests {
 
         assert!(inline.contains("Ursprüngliche Nachricht:"));
         assert!(inline.contains("Von: Ada &lt;ada@example.test&gt;"));
-        assert!(inline.contains("<pre>Hello\nWorld</pre>"));
-        assert!(quoted.contains("Ada &lt;ada@example.test&gt; schrieb"));
+        assert!(inline.contains("<p>Hello<br/>World</p>") || inline.contains("<p>Hello<br>World</p>"));
+        assert!(quoted.contains("Ada") && (quoted.contains("schrieb") || quoted.contains("wrote")));
         assert!(quoted.contains("&gt; Hello<br>&gt; World"));
         assert!(!no_quote.contains("Hello"));
         assert!(!no_quote.contains("Ada"));
+    }
+
+    #[test]
+    fn test_format_sender_display_name() {
+        assert_eq!(
+            format_sender_display_name("Oliver Bennett <OBennett@acme-corp.example>"),
+            "Oliver Bennett"
+        );
+        assert_eq!(
+            format_sender_display_name("\"Oliver Bennett\" <OBennett@acme-corp.example>"),
+            "Oliver Bennett"
+        );
+        assert_eq!(
+            format_sender_display_name("<OBennett@acme-corp.example>"),
+            "OBennett@acme-corp.example"
+        );
+        assert_eq!(
+            format_sender_display_name("OBennett@acme-corp.example"),
+            "OBennett@acme-corp.example"
+        );
+        assert_eq!(format_sender_display_name(""), "");
+    }
+
+    #[test]
+    fn test_format_reply_attribution_evolution_german() {
+        let attr = format_reply_attribution(
+            "Oliver Bennett <OBennett@acme-corp.example>",
+            "Mon, 12 Oct 2026 07:04:00 +0200",
+        );
+        assert_eq!(
+            attr,
+            "Am Montag, dem 12.10.2026 um 07:04 +0200 schrieb Oliver Bennett:"
+        );
+    }
+
+    #[test]
+    fn test_format_reply_attribution_without_date() {
+        let attr = format_reply_attribution("Oliver Bennett <OBennett@acme-corp.example>", "");
+        assert_eq!(attr, "Oliver Bennett schrieb:");
+    }
+
+    #[test]
+    fn test_prepare_quote_html_preserves_rich_markup() {
+        let html = "<html><head><style>body { color: red; }</style></head><body><p>Guten Morgen zusammen,</p><p><b>DB Connect PKW Teil 2</b><br><b>08.10.2026</b></p></body></html>";
+        let prepared = prepare_quote_html(html);
+        assert!(prepared.contains("<b>DB Connect PKW Teil 2</b>"));
+        assert!(prepared.contains("<b>08.10.2026</b>"));
+        assert!(!prepared.contains("<style>"));
+        assert!(!prepared.contains("<head>"));
+        assert!(!prepared.contains("<body"));
+        assert!(!prepared.contains("<pre>"));
+    }
+
+    #[test]
+    fn test_reply_body_html_with_style_renders_evolution_blockquote() {
+        let original = "<p>Guten Morgen,</p><p><b>DB Connect PKW Teil 2</b></p>";
+        let body = reply_body_html_with_style(
+            "Oliver Bennett <OBennett@acme-corp.example>",
+            "test@example.com",
+            "",
+            "Mon, 12 Oct 2026 07:04:00 +0200",
+            original,
+            "blockquote",
+        );
+        assert!(body.contains("Am Montag, dem 12.10.2026 um 07:04 +0200 schrieb Oliver Bennett:"));
+        assert!(body.contains("<blockquote type=\"cite\" style=\"margin: 0 0 0 0.8ex; border-left: 2px solid #729fcf; padding-left: 1ex;\">"));
+        assert!(body.contains("<b>DB Connect PKW Teil 2</b>"));
+        assert!(!body.contains("<pre>"));
     }
 
     #[test]

@@ -41,6 +41,7 @@ pub mod memo_filter_service;
 pub mod memo_surface_service;
 pub mod migration_service;
 pub mod out_of_office_service;
+pub mod plugin_service;
 pub mod recurrence_service;
 pub mod reminder_service;
 pub mod search_engine;

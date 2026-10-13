@@ -317,6 +317,8 @@ struct BackupSettings {
     calendar_compress_weekend: bool,
     #[serde(default = "default_calendar_month_scroll_by_week")]
     calendar_month_scroll_by_week: bool,
+    #[serde(default = "default_calendar_month_scroll_animation")]
+    calendar_month_scroll_animation: bool,
     #[serde(default = "default_calendar_second_zone")]
     calendar_second_zone: String,
     #[serde(default = "default_calendar_second_zones")]
@@ -734,6 +736,10 @@ fn default_calendar_month_scroll_by_week() -> bool {
     true
 }
 
+fn default_calendar_month_scroll_animation() -> bool {
+    true
+}
+
 fn default_calendar_second_zone() -> String {
     String::new()
 }
@@ -1057,6 +1063,7 @@ impl BackupSettings {
             calendar_time_divisions: settings.calendar_time_divisions(),
             calendar_compress_weekend: settings.calendar_compress_weekend(),
             calendar_month_scroll_by_week: settings.calendar_month_scroll_by_week(),
+            calendar_month_scroll_animation: settings.calendar_month_scroll_animation(),
             calendar_second_zone: settings.calendar_second_zone(),
             calendar_second_zones: settings.calendar_second_zones().join(","),
             calendar_hidden_sources: settings.calendar_hidden_sources().join(","),
@@ -1271,6 +1278,7 @@ impl BackupSettings {
         settings.set_calendar_time_divisions(self.calendar_time_divisions);
         settings.set_calendar_compress_weekend(self.calendar_compress_weekend);
         settings.set_calendar_month_scroll_by_week(self.calendar_month_scroll_by_week);
+        settings.set_calendar_month_scroll_animation(self.calendar_month_scroll_animation);
         settings.set_calendar_second_zone(&self.calendar_second_zone);
         settings.set_calendar_second_zones(
             &self
@@ -2150,6 +2158,7 @@ const BACKUP_SETTINGS_FIELDS: &[&str] = &[
     "calendar_time_divisions",
     "calendar_compress_weekend",
     "calendar_month_scroll_by_week",
+    "calendar_month_scroll_animation",
     "calendar_second_zone",
     "calendar_second_zones",
     "calendar_hidden_sources",

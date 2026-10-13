@@ -12,6 +12,7 @@ use adw::subclass::prelude::*;
 use gtk::glib;
 use std::thread;
 
+use crate::i18n::gettext;
 use crate::services::AppSettings;
 use crate::services::account_config_service::{AccountConfigStore, AccountProtocol};
 use crate::services::exchange_service::ExchangeService;
@@ -50,7 +51,7 @@ glib::wrapper! {
 impl OutOfOfficeDialog {
     pub fn new() -> Self {
         glib::Object::builder()
-            .property("title", "Abwesenheitsnotiz (Auto-Responder)")
+            .property("title", gettext("Out of Office (Auto-Responder)"))
             .property("content-width", 600)
             .property("content-height", 520)
             .build()
@@ -61,7 +62,7 @@ impl OutOfOfficeDialog {
 
         let header_bar = adw::HeaderBar::new();
         let btn_save = gtk::Button::builder()
-            .label("Speichern")
+            .label(&gettext("Save"))
             .css_classes(vec!["suggested-action"])
             .build();
         header_bar.pack_end(&btn_save);
@@ -82,12 +83,13 @@ impl OutOfOfficeDialog {
             .build();
 
         let graph_service = graph_service_for_configured_account();
+        let backend_state_text = if graph_service.is_some() {
+            gettext("Microsoft Graph: Loading server status…")
+        } else {
+            gettext("Local configuration; server connection manages synchronization")
+        };
         let backend_state = gtk::Label::builder()
-            .label(if graph_service.is_some() {
-                "Microsoft Graph: Serverstatus wird geladen …"
-            } else {
-                "Lokale Konfiguration; die Serveranbindung bleibt zuständig"
-            })
+            .label(&backend_state_text)
             .css_classes(vec!["caption", "dim-label"])
             .halign(gtk::Align::Start)
             .wrap(true)
@@ -96,34 +98,39 @@ impl OutOfOfficeDialog {
 
         // Status Group
         let group_status = adw::PreferencesGroup::builder()
-            .title("Status & Zeitfenster")
+            .title(&gettext("Status & Schedule"))
             .build();
 
+        let enabled_subtitle = if graph_service.is_some() {
+            gettext("Server status is synchronized via Microsoft Graph")
+        } else {
+            gettext("Configuration saved locally; server delivery configured per account")
+        };
         let row_enabled = adw::SwitchRow::builder()
-            .title("Abwesenheitsnotiz aktivieren")
-            .subtitle(if graph_service.is_some() {
-                "Serverstatus wird über Microsoft Graph synchronisiert"
-            } else {
-                "Konfiguration wird persistent gespeichert; Serveraktivierung erfolgt über das Konto"
-            })
+            .title(&gettext("Automatic replies"))
+            .subtitle(&enabled_subtitle)
             .active(false)
             .build();
+        row_enabled.add_prefix(&gtk::Image::from_icon_name("mail-send-symbolic"));
         group_status.add(&row_enabled);
 
         let row_schedule = adw::SwitchRow::builder()
-            .title("Nur in folgendem Zeitraum senden")
+            .title(&gettext("Send replies only during this period"))
             .active(true)
             .build();
+        row_schedule.add_prefix(&gtk::Image::from_icon_name("x-office-calendar-symbolic"));
         group_status.add(&row_schedule);
 
         let row_start = adw::EntryRow::builder()
-            .title("Startdatum (YYYY-MM-DD, optional)")
+            .title(&gettext("Start date (YYYY-MM-DD, optional)"))
             .build();
+        row_start.add_prefix(&gtk::Image::from_icon_name("preferences-system-time-symbolic"));
         group_status.add(&row_start);
 
         let row_end = adw::EntryRow::builder()
-            .title("Enddatum (YYYY-MM-DD, optional)")
+            .title(&gettext("End date (YYYY-MM-DD, optional)"))
             .build();
+        row_end.add_prefix(&gtk::Image::from_icon_name("preferences-system-time-symbolic"));
         group_status.add(&row_end);
 
         let saved_settings = OutOfOfficeStore::default().load();
@@ -136,7 +143,7 @@ impl OutOfOfficeDialog {
 
         // Internal Message
         let group_internal = adw::PreferencesGroup::builder()
-            .title("Nachricht für Kollegen (Intern)")
+            .title(&gettext("Inside My Organization"))
             .build();
 
         let text_internal = gtk::TextView::builder()
@@ -152,7 +159,7 @@ impl OutOfOfficeDialog {
 
         // External Message
         let group_external = adw::PreferencesGroup::builder()
-            .title("Nachricht für externe Absender")
+            .title(&gettext("Outside My Organization"))
             .build();
 
         let text_external = gtk::TextView::builder()
@@ -233,14 +240,14 @@ impl OutOfOfficeDialog {
                     let Some(service) = graph_service_for_save.clone() else {
                         show_dialog_toast(
                             &dialog_for_save,
-                            "Abwesenheitsnotiz lokal gespeichert; die Serveraktivierung erfolgt über das Konto",
+                            &gettext("Out-of-office settings saved locally; server delivery configured per account"),
                         );
                         dialog_for_save.close();
                         return;
                     };
 
                     save_button_for_save.set_sensitive(false);
-                    backend_state_for_save.set_label("Microsoft Graph: Serverstatus wird gespeichert …");
+                    backend_state_for_save.set_label(&gettext("Microsoft Graph: Saving server status…"));
                     let settings_for_server = settings.clone();
                     let dialog_weak = dialog_for_save.downgrade();
                     let save_button = save_button_for_save.clone();
@@ -264,24 +271,22 @@ impl OutOfOfficeDialog {
                                 }
                                 show_dialog_toast(
                                     &dialog,
-                                    "Abwesenheitsnotiz lokal und auf dem Exchange-Server gespeichert",
+                                    &gettext("Out-of-office settings saved locally and on Exchange server"),
                                 );
                                 dialog.close();
                             }
                             Ok(Err(error)) => {
-                                backend_state.set_label("Microsoft Graph: Server konnte nicht aktualisiert werden");
+                                backend_state.set_label(&gettext("Microsoft Graph: Server could not be updated"));
                                 show_dialog_toast(
                                     &dialog,
-                                    &format!(
-                                        "Lokal gespeichert, Serveraktualisierung fehlgeschlagen: {error}"
-                                    ),
+                                    &format!("{}: {error}", gettext("Saved locally, server update failed")),
                                 );
                             }
                             Err(error) => {
-                                backend_state.set_label("Microsoft Graph: Server konnte nicht aktualisiert werden");
+                                backend_state.set_label(&gettext("Microsoft Graph: Server could not be updated"));
                                 show_dialog_toast(
                                     &dialog,
-                                    &format!("Serveraktualisierung abgebrochen: {error}"),
+                                    &format!("{}: {error}", gettext("Server update cancelled")),
                                 );
                             }
                         }
@@ -289,7 +294,7 @@ impl OutOfOfficeDialog {
                 }
                 Err(error) => show_dialog_toast(
                     &dialog_for_save,
-                    &format!("Abwesenheitsnotiz konnte nicht gespeichert werden: {error}"),
+                    &format!("{}: {error}", gettext("Could not save out-of-office settings")),
                 ),
             }
         });
@@ -356,17 +361,17 @@ fn load_graph_settings(
                 row_end.set_text(&settings.end_date);
                 internal_buffer.set_text(&settings.internal_message);
                 external_buffer.set_text(&settings.external_message);
-                backend_state.set_label("Microsoft Graph: Serverstatus geladen");
+                backend_state.set_label(&gettext("Microsoft Graph: Server status loaded"));
             }
             Ok(Err(error)) => {
                 backend_state.set_label(
-                    "Microsoft Graph: Serverstatus nicht verfügbar; lokale Werte bleiben erhalten",
+                    &gettext("Microsoft Graph: Server status unavailable; local values retained"),
                 );
                 tracing::warn!(%error, "Could not load Graph out-of-office settings");
             }
             Err(error) => {
                 backend_state.set_label(
-                    "Microsoft Graph: Serverstatus nicht verfügbar; lokale Werte bleiben erhalten",
+                    &gettext("Microsoft Graph: Server status unavailable; local values retained"),
                 );
                 tracing::warn!(%error, "Graph out-of-office load was cancelled");
             }

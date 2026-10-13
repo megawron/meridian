@@ -155,6 +155,11 @@ impl CalendarPurgeDialog {
             .title("Termine löschen, die älter sind als")
             .subtitle("Tage")
             .build();
+        let days_icon = gtk::Image::builder()
+            .icon_name("preferences-system-time-symbolic")
+            .valign(gtk::Align::Center)
+            .build();
+        days_row.add_prefix(&days_icon);
         days_row.add_suffix(&days);
         let group = adw::PreferencesGroup::new();
         group.add(&days_row);

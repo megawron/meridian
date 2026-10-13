@@ -93,6 +93,15 @@ impl PluginsDialog {
                     .subtitle(plugin.description)
                     .build();
 
+                let icon_name = match cat {
+                    PluginCategory::Mail => "mail-message-new-symbolic",
+                    PluginCategory::Security => "channel-secure-symbolic",
+                    PluginCategory::Junk => "mail-mark-junk-symbolic",
+                    PluginCategory::Calendar => "x-office-calendar-symbolic",
+                    PluginCategory::Utilities => "applications-utilities-symbolic",
+                };
+                row.add_prefix(&gtk::Image::from_icon_name(icon_name));
+
                 if let Some(settings) = app_settings_rc.as_ref() {
                     row.set_active(settings.is_plugin_enabled(plugin.id));
 
@@ -218,6 +227,7 @@ fn present_plugin_config_dialog<P: IsA<gtk::Widget>>(
                 .title(&gettext("Reminder Enabled"))
                 .subtitle(&gettext("Check for missing attachments when sending"))
                 .build();
+            row_enabled.add_prefix(&gtk::Image::from_icon_name("mail-attachment-symbolic"));
 
             if let Some(s) = &settings {
                 row_enabled.set_active(s.plugin_attachment_reminder_enabled());
@@ -237,6 +247,7 @@ fn present_plugin_config_dialog<P: IsA<gtk::Widget>>(
                         .unwrap_or_else(|| "attachment, attached, anhang, anbei, enclosed".to_string()),
                 )
                 .build();
+            row_keywords.add_prefix(&gtk::Image::from_icon_name("edit-find-symbolic"));
 
             if let Some(s) = &settings {
                 let s_clone = s.clone();
@@ -265,26 +276,31 @@ fn present_plugin_config_dialog<P: IsA<gtk::Widget>>(
                 .title(&gettext("Desktop Notification"))
                 .subtitle(&gettext("Show notification popup when new unread messages arrive"))
                 .build();
+            row_unread.add_prefix(&gtk::Image::from_icon_name("preferences-system-notifications-symbolic"));
 
             let row_inbox_only = adw::SwitchRow::builder()
                 .title(&gettext("Notify for Inbox only"))
                 .subtitle(&gettext("Ignore messages received in other folders"))
                 .build();
+            row_inbox_only.add_prefix(&gtk::Image::from_icon_name("mail-read-symbolic"));
 
             let row_sound = adw::SwitchRow::builder()
                 .title(&gettext("Play Sound"))
                 .subtitle(&gettext("Play an audio alert when new mail arrives (30-second throttle)"))
                 .build();
+            row_sound.add_prefix(&gtk::Image::from_icon_name("audio-volume-high-symbolic"));
 
             let row_sound_beep = adw::SwitchRow::builder()
                 .title(&gettext("Use System Beep"))
                 .subtitle(&gettext("Play the system alert tone instead of a sound file or sound theme"))
                 .build();
+            row_sound_beep.add_prefix(&gtk::Image::from_icon_name("alarm-symbolic"));
 
             let row_sound_file = adw::EntryRow::builder()
                 .title(&gettext("Sound file (optional)"))
                 .text(&settings.as_ref().map(|s| s.mail_notification_sound_file()).unwrap_or_default())
                 .build();
+            row_sound_file.add_prefix(&gtk::Image::from_icon_name("folder-music-symbolic"));
 
             if let Some(s) = &settings {
                 row_unread.set_active(s.mail_notification_enabled());
@@ -355,6 +371,7 @@ fn present_plugin_config_dialog<P: IsA<gtk::Widget>>(
                         .unwrap_or_else(|| "gnome-text-editor %s".to_string()),
                 )
                 .build();
+            row_cmd.add_prefix(&gtk::Image::from_icon_name("system-run-symbolic"));
 
             if let Some(s) = &settings {
                 let s_clone = s.clone();

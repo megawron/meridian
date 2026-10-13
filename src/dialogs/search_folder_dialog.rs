@@ -7,6 +7,7 @@ use adw::subclass::prelude::*;
 use gtk::glib;
 use std::cell::{Cell, RefCell};
 
+use crate::i18n::gettext;
 use crate::services::search_folder_service::{
     SavedSearch, SavedSearchFieldMode, SavedSearchScope, SearchFolderService,
 };
@@ -271,9 +272,9 @@ impl SearchFolderDialog {
         folder_name: Option<String>,
     ) -> Self {
         glib::Object::builder()
-            .property("title", "Lokalen Suchordner speichern")
-            .property("content-width", 520)
-            .property("content-height", 360)
+            .property("title", &gettext("New Search Folder"))
+            .property("content-width", 540)
+            .property("content-height", 420)
             .property("initial-name", "")
             .property("initial-query", initial_query)
             .property("search-id", "")
@@ -287,9 +288,9 @@ impl SearchFolderDialog {
 
     pub fn new_for_edit(search: &SavedSearch) -> Self {
         glib::Object::builder()
-            .property("title", "Lokalen Suchordner bearbeiten")
-            .property("content-width", 520)
-            .property("content-height", 360)
+            .property("title", &gettext("Edit Search Folder"))
+            .property("content-width", 540)
+            .property("content-height", 420)
             .property("initial-name", &search.name)
             .property("initial-query", &search.query)
             .property("search-id", &search.id)
@@ -311,7 +312,7 @@ impl SearchFolderDialog {
         let toolbar = adw::ToolbarView::new();
         let header = adw::HeaderBar::new();
         let save = gtk::Button::builder()
-            .label("Speichern")
+            .label(&gettext("Save"))
             .css_classes(vec!["suggested-action"])
             .build();
         header.pack_end(&save);
@@ -319,91 +320,84 @@ impl SearchFolderDialog {
 
         let content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(12)
+            .spacing(16)
             .margin_start(20)
             .margin_end(20)
-            .margin_top(20)
+            .margin_top(16)
             .margin_bottom(20)
             .build();
-        let name = adw::EntryRow::builder().title("Name").build();
-        name.set_tooltip_text(Some("z. B. Rechnungen"));
-        name.set_text(&self.imp().initial_name.borrow());
+
+        let group = adw::PreferencesGroup::builder()
+            .title(&gettext("Search Folder Properties"))
+            .build();
+
+        let name = adw::EntryRow::builder()
+            .title(&gettext("Folder Name"))
+            .text(self.imp().initial_name.borrow().as_str())
+            .build();
+        name.add_prefix(&gtk::Image::from_icon_name("folder-saved-search-symbolic"));
+        group.add(&name);
+
         let initial_query = self.imp().initial_query.borrow().clone();
         let query = adw::EntryRow::builder()
-            .title("Suchabfrage")
+            .title(&gettext("Search Query"))
             .text(initial_query)
             .build();
-        query.set_tooltip_text(Some("z. B. from:billing@example.org is:unread"));
+        query.add_prefix(&gtk::Image::from_icon_name("system-search-symbolic"));
+        group.add(&query);
 
-        let field_row = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(12)
+        let field_labels = [
+            gettext("Subject or Addresses"),
+            gettext("Subject"),
+            gettext("Sender"),
+            gettext("Recipients"),
+            gettext("Message"),
+            gettext("Body"),
+            gettext("Free-form Expression"),
+        ];
+        let field_slices: Vec<&str> = field_labels.iter().map(|s| s.as_str()).collect();
+        let field_selector = adw::ComboRow::builder()
+            .title(&gettext("Search Field"))
+            .model(&gtk::StringList::new(&field_slices))
+            .selected(field_index(self.imp().field.get()))
             .build();
-        let field_label = gtk::Label::builder()
-            .label("Suchfeld")
-            .halign(gtk::Align::Start)
-            .hexpand(true)
-            .build();
-        let field_selector = gtk::DropDown::new(
-            Some(gtk::StringList::new(FIELD_LABELS)),
-            None::<&gtk::Expression>,
-        );
-        field_selector.set_selected(field_index(self.imp().field.get()));
-        field_selector.set_hexpand(false);
-        field_selector.set_tooltip_text(Some("Suchfeld für unqualifizierte Begriffe"));
-        field_row.append(&field_label);
-        field_row.append(&field_selector);
+        field_selector.add_prefix(&gtk::Image::from_icon_name("edit-find-symbolic"));
+        group.add(&field_selector);
 
-        let scope_row = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(12)
+        let scope_labels = [
+            gettext("Current Folder"),
+            gettext("Current Folder and Subfolders"),
+            gettext("Current Account"),
+            gettext("All Accounts"),
+        ];
+        let scope_slices: Vec<&str> = scope_labels.iter().map(|s| s.as_str()).collect();
+        let scope_selector = adw::ComboRow::builder()
+            .title(&gettext("Search Scope"))
+            .model(&gtk::StringList::new(&scope_slices))
+            .selected(scope_index(self.imp().scope.get()))
             .build();
-        let scope_label = gtk::Label::builder()
-            .label("Suchbereich")
-            .halign(gtk::Align::Start)
-            .hexpand(true)
-            .build();
-        let scope_selector = gtk::DropDown::new(
-            Some(gtk::StringList::new(SCOPE_LABELS)),
-            None::<&gtk::Expression>,
-        );
-        scope_selector.set_selected(scope_index(self.imp().scope.get()));
-        scope_selector.set_hexpand(false);
-        scope_selector.set_tooltip_text(Some("Ordner- oder Kontobereich der Suche"));
-        scope_row.append(&scope_label);
-        scope_row.append(&scope_selector);
+        scope_selector.add_prefix(&gtk::Image::from_icon_name("view-list-symbolic"));
+        group.add(&scope_selector);
 
-        let target_row = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(12)
+        let target_row = adw::ActionRow::builder()
+            .title(&gettext("Target"))
+            .subtitle(&target_description(
+                self.imp().scope.get(),
+                self.imp().folder_id.borrow().as_deref(),
+                self.imp().source_uid.borrow().as_deref(),
+                self.imp().folder_name.borrow().as_deref(),
+            ))
             .build();
-        let target_label = gtk::Label::builder()
-            .label("Ziel")
-            .halign(gtk::Align::Start)
-            .hexpand(true)
-            .build();
-        let target_value = gtk::Label::builder()
-            .halign(gtk::Align::End)
-            .ellipsize(gtk::pango::EllipsizeMode::Middle)
-            .max_width_chars(60)
-            .css_classes(vec!["dim-label"])
-            .build();
-        target_value.set_label(&target_description(
-            self.imp().scope.get(),
-            self.imp().folder_id.borrow().as_deref(),
-            self.imp().source_uid.borrow().as_deref(),
-            self.imp().folder_name.borrow().as_deref(),
-        ));
-        target_row.append(&target_label);
-        target_row.append(&target_value);
+        target_row.add_prefix(&gtk::Image::from_icon_name("folder-symbolic"));
+        group.add(&target_row);
 
-        let target_value_for_scope = target_value.clone();
+        let target_row_for_scope = target_row.clone();
         let folder_id_for_scope = self.imp().folder_id.borrow().clone();
         let source_uid_for_scope = self.imp().source_uid.borrow().clone();
         let folder_name_for_scope = self.imp().folder_name.borrow().clone();
         scope_selector.connect_selected_notify(move |selector| {
             let scope = scope_from_index(selector.selected());
-            target_value_for_scope.set_label(&target_description(
+            target_row_for_scope.set_subtitle(&target_description(
                 scope,
                 folder_id_for_scope.as_deref(),
                 source_uid_for_scope.as_deref(),
@@ -411,11 +405,7 @@ impl SearchFolderDialog {
             ));
         });
 
-        content.append(&name);
-        content.append(&query);
-        content.append(&field_row);
-        content.append(&scope_row);
-        content.append(&target_row);
+        content.append(&group);
         toolbar.set_content(Some(&content));
         self.set_child(Some(&toolbar));
 
@@ -426,7 +416,7 @@ impl SearchFolderDialog {
                 let name_value = name.text().trim().to_string();
                 let query_value = query.text().trim().to_string();
                 if name_value.is_empty() || query_value.is_empty() {
-                    dialog.show_toast("Name und Suchabfrage sind erforderlich");
+                    dialog.show_toast(&gettext("Name and search query are required"));
                     return;
                 }
                 let scope = scope_from_index(scope_selector.selected());
@@ -461,11 +451,12 @@ impl SearchFolderDialog {
                 );
                 match saved.and_then(|saved| SearchFolderService::default().save_saved(saved)) {
                     Ok(()) => {
-                        dialog.show_toast("Suchordner gespeichert");
+                        dialog.show_toast(&gettext("Search folder saved"));
                         dialog.close();
                     }
                     Err(error) => dialog.show_toast(&format!(
-                        "Suchordner konnte nicht gespeichert werden: {error}"
+                        "{}: {error}",
+                        gettext("Could not save search folder")
                     )),
                 }
             }

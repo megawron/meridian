@@ -6,6 +6,8 @@ use adw::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use crate::i18n::gettext;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FolderSortOrderItem {
     pub id: String,
@@ -34,7 +36,7 @@ impl FolderSortOrderDialog {
         F: Fn(FolderSortOrderOutcome) + 'static,
     {
         let dialog = adw::Dialog::builder()
-            .title("Ordnersortierung")
+            .title(&gettext("Folder Sort Order"))
             .content_width(460)
             .content_height(420)
             .build();
@@ -49,7 +51,7 @@ impl FolderSortOrderDialog {
 
         let toolbar = adw::ToolbarView::new();
         let header = adw::HeaderBar::new();
-        let save = gtk::Button::builder().label("Speichern").build();
+        let save = gtk::Button::builder().label(&gettext("Save")).build();
         header.pack_end(&save);
         toolbar.add_top_bar(&header);
 
@@ -71,7 +73,7 @@ impl FolderSortOrderDialog {
         );
         content.append(
             &gtk::Label::builder()
-                .label("Die Reihenfolge gilt nur für diese Ebene. Ordner werden nicht auf dem Server verschoben.")
+                .label(&gettext("This order only applies to this folder level. Folders are not moved on the server."))
                 .xalign(0.0)
                 .wrap(true)
                 .css_classes(vec!["dim-label"])
@@ -91,14 +93,14 @@ impl FolderSortOrderDialog {
             .build();
         let up = gtk::Button::builder()
             .icon_name("go-up-symbolic")
-            .tooltip_text("Nach oben")
+            .tooltip_text(&gettext("Move Up"))
             .build();
         let down = gtk::Button::builder()
             .icon_name("go-down-symbolic")
-            .tooltip_text("Nach unten")
+            .tooltip_text(&gettext("Move Down"))
             .build();
-        let reset_current = gtk::Button::with_label("Diese Ebene zurücksetzen");
-        let reset_all = gtk::Button::with_label("Alle Ebenen zurücksetzen");
+        let reset_current = gtk::Button::with_label(&gettext("Reset This Level"));
+        let reset_all = gtk::Button::with_label(&gettext("Reset All Levels"));
         controls.append(&reset_current);
         controls.append(&reset_all);
         controls.append(&up);
@@ -120,17 +122,24 @@ impl FolderSortOrderDialog {
             }
             let current = *selected_for_refresh.borrow();
             for (index, item) in order_for_refresh.borrow().iter().enumerate() {
+                let row_box = gtk::Box::builder()
+                    .orientation(gtk::Orientation::Horizontal)
+                    .spacing(10)
+                    .margin_start(12)
+                    .margin_end(12)
+                    .margin_top(8)
+                    .margin_bottom(8)
+                    .build();
+                let icon = gtk::Image::from_icon_name("folder-symbolic");
+                let label = gtk::Label::builder()
+                    .label(&item.label)
+                    .xalign(0.0)
+                    .hexpand(true)
+                    .build();
+                row_box.append(&icon);
+                row_box.append(&label);
                 let row = gtk::ListBoxRow::new();
-                row.set_child(Some(
-                    &gtk::Label::builder()
-                        .label(&item.label)
-                        .xalign(0.0)
-                        .margin_start(12)
-                        .margin_end(12)
-                        .margin_top(8)
-                        .margin_bottom(8)
-                        .build(),
-                ));
+                row.set_child(Some(&row_box));
                 list_for_refresh.append(&row);
                 if current == Some(index) {
                     list_for_refresh.select_row(Some(&row));

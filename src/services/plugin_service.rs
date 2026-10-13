@@ -236,6 +236,54 @@ impl PluginManager {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct PluginConfig {
+    pub disabled_plugins: Vec<String>,
+    pub attachment_reminder_enabled: bool,
+    pub attachment_reminder_keywords: Vec<String>,
+    pub external_editor_command: String,
+}
+
+impl Default for PluginConfig {
+    fn default() -> Self {
+        Self {
+            disabled_plugins: Vec::new(),
+            attachment_reminder_enabled: true,
+            attachment_reminder_keywords: vec![
+                "anhang".to_string(),
+                "angehängt".to_string(),
+                "attached".to_string(),
+                "attachment".to_string(),
+                "enclosed".to_string(),
+                "anbei".to_string(),
+                "anlage".to_string(),
+            ],
+            external_editor_command: "gnome-text-editor %s".to_string(),
+        }
+    }
+}
+
+impl PluginConfig {
+    pub fn load() -> Self {
+        let path = crate::services::app_data_dir().join("plugins.json");
+        if let Ok(data) = std::fs::read_to_string(&path) {
+            serde_json::from_str(&data).unwrap_or_default()
+        } else {
+            Self::default()
+        }
+    }
+
+    pub fn save(&self) {
+        let path = crate::services::app_data_dir().join("plugins.json");
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(data) = serde_json::to_string_pretty(self) {
+            let _ = std::fs::write(&path, data);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

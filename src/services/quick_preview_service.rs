@@ -111,6 +111,76 @@ pub fn close_preview() {
     }
 }
 
+/// Returns the user's standard Downloads directory.
+pub fn get_downloads_directory() -> PathBuf {
+    glib::user_special_dir(glib::UserDirectory::Downloads)
+        .unwrap_or_else(|| glib::home_dir().join("Downloads"))
+}
+
+/// Resolves a safe, non-colliding file path in the given directory.
+/// If `file.ext` already exists, produces `file (1).ext`, `file (2).ext`, etc.
+pub fn resolve_unique_download_path(filename: &str) -> PathBuf {
+    let dir = get_downloads_directory();
+    let _ = std::fs::create_dir_all(&dir);
+    let clean_name = if filename.trim().is_empty() {
+        "attachment".to_string()
+    } else {
+        Path::new(filename)
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or("attachment")
+            .replace(['/', '\\', '\0'], "_")
+    };
+    let initial_path = dir.join(&clean_name);
+    if !initial_path.exists() {
+        return initial_path;
+    }
+    let p = Path::new(&clean_name);
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("attachment");
+    let ext = p.extension().and_then(|e| e.to_str());
+    for i in 1..10000 {
+        let candidate = match ext {
+            Some(e) => format!("{stem} ({i}).{e}"),
+            None => format!("{stem} ({i})"),
+        };
+        let candidate_path = dir.join(&candidate);
+        if !candidate_path.exists() {
+            return candidate_path;
+        }
+    }
+    initial_path
+}
+
+/// Directly downloads a single attachment to the user's Downloads folder without prompting.
+pub fn download_attachment_to_downloads(filename: &str, content: &[u8]) -> Result<PathBuf, String> {
+    let target = resolve_unique_download_path(filename);
+    std::fs::write(&target, content).map_err(|e| format!("Could not write file: {e}"))?;
+    Ok(target)
+}
+
+/// Directly downloads all attachments to the user's Downloads folder without prompting.
+pub fn download_all_attachments_to_downloads(
+    attachments: &[crate::models::mail_message::AttachmentInfo],
+) -> Result<(usize, PathBuf), String> {
+    let dir = get_downloads_directory();
+    let _ = std::fs::create_dir_all(&dir);
+    let mut count = 0;
+    for att in attachments {
+        let target = resolve_unique_download_path(&att.filename);
+        if std::fs::write(&target, att.content.as_ref()).is_ok() {
+            count += 1;
+        }
+    }
+    Ok((count, dir))
+}
+
+/// Opens the specified directory in the system's default file manager.
+pub fn open_folder_in_file_manager(folder: &Path) -> Result<(), String> {
+    let uri = format!("file://{}", folder.to_string_lossy());
+    gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>)
+        .map_err(|e| format!("Could not open folder: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +217,24 @@ mod tests {
         let content = std::fs::read_to_string(&expected_file).unwrap();
         assert_eq!(content, dummy_text);
         let _ = std::fs::remove_file(&expected_file);
+    }
+
+    #[test]
+    fn test_unique_download_path_resolution_and_download() {
+        let unique_name = format!("test_download_{}.txt", glib::random_int());
+        let content = b"attachment download test content";
+        let target = download_attachment_to_downloads(&unique_name, content).expect("download succeeds");
+        assert!(target.exists());
+        assert_eq!(std::fs::read(&target).unwrap(), content);
+
+        // Download again with same filename: should produce unique collision name
+        let target2 = download_attachment_to_downloads(&unique_name, content).expect("download duplicate succeeds");
+        assert!(target2.exists());
+        assert_ne!(target, target2);
+        assert!(target2.to_string_lossy().contains("(1)"));
+
+        let _ = std::fs::remove_file(&target);
+        let _ = std::fs::remove_file(&target2);
     }
 }
 

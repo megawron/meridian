@@ -13,6 +13,7 @@ use gtk::glib;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use crate::i18n::gettext;
 use crate::services::mail_filter_service::{
     FilterAction, FilterCondition, FilterField, FilterOperator, FilterScope, MailFilterRule,
     MailFilterStore,
@@ -178,7 +179,7 @@ fn condition_from_editor(editor: &ConditionEditor) -> Result<FilterCondition, St
     };
     let operator = filter_operator_from_index(editor.operator.selected());
     if value.is_empty() && !operator.allows_empty_value(field) {
-        return Err("Diese Bedingung benötigt einen Suchwert".to_string());
+        return Err(gettext("This condition requires a search value"));
     }
     Ok(FilterCondition {
         field,
@@ -190,9 +191,9 @@ fn condition_from_editor(editor: &ConditionEditor) -> Result<FilterCondition, St
 fn action_from_editor(editor: &ActionEditor) -> Result<FilterAction, String> {
     let target = editor.target.text().trim().to_string();
     match editor.action_type.selected() {
-        0 if target.is_empty() => Err("Für das Verschieben ist ein Zielordner erforderlich".into()),
+        0 if target.is_empty() => Err(gettext("A destination folder is required for moving")),
         0 => Ok(FilterAction::MoveToFolder(target)),
-        1 if target.is_empty() => Err("Für das Kopieren ist ein Zielordner erforderlich".into()),
+        1 if target.is_empty() => Err(gettext("A destination folder is required for copying")),
         1 => Ok(FilterAction::CopyToFolder(target)),
         2 => Ok(FilterAction::MarkRead),
         3 => Ok(FilterAction::MarkUnread),
@@ -204,33 +205,33 @@ fn action_from_editor(editor: &ActionEditor) -> Result<FilterAction, String> {
         9 => Ok(FilterAction::StopProcessing),
         10 => Ok(FilterAction::SetJunk),
         11 => Ok(FilterAction::ClearJunk),
-        12 if target.is_empty() => Err("Für das Label ist ein Name erforderlich".into()),
+        12 if target.is_empty() => Err(gettext("A label name is required")),
         12 => Ok(FilterAction::SetLabel(target)),
-        13 if target.is_empty() => Err("Für das Label ist ein Name erforderlich".into()),
+        13 if target.is_empty() => Err(gettext("A label name is required")),
         13 => Ok(FilterAction::ClearLabel(target)),
         14 if target.is_empty() => {
-            Err("Für die Farbe ist ein Farbwert erforderlich (z.B. #ff0000 oder red)".into())
+            Err(gettext("A color value is required (e.g. #ff0000 or red)"))
         }
         14 => Ok(FilterAction::AssignColor(target)),
         15 => Ok(FilterAction::UnsetColor),
         16 => target
             .parse::<i32>()
             .map(FilterAction::AssignScore)
-            .map_err(|_| "Für die Bewertung ist eine gültige Ganzzahl erforderlich".to_string()),
+            .map_err(|_| gettext("A valid integer is required for scoring")),
         17 => target
             .parse::<i32>()
             .map(FilterAction::AdjustScore)
-            .map_err(|_| "Für die Bewertungsanpassung ist eine Ganzzahl (+/-) erforderlich".to_string()),
+            .map_err(|_| gettext("An integer (+/-) is required for score adjustment")),
         18 => Ok(FilterAction::Beep),
-        19 if target.is_empty() => Err("Für den Klang ist ein Dateipfad erforderlich".into()),
+        19 if target.is_empty() => Err(gettext("A file path is required for the sound")),
         19 => Ok(FilterAction::PlaySound(target)),
-        20 if target.is_empty() => Err("Für das Programm ist ein Befehl erforderlich".into()),
+        20 if target.is_empty() => Err(gettext("A command is required for the program")),
         20 => Ok(FilterAction::RunProgram(target)),
-        21 if target.is_empty() => Err("Für die Weiterleitung (Pipe) ist ein Befehl erforderlich".into()),
+        21 if target.is_empty() => Err(gettext("A command is required for the pipe")),
         21 => Ok(FilterAction::PipeToProgram(target)),
-        22 if target.is_empty() => Err("Für die Weiterleitung ist eine E-Mail-Adresse erforderlich".into()),
+        22 if target.is_empty() => Err(gettext("An email address is required for forwarding")),
         22 => Ok(FilterAction::ForwardTo(target)),
-        _ => Err("Unbekannte Filteraktion".into()),
+        _ => Err(gettext("Unknown filter action")),
     }
 }
 
@@ -242,46 +243,50 @@ fn append_condition_editor(
 ) {
     let id = next_id.get();
     next_id.set(id.saturating_add(1));
-    let field_model = gtk::StringList::new(&[
-        "Betreff",
-        "Absender",
-        "Empfänger",
-        "Nachrichteninhalt",
-        "Headerfeld",
-        "Label",
-        "Ungelesen",
-        "Stern-/Markierungsstatus",
-        "Wichtigkeit",
-        "Anhang vorhanden",
-        "Datum",
-        "Ordner",
-        "Spam/Junk",
-    ]);
+    let field_labels = [
+        gettext("Subject"),
+        gettext("Sender"),
+        gettext("Recipient"),
+        gettext("Message Body"),
+        gettext("Header"),
+        gettext("Label"),
+        gettext("Unread"),
+        gettext("Flagged / Starred"),
+        gettext("Importance"),
+        gettext("Attachment"),
+        gettext("Date"),
+        gettext("Folder"),
+        gettext("Junk / Spam"),
+    ];
+    let field_slices: Vec<&str> = field_labels.iter().map(|s| s.as_str()).collect();
+    let field_model = gtk::StringList::new(&field_slices);
     let field = gtk::DropDown::new(Some(field_model), None::<&gtk::Expression>);
     field.set_selected(filter_field_index(condition.field));
     field.set_width_request(150);
-    let operator_model = gtk::StringList::new(&[
-        "enthält",
-        "enthält nicht",
-        "ist",
-        "ist nicht",
-        "beginnt mit",
-        "endet mit",
-        "vor",
-        "nach",
-        "existiert",
-    ]);
+    let operator_labels = [
+        gettext("contains"),
+        gettext("does not contain"),
+        gettext("is"),
+        gettext("is not"),
+        gettext("starts with"),
+        gettext("ends with"),
+        gettext("before"),
+        gettext("after"),
+        gettext("exists"),
+    ];
+    let operator_slices: Vec<&str> = operator_labels.iter().map(|s| s.as_str()).collect();
+    let operator_model = gtk::StringList::new(&operator_slices);
     let operator = gtk::DropDown::new(Some(operator_model), None::<&gtk::Expression>);
     operator.set_selected(filter_operator_index(condition.operator));
     operator.set_width_request(135);
     let value = gtk::Entry::builder()
-        .placeholder_text("Suchwert oder Headername")
+        .placeholder_text(&gettext("Search term or header name"))
         .hexpand(true)
         .build();
     value.set_text(&condition.value);
     let remove = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
-        .tooltip_text("Bedingung entfernen")
+        .tooltip_text(&gettext("Remove condition"))
         .css_classes(vec!["flat", "error"])
         .valign(gtk::Align::Center)
         .build();
@@ -334,36 +339,38 @@ fn append_action_editor(
 ) {
     let id = next_id.get();
     next_id.set(id.saturating_add(1));
-    let action_model = gtk::StringList::new(&[
-        "In Ordner verschieben",
-        "In Ordner kopieren",
-        "Als gelesen markieren",
-        "Als ungelesen markieren",
-        "Stern-/Markierungsstatus setzen",
-        "Stern-/Markierungsstatus entfernen",
-        "Als wichtig markieren",
-        "Wichtigkeitsmarkierung entfernen",
-        "Löschen",
-        "Weitere Filterregeln nicht ausführen",
-        "Als Spam markieren",
-        "Als kein Spam markieren",
-        "Label setzen",
-        "Label entfernen",
-        "Farbe zuweisen",
-        "Farbe entfernen",
-        "Bewertung festlegen",
-        "Bewertung anpassen",
-        "Signalton ausgeben",
-        "Klang abspielen",
-        "Programm ausführen",
-        "An Programm weiterleiten (Pipe)",
-        "Weiterleiten an",
-    ]);
+    let action_labels = [
+        gettext("Move to Folder"),
+        gettext("Copy to Folder"),
+        gettext("Mark as Read"),
+        gettext("Mark as Unread"),
+        gettext("Set Flagged / Starred"),
+        gettext("Clear Flagged / Starred"),
+        gettext("Set Important"),
+        gettext("Clear Important"),
+        gettext("Delete"),
+        gettext("Stop Processing"),
+        gettext("Mark as Junk"),
+        gettext("Mark as Not Junk"),
+        gettext("Set Label"),
+        gettext("Clear Label"),
+        gettext("Assign Color"),
+        gettext("Unset Color"),
+        gettext("Assign Score"),
+        gettext("Adjust Score"),
+        gettext("Beep"),
+        gettext("Play Sound"),
+        gettext("Run Program"),
+        gettext("Pipe to Program"),
+        gettext("Forward To"),
+    ];
+    let action_slices: Vec<&str> = action_labels.iter().map(|s| s.as_str()).collect();
+    let action_model = gtk::StringList::new(&action_slices);
     let action_type = gtk::DropDown::new(Some(action_model), None::<&gtk::Expression>);
     action_type.set_selected(filter_action_index(&action));
     action_type.set_width_request(240);
     let target = gtk::Entry::builder()
-        .placeholder_text("Zielordner, Label oder Parameter")
+        .placeholder_text(&gettext("Destination folder, label, or parameter"))
         .hexpand(true)
         .build();
     if let Some(target_val) = action.target_value() {
@@ -372,7 +379,7 @@ fn append_action_editor(
     target.set_sensitive(action.target_value().is_some());
     let remove = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
-        .tooltip_text("Aktion entfernen")
+        .tooltip_text(&gettext("Remove action"))
         .css_classes(vec!["flat", "error"])
         .valign(gtk::Align::Center)
         .build();
@@ -406,18 +413,18 @@ fn append_action_editor(
             target_for_type.set_text(default_val);
         }
         let placeholder = match sel {
-            0 | 1 => "Zielordner (z.B. archive)",
-            12 | 13 => "Labelname (z.B. Important)",
-            14 => "Farbcode oder Name (z.B. #ff0000)",
-            16 => "Punktzahl (Ganzzahl, z.B. 10)",
-            17 => "Punkte delta (z.B. +5 oder -10)",
-            19 => "Klangdatei-Pfad (z.B. .wav, .oga)",
-            20 => "Befehl / Skriptpfad",
-            21 => "Befehl für STDIN-Pipe",
-            22 => "Empfänger-E-Mail-Adresse",
-            _ => "",
+            0 | 1 => gettext("Destination folder (e.g. archive)"),
+            12 | 13 => gettext("Label name (e.g. Important)"),
+            14 => gettext("Color code or name (e.g. #ff0000)"),
+            16 => gettext("Score (integer, e.g. 10)"),
+            17 => gettext("Score delta (e.g. +5 or -10)"),
+            19 => gettext("Sound file path (e.g. .wav, .oga)"),
+            20 => gettext("Command / script path"),
+            21 => gettext("Command for STDIN pipe"),
+            22 => gettext("Recipient email address"),
+            _ => String::new(),
         };
-        target_for_type.set_placeholder_text(Some(placeholder));
+        target_for_type.set_placeholder_text(Some(&placeholder));
     });
 
     editors.borrow_mut().push(ActionEditor {
@@ -450,18 +457,18 @@ fn append_action_editor(
 impl FilterEditorDialog {
     pub fn new() -> Self {
         glib::Object::builder()
-            .property("title", "Filterregel erstellen")
-            .property("content-width", 620)
-            .property("content-height", 540)
+            .property("title", &gettext("New Filter Rule"))
+            .property("content-width", 640)
+            .property("content-height", 560)
             .build()
     }
 
     pub fn new_for_edit(rule: &MailFilterRule) -> Self {
         let encoded = serde_json::to_string(rule).expect("filter rule should serialize");
         glib::Object::builder()
-            .property("title", "Filterregel bearbeiten")
-            .property("content-width", 620)
-            .property("content-height", 540)
+            .property("title", &gettext("Edit Filter Rule"))
+            .property("content-width", 640)
+            .property("content-height", 560)
             .property("edit-rule-json", encoded)
             .build()
     }
@@ -477,7 +484,7 @@ impl FilterEditorDialog {
 
         let header_bar = adw::HeaderBar::new();
         let btn_save = gtk::Button::builder()
-            .label("Speichern")
+            .label(&gettext("Save"))
             .css_classes(vec!["suggested-action"])
             .build();
         header_bar.pack_end(&btn_save);
@@ -499,20 +506,26 @@ impl FilterEditorDialog {
 
         // Rule Name
         let group_general = adw::PreferencesGroup::builder()
-            .title("Regelname & Ausführung")
+            .title(&gettext("Rule Name & Scope"))
             .build();
 
-        let row_rulename = adw::EntryRow::builder().title("Regelname").build();
+        let row_rulename = adw::EntryRow::builder()
+            .title(&gettext("Rule Name"))
+            .build();
+        row_rulename.add_prefix(&gtk::Image::from_icon_name("view-sort-ascending-symbolic"));
         group_general.add(&row_rulename);
 
+        let scope_options = [
+            gettext("Incoming Mail (Automatic upon arrival)"),
+            gettext("Outgoing Mail (When sending)"),
+            gettext("Manual Execution"),
+        ];
+        let scope_slices: Vec<&str> = scope_options.iter().map(|s| s.as_str()).collect();
         let row_scope = adw::ComboRow::builder()
-            .title("Anwenden bei")
-            .model(&gtk::StringList::new(&[
-                "Posteingang (Automatisch bei Eingang)",
-                "Postausgang (Beim Senden)",
-                "Manuelle Ausführung",
-            ]))
+            .title(&gettext("Apply When"))
+            .model(&gtk::StringList::new(&scope_slices))
             .build();
+        row_scope.add_prefix(&gtk::Image::from_icon_name("system-run-symbolic"));
         if let Some(rule) = edit_rule.as_ref() {
             row_scope.set_selected(match rule.scope {
                 FilterScope::Incoming => 0,
@@ -524,7 +537,7 @@ impl FilterEditorDialog {
 
         content_box.append(&group_general);
 
-        // Conditions.  Use dynamic GTK rows so imported Evolution rules with
+        // Conditions. Use dynamic GTK rows so imported Evolution rules with
         // multiple conditions can also be created and edited here.
         let condition_section = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -535,14 +548,14 @@ impl FilterEditorDialog {
             .spacing(8)
             .build();
         let condition_title = gtk::Label::builder()
-            .label("Bedingungen (Wenn…)")
+            .label(&gettext("Conditions (If…)"))
             .halign(gtk::Align::Start)
             .hexpand(true)
             .css_classes(vec!["heading"])
             .build();
         let add_condition = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text("Weitere Bedingung hinzufügen")
+            .tooltip_text(&gettext("Add condition"))
             .css_classes(vec!["flat", "circular"])
             .build();
         condition_header.append(&condition_title);
@@ -601,16 +614,19 @@ impl FilterEditorDialog {
             }
         ));
 
+        let match_mode_options = [
+            gettext("All conditions match (AND)"),
+            gettext("Any condition matches (OR)"),
+        ];
+        let match_mode_slices: Vec<&str> = match_mode_options.iter().map(|s| s.as_str()).collect();
         let group_cond = adw::PreferencesGroup::builder()
-            .description("Alle Bedingungen müssen zutreffen oder mindestens eine (ODER).")
+            .description(&gettext("Whether all conditions must match or at least one (OR)."))
             .build();
         let row_match_mode = adw::ComboRow::builder()
-            .title("Bedingungsverknüpfung")
-            .model(&gtk::StringList::new(&[
-                "Alle Bedingungen (UND)",
-                "Eine Bedingung (ODER)",
-            ]))
+            .title(&gettext("Condition Logic"))
+            .model(&gtk::StringList::new(&match_mode_slices))
             .build();
+        row_match_mode.add_prefix(&gtk::Image::from_icon_name("edit-select-all-symbolic"));
         if let Some(rule) = edit_rule.as_ref() {
             row_match_mode.set_selected(if rule.match_all { 0 } else { 1 });
         }
@@ -619,7 +635,7 @@ impl FilterEditorDialog {
         content_box.append(&condition_section);
         content_box.append(&group_cond);
 
-        // Actions.  Folder targets are free-form so custom Evolution folder
+        // Actions. Folder targets are free-form so custom Evolution folder
         // names survive editing instead of being forced into demo choices.
         let action_section = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -631,14 +647,14 @@ impl FilterEditorDialog {
             .spacing(8)
             .build();
         let action_title = gtk::Label::builder()
-            .label("Aktionen (Dann…)")
+            .label(&gettext("Actions (Then…)"))
             .halign(gtk::Align::Start)
             .hexpand(true)
             .css_classes(vec!["heading"])
             .build();
         let add_action = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text("Weitere Aktion hinzufügen")
+            .tooltip_text(&gettext("Add action"))
             .css_classes(vec!["flat", "circular"])
             .build();
         action_header.append(&action_title);
@@ -706,7 +722,7 @@ impl FilterEditorDialog {
                 let name = row_rulename.text().trim().to_string();
                 if name.is_empty() {
                     tracing::warn!("Cannot save a mail filter without a name");
-                    dialog.show_toast("Bitte einen Regelnamen eingeben");
+                    dialog.show_toast(&gettext("Please enter a rule name"));
                     return;
                 }
                 let conditions = match condition_editors
@@ -715,13 +731,13 @@ impl FilterEditorDialog {
                     .enumerate()
                     .map(|(index, editor)| {
                         condition_from_editor(editor)
-                            .map_err(|error| format!("Bedingung {}: {error}", index + 1))
+                            .map_err(|error| format!("{}: {error}", format!("{} {}", gettext("Condition"), index + 1)))
                     })
                     .collect::<Result<Vec<_>, _>>()
                 {
                     Ok(conditions) if !conditions.is_empty() => conditions,
                     Ok(_) => {
-                        dialog.show_toast("Bitte mindestens eine Filterbedingung anlegen");
+                        dialog.show_toast(&gettext("Please add at least one filter condition"));
                         return;
                     }
                     Err(error) => {
@@ -738,7 +754,7 @@ impl FilterEditorDialog {
                 {
                     Ok(actions) if !actions.is_empty() => actions,
                     Ok(_) => {
-                        dialog.show_toast("Bitte mindestens eine Filteraktion anlegen");
+                        dialog.show_toast(&gettext("Please add at least one filter action"));
                         return;
                     }
                     Err(error) => {
@@ -771,13 +787,14 @@ impl FilterEditorDialog {
                 match MailFilterStore::default().upsert(rule) {
                     Ok(()) => {
                         tracing::info!("Mail filter rule persisted");
-                        dialog.show_toast("Filterregel gespeichert");
+                        dialog.show_toast(&gettext("Filter rule saved"));
                         dialog.close();
                     }
                     Err(error) => {
                         tracing::error!(%error, "Could not persist mail filter rule");
                         dialog.show_toast(&format!(
-                            "Filterregel konnte nicht gespeichert werden: {error}"
+                            "{}: {error}",
+                            gettext("Could not save filter rule")
                         ));
                     }
                 }

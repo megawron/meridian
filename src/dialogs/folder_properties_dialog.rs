@@ -6,6 +6,7 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
 use std::cell::RefCell;
+use crate::i18n::gettext;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FolderPropertiesSnapshot {
@@ -97,8 +98,8 @@ impl FolderPropertiesDialog {
     pub fn new(snapshot: FolderPropertiesSnapshot) -> Self {
         glib::Object::builder()
             .property("title", "Ordnereigenschaften")
-            .property("content-width", 500)
-            .property("content-height", 520)
+            .property("content-width", 540)
+            .property("content-height", 560)
             .property("folder-name", snapshot.folder_name)
             .property("account-name", snapshot.account_name)
             .property("folder-path", snapshot.folder_path)
@@ -118,13 +119,27 @@ impl FolderPropertiesDialog {
         } else {
             "Lokaler app-eigener Ordner"
         };
-        let title_widget = adw::WindowTitle::new("Ordnereigenschaften", type_subtitle);
-        let header = adw::HeaderBar::new();
-        header.set_title_widget(Some(&title_widget));
-        toolbar.add_top_bar(&header);
 
-        let notebook = gtk::Notebook::new();
-        notebook.set_tab_pos(gtk::PositionType::Top);
+        let view_stack = adw::ViewStack::new();
+
+        let header = adw::HeaderBar::new();
+        let view_switcher = adw::ViewSwitcher::builder()
+            .stack(&view_stack)
+            .policy(adw::ViewSwitcherPolicy::Wide)
+            .build();
+        header.set_title_widget(Some(&view_switcher));
+
+        let close_btn = gtk::Button::builder()
+            .label(&gettext("Close"))
+            .build();
+        let dialog_weak_close = self.downgrade();
+        close_btn.connect_clicked(move |_| {
+            if let Some(dialog) = dialog_weak_close.upgrade() {
+                dialog.close();
+            }
+        });
+        header.pack_end(&close_btn);
+        toolbar.add_top_bar(&header);
 
         let folder_name = self.imp().folder_name.borrow().clone();
         let account_name = self.imp().account_name.borrow().clone();
@@ -134,50 +149,49 @@ impl FolderPropertiesDialog {
         let is_remote = *self.imp().is_remote.borrow();
 
         // ── Page 1: Allgemein (General) ─────────────────────────────────
-        let general_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(6)
-            .margin_start(20)
-            .margin_end(20)
-            .margin_top(10)
-            .margin_bottom(10)
+        let page_general = adw::PreferencesPage::new();
+
+        let details_group = adw::PreferencesGroup::builder()
+            .title(&gettext("Folder Details"))
+            .description(type_subtitle)
             .build();
 
-        // Folder Title Header
-        let title_label = gtk::Label::builder()
-            .label(&folder_name)
-            .halign(gtk::Align::Start)
-            .css_classes(vec!["title-3", "heading"])
+        let row_folder = adw::ActionRow::builder()
+            .title(&gettext("Folder Name"))
+            .subtitle(&folder_name)
             .build();
-        general_box.append(&title_label);
+        let icon_folder = gtk::Image::builder()
+            .icon_name("folder-symbolic")
+            .valign(gtk::Align::Center)
+            .build();
+        row_folder.add_prefix(&icon_folder);
+        details_group.add(&row_folder);
 
-        // Metadata Grid (Path, Unread, Total)
-        let grid = gtk::Grid::builder()
-            .column_spacing(16)
-            .row_spacing(4)
+        let row_account = adw::ActionRow::builder()
+            .title(&gettext("Account"))
+            .subtitle(&account_name)
             .build();
+        let icon_account = gtk::Image::builder()
+            .icon_name("avatar-default-symbolic")
+            .valign(gtk::Align::Center)
+            .build();
+        row_account.add_prefix(&icon_account);
+        details_group.add(&row_account);
 
-        // Row 0: Path
-        let lbl_path = gtk::Label::builder()
-            .label("Pfad:")
-            .halign(gtk::Align::Start)
-            .css_classes(vec!["dim-label"])
+        let row_path = adw::ActionRow::builder()
+            .title(&gettext("Path"))
+            .subtitle(&folder_path)
             .build();
-        let val_path_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(4)
-            .halign(gtk::Align::End)
-            .hexpand(true)
+        let icon_path = gtk::Image::builder()
+            .icon_name("folder-remote-symbolic")
+            .valign(gtk::Align::Center)
             .build();
-        let val_path = gtk::Label::builder()
-            .label(&folder_path)
-            .halign(gtk::Align::End)
-            .ellipsize(gtk::pango::EllipsizeMode::Middle)
-            .build();
+        row_path.add_prefix(&icon_path);
+
         let copy_button = gtk::Button::builder()
             .icon_name("edit-copy-symbolic")
             .valign(gtk::Align::Center)
-            .tooltip_text("Pfad in Zwischenablage kopieren")
+            .tooltip_text(&gettext("Copy folder path"))
             .css_classes(vec!["flat", "circular"])
             .build();
         let path_text = folder_path.clone();
@@ -186,172 +200,190 @@ impl FolderPropertiesDialog {
             if let Some(display) = gtk::gdk::Display::default() {
                 display.clipboard().set_text(&path_text);
                 if let Some(dialog) = dialog_weak.upgrade() {
-                    dialog.show_toast("Ordnerpfad in Zwischenablage kopiert");
+                    dialog.show_toast(&gettext("Folder path copied to clipboard"));
                 }
             }
         });
-        val_path_box.append(&val_path);
-        val_path_box.append(&copy_button);
-        grid.attach(&lbl_path, 0, 0, 1, 1);
-        grid.attach(&val_path_box, 1, 0, 1, 1);
+        row_path.add_suffix(&copy_button);
+        details_group.add(&row_path);
 
-        // Row 1: Unread
-        let lbl_unread = gtk::Label::builder()
-            .label("Ungelesene Nachrichten:")
-            .halign(gtk::Align::Start)
-            .css_classes(vec!["dim-label"])
+        let row_unread = adw::ActionRow::builder()
+            .title(&gettext("Unread Messages"))
+            .subtitle(&unread_count.to_string())
             .build();
-        let val_unread = gtk::Label::builder()
-            .label(&unread_count.to_string())
-            .halign(gtk::Align::End)
+        let icon_unread = gtk::Image::builder()
+            .icon_name("mail-unread-symbolic")
+            .valign(gtk::Align::Center)
             .build();
-        grid.attach(&lbl_unread, 0, 1, 1, 1);
-        grid.attach(&val_unread, 1, 1, 1, 1);
+        row_unread.add_prefix(&icon_unread);
+        details_group.add(&row_unread);
 
-        // Row 2: Total
-        let lbl_total = gtk::Label::builder()
-            .label("Gesamte Nachrichten:")
-            .halign(gtk::Align::Start)
-            .css_classes(vec!["dim-label"])
+        let row_total = adw::ActionRow::builder()
+            .title(&gettext("Total Messages"))
+            .subtitle(&total_count.to_string())
             .build();
-        let val_total = gtk::Label::builder()
-            .label(&total_count.to_string())
-            .halign(gtk::Align::End)
+        let icon_total = gtk::Image::builder()
+            .icon_name("mail-read-symbolic")
+            .valign(gtk::Align::Center)
             .build();
-        grid.attach(&lbl_total, 0, 2, 1, 1);
-        grid.attach(&val_total, 1, 2, 1, 1);
+        row_total.add_prefix(&icon_total);
+        details_group.add(&row_total);
 
-        general_box.append(&grid);
+        page_general.add(&details_group);
 
-        // Options Checkboxes (matching classic GNOME Evolution layout)
-        let cb_offline = gtk::CheckButton::builder()
-            .label("Ordnerinhalt lokal für den Offline-Betrieb kopieren")
+        let sync_group = adw::PreferencesGroup::builder()
+            .title(&gettext("Synchronization and Offline"))
+            .build();
+
+        let row_offline = adw::SwitchRow::builder()
+            .title("Ordnerinhalt lokal für den Offline-Betrieb kopieren")
+            .subtitle(&gettext("Cache messages on this device for offline reading"))
             .active(is_remote)
             .build();
-        general_box.append(&cb_offline);
+        let icon_offline = gtk::Image::builder()
+            .icon_name("network-offline-symbolic")
+            .valign(gtk::Align::Center)
+            .build();
+        row_offline.add_prefix(&icon_offline);
+        sync_group.add(&row_offline);
 
-        let cb_filter = gtk::CheckButton::builder()
-            .label("Nachrichtenfilter auf diesen Ordner anwenden")
+        let row_check = adw::SwitchRow::builder()
+            .title("Immer auf neue E-Mails in diesem Ordner prüfen")
+            .subtitle(&gettext("Include this folder when synchronizing mailbox"))
+            .active(true)
+            .build();
+        let icon_check = gtk::Image::builder()
+            .icon_name("mail-read-symbolic")
+            .valign(gtk::Align::Center)
+            .build();
+        row_check.add_prefix(&icon_check);
+        sync_group.add(&row_check);
+
+        let row_filter = adw::SwitchRow::builder()
+            .title("Nachrichtenfilter auf diesen Ordner anwenden")
+            .subtitle(&gettext("Process incoming filter rules automatically"))
             .active(false)
             .build();
-        general_box.append(&cb_filter);
+        let icon_filter = gtk::Image::builder()
+            .icon_name("view-sort-ascending-symbolic")
+            .valign(gtk::Align::Center)
+            .build();
+        row_filter.add_prefix(&icon_filter);
+        sync_group.add(&row_filter);
 
-        let cb_check = gtk::CheckButton::builder()
-            .label("Immer auf neue E-Mails in diesem Ordner prüfen")
-            .active(true)
-            .build();
-        general_box.append(&cb_check);
+        page_general.add(&sync_group);
 
-        // Mark as read after X seconds row
-        let box_read = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(6)
+        let reading_group = adw::PreferencesGroup::builder()
+            .title(&gettext("Reading and Delivery"))
             .build();
-        let cb_read = gtk::CheckButton::builder()
-            .label("Nachrichten als gelesen markieren nach")
-            .active(true)
+
+        let row_read = adw::ActionRow::builder()
+            .title(&gettext("Mark messages as read after"))
+            .subtitle(&gettext("Timeout before viewed messages are marked read"))
             .build();
+        let icon_read = gtk::Image::builder()
+            .icon_name("preferences-system-time-symbolic")
+            .valign(gtk::Align::Center)
+            .build();
+        row_read.add_prefix(&icon_read);
         let spin_read = gtk::SpinButton::builder()
             .digits(1)
             .climb_rate(0.5)
             .adjustment(&gtk::Adjustment::new(1.5, 0.5, 60.0, 0.5, 5.0, 0.0))
+            .valign(gtk::Align::Center)
             .build();
-        let lbl_sec = gtk::Label::new(Some("Sekunden"));
-        box_read.append(&cb_read);
-        box_read.append(&spin_read);
-        box_read.append(&lbl_sec);
-        general_box.append(&box_read);
-
-        // Send Account Override
-        let lbl_override = gtk::Label::builder()
-            .label("Absendekonto überschreiben:")
-            .halign(gtk::Align::Start)
+        let lbl_sec = gtk::Label::builder()
+            .label(&gettext("Seconds"))
+            .valign(gtk::Align::Center)
             .css_classes(vec!["dim-label"])
-            .margin_top(4)
             .build();
-        general_box.append(&lbl_override);
+        let read_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .valign(gtk::Align::Center)
+            .build();
+        read_box.append(&spin_read);
+        read_box.append(&lbl_sec);
+        row_read.add_suffix(&read_box);
+        reading_group.add(&row_read);
 
         let accounts_list = [
-            "Keines (Standard)".to_string(),
+            gettext("None (Default)"),
             account_name,
         ];
         let accounts_str_slices: Vec<&str> = accounts_list.iter().map(|s| s.as_str()).collect();
-        let dd_override = gtk::DropDown::from_strings(&accounts_str_slices);
-        general_box.append(&dd_override);
-
-        let general_scrolled = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .propagate_natural_height(true)
-            .child(&general_box)
+        let row_override = adw::ComboRow::builder()
+            .title(&gettext("Send Account Override"))
+            .subtitle(&gettext("Default sending identity for messages from this folder"))
+            .model(&gtk::StringList::new(&accounts_str_slices))
             .build();
-        notebook.append_page(&general_scrolled, Some(&gtk::Label::new(Some("Allgemein"))));
+        let icon_override = gtk::Image::builder()
+            .icon_name("mail-send-symbolic")
+            .valign(gtk::Align::Center)
+            .build();
+        row_override.add_prefix(&icon_override);
+        reading_group.add(&row_override);
+
+        page_general.add(&reading_group);
+
+        view_stack.add_titled_with_icon(&page_general, Some("general"), "Allgemein", "folder-symbolic");
 
         // ── Page 2: Erscheinungsbild (Appearance) ────────────────────────
-        let appearance_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(10)
-            .margin_start(20)
-            .margin_end(20)
-            .margin_top(12)
-            .margin_bottom(12)
+        let page_appearance = adw::PreferencesPage::new();
+        let appearance_group = adw::PreferencesGroup::builder()
+            .title(&gettext("Appearance"))
             .build();
-        let cb_color = gtk::CheckButton::builder()
-            .label("Benutzerdefinierte Ordnerfarbe verwenden")
+
+        let row_color = adw::SwitchRow::builder()
+            .title(&gettext("Use custom folder color"))
+            .subtitle(&gettext("Display folder with a custom highlight color"))
             .build();
-        let cb_icon = gtk::CheckButton::builder()
-            .label("Eigenes Ordnersymbol anzeigen")
+        let icon_color = gtk::Image::builder()
+            .icon_name("applications-graphics-symbolic")
+            .valign(gtk::Align::Center)
             .build();
-        appearance_box.append(&cb_color);
-        appearance_box.append(&cb_icon);
-        let appearance_scrolled = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .propagate_natural_height(true)
-            .child(&appearance_box)
+        row_color.add_prefix(&icon_color);
+        appearance_group.add(&row_color);
+
+        let row_icon = adw::SwitchRow::builder()
+            .title(&gettext("Show custom folder icon"))
+            .subtitle(&gettext("Display a customized icon in the sidebar"))
             .build();
-        notebook.append_page(&appearance_scrolled, Some(&gtk::Label::new(Some("Erscheinungsbild"))));
+        let icon_folder_custom = gtk::Image::builder()
+            .icon_name("starred-symbolic")
+            .valign(gtk::Align::Center)
+            .build();
+        row_icon.add_prefix(&icon_folder_custom);
+        appearance_group.add(&row_icon);
+
+        page_appearance.add(&appearance_group);
+        view_stack.add_titled_with_icon(&page_appearance, Some("appearance"), "Erscheinungsbild", "preferences-desktop-appearance-symbolic");
 
         // ── Page 3: Archivierung (Archive) ──────────────────────────────
-        let archive_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(10)
-            .margin_start(20)
-            .margin_end(20)
-            .margin_top(12)
-            .margin_bottom(12)
+        let page_archive = adw::PreferencesPage::new();
+        let archive_group = adw::PreferencesGroup::builder()
+            .title(&gettext("Archiving"))
             .build();
-        let cb_archive = gtk::CheckButton::builder()
-            .label("Alte Nachrichten dieses Ordners automatisch archivieren")
+
+        let row_archive = adw::SwitchRow::builder()
+            .title(&gettext("Automatically archive old messages in this folder"))
+            .subtitle(&gettext("Move expired messages to archive storage"))
             .build();
-        archive_box.append(&cb_archive);
-        let archive_scrolled = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .propagate_natural_height(true)
-            .child(&archive_box)
+        let icon_archive = gtk::Image::builder()
+            .icon_name("package-x-generic-symbolic")
+            .valign(gtk::Align::Center)
             .build();
-        notebook.append_page(&archive_scrolled, Some(&gtk::Label::new(Some("Archivierung"))));
+        row_archive.add_prefix(&icon_archive);
+        archive_group.add(&row_archive);
+
+        page_archive.add(&archive_group);
+        view_stack.add_titled_with_icon(&page_archive, Some("archive"), "Archivierung", "package-x-generic-symbolic");
 
         // ── Page 4: Beschriftungen (Labels) ─────────────────────────────
-        let labels_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(8)
-            .margin_start(20)
-            .margin_end(20)
-            .margin_top(12)
-            .margin_bottom(12)
-            .build();
-        let lbl_labels_hint = gtk::Label::builder()
-            .label("Verfügbare Etiketten und Kennzeichnungen:")
-            .halign(gtk::Align::Start)
-            .css_classes(vec!["dim-label"])
-            .build();
-        labels_box.append(&lbl_labels_hint);
-
-        let labels_list = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .css_classes(vec!["boxed-list"])
+        let page_labels = adw::PreferencesPage::new();
+        let labels_group = adw::PreferencesGroup::builder()
+            .title(&gettext("Labels"))
+            .description(&gettext("Available tags and flags for organizing messages in this folder:"))
             .build();
 
         let available_labels = crate::services::AppSettings::try_new()
@@ -361,7 +393,7 @@ impl FolderPropertiesDialog {
         for label_def in available_labels {
             let row = adw::ActionRow::builder()
                 .title(&label_def.display_name())
-                .subtitle(&format!("Farbe: {}", label_def.color))
+                .subtitle(&format!("{}: {}", gettext("Color"), label_def.color))
                 .build();
 
             let color_dot = gtk::Label::builder()
@@ -380,42 +412,13 @@ impl FolderPropertiesDialog {
             row.add_suffix(&check);
             row.set_activatable_widget(Some(&check));
 
-            labels_list.append(&row);
+            labels_group.add(&row);
         }
-        labels_box.append(&labels_list);
 
-        let labels_scrolled = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .propagate_natural_height(true)
-            .child(&labels_box)
-            .build();
-        notebook.append_page(&labels_scrolled, Some(&gtk::Label::new(Some("Beschriftungen"))));
+        page_labels.add(&labels_group);
+        view_stack.add_titled_with_icon(&page_labels, Some("labels"), "Beschriftungen", "tag-symbolic");
 
-        toolbar.set_content(Some(&notebook));
-
-        // Bottom Action Bar with Close Button
-        let bottom_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .halign(gtk::Align::End)
-            .margin_start(16)
-            .margin_end(16)
-            .margin_top(8)
-            .margin_bottom(8)
-            .build();
-        let close_btn = gtk::Button::builder()
-            .label("Schließen")
-            .build();
-        let dialog_weak_close = self.downgrade();
-        close_btn.connect_clicked(move |_| {
-            if let Some(dialog) = dialog_weak_close.upgrade() {
-                dialog.close();
-            }
-        });
-        bottom_box.append(&close_btn);
-        toolbar.add_bottom_bar(&bottom_box);
-
+        toolbar.set_content(Some(&view_stack));
         self.set_child(Some(&toolbar));
     }
 

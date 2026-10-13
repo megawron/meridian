@@ -26,6 +26,9 @@ mod imp {
         pub on_saved: RefCell<Option<Rc<dyn Fn(SignatureProfile)>>>,
         pub existing_id: RefCell<Option<String>>,
         pub entry_name: RefCell<Option<adw::EntryRow>>,
+        pub row_format: RefCell<Option<adw::SwitchRow>>,
+        pub row_default: RefCell<Option<adw::SwitchRow>>,
+        pub btn_format: RefCell<Option<gtk::ToggleButton>>,
         pub editor: RefCell<Option<HtmlEditor>>,
         pub title_widget: RefCell<Option<adw::WindowTitle>>,
         pub toast_overlay: RefCell<Option<adw::ToastOverlay>>,
@@ -93,7 +96,7 @@ impl SignatureEditorDialog {
         F: Fn(SignatureProfile) + 'static,
     {
         let obj: Self = glib::Object::builder()
-            .property("title", gettext("Neue Signatur"))
+            .property("title", gettext("New Signature"))
             .property("content-width", 780)
             .property("content-height", 680)
             .build();
@@ -109,7 +112,7 @@ impl SignatureEditorDialog {
     {
         let encoded = serde_json::to_string(profile).unwrap_or_default();
         let obj: Self = glib::Object::builder()
-            .property("title", gettext("Signatur bearbeiten"))
+            .property("title", gettext("Edit Signature"))
             .property("content-width", 780)
             .property("content-height", 680)
             .property("edit-signature-json", encoded)
@@ -124,16 +127,28 @@ impl SignatureEditorDialog {
     pub fn load_profile(&self, profile: &SignatureProfile) {
         *self.imp().existing_id.borrow_mut() = Some(profile.id.clone());
         if let Some(title) = self.imp().title_widget.borrow().as_ref() {
-            title.set_title(&gettext("Signatur bearbeiten"));
+            title.set_title(&gettext("Edit Signature"));
         }
         if let Some(entry) = self.imp().entry_name.borrow().as_ref() {
             entry.set_text(&profile.name);
         }
+        let is_html = profile.is_html();
+        if let Some(row_format) = self.imp().row_format.borrow().as_ref() {
+            row_format.set_active(is_html);
+        }
+        if let Some(btn_format) = self.imp().btn_format.borrow().as_ref() {
+            btn_format.set_sensitive(is_html);
+            btn_format.set_active(is_html);
+        }
         if let Some(editor) = self.imp().editor.borrow().as_ref() {
-            if profile.is_html() {
+            if is_html {
+                editor.set_plain_text_mode(false);
                 editor.set_html(&profile.text);
+                editor.set_format_toolbar_visible(true);
             } else {
+                editor.set_plain_text_mode(true);
                 editor.set_text(&profile.text);
+                editor.set_format_toolbar_visible(false);
             }
         }
     }
@@ -150,22 +165,24 @@ impl SignatureEditorDialog {
             *self.imp().existing_id.borrow_mut() = Some(profile.id.clone());
         }
 
+        let is_html = edit_profile.as_ref().map(|p| p.is_html()).unwrap_or(true);
+
         let toolbar_view = adw::ToolbarView::new();
 
         let header_bar = adw::HeaderBar::new();
         header_bar.set_show_end_title_buttons(false);
         header_bar.set_show_start_title_buttons(false);
         let title_str = if edit_profile.is_some() {
-            gettext("Signatur bearbeiten")
+            gettext("Edit Signature")
         } else {
-            gettext("Neue Signatur")
+            gettext("New Signature")
         };
         let title_widget = adw::WindowTitle::new(&title_str, "");
         self.imp().title_widget.replace(Some(title_widget.clone()));
         header_bar.set_title_widget(Some(&title_widget));
 
         let btn_cancel = gtk::Button::builder()
-            .label(&gettext("Abbrechen"))
+            .label(&gettext("Cancel"))
             .build();
         btn_cancel.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
@@ -176,8 +193,18 @@ impl SignatureEditorDialog {
         ));
         header_bar.pack_start(&btn_cancel);
 
+        let btn_format = gtk::ToggleButton::builder()
+            .icon_name("format-text-bold-symbolic")
+            .tooltip_text(&gettext("Toggle formatting toolbar"))
+            .active(is_html)
+            .sensitive(is_html)
+            .css_classes(vec!["flat"])
+            .build();
+        self.imp().btn_format.replace(Some(btn_format.clone()));
+        header_bar.pack_end(&btn_format);
+
         let btn_save = gtk::Button::builder()
-            .label(&gettext("Speichern"))
+            .label(&gettext("Save"))
             .css_classes(vec!["suggested-action"])
             .build();
         header_bar.pack_end(&btn_save);
@@ -193,13 +220,14 @@ impl SignatureEditorDialog {
             .vexpand(true)
             .build();
 
-        // 1. Signature Name (Native Libadwaita Boxed List)
+        // 1. Signature Name & Format (Native Libadwaita Boxed List)
         let group_name = adw::PreferencesGroup::new();
         let entry_name = adw::EntryRow::builder()
-            .title(&gettext("Signaturname"))
+            .title(&gettext("Signature Name"))
             .text(edit_profile.as_ref().map(|p| p.name.as_str()).unwrap_or(""))
             .show_apply_button(false)
             .build();
+        entry_name.add_prefix(&gtk::Image::from_icon_name("document-edit-symbolic"));
         entry_name.connect_changed(move |row| {
             row.remove_css_class("error");
         });
@@ -209,13 +237,44 @@ impl SignatureEditorDialog {
         });
         self.imp().entry_name.replace(Some(entry_name.clone()));
         group_name.add(&entry_name);
+
+        let row_format = adw::SwitchRow::builder()
+            .title(&gettext("HTML and Rich Text"))
+            .subtitle(&gettext("Enable formatting (bold, italic, lists, links) and images or logos"))
+            .active(is_html)
+            .build();
+        row_format.add_prefix(&gtk::Image::from_icon_name("format-text-bold-symbolic"));
+        self.imp().row_format.replace(Some(row_format.clone()));
+        group_name.add(&row_format);
+
+        let store_for_init = SignatureStore::from_environment();
+        let is_default = edit_profile
+            .as_ref()
+            .map(|p| store_for_init.active_id().as_deref() == Some(&p.id))
+            .unwrap_or_else(|| store_for_init.load().is_empty());
+
+        let row_default = adw::SwitchRow::builder()
+            .title(&gettext("Set as Standard Signature"))
+            .subtitle(&gettext("Automatically insert into new messages"))
+            .active(is_default)
+            .build();
+        row_default.add_prefix(&gtk::Image::from_icon_name("starred-symbolic"));
+        self.imp().row_default.replace(Some(row_default.clone()));
+        group_name.add(&row_default);
         content_box.append(&group_name);
 
-        // 2. Signature Editor (.card frame directly below, no redundant header title)
+        // 2. Signature Editor (.card frame directly below with full formatting toolbar)
         let editor = HtmlEditor::new();
         editor.set_vexpand(true);
         editor.set_hexpand(true);
         self.imp().editor.replace(Some(editor.clone()));
+
+        if is_html {
+            editor.set_format_toolbar_visible(true);
+        } else {
+            editor.set_plain_text_mode(true);
+            editor.set_format_toolbar_visible(false);
+        }
 
         if let Some(profile) = &edit_profile {
             if profile.is_html() {
@@ -224,6 +283,29 @@ impl SignatureEditorDialog {
                 editor.set_text(&profile.text);
             }
         }
+
+        btn_format.connect_toggled(glib::clone!(
+            #[weak]
+            editor,
+            move |btn| {
+                editor.set_format_toolbar_visible(btn.is_active());
+            }
+        ));
+
+        let btn_format_weak = btn_format.downgrade();
+        row_format.connect_active_notify(glib::clone!(
+            #[weak]
+            editor,
+            move |row| {
+                let active = row.is_active();
+                editor.set_plain_text_mode(!active);
+                if let Some(btn) = btn_format_weak.upgrade() {
+                    btn.set_sensitive(active);
+                    btn.set_active(active);
+                }
+                editor.set_format_toolbar_visible(active);
+            }
+        ));
 
         let editor_frame = gtk::Frame::builder()
             .css_classes(vec!["card"])
@@ -251,7 +333,7 @@ impl SignatureEditorDialog {
 
             let name_raw = entry_name.text().trim().to_string();
             let name = if name_raw.is_empty() {
-                gettext("Signatur")
+                gettext("Signature")
             } else {
                 name_raw
             };
@@ -263,7 +345,7 @@ impl SignatureEditorDialog {
                 entry_name.add_css_class("error");
                 if let Some(overlay) = dialog.imp().toast_overlay.borrow().as_ref() {
                     overlay.add_toast(adw::Toast::new(&gettext(
-                        "Eine Signatur mit diesem Namen existiert bereits.",
+                        "A signature with this name already exists.",
                     )));
                 }
                 return;
@@ -271,6 +353,22 @@ impl SignatureEditorDialog {
 
             let sig_id = existing_id_opt
                 .unwrap_or_else(|| format!("sig-{}", uuid::Uuid::new_v4()));
+
+            let is_html_active = dialog
+                .imp()
+                .row_format
+                .borrow()
+                .as_ref()
+                .map(|r| r.is_active())
+                .unwrap_or(true);
+            let is_default_active = dialog
+                .imp()
+                .row_default
+                .borrow()
+                .as_ref()
+                .map(|r| r.is_active())
+                .unwrap_or(false);
+            let format_str = if is_html_active { "html" } else { "text" }.to_string();
 
             editor.read_content(glib::clone!(
                 #[weak]
@@ -285,19 +383,32 @@ impl SignatureEditorDialog {
                     };
 
                     if body.trim().is_empty() {
-                        body = "<p><br></p>".to_string();
+                        body = if is_html_active {
+                            "<p><br></p>".to_string()
+                        } else {
+                            String::new()
+                        };
                     }
 
                     let profile = SignatureProfile {
-                        id: sig_id,
+                        id: sig_id.clone(),
                         name,
-                        text: body,
-                        format: "html".to_string(),
+                        text: body.clone(),
+                        format: format_str,
                     };
 
                     let store = SignatureStore::from_environment();
                     if let Err(e) = store.upsert(profile.clone()) {
                         tracing::error!("Failed to upsert signature into store: {e}");
+                    }
+
+                    if is_default_active {
+                        let _ = store.set_active(Some(&sig_id));
+                        if let Some(settings) = crate::services::AppSettings::try_new() {
+                            settings.set_signature_text(&body);
+                        }
+                    } else if store.active_id().as_deref() == Some(&sig_id) {
+                        let _ = store.set_active(None);
                     }
 
                     if let Some(cb) = dialog.imp().on_saved.borrow().as_ref() {
@@ -358,5 +469,74 @@ mod tests {
             format: "text".to_string(),
         };
         assert!(implicit_html.is_html(), "Tags and img must trigger is_html even if format is text");
+    }
+
+    #[test]
+    fn test_signature_editor_dialog_format_toolbar_wiring() {
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let dialog = SignatureEditorDialog::new_for_create::<fn(SignatureProfile)>(None);
+        while context.iteration(false) {}
+
+        let row_format = dialog
+            .imp()
+            .row_format
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("row_format must exist");
+        let btn_format = dialog
+            .imp()
+            .btn_format
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("btn_format must exist");
+        let editor = dialog
+            .imp()
+            .editor
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("editor must exist");
+
+        // By default for new signature, format is HTML and toolbar is visible
+        assert!(row_format.is_active());
+        assert!(btn_format.is_active());
+        assert!(btn_format.is_sensitive());
+        assert!(editor.is_format_toolbar_visible());
+
+        // Toggle format button off
+        btn_format.set_active(false);
+        while context.iteration(false) {}
+        assert!(!editor.is_format_toolbar_visible());
+
+        // Toggle format button on
+        btn_format.set_active(true);
+        while context.iteration(false) {}
+        assert!(editor.is_format_toolbar_visible());
+
+        // Switch to Plain Text mode
+        row_format.set_active(false);
+        while context.iteration(false) {}
+        assert!(!editor.is_format_toolbar_visible());
+        assert!(!btn_format.is_sensitive());
+
+        // Switch back to HTML mode
+        row_format.set_active(true);
+        while context.iteration(false) {}
+        let row_default = dialog
+            .imp()
+            .row_default
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("row_default must exist");
+        assert!(row_default.title().contains("Standard"));
     }
 }

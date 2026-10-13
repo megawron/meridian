@@ -28,6 +28,7 @@ pub use itip_banner::ItipBanner;
 pub use mail_page::MailPage;
 pub(crate) use mail_page::MailDrillDownLevel;
 pub(crate) use mail_page::clean_name_for_avatar;
+pub(crate) use mail_page::parse_flexible_datetime;
 pub(crate) use mail_page::set_button_icon_with_fallback;
 pub(crate) use mail_viewer::MailPrintDialogResult;
 pub use mail_viewer::MailViewer;

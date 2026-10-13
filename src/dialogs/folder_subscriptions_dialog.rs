@@ -55,7 +55,7 @@ impl FolderSubscriptionsDialog {
         F: Fn() + 'static,
     {
         let dialog = adw::Dialog::builder()
-            .title(format!("Ordner-Abonnements: {account_name}"))
+            .title(format!("{}: {account_name}", gettext("Folder Subscriptions")))
             .content_width(560)
             .content_height(500)
             .build();
@@ -85,14 +85,14 @@ impl FolderSubscriptionsDialog {
             .build();
         content.append(
             &gtk::Label::builder()
-                .label("Die Liste und der Abonnementstatus stammen direkt vom Mail-Anbieter.")
+                .label(&gettext("The folder list and subscription status are loaded directly from the mail provider."))
                 .xalign(0.0)
                 .wrap(true)
                 .css_classes(vec!["dim-label"])
                 .build(),
         );
         let search = gtk::SearchEntry::builder()
-            .placeholder_text("Ordner filtern…")
+            .placeholder_text(&gettext("Filter folders…"))
             .build();
         content.append(&search);
         let status = gtk::Label::builder()
@@ -167,6 +167,7 @@ impl FolderSubscriptionsDialog {
         folder_dialog
     }
 
+    #[allow(dead_code)]
     pub fn set_transient_for(&self, _parent: Option<&gtk::Window>) {}
 
     pub fn present(&self, parent: Option<&impl IsA<gtk::Widget>>) {
@@ -238,7 +239,7 @@ fn rebuild_list(state: &Rc<RefCell<SubscriptionDialogState>>) {
         None if busy => {
             list.append(
                 &adw::ActionRow::builder()
-                    .title("Abonnementsliste wird geladen…")
+                    .title(&gettext("Loading subscription list…"))
                     .build(),
             );
             return;
@@ -246,8 +247,8 @@ fn rebuild_list(state: &Rc<RefCell<SubscriptionDialogState>>) {
         Some(false) => {
             list.append(
                 &adw::ActionRow::builder()
-                    .title("Dieses Konto unterstützt keine Ordner-Abonnements")
-                    .subtitle("Der Camel-Anbieter meldet keine CamelSubscribable-Fähigkeit.")
+                    .title(&gettext("This account does not support folder subscriptions"))
+                    .subtitle(&gettext("The mail provider does not report subscription support."))
                     .build(),
             );
             return;
@@ -263,19 +264,19 @@ fn rebuild_list(state: &Rc<RefCell<SubscriptionDialogState>>) {
     if visible.is_empty() {
         let (title, subtitle) = if filter.is_empty() {
             (
-                "Keine Ordner gefunden",
-                "Der Anbieter lieferte keine abonnierbaren Ordner.",
+                gettext("No folders found"),
+                gettext("The provider returned no subscribable folders."),
             )
         } else {
             (
-                "Keine passenden Ordner",
-                "Der Filter stimmt mit keinem Anbieterordner überein.",
+                gettext("No matching folders"),
+                gettext("The filter did not match any folders."),
             )
         };
         list.append(
             &adw::ActionRow::builder()
-                .title(title)
-                .subtitle(subtitle)
+                .title(&title)
+                .subtitle(&subtitle)
                 .build(),
         );
         return;
@@ -284,8 +285,8 @@ fn rebuild_list(state: &Rc<RefCell<SubscriptionDialogState>>) {
     for folder in visible {
         let depth = subscription_hierarchy_depth(&folders, &folder.folder_name);
         let mut subtitle = format!(
-            "{} · {} Nachrichten",
-            folder.folder_name, folder.total_count
+            "{} · {} {}",
+            folder.folder_name, folder.total_count, gettext("messages")
         );
         if !folder.is_selectable {
             subtitle.push_str(" · NOSELECT");
@@ -295,12 +296,18 @@ fn rebuild_list(state: &Rc<RefCell<SubscriptionDialogState>>) {
             .subtitle(&subtitle)
             .margin_start((depth as i32).saturating_mul(18))
             .build();
+        let icon_name = if folder.is_selectable {
+            "folder-symbolic"
+        } else {
+            "folder-remote-symbolic"
+        };
+        row.add_prefix(&gtk::Image::from_icon_name(icon_name));
         if folder.is_selectable && is_subscribable == Some(true) {
             let check = gtk::CheckButton::builder()
                 .active(folder.is_subscribed)
                 .sensitive(!busy)
                 .valign(gtk::Align::Center)
-                .tooltip_text("Abonnement beim Anbieter ändern")
+                .tooltip_text(&gettext("Change subscription with provider"))
                 .build();
             let state_for_toggle = Rc::clone(state);
             let folder_name = folder.folder_name.clone();
@@ -318,11 +325,11 @@ fn rebuild_list(state: &Rc<RefCell<SubscriptionDialogState>>) {
             row.set_activatable_widget(Some(&check));
         } else {
             let state_label = if folder.is_subscribed {
-                "Abonniert"
+                gettext("Subscribed")
             } else {
-                "Nicht abonniert"
+                gettext("Not subscribed")
             };
-            row.add_suffix(&gtk::Label::builder().label(state_label).build());
+            row.add_suffix(&gtk::Label::builder().label(&state_label).build());
         }
         list.append(&row);
     }
@@ -343,7 +350,7 @@ fn start_load(state: &Rc<RefCell<SubscriptionDialogState>>) {
     };
     set_status(
         state,
-        Some("Abonnementsliste wird vom Anbieter geladen…"),
+        Some(&gettext("Loading subscription list from provider…")),
         false,
     );
     update_controls(state);
@@ -378,7 +385,7 @@ fn start_set_subscription(
     };
     set_status(
         state,
-        Some("Abonnement wird beim Anbieter bestätigt…"),
+        Some(&gettext("Confirming subscription with provider…")),
         false,
     );
     update_controls(state);
@@ -412,7 +419,7 @@ fn cancel_current(state: &Rc<RefCell<SubscriptionDialogState>>) {
     if let Some(cancelled) = cancelled {
         cancelled.store(true, Ordering::Relaxed);
     }
-    set_status(state, Some("Vorgang wird abgebrochen…"), false);
+    set_status(state, Some(&gettext("Canceling operation…")), false);
 }
 
 fn poll_worker(
@@ -439,7 +446,7 @@ fn poll_worker(
             Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
             Err(mpsc::TryRecvError::Disconnected) => {
                 if !state.borrow().closed && state.borrow().generation == generation {
-                    finish_worker_error(&state, "Der Abonnement-Arbeitsvorgang wurde beendet");
+                    finish_worker_error(&state, &gettext("The subscription worker terminated unexpectedly"));
                 }
                 glib::ControlFlow::Break
             }
@@ -466,7 +473,8 @@ fn finish_load(
                 set_status(
                     state,
                     Some(&format!(
-                        "Abonnementsliste konnte nicht geladen werden: {error}"
+                        "{}: {error}",
+                        gettext("Could not load subscription list")
                     )),
                     true,
                 );
@@ -497,7 +505,8 @@ fn finish_set_subscription(
             set_status(
                 state,
                 Some(&format!(
-                    "„{folder_name}“ wurde vom Anbieter bestätigt; Liste wird aktualisiert…"
+                    "„{folder_name}“: {}",
+                    gettext("confirmed by provider; refreshing list…")
                 )),
                 false,
             );
@@ -508,7 +517,7 @@ fn finish_set_subscription(
         }
         Err(error) => finish_worker_error(
             state,
-            &format!("Abonnement für „{folder_name}“ wurde nicht geändert: {error}"),
+            &format!("{}: {error}", format!("{} „{folder_name}“", gettext("Subscription not changed for"))),
         ),
     }
 }

@@ -130,12 +130,22 @@ impl SourcePropertiesDialog {
             .title("Quellentyp")
             .subtitle(&source_kind)
             .build();
+        let type_icon = gtk::Image::builder()
+            .icon_name("folder-remote-symbolic")
+            .valign(gtk::Align::Center)
+            .build();
+        type_row.add_prefix(&type_icon);
         general_group.add(&type_row);
 
         let uid_row = adw::ActionRow::builder()
             .title("Quellen-UID")
             .subtitle(&source_uid)
             .build();
+        let uid_icon = gtk::Image::builder()
+            .icon_name("auth-fingerprint-symbolic")
+            .valign(gtk::Align::Center)
+            .build();
+        uid_row.add_prefix(&uid_icon);
         let copy_btn = gtk::Button::builder()
             .icon_name("edit-copy-symbolic")
             .valign(gtk::Align::Center)
@@ -233,6 +243,11 @@ impl SourcePropertiesDialog {
             .title("Als Standardquelle verwenden")
             .activatable_widget(&default_switch)
             .build();
+        let default_icon = gtk::Image::builder()
+            .icon_name("starred-symbolic")
+            .valign(gtk::Align::Center)
+            .build();
+        default_row.add_prefix(&default_icon);
         default_row.add_suffix(&default_switch);
         visual_group.add(&default_row);
 

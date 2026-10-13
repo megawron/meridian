@@ -102,6 +102,11 @@ impl ManageGroupsDialog {
             .title("Gruppenname")
             .show_apply_button(true)
             .build();
+        let add_icon = gtk::Image::builder()
+            .icon_name("folder-new-symbolic")
+            .valign(gtk::Align::Center)
+            .build();
+        add_row.add_prefix(&add_icon);
 
         let add_btn = gtk::Button::builder()
             .icon_name("list-add-symbolic")

@@ -28,6 +28,7 @@ pub mod import_dialog;
 pub mod manage_groups_dialog;
 pub mod name_selector_dialog;
 pub mod oof_dialog;
+pub mod plugins_dialog;
 pub mod preferences_dialog;
 pub mod quick_add_popover;
 pub mod reminder_dialog;
@@ -60,6 +61,8 @@ pub use manage_groups_dialog::ManageGroupsDialog;
 #[allow(unused_imports)]
 pub use name_selector_dialog::NameSelectorDialog;
 pub use oof_dialog::OutOfOfficeDialog;
+#[allow(unused_imports)]
+pub use plugins_dialog::{PluginsDialog, present_plugins_dialog};
 pub use preferences_dialog::PreferencesDialog;
 pub use reminder_dialog::{ReminderDialog, ReminderDialogAction};
 pub use search_folder_dialog::SearchFolderDialog;

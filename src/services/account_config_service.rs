@@ -1649,6 +1649,21 @@ mod tests {
 
     #[test]
     fn test_sync_profile_to_eds_persists_credentials_in_keychain() {
+        let temp_sources = temporary_directory("sync-eds-test-sources");
+        struct EnvGuard(PathBuf);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    std::env::remove_var("MERIDIAN_SOURCES_DIR");
+                }
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        unsafe {
+            std::env::set_var("MERIDIAN_SOURCES_DIR", &temp_sources);
+        }
+        let _guard = EnvGuard(temp_sources);
+
         let profile = test_profile("test-pwd-sync-acc", "Sync Test Account", true);
         let test_pass = "S3cur3-P@ssword-2026!";
 

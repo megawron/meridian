@@ -1506,7 +1506,7 @@ impl EventDialog {
             .show_apply_button(false)
             .build();
         let btn_open_web = gtk::Button::builder()
-            .icon_name("applications-internet-symbolic")
+            .icon_name("web-browser-symbolic")
             .tooltip_text("Webseite / Konferenz im Browser öffnen")
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)

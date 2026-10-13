@@ -293,6 +293,31 @@ impl AccountSetupDialog {
             .build();
         group_type.add(&combo_type);
 
+        if let Some(profile) = edit_profile.as_ref() {
+            if profile.protocol == AccountProtocol::Goa {
+                let row_goa_info = adw::ActionRow::builder()
+                    .title(&crate::i18n::gettext("GNOME Online Account"))
+                    .subtitle(&crate::i18n::gettext(
+                        "Managed system-wide in GNOME Settings. Credentials and servers cannot be edited here.",
+                    ))
+                    .activatable(true)
+                    .build();
+                row_goa_info.add_prefix(&gtk::Image::from_icon_name("goa-panel-symbolic"));
+                let btn_open_goa = gtk::Button::builder()
+                    .label(&crate::i18n::gettext("Open GNOME Settings"))
+                    .valign(gtk::Align::Center)
+                    .css_classes(vec!["flat"])
+                    .build();
+                btn_open_goa.connect_clicked(|_| {
+                    let _ = std::process::Command::new("gnome-control-center")
+                        .arg("online-accounts")
+                        .spawn();
+                });
+                row_goa_info.add_suffix(&btn_open_goa);
+                group_type.add(&row_goa_info);
+            }
+        }
+
         let group_user = adw::PreferencesGroup::builder()
             .title("Benutzerinformationen")
             .description("Persönliche Angaben für ausgehende Nachrichten")
@@ -849,7 +874,7 @@ impl AccountSetupDialog {
             .title("E-Mail-Versand über Exchange")
             .subtitle("Der E-Mail-Versand erfolgt direkt und authentifiziert über die Exchange-/EWS-Verbindung.")
             .build();
-        let icon_check = gtk::Image::from_icon_name("emblem-default-symbolic");
+        let icon_check = gtk::Image::from_icon_name("checkmark-symbolic");
         row_smtp_exchange_info.add_prefix(&icon_check);
         row_smtp_exchange_info.set_visible(false);
         group_smtp.add(&row_smtp_exchange_info);

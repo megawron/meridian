@@ -64,6 +64,24 @@ pub(crate) fn get_system_font_scale() -> f64 {
     1.0
 }
 
+/// Returns whether system animations are enabled (respects GNOME Reduced Motion / Accessibility).
+pub(crate) fn are_animations_enabled() -> bool {
+    if let Some(gtk_settings) = gtk::Settings::default() {
+        if !gtk_settings.is_gtk_enable_animations() {
+            return false;
+        }
+    }
+    if let Some(schema_source) = gio::SettingsSchemaSource::default() {
+        if schema_source.lookup("org.gnome.desktop.interface", true).is_some() {
+            let settings = gio::Settings::new("org.gnome.desktop.interface");
+            if !settings.boolean("enable-animations") {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,6 +100,10 @@ mod tests {
 
         let scale = get_system_font_scale();
         assert!(scale >= 0.5 && scale <= 4.0);
+
+        let anim = are_animations_enabled();
+        // In headless tests or standard GNOME environments, this returns a valid boolean
+        let _ = anim;
     }
 }
 
