@@ -2678,6 +2678,9 @@ pub(crate) fn assign_thread_metadata(messages: &mut [ParsedMail]) {
             in_reply_to: &message.in_reply_to,
             references: &message.references,
             subject: &message.subject,
+            date_ts: crate::views::parse_flexible_datetime(&message.date_str)
+                .map(|dt| dt.timestamp())
+                .unwrap_or(0),
         })
         .collect::<Vec<_>>();
     let memberships = group_messages(&inputs);
@@ -2931,7 +2934,8 @@ fn extract_mime_content(
 
     let is_explicit_attachment = disposition.to_ascii_lowercase().contains("attachment");
     let is_explicit_inline = disposition.to_ascii_lowercase().contains("inline");
-    let is_inline = is_explicit_inline || content_id.is_some();
+    let is_inline = !is_explicit_attachment
+        && (is_explicit_inline || (content_id.is_some() && (filename.is_none() || media_type.starts_with("image/"))));
     if is_explicit_attachment || (!media_type.starts_with("text/") && filename.is_some()) || media_type == "text/calendar" {
         let default_name = if media_type == "text/calendar" { "invite.ics" } else { "attachment" };
         let filename = filename.unwrap_or_else(|| default_name.to_string());
@@ -2961,8 +2965,10 @@ fn extract_mime_content(
             // A non-text part without a filename is still useful to expose as
             // an attachment, but use a stable fallback name for the UI.
             let default_name = if media_type == "text/calendar" { "invite.ics" } else { "attachment" };
+            let is_explicit_attachment = disposition.to_ascii_lowercase().contains("attachment");
             let is_explicit_inline = disposition.to_ascii_lowercase().contains("inline");
-            let is_inline = is_explicit_inline || content_id.is_some();
+            let is_inline = !is_explicit_attachment
+                && (is_explicit_inline || (content_id.is_some() && media_type.starts_with("image/")));
             extracted.attachments.push(AttachmentInfo {
                 filename: default_name.to_string(),
                 size_formatted: format_size(decoded.len()),
@@ -5623,6 +5629,41 @@ Quarterly planning notes";
         let parsed_subj = parse_rfc822_bytes("msg-3", "folder-1", rfc822_subj_preview, false).unwrap();
         let obj_subj = parsed_subj.into_object();
         assert_eq!(obj_subj.attachment_kind(), MailAttachmentKind::Calendar);
+    }
+
+    #[test]
+    fn test_parse_rfc822_with_content_id_attachment() {
+        use crate::models::mail_message::MailAttachmentKind;
+        // Many clients (Exchange, Outlook, Thunderbird) assign Content-IDs to all attachments including PDFs
+        let rfc822_with_pdf = b"MIME-Version: 1.0\r\n\
+From: sender@example.com\r\n\
+To: recipient@example.com\r\n\
+Subject: Report with attachment\r\n\
+Content-Type: multipart/mixed; boundary=\"boundary42\"\r\n\
+\r\n\
+--boundary42\r\n\
+Content-Type: text/plain; charset=utf-8\r\n\
+\r\n\
+Please see attached PDF report.\r\n\
+--boundary42\r\n\
+Content-Type: application/pdf; name=\"Annual_Report.pdf\"\r\n\
+Content-Disposition: attachment; filename=\"Annual_Report.pdf\"\r\n\
+Content-ID: <att-part-1@example.com>\r\n\
+Content-Transfer-Encoding: base64\r\n\
+\r\n\
+JVBERi0xLjQK\r\n\
+--boundary42--\r\n";
+        let parsed = parse_rfc822_bytes("msg-att-1", "inbox", rfc822_with_pdf, false).unwrap();
+        assert_eq!(parsed.attachments.len(), 1);
+        let att = &parsed.attachments[0];
+        assert_eq!(att.filename, "Annual_Report.pdf");
+        assert!(!att.is_inline);
+        assert!(att.is_user_attachment());
+
+        let obj = parsed.into_object();
+        assert_eq!(obj.attachment_count(), 1);
+        assert_eq!(obj.attachment_kind(), MailAttachmentKind::File);
+        assert_eq!(obj.user_attachments().len(), 1);
     }
 
     #[test]

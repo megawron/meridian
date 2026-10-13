@@ -1010,7 +1010,29 @@ append_message_from_info (LoadContext *context,
     has_attachments = (flags & CAMEL_MESSAGE_ATTACHMENTS) != 0 || has_cal;
 
     rfc822 = g_string_sized_new (512);
-    g_string_append_printf (rfc822, "Message-ID: <%s@eds>\r\n", message_uid);
+
+    CamelSummaryMessageID smid;
+    smid.id.id = camel_message_info_get_message_id (message_info);
+    if (smid.id.id != 0) {
+        g_string_append_printf (rfc822, "Message-ID: <%" G_GINT32_MODIFIER "x-%" G_GINT32_MODIFIER "x@camel>\r\n",
+            smid.id.part.hi, smid.id.part.lo);
+    } else {
+        g_string_append_printf (rfc822, "Message-ID: <%s@eds>\r\n", message_uid);
+    }
+
+    const GArray *refs = camel_message_info_get_references (message_info);
+    if (refs && refs->len > 0) {
+        g_string_append (rfc822, "References:");
+        for (guint i = 0; i < refs->len; i++) {
+            CamelSummaryMessageID ref_id = g_array_index (refs, CamelSummaryMessageID, i);
+            g_string_append_printf (rfc822, " <%" G_GINT32_MODIFIER "x-%" G_GINT32_MODIFIER "x@camel>",
+                ref_id.id.part.hi, ref_id.id.part.lo);
+        }
+        g_string_append (rfc822, "\r\n");
+        CamelSummaryMessageID last_ref = g_array_index (refs, CamelSummaryMessageID, refs->len - 1);
+        g_string_append_printf (rfc822, "In-Reply-To: <%" G_GINT32_MODIFIER "x-%" G_GINT32_MODIFIER "x@camel>\r\n",
+            last_ref.id.part.hi, last_ref.id.part.lo);
+    }
     g_string_append (rfc822, "X-Evolution-Preview-Only: 1\r\n");
     if (has_cal)
         g_string_append (rfc822, "X-Evolution-Has-Calendar: 1\r\n");

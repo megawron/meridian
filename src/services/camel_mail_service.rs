@@ -2075,6 +2075,7 @@ fn load_messages_native(
                 if let Some(ref mut loc) = msg.backend_location {
                     loc.source_uid = profile.id.clone();
                     loc.folder_name = target_rel;
+                    msg.id = format!("eds:{}:{}:{}", loc.source_uid, loc.folder_name, loc.message_uid);
                 }
                 break;
             } else if let Some(orig_src) = source_uid {
@@ -2083,8 +2084,9 @@ fn load_messages_native(
                     msg.folder_name = target_fld.to_string();
                     msg.folder_id = normalized_camel_folder_id("", target_fld);
                     if let Some(ref mut loc) = msg.backend_location {
-                        loc.source_uid = orig_src.to_string();
+                        loc.source_uid = profile.id.clone();
                         loc.folder_name = target_fld.to_string();
+                        msg.id = format!("eds:{}:{}:{}", loc.source_uid, loc.folder_name, loc.message_uid);
                     }
                     break;
                 }
@@ -2616,6 +2618,7 @@ pub(crate) fn load_messages_for_uids(
                 if let Some(ref mut loc) = msg.backend_location {
                     loc.source_uid = source_uid.to_string();
                     loc.folder_name = folder_name.to_string();
+                    msg.id = format!("eds:{}:{}:{}", loc.source_uid, loc.folder_name, loc.message_uid);
                 }
             }
         }
@@ -2668,14 +2671,26 @@ fn load_raw_message_uncached(
     }
 
     // Check if the message is already cached locally on disk in summary cache (<1ms, no Camel lock):
-    if let Some(cache) = crate::services::evolution_summary_cache::find_evolution_account_cache(Some(&location.source_uid)) {
+    let (resolved_source_uid, resolved_folder_name) =
+        resolve_shared_mailbox_target(&location.source_uid, &location.folder_name);
+    if let Some(cache) = crate::services::evolution_summary_cache::find_evolution_account_cache(Some(&resolved_source_uid)) {
         if let Some(raw) = crate::services::evolution_summary_cache::read_cached_raw_message_direct(
             &cache.cache_dir,
-            &location.folder_name,
+            &resolved_folder_name,
             &location.message_uid,
         ) {
             cancellation_error(cancelled, "Nachrichtenquelle laden")?;
             return Ok(raw);
+        }
+        if resolved_folder_name != location.folder_name {
+            if let Some(raw) = crate::services::evolution_summary_cache::read_cached_raw_message_direct(
+                &cache.cache_dir,
+                &location.folder_name,
+                &location.message_uid,
+            ) {
+                cancellation_error(cancelled, "Nachrichtenquelle laden")?;
+                return Ok(raw);
+            }
         }
     }
 

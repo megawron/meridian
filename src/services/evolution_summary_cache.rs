@@ -689,6 +689,40 @@ pub struct MessageCursor {
     pub dsent: i64,
 }
 
+/// Parse Evolution Camel `part` summary column:
+/// Format: `<mid_hi> <mid_lo> <ref_count> [<ref_hi> <ref_lo>]*`
+#[inline]
+pub(crate) fn parse_camel_part_fast(part_str: &str) -> (Option<String>, Vec<String>, Vec<String>) {
+    let mut tokens = part_str.split_ascii_whitespace();
+    let mid_hi = tokens.next().and_then(|s| s.parse::<u64>().ok());
+    let mid_lo = tokens.next().and_then(|s| s.parse::<u64>().ok());
+    let message_id = match (mid_hi, mid_lo) {
+        (Some(hi), Some(lo)) if hi != 0 || lo != 0 => Some(format!("{hi:x}-{lo:x}@camel")),
+        _ => None,
+    };
+    let ref_count = tokens.next().and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
+    if ref_count == 0 {
+        return (message_id, Vec::new(), Vec::new());
+    }
+    let mut references = Vec::with_capacity(ref_count.min(16));
+    for _ in 0..ref_count {
+        let Some(r_hi) = tokens.next().and_then(|s| s.parse::<u64>().ok()) else { break; };
+        let Some(r_lo) = tokens.next().and_then(|s| s.parse::<u64>().ok()) else { break; };
+        if r_hi != 0 || r_lo != 0 {
+            let ref_id = format!("{r_hi:x}-{r_lo:x}@camel");
+            if !references.contains(&ref_id) {
+                references.push(ref_id);
+            }
+        }
+    }
+    let in_reply_to = if let Some(last) = references.last() {
+        vec![last.clone()]
+    } else {
+        Vec::new()
+    };
+    (message_id, in_reply_to, references)
+}
+
 /// Fast reader for a page of folder messages directly from Evolution's local `folders.db`
 /// using Keyset Pagination (O(1) seek via index on (dreceived, dsent)).
 pub fn load_folder_messages_page_from_sqlite(
@@ -722,7 +756,7 @@ pub fn load_folder_messages_page_from_sqlite(
     };
 
     let sql_str = format!(
-        "SELECT uid, flags, size, dsent, dreceived, subject, mail_from, mail_to, preview, labels, bdata, usertags \
+        "SELECT uid, flags, size, dsent, dreceived, subject, mail_from, mail_to, preview, labels, bdata, usertags, part \
          FROM {table_name}{where_clause} ORDER BY dreceived DESC, dsent DESC{limit_clause};"
     );
 
@@ -896,6 +930,18 @@ pub fn load_folder_messages_page_from_sqlite(
 
             let normalized_folder_id =
                 crate::services::camel_mail_service::normalized_camel_folder_id("", &mapped_folder_name);
+            let part_ptr = sqlite3_column_text(stmt, 12);
+            let (parsed_msg_id, in_reply_to, references) = if !part_ptr.is_null() {
+                let part_bytes = CStr::from_ptr(part_ptr).to_bytes();
+                if let Ok(part_str) = std::str::from_utf8(part_bytes) {
+                    parse_camel_part_fast(part_str)
+                } else {
+                    (None, Vec::new(), Vec::new())
+                }
+            } else {
+                (None, Vec::new(), Vec::new())
+            };
+
             messages.push(ParsedMail {
                 id,
                 folder_id: normalized_folder_id,
@@ -908,9 +954,9 @@ pub fn load_folder_messages_page_from_sqlite(
                 recipient_bcc: String::new(),
                 reply_to: String::new(),
                 subject,
-                message_id: None,
-                in_reply_to: Vec::new(),
-                references: Vec::new(),
+                message_id: parsed_msg_id,
+                in_reply_to,
+                references,
                 thread_id: uid,
                 thread_size: 1,
                 thread_position: 0,
@@ -934,6 +980,8 @@ pub fn load_folder_messages_page_from_sqlite(
         }
         sqlite3_finalize(stmt);
     }
+
+    crate::services::mail_store_service::assign_thread_metadata(&mut messages);
 
     let next_cursor = if limit > 0 && limit < usize::MAX && messages.len() == limit {
         last_cursor

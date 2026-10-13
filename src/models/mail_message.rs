@@ -42,7 +42,34 @@ impl AttachmentInfo {
     /// Returns true if this is a user-facing file attachment rather than an
     /// inline body resource (such as a signature logo or embedded CID image).
     pub fn is_user_attachment(&self) -> bool {
-        !self.is_inline && self.content_id.is_none()
+        let mime = self.mime_type.to_ascii_lowercase();
+        // Any non-image (PDF, zip, docx, calendar, text, etc.) is always a user-facing attachment.
+        if !mime.starts_with("image/") {
+            return true;
+        }
+        // For images, if it is marked as inline and has a content-id, it is an embedded
+        // HTML body resource (e.g. signature image or inline screenshot).
+        // Otherwise, it is a user-facing attachment.
+        !(self.is_inline && self.content_id.is_some())
+    }
+
+    /// User-friendly description of the attachment's file type (e.g. "PDF document", "PNG image").
+    pub fn type_description(&self) -> String {
+        let desc = gio::content_type_get_description(&self.mime_type);
+        let s = desc.to_string();
+        if !s.is_empty() && s != self.mime_type && s != "unknown" {
+            return s;
+        }
+        let ext = std::path::Path::new(&self.filename)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_uppercase();
+        if !ext.is_empty() {
+            format!("{ext} file")
+        } else {
+            self.mime_type.clone()
+        }
     }
 }
 
@@ -745,5 +772,64 @@ mod tests {
 
         message.set_forwarded(true);
         assert!(message.is_forwarded());
+    }
+
+    #[test]
+    fn test_attachment_info_is_user_attachment() {
+        use super::AttachmentInfo;
+
+        // Non-images are always user attachments, even with content_id or is_inline
+        let pdf_att = AttachmentInfo {
+            filename: "invoice.pdf".to_string(),
+            size_formatted: "10 KB".to_string(),
+            mime_type: "application/pdf".to_string(),
+            content_id: Some("part1@example.com".to_string()),
+            is_inline: true,
+            content: Arc::from([]),
+        };
+        assert!(pdf_att.is_user_attachment());
+
+        let doc_att = AttachmentInfo {
+            filename: "notes.docx".to_string(),
+            size_formatted: "25 KB".to_string(),
+            mime_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string(),
+            content_id: Some("part2@example.com".to_string()),
+            is_inline: false,
+            content: Arc::from([]),
+        };
+        assert!(doc_att.is_user_attachment());
+
+        // Images with both is_inline and content_id are treated as body resources (e.g. logos)
+        let inline_logo = AttachmentInfo {
+            filename: "logo.png".to_string(),
+            size_formatted: "5 KB".to_string(),
+            mime_type: "image/png".to_string(),
+            content_id: Some("logo@company.org".to_string()),
+            is_inline: true,
+            content: Arc::from([]),
+        };
+        assert!(!inline_logo.is_user_attachment());
+
+        // Images not marked inline are user attachments
+        let attached_photo = AttachmentInfo {
+            filename: "photo.jpg".to_string(),
+            size_formatted: "2 MB".to_string(),
+            mime_type: "image/jpeg".to_string(),
+            content_id: Some("photo@example.com".to_string()),
+            is_inline: false,
+            content: Arc::from([]),
+        };
+        assert!(attached_photo.is_user_attachment());
+
+        // Images without content_id are user attachments even if disposition said inline
+        let no_cid_image = AttachmentInfo {
+            filename: "screenshot.png".to_string(),
+            size_formatted: "100 KB".to_string(),
+            mime_type: "image/png".to_string(),
+            content_id: None,
+            is_inline: true,
+            content: Arc::from([]),
+        };
+        assert!(no_cid_image.is_user_attachment());
     }
 }

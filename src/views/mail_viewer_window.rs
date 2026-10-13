@@ -69,8 +69,23 @@ mod imp {
         pub message_find_status: RefCell<Option<gtk::Label>>,
         pub find_previous: RefCell<Option<gtk::Button>>,
         pub find_next: RefCell<Option<gtk::Button>>,
+        pub attachment_section: RefCell<Option<gtk::Box>>,
+        pub attachment_title_box: RefCell<Option<gtk::Box>>,
+        pub attachment_summary_box: RefCell<Option<gtk::Box>>,
+        pub attachment_summary_label: RefCell<Option<gtk::Label>>,
+        pub attachment_chip_box: RefCell<Option<gtk::Box>>,
+        pub attachment_chevron: RefCell<Option<gtk::Image>>,
+        pub attachment_btn_collapse: RefCell<Option<gtk::Button>>,
+        pub attachment_save_all_box: RefCell<Option<gtk::Box>>,
+        pub attachment_view_toggle_box: RefCell<Option<gtk::Box>>,
+        pub attachment_btn_icons: RefCell<Option<gtk::Button>>,
+        pub attachment_btn_list: RefCell<Option<gtk::Button>>,
+        pub attachment_stack: RefCell<Option<gtk::Stack>>,
         pub attachment_bar: RefCell<Option<gtk::Box>>,
         pub attachment_scrolled: RefCell<Option<gtk::ScrolledWindow>>,
+        pub attachment_listbox: RefCell<Option<gtk::ListBox>>,
+        pub attachment_revealer: RefCell<Option<gtk::Revealer>>,
+        pub attachment_expanded: Cell<bool>,
         pub print_status_area: RefCell<Option<gtk::Box>>,
         pub print_status_label: RefCell<Option<gtk::Label>>,
         pub print_cancel_button: RefCell<Option<gtk::Button>>,
@@ -193,6 +208,16 @@ impl MailViewerWindow {
 
     pub fn show_toast(&self, message: &str) {
         self.add_toast(&adw::Toast::new(message));
+    }
+
+    pub fn show_toast_with_folder_action(&self, message: &str, folder: &std::path::Path) {
+        let toast = adw::Toast::new(message);
+        toast.set_button_label(Some(&gettext("Open Folder")));
+        let folder_path = folder.to_path_buf();
+        toast.connect_button_clicked(move |_| {
+            let _ = crate::services::quick_preview_service::open_folder_in_file_manager(&folder_path);
+        });
+        self.add_toast(&toast);
     }
 
     pub fn zoom_level(&self) -> f64 {
@@ -518,13 +543,159 @@ impl MailViewerWindow {
         mail_viewer.set_margin_bottom(8);
         self.imp().mail_viewer.replace(Some(mail_viewer.clone()));
 
-        // Attachment bar
+        // Attachment section container
+        let attachment_section = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(0)
+            .css_classes(vec!["attachment-section-container"])
+            .visible(false)
+            .build();
+
+        let handle_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .margin_top(2)
+            .margin_bottom(1)
+            .css_classes(vec!["attachment-handle-container"])
+            .focusable(true)
+            .build();
+        handle_box.set_cursor_from_name(Some("pointer"));
+
+        let handle_pill = gtk::Box::builder()
+            .css_classes(vec!["attachment-bar-handle"])
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .build();
+        handle_box.append(&handle_pill);
+        attachment_section.append(&handle_box);
+
+        let attachment_header = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(1)
+            .margin_bottom(2)
+            .css_classes(vec!["attachment-header-bar"])
+            .build();
+
+        let title_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(0)
+            .valign(gtk::Align::Center)
+            .hexpand(false)
+            .css_classes(vec!["attachment-title-box"])
+            .tooltip_text(&gettext("Attachments"))
+            .focusable(true)
+            .build();
+        title_box.set_cursor_from_name(Some("pointer"));
+
+        let clip_icon = gtk::Image::from_icon_name("mail-attachment-symbolic");
+        clip_icon.set_pixel_size(16);
+        clip_icon.set_opacity(0.85);
+        title_box.append(&clip_icon);
+        attachment_header.append(&title_box);
+
+        let summary_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["attachment-summary-clickable"])
+            .focusable(true)
+            .visible(false)
+            .build();
+        summary_box.set_cursor_from_name(Some("pointer"));
+
+        let summary_label = gtk::Label::builder()
+            .valign(gtk::Align::Center)
+            .use_markup(true)
+            .css_classes(vec!["attachment-summary-label"])
+            .build();
+        summary_box.append(&summary_label);
+        attachment_header.append(&summary_box);
+
+        let chip_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .valign(gtk::Align::Center)
+            .hexpand(false)
+            .css_classes(vec!["attachment-bar-chip-container"])
+            .visible(true)
+            .build();
+        attachment_header.append(&chip_box);
+
+        let header_spacer = gtk::Box::builder().hexpand(true).build();
+        attachment_header.append(&header_spacer);
+
+        let save_all_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["attachment-save-all-box"])
+            .build();
+        attachment_header.append(&save_all_box);
+
+        let view_toggle_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .css_classes(vec!["linked", "attachment-view-toggle"])
+            .valign(gtk::Align::Center)
+            .margin_start(4)
+            .visible(false)
+            .build();
+
+        let btn_icons = gtk::Button::builder()
+            .icon_name("view-grid-symbolic")
+            .tooltip_text(&gettext("Icon view"))
+            .css_classes(vec!["flat", "active", "attachment-view-icons-btn"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&btn_icons, &gettext("Icon view"));
+
+        let btn_list = gtk::Button::builder()
+            .icon_name("view-list-symbolic")
+            .tooltip_text(&gettext("List view"))
+            .css_classes(vec!["flat", "attachment-view-list-btn"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&btn_list, &gettext("List view"));
+
+        view_toggle_box.append(&btn_icons);
+        view_toggle_box.append(&btn_list);
+        attachment_header.append(&view_toggle_box);
+
+        let chevron_icon = gtk::Image::from_icon_name("pan-down-symbolic");
+        chevron_icon.set_pixel_size(12);
+        chevron_icon.set_opacity(0.75);
+        chevron_icon.add_css_class("attachment-chevron");
+        let btn_collapse = gtk::Button::builder()
+            .child(&chevron_icon)
+            .tooltip_text(&gettext("Expand attachments"))
+            .css_classes(vec!["flat", "circular", "attachment-collapse-btn"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&btn_collapse, &gettext("Expand attachments"));
+        attachment_header.append(&btn_collapse);
+
+        attachment_section.append(&attachment_header);
+
+        let attachment_revealer = gtk::Revealer::builder()
+            .transition_type(gtk::RevealerTransitionType::SlideDown)
+            .transition_duration(200)
+            .reveal_child(false)
+            .build();
+
+        let attachment_stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .transition_duration(150)
+            .build();
+
+        // Attachment bar (icons view)
         let attachment_bar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
             .margin_start(12)
             .margin_end(12)
-            .margin_top(6)
+            .margin_top(4)
             .margin_bottom(6)
             .build();
         let attachment_scrolled = gtk::ScrolledWindow::builder()
@@ -532,12 +703,187 @@ impl MailViewerWindow {
             .vscrollbar_policy(gtk::PolicyType::Never)
             .propagate_natural_height(true)
             .child(&attachment_bar)
-            .visible(false)
+            .visible(true)
             .build();
-        let attachment_separator = gtk::Separator::new(gtk::Orientation::Horizontal);
-        attachment_separator.set_visible(false);
+
+        attachment_stack.add_named(&attachment_scrolled, Some("icons"));
+
+        // List view container
+        let list_container = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(0)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(2)
+            .margin_bottom(6)
+            .build();
+
+        let list_header_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
+            .margin_start(8)
+            .margin_end(8)
+            .css_classes(vec!["attachment-list-header"])
+            .height_request(26)
+            .build();
+
+        let icon_spacer = gtk::Box::builder().width_request(22).build();
+        list_header_box.append(&icon_spacer);
+
+        let col_name = gtk::Label::builder()
+            .label(&gettext("Name"))
+            .hexpand(true)
+            .xalign(0.0)
+            .css_classes(vec!["attachment-col-header-label"])
+            .build();
+        list_header_box.append(&col_name);
+
+        let col_type = gtk::Label::builder()
+            .label(&gettext("Type"))
+            .width_request(140)
+            .xalign(0.0)
+            .css_classes(vec!["attachment-col-header-label", "attachment-col-type"])
+            .build();
+        list_header_box.append(&col_type);
+
+        let col_size = gtk::Label::builder()
+            .label(&gettext("Size"))
+            .width_request(85)
+            .xalign(1.0)
+            .css_classes(vec!["attachment-col-header-label"])
+            .build();
+        list_header_box.append(&col_size);
+
+        let actions_spacer = gtk::Box::builder().width_request(60).build();
+        list_header_box.append(&actions_spacer);
+        list_container.append(&list_header_box);
+
+        let attachment_listbox = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::Single)
+            .css_classes(vec!["attachment-listbox"])
+            .build();
+
+        let list_scrolled = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .propagate_natural_height(true)
+            .min_content_height(0)
+            .max_content_height(160)
+            .child(&attachment_listbox)
+            .build();
+        list_container.append(&list_scrolled);
+
+        attachment_stack.add_named(&list_container, Some("list"));
+
+        attachment_revealer.set_child(Some(&attachment_stack));
+        attachment_section.append(&attachment_revealer);
+
+        let win_weak_toggle = self.downgrade();
+        let toggle_action = std::rc::Rc::new(move || {
+            if let Some(win) = win_weak_toggle.upgrade() {
+                win.toggle_attachment_expanded();
+            }
+        });
+
+        let toggle_btn = toggle_action.clone();
+        btn_collapse.connect_clicked(move |_| {
+            toggle_btn();
+        });
+
+        let toggle_title = toggle_action.clone();
+        let title_click = gtk::GestureClick::new();
+        title_click.connect_released(move |_, _, _, _| {
+            toggle_title();
+        });
+        title_box.add_controller(title_click);
+
+        let toggle_handle = toggle_action.clone();
+        let handle_click = gtk::GestureClick::new();
+        handle_click.connect_released(move |_, _, _, _| {
+            toggle_handle();
+        });
+        handle_box.add_controller(handle_click);
+
+        let toggle_drag = toggle_action.clone();
+        let rev_for_drag = attachment_revealer.clone();
+        let drag_gesture = gtk::GestureDrag::new();
+        drag_gesture.set_button(1);
+        drag_gesture.connect_drag_end(move |gesture, _offset_x, offset_y| {
+            if offset_y < -8.0 && !rev_for_drag.reveals_child() {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                toggle_drag();
+            } else if offset_y > 8.0 && rev_for_drag.reveals_child() {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                toggle_drag();
+            }
+        });
+        handle_box.add_controller(drag_gesture);
+
+        let toggle_summary = toggle_action.clone();
+        let click_gesture = gtk::GestureClick::new();
+        click_gesture.connect_released(move |_, _, _, _| {
+            toggle_summary();
+        });
+        summary_box.add_controller(click_gesture);
+
+        let toggle_key = toggle_action.clone();
+        let key_ctrl = gtk::EventControllerKey::new();
+        key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
+            if keyval == gdk::Key::space || keyval == gdk::Key::Return {
+                toggle_key();
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        summary_box.add_controller(key_ctrl);
+
+        let stack_for_icons = attachment_stack.clone();
+        let btn_icons_for_icons = btn_icons.clone();
+        let btn_list_for_icons = btn_list.clone();
+        let win_for_icons = self.downgrade();
+        btn_icons.connect_clicked(move |_| {
+            stack_for_icons.set_visible_child_name("icons");
+            btn_icons_for_icons.add_css_class("active");
+            btn_list_for_icons.remove_css_class("active");
+            if let Some(win) = win_for_icons.upgrade() {
+                if !win.imp().attachment_expanded.get() {
+                    win.set_attachment_expanded(true);
+                }
+            }
+        });
+
+        let stack_for_list = attachment_stack.clone();
+        let btn_icons_for_list = btn_icons.clone();
+        let btn_list_for_list = btn_list.clone();
+        let win_for_list = self.downgrade();
+        btn_list.connect_clicked(move |_| {
+            stack_for_list.set_visible_child_name("list");
+            btn_list_for_list.add_css_class("active");
+            btn_icons_for_list.remove_css_class("active");
+            if let Some(win) = win_for_list.upgrade() {
+                if !win.imp().attachment_expanded.get() {
+                    win.set_attachment_expanded(true);
+                }
+            }
+        });
+
+        self.imp().attachment_section.replace(Some(attachment_section));
+        self.imp().attachment_title_box.replace(Some(title_box));
+        self.imp().attachment_summary_box.replace(Some(summary_box));
+        self.imp().attachment_summary_label.replace(Some(summary_label));
+        self.imp().attachment_chip_box.replace(Some(chip_box));
+        self.imp().attachment_chevron.replace(Some(chevron_icon));
+        self.imp().attachment_btn_collapse.replace(Some(btn_collapse));
+        self.imp().attachment_save_all_box.replace(Some(save_all_box));
+        self.imp().attachment_view_toggle_box.replace(Some(view_toggle_box));
+        self.imp().attachment_btn_icons.replace(Some(btn_icons));
+        self.imp().attachment_btn_list.replace(Some(btn_list));
+        self.imp().attachment_stack.replace(Some(attachment_stack));
         self.imp().attachment_bar.replace(Some(attachment_bar));
-        self.imp().attachment_scrolled.replace(Some(attachment_scrolled.clone()));
+        self.imp().attachment_scrolled.replace(Some(attachment_scrolled));
+        self.imp().attachment_listbox.replace(Some(attachment_listbox));
+        self.imp().attachment_revealer.replace(Some(attachment_revealer));
+        self.imp().attachment_expanded.set(false);
 
         // Print status area
         let print_status_label = gtk::Label::builder()
@@ -627,8 +973,9 @@ impl MailViewerWindow {
         main_box.append(&message_find_revealer);
         main_box.append(itip_banner.widget());
         main_box.append(&mail_viewer);
-        main_box.append(&attachment_separator);
-        main_box.append(&attachment_scrolled);
+        if let Some(sec) = self.imp().attachment_section.borrow().as_ref() {
+            main_box.append(sec);
+        }
         main_box.append(&print_status_area);
 
         self.imp().toast_overlay.set_child(Some(&main_box));
@@ -974,148 +1321,886 @@ impl MailViewerWindow {
         self.check_preview_only(&message);
     }
 
+    pub fn set_attachment_expanded(&self, expanded: bool) {
+        self.imp().attachment_expanded.set(expanded);
+        if let Some(rev) = self.imp().attachment_revealer.borrow().as_ref() {
+            rev.set_reveal_child(expanded);
+        }
+        if let Some(chev) = self.imp().attachment_chevron.borrow().as_ref() {
+            chev.set_icon_name(Some(if expanded {
+                "pan-up-symbolic"
+            } else {
+                "pan-down-symbolic"
+            }));
+        }
+        if let Some(btn) = self.imp().attachment_btn_collapse.borrow().as_ref() {
+            let tip = if expanded {
+                gettext("Collapse attachments")
+            } else {
+                gettext("Expand attachments")
+            };
+            btn.set_tooltip_text(Some(&tip));
+            set_accessible_label(btn, &tip);
+        }
+        let has_chips = self.imp().attachment_chip_box.borrow().as_ref()
+            .and_then(|cb| cb.first_child())
+            .is_some();
+        if let Some(summary) = self.imp().attachment_summary_box.borrow().as_ref() {
+            summary.set_visible(expanded || !has_chips);
+        }
+        if let Some(chip_box) = self.imp().attachment_chip_box.borrow().as_ref() {
+            chip_box.set_visible(!expanded && has_chips);
+        }
+        if let Some(view_toggle) = self.imp().attachment_view_toggle_box.borrow().as_ref() {
+            view_toggle.set_visible(expanded);
+        }
+    }
+
+    pub fn toggle_attachment_expanded(&self) {
+        let current = self.imp().attachment_revealer.borrow().as_ref().map(|r| r.reveals_child()).unwrap_or(false);
+        self.set_attachment_expanded(!current);
+    }
+
     fn render_attachments(&self, message: &MailMessageObject) {
         let Some(bar) = self.imp().attachment_bar.borrow().as_ref().cloned() else { return; };
-        let Some(scroll) = self.imp().attachment_scrolled.borrow().as_ref().cloned() else { return; };
+        let Some(section) = self.imp().attachment_section.borrow().as_ref().cloned() else { return; };
 
         while let Some(child) = bar.first_child() {
             bar.remove(&child);
         }
 
-        if message.is_preview_only() {
-            scroll.set_visible(false);
+        if let Some(listbox) = self.imp().attachment_listbox.borrow().as_ref() {
+            while let Some(child) = listbox.first_child() {
+                listbox.remove(&child);
+            }
+        }
+
+        if let Some(save_all_box) = self.imp().attachment_save_all_box.borrow().as_ref() {
+            while let Some(child) = save_all_box.first_child() {
+                save_all_box.remove(&child);
+            }
+        }
+
+        if let Some(chip_box) = self.imp().attachment_chip_box.borrow().as_ref() {
+            while let Some(child) = chip_box.first_child() {
+                chip_box.remove(&child);
+            }
+        }
+
+        if message.is_preview_only() && message.user_attachments().is_empty() {
+            section.set_visible(false);
+            self.set_attachment_expanded(false);
             return;
         }
 
         let attachments = message.user_attachments();
         if attachments.is_empty() {
-            scroll.set_visible(false);
+            section.set_visible(false);
+            self.set_attachment_expanded(false);
             return;
         }
 
-        scroll.set_visible(true);
+        section.set_visible(true);
 
-        if attachments.len() > 1 {
-            let btn_save_all = gtk::Button::builder()
-                .label(&gettext("Save all…"))
-                .icon_name("document-save-symbolic")
-                .css_classes(vec!["flat", "suggested-action"])
-                .valign(gtk::Align::Center)
-                .build();
-            let atts = attachments.clone();
-            let win_weak = self.downgrade();
-            btn_save_all.connect_clicked(move |_| {
-                let Some(win) = win_weak.upgrade() else { return; };
-                let folder_dialog = gtk::FileDialog::builder()
-                    .title(&gettext("Select folder for all attachments"))
-                    .modal(true)
+        let total_size: u64 = attachments.iter().map(|att| att.content.len() as u64).sum();
+        let count = attachments.len();
+        let count_str = if count == 1 {
+            gettext("1 attachment")
+        } else {
+            gettext("{} attachments").replace("{}", &count.to_string())
+        };
+        let size_str = glib::format_size(total_size);
+
+        if let Some(lbl) = self.imp().attachment_summary_label.borrow().as_ref() {
+            lbl.set_markup(&format!(
+                "<b>{}</b> <span alpha='70%'>({})</span>",
+                glib::markup_escape_text(&count_str),
+                glib::markup_escape_text(&size_str)
+            ));
+        }
+
+        let win_w = self.width().max(self.default_width());
+        let max_chips = if win_w < 550 {
+            1
+        } else if win_w < 750 {
+            2
+        } else if win_w < 1000 {
+            3
+        } else {
+            4
+        };
+
+        let is_short_mail = {
+            let (len, lines) = if let Some(searchable) = message.searchable_body_text() {
+                let trimmed = searchable.trim();
+                (trimmed.len(), trimmed.lines().count())
+            } else {
+                let html = message.html_body();
+                if html.trim().is_empty() {
+                    (0, 0)
+                } else {
+                    let plain = crate::services::html_sanitizer::html_to_plain_text(&html);
+                    let trimmed = plain.trim();
+                    (trimmed.len(), trimmed.lines().count())
+                }
+            };
+            len < 800 && lines <= 16
+        };
+
+        if let Some(chip_box) = self.imp().attachment_chip_box.borrow().as_ref() {
+            if count <= max_chips {
+                let max_chip_name_chars = if count == 1 { 50 } else { 26 };
+                for att in &attachments {
+                    let chip = self.create_attachment_bar_chip(att, max_chip_name_chars);
+                    chip_box.append(&chip);
+                }
+            } else if let Some(summary_box) = self.imp().attachment_summary_box.borrow().as_ref() {
+                let tip = format!("{} ({}) – {}", count_str, size_str, gettext("Click to expand"));
+                summary_box.set_tooltip_text(Some(&tip));
+            }
+        }
+
+        // For short emails, expand drawer by default since vertical whitespace is plentiful.
+        // For longer emails, default to collapsed state so reading viewport is prioritized.
+        self.set_attachment_expanded(is_short_mail);
+
+        if count > 1 {
+            let btn_save_all = self.create_save_all_button(&attachments);
+            if let Some(save_all_box) = self.imp().attachment_save_all_box.borrow().as_ref() {
+                save_all_box.append(&btn_save_all);
+            }
+        }
+
+        for att in &attachments {
+            let card = self.create_attachment_drawer_card(att);
+            bar.append(&card);
+
+            // Also add list view row if listbox exists
+            if let Some(listbox) = self.imp().attachment_listbox.borrow().as_ref() {
+                let row = gtk::ListBoxRow::new();
+                row.set_css_classes(&["attachment-list-row"]);
+
+                let row_box = gtk::Box::builder()
+                    .orientation(gtk::Orientation::Horizontal)
+                    .spacing(12)
+                    .margin_start(8)
+                    .margin_end(8)
+                    .margin_top(2)
+                    .margin_bottom(2)
+                    .focusable(true)
+                    .tooltip_text(&format!("{} ({})", att.filename, att.size_formatted))
                     .build();
-                let atts_to_save = atts.clone();
-                let win_for_toast = win.downgrade();
-                folder_dialog.select_folder(Some(&win), None::<&gio::Cancellable>, move |res| {
-                    if let Ok(folder) = res {
-                        if let Some(folder_path) = folder.path() {
-                            let mut count = 0;
-                            for att in &atts_to_save {
-                                let target = folder_path.join(&att.filename);
-                                if fs::write(&target, att.content.as_ref()).is_ok() {
-                                    count += 1;
-                                }
-                            }
-                            if let Some(win) = win_for_toast.upgrade() {
-                                win.show_toast(&gettext("{} attachments saved").replace("{}", &count.to_string()));
-                            }
+                row_box.set_cursor_from_name(Some("pointer"));
+
+                let icon_name = match att.mime_type.as_str() {
+                    m if m.starts_with("image/") => "image-x-generic-symbolic",
+                    m if m.contains("pdf") => "x-office-document-symbolic",
+                    m if m.contains("zip") || m.contains("tar") || m.contains("compressed") => {
+                        "package-x-generic-symbolic"
+                    }
+                    m if m.starts_with("audio/") => "audio-x-generic-symbolic",
+                    m if m.starts_with("video/") => "video-x-generic-symbolic",
+                    m if m.contains("text/") => "text-x-generic-symbolic",
+                    _ => "mail-attachment-symbolic",
+                };
+                let list_icon = gtk::Image::new();
+                set_image_icon_with_fallback(&list_icon, icon_name, "mail-attachment-symbolic");
+                list_icon.set_pixel_size(18);
+                row_box.append(&list_icon);
+
+                let lbl_name = gtk::Label::builder()
+                    .label(&att.filename)
+                    .ellipsize(gtk::pango::EllipsizeMode::Middle)
+                    .css_classes(vec!["attachment-list-label"])
+                    .hexpand(true)
+                    .xalign(0.0)
+                    .valign(gtk::Align::Center)
+                    .build();
+                row_box.append(&lbl_name);
+
+                let type_desc = att.type_description();
+                let lbl_type = gtk::Label::builder()
+                    .label(&type_desc)
+                    .ellipsize(gtk::pango::EllipsizeMode::End)
+                    .css_classes(vec!["dim-label", "caption", "attachment-col-type"])
+                    .width_request(140)
+                    .xalign(0.0)
+                    .valign(gtk::Align::Center)
+                    .build();
+                row_box.append(&lbl_type);
+
+                let lbl_size = gtk::Label::builder()
+                    .label(&att.size_formatted)
+                    .css_classes(vec!["dim-label", "caption", "attachment-col-size"])
+                    .width_request(85)
+                    .xalign(1.0)
+                    .valign(gtk::Align::Center)
+                    .build();
+                row_box.append(&lbl_size);
+
+                let actions_box = gtk::Box::builder()
+                    .orientation(gtk::Orientation::Horizontal)
+                    .spacing(4)
+                    .valign(gtk::Align::Center)
+                    .build();
+
+                let save_icon = gtk::Image::from_icon_name("document-save-symbolic");
+                save_icon.set_pixel_size(14);
+                let btn_save_list = gtk::Button::builder()
+                    .child(&save_icon)
+                    .tooltip_text(&gettext("Save to Downloads (Right-click for options)"))
+                    .css_classes(vec!["flat", "circular", "attachment-list-download-btn"])
+                    .valign(gtk::Align::Center)
+                    .focusable(false)
+                    .build();
+                set_accessible_label(&btn_save_list, &gettext("Save attachment"));
+                let fname_save_list = att.filename.clone();
+                let content_save_list = att.content.clone();
+                let win_weak_list = self.downgrade();
+                btn_save_list.connect_clicked(move |_| {
+                    let Some(win) = win_weak_list.upgrade() else { return; };
+                    match crate::services::quick_preview_service::download_attachment_to_downloads(&fname_save_list, content_save_list.as_ref()) {
+                        Ok(path) => {
+                            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(&fname_save_list);
+                            let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+                            let msg = gettext("Saved to Downloads: {}").replace("{}", file_name);
+                            win.show_toast_with_folder_action(&msg, dir);
+                        }
+                        Err(e) => {
+                            tracing::error!(%e, "Failed to download attachment");
                         }
                     }
                 });
-            });
-            bar.append(&btn_save_all);
+
+                let fname_rc = att.filename.clone();
+                let ct_rc = att.content.clone();
+                let win_weak_rc = self.downgrade();
+                let btn_save_rc = btn_save_list.clone();
+                let btn_rc_gesture = gtk::GestureClick::builder().button(3).build();
+                btn_rc_gesture.connect_pressed(move |gesture, _, x, y| {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    if let Some(win) = win_weak_rc.upgrade() {
+                        win.show_attachment_chip_context_menu(&btn_save_rc, x, y, &fname_rc, &ct_rc);
+                    }
+                });
+                btn_save_list.add_controller(btn_rc_gesture);
+
+                actions_box.append(&btn_save_list);
+
+                let fn_row_rc = att.filename.clone();
+                let ct_row_rc = att.content.clone();
+                let win_weak_row = self.downgrade();
+                let row_rc = row.clone();
+                let row_rc_gesture = gtk::GestureClick::builder().button(3).build();
+                row_rc_gesture.connect_pressed(move |gesture, _, x, y| {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    if let Some(win) = win_weak_row.upgrade() {
+                        win.show_attachment_chip_context_menu(&row_rc, x, y, &fn_row_rc, &ct_row_rc);
+                    }
+                });
+                row.add_controller(row_rc_gesture);
+
+                row_box.append(&actions_box);
+
+                let fn_open_row = att.filename.clone();
+                let ct_open_row = att.content.clone();
+                let click = gtk::GestureClick::new();
+                click.connect_released(move |_, n_press, _, _| {
+                    if n_press == 2 {
+                        let temp_dir = std::env::temp_dir().join("meridian-attachments");
+                        let _ = fs::create_dir_all(&temp_dir);
+                        let temp_path = temp_dir.join(&fn_open_row);
+                        if fs::write(&temp_path, ct_open_row.as_ref()).is_ok() {
+                            let uri = format!("file://{}", temp_path.to_string_lossy());
+                            let _ = crate::services::quick_preview_service::preview_file_or_uri(&uri, None);
+                        }
+                    }
+                });
+                row.add_controller(click);
+
+                let fn_key_row = att.filename.clone();
+                let ct_key_row = att.content.clone();
+                let key_ctrl = gtk::EventControllerKey::new();
+                key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
+                    if keyval == gdk::Key::space || keyval == gdk::Key::Return {
+                        let temp_dir = std::env::temp_dir().join("meridian-attachments");
+                        let _ = fs::create_dir_all(&temp_dir);
+                        let temp_path = temp_dir.join(&fn_key_row);
+                        if fs::write(&temp_path, ct_key_row.as_ref()).is_ok() {
+                            let uri = format!("file://{}", temp_path.to_string_lossy());
+                            let _ = crate::services::quick_preview_service::preview_file_or_uri(&uri, None);
+                        }
+                        return glib::Propagation::Stop;
+                    }
+                    glib::Propagation::Proceed
+                });
+                row.add_controller(key_ctrl);
+
+                row.set_child(Some(&row_box));
+                listbox.append(&row);
+            }
         }
+    }
 
-        for att in attachments {
-            let chip = gtk::Box::builder()
-                .orientation(gtk::Orientation::Horizontal)
-                .spacing(6)
-                .css_classes(vec!["card", "attachment-chip"])
-                .margin_top(2)
-                .margin_bottom(2)
-                .build();
+    fn create_save_all_button(
+        &self,
+        attachments: &[crate::models::mail_message::AttachmentInfo],
+    ) -> gtk::Button {
+        let btn = gtk::Button::builder()
+            .css_classes(vec!["attachment-save-all-btn"])
+            .valign(gtk::Align::Center)
+            .tooltip_text(&gettext("Save all attachments to Downloads (Right-click for options)"))
+            .build();
+        set_accessible_label(&btn, &gettext("Save all attachments"));
 
-            let icon_name = match att.mime_type.as_str() {
-                m if m.starts_with("image/") => "image-x-generic-symbolic",
-                m if m.contains("pdf") => "x-office-document-symbolic",
-                m if m.contains("zip") || m.contains("tar") || m.contains("compressed") => {
-                    "package-x-generic-symbolic"
+        let btn_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .valign(gtk::Align::Center)
+            .build();
+
+        let save_icon = gtk::Image::from_icon_name("document-save-symbolic");
+        save_icon.set_pixel_size(15);
+        let save_label = gtk::Label::builder()
+            .label(&gettext("Save all…"))
+            .css_classes(vec!["attachment-save-all-label"])
+            .build();
+
+        btn_box.append(&save_icon);
+        btn_box.append(&save_label);
+        btn.set_child(Some(&btn_box));
+
+        let atts_click = attachments.to_vec();
+        let win_weak = self.downgrade();
+        btn.connect_clicked(move |_| {
+            let Some(win) = win_weak.upgrade() else { return; };
+            match crate::services::quick_preview_service::download_all_attachments_to_downloads(&atts_click) {
+                Ok((saved_count, dir)) => {
+                    let msg = if saved_count == 1 {
+                        gettext("1 attachment saved to Downloads")
+                    } else {
+                        gettext("{} attachments saved to Downloads").replace("{}", &saved_count.to_string())
+                    };
+                    win.show_toast_with_folder_action(&msg, &dir);
                 }
-                m if m.starts_with("audio/") => "audio-x-generic-symbolic",
-                m if m.starts_with("video/") => "video-x-generic-symbolic",
-                m if m.contains("text/") => "text-x-generic-symbolic",
-                _ => "mail-attachment-symbolic",
-            };
-            let icon = gtk::Image::new();
-            set_image_icon_with_fallback(&icon, icon_name, "mail-attachment-symbolic");
+                Err(e) => {
+                    tracing::error!(%e, "Failed to download attachments");
+                }
+            }
+        });
 
-            let label = gtk::Label::builder()
-                .label(&format!("{} ({})", att.filename, att.size_formatted))
-                .css_classes(vec!["caption"])
-                .build();
+        let atts_rc = attachments.to_vec();
+        let win_weak_rc = self.downgrade();
+        let btn_rc = btn.clone();
+        let rc_gesture = gtk::GestureClick::builder().button(3).build();
+        rc_gesture.connect_pressed(move |gesture, _, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            if let Some(win) = win_weak_rc.upgrade() {
+                win.show_save_all_context_menu(&btn_rc, x, y, &atts_rc);
+            }
+        });
+        btn.add_controller(rc_gesture);
 
-            let btn_open = gtk::Button::builder()
-                .icon_name("document-open-symbolic")
-                .tooltip_text(&gettext("Open attachment"))
-                .css_classes(vec!["flat", "circular"])
-                .valign(gtk::Align::Center)
+        btn
+    }
+
+    fn show_save_all_context_menu(
+        &self,
+        button: &gtk::Button,
+        x: f64,
+        y: f64,
+        attachments: &[crate::models::mail_message::AttachmentInfo],
+    ) {
+        let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+        let (popover, menu_box) = crate::views::create_context_popover(Some(&rect));
+
+        let btn_quick = crate::views::create_context_menu_button(
+            Some("folder-download-symbolic"),
+            &gettext("Save to Downloads"),
+            false,
+        );
+        let pop_quick = popover.clone();
+        let win_weak_quick = self.downgrade();
+        let atts_for_quick = attachments.to_vec();
+        btn_quick.connect_clicked(move |_| {
+            pop_quick.popdown();
+            let Some(win) = win_weak_quick.upgrade() else { return; };
+            match crate::services::quick_preview_service::download_all_attachments_to_downloads(&atts_for_quick) {
+                Ok((saved_count, dir)) => {
+                    let msg = if saved_count == 1 {
+                        gettext("1 attachment saved to Downloads")
+                    } else {
+                        gettext("{} attachments saved to Downloads").replace("{}", &saved_count.to_string())
+                    };
+                    win.show_toast_with_folder_action(&msg, &dir);
+                }
+                Err(e) => {
+                    tracing::error!(%e, "Failed to download attachments");
+                }
+            }
+        });
+        menu_box.append(&btn_quick);
+
+        let btn_choose = crate::views::create_context_menu_button(
+            Some("document-save-as-symbolic"),
+            &gettext("Choose folder…"),
+            false,
+        );
+        let pop_choose = popover.clone();
+        let atts_for_choose = attachments.to_vec();
+        let win_weak_choose = self.downgrade();
+        btn_choose.connect_clicked(move |_| {
+            pop_choose.popdown();
+            let Some(win) = win_weak_choose.upgrade() else { return; };
+            let folder_dialog = gtk::FileDialog::builder()
+                .title(&gettext("Select folder for all attachments"))
+                .modal(true)
                 .build();
-            let fname = att.filename.clone();
-            let content = att.content.clone();
-            btn_open.connect_clicked(move |_| {
+            let atts = atts_for_choose.clone();
+            let win_for_toast = win.downgrade();
+            folder_dialog.select_folder(Some(&win), None::<&gio::Cancellable>, move |result| {
+                if let Ok(folder) = result {
+                    if let Some(folder_path) = folder.path() {
+                        let mut saved_count = 0;
+                        for att in &atts {
+                            let target_path = folder_path.join(&att.filename);
+                            if std::fs::write(&target_path, att.content.as_ref()).is_ok() {
+                                saved_count += 1;
+                            }
+                        }
+                        if let Some(win) = win_for_toast.upgrade() {
+                            let msg = gettext("{} attachments saved").replace("{}", &saved_count.to_string());
+                            win.show_toast_with_folder_action(&msg, &folder_path);
+                        }
+                    }
+                }
+            });
+        });
+        menu_box.append(&btn_choose);
+
+        popover.set_parent(button);
+        popover.connect_closed(|p| {
+            let p = p.clone();
+            glib::idle_add_local_once(move || {
+                p.unparent();
+            });
+        });
+        popover.popup();
+    }
+
+    fn create_attachment_drawer_card(
+        &self,
+        att: &crate::models::mail_message::AttachmentInfo,
+    ) -> gtk::Widget {
+        let card = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(10)
+            .css_classes(vec!["attachment-drawer-card"])
+            .margin_top(4)
+            .margin_bottom(4)
+            .width_request(200)
+            .focusable(true)
+            .tooltip_text(&format!("{} ({})", att.filename, att.size_formatted))
+            .build();
+        card.set_cursor_from_name(Some("pointer"));
+
+        let icon_name = match att.mime_type.as_str() {
+            m if m.starts_with("image/") => "image-x-generic-symbolic",
+            m if m.contains("pdf") => "x-office-document-symbolic",
+            m if m.contains("zip") || m.contains("tar") || m.contains("compressed") => {
+                "package-x-generic-symbolic"
+            }
+            m if m.starts_with("audio/") => "audio-x-generic-symbolic",
+            m if m.starts_with("video/") => "video-x-generic-symbolic",
+            m if m.contains("text/") => "text-x-generic-symbolic",
+            _ => "mail-attachment-symbolic",
+        };
+        let icon = gtk::Image::new();
+        set_image_icon_with_fallback(&icon, icon_name, "mail-attachment-symbolic");
+        icon.set_pixel_size(24);
+        card.append(&icon);
+
+        let text_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .valign(gtk::Align::Center)
+            .hexpand(true)
+            .build();
+
+        let lbl_name = gtk::Label::builder()
+            .label(&att.filename)
+            .ellipsize(gtk::pango::EllipsizeMode::Middle)
+            .max_width_chars(28)
+            .css_classes(vec!["attachment-card-name"])
+            .xalign(0.0)
+            .build();
+        text_box.append(&lbl_name);
+
+        let lbl_meta = gtk::Label::builder()
+            .label(&format!("{} • {}", att.size_formatted, att.type_description()))
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .css_classes(vec!["dim-label", "caption", "attachment-card-meta"])
+            .xalign(0.0)
+            .build();
+        text_box.append(&lbl_meta);
+
+        card.append(&text_box);
+
+        let save_icon = gtk::Image::from_icon_name("document-save-symbolic");
+        save_icon.set_pixel_size(15);
+        let btn_save = gtk::Button::builder()
+            .child(&save_icon)
+            .tooltip_text(&gettext("Save to Downloads (Right-click for options)"))
+            .css_classes(vec!["flat", "circular", "attachment-card-download-btn"])
+            .valign(gtk::Align::Center)
+            .focusable(false)
+            .build();
+        set_accessible_label(&btn_save, &gettext("Save attachment"));
+
+        let fn_save = att.filename.clone();
+        let ct_save = att.content.clone();
+        let win_weak_save = self.downgrade();
+        btn_save.connect_clicked(move |_| {
+            let Some(win) = win_weak_save.upgrade() else { return; };
+            match crate::services::quick_preview_service::download_attachment_to_downloads(&fn_save, ct_save.as_ref()) {
+                Ok(path) => {
+                    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(&fn_save);
+                    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+                    let msg = gettext("Saved to Downloads: {}").replace("{}", file_name);
+                    win.show_toast_with_folder_action(&msg, dir);
+                }
+                Err(e) => {
+                    tracing::error!(%e, "Failed to download attachment");
+                }
+            }
+        });
+
+        let fn_save_rc = att.filename.clone();
+        let ct_save_rc = att.content.clone();
+        let win_weak_rc = self.downgrade();
+        let btn_save_rc = btn_save.clone();
+        let btn_rc_gesture = gtk::GestureClick::builder().button(3).build();
+        btn_rc_gesture.connect_pressed(move |gesture, _, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            if let Some(win) = win_weak_rc.upgrade() {
+                win.show_attachment_chip_context_menu(&btn_save_rc, x, y, &fn_save_rc, &ct_save_rc);
+            }
+        });
+        btn_save.add_controller(btn_rc_gesture);
+
+        card.append(&btn_save);
+
+        let fn_open = att.filename.clone();
+        let ct_open = att.content.clone();
+        let click = gtk::GestureClick::new();
+        click.connect_released(move |_, n_press, _, _| {
+            if n_press >= 1 {
                 let temp_dir = std::env::temp_dir().join("meridian-attachments");
                 let _ = fs::create_dir_all(&temp_dir);
-                let path = temp_dir.join(&fname);
-                if fs::write(&path, content.as_ref()).is_ok() {
-                    let uri = format!("file://{}", path.to_string_lossy());
-                    let _ = gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>);
+                let temp_path = temp_dir.join(&fn_open);
+                if fs::write(&temp_path, ct_open.as_ref()).is_ok() {
+                    let uri = format!("file://{}", temp_path.to_string_lossy());
+                    let _ = crate::services::quick_preview_service::preview_file_or_uri(&uri, None);
                 }
-            });
+            }
+        });
+        card.add_controller(click);
 
-            let btn_save = gtk::Button::builder()
-                .icon_name("document-save-symbolic")
-                .tooltip_text(&gettext("Save attachment as…"))
-                .css_classes(vec!["flat", "circular"])
-                .valign(gtk::Align::Center)
+        let fn_key = att.filename.clone();
+        let ct_key = att.content.clone();
+        let key_ctrl = gtk::EventControllerKey::new();
+        key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
+            if keyval == gdk::Key::space || keyval == gdk::Key::Return {
+                let temp_dir = std::env::temp_dir().join("meridian-attachments");
+                let _ = fs::create_dir_all(&temp_dir);
+                let temp_path = temp_dir.join(&fn_key);
+                if fs::write(&temp_path, ct_key.as_ref()).is_ok() {
+                    let uri = format!("file://{}", temp_path.to_string_lossy());
+                    let _ = crate::services::quick_preview_service::preview_file_or_uri(&uri, None);
+                }
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        card.add_controller(key_ctrl);
+
+        let fn_rc = att.filename.clone();
+        let ct_rc = att.content.clone();
+        let win_weak_rc2 = self.downgrade();
+        let card_weak = card.downgrade();
+        let rc_gesture = gtk::GestureClick::builder().button(3).build();
+        rc_gesture.connect_pressed(move |gesture, _, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            if let (Some(c), Some(win)) = (card_weak.upgrade(), win_weak_rc2.upgrade()) {
+                win.show_attachment_chip_context_menu(&c, x, y, &fn_rc, &ct_rc);
+            }
+        });
+        card.add_controller(rc_gesture);
+
+        card.upcast::<gtk::Widget>()
+    }
+
+    fn create_attachment_bar_chip(
+        &self,
+        att: &crate::models::mail_message::AttachmentInfo,
+        max_chars: i32,
+    ) -> gtk::Widget {
+        let chip_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["attachment-chip"])
+            .tooltip_text(&format!("{} ({})", att.filename, att.size_formatted))
+            .focusable(true)
+            .build();
+        chip_box.set_cursor_from_name(Some("pointer"));
+
+        let icon_name = match att.mime_type.as_str() {
+            m if m.starts_with("image/") => "image-x-generic-symbolic",
+            m if m.contains("pdf") => "x-office-document-symbolic",
+            m if m.contains("zip") || m.contains("tar") || m.contains("compressed") => {
+                "package-x-generic-symbolic"
+            }
+            m if m.starts_with("audio/") => "audio-x-generic-symbolic",
+            m if m.starts_with("video/") => "video-x-generic-symbolic",
+            m if m.contains("text/") => "text-x-generic-symbolic",
+            _ => "mail-attachment-symbolic",
+        };
+        let icon = gtk::Image::new();
+        set_image_icon_with_fallback(&icon, icon_name, "mail-attachment-symbolic");
+        icon.set_pixel_size(15);
+        chip_box.append(&icon);
+
+        let lbl = gtk::Label::builder()
+            .label(&att.filename)
+            .ellipsize(gtk::pango::EllipsizeMode::Middle)
+            .max_width_chars(max_chars)
+            .css_classes(vec!["attachment-chip-label"])
+            .valign(gtk::Align::Center)
+            .build();
+        chip_box.append(&lbl);
+
+        let lbl_size = gtk::Label::builder()
+            .label(&format!("· {}", att.size_formatted))
+            .css_classes(vec!["dim-label", "caption", "attachment-chip-size"])
+            .valign(gtk::Align::Center)
+            .build();
+        chip_box.append(&lbl_size);
+
+        let save_icon = gtk::Image::from_icon_name("document-save-symbolic");
+        save_icon.set_pixel_size(12);
+        let btn_save = gtk::Button::builder()
+            .child(&save_icon)
+            .tooltip_text(&gettext("Save to Downloads (Right-click for options)"))
+            .css_classes(vec!["flat", "circular", "attachment-chip-download-btn", "attachment-chip-btn"])
+            .valign(gtk::Align::Center)
+            .focusable(false)
+            .build();
+        set_accessible_label(&btn_save, &gettext("Save attachment"));
+
+        let filename_for_save = att.filename.clone();
+        let content_for_save = att.content.clone();
+        let win_weak_save = self.downgrade();
+        btn_save.connect_clicked(move |_| {
+            let Some(win) = win_weak_save.upgrade() else { return; };
+            match crate::services::quick_preview_service::download_attachment_to_downloads(&filename_for_save, content_for_save.as_ref()) {
+                Ok(path) => {
+                    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(&filename_for_save);
+                    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+                    let msg = gettext("Saved to Downloads: {}").replace("{}", file_name);
+                    win.show_toast_with_folder_action(&msg, dir);
+                }
+                Err(e) => {
+                    tracing::error!(%e, "Failed to download attachment");
+                }
+            }
+        });
+
+        let fn_save_rc = att.filename.clone();
+        let ct_save_rc = att.content.clone();
+        let win_weak_rc_btn = self.downgrade();
+        let btn_save_rc = btn_save.clone();
+        let btn_rc_gesture = gtk::GestureClick::builder().button(3).build();
+        btn_rc_gesture.connect_pressed(move |gesture, _, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            if let Some(win) = win_weak_rc_btn.upgrade() {
+                win.show_attachment_chip_context_menu(&btn_save_rc, x, y, &fn_save_rc, &ct_save_rc);
+            }
+        });
+        btn_save.add_controller(btn_rc_gesture);
+
+        chip_box.append(&btn_save);
+
+        let fn_open = att.filename.clone();
+        let ct_open = att.content.clone();
+        let click = gtk::GestureClick::new();
+        click.connect_released(move |_, n_press, _, _| {
+            if n_press >= 1 {
+                let temp_dir = std::env::temp_dir().join("meridian-attachments");
+                let _ = fs::create_dir_all(&temp_dir);
+                let temp_path = temp_dir.join(&fn_open);
+                if fs::write(&temp_path, ct_open.as_ref()).is_ok() {
+                    let uri = format!("file://{}", temp_path.to_string_lossy());
+                    let _ = crate::services::quick_preview_service::preview_file_or_uri(&uri, None);
+                }
+            }
+        });
+        chip_box.add_controller(click);
+
+        let fn_key = att.filename.clone();
+        let ct_key = att.content.clone();
+        let key_ctrl = gtk::EventControllerKey::new();
+        key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
+            if keyval == gdk::Key::space || keyval == gdk::Key::Return {
+                let temp_dir = std::env::temp_dir().join("meridian-attachments");
+                let _ = fs::create_dir_all(&temp_dir);
+                let temp_path = temp_dir.join(&fn_key);
+                if fs::write(&temp_path, ct_key.as_ref()).is_ok() {
+                    let uri = format!("file://{}", temp_path.to_string_lossy());
+                    let _ = crate::services::quick_preview_service::preview_file_or_uri(&uri, None);
+                }
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        chip_box.add_controller(key_ctrl);
+
+        let fn_rc = att.filename.clone();
+        let ct_rc = att.content.clone();
+        let win_weak_rc = self.downgrade();
+        let chip_weak_rc = chip_box.downgrade();
+        let rc_gesture = gtk::GestureClick::builder().button(3).build();
+        rc_gesture.connect_pressed(move |gesture, _, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            if let (Some(c), Some(win)) = (chip_weak_rc.upgrade(), win_weak_rc.upgrade()) {
+                win.show_attachment_chip_context_menu(&c, x, y, &fn_rc, &ct_rc);
+            }
+        });
+        chip_box.add_controller(rc_gesture);
+
+        chip_box.upcast::<gtk::Widget>()
+    }
+
+    fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
+        &self,
+        widget: &W,
+        x: f64,
+        y: f64,
+        filename: &str,
+        content: &std::sync::Arc<[u8]>,
+    ) {
+        let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+        let (popover, menu_box) = crate::views::create_context_popover(Some(&rect));
+
+        let btn_open = crate::views::create_context_menu_button(
+            Some("document-open-symbolic"),
+            &gettext("Open Attachment"),
+            false,
+        );
+        let pop_open = popover.clone();
+        let fname_open = filename.to_string();
+        let cont_open = content.clone();
+        btn_open.connect_clicked(move |_| {
+            pop_open.popdown();
+            let temp_dir = std::env::temp_dir().join("meridian-attachments");
+            let _ = fs::create_dir_all(&temp_dir);
+            let temp_path = temp_dir.join(&fname_open);
+            if fs::write(&temp_path, cont_open.as_ref()).is_ok() {
+                let uri = format!("file://{}", temp_path.to_string_lossy());
+                let _ = gio::AppInfo::launch_default_for_uri(
+                    &uri,
+                    None::<&gio::AppLaunchContext>,
+                );
+            }
+        });
+        menu_box.append(&btn_open);
+
+        let btn_quick = crate::views::create_context_menu_button(
+            Some("folder-download-symbolic"),
+            &gettext("Save to Downloads"),
+            false,
+        );
+        let pop_quick = popover.clone();
+        let fname_quick = filename.to_string();
+        let cont_quick = content.clone();
+        let win_weak_quick = self.downgrade();
+        btn_quick.connect_clicked(move |_| {
+            pop_quick.popdown();
+            let Some(win) = win_weak_quick.upgrade() else { return; };
+            match crate::services::quick_preview_service::download_attachment_to_downloads(&fname_quick, cont_quick.as_ref()) {
+                Ok(path) => {
+                    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(&fname_quick);
+                    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+                    let msg = gettext("Saved to Downloads: {}").replace("{}", file_name);
+                    win.show_toast_with_folder_action(&msg, dir);
+                }
+                Err(e) => {
+                    tracing::error!(%e, "Failed to download attachment");
+                }
+            }
+        });
+        menu_box.append(&btn_quick);
+
+        let btn_save = crate::views::create_context_menu_button(
+            Some("document-save-as-symbolic"),
+            &gettext("Save As…"),
+            false,
+        );
+        let pop_save = popover.clone();
+        let fname_save = filename.to_string();
+        let cont_save = content.clone();
+        let win_weak_save = self.downgrade();
+        btn_save.connect_clicked(move |_| {
+            pop_save.popdown();
+            let Some(win) = win_weak_save.upgrade() else { return; };
+            let file_dialog = gtk::FileDialog::builder()
+                .title(&gettext("Save Attachment"))
+                .modal(true)
+                .initial_name(&fname_save)
                 .build();
-            let fname_save = att.filename.clone();
-            let content_save = att.content.clone();
-            let win_weak = self.downgrade();
-            btn_save.connect_clicked(move |_| {
-                let Some(win) = win_weak.upgrade() else { return; };
-                let file_dialog = gtk::FileDialog::builder()
-                    .title(&gettext("Save attachment"))
-                    .modal(true)
-                    .initial_name(&fname_save)
-                    .build();
-                let f_name = fname_save.clone();
-                let c_data = content_save.clone();
-                let win_for_feedback = win.downgrade();
-                file_dialog.save(Some(&win), None::<&gio::Cancellable>, move |res| {
-                    if let Ok(file) = res {
-                        if let Some(path) = file.path() {
-                            if fs::write(&path, c_data.as_ref()).is_ok() {
-                                if let Some(win) = win_for_feedback.upgrade() {
-                                    win.show_toast(&gettext("{filename} saved").replace("{filename}", &f_name));
-                                }
+            let cont = cont_save.clone();
+            let f_name = fname_save.clone();
+            let win_for_toast = win.downgrade();
+            file_dialog.save(Some(&win), None::<&gio::Cancellable>, move |result| {
+                if let Ok(file) = result {
+                    if let Some(path) = file.path() {
+                        if fs::write(&path, cont.as_ref()).is_ok() {
+                            if let Some(win) = win_for_toast.upgrade() {
+                                let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+                                let msg = gettext("Saved: {}").replace("{}", &f_name);
+                                win.show_toast_with_folder_action(&msg, dir);
                             }
                         }
                     }
-                });
+                }
             });
+        });
+        menu_box.append(&btn_save);
 
-            chip.append(&icon);
-            chip.append(&label);
-            chip.append(&btn_open);
-            chip.append(&btn_save);
-            bar.append(&chip);
-        }
+        menu_box.append(&crate::views::create_context_menu_separator());
+
+        let btn_copy = crate::views::create_context_menu_button(
+            Some("edit-copy-symbolic"),
+            &gettext("Copy Filename"),
+            false,
+        );
+        let pop_copy = popover.clone();
+        let fname_copy = filename.to_string();
+        let w_copy = widget.clone();
+        btn_copy.connect_clicked(move |_| {
+            pop_copy.popdown();
+            w_copy.display().clipboard().set_text(&fname_copy);
+        });
+        menu_box.append(&btn_copy);
+
+        popover.set_parent(widget);
+        popover.connect_closed(|p| {
+            let p = p.clone();
+            glib::idle_add_local_once(move || {
+                p.unparent();
+            });
+        });
+        popover.popup();
     }
 
     fn render_itip(&self, message: &MailMessageObject) {
@@ -1691,5 +2776,208 @@ mod tests {
 
         window.cancel_loading();
         assert!(cancel.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_mail_viewer_window_evolution_attachment_section() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let msg = MailMessageObject::new(
+            "msg-test-att",
+            "inbox",
+            "Alice",
+            "alice@example.com",
+            "bob@example.com",
+            "",
+            "",
+            "",
+            "Subject",
+            None,
+            vec![],
+            vec![],
+            "t1",
+            1,
+            0,
+            "12:00",
+            512,
+            "Snippet",
+            &"<p>Long email body line</p>\n".repeat(25),
+            false,
+            false,
+            false,
+            MailFollowUpState::None,
+            MailFollowUpMetadata::default(),
+            vec![],
+            None,
+            vec![
+                crate::models::mail_message::AttachmentInfo {
+                    filename: "report.pdf".to_string(),
+                    size_formatted: "100 KB".to_string(),
+                    mime_type: "application/pdf".to_string(),
+                    content_id: None,
+                    is_inline: false,
+                    content: std::sync::Arc::from([1, 2, 3]),
+                },
+                crate::models::mail_message::AttachmentInfo {
+                    filename: "image.png".to_string(),
+                    size_formatted: "500 KB".to_string(),
+                    mime_type: "image/png".to_string(),
+                    content_id: None,
+                    is_inline: false,
+                    content: std::sync::Arc::from([4, 5, 6, 7]),
+                },
+            ],
+        );
+
+        let window = MailViewerWindow::new(None, &msg, None);
+        window.set_visible(true);
+        let sec = window.imp().attachment_section.borrow().clone().expect("attachment_section");
+        let rev = window.imp().attachment_revealer.borrow().clone().expect("attachment_revealer");
+        let lbl = window.imp().attachment_summary_label.borrow().clone().expect("attachment_summary_label");
+        let save_box = window.imp().attachment_save_all_box.borrow().clone().expect("attachment_save_all_box");
+        let chip_box = window.imp().attachment_chip_box.borrow().clone().expect("chip_box");
+        let summary_box = window.imp().attachment_summary_box.borrow().clone().expect("summary_box");
+        let btn_collapse = window.imp().attachment_btn_collapse.borrow().clone().expect("btn_collapse");
+
+        // Section should be visible and revealer should be collapsed by default to save space
+        assert!(sec.is_visible());
+        assert!(!rev.reveals_child());
+        assert!(chip_box.is_visible());
+        assert!(chip_box.first_child().is_some());
+        assert!(!summary_box.is_visible());
+
+        // View toggle box and stack should be present
+        let toggle_box = window.imp().attachment_view_toggle_box.borrow().clone().expect("view_toggle_box");
+        let stack = window.imp().attachment_stack.borrow().clone().expect("attachment_stack");
+        let listbox = window.imp().attachment_listbox.borrow().clone().expect("attachment_listbox");
+        let btn_list = window.imp().attachment_btn_list.borrow().clone().expect("btn_list");
+        let btn_icons = window.imp().attachment_btn_icons.borrow().clone().expect("btn_icons");
+
+        assert!(!toggle_box.is_visible());
+        assert_eq!(stack.visible_child_name().as_deref(), Some("icons"));
+        assert!(listbox.first_child().is_some());
+
+        // Summary label should reflect 2 attachments
+        let text = lbl.text();
+        assert!(text.contains('2'), "Summary label should contain attachment count 2: {text}");
+
+        fn has_descendant_with_class(root: &impl gtk::prelude::IsA<gtk::Widget>, class: &str) -> bool {
+            if root.has_css_class(class) {
+                return true;
+            }
+            let mut child = root.first_child();
+            while let Some(c) = child {
+                if has_descendant_with_class(&c, class) {
+                    return true;
+                }
+                child = c.next_sibling();
+            }
+            false
+        }
+
+        // Save all button should be styled with attachment-save-all-btn
+        let btn = save_box.first_child().and_downcast::<gtk::Button>().expect("save all button");
+        assert!(btn.has_css_class("attachment-save-all-btn"));
+        assert!(has_descendant_with_class(&btn, "attachment-save-all-label"), "save all button must render a visible label");
+
+        // Compact chip should have a 1-click download button
+        let chip = chip_box.first_child().expect("chip in chip_box");
+        assert!(has_descendant_with_class(&chip, "attachment-chip-download-btn"), "compact chip must have a 1-click download button");
+
+        // List row should have a 1-click download button
+        let list_row = listbox.first_child().expect("list row exists");
+        assert!(list_row.has_css_class("attachment-list-row"));
+        assert!(has_descendant_with_class(&list_row, "attachment-list-download-btn"), "list row must have a 1-click download button");
+
+        // Attachment bar should contain drawer cards with download button
+        let bar = window.imp().attachment_bar.borrow().clone().expect("attachment_bar");
+        let mut has_drawer_card = false;
+        let mut curr_bar_child = bar.first_child();
+        while let Some(w) = curr_bar_child {
+            if w.has_css_class("attachment-drawer-card") {
+                has_drawer_card = true;
+                assert!(has_descendant_with_class(&w, "attachment-card-download-btn"), "drawer card must have a 1-click download button");
+            }
+            curr_bar_child = w.next_sibling();
+        }
+        assert!(has_drawer_card, "attachment_bar must contain cards with .attachment-drawer-card");
+
+        // Expanding revealer via btn_collapse
+        btn_collapse.emit_clicked();
+        assert!(rev.reveals_child());
+        assert!(!chip_box.is_visible());
+        assert!(summary_box.is_visible());
+        assert!(toggle_box.is_visible());
+
+        // Switch to list view
+        btn_list.emit_clicked();
+        assert_eq!(stack.visible_child_name().as_deref(), Some("list"));
+
+        // Switch back to icons view
+        btn_icons.emit_clicked();
+        assert_eq!(stack.visible_child_name().as_deref(), Some("icons"));
+
+        // Collapse again
+        btn_collapse.emit_clicked();
+        assert!(!rev.reveals_child());
+        assert!(chip_box.is_visible());
+        assert!(!summary_box.is_visible());
+        assert!(!toggle_box.is_visible());
+
+        // When opening a short email, drawer is expanded by default to utilize vertical whitespace
+        let short_msg = MailMessageObject::new(
+            "msg-test-short",
+            "inbox",
+            "Alice",
+            "alice@example.com",
+            "bob@example.com",
+            "",
+            "",
+            "",
+            "Subject",
+            None,
+            vec![],
+            vec![],
+            "t1",
+            1,
+            0,
+            "12:00",
+            512,
+            "Snippet",
+            "Short body",
+            false,
+            false,
+            false,
+            MailFollowUpState::None,
+            MailFollowUpMetadata::default(),
+            vec![],
+            None,
+            vec![
+                crate::models::mail_message::AttachmentInfo {
+                    filename: "quick.pdf".to_string(),
+                    size_formatted: "10 KB".to_string(),
+                    mime_type: "application/pdf".to_string(),
+                    content_id: None,
+                    is_inline: false,
+                    content: std::sync::Arc::from([1, 2]),
+                },
+            ],
+        );
+        let short_win = MailViewerWindow::new(None, &short_msg, None);
+        short_win.set_visible(true);
+        let short_rev = short_win.imp().attachment_revealer.borrow().clone().expect("attachment_revealer");
+        let short_summary = short_win.imp().attachment_summary_box.borrow().clone().expect("summary_box");
+        let short_chip = short_win.imp().attachment_chip_box.borrow().clone().expect("chip_box");
+        let short_toggle = short_win.imp().attachment_view_toggle_box.borrow().clone().expect("view_toggle_box");
+
+        assert!(short_rev.reveals_child(), "Short email drawer should be expanded by default");
+        assert!(short_summary.is_visible());
+        assert!(!short_chip.is_visible());
+        assert!(short_toggle.is_visible());
     }
 }
