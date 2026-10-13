@@ -53,6 +53,11 @@
       <default>true</default>
       <summary>Scroll month view by a week instead of a month</summary>
     </key>
+    <key name="calendar-month-scroll-animation" type="b">
+      <default>true</default>
+      <summary>Animate month view scrolling</summary>
+      <description>Smoothly slide rows when scrolling weeks in month view. Disabled automatically when system animations are reduced.</description>
+    </key>
     <key name="calendar-month-view-rows" type="i">
       <default>5</default>
       <range min="5" max="6"/>
