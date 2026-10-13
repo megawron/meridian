@@ -7560,3 +7560,31 @@ msgstr ""
 #: src/window.rs:6246 src/window.rs:6260 src/window.rs:6277 and 2 more
 msgid "window.rs"
 msgstr ""
+
+msgctxt "grid monday"
+msgid "M"
+msgstr ""
+
+msgctxt "grid tuesday"
+msgid "T"
+msgstr ""
+
+msgctxt "grid wednesday"
+msgid "W"
+msgstr ""
+
+msgctxt "grid thursday"
+msgid "T"
+msgstr ""
+
+msgctxt "grid friday"
+msgid "F"
+msgstr ""
+
+msgctxt "grid saturday"
+msgid "S"
+msgstr ""
+
+msgctxt "grid sunday"
+msgid "S"
+msgstr ""

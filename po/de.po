@@ -8433,4 +8433,33 @@ msgstr "Zeigt die Anzahl ungelesener Nachrichten im Fenstertitel und auf dem Mai
 msgid "Recipient address"
 msgstr "Empfängeradresse"
 
+msgctxt "grid monday"
+msgid "M"
+msgstr "M"
+
+msgctxt "grid tuesday"
+msgid "T"
+msgstr "D"
+
+msgctxt "grid wednesday"
+msgid "W"
+msgstr "M"
+
+msgctxt "grid thursday"
+msgid "T"
+msgstr "D"
+
+msgctxt "grid friday"
+msgid "F"
+msgstr "F"
+
+msgctxt "grid saturday"
+msgid "S"
+msgstr "S"
+
+msgctxt "grid sunday"
+msgid "S"
+msgstr "S"
+
+
 
