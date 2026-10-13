@@ -636,8 +636,8 @@ searchbar dropdown > button.combo,
 .mail-preview-card {
   background-color: @card_bg_color;
   border-radius: 12px;
-  border: 1px solid alpha(currentColor, 0.08);
-  box-shadow: 0 1px 3px alpha(currentColor, 0.04);
+  border: none;
+  box-shadow: none;
   transition: border-bottom-left-radius 150ms ease, border-bottom-right-radius 150ms ease;
 }
 
@@ -1329,6 +1329,21 @@ popover.context-menu separator {
   outline-offset: 2px;
 }
 
+.attachment-chip button.flat.circular {
+  color: currentColor;
+  opacity: 0.75;
+  min-width: 22px;
+  min-height: 22px;
+  padding: 2px;
+  transition: opacity 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+.attachment-chip button.flat.circular:hover {
+  opacity: 1.0;
+  background-color: alpha(currentColor, 0.12);
+  color: @accent_color;
+}
+
 .attachment-flow-child {
   border-radius: 8px;
   padding: 0;
@@ -1414,14 +1429,202 @@ flowbox > flowboxchild.attachment-flow-child:selected {
   color: inherit;
 }
 
+.attachment-section-container {
+  background-color: alpha(@window_fg_color, 0.02);
+  transition: background-color 150ms ease;
+}
+
+.attachment-header-bar {
+  min-height: 32px;
+  padding: 1px 12px;
+}
+
 .attachment-summary-clickable {
   border-radius: 6px;
   padding: 4px 8px;
-  transition: background-color 150ms ease;
+  color: alpha(currentColor, 0.85);
+  transition: background-color 150ms ease, color 150ms ease;
 }
 
 .attachment-summary-clickable:hover {
   background-color: alpha(currentColor, 0.08);
+  color: currentColor;
+}
+
+.attachment-summary-clickable:focus-visible {
+  outline: 2px solid alpha(@accent_color, 0.6);
+  outline-offset: 1px;
+}
+
+.attachment-summary-label {
+  font-size: 0.84rem;
+}
+
+.attachment-chevron {
+  transition: transform 180ms ease;
+}
+
+button.attachment-save-all-btn {
+  background-color: alpha(currentColor, 0.08);
+  color: inherit;
+  border: none;
+  box-shadow: none;
+  border-radius: 9999px;
+  padding: 4px 12px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+button.attachment-save-all-btn:hover {
+  background-color: alpha(@accent_color, 0.16);
+  color: @accent_color;
+  border: none;
+  box-shadow: none;
+}
+
+button.attachment-save-all-btn:active {
+  background-color: alpha(@accent_color, 0.26);
+  color: @accent_color;
+  border: none;
+  box-shadow: none;
+}
+
+.attachment-save-all-label {
+  font-weight: 600;
+  font-size: 0.82rem;
+  color: inherit;
+}
+
+/* ── Attachment Drawer Cards (Expanded Icons View) ────────────────────────── */
+.attachment-drawer-card,
+.card.attachment-drawer-card {
+  background-color: alpha(currentColor, 0.05);
+  border: none;
+  outline: none;
+  box-shadow: none;
+  border-radius: 10px;
+  padding: 6px 12px;
+  min-height: 48px;
+  max-height: 52px;
+  min-width: 180px;
+  max-width: 280px;
+  transition: background-color 150ms ease;
+}
+
+.attachment-drawer-card:hover,
+.card.attachment-drawer-card:hover {
+  background-color: alpha(currentColor, 0.09);
+  border: none;
+  outline: none;
+  box-shadow: none;
+}
+
+.attachment-drawer-card:focus,
+.attachment-drawer-card:focus-visible,
+.card.attachment-drawer-card:focus,
+.card.attachment-drawer-card:focus-visible {
+  outline: 2px solid alpha(@accent_color, 0.55);
+  outline-offset: 1px;
+}
+
+.attachment-card-name {
+  font-weight: 600;
+  font-size: 0.83rem;
+  color: inherit;
+}
+
+.attachment-card-meta {
+  font-size: 0.73rem;
+  opacity: 0.65;
+}
+
+.attachment-card-download-btn {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 4px;
+  border-radius: 9999px;
+  color: alpha(currentColor, 0.70);
+  background-color: transparent;
+  border: none;
+  box-shadow: none;
+  transition: background-color 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.attachment-card-download-btn:hover {
+  background-color: alpha(currentColor, 0.12);
+  color: @accent_color;
+  transform: scale(1.05);
+}
+
+.attachment-card-download-btn:active {
+  background-color: alpha(currentColor, 0.20);
+  color: @accent_color;
+  transform: scale(0.95);
+}
+
+.attachment-chip-download-btn {
+  color: alpha(currentColor, 0.65);
+  background-color: transparent;
+  min-width: 22px;
+  min-height: 22px;
+  padding: 2px;
+  border-radius: 9999px;
+  border: none;
+  box-shadow: none;
+  transition: background-color 120ms ease, color 120ms ease, opacity 120ms ease;
+}
+
+.attachment-chip-download-btn:hover {
+  background-color: alpha(currentColor, 0.12);
+  color: currentColor;
+  opacity: 1.0;
+}
+
+.attachment-chip-download-btn:active {
+  background-color: alpha(currentColor, 0.20);
+  color: currentColor;
+}
+
+.attachment-list-download-btn {
+  color: alpha(currentColor, 0.65);
+  background-color: transparent;
+  min-width: 26px;
+  min-height: 26px;
+  padding: 3px;
+  border-radius: 9999px;
+  border: none;
+  box-shadow: none;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.attachment-list-download-btn:hover {
+  background-color: alpha(currentColor, 0.12);
+  color: currentColor;
+}
+
+.attachment-list-download-btn:active {
+  background-color: alpha(currentColor, 0.20);
+  color: currentColor;
+}
+
+/* Global fix for flat suggested-action buttons (prevent white text on transparent light background) */
+button.flat.suggested-action,
+button.suggested-action.flat {
+  color: @accent_color;
+  background-color: alpha(@accent_color, 0.12);
+}
+
+button.flat.suggested-action:hover,
+button.suggested-action.flat:hover {
+  background-color: alpha(@accent_color, 0.22);
+  color: @accent_color;
+}
+
+button.flat.suggested-action:active,
+button.suggested-action.flat:active {
+  background-color: alpha(@accent_color, 0.32);
+  color: @accent_color;
 }
 
 .attachment-row-entry {
@@ -1523,15 +1726,24 @@ window:drop(active) > .background {
   border-top-right-radius: 0;
 }
 
+.attachment-handle-container {
+  padding: 1px 24px 1px 24px;
+  cursor: pointer;
+}
+
+.attachment-handle-container:hover .attachment-bar-handle {
+  background-color: alpha(currentColor, 0.45);
+}
+
 .attachment-bar-handle {
-  min-width: 32px;
-  max-width: 32px;
-  min-height: 4px;
-  max-height: 4px;
+  min-width: 28px;
+  max-width: 28px;
+  min-height: 3px;
+  max-height: 3px;
   border-radius: 9999px;
-  background-color: alpha(currentColor, 0.22);
-  margin-top: 3px;
-  margin-bottom: 2px;
+  background-color: alpha(currentColor, 0.18);
+  margin-top: 1px;
+  margin-bottom: 1px;
   cursor: pointer;
   transition: background-color 150ms ease;
 }
@@ -2675,103 +2887,127 @@ scrolledwindow:has(.calendar-toolbar) > viewport {
   background-color: alpha(@window_fg_color, 0.08);
 }
 
-/* ── Calendar Date Chooser Popover (GNOME Calendar parity) ──────────── */
+/* ── Calendar Date Chooser (GNOME Calendar 1:1 parity) ──────────── */
 popover.calendar-date-chooser-popover > contents,
 .calendar-date-chooser-popover contents {
   padding: 0;
   border-radius: 14px;
 }
 
-.calendar-popover-nav-group {
-  border: 1px solid alpha(@borders, 0.7);
-  border-radius: 8px;
-  background-color: alpha(@window_fg_color, 0.03);
-  padding: 1px 2px;
+.calendar-date-chooser-container {
+  padding: 0;
 }
 
+.date-chooser-navigator,
+.calendar-popover-nav-group {
+  border: 1px solid alpha(@window_fg_color, 0.15);
+  border-radius: 9px;
+  background-color: alpha(@window_fg_color, 0.02);
+  padding: 2px 4px;
+  transition: outline 150ms ease, border-color 150ms ease;
+}
+
+.date-chooser-navigator:focus-within,
 .calendar-popover-nav-group:focus-within {
   border-color: @accent_color;
+  outline: 2px solid @accent_color;
+  outline-offset: -1px;
 }
 
+.date-chooser-navigator label,
 .calendar-popover-nav-title {
-  font-weight: 600;
+  font-weight: 700;
   font-size: 0.95rem;
-  padding: 0 6px;
+  padding: 0 4px;
 }
 
-.calendar-popover-weekday-header {
-  font-size: 0.76rem;
+.date-chooser-navigator button,
+.calendar-popover-nav-group button {
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 9999px;
+}
+
+.calendar-popover-weekday-header,
+.weekday {
+  font-size: 0.78rem;
   font-weight: 700;
-  color: alpha(@window_fg_color, 0.55);
+  color: alpha(@window_fg_color, 0.50);
   min-width: 32px;
   min-height: 24px;
 }
 
-button.calendar-popover-week-badge {
-  font-size: 0.78rem;
+button.calendar-popover-week-badge,
+.weeknum {
+  font-size: 0.76rem;
   font-weight: 700;
   color: alpha(@window_fg_color, 0.50);
   background-color: alpha(@window_fg_color, 0.06);
-  border-radius: 6px;
-  min-width: 26px;
-  min-height: 26px;
-  padding: 0;
-  margin: 1px 2px;
+  border-radius: 5px;
+  min-width: 24px;
+  min-height: 22px;
+  padding: 2px 4px;
+  margin: 2px 4px;
 }
 
 button.calendar-popover-week-badge > label,
 button.calendar-popover-day-btn > label {
   padding: 0;
   margin: 0;
-  line-height: 1;
+  line-height: normal;
 }
 
-button.calendar-popover-week-badge.selected-week {
-  background-color: alpha(@window_fg_color, 0.12);
-  color: alpha(@window_fg_color, 0.85);
-  border-top-left-radius: 14px;
-  border-bottom-left-radius: 14px;
-  border-top-right-radius: 0;
-  border-bottom-right-radius: 0;
-  margin-right: 0;
-}
-
-button.calendar-popover-day-btn {
-  font-size: 0.92rem;
-  font-weight: 500;
-  min-width: 32px;
-  min-height: 32px;
-  padding: 0;
-  border-radius: 9999px;
+.date-chooser-current-week {
+  background-color: alpha(@window_fg_color, 0.08);
+  border-radius: 9px;
   margin: 1px 0;
 }
 
-button.calendar-popover-day-btn.other-month {
-  color: alpha(@window_fg_color, 0.35);
-}
-
-button.calendar-popover-day-btn.selected-week {
-  background-color: alpha(@window_fg_color, 0.08);
-  border-radius: 0;
-}
-
-button.calendar-popover-day-btn.selected-week.last-col {
-  border-top-right-radius: 14px;
-  border-bottom-right-radius: 14px;
-}
-
-popover.calendar-date-chooser-popover button.calendar-popover-day-btn.selected-day,
-button.calendar-popover-day-btn.selected-day {
-  background-color: #3584e4;
-  color: #ffffff;
-  font-weight: 700;
+button.calendar-popover-day-btn,
+button.day {
+  font-size: 0.92rem;
+  font-weight: normal;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
   border-radius: 9999px;
+  margin: 1px 2px;
+  color: @window_fg_color;
 }
 
-button.calendar-popover-day-btn.today:not(.selected-day) {
+button.calendar-popover-day-btn.today,
+button.day.today {
+  background-color: @accent_bg_color;
+  color: @accent_fg_color;
+  font-weight: 700;
+}
+
+button.calendar-popover-day-btn.selected-day:not(.today),
+button.day.selected:not(.today) {
+  background-color: alpha(@accent_color, 0.20);
   color: @accent_color;
   font-weight: 700;
 }
+
+button.calendar-popover-day-btn.other-month,
+button.day.other-month {
+  color: alpha(@window_fg_color, 0.35);
+}
+
+button.calendar-popover-day-btn.non-workday:not(.today):not(.other-month),
+button.day.non-workday:not(.today):not(.other-month) {
+  color: alpha(@window_fg_color, 0.55);
+}
+
+.calendar-month-date-button {
+  font-weight: 700;
+  font-size: 1.10rem;
+  padding: 4px 10px;
+  border-radius: 8px;
+}
+
 
 /* ── iTIP Meeting Invitation Banner ────────────────────────────────────────── */
 .itip-banner {
@@ -4302,6 +4538,73 @@ banner.mail-status-banner button,
 
 .mail-conversation-inner {
   padding: 2px 0;
+}
+
+.mail-thread-stepper {
+  background-color: alpha(currentColor, 0.04);
+  border-radius: 6px;
+  padding: 1px 4px;
+}
+
+.mail-thread-stepper button {
+  min-height: 22px;
+  min-width: 22px;
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
+.mail-thread-strip {
+  min-height: 24px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background-color: transparent;
+  border: none;
+  box-shadow: none;
+  margin-bottom: 1px;
+  transition: background-color 100ms ease;
+}
+
+.mail-thread-strip:hover {
+  background-color: alpha(currentColor, 0.05);
+  border: none;
+  box-shadow: none;
+}
+
+.mail-thread-strip-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 1px 5px;
+  min-width: 18px;
+  border-radius: 4px;
+  background-color: transparent;
+  color: alpha(@window_fg_color, 0.55);
+}
+
+.mail-thread-strip.active,
+.mail-thread-strip.current {
+  background-color: alpha(@accent_color, 0.12);
+  border: none;
+  box-shadow: none;
+}
+
+.mail-thread-strip.active:hover,
+.mail-thread-strip.current:hover {
+  background-color: alpha(@accent_color, 0.16);
+  border: none;
+  box-shadow: none;
+}
+
+.mail-thread-strip.active .mail-thread-strip-badge,
+.mail-thread-strip.current .mail-thread-strip-badge {
+  background-color: @accent_bg_color;
+  color: @accent_fg_color;
+  font-weight: 700;
+}
+
+.mail-thread-toggle-btn {
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.75rem;
 }
 
 .mail-thread-pill {
