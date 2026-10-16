@@ -2478,7 +2478,10 @@ splitview > .sidebar:backdrop {
 }
 
 /* ── Calendar, Tasks & Contacts Sidebar (Matching Mail Sidebar Density & Parity) ── */
-.calendar-sidebar,
+.calendar-sidebar {
+  padding: 0;
+}
+
 .tasks-sidebar,
 .contacts-sidebar {
   padding: 2px;
@@ -2900,18 +2903,22 @@ popover.calendar-date-chooser-popover > contents,
 
 .date-chooser-navigator,
 .calendar-popover-nav-group {
-  border: 1px solid alpha(@window_fg_color, 0.15);
-  border-radius: 9px;
-  background-color: alpha(@window_fg_color, 0.02);
-  padding: 2px 4px;
-  transition: outline 150ms ease, border-color 150ms ease;
+  border: none;
+  border-radius: 7px;
+  background-color: transparent;
+  padding: 2px 2px;
+  outline: none;
+  box-shadow: none;
 }
 
 .date-chooser-navigator:focus-within,
-.calendar-popover-nav-group:focus-within {
-  border-color: @accent_color;
-  outline: 2px solid @accent_color;
-  outline-offset: -1px;
+.calendar-popover-nav-group:focus-within,
+.date-chooser-navigator:hover,
+.calendar-popover-nav-group:hover {
+  border: none;
+  outline: none;
+  box-shadow: none;
+  background-color: transparent;
 }
 
 .date-chooser-navigator label,
@@ -2927,78 +2934,291 @@ popover.calendar-date-chooser-popover > contents,
   min-height: 26px;
   padding: 0;
   border: none;
+  outline: none;
+  box-shadow: none;
   border-radius: 9999px;
 }
 
+.date-chooser-navigator button:hover,
+.calendar-popover-nav-group button:hover {
+  background-color: alpha(@window_fg_color, 0.08);
+}
+
 .calendar-popover-weekday-header,
-.weekday {
+.calendar-date-chooser-container .weekday {
   font-size: 0.78rem;
   font-weight: 700;
   color: alpha(@window_fg_color, 0.50);
-  min-width: 32px;
+  min-width: 30px;
   min-height: 24px;
 }
 
 button.calendar-popover-week-badge,
-.weeknum {
-  font-size: 0.76rem;
+.calendar-date-chooser-container .weeknum {
+  font-size: 0.75rem;
   font-weight: 700;
-  color: alpha(@window_fg_color, 0.50);
+  color: alpha(@window_fg_color, 0.52);
   background-color: alpha(@window_fg_color, 0.06);
-  border-radius: 5px;
+  border-radius: 6px;
   min-width: 24px;
   min-height: 22px;
   padding: 2px 4px;
-  margin: 2px 4px;
+  margin: 2px 6px 2px 2px;
 }
 
-button.calendar-popover-week-badge > label,
-button.calendar-popover-day-btn > label {
-  padding: 0;
-  margin: 0;
-  line-height: normal;
-}
-
-.date-chooser-current-week {
-  background-color: alpha(@window_fg_color, 0.08);
-  border-radius: 9px;
-  margin: 1px 0;
-}
-
-button.calendar-popover-day-btn,
-button.day {
-  font-size: 0.92rem;
-  font-weight: normal;
-  min-width: 28px;
-  min-height: 28px;
-  padding: 0;
-  border-radius: 9999px;
-  margin: 1px 2px;
+button.calendar-popover-week-badge:hover,
+.calendar-date-chooser-container .weeknum:hover {
+  background-color: alpha(@window_fg_color, 0.13);
   color: @window_fg_color;
 }
 
-button.calendar-popover-day-btn.today,
-button.day.today {
-  background-color: @accent_bg_color;
-  color: @accent_fg_color;
-  font-weight: 700;
+button.calendar-popover-week-badge.active-week,
+.calendar-date-chooser-container .weeknum.active-week {
+  background-color: alpha(@accent_color, 0.18);
+  color: @accent_color;
 }
 
-button.calendar-popover-day-btn.selected-day:not(.today),
-button.day.selected:not(.today) {
-  background-color: alpha(@accent_color, 0.20);
+button.calendar-popover-week-badge > label,
+button.calendar-popover-day-btn > label,
+button.calendar-popover-day-btn > box > label {
+  padding: 0;
+  margin: 0;
+  line-height: 1.05;
+}
+
+.calendar-day-event-dot {
+  min-width: 3px;
+  min-height: 3px;
+  border-radius: 9999px;
+  margin-top: 1px;
+  background-color: transparent;
+}
+
+.calendar-day-event-dot.has-events {
+  background-color: alpha(@window_fg_color, 0.72);
+}
+
+/* Dot on selected day is white */
+button.calendar-popover-day-btn.selected-day .calendar-day-event-dot.has-events,
+.calendar-date-chooser-container button.day.selected .calendar-day-event-dot.has-events,
+.calendar-date-chooser-container button.day:selected .calendar-day-event-dot.has-events {
+  background-color: @accent_fg_color;
+}
+
+/* Dot on today when not selected is blue */
+button.calendar-popover-day-btn.today:not(.selected-day) .calendar-day-event-dot.has-events,
+.calendar-date-chooser-container button.day.today:not(.selected):not(:selected) .calendar-day-event-dot.has-events {
+  background-color: @accent_color;
+}
+
+.date-chooser-current-week {
+  background-color: transparent;
+  border-radius: 8px;
+  margin: 1px 0;
+}
+
+/* Day cell = band carrier (visible range), inner box = circle (today / selected / hover) */
+button.calendar-popover-day-btn,
+.calendar-date-chooser-container button.day {
+  font-size: 0.90rem;
+  font-weight: normal;
+  min-width: 30px;
+  min-height: 28px;
+  padding: 0;
+  border-radius: 0;
+  margin: 1px 0;
+  color: @window_fg_color;
+  background: none;
+  box-shadow: none;
+  outline: none;
+}
+
+button.calendar-popover-day-btn > box {
+  min-width: 26px;
+  min-height: 26px;
+  border-radius: 9999px;
+  transition: background-color 120ms ease;
+}
+
+button.calendar-popover-day-btn:hover > box {
+  background-color: alpha(@window_fg_color, 0.10);
+}
+
+/* Continuous grey band for the range visible in the active multi-day view */
+button.calendar-popover-day-btn:hover:not(.in-range),
+button.calendar-popover-day-btn:active:not(.in-range),
+button.calendar-popover-day-btn:checked:not(.in-range) {
+  background: none;
+}
+
+button.calendar-popover-day-btn.in-range,
+button.calendar-popover-day-btn.in-range:hover,
+button.calendar-popover-day-btn.in-range:active {
+  background-color: alpha(@window_fg_color, 0.09);
+}
+
+button.calendar-popover-day-btn.in-range.range-start {
+  border-top-left-radius: 9999px;
+  border-bottom-left-radius: 9999px;
+}
+
+button.calendar-popover-day-btn.in-range.range-end {
+  border-top-right-radius: 9999px;
+  border-bottom-right-radius: 9999px;
+}
+
+/* Today: when not selected, blue text and transparent circle */
+button.calendar-popover-day-btn.today:not(.selected-day),
+.calendar-date-chooser-container button.day.today:not(.selected):not(:selected) {
   color: @accent_color;
   font-weight: 700;
 }
 
-button.calendar-popover-day-btn.other-month,
-button.day.other-month {
+button.calendar-popover-day-btn.today:not(.selected-day) > box,
+.calendar-date-chooser-container button.day.today:not(.selected):not(:selected) > box {
+  background-color: transparent;
+  color: @accent_color;
+}
+
+button.calendar-popover-day-btn.today:not(.selected-day) > box > label,
+.calendar-date-chooser-container button.day.today:not(.selected):not(:selected) > box > label {
+  color: @accent_color;
+}
+
+button.calendar-popover-day-btn.today:not(.selected-day):hover > box,
+.calendar-date-chooser-container button.day.today:not(.selected):not(:selected):hover > box {
+  background-color: alpha(@accent_color, 0.15);
+}
+
+/* Selected day (including today if selected): filled blue circle with white text */
+button.calendar-popover-day-btn.selected-day > box,
+.calendar-date-chooser-container button.day.selected > box,
+.calendar-date-chooser-container button.day:selected > box {
+  background-color: @accent_bg_color;
+  color: @accent_fg_color;
+}
+
+button.calendar-popover-day-btn.selected-day,
+.calendar-date-chooser-container button.day.selected,
+.calendar-date-chooser-container button.day:selected {
+  font-weight: 700;
+  color: @accent_fg_color;
+}
+
+button.calendar-popover-day-btn.selected-day > box > label,
+.calendar-date-chooser-container button.day.selected > box > label,
+.calendar-date-chooser-container button.day:selected > box > label {
+  color: @accent_fg_color;
+}
+
+button.calendar-popover-day-btn.selected-day:hover > box,
+.calendar-date-chooser-container button.day.selected:hover > box,
+.calendar-date-chooser-container button.day:selected:hover > box {
+  background-color: shade(@accent_bg_color, 1.08);
+  color: @accent_fg_color;
+}
+
+button.calendar-popover-day-btn.other-month:not(.today):not(.selected-day) {
   color: alpha(@window_fg_color, 0.35);
 }
 
-button.calendar-popover-day-btn.non-workday:not(.today):not(.other-month),
-button.day.non-workday:not(.today):not(.other-month) {
+button.calendar-popover-day-btn.non-workday:not(.today):not(.other-month):not(.selected-day) {
   color: alpha(@window_fg_color, 0.55);
+}
+
+/* ── GNOME Calendar Full-Width Sidebar Mini-Calendar + Vertical Pull-Down Handle ── */
+.sidebar-date-chooser + .sidebar-date-chooser {
+  border-top: 1px solid alpha(@borders, 0.45);
+  padding-top: 6px;
+  margin-top: 2px;
+}
+
+.sidebar-date-chooser .date-chooser-navigator,
+.sidebar-date-chooser .date-chooser-navigator:hover,
+.sidebar-date-chooser .date-chooser-navigator:focus-within {
+  border: none;
+  outline: none;
+  box-shadow: none;
+  background-color: transparent;
+  border-radius: 7px;
+  padding: 1px 2px;
+}
+
+.sidebar-date-chooser .date-chooser-navigator label {
+  font-size: 0.85rem;
+  font-weight: 700;
+  padding: 0 2px;
+}
+
+.sidebar-date-chooser .date-chooser-navigator button {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+  -gtk-icon-size: 12px;
+}
+
+.sidebar-date-chooser .calendar-popover-weekday-header,
+.sidebar-date-chooser .weekday {
+  font-size: 0.74rem;
+  min-width: 24px;
+  min-height: 20px;
+}
+
+.sidebar-date-chooser button.calendar-popover-week-badge,
+.sidebar-date-chooser .weeknum {
+  font-size: 0.70rem;
+  border-radius: 5px;
+  min-width: 20px;
+  min-height: 20px;
+  padding: 1px 3px;
+  margin: 1px 4px 1px 2px;
+}
+
+.sidebar-date-chooser .date-chooser-current-week {
+  background-color: transparent;
+  border-radius: 8px;
+  margin: 1px 0;
+}
+
+.sidebar-date-chooser button.calendar-popover-day-btn {
+  font-size: 0.84rem;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  margin: 1px 0;
+}
+
+.sidebar-date-chooser button.calendar-popover-day-btn > box {
+  min-width: 22px;
+  min-height: 22px;
+}
+
+.sidebar-minical-pane-border {
+  min-height: 7px;
+  margin-top: -3px;
+  margin-bottom: -3px;
+  margin-start: 0;
+  margin-end: 0;
+  padding: 0;
+  background-color: transparent;
+  background-image: linear-gradient(
+    to bottom,
+    transparent 3px,
+    @borders 3px,
+    @borders 4px,
+    transparent 4px
+  );
+}
+
+.sidebar-minical-pane-border:hover,
+.sidebar-minical-pane-border.dragging {
+  background-image: linear-gradient(
+    to bottom,
+    transparent 2px,
+    alpha(@accent_bg_color, 0.70) 2px,
+    alpha(@accent_bg_color, 0.70) 5px,
+    transparent 5px
+  );
 }
 
 .calendar-month-date-button {
@@ -3274,6 +3494,58 @@ button.calendar-grid-event.all-day-chip:active {
   background-color: transparent;
 }
 
+.calendar-grid-event.all-day-compact-chip,
+button.calendar-grid-event.all-day-compact-chip {
+  margin: 1px 1px;
+  padding: 0;
+  border-radius: 3px;
+  border: none;
+  outline: none;
+  box-shadow: none;
+  background-color: transparent;
+  min-height: 6px;
+  height: 6px;
+}
+
+.calendar-grid-event.all-day-compact-chip:hover,
+button.calendar-grid-event.all-day-compact-chip:hover,
+.calendar-grid-event.all-day-compact-chip:active,
+button.calendar-grid-event.all-day-compact-chip:active {
+  border: none;
+  outline: none;
+  box-shadow: none;
+  background-color: transparent;
+}
+
+button.week-header-expander {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+  border-radius: 9999px;
+  margin: 0;
+  border: none;
+  outline: none;
+  box-shadow: none;
+  -gtk-icon-size: 14px;
+  color: alpha(@window_fg_color, 0.70);
+  background-color: transparent;
+}
+
+button.week-header-expander.collapsed {
+  background-color: alpha(@window_fg_color, 0.08);
+  color: alpha(@window_fg_color, 0.75);
+}
+
+button.week-header-expander.expanded {
+  background-color: transparent;
+  color: alpha(@window_fg_color, 0.50);
+}
+
+button.week-header-expander:hover {
+  background-color: alpha(@window_fg_color, 0.12);
+  color: @window_fg_color;
+}
+
 .calendar-grid-event.month-bar-chip,
 button.calendar-grid-event.month-bar-chip {
   margin: 1px 2px;
@@ -3427,6 +3699,30 @@ button.month-bar-chip.span-end {
   background: @view_bg_color;
 }
 
+.year-planner-day-popover > contents {
+  padding: 2px;
+  border-radius: 12px;
+}
+
+.year-planner-popover-day-number {
+  font-size: 28pt;
+  font-weight: 800;
+  line-height: 0.92;
+  letter-spacing: -0.03em;
+}
+
+.year-planner-popover-weekday {
+  font-size: 8.5pt;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.year-planner-popover-event-row {
+  min-height: 22px;
+  padding: 2px 6px;
+  border-radius: 5px;
+}
+
 .calendar-month-canvas {
   background-color: #ffffff;
 }
@@ -3498,9 +3794,9 @@ button.month-bar-chip.span-end {
 
 /* ── Calendar Header & Month Day Numbers ───────────────────────────────── */
 .calendar-header-day-name {
-  font-size: 0.72rem;
+  font-size: 0.82rem;
   font-weight: 700;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.6px;
   text-transform: uppercase;
 }
 
@@ -3509,8 +3805,8 @@ button.month-bar-chip.span-end {
 }
 
 .calendar-header-day-number {
-  font-size: 1.05rem;
-  font-weight: 700;
+  font-size: 1.28rem;
+  font-weight: 800;
 }
 
 .calendar-header-day-number.accent {
@@ -5002,6 +5298,109 @@ popover.menu.touch modelbutton {
 
 .calendar-overflow-item-btn:hover {
   background: alpha(@theme_fg_color, 0.08);
+}
+
+/* ── GNOME Calendar-style Month Day Popover ─────────────────────────── */
+popover.calendar-month-day-popover > contents {
+  padding: 12px 14px 12px 14px;
+  border-radius: 14px;
+  min-width: 260px;
+  max-width: 320px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.22);
+}
+
+button.month-popover-day-btn {
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  outline: none;
+  box-shadow: none;
+}
+
+button.month-popover-day-btn:hover {
+  background: transparent;
+}
+
+button.month-popover-day-btn:hover label {
+  color: @accent_color;
+}
+
+.month-popover-day-number {
+  font-size: 28pt;
+  font-weight: 400;
+  line-height: 1.0;
+  letter-spacing: -0.02em;
+  color: @window_fg_color;
+}
+
+button.month-popover-close-btn {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  border-radius: 9999px;
+  border: none;
+  outline: none;
+  box-shadow: none;
+  background: transparent;
+  color: alpha(@window_fg_color, 0.65);
+  -gtk-icon-size: 14px;
+}
+
+button.month-popover-close-btn:hover {
+  background: alpha(@window_fg_color, 0.12);
+  color: @window_fg_color;
+}
+
+button.month-popover-event-chip {
+  min-height: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 5px;
+  border: none;
+  outline: none;
+  box-shadow: none;
+  margin: 1px 0;
+}
+
+.month-popover-event-title {
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+button.month-popover-new-event-btn {
+  font-size: 13px;
+  font-weight: 700;
+  padding: 6px 16px;
+  border-radius: 7px;
+  background: transparent;
+  border: none;
+  outline: none;
+  box-shadow: none;
+  color: @window_fg_color;
+}
+
+button.month-popover-new-event-btn:hover {
+  background: alpha(@window_fg_color, 0.08);
+}
+
+/* ── Compact All-Day Chip Fast Preview Popover ────────────────────────── */
+popover.compact-chip-preview-popover > contents {
+  padding: 5px 9px;
+  border-radius: 8px;
+  min-width: 140px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
+}
+
+.compact-chip-preview-title {
+  font-weight: 600;
+  font-size: 12px;
+  color: @theme_fg_color;
+}
+
+.compact-chip-preview-subtitle {
+  font-size: 11px;
+  color: alpha(@theme_fg_color, 0.7);
 }
 
 /* ── Calendar Picker Popover (Event Dialog) ────────────────────────────── */
