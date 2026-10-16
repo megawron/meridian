@@ -1169,6 +1169,30 @@ impl AppSettings {
         self.set_int("calendar-tag-vpane-position", value.clamp(100, 2000));
     }
 
+    pub fn calendar_sidebar_show_memos(&self) -> bool {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("calendar-sidebar-show-memos"))
+            .unwrap_or(false);
+        if has_key {
+            self.settings.boolean("calendar-sidebar-show-memos")
+        } else {
+            false
+        }
+    }
+
+    pub fn set_calendar_sidebar_show_memos(&self, value: bool) {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("calendar-sidebar-show-memos"))
+            .unwrap_or(false);
+        if has_key {
+            self.set_boolean("calendar-sidebar-show-memos", value);
+        }
+    }
+
     pub fn calendar_show_agenda_preview(&self) -> bool {
         let has_key = self
             .settings

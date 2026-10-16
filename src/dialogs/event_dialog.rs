@@ -225,7 +225,7 @@ fn date_to_iso(text: &str) -> Option<String> {
     parse_date_lenient(text).map(|d| d.format("%Y-%m-%d").to_string())
 }
 
-fn split_datetime_for_entries(datetime_str: &str) -> (String, String) {
+pub(crate) fn split_datetime_for_entries(datetime_str: &str) -> (String, String) {
     let s = datetime_str.trim();
     if let Some((d, t)) = s.split_once(' ') {
         (d.to_string(), t.to_string())
@@ -3344,7 +3344,7 @@ fn ical_property(raw: &str, name: &str) -> Option<String> {
     })
 }
 
-fn ical_properties(raw: &str, name: &str) -> Vec<String> {
+pub(crate) fn ical_properties(raw: &str, name: &str) -> Vec<String> {
     let target = name.to_ascii_uppercase();
     unfold_ical_lines(raw)
         .into_iter()
@@ -3476,7 +3476,7 @@ fn parse_attachments(value: &str) -> Vec<String> {
         .collect()
 }
 
-fn component_property_has_date_value(raw: &str, name: &str) -> bool {
+pub(crate) fn component_property_has_date_value(raw: &str, name: &str) -> bool {
     let target = name.to_ascii_uppercase();
     unfold_ical_lines(raw).into_iter().any(|line| {
         line.split_once(':')
@@ -3506,7 +3506,7 @@ fn ical_datetime_property_prefix(raw: &str, name: &str) -> Option<String> {
     })
 }
 
-fn format_event_datetime_for_editor(value: &str, all_day: bool) -> String {
+pub(crate) fn format_event_datetime_for_editor(value: &str, all_day: bool) -> String {
     let value = value.trim_end_matches('Z');
     if !value.is_ascii() {
         return value.to_string();

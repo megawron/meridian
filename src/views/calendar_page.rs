@@ -220,6 +220,77 @@ pub(crate) struct PreparedYearCanvasLayout {
     pub(crate) first_weekday: Weekday,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum YearViewStyle {
+    #[default]
+    Planner,
+    Grid,
+}
+
+fn year_view_style_config_path() -> std::path::PathBuf {
+    glib::user_config_dir()
+        .join("meridian")
+        .join("year-view-style")
+}
+
+pub(crate) fn load_persisted_year_view_style() -> YearViewStyle {
+    if let Ok(raw) = std::fs::read_to_string(year_view_style_config_path()) {
+        if raw.trim().eq_ignore_ascii_case("grid") {
+            return YearViewStyle::Grid;
+        }
+    }
+    YearViewStyle::Planner
+}
+
+pub(crate) fn persist_year_view_style(style: YearViewStyle) {
+    let path = year_view_style_config_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let val = match style {
+        YearViewStyle::Planner => "planner",
+        YearViewStyle::Grid => "grid",
+    };
+    let _ = std::fs::write(path, val);
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct YearPlannerEventSpan {
+    pub(crate) start_day: u32,
+    pub(crate) end_day: u32,
+    pub(crate) track: usize,
+    pub(crate) color_rgb: (u8, u8, u8),
+    pub(crate) continues_left: bool,
+    pub(crate) continues_right: bool,
+    pub(crate) is_timed_single: bool,
+    pub(crate) start_min: u16,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct YearPlannerDayPreviewItem {
+    pub(crate) title: String,
+    pub(crate) time_str: Option<String>,
+    pub(crate) color_rgb: (u8, u8, u8),
+    pub(crate) is_all_day_or_multi: bool,
+    pub(crate) start_min: u16,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct YearPlannerMonthData {
+    pub(crate) spans: Vec<YearPlannerEventSpan>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct YearPlannerCanvasLayout {
+    pub(crate) year: i32,
+    pub(crate) width: f64,
+    pub(crate) height: f64,
+    pub(crate) month_header_w: f64,
+    pub(crate) col_w: f64,
+    pub(crate) row_h: f64,
+}
+
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CalendarDataState {
     Loading,
@@ -746,9 +817,13 @@ struct IndexedEventMeta {
     start_min: u16,
     end_min: u16,
     is_single_day: bool,
+    color_rgb: (u8, u8, u8),
     sort_start: Option<NaiveDateTime>,
     sort_end: Option<NaiveDateTime>,
     summary_lowercase: String,
+    is_cancelled: bool,
+    categories: Vec<String>,
+    search_text: String,
 }
 
 #[derive(Debug, Clone)]
@@ -775,12 +850,11 @@ impl CalendarSnapshotIndex {
         for event in snapshot.events.iter() {
             let identity = CalendarEventIdentity::from_event(event);
             let display_range = record_display_range(event).or_else(|| event_display_range(event));
-            let recurring = (event.component.contains("RRULE") || event.component.contains("RDATE"))
-                && (ical_property(&event.component, "RRULE").is_some()
-                    || ical_property(&event.component, "RDATE").is_some());
+            let rrule_raw = ical_property(&event.component, "RRULE");
+            let recurring = rrule_raw.is_some() || ical_property(&event.component, "RDATE").is_some();
             let (recurrence_rule, excluded_dates, rdate_values) = if recurring {
                 (
-                    ical_property(&event.component, "RRULE").and_then(|raw| parse_recurrence_rule(&raw)),
+                    rrule_raw.and_then(|raw| parse_recurrence_rule(&raw)),
                     exdate_values(event),
                     property_local_dates(&event.component, "RDATE"),
                 )
@@ -819,9 +893,14 @@ impl CalendarSnapshotIndex {
                     (0, 1440, false)
                 }
             };
+            let color_hex = event_color_for_record(event);
+            let color_rgb = parse_hex_color(&color_hex).unwrap_or((53, 132, 228));
             let sort_start = displayed_event_datetime(&event.start);
             let sort_end = displayed_event_datetime(&event.end);
             let summary_lowercase = event.summary.to_lowercase();
+            let is_cancelled = event_is_cancelled(event);
+            let categories = category_names_from_ical_component(&event.component);
+            let search_text = calendar_event_search_text(event);
             metas.push(IndexedEventMeta {
                 identity,
                 display_range,
@@ -832,9 +911,13 @@ impl CalendarSnapshotIndex {
                 start_min,
                 end_min,
                 is_single_day,
+                color_rgb,
                 sort_start,
                 sort_end,
                 summary_lowercase,
+                is_cancelled,
+                categories,
+                search_text,
             });
         }
 
@@ -1094,9 +1177,8 @@ fn calendar_view_to_index(view: CalendarView) -> u32 {
         CalendarView::WorkWeek => 1,
         CalendarView::Week => 2,
         CalendarView::Month => 3,
-        CalendarView::Agenda => 4,
+        CalendarView::Agenda | CalendarView::List => 4,
         CalendarView::Year => 5,
-        CalendarView::List => 6,
     }
 }
 
@@ -1107,8 +1189,7 @@ fn calendar_view_from_index(index: u32) -> CalendarView {
         2 => CalendarView::Week,
         3 => CalendarView::Month,
         4 => CalendarView::Agenda,
-        5 => CalendarView::Year,
-        _ => CalendarView::List,
+        _ => CalendarView::Year,
     }
 }
 
@@ -1187,6 +1268,18 @@ pub(crate) struct DateChooserWidget {
     pub browse_date: Rc<Cell<NaiveDate>>,
     pub is_popover: bool,
     pub popover: Option<gtk::Popover>,
+    pub header_labels: Vec<gtk::Label>,
+    pub week_bg_bins: Vec<gtk::Box>,
+    pub week_buttons: Vec<(gtk::Button, gtk::Label, Rc<Cell<NaiveDate>>)>,
+    pub day_buttons: Vec<Vec<(gtk::Button, gtk::Label, gtk::Box, Rc<Cell<NaiveDate>>)>>,
+    pub cached_markers: Rc<
+        RefCell<
+            Option<(
+                (u64, NaiveDate, String, Option<String>, usize),
+                BTreeMap<NaiveDate, usize>,
+            )>,
+        >,
+    >,
 }
 
 impl std::fmt::Debug for DateChooserWidget {
@@ -1196,6 +1289,20 @@ impl std::fmt::Debug for DateChooserWidget {
             .field("is_popover", &self.is_popover)
             .finish()
     }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct MoveDragState {
+    pub(crate) origin_day_index: usize,
+    pub(crate) origin_date: NaiveDate,
+    pub(crate) event: CalendarEventRecord,
+    pub(crate) initial_start_slot: usize,
+    pub(crate) row_span: usize,
+    pub(crate) grab_slot_offset: usize,
+    pub(crate) current_day_index: usize,
+    pub(crate) current_date: NaiveDate,
+    pub(crate) current_start_slot: usize,
+    pub(crate) is_active: bool,
 }
 
 // ─── GObject Subclass ───────────────────────────────────────────────────────
@@ -1239,7 +1346,10 @@ mod imp {
         pub(crate) agenda_rendered_key: RefCell<Option<(CalendarDateRange, u64, String, Option<String>, usize)>>,
         pub year_rendered_key: RefCell<Option<(i32, u64, String, Option<String>, usize)>>,
         pub(crate) calendar_list_rendered_key: RefCell<Option<(u64, String, Option<String>, usize)>>,
-        pub(crate) mini_calendar_last_key: RefCell<Option<(CalendarView, NaiveDate, CalendarDateRange)>>,
+        pub(crate) mini_calendar_last_key: RefCell<Option<(CalendarView, NaiveDate, CalendarDateRange, Option<CalendarDateRange>)>>,
+        pub(crate) custom_selected_range: RefCell<Option<CalendarDateRange>>,
+        pub time_grid_allday_collapsed: Cell<bool>,
+        pub(crate) time_grid_drag_move_state: RefCell<Option<MoveDragState>>,
         pub day_view: RefCell<Option<gtk::Box>>,
         pub week_view: RefCell<Option<gtk::Box>>,
         pub workweek_view: RefCell<Option<gtk::Box>>,
@@ -1271,6 +1381,21 @@ mod imp {
         pub year_day_buttons: RefCell<HashMap<NaiveDate, gtk::Button>>,
         pub(crate) year_preview_mode: Cell<YearPreviewMode>,
         pub(crate) year_preview_orientation: Cell<YearPreviewOrientation>,
+        pub(crate) year_view_style: Cell<YearViewStyle>,
+        pub(crate) year_planner_months: RefCell<[YearPlannerMonthData; 12]>,
+        pub(crate) year_day_previews: RefCell<HashMap<NaiveDate, Vec<YearPlannerDayPreviewItem>>>,
+        pub(crate) year_projection_cache: RefCell<
+            HashMap<
+                (i32, u64, String, Option<String>, usize),
+                (
+                    BTreeMap<NaiveDate, usize>,
+                    [YearPlannerMonthData; 12],
+                    HashMap<NaiveDate, Vec<YearPlannerDayPreviewItem>>,
+                ),
+            >,
+        >,
+        pub(crate) year_view_options_split_btn: RefCell<Option<adw::SplitButton>>,
+        pub(crate) year_planner_popover: RefCell<Option<gtk::Popover>>,
         pub year_details_container: RefCell<Option<gtk::Box>>,
         pub year_paned: RefCell<Option<gtk::Paned>>,
         pub year_details_side_width: Cell<i32>,
@@ -1303,6 +1428,17 @@ mod imp {
         pub memopad_selected_index: RefCell<Option<usize>>,
         pub memopad_state: RefCell<Option<gtk::Label>>,
         pub memopad_count: RefCell<Option<gtk::Label>>,
+        pub event_inspector_content: RefCell<Option<gtk::Box>>,
+        pub event_inspector_scroll: RefCell<Option<gtk::ScrolledWindow>>,
+        pub current_inspected_event: RefCell<Option<(CalendarEventRecord, Option<NaiveDate>)>>,
+        pub sidebar_lower_stack: RefCell<Option<gtk::Stack>>,
+        pub sidebar_stack_switcher: RefCell<Option<gtk::Box>>,
+        pub sidebar_details_title: RefCell<Option<gtk::Label>>,
+        pub sidebar_memos_add_btn: RefCell<Option<gtk::Button>>,
+        pub taskpad_scroll: RefCell<Option<gtk::ScrolledWindow>>,
+        pub taskpad_collapse_btn: RefCell<Option<gtk::Button>>,
+        pub inspector_collapse_btn: RefCell<Option<gtk::Button>>,
+        pub sidebar_show_memos: Cell<bool>,
         pub tag_vpaned: RefCell<Option<gtk::Paned>>,
         pub content_hpaned: RefCell<Option<gtk::Paned>>,
         pub toolbar: RefCell<Option<gtk::Widget>>,
@@ -1310,6 +1446,7 @@ mod imp {
         pub tag_vpane_toggle_btn: RefCell<Option<gtk::ToggleButton>>,
         pub calendar_sidebar_toggle: RefCell<Option<gtk::ToggleButton>>,
         pub(crate) sidebar_date_chooser: RefCell<Option<DateChooserWidget>>,
+        pub(crate) sidebar_date_choosers: RefCell<Vec<DateChooserWidget>>,
         pub(crate) popover_date_chooser: RefCell<Option<DateChooserWidget>>,
         pub(crate) toolbar_title_stack: RefCell<Option<gtk::Stack>>,
         pub(crate) toolbar_title_label: RefCell<Option<gtk::Label>>,
@@ -1324,6 +1461,7 @@ mod imp {
         pub mini_calendar_4: RefCell<Option<gtk::Calendar>>,
         pub mini_calendars: RefCell<Vec<gtk::Calendar>>,
         pub mini_calendar_box: RefCell<Option<gtk::Box>>,
+        pub mini_calendar_viewport: RefCell<Option<gtk::ScrolledWindow>>,
         pub syncing_mini_calendar: Cell<bool>,
         pub calendar_search_entry: RefCell<Option<gtk::SearchEntry>>,
         pub calendar_search_bar: RefCell<Option<gtk::SearchBar>>,
@@ -1400,6 +1538,9 @@ mod imp {
                 year_rendered_key: RefCell::new(None),
                 calendar_list_rendered_key: RefCell::new(None),
                 mini_calendar_last_key: RefCell::new(None),
+                custom_selected_range: RefCell::new(None),
+                time_grid_allday_collapsed: Cell::new(false),
+                time_grid_drag_move_state: RefCell::new(None),
                 day_view: RefCell::new(None),
                 week_view: RefCell::new(None),
                 workweek_view: RefCell::new(None),
@@ -1431,6 +1572,12 @@ mod imp {
                 year_day_buttons: RefCell::new(HashMap::new()),
                 year_preview_mode: Cell::new(YearPreviewMode::Schedule),
                 year_preview_orientation: Cell::new(YearPreviewOrientation::Side),
+                year_view_style: Cell::new(load_persisted_year_view_style()),
+                year_planner_months: RefCell::new(std::array::from_fn(|_| YearPlannerMonthData::default())),
+                year_day_previews: RefCell::new(HashMap::new()),
+                year_projection_cache: RefCell::new(HashMap::new()),
+                year_view_options_split_btn: RefCell::new(None),
+                year_planner_popover: RefCell::new(None),
                 year_details_container: RefCell::new(None),
                 year_paned: RefCell::new(None),
                 year_details_side_width: Cell::new(240),
@@ -1463,6 +1610,17 @@ mod imp {
                 memopad_selected_index: RefCell::new(None),
                 memopad_state: RefCell::new(None),
                 memopad_count: RefCell::new(None),
+                event_inspector_content: RefCell::new(None),
+                event_inspector_scroll: RefCell::new(None),
+                current_inspected_event: RefCell::new(None),
+                sidebar_lower_stack: RefCell::new(None),
+                sidebar_stack_switcher: RefCell::new(None),
+                sidebar_details_title: RefCell::new(None),
+                sidebar_memos_add_btn: RefCell::new(None),
+                taskpad_scroll: RefCell::new(None),
+                taskpad_collapse_btn: RefCell::new(None),
+                inspector_collapse_btn: RefCell::new(None),
+                sidebar_show_memos: Cell::new(false),
                 tag_vpaned: RefCell::new(None),
                 content_hpaned: RefCell::new(None),
                 toolbar: RefCell::new(None),
@@ -1470,6 +1628,7 @@ mod imp {
                 tag_vpane_toggle_btn: RefCell::new(None),
                 calendar_sidebar_toggle: RefCell::new(None),
                 sidebar_date_chooser: RefCell::new(None),
+                sidebar_date_choosers: RefCell::new(Vec::new()),
                 popover_date_chooser: RefCell::new(None),
                 toolbar_title_stack: RefCell::new(None),
                 toolbar_title_label: RefCell::new(None),
@@ -1484,6 +1643,7 @@ mod imp {
                 mini_calendar_4: RefCell::new(None),
                 mini_calendars: RefCell::new(Vec::new()),
                 mini_calendar_box: RefCell::new(None),
+                mini_calendar_viewport: RefCell::new(None),
                 syncing_mini_calendar: Cell::new(false),
                 calendar_search_entry: RefCell::new(None),
                 calendar_search_bar: RefCell::new(None),
@@ -1785,19 +1945,19 @@ impl CalendarPage {
     }
 
     pub(crate) fn period_label_text(&self) -> String {
+        if let Some(custom) = self.imp().custom_selected_range.borrow().as_ref() {
+            return format_calendar_range(custom.start, custom.last_inclusive());
+        }
         let viewport = self.current_calendar_viewport();
         let date = viewport.anchor_date;
         match viewport.view {
-            CalendarView::Day => format_date(date),
+            CalendarView::Day => {
+                format!("{} {}", Self::month_name(date.month()), date.year())
+            }
             CalendarView::Week => {
-                format!(
-                    "{} {}",
-                    crate::i18n::gettext("Week"),
-                    format_calendar_range(
-                        viewport.visible_range.start,
-                        viewport.visible_range.last_inclusive(),
-                    )
-                )
+                let start = viewport.visible_range.start;
+                let end = viewport.visible_range.last_inclusive();
+                format_month_year_range(start, end)
             }
             CalendarView::WorkWeek => {
                 let days = workweek_display_dates(viewport.visible_range, &configured_workdays());
@@ -1809,19 +1969,13 @@ impl CalendarPage {
                     .last()
                     .copied()
                     .unwrap_or(viewport.visible_range.last_inclusive());
-                format!("{} {}", crate::i18n::gettext("Work Week"), format_calendar_range(start, end))
+                format_month_year_range(start, end)
             }
             CalendarView::Month => {
                 format!("{} {}", Self::month_name(date.month()), date.year())
             }
             CalendarView::Agenda => {
-                if let Some(idx) = self.imp().agenda_selected_row.get() {
-                    let items = self.imp().agenda_items.borrow();
-                    if let Some(item) = items.get(idx) {
-                        return format_date(item.date());
-                    }
-                }
-                crate::i18n::gettext("Agenda")
+                format!("{} {}", Self::month_name(date.month()), date.year())
             }
             CalendarView::Year => date.year().to_string(),
             CalendarView::List => self
@@ -1940,6 +2094,48 @@ impl CalendarPage {
 
     pub(crate) fn current_calendar_view(&self) -> CalendarView {
         *self.imp().current_view.borrow()
+    }
+
+    pub fn year_view_options_split_button(&self) -> Option<adw::SplitButton> {
+        self.imp().year_view_options_split_btn.borrow().clone()
+    }
+
+    pub(crate) fn set_year_view_style(&self, style: YearViewStyle) {
+        if self.imp().year_view_style.get() == style {
+            return;
+        }
+        if let Some(pop) = self.imp().year_planner_popover.borrow_mut().take() {
+            pop.popdown();
+        }
+        self.imp().year_view_style.set(style);
+        persist_year_view_style(style);
+        if let Some(split_btn) = self.imp().year_view_options_split_btn.borrow().as_ref() {
+            match style {
+                YearViewStyle::Planner => split_btn.set_icon_name("view-list-symbolic"),
+                YearViewStyle::Grid => split_btn.set_icon_name("view-grid-symbolic"),
+            }
+        }
+        if let Some(vadj) = self.imp().year_vadjustment.borrow().as_ref() {
+            vadj.set_value(0.0);
+        }
+        self.update_year_paned_layout();
+        if let Some(canvas) = self.imp().year_canvas.borrow().as_ref() {
+            canvas.queue_draw();
+        }
+        if style == YearViewStyle::Grid {
+            let year = self.current_calendar_viewport().anchor_date.year();
+            let selected_day = self
+                .imp()
+                .view_state
+                .borrow()
+                .selected_range
+                .filter(|r| r.start.year() == year)
+                .map(|r| r.start)
+                .unwrap_or_else(|| self.current_calendar_viewport().anchor_date);
+            if let Some(details) = self.imp().year_details_container.borrow().as_ref() {
+                self.render_year_day_details(details, selected_day);
+            }
+        }
     }
 
     pub fn is_agenda_detail_visible(&self) -> bool {
@@ -2087,6 +2283,71 @@ impl CalendarPage {
             status_box.append(&desc_lbl);
             content_box.append(&status_box);
         }
+    }
+
+    pub fn refresh_event_inspector(&self) {
+        let Some(content_box) = self.imp().event_inspector_content.borrow().as_ref().cloned() else { return };
+        clear_box(&content_box);
+
+        let inspected = self.imp().current_inspected_event.borrow().clone();
+        if let Some((event, date)) = inspected {
+            let details_widget = build_calendar_event_details_content(self, &content_box, &event, date, false, None);
+            content_box.append(&details_widget);
+        } else {
+            let status_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(8)
+                .valign(gtk::Align::Center)
+                .halign(gtk::Align::Center)
+                .hexpand(true)
+                .vexpand(true)
+                .margin_top(32)
+                .margin_bottom(32)
+                .build();
+            let icon = gtk::Image::from_icon_name("x-office-calendar-symbolic");
+            icon.set_pixel_size(40);
+            icon.add_css_class("dim-label");
+            let title_lbl = gtk::Label::builder()
+                .label(&crate::i18n::gettext("No Appointment Selected"))
+                .css_classes(vec!["heading", "dim-label"])
+                .build();
+            let desc_lbl = gtk::Label::builder()
+                .label(&crate::i18n::gettext("Select an appointment in the calendar to view its details"))
+                .css_classes(vec!["caption", "dim-label"])
+                .wrap(true)
+                .justify(gtk::Justification::Center)
+                .build();
+            status_box.append(&icon);
+            status_box.append(&title_lbl);
+            status_box.append(&desc_lbl);
+            content_box.append(&status_box);
+        }
+    }
+
+    pub fn select_and_inspect_event(&self, event: &CalendarEventRecord, target_day: Option<NaiveDate>) {
+        if let Some(id) = CalendarEventIdentity::from_event(event) {
+            self.imp().view_state.borrow_mut().select_event(Some(id), None);
+        }
+        *self.imp().current_inspected_event.borrow_mut() = Some((event.clone(), target_day));
+        self.refresh_event_inspector();
+        if let Some(stack) = self.imp().sidebar_lower_stack.borrow().as_ref() {
+            stack.set_visible_child_name("details");
+        }
+        // Auto-expand inspector if collapsed
+        if let Some(scroll) = self.imp().event_inspector_scroll.borrow().as_ref() {
+            if !scroll.is_visible() {
+                scroll.set_visible(true);
+                if let Some(btn) = self.imp().inspector_collapse_btn.borrow().as_ref() {
+                    btn.set_icon_name("pan-down-symbolic");
+                }
+            }
+        }
+    }
+
+    pub fn clear_inspected_event(&self) {
+        self.imp().view_state.borrow_mut().select_event(None, None);
+        *self.imp().current_inspected_event.borrow_mut() = None;
+        self.refresh_event_inspector();
     }
 
     pub fn is_sidebar_visible(&self) -> bool {
@@ -3012,6 +3273,7 @@ impl CalendarPage {
     fn bump_calendar_revision(&self) -> u64 {
         let next = advance_calendar_generation(self.imp().calendar_revision.get());
         self.imp().calendar_revision.set(next);
+        self.imp().mini_calendar_last_key.replace(None);
         next
     }
 
@@ -3586,15 +3848,43 @@ impl CalendarPage {
         }
     }
 
+    fn date_for_point_in_grid(
+        grid: &gtk::Grid,
+        day_buttons: &[Vec<(gtk::Button, gtk::Label, gtk::Box, Rc<Cell<NaiveDate>>)>],
+        x: f64,
+        y: f64,
+    ) -> Option<NaiveDate> {
+        for row in day_buttons {
+            for (btn, _, _, date_cell) in row {
+                if let Some(bounds) = btn.compute_bounds(grid) {
+                    let bx = bounds.x() as f64;
+                    let by = bounds.y() as f64;
+                    let bw = bounds.width() as f64;
+                    let bh = bounds.height() as f64;
+                    if x >= bx && x <= bx + bw && y >= by - 2.0 && y <= by + bh + 2.0 {
+                        return Some(date_cell.get());
+                    }
+                }
+            }
+        }
+        None
+    }
+
     fn create_date_chooser_widget(
         &self,
         is_popover: bool,
         popover: Option<gtk::Popover>,
     ) -> DateChooserWidget {
+        let mut container_classes = vec!["date-chooser", "calendar-date-chooser-container"];
+        if !is_popover {
+            container_classes.push("sidebar-date-chooser");
+        }
         let container = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(4)
-            .css_classes(vec!["date-chooser"])
+            .halign(gtk::Align::Fill)
+            .hexpand(true)
+            .css_classes(container_classes)
             .build();
 
         if is_popover {
@@ -3606,37 +3896,56 @@ impl CalendarPage {
             container.set_margin_start(8);
             container.set_margin_end(8);
             container.set_margin_top(6);
-            container.set_margin_bottom(8);
+            container.set_margin_bottom(4);
         }
 
         let top_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .halign(gtk::Align::Center)
+            .spacing(if is_popover { 8 } else { 6 })
+            .halign(if is_popover {
+                gtk::Align::Center
+            } else {
+                gtk::Align::Fill
+            })
             .hexpand(true)
             .build();
 
         // Month selector
         let month_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["linked", "date-chooser-navigator"])
+            .css_classes(vec!["date-chooser-navigator"])
             .hexpand(true)
-            .halign(gtk::Align::Center)
+            .halign(if is_popover {
+                gtk::Align::Center
+            } else {
+                gtk::Align::Fill
+            })
             .build();
         let btn_prev_month = gtk::Button::builder()
             .icon_name("pan-start-symbolic")
             .css_classes(vec!["flat"])
+            .focus_on_click(false)
             .tooltip_text(&crate::i18n::gettext("Previous month"))
             .build();
         set_accessible_label(&btn_prev_month, &crate::i18n::gettext("Previous month"));
-        let lbl_month = gtk::Label::builder()
-            .halign(gtk::Align::Center)
-            .width_chars(10)
-            .xalign(0.5)
-            .build();
+        let lbl_month = if is_popover {
+            gtk::Label::builder()
+                .halign(gtk::Align::Center)
+                .width_chars(10)
+                .xalign(0.5)
+                .build()
+        } else {
+            gtk::Label::builder()
+                .halign(gtk::Align::Center)
+                .hexpand(true)
+                .width_request(58)
+                .xalign(0.5)
+                .build()
+        };
         let btn_next_month = gtk::Button::builder()
             .icon_name("pan-end-symbolic")
             .css_classes(vec!["flat"])
+            .focus_on_click(false)
             .tooltip_text(&crate::i18n::gettext("Next month"))
             .build();
         set_accessible_label(&btn_next_month, &crate::i18n::gettext("Next month"));
@@ -3647,24 +3956,39 @@ impl CalendarPage {
         // Year selector
         let year_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["linked", "date-chooser-navigator"])
+            .css_classes(vec!["date-chooser-navigator"])
             .hexpand(true)
-            .halign(gtk::Align::Center)
+            .halign(if is_popover {
+                gtk::Align::Center
+            } else {
+                gtk::Align::Fill
+            })
             .build();
         let btn_prev_year = gtk::Button::builder()
             .icon_name("pan-start-symbolic")
             .css_classes(vec!["flat"])
+            .focus_on_click(false)
             .tooltip_text(&crate::i18n::gettext("Previous year"))
             .build();
         set_accessible_label(&btn_prev_year, &crate::i18n::gettext("Previous year"));
-        let lbl_year = gtk::Label::builder()
-            .halign(gtk::Align::Center)
-            .width_chars(6)
-            .xalign(0.5)
-            .build();
+        let lbl_year = if is_popover {
+            gtk::Label::builder()
+                .halign(gtk::Align::Center)
+                .width_chars(6)
+                .xalign(0.5)
+                .build()
+        } else {
+            gtk::Label::builder()
+                .halign(gtk::Align::Center)
+                .hexpand(true)
+                .width_request(34)
+                .xalign(0.5)
+                .build()
+        };
         let btn_next_year = gtk::Button::builder()
             .icon_name("pan-end-symbolic")
             .css_classes(vec!["flat"])
+            .focus_on_click(false)
             .tooltip_text(&crate::i18n::gettext("Next year"))
             .build();
         set_accessible_label(&btn_next_year, &crate::i18n::gettext("Next year"));
@@ -3678,13 +4002,254 @@ impl CalendarPage {
 
         let grid = gtk::Grid::builder()
             .row_spacing(2)
-            .column_spacing(2)
-            .halign(gtk::Align::Center)
+            .column_spacing(0)
+            .halign(if is_popover {
+                gtk::Align::Center
+            } else {
+                gtk::Align::Fill
+            })
+            .hexpand(!is_popover)
             .build();
         container.append(&grid);
 
         let initial_date = *self.imp().current_date.borrow();
         let browse_date = Rc::new(Cell::new(initial_date));
+
+        // Pre-populate fixed 6x7 grid topology once to avoid destroying/recreating ~120 widgets on every refresh
+        let spacer = gtk::Label::builder()
+            .width_request(if is_popover { 28 } else { 22 })
+            .build();
+        grid.attach(&spacer, 0, 0, 1, 1);
+
+        let mut header_labels = Vec::with_capacity(7);
+        for col_idx in 0..7 {
+            let header_lbl = gtk::Label::builder()
+                .css_classes(vec!["calendar-popover-weekday-header", "weekday"])
+                .halign(gtk::Align::Center)
+                .valign(gtk::Align::Center)
+                .hexpand(true)
+                .width_request(if is_popover { 30 } else { 24 })
+                .build();
+            grid.attach(&header_lbl, (col_idx + 1) as i32, 0, 1, 1);
+            header_labels.push(header_lbl);
+        }
+
+        let mut week_bg_bins = Vec::with_capacity(6);
+        let mut week_buttons = Vec::with_capacity(6);
+        let mut day_buttons = Vec::with_capacity(6);
+
+        for row_idx in 0..6 {
+            let grid_row = (row_idx + 1) as i32;
+            grid.set_row_baseline_position(grid_row, gtk::BaselinePosition::Center);
+
+            let bg_bin = gtk::Box::builder()
+                .css_classes(vec!["date-chooser-current-week"])
+                .halign(gtk::Align::Fill)
+                .hexpand(true)
+                .can_target(false)
+                .visible(false)
+                .build();
+            grid.attach(&bg_bin, 0, grid_row, 8, 1);
+            week_bg_bins.push(bg_bin);
+
+            let week_lbl = gtk::Label::builder()
+                .halign(gtk::Align::Center)
+                .valign(gtk::Align::Center)
+                .build();
+            let week_btn = gtk::Button::builder()
+                .child(&week_lbl)
+                .focus_on_click(false)
+                .halign(gtk::Align::Center)
+                .valign(gtk::Align::Center)
+                .css_classes(vec!["flat", "weeknum", "calendar-popover-week-badge"])
+                .build();
+            let week_date_cell = Rc::new(Cell::new(initial_date));
+            let page_weak = self.downgrade();
+            let pop_weak = popover.as_ref().map(|p| p.downgrade());
+            let week_date_for_click = week_date_cell.clone();
+            week_btn.connect_clicked(move |_| {
+                let target = week_date_for_click.get();
+                if let Some(p) = page_weak.upgrade() {
+                    p.navigate_to_week(target);
+                }
+                if let Some(ref pop_w) = pop_weak {
+                    if let Some(pop) = pop_w.upgrade() {
+                        pop.popdown();
+                    }
+                }
+            });
+            grid.attach(&week_btn, 0, grid_row, 1, 1);
+            week_buttons.push((week_btn, week_lbl, week_date_cell));
+
+            let mut row_days = Vec::with_capacity(7);
+            for col_idx in 0..7 {
+                let day_content = gtk::Box::builder()
+                    .orientation(gtk::Orientation::Vertical)
+                    .spacing(0)
+                    .halign(gtk::Align::Center)
+                    .valign(gtk::Align::Center)
+                    .build();
+                let day_lbl = gtk::Label::builder()
+                    .halign(gtk::Align::Center)
+                    .valign(gtk::Align::Center)
+                    .vexpand(true)
+                    .build();
+                let dot_box = gtk::Box::builder()
+                    .css_classes(vec!["calendar-day-event-dot"])
+                    .halign(gtk::Align::Center)
+                    .valign(gtk::Align::Center)
+                    .width_request(3)
+                    .height_request(3)
+                    .visible(false)
+                    .build();
+                day_content.append(&day_lbl);
+                day_content.append(&dot_box);
+
+                let day_btn = gtk::Button::builder()
+                    .child(&day_content)
+                    .focus_on_click(false)
+                    .hexpand(true)
+                    .halign(gtk::Align::Fill)
+                    .valign(gtk::Align::Center)
+                    .css_classes(vec!["flat", "day", "calendar-popover-day-btn"])
+                    .build();
+                let cell_date_cell = Rc::new(Cell::new(initial_date));
+                let last_gesture_click_time: Rc<Cell<Option<std::time::Instant>>> = Rc::new(Cell::new(None));
+
+                let click_gesture = gtk::GestureClick::new();
+                click_gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+                let cell_date_for_gesture = cell_date_cell.clone();
+                let page_weak_click = self.downgrade();
+                let pop_weak_click = popover.as_ref().map(|p| p.downgrade());
+                let last_click_time_for_gesture = last_gesture_click_time.clone();
+                click_gesture.connect_released(move |gesture, n_press, _x, _y| {
+                    if n_press != 1 {
+                        return;
+                    }
+                    last_click_time_for_gesture.set(Some(std::time::Instant::now()));
+                    let target = cell_date_for_gesture.get();
+                    let Some(p) = page_weak_click.upgrade() else { return; };
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    let state = gesture.current_event_state();
+                    let is_shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+                    if is_shift {
+                        let anchor = *p.imp().current_date.borrow();
+                        let min_d = anchor.min(target);
+                        let max_d = anchor.max(target);
+                        p.navigate_to_custom_date_range(min_d, max_d);
+                    } else {
+                        p.navigate_to_date(target);
+                    }
+                    if let Some(ref pop_w) = pop_weak_click {
+                        if let Some(pop) = pop_w.upgrade() {
+                            pop.popdown();
+                        }
+                    }
+                });
+                day_btn.add_controller(click_gesture);
+
+                let page_weak = self.downgrade();
+                let pop_weak = popover.as_ref().map(|p| p.downgrade());
+                let cell_date_for_click = cell_date_cell.clone();
+                let last_click_time_for_button = last_gesture_click_time.clone();
+                day_btn.connect_clicked(move |_| {
+                    if let Some(t) = last_click_time_for_button.get() {
+                        if t.elapsed().as_millis() < 120 {
+                            return;
+                        }
+                    }
+                    let target = cell_date_for_click.get();
+                    if let Some(p) = page_weak.upgrade() {
+                        p.navigate_to_date(target);
+                    }
+                    if let Some(ref pop_w) = pop_weak {
+                        if let Some(pop) = pop_w.upgrade() {
+                            pop.popdown();
+                        }
+                    }
+                });
+                grid.attach(&day_btn, (col_idx + 1) as i32, grid_row, 1, 1);
+                row_days.push((day_btn, day_lbl, dot_box, cell_date_cell));
+            }
+            day_buttons.push(row_days);
+        }
+
+        // Multi-day drag gesture on grid (Option 3 dynamic N-day time grid)
+        let drag_start_date: Rc<Cell<Option<NaiveDate>>> = Rc::new(Cell::new(None));
+        let drag_current_date: Rc<Cell<Option<NaiveDate>>> = Rc::new(Cell::new(None));
+        let is_drag_active: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+
+        let gesture_drag = gtk::GestureDrag::new();
+        gesture_drag.set_propagation_phase(gtk::PropagationPhase::Capture);
+
+        let start_date_begin = drag_start_date.clone();
+        let cur_date_begin = drag_current_date.clone();
+        let drag_active_begin = is_drag_active.clone();
+        let grid_begin = grid.clone();
+        let day_buttons_begin = day_buttons.clone();
+        gesture_drag.connect_drag_begin(move |_gesture, start_x, start_y| {
+            let d = Self::date_for_point_in_grid(&grid_begin, &day_buttons_begin, start_x, start_y);
+            start_date_begin.set(d);
+            cur_date_begin.set(d);
+            drag_active_begin.set(false);
+        });
+
+        let start_date_update = drag_start_date.clone();
+        let cur_date_update = drag_current_date.clone();
+        let drag_active_update = is_drag_active.clone();
+        let grid_update = grid.clone();
+        let day_buttons_update = day_buttons.clone();
+        let page_weak_update = self.downgrade();
+        gesture_drag.connect_drag_update(move |gesture, offset_x, offset_y| {
+            let Some(start_d) = start_date_update.get() else { return; };
+            if offset_x.hypot(offset_y) < 6.0 && !drag_active_update.get() {
+                return;
+            }
+            let Some((start_x, start_y)) = gesture.start_point() else { return; };
+            let cur_x = start_x + offset_x;
+            let cur_y = start_y + offset_y;
+            if let Some(curr_d) = Self::date_for_point_in_grid(&grid_update, &day_buttons_update, cur_x, cur_y) {
+                cur_date_update.set(Some(curr_d));
+                if curr_d != start_d && !drag_active_update.get() {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    drag_active_update.set(true);
+                }
+                if drag_active_update.get() {
+                    if let Some(page) = page_weak_update.upgrade() {
+                        let min_d = start_d.min(curr_d);
+                        let max_d = start_d.max(curr_d);
+                        page.preview_custom_date_range(min_d, max_d);
+                    }
+                }
+            }
+        });
+
+        let start_date_end = drag_start_date.clone();
+        let cur_date_end = drag_current_date.clone();
+        let drag_active_end = is_drag_active.clone();
+        let page_weak_end = self.downgrade();
+        let pop_weak_end = popover.as_ref().map(|p| p.downgrade());
+        gesture_drag.connect_drag_end(move |_gesture, _offset_x, _offset_y| {
+            if drag_active_end.get() {
+                if let (Some(start_d), Some(curr_d)) = (start_date_end.get(), cur_date_end.get()) {
+                    if let Some(page) = page_weak_end.upgrade() {
+                        let min_d = start_d.min(curr_d);
+                        let max_d = start_d.max(curr_d);
+                        page.navigate_to_custom_date_range(min_d, max_d);
+                    }
+                    if let Some(ref pop_w) = pop_weak_end {
+                        if let Some(pop) = pop_w.upgrade() {
+                            pop.popdown();
+                        }
+                    }
+                }
+            }
+            start_date_end.set(None);
+            cur_date_end.set(None);
+            drag_active_end.set(false);
+        });
+
+        grid.add_controller(gesture_drag);
 
         let chooser = DateChooserWidget {
             container,
@@ -3694,46 +4259,43 @@ impl CalendarPage {
             browse_date,
             is_popover,
             popover,
+            header_labels,
+            week_bg_bins,
+            week_buttons,
+            day_buttons,
+            cached_markers: Rc::new(RefCell::new(None)),
         };
 
-        // Wire month / year buttons
+        // Wire month / year buttons so both mini-calendars navigate in all calendar views
         let page_weak = self.downgrade();
         let ch_clone = chooser.clone();
         btn_prev_month.connect_clicked(move |_| {
-            let next_d = step_date_by_month(ch_clone.browse_date.get(), -1);
-            ch_clone.browse_date.set(next_d);
             if let Some(page) = page_weak.upgrade() {
-                page.refresh_date_chooser_grid(&ch_clone);
+                page.step_date_chooser_period(&ch_clone, -1, 0);
             }
         });
 
         let page_weak = self.downgrade();
         let ch_clone = chooser.clone();
         btn_next_month.connect_clicked(move |_| {
-            let next_d = step_date_by_month(ch_clone.browse_date.get(), 1);
-            ch_clone.browse_date.set(next_d);
             if let Some(page) = page_weak.upgrade() {
-                page.refresh_date_chooser_grid(&ch_clone);
+                page.step_date_chooser_period(&ch_clone, 1, 0);
             }
         });
 
         let page_weak = self.downgrade();
         let ch_clone = chooser.clone();
         btn_prev_year.connect_clicked(move |_| {
-            let next_d = step_date_by_year(ch_clone.browse_date.get(), -1);
-            ch_clone.browse_date.set(next_d);
             if let Some(page) = page_weak.upgrade() {
-                page.refresh_date_chooser_grid(&ch_clone);
+                page.step_date_chooser_period(&ch_clone, 0, -1);
             }
         });
 
         let page_weak = self.downgrade();
         let ch_clone = chooser.clone();
         btn_next_year.connect_clicked(move |_| {
-            let next_d = step_date_by_year(ch_clone.browse_date.get(), 1);
-            ch_clone.browse_date.set(next_d);
             if let Some(page) = page_weak.upgrade() {
-                page.refresh_date_chooser_grid(&ch_clone);
+                page.step_date_chooser_period(&ch_clone, 0, 1);
             }
         });
 
@@ -3741,24 +4303,114 @@ impl CalendarPage {
         chooser
     }
 
+    fn step_date_chooser_period(
+        &self,
+        chooser: &DateChooserWidget,
+        month_delta: i32,
+        year_delta: i32,
+    ) {
+        if chooser.is_popover {
+            let mut next_d = chooser.browse_date.get();
+            if month_delta != 0 {
+                next_d = step_date_by_month(next_d, month_delta);
+            }
+            if year_delta != 0 {
+                next_d = step_date_by_year(next_d, year_delta);
+            }
+            chooser.browse_date.set(next_d);
+            self.navigate_to_date(next_d);
+            self.refresh_date_chooser_grid(chooser);
+        } else {
+            self.shift_sidebar_date_choosers(month_delta, year_delta);
+        }
+    }
+
+    fn shift_sidebar_date_choosers(&self, month_delta: i32, year_delta: i32) {
+        let choosers = self.imp().sidebar_date_choosers.borrow().clone();
+        let base_anchor = choosers
+            .first()
+            .map(|c| c.browse_date.get())
+            .unwrap_or_else(|| *self.imp().current_date.borrow());
+        let mut base = base_anchor;
+        if month_delta != 0 {
+            base = step_date_by_month(base, month_delta);
+        }
+        if year_delta != 0 {
+            base = step_date_by_year(base, year_delta);
+        }
+        for (idx, ch) in choosers.iter().enumerate() {
+            let d = if idx == 0 {
+                base
+            } else {
+                step_date_by_month(base, idx as i32)
+            };
+            ch.browse_date.set(d);
+            if ch.container.is_visible() || idx == 0 {
+                self.refresh_date_chooser_grid(ch);
+            }
+        }
+        self.navigate_to_date(base);
+    }
+
+    pub(crate) fn sidebar_mini_calendar_height_for_count(&self, count: usize) -> i32 {
+        let choosers = self.imp().sidebar_date_choosers.borrow();
+        let Some(first) = choosers.first() else {
+            return 217;
+        };
+        let (_, first_nat_h, _, _) = first.container.measure(gtk::Orientation::Vertical, -1);
+        let base_h = first_nat_h.max(210);
+        let count = count.clamp(1, choosers.len().max(1));
+        let mut total_h = base_h;
+        for idx in 1..count {
+            if let Some(ch) = choosers.get(idx) {
+                let extra_h = if ch.container.is_visible() {
+                    let (_, nat_h, _, _) = ch.container.measure(gtk::Orientation::Vertical, -1);
+                    nat_h.max(base_h)
+                } else {
+                    base_h + 9
+                };
+                total_h += 2 + extra_h;
+            }
+        }
+        total_h
+    }
+
+    pub(crate) fn update_sidebar_date_chooser_count(&self, target_count: usize) {
+        let choosers = self.imp().sidebar_date_choosers.borrow().clone();
+        let Some(first) = choosers.first() else {
+            return;
+        };
+        let target_count = target_count.clamp(1, choosers.len().max(1));
+        let base_date = first.browse_date.get();
+        for (idx, ch) in choosers.iter().enumerate() {
+            let should_show = idx < target_count;
+            if should_show && idx > 0 {
+                let next_month = step_date_by_month(base_date, idx as i32);
+                ch.browse_date.set(next_month);
+                self.refresh_date_chooser_grid(ch);
+            }
+            if ch.container.is_visible() != should_show {
+                ch.container.set_visible(should_show);
+            }
+        }
+        let target_h = self.sidebar_mini_calendar_height_for_count(target_count);
+        if let Some(vp) = self.imp().mini_calendar_viewport.borrow().as_ref() {
+            vp.set_max_content_height(-1);
+            vp.set_min_content_height(target_h);
+            vp.set_max_content_height(target_h);
+            vp.set_height_request(target_h);
+        }
+    }
+
     fn refresh_date_chooser_grid(&self, widget: &DateChooserWidget) {
         let view_date = widget.browse_date.get();
         widget.lbl_month.set_label(&Self::month_name(view_date.month()));
         widget.lbl_year.set_label(&view_date.year().to_string());
 
-        let grid = &widget.grid;
-        while let Some(child) = grid.first_child() {
-            grid.remove(&child);
-        }
-
         let first_weekday = configured_first_weekday();
 
-        // Row 0: Headers (Col 0: week number spacer, Cols 1..=7: weekday initials)
-        let spacer = gtk::Label::builder().width_request(24).build();
-        grid.attach(&spacer, 0, 0, 1, 1);
-
-        for col_idx in 0..7 {
-            let weekday = match (first_weekday.num_days_from_monday() + col_idx) % 7 {
+        for (col_idx, header_lbl) in widget.header_labels.iter().enumerate() {
+            let weekday = match (first_weekday.num_days_from_monday() + col_idx as u32) % 7 {
                 0 => Weekday::Mon,
                 1 => Weekday::Tue,
                 2 => Weekday::Wed,
@@ -3768,124 +4420,185 @@ impl CalendarPage {
                 _ => Weekday::Sun,
             };
             let initial = Self::calendar_grid_weekday_initial(weekday);
-            let header_lbl = gtk::Label::builder()
-                .label(&initial)
-                .css_classes(vec!["calendar-popover-weekday-header", "weekday"])
-                .halign(gtk::Align::Center)
-                .valign(gtk::Align::Center)
-                .width_request(32)
-                .build();
-            grid.attach(&header_lbl, (col_idx + 1) as i32, 0, 1, 1);
+            if header_lbl.label() != initial {
+                header_lbl.set_label(&initial);
+            }
         }
 
-        let anchor_date = *self.imp().current_date.borrow();
         let today = Local::now().date_naive();
-        let active_view = *self.imp().current_view.borrow();
+        let viewport = self.current_calendar_viewport();
 
-        let weeks = compute_date_chooser_weeks(
-            view_date,
-            anchor_date,
-            today,
-            active_view,
-            first_weekday,
+        let weeks = if let Some(custom) = self.imp().custom_selected_range.borrow().as_ref() {
+            compute_date_chooser_weeks_for_range(
+                view_date,
+                *custom,
+                *self.imp().current_date.borrow(),
+                today,
+                first_weekday,
+            )
+        } else if viewport.view == CalendarView::Agenda {
+            let agenda_dates: std::collections::HashSet<NaiveDate> = self
+                .imp()
+                .agenda_items
+                .borrow()
+                .iter()
+                .filter_map(|item| match item {
+                    PreparedAgendaItem::DateHeader { date, .. } => Some(*date),
+                    _ => None,
+                })
+                .collect();
+            compute_date_chooser_weeks_with_visibility(
+                view_date,
+                viewport.anchor_date,
+                today,
+                first_weekday,
+                |d| agenda_dates.contains(&d),
+            )
+        } else {
+            compute_date_chooser_weeks_for_viewport(
+                view_date,
+                &viewport,
+                today,
+                first_weekday,
+            )
+        };
+
+        let grid_start = weeks.first().map(|w| w.week_start).unwrap_or(view_date);
+        let grid_end = grid_start + Duration::days(42);
+        let grid_range = CalendarDateRange::new(grid_start, grid_end);
+
+        let revision = self.imp().calendar_revision.get();
+        let query = self.imp().calendar_search_query.borrow().clone();
+        let category = self.imp().calendar_category_filter.borrow().clone();
+        let hidden_sources = self.imp().hidden_calendar_sources.borrow();
+        let marker_key = (
+            revision,
+            grid_start,
+            query.clone(),
+            category.clone(),
+            hidden_sources.len(),
         );
 
+        let needs_recompute = widget
+            .cached_markers
+            .borrow()
+            .as_ref()
+            .map(|(k, _)| k != &marker_key)
+            .unwrap_or(true);
+        if needs_recompute {
+            let markers = if let Some(index) = self
+                .imp()
+                .calendar_snapshot_index
+                .borrow()
+                .as_ref()
+            {
+                indexed_event_day_markers(
+                    index,
+                    grid_range,
+                    &query,
+                    category.as_deref(),
+                    &hidden_sources,
+                )
+            } else {
+                BTreeMap::new()
+            };
+            widget.cached_markers.replace(Some((marker_key, markers)));
+        }
+        drop(hidden_sources);
+        let cached_guard = widget.cached_markers.borrow();
+        let markers = cached_guard.as_ref().map(|(_, m)| m);
+
+        let week_word = crate::i18n::gettext("Week");
         for (row_idx, week_info) in weeks.into_iter().enumerate() {
-            let grid_row = (row_idx + 1) as i32;
-            grid.set_row_baseline_position(grid_row, gtk::BaselinePosition::Center);
-
-            // If current week: attach background capsule across col 0..=7
-            if week_info.is_selected_week {
-                let bg_bin = gtk::Box::builder()
-                    .css_classes(vec!["date-chooser-current-week"])
-                    .can_target(false)
-                    .build();
-                grid.attach(&bg_bin, 0, grid_row, 8, 1);
+            if let Some(bg_bin) = widget.week_bg_bins.get(row_idx) {
+                bg_bin.set_visible(false);
             }
 
-            // Col 0: Week number badge
-            let week_lbl = gtk::Label::builder()
-                .label(&week_info.week_number.to_string())
-                .halign(gtk::Align::Center)
-                .valign(gtk::Align::Center)
-                .build();
-            let week_btn = gtk::Button::builder()
-                .child(&week_lbl)
-                .halign(gtk::Align::Center)
-                .valign(gtk::Align::Center)
-                .tooltip_text(&format!("{} {}", crate::i18n::gettext("Week"), week_info.week_number))
-                .build();
-            set_accessible_label(&week_btn, &format!("{} {}", crate::i18n::gettext("Week"), week_info.week_number));
-            let mut week_classes = vec!["flat", "weeknum", "calendar-popover-week-badge"];
-            if week_info.is_selected_week {
-                week_classes.push("selected-week");
+            if let Some((week_btn, week_lbl, week_date_cell)) = widget.week_buttons.get(row_idx) {
+                week_date_cell.set(week_info.week_start);
+                let num_str = week_info.week_number.to_string();
+                if week_lbl.label() != num_str {
+                    week_lbl.set_label(&num_str);
+                    let tip = format!("{week_word} {num_str}");
+                    week_btn.set_tooltip_text(Some(&tip));
+                    set_accessible_label(week_btn, &tip);
+                }
+                if week_info.is_selected_week {
+                    week_btn.add_css_class("selected-week");
+                } else {
+                    week_btn.remove_css_class("selected-week");
+                }
+                if week_info.has_visible_days {
+                    week_btn.add_css_class("active-week");
+                } else {
+                    week_btn.remove_css_class("active-week");
+                }
             }
-            week_btn.set_css_classes(&week_classes);
 
-            let page_weak = self.downgrade();
-            let pop_weak = widget.popover.as_ref().map(|p| p.downgrade());
-            let week_start = week_info.week_start;
-            week_btn.connect_clicked(move |_| {
-                if let Some(p) = page_weak.upgrade() {
-                    p.navigate_to_date(week_start);
-                }
-                if let Some(ref pop_w) = pop_weak {
-                    if let Some(pop) = pop_w.upgrade() {
-                        pop.popdown();
-                    }
-                }
-            });
-            grid.attach(&week_btn, 0, grid_row, 1, 1);
+            if let Some(row_days) = widget.day_buttons.get(row_idx) {
+                for (col_idx, cell) in week_info.days.into_iter().enumerate() {
+                    if let Some((day_btn, day_lbl, dot_box, cell_date_cell)) = row_days.get(col_idx) {
+                        let prev_date = cell_date_cell.replace(cell.date);
+                        let day_str = cell.date.day().to_string();
+                        if day_lbl.label() != day_str {
+                            day_lbl.set_label(&day_str);
+                        }
+                        if prev_date != cell.date {
+                            set_accessible_label(day_btn, &format_date(cell.date));
+                        }
 
-            // Cols 1..=7: Days
-            for (col_idx, cell) in week_info.days.into_iter().enumerate() {
-                let day_lbl = gtk::Label::builder()
-                    .label(&cell.date.day().to_string())
-                    .halign(gtk::Align::Center)
-                    .valign(gtk::Align::Center)
-                    .build();
-                let day_btn = gtk::Button::builder()
-                    .child(&day_lbl)
-                    .halign(gtk::Align::Center)
-                    .valign(gtk::Align::Center)
-                    .build();
-                let date_str = format_date(cell.date);
-                set_accessible_label(&day_btn, &date_str);
+                        let has_events = !cell.is_outside_month
+                            && markers
+                                .and_then(|m| m.get(&cell.date))
+                                .copied()
+                                .unwrap_or(0)
+                                > 0;
+                        if has_events {
+                            dot_box.add_css_class("has-events");
+                        } else {
+                            dot_box.remove_css_class("has-events");
+                        }
 
-                let mut day_classes = vec!["flat", "day", "calendar-popover-day-btn"];
-                let is_off_day = match cell.date.weekday() {
-                    Weekday::Sat | Weekday::Sun => true,
-                    _ => false,
-                };
-                if is_off_day {
-                    day_classes.push("non-workday");
-                }
-                if cell.is_selected_day {
-                    day_classes.push("selected");
-                    day_classes.push("selected-day");
-                }
-                if cell.is_today {
-                    day_classes.push("today");
-                }
-                if cell.is_outside_month {
-                    day_classes.push("other-month");
-                }
-                day_btn.set_css_classes(&day_classes);
-
-                let page_weak = self.downgrade();
-                let pop_weak = widget.popover.as_ref().map(|p| p.downgrade());
-                let cell_date = cell.date;
-                day_btn.connect_clicked(move |_| {
-                    if let Some(p) = page_weak.upgrade() {
-                        p.navigate_to_date(cell_date);
-                    }
-                    if let Some(ref pop_w) = pop_weak {
-                        if let Some(pop) = pop_w.upgrade() {
-                            pop.popdown();
+                        let is_off_day = matches!(cell.date.weekday(), Weekday::Sat | Weekday::Sun);
+                        if is_off_day {
+                            day_btn.add_css_class("non-workday");
+                        } else {
+                            day_btn.remove_css_class("non-workday");
+                        }
+                        if cell.in_visible_range {
+                            day_btn.add_css_class("in-range");
+                        } else {
+                            day_btn.remove_css_class("in-range");
+                        }
+                        if cell.is_range_start {
+                            day_btn.add_css_class("range-start");
+                        } else {
+                            day_btn.remove_css_class("range-start");
+                        }
+                        if cell.is_range_end {
+                            day_btn.add_css_class("range-end");
+                        } else {
+                            day_btn.remove_css_class("range-end");
+                        }
+                        if cell.is_selected_day {
+                            day_btn.add_css_class("selected");
+                            day_btn.add_css_class("selected-day");
+                        } else {
+                            day_btn.remove_css_class("selected");
+                            day_btn.remove_css_class("selected-day");
+                        }
+                        if cell.is_today {
+                            day_btn.add_css_class("today");
+                        } else {
+                            day_btn.remove_css_class("today");
+                        }
+                        if cell.is_outside_month {
+                            day_btn.add_css_class("other-month");
+                        } else {
+                            day_btn.remove_css_class("other-month");
                         }
                     }
-                });
-                grid.attach(&day_btn, (col_idx + 1) as i32, grid_row, 1, 1);
+                }
             }
         }
     }
@@ -3935,6 +4648,9 @@ impl CalendarPage {
             self.imp()
                 .hidden_calendar_sources
                 .replace(settings.calendar_hidden_sources().into_iter().collect());
+            self.imp()
+                .time_grid_allday_collapsed
+                .set(settings.calendar_allday_collapsed());
         }
         // Keep the classic Evolution split on wide windows, while using the
         let paned = gtk::Paned::builder()
@@ -3949,6 +4665,7 @@ impl CalendarPage {
         let sidebar_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(0)
+            .vexpand(true)
             .margin_start(0)
             .margin_end(0)
             .margin_top(0)
@@ -3956,11 +4673,243 @@ impl CalendarPage {
             .css_classes(vec!["calendar-sidebar"])
             .build();
 
-        let sidebar_chooser = self.create_date_chooser_widget(false, None);
-        sidebar_box.append(&sidebar_chooser.container);
+        let mini_calendar_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .halign(gtk::Align::Fill)
+            .hexpand(true)
+            .valign(gtk::Align::Start)
+            .build();
+        self.imp()
+            .mini_calendar_box
+            .replace(Some(mini_calendar_box.clone()));
+
+        let sidebar_chooser_1 = self.create_date_chooser_widget(false, None);
+        let sidebar_chooser_2 = self.create_date_chooser_widget(false, None);
+        let sidebar_chooser_3 = self.create_date_chooser_widget(false, None);
+        sidebar_chooser_2
+            .browse_date
+            .set(step_date_by_month(sidebar_chooser_1.browse_date.get(), 1));
+        self.refresh_date_chooser_grid(&sidebar_chooser_2);
+        sidebar_chooser_2.container.set_visible(false);
+
+        sidebar_chooser_3
+            .browse_date
+            .set(step_date_by_month(sidebar_chooser_1.browse_date.get(), 2));
+        self.refresh_date_chooser_grid(&sidebar_chooser_3);
+        sidebar_chooser_3.container.set_visible(false);
+
+        mini_calendar_box.append(&sidebar_chooser_1.container);
+        mini_calendar_box.append(&sidebar_chooser_2.container);
+        mini_calendar_box.append(&sidebar_chooser_3.container);
+
         self.imp()
             .sidebar_date_chooser
-            .replace(Some(sidebar_chooser));
+            .replace(Some(sidebar_chooser_1.clone()));
+        *self.imp().sidebar_date_choosers.borrow_mut() = vec![
+            sidebar_chooser_1,
+            sidebar_chooser_2,
+            sidebar_chooser_3,
+        ];
+
+        let initial_minical_h = self.sidebar_mini_calendar_height_for_count(1);
+        let mini_calendar_viewport = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::External)
+            .propagate_natural_width(false)
+            .propagate_natural_height(false)
+            .kinetic_scrolling(false)
+            .vexpand(false)
+            .hexpand(true)
+            .min_content_width(40)
+            .min_content_height(initial_minical_h)
+            .max_content_height(initial_minical_h)
+            .height_request(initial_minical_h)
+            .child(&mini_calendar_box)
+            .build();
+        let block_vscroll =
+            gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+        block_vscroll.set_propagation_phase(gtk::PropagationPhase::Capture);
+        block_vscroll.connect_scroll(|_, _, _| glib::Propagation::Stop);
+        mini_calendar_viewport.add_controller(block_vscroll);
+        mini_calendar_viewport
+            .vadjustment()
+            .connect_value_changed(|adj| {
+                if adj.value() != 0.0 {
+                    adj.set_value(0.0);
+                }
+            });
+        self.imp()
+            .mini_calendar_viewport
+            .replace(Some(mini_calendar_viewport.clone()));
+        sidebar_box.append(&mini_calendar_viewport);
+
+        // Native pane border separator (matching gtk::Paned borders across Meridian)
+        let minical_border = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .css_classes(vec!["sidebar-minical-pane-border"])
+            .halign(gtk::Align::Fill)
+            .hexpand(true)
+            .vexpand(false)
+            .build();
+        minical_border.set_cursor_from_name(Some("ns-resize"));
+        sidebar_box.append(&minical_border);
+
+        let drag_start_height = Rc::new(Cell::new(initial_minical_h));
+        let drag_start_count = Rc::new(Cell::new(1usize));
+        let drag_active = Rc::new(Cell::new(false));
+        let snap_generation = Rc::new(Cell::new(0u64));
+
+        let gesture_drag = gtk::GestureDrag::new();
+        let border_for_begin = minical_border.clone();
+        let sidebar_for_begin = sidebar_box.clone();
+        let vp_for_begin = mini_calendar_viewport.clone();
+        let page_weak_begin = self.downgrade();
+        let start_h_begin = drag_start_height.clone();
+        let start_count_begin = drag_start_count.clone();
+        let active_begin = drag_active.clone();
+        let snap_gen_begin = snap_generation.clone();
+        gesture_drag.connect_drag_begin(move |gesture, start_x, start_y| {
+            if let Some(bounds) = border_for_begin.compute_bounds(&sidebar_for_begin) {
+                let bx = bounds.x() as f64;
+                let by = bounds.y() as f64;
+                let bw = bounds.width() as f64;
+                let bh = bounds.height() as f64;
+                if start_x >= bx
+                    && start_x <= bx + bw
+                    && start_y >= by - 7.0
+                    && start_y <= by + bh + 7.0
+                {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    active_begin.set(true);
+                    snap_gen_begin.set(snap_gen_begin.get().wrapping_add(1));
+                    border_for_begin.add_css_class("dragging");
+                    if let Some(page) = page_weak_begin.upgrade() {
+                        let choosers = page.imp().sidebar_date_choosers.borrow().clone();
+                        let visible_count = choosers
+                            .iter()
+                            .filter(|c| c.container.is_visible())
+                            .count()
+                            .max(1);
+                        start_count_begin.set(visible_count);
+                        let cur_h = vp_for_begin
+                            .height()
+                            .max(page.sidebar_mini_calendar_height_for_count(1));
+                        start_h_begin.set(cur_h);
+
+                        // Pre-enable all 3 months inside the clipped viewport so dragging reveals them pixel-by-pixel
+                        if let Some(first) = choosers.first() {
+                            let base_date = first.browse_date.get();
+                            for (idx, ch) in choosers.iter().enumerate() {
+                                if idx > 0 {
+                                    let next_month = step_date_by_month(base_date, idx as i32);
+                                    ch.browse_date.set(next_month);
+                                    page.refresh_date_chooser_grid(ch);
+                                }
+                                ch.container.set_visible(true);
+                            }
+                        }
+                        vp_for_begin.set_max_content_height(-1);
+                        vp_for_begin.set_min_content_height(cur_h);
+                        vp_for_begin.set_max_content_height(cur_h);
+                        vp_for_begin.set_height_request(cur_h);
+                    }
+                    return;
+                }
+            }
+            active_begin.set(false);
+        });
+
+        let page_weak_update = self.downgrade();
+        let vp_for_update = mini_calendar_viewport.clone();
+        let start_h_update = drag_start_height.clone();
+        let active_update = drag_active.clone();
+        gesture_drag.connect_drag_update(move |_, _offset_x, offset_y| {
+            if !active_update.get() {
+                return;
+            }
+            let Some(page) = page_weak_update.upgrade() else {
+                return;
+            };
+            let min_h = page.sidebar_mini_calendar_height_for_count(1);
+            let max_h = page.sidebar_mini_calendar_height_for_count(3);
+            let new_h = (start_h_update.get() + offset_y.round() as i32).clamp(min_h, max_h);
+            vp_for_update.set_max_content_height(-1);
+            vp_for_update.set_min_content_height(new_h);
+            vp_for_update.set_max_content_height(new_h);
+            vp_for_update.set_height_request(new_h);
+        });
+
+        let page_weak_end = self.downgrade();
+        let vp_for_end = mini_calendar_viewport.clone();
+        let border_for_end = minical_border.clone();
+        let start_h_end = drag_start_height.clone();
+        let start_count_end = drag_start_count.clone();
+        let active_end = drag_active.clone();
+        let snap_gen_end = snap_generation.clone();
+        gesture_drag.connect_drag_end(move |_, _offset_x, offset_y| {
+            if !active_end.replace(false) {
+                return;
+            }
+            border_for_end.remove_css_class("dragging");
+            let Some(page) = page_weak_end.upgrade() else {
+                return;
+            };
+            let h1 = page.sidebar_mini_calendar_height_for_count(1);
+            let h2 = page.sidebar_mini_calendar_height_for_count(2);
+            let h3 = page.sidebar_mini_calendar_height_for_count(3);
+            let cur_h = (start_h_end.get() + offset_y.round() as i32).clamp(h1, h3);
+            let month_step_h = (h2 - h1).max(180) as f64;
+            let raw_months = 1.0 + (cur_h - h1) as f64 / month_step_h;
+
+            // Directional threshold (30% of a month) so pulling down or pushing up feels responsive
+            let prev_count = start_count_end.get() as f64;
+            let target_count = if offset_y > 18.0 {
+                (raw_months + 0.20).round().clamp(1.0, 3.0) as usize
+            } else if offset_y < -18.0 {
+                (raw_months - 0.20).round().clamp(1.0, 3.0) as usize
+            } else {
+                raw_months.round().clamp(1.0, 3.0).max(prev_count.min(1.0)) as usize
+            };
+            let target_h = match target_count {
+                1 => h1,
+                2 => h2,
+                _ => h3,
+            };
+
+            if (cur_h - target_h).abs() <= 2 {
+                page.update_sidebar_date_chooser_count(target_count);
+                return;
+            }
+
+            let generation = snap_gen_end.get().wrapping_add(1);
+            snap_gen_end.set(generation);
+            let snap_gen_tick = snap_gen_end.clone();
+            let page_weak_tick = page.downgrade();
+            let start_time = std::time::Instant::now();
+            let duration_ms = 110.0f64;
+            vp_for_end.add_tick_callback(move |vp, _| {
+                if snap_gen_tick.get() != generation {
+                    return glib::ControlFlow::Break;
+                }
+                let elapsed = start_time.elapsed().as_secs_f64() * 1000.0;
+                let t = (elapsed / duration_ms).clamp(0.0, 1.0);
+                let eased = 1.0 - (1.0 - t).powi(3);
+                let h = (cur_h as f64 + (target_h - cur_h) as f64 * eased).round() as i32;
+                vp.set_max_content_height(-1);
+                vp.set_min_content_height(h);
+                vp.set_max_content_height(h);
+                vp.set_height_request(h);
+                if t >= 1.0 {
+                    if let Some(p) = page_weak_tick.upgrade() {
+                        p.update_sidebar_date_chooser_count(target_count);
+                    }
+                    return glib::ControlFlow::Break;
+                }
+                glib::ControlFlow::Continue
+            });
+        });
+        sidebar_box.add_controller(gesture_drag);
 
         let mut initial_cals = Vec::new();
         for _ in 0..4 {
@@ -3973,12 +4922,19 @@ impl CalendarPage {
         self.imp().mini_calendar_4.replace(Some(initial_cals[3].clone()));
         *self.imp().mini_calendars.borrow_mut() = initial_cals;
 
+        let sidebar_sources_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(0)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+
         let source_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
             .css_classes(vec!["navigation-sidebar"])
             .build();
 
-        sidebar_box.append(&source_list);
+        sidebar_sources_box.append(&source_list);
         self.imp()
             .calendar_source_list
             .replace(Some(source_list.clone()));
@@ -3992,7 +4948,7 @@ impl CalendarPage {
             .margin_start(6)
             .margin_end(6)
             .build();
-        sidebar_box.append(&calendar_state);
+        sidebar_sources_box.append(&calendar_state);
         self.imp()
             .calendar_source_state_label
             .replace(Some(calendar_state.clone()));
@@ -4013,7 +4969,7 @@ impl CalendarPage {
             .selection_mode(gtk::SelectionMode::None)
             .css_classes(vec!["boxed-list"])
             .build();
-        sidebar_box.append(&event_list);
+        sidebar_sources_box.append(&event_list);
         let event_records = Rc::new(RefCell::new(Vec::<CalendarEventRecord>::new()));
         self.imp()
             .event_records
@@ -4123,7 +5079,7 @@ impl CalendarPage {
                     };
                     if !page.calendar_monitor_is_current(monitor_generation) {
                         return;
-                    }
+                    };
                     match event {
                         ECalSyncEvent::Ready(status) => {
                             if let Some(warning) = status.warning {
@@ -4167,9 +5123,12 @@ impl CalendarPage {
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_width(false)
             .min_content_height(40)
-            .child(&sidebar_box)
+            .child(&sidebar_sources_box)
             .vexpand(true)
+            .margin_start(2)
+            .margin_end(2)
             .build();
+        sidebar_box.append(&sidebar_scroll);
 
         let drawer_header = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -4192,7 +5151,7 @@ impl CalendarPage {
             .css_classes(vec!["meridian-sidebar-drawer"])
             .build();
         sidebar_outer_box.append(&drawer_header);
-        sidebar_outer_box.append(&sidebar_scroll);
+        sidebar_outer_box.append(&sidebar_box);
         sidebar_outer_box.append(&crate::views::build_sidebar_module_switcher(
             "calendar",
             &sidebar_outer_box,
@@ -4317,7 +5276,10 @@ impl CalendarPage {
             .as_ref()
             .map(|settings| persisted_calendar_view_name(Some(settings)))
             .unwrap_or_else(|| persisted_calendar_view_name(None));
-        let initial_calendar_view = calendar_view_from_name(&initial_view);
+        let initial_calendar_view = match calendar_view_from_name(&initial_view) {
+            CalendarView::List => CalendarView::Agenda,
+            other => other,
+        };
         *self.imp().current_view.borrow_mut() = initial_calendar_view;
         self.imp()
             .view_state
@@ -4330,7 +5292,6 @@ impl CalendarPage {
         let str_month = crate::i18n::gettext("Month");
         let str_agenda = crate::i18n::gettext("Agenda");
         let str_year = crate::i18n::gettext("Year");
-        let str_list = crate::i18n::gettext("List");
 
         let day_btn = gtk::ToggleButton::builder()
             .label(&str_day)
@@ -4361,11 +5322,6 @@ impl CalendarPage {
             .group(&day_btn)
             .active(initial_calendar_view == CalendarView::Year)
             .build();
-        let list_btn = gtk::ToggleButton::builder()
-            .label(&str_list)
-            .group(&day_btn)
-            .active(initial_calendar_view == CalendarView::List)
-            .build();
 
         view_toggle.append(&day_btn);
         view_toggle.append(&workweek_btn);
@@ -4373,7 +5329,6 @@ impl CalendarPage {
         view_toggle.append(&month_btn);
         view_toggle.append(&agenda_btn);
         view_toggle.append(&year_btn);
-        view_toggle.append(&list_btn);
 
         let view_names = [
             str_day.as_str(),
@@ -4382,7 +5337,6 @@ impl CalendarPage {
             str_month.as_str(),
             str_agenda.as_str(),
             str_year.as_str(),
-            str_list.as_str(),
         ];
         let dropdown_model = gtk::StringList::new(&view_names);
         let calendar_view_dropdown =
@@ -4457,10 +5411,13 @@ impl CalendarPage {
                         return;
                     }
                 }
+                let was_visible = page.is_sidebar_visible();
                 page.set_sidebar_visible(is_active);
                 page.sync_toolbar_navigation_title();
-                if let Some(settings) = AppSettings::try_new() {
-                    settings.set_mail_show_sidebar(is_active);
+                if was_visible != is_active {
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_mail_show_sidebar(is_active);
+                    }
                 }
             } else {
                 sidebar_for_toggle.set_visible(is_active);
@@ -4637,11 +5594,9 @@ impl CalendarPage {
             let Some(hit) = hit_test_month_canvas(x, y, w, h, &layout) else { return };
 
             match hit {
-                MonthCanvasHit::Event { event, .. } => {
+                MonthCanvasHit::Event { event, date, .. } => {
                     page.clear_selected_time_slot();
-                    if let Some(identity) = CalendarEventIdentity::from_event(&event) {
-                        page.imp().view_state.borrow_mut().select_event(Some(identity.clone()), None);
-                    }
+                    page.select_and_inspect_event(&event, Some(date));
                     if n_press == 2 || page.imp().is_mobile.get() {
                         if let Some(identity) = CalendarEventIdentity::from_event(&event) {
                             page.open_event_editor_for_identity(drawing_area, &identity);
@@ -4653,7 +5608,7 @@ impl CalendarPage {
                     show_month_overflow_popover(&page, drawing_area, date, Some(rect));
                 }
                 MonthCanvasHit::DayCell { date } => {
-                    page.imp().view_state.borrow_mut().select_event(None, None);
+                    page.clear_inspected_event();
                     let direct_create = AppSettings::try_new()
                         .map(|s| s.calendar_click_action() == "create")
                         .unwrap_or(false);
@@ -4709,13 +5664,17 @@ impl CalendarPage {
                 let Some(layout) = layout_rc else { return };
                 let w = drawing_area.width() as f64;
                 let h = drawing_area.height() as f64;
-                if let Some(MonthCanvasHit::Event { event, date, .. }) = hit_test_month_canvas(x, y, w, h, &layout) {
-                    show_calendar_event_details_popover(
-                        &page,
-                        drawing_area,
-                        &event,
-                        Some(date),
-                    );
+                if let Some(MonthCanvasHit::Event { date, event, .. }) = hit_test_month_canvas(x, y, w, h, &layout) {
+                    page.select_and_inspect_event(&event, Some(date));
+                    if !page.is_tag_vpane_visible() {
+                        let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+                        show_month_overflow_popover(
+                            &page,
+                            drawing_area,
+                            date,
+                            Some(rect),
+                        );
+                    }
                 }
             }
         });
@@ -5142,18 +6101,22 @@ impl CalendarPage {
         month_container.append(&month_canvas);
 
         let scroll_controller = gtk::EventControllerScroll::new(
-            gtk::EventControllerScrollFlags::VERTICAL
-                | gtk::EventControllerScrollFlags::DISCRETE
-                | gtk::EventControllerScrollFlags::KINETIC,
+            gtk::EventControllerScrollFlags::VERTICAL,
         );
         scroll_controller.set_propagation_phase(gtk::PropagationPhase::Capture);
         let delta_accum = std::rc::Rc::new(std::cell::Cell::new(0.0f64));
-        let last_scroll_time = std::rc::Rc::new(std::cell::Cell::new(std::time::Instant::now()));
+        let last_scroll_time = std::rc::Rc::new(std::cell::Cell::new(
+            std::time::Instant::now() - std::time::Duration::from_secs(10),
+        ));
+        let last_step_time = std::rc::Rc::new(std::cell::Cell::new(
+            std::time::Instant::now() - std::time::Duration::from_secs(10),
+        ));
         let zoom_delta_accum = std::rc::Rc::new(std::cell::Cell::new(0.0f64));
         let last_zoom_time = std::rc::Rc::new(std::cell::Cell::new(std::time::Instant::now()));
 
         let delta_for_scroll = delta_accum.clone();
         let last_scroll_time_for_scroll = last_scroll_time.clone();
+        let last_step_time_for_scroll = last_step_time.clone();
         let zoom_delta_for_scroll = zoom_delta_accum.clone();
         let last_zoom_time_for_scroll = last_zoom_time.clone();
 
@@ -5196,21 +6159,49 @@ impl CalendarPage {
                     return glib::Propagation::Stop;
                 }
 
+                if dy.abs() < 1e-4 {
+                    return glib::Propagation::Stop;
+                }
+
                 let now = std::time::Instant::now();
-                if now.duration_since(last_scroll_time_for_scroll.get())
-                    > std::time::Duration::from_millis(250)
-                {
+                let idle_elapsed = now.duration_since(last_scroll_time_for_scroll.get());
+                let prev_delta = delta_for_scroll.get();
+                let is_fresh_gesture = idle_elapsed > std::time::Duration::from_millis(180)
+                    || (prev_delta != 0.0 && prev_delta.signum() != dy.signum());
+                if is_fresh_gesture {
                     delta_for_scroll.set(0.0);
                 }
                 last_scroll_time_for_scroll.set(now);
 
                 let current_delta = delta_for_scroll.get() + dy;
-                const SCROLL_THRESHOLD: f64 = 1.0;
+                // Trigger immediately on a fresh scroll gesture so the first wheel notch or touchpad
+                // movement has zero initial dead-zone, then step smoothly at SCROLL_THRESHOLD.
+                const SCROLL_THRESHOLD: f64 = 0.75;
+                const INITIAL_THRESHOLD: f64 = 0.15;
 
-                let steps = (current_delta / SCROLL_THRESHOLD).trunc() as i32;
-                if steps != 0 {
-                    delta_for_scroll.set(current_delta - (steps as f64 * SCROLL_THRESHOLD));
-                    page.shift_month_week(steps.clamp(-1, 1));
+                let step_dir = if is_fresh_gesture && current_delta.abs() >= INITIAL_THRESHOLD {
+                    current_delta.signum() as i32
+                } else {
+                    (current_delta / SCROLL_THRESHOLD).trunc() as i32
+                };
+
+                if step_dir != 0 {
+                    let since_last_step = now.duration_since(last_step_time_for_scroll.get());
+                    if is_fresh_gesture || since_last_step >= std::time::Duration::from_millis(32) {
+                        delta_for_scroll.set(0.0);
+                        last_step_time_for_scroll.set(now);
+                        let clamped = step_dir.clamp(-1, 1);
+                        if configured_month_scroll_by_week() {
+                            page.shift_month_week(clamped);
+                        } else {
+                            page.shift_period(clamped);
+                            page.refresh_month_grid();
+                            page.update_calendar_navigation_controls();
+                            page.refresh_period_label();
+                        }
+                    } else {
+                        delta_for_scroll.set(current_delta.clamp(-SCROLL_THRESHOLD, SCROLL_THRESHOLD));
+                    }
                 } else {
                     delta_for_scroll.set(current_delta);
                 }
@@ -5500,6 +6491,7 @@ impl CalendarPage {
             if let Some(idx) = hit_test_agenda_canvas_with_scroll(&items_ref, logical_y, scroll_y) {
                 if items_ref[idx].is_event_row() {
                     let is_running = if let PreparedAgendaItem::EventRow { record, date, .. } = &items_ref[idx] {
+                        page.select_and_inspect_event(record, Some(*date));
                         is_event_running_now(record, *date)
                     } else {
                         false
@@ -5809,7 +6801,154 @@ impl CalendarPage {
             }
         });
 
-        // 6. Year View: high-performance Cairo canvas with 12 month grids and details panel
+        // 6. Year View: high-performance Cairo canvas with Planner (BusyCal 12x31 matrix) and Grid (12-month cards) modes
+        let year_view_options_popover = gtk::Popover::builder()
+            .has_arrow(true)
+            .autohide(true)
+            .css_classes(vec!["view-options-popover"])
+            .build();
+
+        let year_view_pop_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(10)
+            .margin_top(12)
+            .margin_bottom(12)
+            .margin_start(12)
+            .margin_end(12)
+            .build();
+
+        let year_mode_section = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .build();
+        let year_mode_title = gtk::Label::builder()
+            .label(&crate::i18n::gettext("Year View Layout"))
+            .css_classes(vec!["caption-heading", "dim-label"])
+            .xalign(0.0)
+            .build();
+        year_mode_section.append(&year_mode_title);
+
+        let year_mode_toggle_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .css_classes(vec!["linked"])
+            .homogeneous(true)
+            .build();
+
+        let initial_year_style = self.imp().year_view_style.get();
+
+        let planner_btn_content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .halign(gtk::Align::Center)
+            .build();
+        planner_btn_content.append(&gtk::Image::from_icon_name("view-list-symbolic"));
+        planner_btn_content.append(&gtk::Label::new(Some(&crate::i18n::gettext("Planner"))));
+        let year_planner_btn = gtk::ToggleButton::builder()
+            .child(&planner_btn_content)
+            .active(initial_year_style == YearViewStyle::Planner)
+            .build();
+
+        let grid_btn_content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .halign(gtk::Align::Center)
+            .build();
+        grid_btn_content.append(&gtk::Image::from_icon_name("view-grid-symbolic"));
+        grid_btn_content.append(&gtk::Label::new(Some(&crate::i18n::gettext("Grid"))));
+        let year_grid_btn = gtk::ToggleButton::builder()
+            .child(&grid_btn_content)
+            .group(&year_planner_btn)
+            .active(initial_year_style == YearViewStyle::Grid)
+            .build();
+
+        year_mode_toggle_box.append(&year_planner_btn);
+        year_mode_toggle_box.append(&year_grid_btn);
+        year_mode_section.append(&year_mode_toggle_box);
+        year_view_pop_box.append(&year_mode_section);
+        year_view_options_popover.set_child(Some(&year_view_pop_box));
+
+        let year_view_options_split_btn = adw::SplitButton::builder()
+            .icon_name(match initial_year_style {
+                YearViewStyle::Planner => "view-list-symbolic",
+                YearViewStyle::Grid => "view-grid-symbolic",
+            })
+            .tooltip_text(&crate::i18n::gettext("Switch Year View Style (Planner / Grid)"))
+            .popover(&year_view_options_popover)
+            .valign(gtk::Align::Center)
+            .build();
+        self.imp()
+            .year_view_options_split_btn
+            .replace(Some(year_view_options_split_btn.clone()));
+
+        {
+            let page_weak = self.downgrade();
+            let pop_weak = year_view_options_popover.downgrade();
+            year_planner_btn.connect_toggled(move |btn| {
+                if !btn.is_active() {
+                    return;
+                }
+                if let Some(page) = page_weak.upgrade() {
+                    page.set_year_view_style(YearViewStyle::Planner);
+                }
+                if let Some(pop) = pop_weak.upgrade() {
+                    pop.popdown();
+                }
+            });
+        }
+        {
+            let page_weak = self.downgrade();
+            let pop_weak = year_view_options_popover.downgrade();
+            year_grid_btn.connect_toggled(move |btn| {
+                if !btn.is_active() {
+                    return;
+                }
+                if let Some(page) = page_weak.upgrade() {
+                    page.set_year_view_style(YearViewStyle::Grid);
+                }
+                if let Some(pop) = pop_weak.upgrade() {
+                    pop.popdown();
+                }
+            });
+        }
+        {
+            let page_weak = self.downgrade();
+            let planner_btn_clone = year_planner_btn.clone();
+            let grid_btn_clone = year_grid_btn.clone();
+            year_view_options_popover.connect_show(move |_| {
+                let Some(page) = page_weak.upgrade() else { return };
+                match page.imp().year_view_style.get() {
+                    YearViewStyle::Planner => {
+                        if !planner_btn_clone.is_active() {
+                            planner_btn_clone.set_active(true);
+                        }
+                    }
+                    YearViewStyle::Grid => {
+                        if !grid_btn_clone.is_active() {
+                            grid_btn_clone.set_active(true);
+                        }
+                    }
+                }
+            });
+        }
+        {
+            let page_weak = self.downgrade();
+            let planner_btn_clone = year_planner_btn.clone();
+            let grid_btn_clone = year_grid_btn.clone();
+            year_view_options_split_btn.connect_clicked(move |_| {
+                let Some(page) = page_weak.upgrade() else { return };
+                match page.imp().year_view_style.get() {
+                    YearViewStyle::Planner => {
+                        grid_btn_clone.set_active(true);
+                        page.set_year_view_style(YearViewStyle::Grid);
+                    }
+                    YearViewStyle::Grid => {
+                        planner_btn_clone.set_active(true);
+                        page.set_year_view_style(YearViewStyle::Planner);
+                    }
+                }
+            });
+        }
+
         let year_view = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .hexpand(true)
@@ -5875,6 +7014,7 @@ impl CalendarPage {
             .orientation(gtk::Orientation::Vertical)
             .spacing(0)
             .vexpand(true)
+            .visible(initial_year_style == YearViewStyle::Grid)
             .build();
         self.imp().year_details_container.replace(Some(details_container.clone()));
 
@@ -5914,6 +7054,9 @@ impl CalendarPage {
         let page_weak_paned = self.downgrade();
         year_paned.connect_position_notify(move |paned| {
             let Some(page) = page_weak_paned.upgrade() else { return };
+            if page.imp().year_view_style.get() != YearViewStyle::Grid {
+                return;
+            }
             let pos = paned.position();
             if pos <= 0 { return; }
             match page.imp().year_preview_orientation.get() {
@@ -5969,26 +7112,6 @@ impl CalendarPage {
             let height = height_i32 as f64;
             let is_dark = adw::StyleManager::default().is_dark();
             let year = page.current_calendar_viewport().anchor_date.year();
-            let show_week_numbers = AppSettings::try_new()
-                .map(|s| s.calendar_show_week_numbers())
-                .unwrap_or(false);
-            let first_weekday = configured_first_weekday();
-            let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
-            let total_h = layout.height.ceil();
-
-            let scroll_y = if let Some(vadj) = page.imp().year_vadjustment.borrow().as_ref() {
-                if (vadj.upper() - total_h).abs() > 1.0 {
-                    vadj.set_upper(total_h.max(1.0));
-                }
-                if (vadj.page_size() - height).abs() > 1.0 {
-                    vadj.set_page_size(height);
-                    vadj.set_page_increment((height * 0.9).max(10.0));
-                }
-                vadj.value()
-            } else {
-                0.0
-            };
-
             let selected_day = page
                 .imp()
                 .view_state
@@ -5997,21 +7120,79 @@ impl CalendarPage {
                 .filter(|range| range.start.year() == year)
                 .map(|range| range.start);
             let today = Local::now().date_naive();
-            let markers = page.imp().year_markers.borrow();
             let hovered = page.imp().year_hovered_target.borrow().clone();
 
-            let _ = cr.save();
-            cr.translate(0.0, -scroll_y);
-            Self::draw_year_canvas(
-                cr,
-                &layout,
-                &markers,
-                selected_day,
-                today,
-                hovered.as_ref(),
-                is_dark,
-            );
-            let _ = cr.restore();
+            match page.imp().year_view_style.get() {
+                YearViewStyle::Planner => {
+                    let planner_layout = Self::prepare_year_planner_layout(year, width, height);
+                    let total_h = planner_layout.height.ceil();
+                    let scroll_y = if let Some(vadj) = page.imp().year_vadjustment.borrow().as_ref() {
+                        if (vadj.upper() - total_h).abs() > 1.0 {
+                            vadj.set_upper(total_h.max(1.0));
+                        }
+                        if (vadj.page_size() - height).abs() > 1.0 {
+                            vadj.set_page_size(height);
+                            vadj.set_page_increment((height * 0.9).max(10.0));
+                        }
+                        let max_scroll = (total_h - height).max(0.0);
+                        vadj.value().clamp(0.0, max_scroll)
+                    } else {
+                        0.0
+                    };
+                    let scroll_y_snapped = scroll_y.round();
+                    let planner_months = page.imp().year_planner_months.borrow();
+                    let day_previews = page.imp().year_day_previews.borrow();
+                    let _ = cr.save();
+                    cr.translate(0.0, -scroll_y_snapped);
+                    Self::draw_year_planner_canvas(
+                        cr,
+                        &planner_layout,
+                        &planner_months,
+                        &day_previews,
+                        selected_day,
+                        today,
+                        hovered.as_ref(),
+                        scroll_y_snapped,
+                        height,
+                        is_dark,
+                    );
+                    let _ = cr.restore();
+                }
+                YearViewStyle::Grid => {
+                    let show_week_numbers = AppSettings::try_new()
+                        .map(|s| s.calendar_show_week_numbers())
+                        .unwrap_or(false);
+                    let first_weekday = configured_first_weekday();
+                    let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
+                    let total_h = layout.height.ceil();
+
+                    let scroll_y = if let Some(vadj) = page.imp().year_vadjustment.borrow().as_ref() {
+                        if (vadj.upper() - total_h).abs() > 1.0 {
+                            vadj.set_upper(total_h.max(1.0));
+                        }
+                        if (vadj.page_size() - height).abs() > 1.0 {
+                            vadj.set_page_size(height);
+                            vadj.set_page_increment((height * 0.9).max(10.0));
+                        }
+                        vadj.value()
+                    } else {
+                        0.0
+                    };
+                    let markers = page.imp().year_markers.borrow();
+                    let _ = cr.save();
+                    cr.translate(0.0, -scroll_y);
+                    Self::draw_year_canvas(
+                        cr,
+                        &layout,
+                        &markers,
+                        selected_day,
+                        today,
+                        hovered.as_ref(),
+                        is_dark,
+                    );
+                    let _ = cr.restore();
+                }
+            }
         });
 
         // Primary click gesture
@@ -6022,17 +7203,32 @@ impl CalendarPage {
             let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
             area.grab_focus();
             let year = page.current_calendar_viewport().anchor_date.year();
-            let show_week_numbers = AppSettings::try_new()
-                .map(|s| s.calendar_show_week_numbers())
-                .unwrap_or(false);
-            let first_weekday = configured_first_weekday();
             let width = area.width() as f64;
-            let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
+            let height = area.height() as f64;
             let scroll_y = page.imp().year_vadjustment.borrow().as_ref().map(|v| v.value()).unwrap_or(0.0);
             let logical_y = y + scroll_y;
-            if let Some(target) = Self::hit_test_year_canvas(&layout, x, logical_y) {
+            let style = page.imp().year_view_style.get();
+            let (target, planner_layout_opt) = match style {
+                YearViewStyle::Planner => {
+                    let pl = Self::prepare_year_planner_layout(year, width, height);
+                    let t = Self::hit_test_year_planner_canvas(&pl, x, logical_y);
+                    (t, Some(pl))
+                }
+                YearViewStyle::Grid => {
+                    let show_week_numbers = AppSettings::try_new()
+                        .map(|s| s.calendar_show_week_numbers())
+                        .unwrap_or(false);
+                    let first_weekday = configured_first_weekday();
+                    let gl = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
+                    (Self::hit_test_year_canvas(&gl, x, logical_y), None)
+                }
+            };
+            if let Some(target) = target {
                 match target {
                     YearCanvasHitTarget::MonthHeader(m) => {
+                        if let Some(pop) = page.imp().year_planner_popover.borrow_mut().take() {
+                            pop.popdown();
+                        }
                         if let Some(first_of_month) = NaiveDate::from_ymd_opt(year, m, 1) {
                             *page.imp().current_date.borrow_mut() = first_of_month;
                             page.imp()
@@ -6046,7 +7242,14 @@ impl CalendarPage {
                     YearCanvasHitTarget::Day(target_date) => {
                         if n_press == 1 {
                             page.select_calendar_day(target_date);
+                            if let Some(pl) = planner_layout_opt.as_ref() {
+                                let cell_rect = Self::year_planner_day_rect(pl, target_date, scroll_y);
+                                page.show_year_planner_day_popover(&area, target_date, cell_rect);
+                            }
                         } else if n_press >= 2 {
+                            if let Some(pop) = page.imp().year_planner_popover.borrow_mut().take() {
+                                pop.popdown();
+                            }
                             *page.imp().current_date.borrow_mut() = target_date;
                             page.imp()
                                 .view_state
@@ -6070,16 +7273,26 @@ impl CalendarPage {
             let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
             area.grab_focus();
             let year = page.current_calendar_viewport().anchor_date.year();
-            let show_week_numbers = AppSettings::try_new()
-                .map(|s| s.calendar_show_week_numbers())
-                .unwrap_or(false);
-            let first_weekday = configured_first_weekday();
             let width = area.width() as f64;
-            let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
+            let height = area.height() as f64;
             let scroll_y = page.imp().year_vadjustment.borrow().as_ref().map(|v| v.value()).unwrap_or(0.0);
             let logical_y = y + scroll_y;
             let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
-            if let Some(target) = Self::hit_test_year_canvas(&layout, x, logical_y) {
+            let target = match page.imp().year_view_style.get() {
+                YearViewStyle::Planner => {
+                    let pl = Self::prepare_year_planner_layout(year, width, height);
+                    Self::hit_test_year_planner_canvas(&pl, x, logical_y)
+                }
+                YearViewStyle::Grid => {
+                    let show_week_numbers = AppSettings::try_new()
+                        .map(|s| s.calendar_show_week_numbers())
+                        .unwrap_or(false);
+                    let first_weekday = configured_first_weekday();
+                    let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
+                    Self::hit_test_year_canvas(&layout, x, logical_y)
+                }
+            };
+            if let Some(target) = target {
                 match target {
                     YearCanvasHitTarget::Day(target_date) => {
                         page.select_calendar_day(target_date);
@@ -6104,16 +7317,26 @@ impl CalendarPage {
             let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
             area.grab_focus();
             let year = page.current_calendar_viewport().anchor_date.year();
-            let show_week_numbers = AppSettings::try_new()
-                .map(|s| s.calendar_show_week_numbers())
-                .unwrap_or(false);
-            let first_weekday = configured_first_weekday();
             let width = area.width() as f64;
-            let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
+            let height = area.height() as f64;
             let scroll_y = page.imp().year_vadjustment.borrow().as_ref().map(|v| v.value()).unwrap_or(0.0);
             let logical_y = y + scroll_y;
             let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
-            if let Some(target) = Self::hit_test_year_canvas(&layout, x, logical_y) {
+            let target = match page.imp().year_view_style.get() {
+                YearViewStyle::Planner => {
+                    let pl = Self::prepare_year_planner_layout(year, width, height);
+                    Self::hit_test_year_planner_canvas(&pl, x, logical_y)
+                }
+                YearViewStyle::Grid => {
+                    let show_week_numbers = AppSettings::try_new()
+                        .map(|s| s.calendar_show_week_numbers())
+                        .unwrap_or(false);
+                    let first_weekday = configured_first_weekday();
+                    let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
+                    Self::hit_test_year_canvas(&layout, x, logical_y)
+                }
+            };
+            if let Some(target) = target {
                 match target {
                     YearCanvasHitTarget::Day(target_date) => {
                         page.select_calendar_day(target_date);
@@ -6136,15 +7359,24 @@ impl CalendarPage {
             let Some(page) = page_weak_motion.upgrade() else { return };
             let Some(area) = ctrl.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
             let year = page.current_calendar_viewport().anchor_date.year();
-            let show_week_numbers = AppSettings::try_new()
-                .map(|s| s.calendar_show_week_numbers())
-                .unwrap_or(false);
-            let first_weekday = configured_first_weekday();
             let width = area.width() as f64;
-            let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
+            let height = area.height() as f64;
             let scroll_y = page.imp().year_vadjustment.borrow().as_ref().map(|v| v.value()).unwrap_or(0.0);
             let logical_y = y + scroll_y;
-            let target = Self::hit_test_year_canvas(&layout, x, logical_y);
+            let target = match page.imp().year_view_style.get() {
+                YearViewStyle::Planner => {
+                    let pl = Self::prepare_year_planner_layout(year, width, height);
+                    Self::hit_test_year_planner_canvas(&pl, x, logical_y)
+                }
+                YearViewStyle::Grid => {
+                    let show_week_numbers = AppSettings::try_new()
+                        .map(|s| s.calendar_show_week_numbers())
+                        .unwrap_or(false);
+                    let first_weekday = configured_first_weekday();
+                    let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
+                    Self::hit_test_year_canvas(&layout, x, logical_y)
+                }
+            };
             let old_target = page.imp().year_hovered_target.borrow().clone();
             if target != old_target {
                 *page.imp().year_hovered_target.borrow_mut() = target.clone();
@@ -6174,21 +7406,34 @@ impl CalendarPage {
         year_canvas.connect_query_tooltip(move |area, x, y, _keyboard, tooltip| {
             let Some(page) = page_weak_tt.upgrade() else { return false };
             let year = page.current_calendar_viewport().anchor_date.year();
-            let show_week_numbers = AppSettings::try_new()
-                .map(|s| s.calendar_show_week_numbers())
-                .unwrap_or(false);
-            let first_weekday = configured_first_weekday();
             let width = area.width() as f64;
-            let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
+            let height = area.height() as f64;
             let scroll_y = page.imp().year_vadjustment.borrow().as_ref().map(|v| v.value()).unwrap_or(0.0);
             let logical_y = y as f64 + scroll_y;
-            if let Some(target) = Self::hit_test_year_canvas(&layout, x as f64, logical_y) {
+            let target = match page.imp().year_view_style.get() {
+                YearViewStyle::Planner => {
+                    let pl = Self::prepare_year_planner_layout(year, width, height);
+                    Self::hit_test_year_planner_canvas(&pl, x as f64, logical_y)
+                }
+                YearViewStyle::Grid => {
+                    let show_week_numbers = AppSettings::try_new()
+                        .map(|s| s.calendar_show_week_numbers())
+                        .unwrap_or(false);
+                    let first_weekday = configured_first_weekday();
+                    let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
+                    Self::hit_test_year_canvas(&layout, x as f64, logical_y)
+                }
+            };
+            if let Some(target) = target {
                 match target {
                     YearCanvasHitTarget::MonthHeader(m) => {
                         tooltip.set_text(Some(&format!("{}: {} {}", crate::i18n::gettext("Go to month view for"), Self::calendar_month_name(m), year)));
                         true
                     }
                     YearCanvasHitTarget::Day(date) => {
+                        if page.imp().year_view_style.get() == YearViewStyle::Planner {
+                            return false;
+                        }
                         let markers = page.imp().year_markers.borrow();
                         let count = markers.get(&date).copied().unwrap_or(0);
                         let text = if count == 0 {
@@ -6323,6 +7568,7 @@ impl CalendarPage {
                     .view_state
                     .borrow_mut()
                     .select_event(item.identity.clone(), Some(idx));
+                page.select_and_inspect_event(&item.record, event_start_date(&item.record));
                 area.queue_draw();
 
                 if n_press >= 2 {
@@ -6550,7 +7796,6 @@ impl CalendarPage {
             month_btn.clone(),
             agenda_btn.clone(),
             year_btn.clone(),
-            list_btn.clone(),
         ]));
 
         // View toggle handler
@@ -6605,15 +7850,6 @@ impl CalendarPage {
             move |btn| {
                 if btn.is_active() {
                     page.select_calendar_view(CalendarView::Year);
-                }
-            }
-        ));
-        list_btn.connect_toggled(glib::clone!(
-            #[weak(rename_to = page)]
-            self,
-            move |btn| {
-                if btn.is_active() {
-                    page.select_calendar_view(CalendarView::List);
                 }
             }
         ));
@@ -6741,6 +7977,8 @@ impl CalendarPage {
                     return;
                 }
                 let today = Local::now().date_naive();
+                page.imp().custom_selected_range.borrow_mut().take();
+                page.imp().mini_calendar_last_key.replace(None);
                 page.imp().agenda_needs_initial_scroll.set(true);
                 page.imp().time_grid_reset_scroll.set(true);
                 page.imp().time_grid_center_ratio.set(None);
@@ -6788,22 +8026,33 @@ impl CalendarPage {
             .margin_start(6)
             .margin_end(6)
             .margin_top(4)
-            .margin_bottom(4)
+            .margin_bottom(0)
             .vexpand(true)
             .build();
 
         let taskpad_header = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(6)
+            .spacing(4)
             .build();
+
+        let taskpad_collapse_btn = gtk::Button::builder()
+            .icon_name("pan-down-symbolic")
+            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(&gettext("Toggle section"))
+            .valign(gtk::Align::Center)
+            .build();
+        self.imp().taskpad_collapse_btn.replace(Some(taskpad_collapse_btn.clone()));
+
         let taskpad_title = gtk::Label::builder()
             .label(&gettext("Tasks"))
-            .css_classes(vec!["heading", "title-4"])
+            .css_classes(vec!["heading"])
             .halign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
             .build();
         let taskpad_count = gtk::Label::builder()
             .css_classes(vec!["dim-label", "caption"])
             .halign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
             .build();
         self.imp()
             .taskpad_count
@@ -6813,6 +8062,7 @@ impl CalendarPage {
             .icon_name("list-add-symbolic")
             .tooltip_text(&gettext("Create new task"))
             .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
             .build();
         taskpad_add_btn.connect_clicked(move |btn| {
             if let Some(root) = btn.root() {
@@ -6822,10 +8072,73 @@ impl CalendarPage {
             }
         });
 
+        let sidebar_options_btn = gtk::MenuButton::builder()
+            .icon_name("view-more-symbolic")
+            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(&gettext("Sidebar options"))
+            .valign(gtk::Align::Center)
+            .build();
+
+        let opt_popover = gtk::Popover::new();
+        let opt_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .margin_start(10)
+            .margin_end(10)
+            .margin_top(8)
+            .margin_bottom(8)
+            .build();
+
+        let opt_label = gtk::Label::builder()
+            .label(&gettext("Sidebar Sections"))
+            .css_classes(vec!["heading", "caption"])
+            .halign(gtk::Align::Start)
+            .build();
+        opt_box.append(&opt_label);
+
+        let initial_show_memos = AppSettings::try_new()
+            .map(|s| s.calendar_sidebar_show_memos())
+            .unwrap_or(false);
+        self.imp().sidebar_show_memos.set(initial_show_memos);
+
+        let memos_check = gtk::CheckButton::builder()
+            .label(&gettext("Show Memos Tab"))
+            .active(initial_show_memos)
+            .build();
+        let page_weak_opts = self.downgrade();
+        memos_check.connect_toggled(move |chk| {
+            let active = chk.is_active();
+            if let Some(page) = page_weak_opts.upgrade() {
+                page.imp().sidebar_show_memos.set(active);
+                if let Some(settings) = AppSettings::try_new() {
+                    settings.set_calendar_sidebar_show_memos(active);
+                }
+                if let (Some(title), Some(switcher), Some(add_btn)) = (
+                    page.imp().sidebar_details_title.borrow().as_ref(),
+                    page.imp().sidebar_stack_switcher.borrow().as_ref(),
+                    page.imp().sidebar_memos_add_btn.borrow().as_ref(),
+                ) {
+                    title.set_visible(!active);
+                    switcher.set_visible(active);
+                    if !active {
+                        add_btn.set_visible(false);
+                        if let Some(stack) = page.imp().sidebar_lower_stack.borrow().as_ref() {
+                            stack.set_visible_child_name("details");
+                        }
+                    }
+                }
+            }
+        });
+        opt_box.append(&memos_check);
+        opt_popover.set_child(Some(&opt_box));
+        sidebar_options_btn.set_popover(Some(&opt_popover));
+
+        taskpad_header.append(&taskpad_collapse_btn);
         taskpad_header.append(&taskpad_title);
         taskpad_header.append(&taskpad_count);
         taskpad_header.append(&taskpad_spacer);
         taskpad_header.append(&taskpad_add_btn);
+        taskpad_header.append(&sidebar_options_btn);
         taskpad_box.append(&taskpad_header);
 
         let taskpad_state = gtk::Label::builder()
@@ -7031,6 +8344,18 @@ impl CalendarPage {
             .vexpand(true)
             .child(&taskpad_canvas)
             .build();
+        self.imp().taskpad_scroll.replace(Some(taskpad_scroll.clone()));
+        if let Some(btn) = self.imp().taskpad_collapse_btn.borrow().as_ref() {
+            let scroll_weak = taskpad_scroll.downgrade();
+            let btn_weak = btn.downgrade();
+            btn.connect_clicked(move |_| {
+                if let (Some(scroll), Some(btn)) = (scroll_weak.upgrade(), btn_weak.upgrade()) {
+                    let is_vis = scroll.is_visible();
+                    scroll.set_visible(!is_vis);
+                    btn.set_icon_name(if is_vis { "pan-end-symbolic" } else { "pan-down-symbolic" });
+                }
+            });
+        }
         taskpad_box.append(&taskpad_scroll);
 
         tag_vpaned.set_start_child(Some(&taskpad_box));
@@ -7044,7 +8369,7 @@ impl CalendarPage {
             .margin_start(6)
             .margin_end(6)
             .margin_top(4)
-            .margin_bottom(4)
+            .margin_bottom(0)
             .vexpand(true)
             .build();
 
@@ -7054,7 +8379,7 @@ impl CalendarPage {
             .build();
         let memopad_title = gtk::Label::builder()
             .label(&gettext("Memos"))
-            .css_classes(vec!["heading", "title-4"])
+            .css_classes(vec!["heading"])
             .halign(gtk::Align::Start)
             .build();
         let memopad_count = gtk::Label::builder()
@@ -7275,9 +8600,156 @@ impl CalendarPage {
             .build();
         memopad_box.append(&memopad_scroll);
 
-        tag_vpaned.set_end_child(Some(&memopad_box));
+        // 2. Lower Section: Event Details & Optional Memopad
+        let sidebar_lower_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .margin_start(6)
+            .margin_end(6)
+            .margin_top(4)
+            .margin_bottom(4)
+            .vexpand(true)
+            .build();
+
+        let lower_header = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .build();
+
+        let inspector_collapse_btn = gtk::Button::builder()
+            .icon_name("pan-down-symbolic")
+            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(&gettext("Toggle section"))
+            .valign(gtk::Align::Center)
+            .build();
+        self.imp().inspector_collapse_btn.replace(Some(inspector_collapse_btn.clone()));
+
+        let initial_show_memos = self.imp().sidebar_show_memos.get();
+
+        let sidebar_details_title = gtk::Label::builder()
+            .label(&gettext("Details"))
+            .css_classes(vec!["heading"])
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
+            .visible(!initial_show_memos)
+            .build();
+        self.imp().sidebar_details_title.replace(Some(sidebar_details_title.clone()));
+
+        // Switcher box for Details / Memos
+        let switcher_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(2)
+            .css_classes(vec!["linked"])
+            .valign(gtk::Align::Center)
+            .visible(initial_show_memos)
+            .build();
+        let details_tab_btn = gtk::ToggleButton::builder()
+            .label(&gettext("Details"))
+            .active(true)
+            .css_classes(vec!["flat"])
+            .build();
+        let memos_tab_btn = gtk::ToggleButton::builder()
+            .label(&gettext("Memos"))
+            .group(&details_tab_btn)
+            .css_classes(vec!["flat"])
+            .build();
+        switcher_box.append(&details_tab_btn);
+        switcher_box.append(&memos_tab_btn);
+        self.imp().sidebar_stack_switcher.replace(Some(switcher_box.clone()));
+
+        let lower_spacer = gtk::Box::builder().hexpand(true).build();
+
+        let sidebar_memos_add_btn = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text(&gettext("Create new memo"))
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        sidebar_memos_add_btn.connect_clicked(move |btn| {
+            if let Some(root) = btn.root() {
+                if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
+                    window.present_new_memo();
+                }
+            }
+        });
+        self.imp().sidebar_memos_add_btn.replace(Some(sidebar_memos_add_btn.clone()));
+
+        lower_header.append(&inspector_collapse_btn);
+        lower_header.append(&sidebar_details_title);
+        lower_header.append(&switcher_box);
+        lower_header.append(&lower_spacer);
+        lower_header.append(&sidebar_memos_add_btn);
+        sidebar_lower_box.append(&lower_header);
+
+        // Lower Stack
+        let sidebar_lower_stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        self.imp().sidebar_lower_stack.replace(Some(sidebar_lower_stack.clone()));
+
+        // Page A: Event Inspector
+        let event_inspector_content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        self.imp().event_inspector_content.replace(Some(event_inspector_content.clone()));
+
+        let event_inspector_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .propagate_natural_height(false)
+            .min_content_height(40)
+            .vexpand(true)
+            .hexpand(true)
+            .child(&event_inspector_content)
+            .build();
+        self.imp().event_inspector_scroll.replace(Some(event_inspector_scroll.clone()));
+        sidebar_lower_stack.add_named(&event_inspector_scroll, Some("details"));
+
+        // Page B: Memopad
+        memopad_header.set_visible(false);
+        sidebar_lower_stack.add_named(&memopad_box, Some("memos"));
+
+        sidebar_lower_box.append(&sidebar_lower_stack);
+
+        let stack_for_details = sidebar_lower_stack.clone();
+        let add_btn_for_details = sidebar_memos_add_btn.clone();
+        details_tab_btn.connect_toggled(move |btn| {
+            if btn.is_active() {
+                stack_for_details.set_visible_child_name("details");
+                add_btn_for_details.set_visible(false);
+            }
+        });
+
+        let stack_for_memos = sidebar_lower_stack.clone();
+        let add_btn_for_memos = sidebar_memos_add_btn.clone();
+        memos_tab_btn.connect_toggled(move |btn| {
+            if btn.is_active() {
+                stack_for_memos.set_visible_child_name("memos");
+                add_btn_for_memos.set_visible(true);
+            }
+        });
+
+        let stack_weak_coll = sidebar_lower_stack.downgrade();
+        let btn_weak_coll = inspector_collapse_btn.downgrade();
+        inspector_collapse_btn.connect_clicked(move |_| {
+            if let (Some(stack), Some(btn)) = (stack_weak_coll.upgrade(), btn_weak_coll.upgrade()) {
+                let is_vis = stack.is_visible();
+                stack.set_visible(!is_vis);
+                btn.set_icon_name(if is_vis { "pan-end-symbolic" } else { "pan-down-symbolic" });
+            }
+        });
+
+        tag_vpaned.set_end_child(Some(&sidebar_lower_box));
         tag_vpaned.set_resize_end_child(true);
         tag_vpaned.set_shrink_end_child(true);
+
+        self.refresh_event_inspector();
 
         // Connect toggle button to tag_vpaned visibility
         if let Some(btn) = self.imp().tag_vpane_toggle_btn.borrow().as_ref() {
@@ -7481,6 +8953,7 @@ impl CalendarPage {
             return;
         }
         self.clear_selected_time_slot();
+        self.imp().custom_selected_range.borrow_mut().take();
         self.imp().view_state.borrow_mut().select_event(None, None);
         let imp = self.imp();
         if imp.is_mobile.get() {
@@ -7520,7 +8993,6 @@ impl CalendarPage {
                 CalendarView::Month,
                 CalendarView::Agenda,
                 CalendarView::Year,
-                CalendarView::List,
             ]) {
                 button.set_active(candidate == view);
             }
@@ -7555,7 +9027,10 @@ impl CalendarPage {
             .settings
             .borrow()
             .as_ref()
-            .map(|settings| calendar_view_from_name(&persisted_calendar_view_name(Some(settings))))
+            .map(|settings| match calendar_view_from_name(&persisted_calendar_view_name(Some(settings))) {
+                CalendarView::List => CalendarView::Agenda,
+                other => other,
+            })
             .unwrap_or_else(|| *self.imp().current_view.borrow());
 
         if *self.imp().current_view.borrow() == view {
@@ -7584,7 +9059,6 @@ impl CalendarPage {
                 CalendarView::Month,
                 CalendarView::Agenda,
                 CalendarView::Year,
-                CalendarView::List,
             ]) {
                 button.set_active(candidate == view);
             }
@@ -7859,14 +9333,22 @@ impl CalendarPage {
                     child_box.append(&primary_ind);
                 }
 
-                // 5. Remote sync icon
-                if item.backend_name != "local" && source_uid != "local-calendar" {
-                    let sync_icon =
-                        gtk::Image::from_icon_name("media-playlist-repeat-symbolic");
-                    sync_icon.add_css_class("dim-label");
-                    sync_icon.set_tooltip_text(Some(&gettext("Synchronized calendar")));
-                    sync_icon.set_valign(gtk::Align::Center);
-                    child_box.append(&sync_icon);
+                // 5. Sync problem indicator (only shown if NOT synchronized / error present)
+                let has_sync_problem = !item.enabled
+                    || self
+                        .imp()
+                        .calendar_load_error
+                        .borrow()
+                        .as_ref()
+                        .map(|e| e.contains(&item.display_name) || e.contains(&source_uid))
+                        .unwrap_or(false);
+                if has_sync_problem {
+                    let sync_error_icon =
+                        gtk::Image::from_icon_name("dialog-warning-symbolic");
+                    sync_error_icon.add_css_class("warning");
+                    sync_error_icon.set_tooltip_text(Some(&gettext("Calendar not synchronized or offline")));
+                    sync_error_icon.set_valign(gtk::Align::Center);
+                    child_box.append(&sync_error_icon);
                 }
 
                 let row = gtk::ListBoxRow::builder()
@@ -8536,6 +10018,22 @@ impl CalendarPage {
             self.shift_month_week(direction);
             return;
         }
+        let custom_opt = self.imp().custom_selected_range.borrow().clone();
+        if let Some(custom) = custom_opt {
+            let span = (custom.last_inclusive() - custom.start).num_days() + 1;
+            if span > 0 {
+                let delta = direction as i64 * span;
+                let new_start = custom.start + Duration::days(delta);
+                let new_range = CalendarDateRange::from_days(new_start, span);
+                *self.imp().custom_selected_range.borrow_mut() = Some(new_range);
+                *self.imp().current_date.borrow_mut() = new_start;
+                self.imp().mini_calendar_last_key.replace(None);
+                self.refresh_period_label();
+                self.refresh_calendar_views();
+                self.sync_mini_calendar();
+                return;
+            }
+        }
         self.imp().agenda_needs_initial_scroll.set(true);
         self.imp().agenda_selected_row.set(None);
         self.imp().view_state.borrow_mut().navigate_step(
@@ -8628,7 +10126,12 @@ impl CalendarPage {
                                 if let Some(c) = page.imp().month_canvas.borrow().as_ref() {
                                     c.queue_draw();
                                 }
-                                page.sync_mini_calendar();
+                                let page_weak_sync = page.downgrade();
+                                glib::idle_add_local_once(move || {
+                                    if let Some(p) = page_weak_sync.upgrade() {
+                                        p.sync_mini_calendar();
+                                    }
+                                });
                                 return glib::ControlFlow::Break;
                             }
 
@@ -8681,16 +10184,30 @@ impl CalendarPage {
         let current_view = *self.imp().current_view.borrow();
         let viewport = self.current_calendar_viewport();
 
-        let key = (current_view, date, viewport.visible_range);
+        let custom_range = self.imp().custom_selected_range.borrow().clone();
+        let key = (current_view, date, viewport.visible_range, custom_range);
         if self.imp().mini_calendar_last_key.borrow().as_ref() == Some(&key) {
             return;
         }
 
         self.imp().syncing_mini_calendar.set(true);
 
-        if let Some(chooser) = self.imp().sidebar_date_chooser.borrow().as_ref() {
+        let choosers = self.imp().sidebar_date_choosers.borrow().clone();
+        for (idx, chooser) in choosers.iter().enumerate() {
+            let target_date = if idx == 0 {
+                date
+            } else {
+                step_date_by_month(date, idx as i32)
+            };
+            chooser.browse_date.set(target_date);
+            if chooser.container.is_visible() || idx == 0 {
+                self.refresh_date_chooser_grid(chooser);
+            }
+        }
+        let popover_chooser = self.imp().popover_date_chooser.borrow().clone();
+        if let Some(chooser) = popover_chooser {
             chooser.browse_date.set(date);
-            self.refresh_date_chooser_grid(chooser);
+            self.refresh_date_chooser_grid(&chooser);
         }
 
         let is_month_view = current_view == CalendarView::Month;
@@ -8715,11 +10232,34 @@ impl CalendarPage {
                 cal.select_day(&dt);
             }
             cal.clear_marks();
+            let agenda_dates_set = if current_view == CalendarView::Agenda {
+                Some(
+                    self.imp()
+                        .agenda_items
+                        .borrow()
+                        .iter()
+                        .filter_map(|item| match item {
+                            PreparedAgendaItem::DateHeader { date, .. } => Some(*date),
+                            _ => None,
+                        })
+                        .collect::<std::collections::HashSet<NaiveDate>>(),
+                )
+            } else {
+                None
+            };
             let days_count = days_in_month(y, m);
             for day in 1..=days_count {
                 if let Some(d) = NaiveDate::from_ymd_opt(y, m, day) {
-                    let visible = if is_month_view {
+                    let visible = if let Some(custom) = custom_range {
+                        custom.contains(d)
+                    } else if is_month_view {
                         has_selected_date && is_day_visible_in_viewport(&viewport, d)
+                    } else if current_view == CalendarView::Year
+                        || current_view == CalendarView::List
+                    {
+                        false
+                    } else if let Some(ref ag_dates) = agenda_dates_set {
+                        ag_dates.contains(&d)
                     } else {
                         is_day_visible_in_viewport(&viewport, d)
                     };
@@ -8749,8 +10289,91 @@ impl CalendarPage {
     }
 
     pub fn navigate_to_date(&self, date: NaiveDate) {
+        self.imp().custom_selected_range.borrow_mut().take();
         self.set_calendar_anchor(date);
         self.refresh_calendar_views();
+    }
+
+    pub fn navigate_to_custom_date_range(&self, start: NaiveDate, end: NaiveDate) {
+        let (min_d, max_d) = if start <= end { (start, end) } else { (end, start) };
+        let span = (max_d - min_d).num_days() + 1;
+        if span <= 1 {
+            self.imp().custom_selected_range.borrow_mut().take();
+            self.navigate_to_date(min_d);
+            return;
+        }
+        let range = CalendarDateRange::from_days(min_d, span);
+        *self.imp().custom_selected_range.borrow_mut() = Some(range);
+        *self.imp().current_date.borrow_mut() = min_d;
+
+        *self.imp().current_view.borrow_mut() = CalendarView::Week;
+        self.imp()
+            .view_state
+            .borrow_mut()
+            .set_view(CalendarView::Week, configured_first_weekday());
+        if let Some(stack) = self.imp().calendar_stack.borrow().as_ref() {
+            stack.set_visible_child_name(calendar_view_name(CalendarView::Week));
+        }
+        self.imp().syncing_calendar_view.set(true);
+        if let Some(buttons) = self.imp().calendar_view_buttons.borrow().as_ref() {
+            for (button, candidate) in buttons.iter().zip([
+                CalendarView::Day,
+                CalendarView::WorkWeek,
+                CalendarView::Week,
+                CalendarView::Month,
+                CalendarView::Agenda,
+                CalendarView::Year,
+            ]) {
+                button.set_active(candidate == CalendarView::Week);
+            }
+        }
+        self.imp().syncing_calendar_view.set(false);
+
+        self.set_calendar_anchor(min_d);
+        self.imp().mini_calendar_last_key.replace(None);
+        self.refresh_period_label();
+        self.refresh_calendar_views();
+        self.sync_mini_calendar();
+    }
+
+    pub fn preview_custom_date_range(&self, start: NaiveDate, end: NaiveDate) {
+        let (min_d, max_d) = if start <= end { (start, end) } else { (end, start) };
+        let span = (max_d - min_d).num_days() + 1;
+        let range = CalendarDateRange::from_days(min_d, span);
+        *self.imp().custom_selected_range.borrow_mut() = Some(range);
+        self.imp().mini_calendar_last_key.replace(None);
+        self.sync_mini_calendar();
+    }
+
+    /// Navigate to the week starting at `week_start` (from a mini-calendar week number).
+    /// In Month view with week-scrolling enabled, the month grid starts at that week.
+    pub fn navigate_to_week(&self, week_start: NaiveDate) {
+        let view = *self.imp().current_view.borrow();
+        if view == CalendarView::Month && configured_month_scroll_by_week() {
+            self.finish_month_scroll_animation();
+            // Pick an anchor inside the dominant month of the new window
+            let range = CalendarDateRange::from_days(week_start, configured_month_grid_cells());
+            let (dom_y, dom_m) = dominant_month_for_range(range, None);
+            let anchor = if week_start.year() == dom_y && week_start.month() == dom_m {
+                week_start
+            } else {
+                NaiveDate::from_ymd_opt(dom_y, dom_m, 1).unwrap_or(week_start)
+            };
+            *self.imp().current_date.borrow_mut() = anchor;
+            {
+                let mut state = self.imp().view_state.borrow_mut();
+                state.anchor_date = anchor;
+                state.visible_range = range;
+                state.selected_range = None;
+            }
+            self.refresh_month_grid();
+            self.update_calendar_navigation_controls();
+            self.refresh_period_label();
+            self.imp().mini_calendar_last_key.replace(None);
+            self.sync_mini_calendar();
+            return;
+        }
+        self.navigate_to_date(week_start);
     }
 
     /// Navigate to a specific date for inspecting an appointment.
@@ -8823,7 +10446,20 @@ impl CalendarPage {
         }
         self.update_calendar_navigation_controls();
         self.refresh_period_label();
+        self.imp().mini_calendar_last_key.replace(None);
         self.sync_mini_calendar();
+
+        let inspected = self.imp().current_inspected_event.borrow().clone();
+        if let Some((current_ev, date)) = inspected {
+            if let Some(id) = CalendarEventIdentity::from_event(&current_ev) {
+                if let Some(updated_ev) = self.unique_loaded_calendar_event(&id) {
+                    *self.imp().current_inspected_event.borrow_mut() = Some((updated_ev, date));
+                    self.refresh_event_inspector();
+                } else {
+                    self.clear_inspected_event();
+                }
+            }
+        }
     }
 
     fn refresh_calendar_time_display(&self) {
@@ -9002,10 +10638,14 @@ impl CalendarPage {
         let Some(view) = self.imp().week_view.borrow().as_ref().cloned() else {
             return;
         };
-        let week_start = self.current_calendar_viewport().visible_range.start;
-        let days: Vec<NaiveDate> = (0..7)
-            .map(|i| week_start + chrono::Duration::days(i))
-            .collect();
+        let days: Vec<NaiveDate> = if let Some(custom) = self.imp().custom_selected_range.borrow().as_ref() {
+            custom.dates().collect()
+        } else {
+            let week_start = self.current_calendar_viewport().visible_range.start;
+            (0..7)
+                .map(|i| week_start + chrono::Duration::days(i))
+                .collect()
+        };
         self.render_continuous_time_grid(&view, &days);
     }
 
@@ -9040,10 +10680,16 @@ impl CalendarPage {
             self.imp().time_grid_center_ratio.get()
         };
 
+        let prev_page_size = view
+            .last_child()
+            .and_then(|w| w.downcast::<gtk::ScrolledWindow>().ok())
+            .map(|sw| sw.vadjustment().page_size())
+            .filter(|p| *p > 50.0);
+
         if target_center_ratio.is_none() && !should_reset {
             if let Some(sw) = view.last_child().and_then(|w| w.downcast::<gtk::ScrolledWindow>().ok()) {
                 let vadj = sw.vadjustment();
-                if vadj.upper() > 100.0 && vadj.page_size() > 50.0 {
+                if vadj.upper() > 100.0 && vadj.page_size() > 50.0 && vadj.value() > 1.0 {
                     let center_y = vadj.value() + (vadj.page_size() / 2.0);
                     let ratio = (center_y / vadj.upper()).clamp(0.0, 1.0);
                     target_center_ratio = Some(ratio);
@@ -9082,7 +10728,6 @@ impl CalendarPage {
         let chip_scale = configured_chip_scale();
         let slot_height = ((base_slot_height as f64) * chip_scale).round().max(12.0) as i32;
         let time_col_width = 52;
-        let allday_h = 24;
 
         let second_zone_name = configured_second_zone();
         let second_tz = timezone_from_name(&second_zone_name);
@@ -9108,6 +10753,8 @@ impl CalendarPage {
             .column_spacing(0)
             .row_spacing(0)
             .hexpand(true)
+            .vexpand(false)
+            .valign(gtk::Align::Start)
             .css_classes(vec!["calendar-header-grid"])
             .build();
 
@@ -9173,66 +10820,6 @@ impl CalendarPage {
             header_grid.attach(&header_cell, day_index as i32 + day_column_offset, 0, 1, 1);
         }
 
-        // Row 1: All-Day Row
-        let all_day_label = gtk::Label::builder()
-            .label(&crate::i18n::gettext("All Day"))
-            .css_classes(vec!["calendar-allday-label"])
-            .halign(gtk::Align::Center)
-            .valign(gtk::Align::Fill)
-            .width_request(time_col_width)
-            .build();
-        time_col_group.add_widget(&all_day_label);
-        header_grid.attach(&all_day_label, 0, 1, 1, 1);
-
-        if let Some(ref sec_group) = sec_col_group {
-            let sec_allday_box = gtk::Box::builder()
-                .orientation(gtk::Orientation::Vertical)
-                .css_classes(vec![
-                    "calendar-allday-label",
-                    "calendar-time-gutter-secondary",
-                ])
-                .width_request(time_col_width)
-                .valign(gtk::Align::Fill)
-                .build();
-            sec_group.add_widget(&sec_allday_box);
-            header_grid.attach(&sec_allday_box, 1, 1, 1, 1);
-        }
-
-        let days_overlay = gtk::Overlay::new();
-        days_overlay.set_hexpand(true);
-
-        let base_days_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(0)
-            .hexpand(true)
-            .build();
-
-        for (day_index, day) in days.iter().enumerate() {
-            let bg_cell = gtk::Box::builder()
-                .orientation(gtk::Orientation::Vertical)
-                .css_classes(vec!["calendar-allday-cell"])
-                .hexpand(true)
-                .height_request(allday_h)
-                .valign(gtk::Align::Fill)
-                .build();
-            day_groups[day_index].add_widget(&bg_cell);
-            install_day_drop_target(&bg_cell, self, *day);
-            base_days_box.append(&bg_cell);
-        }
-        days_overlay.set_child(Some(&base_days_box));
-
-        let allday_grid = gtk::Grid::builder()
-            .column_homogeneous(true)
-            .row_spacing(2)
-            .column_spacing(2)
-            .hexpand(true)
-            .valign(gtk::Align::Start)
-            .margin_top(1)
-            .margin_bottom(1)
-            .margin_start(1)
-            .margin_end(1)
-            .build();
-
         // Collect unique all-day and multi-day events across the displayed days
         let mut unique_allday: Vec<CalendarEventRecord> = Vec::new();
         let mut seen_ids: HashSet<String> = HashSet::new();
@@ -9254,8 +10841,8 @@ impl CalendarPage {
         }
 
         let mut spans: Vec<AlldaySpan> = Vec::new();
-        for event in unique_allday {
-            let range = event_display_range(&event);
+        for event in &unique_allday {
+            let range = event_display_range(event);
             let mut start_idx = None;
             let mut end_idx = 0;
             for (idx, day) in days.iter().enumerate() {
@@ -9271,7 +10858,7 @@ impl CalendarPage {
                 let span = end_idx - s;
                 if span > 0 {
                     spans.push(AlldaySpan {
-                        event,
+                        event: event.clone(),
                         start_col: s,
                         span,
                     });
@@ -9287,6 +10874,7 @@ impl CalendarPage {
         });
 
         let mut track_busy: Vec<Vec<bool>> = Vec::new();
+        let mut spans_with_tracks: Vec<(AlldaySpan, usize)> = Vec::new();
         for item in spans {
             let mut assigned_track = None;
             for (t_idx, row) in track_busy.iter().enumerate() {
@@ -9310,21 +10898,171 @@ impl CalendarPage {
                     track_busy[track][col] = true;
                 }
             }
+            spans_with_tracks.push((item, track));
+        }
 
+        let is_collapsed = self.imp().time_grid_allday_collapsed.get();
+        let track_count = track_busy.len();
+        let allday_h = if is_collapsed {
+            if track_count == 0 {
+                24
+            } else {
+                ((track_count * 8 + 2).max(24)) as i32
+            }
+        } else {
+            (track_count * 24 + 4).max(28) as i32
+        };
+
+        // Row 1: All-Day Column Header (Expander toggle button + label)
+        let all_day_container = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(0)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Fill)
+            .vexpand(false)
+            .css_classes(vec!["calendar-allday-label"])
+            .width_request(time_col_width)
+            .build();
+
+        if !unique_allday.is_empty() {
+            if !is_collapsed {
+                let all_day_label = gtk::Label::builder()
+                    .label(&crate::i18n::gettext("All Day"))
+                    .halign(gtk::Align::Center)
+                    .valign(gtk::Align::Start)
+                    .vexpand(false)
+                    .margin_top(4)
+                    .build();
+                all_day_container.append(&all_day_label);
+            }
+
+            let mut css_classes = vec!["circular", "flat", "week-header-expander"];
+            if is_collapsed {
+                css_classes.push("collapsed");
+            } else {
+                css_classes.push("expanded");
+            }
+
+            let expander_btn = gtk::Button::builder()
+                .icon_name(if is_collapsed { "go-down-symbolic" } else { "go-up-symbolic" })
+                .css_classes(css_classes)
+                .halign(gtk::Align::Center)
+                .valign(gtk::Align::End)
+                .vexpand(true)
+                .margin_bottom(3)
+                .tooltip_text(if is_collapsed {
+                    crate::i18n::gettext("Expand all-day events")
+                } else {
+                    crate::i18n::gettext("Collapse all-day events")
+                })
+                .build();
+            let page_weak = self.downgrade();
+            expander_btn.connect_clicked(move |_| {
+                if let Some(page) = page_weak.upgrade() {
+                    let cur = page.imp().time_grid_allday_collapsed.get();
+                    let new_val = !cur;
+                    page.imp().time_grid_allday_collapsed.set(new_val);
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_calendar_allday_collapsed(new_val);
+                    }
+                    page.refresh_calendar_views();
+                }
+            });
+            all_day_container.append(&expander_btn);
+        } else {
+            let all_day_label = gtk::Label::builder()
+                .label(&crate::i18n::gettext("All Day"))
+                .halign(gtk::Align::Center)
+                .valign(gtk::Align::Center)
+                .vexpand(true)
+                .build();
+            all_day_container.append(&all_day_label);
+        }
+
+        time_col_group.add_widget(&all_day_container);
+        header_grid.attach(&all_day_container, 0, 1, 1, 1);
+
+        if let Some(ref sec_group) = sec_col_group {
+            let sec_allday_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .css_classes(vec![
+                    "calendar-allday-label",
+                    "calendar-time-gutter-secondary",
+                ])
+                .width_request(time_col_width)
+                .valign(gtk::Align::Center)
+                .vexpand(false)
+                .build();
+            sec_group.add_widget(&sec_allday_box);
+            header_grid.attach(&sec_allday_box, 1, 1, 1, 1);
+        }
+
+        let days_overlay = gtk::Overlay::new();
+        days_overlay.set_hexpand(true);
+        days_overlay.set_vexpand(false);
+        days_overlay.set_valign(gtk::Align::Start);
+
+        let base_days_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(0)
+            .hexpand(true)
+            .vexpand(false)
+            .valign(gtk::Align::Start)
+            .build();
+
+        for (day_index, day) in days.iter().enumerate() {
+            let bg_cell = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .css_classes(vec!["calendar-allday-cell"])
+                .hexpand(true)
+                .vexpand(false)
+                .height_request(allday_h)
+                .valign(gtk::Align::Start)
+                .build();
+            day_groups[day_index].add_widget(&bg_cell);
+            install_day_drop_target(&bg_cell, self, *day);
+            base_days_box.append(&bg_cell);
+        }
+        days_overlay.set_child(Some(&base_days_box));
+
+        let allday_grid = gtk::Grid::builder()
+            .column_homogeneous(true)
+            .row_spacing(2)
+            .column_spacing(2)
+            .hexpand(true)
+            .vexpand(false)
+            .valign(gtk::Align::Start)
+            .margin_top(if is_collapsed { 2 } else { 1 })
+            .margin_bottom(if is_collapsed { 2 } else { 1 })
+            .margin_start(1)
+            .margin_end(1)
+            .build();
+
+        for (item, track) in spans_with_tracks {
             let range = event_display_range(&item.event);
             let cont_left = range.as_ref().map(|r| r.start < days[0]).unwrap_or(false);
             let cont_right = range.as_ref().map(|r| r.last_inclusive() > days[days.len() - 1]).unwrap_or(false);
 
-            let chip = calendar_grid_event_chip(
-                self,
-                &item.event,
-                true,
-                days[item.start_col],
-                None,
-                1,
-                cont_left,
-                cont_right,
-            );
+            let chip = if is_collapsed {
+                calendar_grid_compact_allday_chip(
+                    self,
+                    &item.event,
+                    days[item.start_col],
+                    cont_left,
+                    cont_right,
+                )
+            } else {
+                calendar_grid_event_chip(
+                    self,
+                    &item.event,
+                    true,
+                    days[item.start_col],
+                    None,
+                    1,
+                    cont_left,
+                    cont_right,
+                )
+            };
             allday_grid.attach(
                 &chip,
                 item.start_col as i32,
@@ -9440,6 +11178,7 @@ impl CalendarPage {
 
         let total_grid_height = (slot_count as i32 * slot_height).max(1);
         let days_vec = days.to_vec();
+        let mut earliest_event_slot: Option<usize> = None;
 
         for (day_index, day) in days.iter().enumerate() {
             let target_date = *day;
@@ -9450,8 +11189,10 @@ impl CalendarPage {
                 interval_minutes as u32,
                 slot_count,
             );
+            if let Some(first_slot) = placed_chips.iter().map(|c| c.start_slot).min() {
+                earliest_event_slot = Some(earliest_event_slot.map_or(first_slot, |s| s.min(first_slot)));
+            }
             let placed_chips_rc = Rc::new(RefCell::new(placed_chips));
-            let hovered_chip_idx_rc = Rc::new(Cell::new(None));
             let drag_start_x = Rc::new(Cell::new(0.0f64));
             let drag_start_y = Rc::new(Cell::new(0.0f64));
             let drag_start_slot = Rc::new(Cell::new(0usize));
@@ -9471,7 +11212,6 @@ impl CalendarPage {
             // Draw function for this day
             let page_weak_draw = self.downgrade();
             let placed_chips_draw = placed_chips_rc.clone();
-            let hovered_chip_draw = hovered_chip_idx_rc.clone();
             let is_workday = workdays.contains(&target_date.weekday());
             drawing_area.set_draw_func(move |_area, cr, width_i32, height_i32| {
                 let width = width_i32 as f64;
@@ -9591,63 +11331,118 @@ impl CalendarPage {
                 };
                 let dim_past = configured_dim_past_events();
 
-                let hovered_idx = hovered_chip_draw.get();
-                for (idx, chip) in placed_chips_draw.borrow().iter().enumerate() {
+                let active_move = page_weak_draw.upgrade().and_then(|p| p.imp().time_grid_drag_move_state.borrow().clone());
+
+                // 4. Event chip background cards ("div")
+                for chip in placed_chips_draw.borrow().iter() {
+                    let is_being_moved = if let Some(ref ms) = active_move {
+                        ms.is_active && ms.origin_date == target_date && chip.event.uid == ms.event.uid
+                    } else {
+                        false
+                    };
                     let is_past = dim_past && is_time_grid_chip_past(chip, target_date, current_today, now_min, interval_minutes);
-                    draw_time_grid_chip(
+                    if is_being_moved {
+                        cr.push_group();
+                    }
+                    draw_time_grid_chip_card(
                         cr,
                         chip,
                         width,
                         slot_height as f64,
-                        hovered_idx == Some(idx),
                         is_dark,
                         is_past,
                     );
+                    if is_being_moved {
+                        let _ = cr.pop_group_to_source();
+                        let _ = cr.paint_with_alpha(0.30);
+                    }
                 }
 
                 // 5. Current-time red indicator line
+                // Rendered above the event cards ("über deren div"), but below text labels ("unter der beschriftung")
                 if target_date == current_today {
                     draw_current_time_indicator_line(cr, width, height, now_min);
                 }
+
+                // 6. Event chip text labels
+                for chip in placed_chips_draw.borrow().iter() {
+                    let is_being_moved = if let Some(ref ms) = active_move {
+                        ms.is_active && ms.origin_date == target_date && chip.event.uid == ms.event.uid
+                    } else {
+                        false
+                    };
+                    let is_past = dim_past && is_time_grid_chip_past(chip, target_date, current_today, now_min, interval_minutes);
+                    if is_being_moved {
+                        cr.push_group();
+                    }
+                    draw_time_grid_chip_content(
+                        cr,
+                        chip,
+                        width,
+                        slot_height as f64,
+                        is_dark,
+                        is_past,
+                    );
+                    if is_being_moved {
+                        let _ = cr.pop_group_to_source();
+                        let _ = cr.paint_with_alpha(0.30);
+                    }
+                }
+
+                // 7. Ghost preview chip when dragging an event onto this day
+                if let Some(ref ms) = active_move {
+                    if ms.is_active && ms.current_date == target_date {
+                        draw_ghost_move_chip(
+                            cr,
+                            ms,
+                            width,
+                            slot_height as f64,
+                            interval_minutes as u32,
+                            is_dark,
+                            use_12h,
+                        );
+                    }
+                }
             });
 
-            // Motion controller for hover state and cursor change
+            // Motion controller for cursor change
             let motion = gtk::EventControllerMotion::new();
             let placed_chips_motion = placed_chips_rc.clone();
-            let hovered_chip_motion = hovered_chip_idx_rc.clone();
+            let page_weak_motion = self.downgrade();
             let current_grid_cursor: Rc<Cell<Option<&'static str>>> = Rc::new(Cell::new(None));
             let current_grid_cursor_motion = current_grid_cursor.clone();
             motion.connect_motion(move |controller, x, y| {
                 let Some(area) = controller.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
-                let w = area.width() as f64;
-                let found = find_chip_at(&placed_chips_motion.borrow(), x, y, w, slot_height as f64);
-                let on_edge = find_chip_bottom_edge_at(&placed_chips_motion.borrow(), x, y, w, slot_height as f64);
-                let desired_cursor = if on_edge.is_some() {
-                    Some("ns-resize")
-                } else if found.is_some() {
-                    Some("pointer")
+                let is_moving = page_weak_motion.upgrade().map(|p| {
+                    p.imp().time_grid_drag_move_state.borrow().as_ref().map(|s| s.is_active).unwrap_or(false)
+                }).unwrap_or(false);
+
+                let desired_cursor = if is_moving {
+                    Some("grabbing")
                 } else {
-                    None
+                    let w = area.width() as f64;
+                    let on_edge = find_chip_bottom_edge_at(&placed_chips_motion.borrow(), x, y, w, slot_height as f64);
+                    if on_edge.is_some() {
+                        Some("ns-resize")
+                    } else if find_chip_at(&placed_chips_motion.borrow(), x, y, w, slot_height as f64).is_some() {
+                        Some("pointer")
+                    } else {
+                        None
+                    }
                 };
+
                 if current_grid_cursor_motion.get() != desired_cursor {
                     current_grid_cursor_motion.set(desired_cursor);
                     area.set_cursor_from_name(desired_cursor);
                 }
-                if found != hovered_chip_motion.get() {
-                    hovered_chip_motion.set(found);
-                    area.queue_draw();
-                }
             });
-            let hovered_chip_leave = hovered_chip_idx_rc.clone();
             let current_grid_cursor_leave = current_grid_cursor.clone();
             motion.connect_leave(move |controller| {
                 if let Some(area) = controller.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) {
-                    hovered_chip_leave.set(None);
                     if current_grid_cursor_leave.get().is_some() {
                         current_grid_cursor_leave.set(None);
                         area.set_cursor_from_name(None);
                     }
-                    area.queue_draw();
                 }
             });
             drawing_area.add_controller(motion);
@@ -9683,6 +11478,10 @@ impl CalendarPage {
                 }
             });
 
+            let drag_happened = Rc::new(Cell::new(false));
+            let drag_happened_click = drag_happened.clone();
+            let drag_happened_drag = drag_happened.clone();
+
             // Click gesture: open event details or select/open event dialog
             let click_gesture = gtk::GestureClick::new();
             click_gesture.set_button(1);
@@ -9694,14 +11493,13 @@ impl CalendarPage {
                 let Some(page) = page_weak_click.upgrade() else { return };
                 let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
                 let w = area.width() as f64;
-                let found = find_chip_at(&placed_chips_click.borrow(), click_x, click_y, w, slot_height as f64);
+                let on_edge = find_chip_bottom_edge_at(&placed_chips_click.borrow(), click_x, click_y, w, slot_height as f64);
+                let found = on_edge.or_else(|| find_chip_at(&placed_chips_click.borrow(), click_x, click_y, w, slot_height as f64));
 
                 if let Some(chip_idx) = found {
                     let chip = &placed_chips_click.borrow()[chip_idx];
                     page.clear_selected_time_slot();
-                    if let Some(id) = CalendarEventIdentity::from_event(&chip.event) {
-                        page.imp().view_state.borrow_mut().select_event(Some(id.clone()), None);
-                    }
+                    page.select_and_inspect_event(&chip.event, Some(target_date));
                     if n_press == 2 {
                         gesture.set_state(gtk::EventSequenceState::Claimed);
                         if let Some(id) = CalendarEventIdentity::from_event(&chip.event) {
@@ -9710,7 +11508,7 @@ impl CalendarPage {
                     }
                 } else {
                     // Clicked on an empty time slot
-                    page.imp().view_state.borrow_mut().select_event(None, None);
+                    page.clear_inspected_event();
                     let slot = ((click_y / slot_height as f64).floor() as usize).min(slot_count.saturating_sub(1));
                     let start_min = (slot * interval_minutes as usize) as u32;
                     let end_min = ((slot + 1) * interval_minutes as usize) as u32;
@@ -9793,34 +11591,41 @@ impl CalendarPage {
             let page_weak_release = self.downgrade();
             let placed_chips_release = placed_chips_rc.clone();
             click_gesture.connect_released(move |gesture, n_press, click_x, click_y| {
+                if drag_happened_click.get() {
+                    drag_happened_click.set(false);
+                    return;
+                }
                 if n_press == 1 {
                     let Some(page) = page_weak_release.upgrade() else { return };
                     let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
                     let w = area.width() as f64;
-                    let on_edge = find_chip_bottom_edge_at(&placed_chips_release.borrow(), click_x, click_y, w, slot_height as f64);
-                    if on_edge.is_some() {
-                        return;
-                    }
                     let found = find_chip_at(&placed_chips_release.borrow(), click_x, click_y, w, slot_height as f64);
                     if let Some(chip_idx) = found {
                         let chip = &placed_chips_release.borrow()[chip_idx];
-                        let (cx, cy, cw, ch) = chip_rect_coordinates(chip, w, slot_height as f64);
-                        let rect = gdk::Rectangle::new(cx as i32, cy as i32, cw as i32, ch as i32);
-                        show_calendar_event_details_popover_full(
-                            &page,
-                            &area,
-                            &chip.event,
-                            Some(target_date),
-                            Some(rect),
-                        );
+                        page.select_and_inspect_event(&chip.event, Some(target_date));
+                        if !page.is_tag_vpane_visible() {
+                            let (cx, cy, cw, ch) = chip_rect_coordinates(chip, w, slot_height as f64);
+                            let rect = gdk::Rectangle::new(cx as i32, cy as i32, cw as i32, ch as i32);
+                            show_calendar_event_details_popover_full(
+                                &page,
+                                &area,
+                                &chip.event,
+                                Some(target_date),
+                                Some(rect),
+                            );
+                        }
                     }
                 }
             });
             drawing_area.add_controller(click_gesture);
 
             let resizing_drag_state: Rc<RefCell<Option<ResizeDragState>>> = Rc::new(RefCell::new(None));
+            let move_drag_state: Rc<RefCell<Option<MoveDragState>>> = Rc::new(RefCell::new(None));
 
-            // Drag gesture for selecting continuous time ranges and resizing event duration
+            // Drag gesture for:
+            // 1. Resizing event duration by dragging bottom edge
+            // 2. Moving event to another time slot or day (Google Calendar style)
+            // 3. Selecting continuous time ranges on empty slots
             let drag_gesture = gtk::GestureDrag::new();
             drag_gesture.set_button(1);
             let page_weak_drag_begin = self.downgrade();
@@ -9829,13 +11634,21 @@ impl CalendarPage {
             let drag_start_y_begin = drag_start_y.clone();
             let drag_start_slot_begin = drag_start_slot.clone();
             let resizing_drag_begin = resizing_drag_state.clone();
+            let move_drag_begin = move_drag_state.clone();
 
             drag_gesture.connect_drag_begin(move |gesture, start_x, start_y| {
                 let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
                 let w = area.width() as f64;
+                drag_start_x_begin.set(start_x);
+                drag_start_y_begin.set(start_y);
+
+                // 1. Check if user is resizing bottom edge
                 let on_edge = find_chip_bottom_edge_at(&placed_chips_for_drag.borrow(), start_x, start_y, w, slot_height as f64);
                 if let Some(chip_idx) = on_edge {
                     gesture.set_state(gtk::EventSequenceState::Claimed);
+                    if let Some(page) = page_weak_drag_begin.upgrade() {
+                        page.clear_selected_time_slot();
+                    }
                     let chip = &placed_chips_for_drag.borrow()[chip_idx];
                     let end_slot = chip.start_slot + chip.row_span;
                     resizing_drag_begin.borrow_mut().replace(ResizeDragState {
@@ -9845,16 +11658,39 @@ impl CalendarPage {
                         initial_end_slot: end_slot,
                         current_end_slot: end_slot,
                     });
-                    drag_start_x_begin.set(start_x);
-                    drag_start_y_begin.set(start_y);
                     return;
                 }
-                let on_chip = find_chip_at(&placed_chips_for_drag.borrow(), start_x, start_y, w, slot_height as f64).is_some();
-                if on_chip {
-                    return;
+
+                // 2. Check if user clicked an event to move it
+                let on_chip = find_chip_at(&placed_chips_for_drag.borrow(), start_x, start_y, w, slot_height as f64);
+                if let Some(chip_idx) = on_chip {
+                    let chip = &placed_chips_for_drag.borrow()[chip_idx];
+                    if event_mutation_error(&chip.event).is_none() {
+                        if let Some(page) = page_weak_drag_begin.upgrade() {
+                            page.clear_selected_time_slot();
+                        }
+                        let grab_y = start_y.max(0.0);
+                        let chip_top_y = chip.start_slot as f64 * slot_height as f64;
+                        let offset_in_chip = ((grab_y - chip_top_y).max(0.0) / slot_height as f64).floor() as usize;
+                        let grab_slot_offset = offset_in_chip.min(chip.row_span.saturating_sub(1));
+
+                        move_drag_begin.borrow_mut().replace(MoveDragState {
+                            origin_day_index: day_index,
+                            origin_date: target_date,
+                            event: chip.event.clone(),
+                            initial_start_slot: chip.start_slot,
+                            row_span: chip.row_span,
+                            grab_slot_offset,
+                            current_day_index: day_index,
+                            current_date: target_date,
+                            current_start_slot: chip.start_slot,
+                            is_active: false,
+                        });
+                        return;
+                    }
                 }
-                drag_start_x_begin.set(start_x);
-                drag_start_y_begin.set(start_y);
+
+                // 3. Otherwise, empty time slot selection drag
                 let s = ((start_y.max(0.0) / slot_height as f64).floor() as usize).min(slot_count.saturating_sub(1));
                 drag_start_slot_begin.set(s);
                 let start_min = (s * interval_minutes as usize) as u32;
@@ -9876,10 +11712,20 @@ impl CalendarPage {
             let drag_start_slot_update = drag_start_slot.clone();
             let days_for_update = days_vec.clone();
             let resizing_drag_update = resizing_drag_state.clone();
+            let move_drag_update = move_drag_state.clone();
             let placed_chips_for_resize = placed_chips_rc.clone();
+            let drag_happened_update = drag_happened_drag.clone();
+
             drag_gesture.connect_drag_update(move |gesture, offset_x, offset_y| {
+                // A. Handle Resizing
                 if let Some(ref mut rs) = *resizing_drag_update.borrow_mut() {
                     gesture.set_state(gtk::EventSequenceState::Claimed);
+                    drag_happened_update.set(true);
+                    if let Some(page) = page_weak_drag_update.upgrade() {
+                        if page.imp().selected_time_slot.borrow().is_some() {
+                            page.clear_selected_time_slot();
+                        }
+                    }
                     let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
                     let cur_y = (drag_start_y_update.get() + offset_y).max(0.0);
                     let cur_slot = ((cur_y / slot_height as f64).round() as usize)
@@ -9889,13 +11735,59 @@ impl CalendarPage {
                         let new_span = cur_slot.saturating_sub(rs.start_slot).max(1);
                         if let Some(chip) = placed_chips_for_resize.borrow_mut().get_mut(rs.chip_idx) {
                             chip.row_span = new_span;
+                            let start_min = (chip.start_slot as u32 * interval_minutes as u32).min(1439);
+                            let end_min = ((chip.start_slot + new_span) as u32 * interval_minutes as u32).min(1440);
+                            chip.time_text = format!("{}–{}", format_minute_of_day(start_min, use_12h), format_minute_of_day(end_min, use_12h));
                         }
                         area.queue_draw();
                     }
                     return;
                 }
+
+                // B. Handle Move Drag (Google Calendar style)
+                if let Some(ref mut ms) = *move_drag_update.borrow_mut() {
+                    if offset_x.abs() > 4.0 || offset_y.abs() > 4.0 || ms.is_active {
+                        ms.is_active = true;
+                        gesture.set_state(gtk::EventSequenceState::Claimed);
+                        drag_happened_update.set(true);
+
+                        let Some(page) = page_weak_drag_update.upgrade() else { return };
+                        if page.imp().selected_time_slot.borrow().is_some() {
+                            page.clear_selected_time_slot();
+                        }
+                        let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
+                        let w = area.width() as f64;
+                        if w <= 0.0 { return; }
+
+                        let day_offset = ((drag_start_x_update.get() + offset_x) / w).floor() as i32;
+                        let cur_day_idx = (day_index as i32 + day_offset).clamp(0, days_for_update.len() as i32 - 1) as usize;
+                        let cur_date = days_for_update[cur_day_idx];
+
+                        let cur_y = (drag_start_y_update.get() + offset_y).max(0.0);
+                        let pointer_slot = (cur_y / slot_height as f64).floor() as i64;
+                        let max_start_slot = (slot_count.saturating_sub(ms.row_span)) as i64;
+                        let target_start = (pointer_slot - ms.grab_slot_offset as i64).clamp(0, max_start_slot) as usize;
+
+                        let mut changed = false;
+                        if ms.current_day_index != cur_day_idx || ms.current_date != cur_date || ms.current_start_slot != target_start {
+                            ms.current_day_index = cur_day_idx;
+                            ms.current_date = cur_date;
+                            ms.current_start_slot = target_start;
+                            changed = true;
+                        }
+
+                        if changed || page.imp().time_grid_drag_move_state.borrow().is_none() {
+                            *page.imp().time_grid_drag_move_state.borrow_mut() = Some(ms.clone());
+                            page.queue_redraw_all_time_slots();
+                        }
+                    }
+                    return;
+                }
+
+                // C. Handle Empty Slot Range Selection
                 if offset_x.abs() > 4.0 || offset_y.abs() > 4.0 {
                     gesture.set_state(gtk::EventSequenceState::Claimed);
+                    drag_happened_update.set(true);
                     let Some(page) = page_weak_drag_update.upgrade() else { return };
                     let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
                     let w = area.width() as f64;
@@ -9939,10 +11831,16 @@ impl CalendarPage {
 
             let page_weak_drag_end = self.downgrade();
             let resizing_drag_end = resizing_drag_state.clone();
+            let move_drag_end = move_drag_state.clone();
+            let drag_happened_end = drag_happened_drag.clone();
+
             drag_gesture.connect_drag_end(move |gesture, _offset_x, _offset_y| {
+                // A. Finish Resize
                 if let Some(rs) = resizing_drag_end.borrow_mut().take() {
+                    drag_happened_end.set(true);
                     gesture.set_state(gtk::EventSequenceState::Claimed);
                     let Some(page) = page_weak_drag_end.upgrade() else { return };
+                    page.clear_selected_time_slot();
                     let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
                     if rs.current_end_slot != rs.initial_end_slot {
                         let delta_slots = rs.current_end_slot as i64 - rs.initial_end_slot as i64;
@@ -9953,12 +11851,35 @@ impl CalendarPage {
                     }
                     return;
                 }
+
+                // B. Finish Move Drag
+                if let Some(ms) = move_drag_end.borrow_mut().take() {
+                    let Some(page) = page_weak_drag_end.upgrade() else { return };
+                    page.clear_selected_time_slot();
+                    page.imp().time_grid_drag_move_state.borrow_mut().take();
+                    page.queue_redraw_all_time_slots();
+
+                    if ms.is_active {
+                        drag_happened_end.set(true);
+                        gesture.set_state(gtk::EventSequenceState::Claimed);
+                        let delta_days = (ms.current_date - ms.origin_date).num_days();
+                        let delta_slots = ms.current_start_slot as i64 - ms.initial_start_slot as i64;
+                        let delta_minutes = delta_slots * interval_minutes as i64;
+                        if delta_days != 0 || delta_minutes != 0 {
+                            page.move_event_by_delta(ms.event, delta_days, delta_minutes);
+                        }
+                    }
+                    return;
+                }
+
+                // C. Finish Empty Slot Selection
                 let Some(page) = page_weak_drag_end.upgrade() else { return };
                 let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
                 if let Some(sel) = *page.imp().selected_time_slot.borrow() {
                     let has_multi_slot = sel.date != sel.end_date
                         || sel.end_minute.saturating_sub(sel.start_minute) > interval_minutes as u32;
                     if has_multi_slot {
+                        drag_happened_end.set(true);
                         gesture.set_state(gtk::EventSequenceState::Claimed);
                         let (d_start, d_end, t_start, t_end) = if (sel.date, sel.start_minute) <= (sel.end_date, sel.end_minute) {
                             (sel.date, sel.end_date, sel.start_minute, sel.end_minute)
@@ -9981,33 +11902,20 @@ impl CalendarPage {
             });
             drawing_area.add_controller(drag_gesture);
 
-            // DragSource: Dragging an event chip to reschedule it
-            let drag_source = gtk::DragSource::new();
-            drag_source.set_actions(gdk::DragAction::MOVE | gdk::DragAction::COPY);
-            let placed_chips_drag = placed_chips_rc.clone();
-            drag_source.connect_prepare(move |source, x, y| {
-                let Some(area) = source.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return None };
-                let w = area.width() as f64;
-                let on_edge = find_chip_bottom_edge_at(&placed_chips_drag.borrow(), x, y, w, slot_height as f64);
-                if on_edge.is_some() {
-                    return None;
+            let key_ctrl = gtk::EventControllerKey::new();
+            let page_weak_key = self.downgrade();
+            key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
+                if keyval == gdk::Key::Escape {
+                    if let Some(page) = page_weak_key.upgrade() {
+                        if page.imp().time_grid_drag_move_state.borrow_mut().take().is_some() {
+                            page.queue_redraw_all_time_slots();
+                            return glib::Propagation::Stop;
+                        }
+                    }
                 }
-                let found = find_chip_at(&placed_chips_drag.borrow(), x, y, w, slot_height as f64);
-                if let Some(idx) = found {
-                    let chip = &placed_chips_drag.borrow()[idx];
-                    let payload = format!(
-                        "{}\n{}\n{}\n{}",
-                        chip.event.source_uid,
-                        chip.event.uid,
-                        calendar_recurrence_id(&chip.event).unwrap_or_default(),
-                        target_date.format("%Y-%m-%d")
-                    );
-                    Some(gdk::ContentProvider::for_value(&payload.to_value()))
-                } else {
-                    None
-                }
+                glib::Propagation::Proceed
             });
-            drawing_area.add_controller(drag_source);
+            drawing_area.add_controller(key_ctrl);
 
             // Secondary / Right click context menu
             let time_grid_right_click = gtk::GestureClick::builder().button(3).build();
@@ -10161,12 +12069,20 @@ impl CalendarPage {
             viewport.set_scroll_to_focus(false);
         }
 
-        let vadj = timed_scroll.vadjustment();
         let (workday_start, _) = configured_workday_range();
-        let target_start_min = workday_start;
+        // Start ~2h before the configured workday so the working day is visible without scrolling
+        let base_start_min = workday_start.saturating_sub(120);
+        // Pull earlier only for real early-morning events (after 05:00), never into the night
+        let earliest_event_min = earliest_event_slot
+            .map(|slot| (slot as u32) * (interval_minutes as u32))
+            .filter(|min| *min >= 300 && *min < base_start_min)
+            .map(|min| min.saturating_sub(30).max(300))
+            .unwrap_or(base_start_min);
+        let target_start_min = earliest_event_min;
 
         let center_ratio_captured = target_center_ratio;
         let initial_applied = Rc::new(Cell::new(false));
+        let apply_scheduled = Rc::new(Cell::new(false));
 
         let compute_target_y = move |adj: &gtk::Adjustment| -> f64 {
             let max_scroll = (adj.upper() - adj.page_size()).max(0.0);
@@ -10181,57 +12097,98 @@ impl CalendarPage {
                 return top_y.clamp(0.0, max_scroll);
             }
 
-            // Initial placement: align top to configured workday start
+            // Initial placement: align top to ~2h before configured workday start
             let start_slot = (target_start_min / interval_minutes as u32) as usize;
             let slot_y = (start_slot * slot_height as usize) as f64;
             slot_y.clamp(0.0, max_scroll)
         };
 
+        // Flicker-free re-render (e.g. Ctrl+scroll zoom): if we know the viewport height from the
+        // previous grid, hand the new ScrolledWindow an adjustment that already holds the target
+        // value. GtkViewport keeps that value on its first allocation, so the very first frame is
+        // already at the correct position instead of jumping from 0 afterwards.
+        if let Some(page) = prev_page_size {
+            let upper = (total_grid_height as f64).max(page);
+            let preset = gtk::Adjustment::new(
+                0.0,
+                0.0,
+                upper,
+                slot_height as f64,
+                page * 0.9,
+                page,
+            );
+            let target = compute_target_y(&preset);
+            preset.set_value(target);
+            timed_scroll.set_vadjustment(Some(&preset));
+            initial_applied.set(true);
+        }
+        let vadj = timed_scroll.vadjustment();
+
+        // Applies the scroll target. Must never run inside GtkViewport::size_allocate,
+        // otherwise the adjustment value changes but the child allocation is not updated.
         let apply_target_scroll = {
             let compute_y = compute_target_y.clone();
             let applied = initial_applied.clone();
+            let scroll_weak = timed_scroll.downgrade();
             move |adj: &gtk::Adjustment| {
+                if applied.get() {
+                    return;
+                }
                 if adj.upper() > 100.0 && adj.page_size() > 50.0 {
                     let target = compute_y(adj);
                     adj.set_value(target);
                     applied.set(true);
+                    if let Some(sw) = scroll_weak.upgrade() {
+                        if let Some(child) = sw.child() {
+                            child.queue_allocate();
+                        }
+                        sw.queue_allocate();
+                    }
                 }
             }
         };
 
-        let apply_notify = apply_target_scroll.clone();
-        let applied_notify = initial_applied.clone();
+        // Defers application to the next main-loop iteration (outside size_allocate)
+        let schedule_apply = {
+            let apply = apply_target_scroll.clone();
+            let scheduled = apply_scheduled.clone();
+            let applied = initial_applied.clone();
+            move |adj: &gtk::Adjustment| {
+                if applied.get() || scheduled.get() {
+                    return;
+                }
+                scheduled.set(true);
+                let apply = apply.clone();
+                let scheduled = scheduled.clone();
+                let adj = adj.clone();
+                glib::idle_add_local_once(move || {
+                    scheduled.set(false);
+                    apply(&adj);
+                });
+            }
+        };
+
+        let schedule_notify = schedule_apply.clone();
         vadj.connect_upper_notify(move |adj| {
-            if !applied_notify.get() {
-                apply_notify(adj);
-            }
+            schedule_notify(adj);
         });
 
-        let apply_page = apply_target_scroll.clone();
-        let applied_page = initial_applied.clone();
+        let schedule_page = schedule_apply.clone();
         vadj.connect_page_size_notify(move |adj| {
-            if !applied_page.get() && adj.page_size() > 50.0 {
-                apply_page(adj);
+            if adj.page_size() > 50.0 {
+                schedule_page(adj);
             }
         });
 
-        let apply_map = apply_target_scroll.clone();
+        let schedule_map = schedule_apply.clone();
         let vadj_map = vadj.clone();
-        let applied_map = initial_applied.clone();
         timed_scroll.connect_map(move |_| {
-            if !applied_map.get() {
-                apply_map(&vadj_map);
-            }
+            schedule_map(&vadj_map);
         });
 
-        let apply_idle = apply_target_scroll;
+        let schedule_idle = schedule_apply;
         let vadj_idle = vadj.clone();
-        let applied_idle = initial_applied;
-        glib::idle_add_local_once(move || {
-            if !applied_idle.get() {
-                apply_idle(&vadj_idle);
-            }
-        });
+        schedule_idle(&vadj_idle);
 
         view.append(&timed_scroll);
     }
@@ -10746,12 +12703,15 @@ impl CalendarPage {
                 gesture.connect_pressed(move |gesture, n_press, _x, _y| {
                     gesture.set_state(gtk::EventSequenceState::Claimed);
                     let (Some(page), Some(widget)) = (page_weak.upgrade(), gesture.widget()) else { return };
+                    page.select_and_inspect_event(&ev_record, Some(date));
                     if n_press == 2 {
                         if let Some(id) = identity.as_ref() {
                             page.open_event_editor_for_identity(&widget, id);
                         }
                     } else if n_press == 1 {
-                        show_calendar_event_details_popover(&page, &widget, &ev_record, Some(date));
+                        if !page.is_tag_vpane_visible() {
+                            show_calendar_event_details_popover(&page, &widget, &ev_record, Some(date));
+                        }
                     }
                 });
                 chip_btn.add_controller(gesture);
@@ -11447,11 +13407,1281 @@ impl CalendarPage {
         }
     }
 
+    pub(crate) fn calendar_month_short_name(month: u32) -> String {
+        match month {
+            1 => gettext("Jan"),
+            2 => gettext("Feb"),
+            3 => gettext("Mar"),
+            4 => gettext("Apr"),
+            5 => gettext("May"),
+            6 => gettext("Jun"),
+            7 => gettext("Jul"),
+            8 => gettext("Aug"),
+            9 => gettext("Sep"),
+            10 => gettext("Oct"),
+            11 => gettext("Nov"),
+            12 => gettext("Dec"),
+            _ => String::new(),
+        }
+    }
+
+    pub(crate) fn calendar_weekday_two_letter(wd: Weekday) -> &'static str {
+        match wd {
+            Weekday::Mon => "Mo",
+            Weekday::Tue => "Di",
+            Weekday::Wed => "Mi",
+            Weekday::Thu => "Do",
+            Weekday::Fri => "Fr",
+            Weekday::Sat => "Sa",
+            Weekday::Sun => "So",
+        }
+    }
+
+    pub(crate) fn prepare_year_planner_layout(
+        year: i32,
+        avail_width: f64,
+        avail_height: f64,
+    ) -> YearPlannerCanvasLayout {
+        let month_header_w = 32.0;
+        let usable_w = (avail_width - month_header_w).max(31.0 * 26.0);
+        let col_w = usable_w / 31.0;
+        let row_h = (avail_height / 12.0).max(48.0);
+        YearPlannerCanvasLayout {
+            year,
+            width: month_header_w + 31.0 * col_w,
+            height: 12.0 * row_h,
+            month_header_w,
+            col_w,
+            row_h,
+        }
+    }
+
+    pub(crate) fn hit_test_year_planner_canvas(
+        layout: &YearPlannerCanvasLayout,
+        x: f64,
+        y: f64,
+    ) -> Option<YearCanvasHitTarget> {
+        if x < 0.0 || y < 0.0 || x >= layout.width || y >= layout.height {
+            return None;
+        }
+        let month = (y / layout.row_h).floor() as u32 + 1;
+        if !(1..=12).contains(&month) {
+            return None;
+        }
+        if x < layout.month_header_w {
+            return Some(YearCanvasHitTarget::MonthHeader(month));
+        }
+        let day = ((x - layout.month_header_w) / layout.col_w).floor() as u32 + 1;
+        if !(1..=31).contains(&day) {
+            return None;
+        }
+        NaiveDate::from_ymd_opt(layout.year, month, day).map(YearCanvasHitTarget::Day)
+    }
+
+    pub(crate) fn year_planner_day_rect(
+        layout: &YearPlannerCanvasLayout,
+        date: NaiveDate,
+        scroll_y: f64,
+    ) -> gdk::Rectangle {
+        let rx = layout.month_header_w + (date.day().saturating_sub(1)) as f64 * layout.col_w;
+        let ry = (date.month().saturating_sub(1)) as f64 * layout.row_h - scroll_y;
+        gdk::Rectangle::new(
+            rx.round() as i32,
+            ry.round() as i32,
+            layout.col_w.round().max(1.0) as i32,
+            layout.row_h.round().max(1.0) as i32,
+        )
+    }
+
+    pub(crate) fn build_year_planner_months(
+        year: i32,
+        events_by_date: &BTreeMap<NaiveDate, Vec<CalendarEventRecord>>,
+    ) -> [YearPlannerMonthData; 12] {
+        std::array::from_fn(|m_idx| {
+            let month = (m_idx + 1) as u32;
+            let max_d = days_in_month(year, month);
+            let Some(month_start) = NaiveDate::from_ymd_opt(year, month, 1) else {
+                return YearPlannerMonthData::default();
+            };
+            let Some(month_end) = NaiveDate::from_ymd_opt(year, month, max_d) else {
+                return YearPlannerMonthData::default();
+            };
+
+            let mut multi_candidates: Vec<(u32, u32, (u8, u8, u8), bool, bool, String)> = Vec::new();
+            let mut seen_multi = HashSet::<(String, String, NaiveDate)>::new();
+
+            for d in 1..=max_d {
+                let Some(date) = NaiveDate::from_ymd_opt(year, month, d) else { continue };
+                let Some(events) = events_by_date.get(&date) else { continue };
+                for ev in events {
+                    let range = event_occurrence_range_for_date(ev, date)
+                        .or_else(|| event_display_range(ev))
+                        .unwrap_or_else(|| CalendarDateRange::single(date));
+                    if ev.all_day || range.len_days() > 1 {
+                        let dedup_key = (ev.source_uid.clone(), ev.uid.clone(), range.start);
+                        if seen_multi.insert(dedup_key) {
+                            let clamped_start = range.start.max(month_start);
+                            let clamped_end = range.last_inclusive().min(month_end);
+                            if clamped_start <= clamped_end {
+                                let hex = event_color_for_record(ev);
+                                let rgb = parse_hex_color(&hex).unwrap_or((53, 132, 228));
+                                multi_candidates.push((
+                                    clamped_start.day(),
+                                    clamped_end.day(),
+                                    rgb,
+                                    range.start < month_start,
+                                    range.last_inclusive() > month_end,
+                                    ev.summary.clone(),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+
+            multi_candidates.sort_by(|a, b| {
+                a.0.cmp(&b.0)
+                    .then_with(|| (b.1 - b.0).cmp(&(a.1 - a.0)))
+                    .then_with(|| a.5.cmp(&b.5))
+            });
+
+            let mut tracks: Vec<[bool; 32]> = Vec::new();
+            let mut spans: Vec<YearPlannerEventSpan> = Vec::new();
+
+            for (start_day, end_day, color_rgb, continues_left, continues_right, _) in multi_candidates {
+                let mut t = 0;
+                loop {
+                    if t >= tracks.len() {
+                        tracks.push([false; 32]);
+                        break;
+                    }
+                    if (start_day..=end_day).all(|d| !tracks[t][d as usize]) {
+                        break;
+                    }
+                    t += 1;
+                }
+                for d in start_day..=end_day {
+                    tracks[t][d as usize] = true;
+                }
+                spans.push(YearPlannerEventSpan {
+                    start_day,
+                    end_day,
+                    track: t,
+                    color_rgb,
+                    continues_left,
+                    continues_right,
+                    is_timed_single: false,
+                    start_min: 0,
+                });
+            }
+
+            for d in 1..=max_d {
+                let Some(date) = NaiveDate::from_ymd_opt(year, month, d) else { continue };
+                let Some(events) = events_by_date.get(&date) else { continue };
+                for ev in events {
+                    let range = event_occurrence_range_for_date(ev, date)
+                        .or_else(|| event_display_range(ev))
+                        .unwrap_or_else(|| CalendarDateRange::single(date));
+                    if ev.all_day || range.len_days() > 1 {
+                        continue;
+                    }
+                    let hex = event_color_for_record(ev);
+                    let color_rgb = parse_hex_color(&hex).unwrap_or((53, 132, 228));
+                    let (start_min_u32, _, _) = event_occurrence_times_for_date(ev, date, 30);
+                    let start_min = start_min_u32.min(1439) as u16;
+                    let mut t = 0;
+                    loop {
+                        if t >= tracks.len() {
+                            tracks.push([false; 32]);
+                            break;
+                        }
+                        if !tracks[t][d as usize] {
+                            break;
+                        }
+                        t += 1;
+                    }
+                    tracks[t][d as usize] = true;
+                    spans.push(YearPlannerEventSpan {
+                        start_day: d,
+                        end_day: d,
+                        track: t,
+                        color_rgb,
+                        continues_left: false,
+                        continues_right: false,
+                        is_timed_single: true,
+                        start_min,
+                    });
+                }
+            }
+
+            YearPlannerMonthData { spans }
+        })
+    }
+
+    fn build_year_projection_from_index(
+        index: &CalendarSnapshotIndex,
+        year: i32,
+        year_range: CalendarDateRange,
+        query: &str,
+        category: Option<&str>,
+        hidden_sources: &HashSet<String>,
+    ) -> (
+        BTreeMap<NaiveDate, usize>,
+        [YearPlannerMonthData; 12],
+        HashMap<NaiveDate, Vec<YearPlannerDayPreviewItem>>,
+    ) {
+        let hide_cancelled = configured_hide_cancelled_events();
+        let normalized_query = query.trim().to_lowercase();
+        let normalized_category = category
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_lowercase);
+
+        let mut filter_cache: Vec<Option<bool>> = vec![None; index.metas.len()];
+        let mut check_match = |ev_idx: usize| -> bool {
+            if let Some(res) = filter_cache[ev_idx] {
+                return res;
+            }
+            let matched = index_event_matches_filter(
+                index,
+                ev_idx,
+                &normalized_query,
+                normalized_category.as_deref(),
+                hidden_sources,
+                hide_cancelled,
+            );
+            filter_cache[ev_idx] = Some(matched);
+            matched
+        };
+
+        // Collect all (ev_idx, occurrence_range) intersecting year_range
+        let mut occurrences: Vec<(usize, CalendarDateRange)> = Vec::with_capacity(256);
+
+        for (date, bucket) in index.date_buckets.range(year_range.start..year_range.end) {
+            for &ev_idx in bucket {
+                if check_match(ev_idx) {
+                    occurrences.push((ev_idx, CalendarDateRange::single(*date)));
+                }
+            }
+        }
+
+        for &(ev_idx, range) in &index.long_events {
+            if range.intersects(year_range) && check_match(ev_idx) {
+                occurrences.push((ev_idx, range));
+            }
+        }
+
+        for &ev_idx in &index.recurring_events {
+            if !check_match(ev_idx) {
+                continue;
+            }
+            let meta = &index.metas[ev_idx];
+            let Some(initial_range) = meta.display_range else { continue };
+            let initial_start = initial_range.start;
+            let span_days = initial_range.len_days().saturating_sub(1);
+            let mut occ_starts = BTreeSet::new();
+
+            if !meta.excluded_dates.contains(&initial_start) {
+                let initial_occ_end = initial_start
+                    .checked_add_signed(Duration::days(span_days + 1))
+                    .unwrap_or(initial_range.end);
+                let occ_r = CalendarDateRange::new(initial_start, initial_occ_end);
+                if occ_r.intersects(year_range) {
+                    occ_starts.insert(initial_start);
+                }
+            }
+            for &rdate in &meta.rdate_values {
+                if !meta.excluded_dates.contains(&rdate) {
+                    let occ_end = rdate
+                        .checked_add_signed(Duration::days(span_days + 1))
+                        .unwrap_or(rdate);
+                    let occ_r = CalendarDateRange::new(rdate, occ_end);
+                    if occ_r.intersects(year_range) {
+                        occ_starts.insert(rdate);
+                    }
+                }
+            }
+            if let Some(rule) = meta.recurrence_rule.as_ref() {
+                let from = year_range
+                    .start
+                    .checked_sub_signed(Duration::days(span_days))
+                    .unwrap_or(year_range.start)
+                    .max(initial_start);
+                if from < year_range.end {
+                    let starts = recurrence_occurrences_in_range(
+                        rule,
+                        initial_start,
+                        from,
+                        year_range.end,
+                        &meta.excluded_dates,
+                    );
+                    occ_starts.extend(starts);
+                }
+            }
+            for occ_start in occ_starts {
+                let Some(occ_end) = occ_start.checked_add_signed(Duration::days(span_days + 1)) else {
+                    continue;
+                };
+                let occ_range = CalendarDateRange::new(occ_start, occ_end);
+                if occ_range.intersects(year_range) {
+                    occurrences.push((ev_idx, occ_range));
+                }
+            }
+        }
+
+        let mut day_identities: BTreeMap<NaiveDate, (BTreeSet<CalendarEventIdentity>, usize)> =
+            BTreeMap::new();
+        let mut day_previews: HashMap<NaiveDate, Vec<YearPlannerDayPreviewItem>> = HashMap::new();
+        let mut month_multi_candidates: [Vec<(u32, u32, (u8, u8, u8), bool, bool, usize)>; 12] =
+            std::array::from_fn(|_| Vec::new());
+        let mut month_timed_singles: [Vec<(u32, u16, (u8, u8, u8), usize)>; 12] =
+            std::array::from_fn(|_| Vec::new());
+
+        let untitled = gettext("(Untitled)");
+
+        for &(ev_idx, occ_range) in &occurrences {
+            let event = &index.snapshot.events[ev_idx];
+            let meta = &index.metas[ev_idx];
+            let is_all_day_or_multi = meta.all_day || occ_range.len_days() > 1;
+            let title = if event.summary.trim().is_empty() {
+                untitled.clone()
+            } else {
+                event.summary.clone()
+            };
+            let time_str = if is_all_day_or_multi {
+                None
+            } else {
+                Some(format_clock_minutes(meta.start_min as u32))
+            };
+
+            let clamped_year_start = occ_range.start.max(year_range.start);
+            let clamped_year_end = occ_range.last_inclusive().min(year_range.last_inclusive());
+            let mut cur = clamped_year_start;
+            while cur <= clamped_year_end {
+                let (seen, no_id_count) = day_identities.entry(cur).or_default();
+                let is_new_on_day = if let Some(ref id) = meta.identity {
+                    seen.insert(id.clone())
+                } else {
+                    *no_id_count += 1;
+                    true
+                };
+                if is_new_on_day {
+                    day_previews
+                        .entry(cur)
+                        .or_default()
+                        .push(YearPlannerDayPreviewItem {
+                            title: title.clone(),
+                            time_str: time_str.clone(),
+                            color_rgb: meta.color_rgb,
+                            is_all_day_or_multi,
+                            start_min: meta.start_min,
+                        });
+                }
+                let Some(next) = cur.succ_opt() else { break };
+                cur = next;
+            }
+
+            if is_all_day_or_multi {
+                let start_m = clamped_year_start.month();
+                let end_m = clamped_year_end.month();
+                for m in start_m..=end_m {
+                    let max_d = days_in_month(year, m);
+                    let Some(m_start) = NaiveDate::from_ymd_opt(year, m, 1) else { continue };
+                    let Some(m_end) = NaiveDate::from_ymd_opt(year, m, max_d) else { continue };
+                    let cs = occ_range.start.max(m_start);
+                    let ce = occ_range.last_inclusive().min(m_end);
+                    if cs <= ce {
+                        month_multi_candidates[(m - 1) as usize].push((
+                            cs.day(),
+                            ce.day(),
+                            meta.color_rgb,
+                            occ_range.start < m_start,
+                            occ_range.last_inclusive() > m_end,
+                            ev_idx,
+                        ));
+                    }
+                }
+            } else if clamped_year_start.year() == year {
+                let m_idx = (clamped_year_start.month() - 1) as usize;
+                month_timed_singles[m_idx].push((
+                    clamped_year_start.day(),
+                    meta.start_min,
+                    meta.color_rgb,
+                    ev_idx,
+                ));
+            }
+        }
+
+        for items in day_previews.values_mut() {
+            items.sort_by(|a, b| {
+                b.is_all_day_or_multi
+                    .cmp(&a.is_all_day_or_multi)
+                    .then_with(|| a.start_min.cmp(&b.start_min))
+                    .then_with(|| a.title.cmp(&b.title))
+            });
+        }
+
+        let markers: BTreeMap<NaiveDate, usize> = day_identities
+            .into_iter()
+            .filter_map(|(date, (seen, no_id_count))| {
+                let count = seen.len() + no_id_count;
+                (count > 0).then_some((date, count))
+            })
+            .collect();
+
+        let planner_months: [YearPlannerMonthData; 12] = std::array::from_fn(|m_idx| {
+            let mut multi = std::mem::take(&mut month_multi_candidates[m_idx]);
+            multi.sort_by(|a, b| {
+                a.0.cmp(&b.0)
+                    .then_with(|| (b.1 - b.0).cmp(&(a.1 - a.0)))
+                    .then_with(|| {
+                        index.metas[a.5]
+                            .summary_lowercase
+                            .cmp(&index.metas[b.5].summary_lowercase)
+                    })
+            });
+
+            let mut tracks: Vec<[bool; 32]> = Vec::new();
+            let mut spans: Vec<YearPlannerEventSpan> = Vec::new();
+
+            for (start_day, end_day, color_rgb, continues_left, continues_right, _) in multi {
+                let mut t = 0;
+                loop {
+                    if t >= tracks.len() {
+                        tracks.push([false; 32]);
+                        break;
+                    }
+                    if (start_day..=end_day).all(|d| !tracks[t][d as usize]) {
+                        break;
+                    }
+                    t += 1;
+                }
+                for d in start_day..=end_day {
+                    tracks[t][d as usize] = true;
+                }
+                spans.push(YearPlannerEventSpan {
+                    start_day,
+                    end_day,
+                    track: t,
+                    color_rgb,
+                    continues_left,
+                    continues_right,
+                    is_timed_single: false,
+                    start_min: 0,
+                });
+            }
+
+            let mut singles = std::mem::take(&mut month_timed_singles[m_idx]);
+            singles.sort_by(|a, b| {
+                a.0.cmp(&b.0)
+                    .then_with(|| a.1.cmp(&b.1))
+                    .then_with(|| {
+                        index.metas[a.3]
+                            .summary_lowercase
+                            .cmp(&index.metas[b.3].summary_lowercase)
+                    })
+            });
+
+            for (d, start_min, color_rgb, _) in singles {
+                let mut t = 0;
+                loop {
+                    if t >= tracks.len() {
+                        tracks.push([false; 32]);
+                        break;
+                    }
+                    if !tracks[t][d as usize] {
+                        break;
+                    }
+                    t += 1;
+                }
+                tracks[t][d as usize] = true;
+                spans.push(YearPlannerEventSpan {
+                    start_day: d,
+                    end_day: d,
+                    track: t,
+                    color_rgb,
+                    continues_left: false,
+                    continues_right: false,
+                    is_timed_single: true,
+                    start_min,
+                });
+            }
+
+            YearPlannerMonthData { spans }
+        });
+
+        (markers, planner_months, day_previews)
+    }
+
+    fn draw_year_planner_canvas(
+        cr: &gtk::cairo::Context,
+        layout: &YearPlannerCanvasLayout,
+        planner_months: &[YearPlannerMonthData; 12],
+        day_previews: &HashMap<NaiveDate, Vec<YearPlannerDayPreviewItem>>,
+        selected_day: Option<NaiveDate>,
+        today: NaiveDate,
+        hovered_target: Option<&YearCanvasHitTarget>,
+        scroll_y: f64,
+        viewport_height: f64,
+        is_dark: bool,
+    ) {
+        // Base background
+        if let Ok(mut font_opts) = gtk::cairo::FontOptions::new() {
+            font_opts.set_antialias(gtk::cairo::Antialias::Gray);
+            font_opts.set_hint_style(gtk::cairo::HintStyle::Full);
+            font_opts.set_hint_metrics(gtk::cairo::HintMetrics::On);
+            cr.set_font_options(&font_opts);
+        }
+
+        if is_dark {
+            cr.set_source_rgb(0.135, 0.135, 0.15);
+        } else {
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+        }
+        cr.rectangle(0.0, 0.0, layout.width, layout.height);
+        let _ = cr.fill();
+
+        let fg = if is_dark { 1.0 } else { 0.12 };
+        let primary_alpha = if is_dark { 0.96 } else { 0.92 };
+        let muted_alpha = if is_dark { 0.70 } else { 0.65 };
+        let (wknd_r, wknd_g, wknd_b) = if is_dark {
+            (1.0, 0.44, 0.44)
+        } else {
+            (0.84, 0.16, 0.16)
+        };
+        let border_alpha = if is_dark { 0.14 } else { 0.11 };
+
+        for m in 1..=12u32 {
+            let row_idx = (m - 1) as usize;
+            let row_y = row_idx as f64 * layout.row_h;
+
+            // 1. Left Month Header cell (rotated -90 deg, larger 13pt bold, no redundant year on Jan)
+            let is_header_hovered = hovered_target == Some(&YearCanvasHitTarget::MonthHeader(m));
+            if is_header_hovered {
+                cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, if is_dark { 0.22 } else { 0.12 });
+            } else if is_dark {
+                cr.set_source_rgba(1.0, 1.0, 1.0, 0.025);
+            } else {
+                cr.set_source_rgba(0.0, 0.0, 0.0, 0.02);
+            }
+            cr.rectangle(0.0, row_y, layout.month_header_w, layout.row_h);
+            let _ = cr.fill();
+
+            let m_short = Self::calendar_month_short_name(m);
+            let _ = cr.save();
+            cr.translate(
+                (layout.month_header_w * 0.5 + 5.0).round(),
+                (row_y + layout.row_h * 0.5).round(),
+            );
+            cr.rotate(-std::f64::consts::FRAC_PI_2);
+            cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+            cr.set_font_size(13.0);
+            if is_header_hovered {
+                cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 1.0);
+            } else {
+                cr.set_source_rgba(fg, fg, fg, primary_alpha);
+            }
+            if let Ok(ext) = cr.text_extents(&m_short) {
+                cr.move_to((-ext.width() * 0.5 - ext.x_bearing()).round(), 0.0);
+                let _ = cr.show_text(&m_short);
+            }
+            let _ = cr.restore();
+
+            // 2. Day cells (1..=31)
+            for day in 1..=31u32 {
+                let col_idx = (day - 1) as usize;
+                let cell_x = layout.month_header_w + col_idx as f64 * layout.col_w;
+
+                if let Some(date) = NaiveDate::from_ymd_opt(layout.year, m, day) {
+                    let is_sat_sun = matches!(date.weekday(), Weekday::Sat | Weekday::Sun);
+                    let is_today = date == today;
+                    let is_selected = selected_day == Some(date);
+                    let is_hovered = hovered_target == Some(&YearCanvasHitTarget::Day(date));
+
+                    if is_sat_sun {
+                        if is_dark {
+                            cr.set_source_rgba(1.0, 1.0, 1.0, 0.042);
+                        } else {
+                            cr.set_source_rgba(0.0, 0.0, 0.0, 0.044);
+                        }
+                        cr.rectangle(cell_x, row_y, layout.col_w, layout.row_h);
+                        let _ = cr.fill();
+                    }
+                    if is_today {
+                        cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, if is_dark { 0.16 } else { 0.10 });
+                        cr.rectangle(cell_x, row_y, layout.col_w, layout.row_h);
+                        let _ = cr.fill();
+                    } else if is_hovered && !is_selected {
+                        cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, if is_dark { 0.12 } else { 0.07 });
+                        cr.rectangle(cell_x, row_y, layout.col_w, layout.row_h);
+                        let _ = cr.fill();
+                    }
+
+                    // Top-left day number + 2-letter weekday header ("1 Do" / "3 Sa") snapped to integer pixels
+                    let day_str = day.to_string();
+                    cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+                    cr.set_font_size(12.0);
+                    if is_sat_sun {
+                        cr.set_source_rgba(wknd_r, wknd_g, wknd_b, 0.96);
+                    } else {
+                        cr.set_source_rgba(fg, fg, fg, primary_alpha);
+                    }
+                    let day_tx = (cell_x + 3.0).round();
+                    let day_ty = (row_y + 13.0).round();
+                    cr.move_to(day_tx, day_ty);
+                    let _ = cr.show_text(&day_str);
+
+                    if layout.col_w >= 26.0 {
+                        let day_adv = cr.text_extents(&day_str).map(|e| e.x_advance()).unwrap_or(13.0);
+                        let wd_str = Self::calendar_weekday_two_letter(date.weekday());
+                        cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
+                        cr.set_font_size(11.0);
+                        cr.set_source_rgba(fg, fg, fg, muted_alpha);
+                        let wd_tx = (day_tx + day_adv + 2.0).round();
+                        if wd_tx + 12.0 <= cell_x + layout.col_w {
+                            cr.move_to(wd_tx, day_ty);
+                            let _ = cr.show_text(wd_str);
+                        }
+                    }
+                } else {
+                    // Invalid trailing day of month (e.g. Feb 29-31, Apr 31)
+                    if is_dark {
+                        cr.set_source_rgba(0.0, 0.0, 0.0, 0.18);
+                    } else {
+                        cr.set_source_rgba(0.0, 0.0, 0.0, 0.018);
+                    }
+                    cr.rectangle(cell_x, row_y, layout.col_w, layout.row_h);
+                    let _ = cr.fill();
+                }
+            }
+
+            // 3. Grid lines for this row
+            cr.set_line_width(1.0);
+            cr.set_source_rgba(if is_dark { 1.0 } else { 0.0 }, if is_dark { 1.0 } else { 0.0 }, if is_dark { 1.0 } else { 0.0 }, border_alpha);
+            cr.move_to(0.0, (row_y + layout.row_h).floor() + 0.5);
+            cr.line_to(layout.width, (row_y + layout.row_h).floor() + 0.5);
+            let _ = cr.stroke();
+
+            // 4. Event bars inside this month row:
+            //    - All-day / multi-day events span full cell width(s)
+            //    - Non-all-day (timed) events render as shorter BusyCal lines (~44% cell width) positioned horizontally by time of day
+            let events_top_y = (row_y + 18.0).round();
+            let avail_event_h = (layout.row_h - 19.0).max(4.0);
+            let bar_h = (layout.row_h * 0.075).clamp(4.0, 5.0).round();
+            let track_gap = 2.0;
+            let track_step = bar_h + track_gap;
+            let max_tracks = ((avail_event_h / track_step).floor() as usize).max(1);
+
+            for span in &planner_months[row_idx].spans {
+                if span.track >= max_tracks {
+                    continue;
+                }
+                let bar_y = (events_top_y + span.track as f64 * track_step).round();
+                let (start_x, bar_w) = if span.is_timed_single {
+                    let cell_left = layout.month_header_w + (span.start_day - 1) as f64 * layout.col_w + 2.0;
+                    let usable_cell_w = (layout.col_w - 4.0).max(6.0);
+                    let short_w = (usable_cell_w * 0.44).clamp(7.0, 18.0).min(usable_cell_w).round();
+                    let time_ratio = ((span.start_min as f64 - 420.0) / (1200.0 - 420.0)).clamp(0.0, 1.0);
+                    let max_offset = (usable_cell_w - short_w).max(0.0);
+                    ((cell_left + max_offset * time_ratio).round(), short_w)
+                } else {
+                    let left_pad = if span.continues_left { 0.0 } else { 1.5 };
+                    let right_pad = if span.continues_right { 0.0 } else { 1.5 };
+                    let sx = (layout.month_header_w + (span.start_day - 1) as f64 * layout.col_w + left_pad).round();
+                    let ex = (layout.month_header_w + span.end_day as f64 * layout.col_w - right_pad).round();
+                    (sx, (ex - sx).max(2.0))
+                };
+                let (r, g, b) = span.color_rgb;
+                cr.set_source_rgba(
+                    r as f64 / 255.0,
+                    g as f64 / 255.0,
+                    b as f64 / 255.0,
+                    if span.is_timed_single { 0.90 } else { 0.98 },
+                );
+                draw_cairo_rounded_rect(cr, start_x, bar_y, bar_w, bar_h, bar_h * 0.48);
+                let _ = cr.fill();
+            }
+        }
+
+        // Vertical column grid lines (drawn across all 12 rows)
+        cr.set_line_width(1.0);
+        cr.set_source_rgba(if is_dark { 1.0 } else { 0.0 }, if is_dark { 1.0 } else { 0.0 }, if is_dark { 1.0 } else { 0.0 }, border_alpha);
+        for col in 0..=31usize {
+            let x = (layout.month_header_w + col as f64 * layout.col_w).floor() + 0.5;
+            cr.move_to(x, 0.0);
+            cr.line_to(x, layout.height);
+        }
+        let _ = cr.stroke();
+
+        // Today, Selected Day & Hovered Day outlines (drawn on top of grid lines)
+        if today.year() == layout.year && selected_day != Some(today) {
+            let tx = layout.month_header_w + (today.day() - 1) as f64 * layout.col_w;
+            let ty = (today.month() - 1) as f64 * layout.row_h;
+            cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 0.70);
+            cr.set_line_width(1.5);
+            cr.rectangle(tx + 0.75, ty + 0.75, layout.col_w - 1.5, layout.row_h - 1.5);
+            let _ = cr.stroke();
+        }
+
+        if let Some(sel) = selected_day.filter(|d| d.year() == layout.year) {
+            let sx = layout.month_header_w + (sel.day() - 1) as f64 * layout.col_w;
+            let sy = (sel.month() - 1) as f64 * layout.row_h;
+            cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 1.0);
+            cr.set_line_width(2.0);
+            cr.rectangle(sx + 1.0, sy + 1.0, (layout.col_w - 2.0).max(1.0), (layout.row_h - 2.0).max(1.0));
+            let _ = cr.stroke();
+        }
+
+        if let Some(YearCanvasHitTarget::Day(hover_date)) = hovered_target {
+            if hover_date.year() == layout.year {
+                let hx = layout.month_header_w + (hover_date.day() - 1) as f64 * layout.col_w;
+                let hy = (hover_date.month() - 1) as f64 * layout.row_h;
+                cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 0.95);
+                cr.set_line_width(2.0);
+                cr.rectangle(hx + 1.0, hy + 1.0, (layout.col_w - 2.0).max(1.0), (layout.row_h - 2.0).max(1.0));
+                let _ = cr.stroke();
+
+                Self::draw_year_planner_hover_card(
+                    cr,
+                    layout,
+                    *hover_date,
+                    day_previews.get(hover_date).map(Vec::as_slice).unwrap_or(&[]),
+                    today,
+                    scroll_y,
+                    viewport_height,
+                    is_dark,
+                );
+            }
+        }
+    }
+
+    fn draw_year_planner_hover_card(
+        cr: &gtk::cairo::Context,
+        layout: &YearPlannerCanvasLayout,
+        date: NaiveDate,
+        items: &[YearPlannerDayPreviewItem],
+        today: NaiveDate,
+        scroll_y: f64,
+        viewport_height: f64,
+        is_dark: bool,
+    ) {
+        let max_items = 8usize;
+        let shown_items = &items[..items.len().min(max_items)];
+        let extra_count = items.len().saturating_sub(max_items);
+
+        let card_w: f64 = 308.0;
+        let header_h: f64 = 56.0;
+        let mut content_h: f64 = 0.0;
+        if shown_items.is_empty() {
+            content_h += 30.0;
+        } else {
+            content_h += 6.0;
+            for item in shown_items {
+                content_h += if item.is_all_day_or_multi { 26.0 } else { 23.0 };
+            }
+            if extra_count > 0 {
+                content_h += 22.0;
+            }
+        }
+        let card_h: f64 = (header_h + content_h + 12.0).round();
+
+        let cell_x = layout.month_header_w + (date.day() - 1) as f64 * layout.col_w;
+        let cell_y = (date.month() - 1) as f64 * layout.row_h;
+
+        // Place card right next to the hovered cell (or to the left if near right edge), snapped to integer pixels
+        let card_x = if cell_x + layout.col_w + 8.0 + card_w <= layout.width - 6.0 {
+            (cell_x + layout.col_w + 7.0).round()
+        } else {
+            (cell_x - card_w - 7.0).max(6.0).round()
+        };
+        let min_y = (scroll_y + 6.0).round();
+        let max_y = (scroll_y + viewport_height - card_h - 6.0).max(min_y).round();
+        let card_y = (cell_y + layout.row_h * 0.5 - card_h * 0.35).clamp(min_y, max_y).round();
+
+        let _ = cr.save();
+
+        // Soft drop shadow
+        for (i, alpha) in [
+            (4.0, if is_dark { 0.26 } else { 0.09 }),
+            (2.0, if is_dark { 0.36 } else { 0.14 }),
+        ] {
+            cr.set_source_rgba(0.0, 0.0, 0.0, alpha);
+            draw_cairo_rounded_rect(cr, card_x - i * 0.5, card_y + i, card_w + i, card_h + i, 11.0 + i * 0.5);
+            let _ = cr.fill();
+        }
+
+        // Card background (integer pixel bounds)
+        if is_dark {
+            cr.set_source_rgba(0.19, 0.19, 0.21, 0.99);
+        } else {
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.99);
+        }
+        draw_cairo_rounded_rect(cr, card_x, card_y, card_w, card_h, 10.0);
+        let _ = cr.fill();
+
+        // Crisp 1px card border aligned on +0.5 pixel grid
+        if is_dark {
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.18);
+        } else {
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.16);
+        }
+        cr.set_line_width(1.0);
+        draw_cairo_rounded_rect(cr, card_x + 0.5, card_y + 0.5, card_w - 1.0, card_h - 1.0, 10.0);
+        let _ = cr.stroke();
+
+        // Header: Big Day Number ("13") on left + Weekday & Month/KW on right
+        let day_str = date.day().to_string();
+        cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+        cr.set_font_size(29.0);
+        if is_dark {
+            cr.set_source_rgba(98.0 / 255.0, 160.0 / 255.0, 234.0 / 255.0, 1.0);
+        } else {
+            cr.set_source_rgba(28.0 / 255.0, 113.0 / 255.0, 216.0 / 255.0, 1.0);
+        }
+        let num_x = (card_x + 14.0).round();
+        let num_y = (card_y + 37.0).round();
+        cr.move_to(num_x, num_y);
+        let _ = cr.show_text(&day_str);
+        let num_adv = cr.text_extents(&day_str).map(|e| e.x_advance()).unwrap_or(32.0);
+
+        let info_x = (num_x + num_adv + 10.0).round();
+        let wd_name = match date.weekday() {
+            Weekday::Mon => gettext("Monday"),
+            Weekday::Tue => gettext("Tuesday"),
+            Weekday::Wed => gettext("Wednesday"),
+            Weekday::Thu => gettext("Thursday"),
+            Weekday::Fri => gettext("Friday"),
+            Weekday::Sat => gettext("Saturday"),
+            Weekday::Sun => gettext("Sunday"),
+        };
+        let rel_header = if date == today {
+            format!("{}, {}", gettext("Today").to_uppercase(), wd_name.to_uppercase())
+        } else if Some(date) == today.succ_opt() {
+            format!("{}, {}", gettext("Tomorrow").to_uppercase(), wd_name.to_uppercase())
+        } else if Some(date) == today.pred_opt() {
+            format!("{}, {}", gettext("Yesterday").to_uppercase(), wd_name.to_uppercase())
+        } else {
+            wd_name.to_uppercase()
+        };
+
+        let fg = if is_dark { 1.0 } else { 0.12 };
+        cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+        cr.set_font_size(11.0);
+        cr.set_source_rgba(fg, fg, fg, if is_dark { 0.90 } else { 0.86 });
+        let max_hdr_w = (card_x + card_w - info_x - 12.0).max(40.0);
+        let rel_trunc = truncate_cairo_text(cr, &rel_header, max_hdr_w);
+        cr.move_to(info_x, (card_y + 21.0).round());
+        let _ = cr.show_text(&rel_trunc);
+
+        let month_name = Self::calendar_month_name(date.month());
+        let kw_str = format!("{} {}", gettext("CW"), date.iso_week().week());
+        cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
+        cr.set_font_size(12.0);
+        cr.set_source_rgba(fg, fg, fg, if is_dark { 0.68 } else { 0.62 });
+        let sub_hdr_y = (card_y + 38.0).round();
+        cr.move_to(info_x, sub_hdr_y);
+        let _ = cr.show_text(&month_name);
+
+        if let Ok(ext) = cr.text_extents(&kw_str) {
+            cr.move_to((card_x + card_w - 14.0 - ext.width()).round(), sub_hdr_y);
+            let _ = cr.show_text(&kw_str);
+        }
+
+        // Crisp 1px divider line under header
+        cr.set_source_rgba(fg, fg, fg, if is_dark { 0.14 } else { 0.10 });
+        cr.set_line_width(1.0);
+        let div_y = (card_y + 48.0).floor() + 0.5;
+        cr.move_to(card_x + 12.0, div_y);
+        cr.line_to(card_x + card_w - 12.0, div_y);
+        let _ = cr.stroke();
+
+        let mut cur_y = (card_y + 56.0).round();
+        if shown_items.is_empty() {
+            cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
+            cr.set_font_size(12.0);
+            cr.set_source_rgba(fg, fg, fg, if is_dark { 0.56 } else { 0.52 });
+            cr.move_to((card_x + 14.0).round(), (cur_y + 18.0).round());
+            let _ = cr.show_text(&gettext("No appointments"));
+        } else {
+            for item in shown_items {
+                let (r, g, b) = item.color_rgb;
+                if item.is_all_day_or_multi {
+                    let pill_x = (card_x + 12.0).round();
+                    let pill_w = (card_w - 24.0).round();
+                    let pill_h = 22.0;
+                    cr.set_source_rgba(
+                        r as f64 / 255.0,
+                        g as f64 / 255.0,
+                        b as f64 / 255.0,
+                        if is_dark { 0.34 } else { 0.22 },
+                    );
+                    draw_cairo_rounded_rect(cr, pill_x, cur_y, pill_w, pill_h, 5.0);
+                    let _ = cr.fill();
+
+                    // Left accent stripe inside pill
+                    cr.set_source_rgba(r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0, 0.96);
+                    draw_cairo_rounded_rect(cr, pill_x, cur_y, 4.0, pill_h, 2.0);
+                    let _ = cr.fill();
+
+                    cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+                    cr.set_font_size(12.0);
+                    if is_dark {
+                        cr.set_source_rgba(0.97, 0.97, 0.99, 0.98);
+                    } else {
+                        cr.set_source_rgba(
+                            (r as f64 * 0.42) / 255.0,
+                            (g as f64 * 0.42) / 255.0,
+                            (b as f64 * 0.42) / 255.0,
+                            0.98,
+                        );
+                    }
+                    let text_trunc = truncate_cairo_text(cr, &item.title, pill_w - 16.0);
+                    cr.move_to((pill_x + 9.0).round(), (cur_y + 15.0).round());
+                    let _ = cr.show_text(&text_trunc);
+                    cur_y += 26.0;
+                } else {
+                    let row_x = (card_x + 14.0).round();
+                    let text_y = (cur_y + 15.0).round();
+                    let time_s = item.time_str.as_deref().unwrap_or("");
+                    cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
+                    cr.set_font_size(11.5);
+                    cr.set_source_rgba(fg, fg, fg, if is_dark { 0.70 } else { 0.64 });
+                    cr.move_to(row_x, text_y);
+                    let _ = cr.show_text(time_s);
+
+                    let dot_x = (row_x + 42.0).round();
+                    let dot_y = (cur_y + 11.0).round();
+                    cr.arc(dot_x, dot_y, 3.8, 0.0, 2.0 * std::f64::consts::PI);
+                    cr.set_source_rgba(r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0, 0.96);
+                    let _ = cr.fill();
+
+                    cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
+                    cr.set_font_size(12.0);
+                    cr.set_source_rgba(fg, fg, fg, if is_dark { 0.96 } else { 0.92 });
+                    let title_x = (dot_x + 9.0).round();
+                    let avail_w = (card_x + card_w - 12.0 - title_x).max(30.0);
+                    let title_trunc = truncate_cairo_text(cr, &item.title, avail_w);
+                    cr.move_to(title_x, text_y);
+                    let _ = cr.show_text(&title_trunc);
+                    cur_y += 23.0;
+                }
+            }
+            if extra_count > 0 {
+                cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+                cr.set_font_size(11.0);
+                cr.set_source_rgba(fg, fg, fg, if is_dark { 0.64 } else { 0.60 });
+                let more_txt = format!("+{} {}", extra_count, gettext("more"));
+                cr.move_to((card_x + 14.0).round(), (cur_y + 15.0).round());
+                let _ = cr.show_text(&more_txt);
+            }
+        }
+
+        let _ = cr.restore();
+    }
+
+    fn show_year_planner_day_popover(
+        &self,
+        area: &gtk::DrawingArea,
+        date: NaiveDate,
+        cell_rect: gdk::Rectangle,
+    ) {
+        if let Some(prev) = self.imp().year_planner_popover.borrow_mut().take() {
+            prev.popdown();
+        }
+
+        let popover = gtk::Popover::builder()
+            .autohide(true)
+            .has_arrow(true)
+            .pointing_to(&cell_rect)
+            .css_classes(vec!["year-planner-day-popover"])
+            .build();
+        popover.set_parent(area);
+
+        let page_weak_close = self.downgrade();
+        let pop_weak = popover.downgrade();
+        popover.connect_closed(move |p| {
+            if let Some(page) = page_weak_close.upgrade() {
+                let matches_curr = page
+                    .imp()
+                    .year_planner_popover
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|curr| curr == p);
+                if matches_curr {
+                    page.imp().year_planner_popover.replace(None);
+                }
+            }
+            if let Some(pop) = pop_weak.upgrade() {
+                pop.unparent();
+            }
+        });
+
+        let root_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .margin_top(10)
+            .margin_bottom(10)
+            .margin_start(12)
+            .margin_end(12)
+            .width_request(268)
+            .build();
+
+        // Top BusyCal-style header: [ Big Day Number "12" | Uppercase Weekday + Month & W42 | + ]
+        let header_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(10)
+            .valign(gtk::Align::Center)
+            .build();
+
+        let day_num_lbl = gtk::Label::builder()
+            .label(&date.day().to_string())
+            .css_classes(vec!["year-planner-popover-day-number"])
+            .valign(gtk::Align::Center)
+            .build();
+        header_row.append(&day_num_lbl);
+
+        let meta_col = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(1)
+            .hexpand(true)
+            .valign(gtk::Align::Center)
+            .build();
+
+        let today = Local::now().date_naive();
+        let weekday_full = match date.weekday() {
+            Weekday::Mon => gettext("Monday"),
+            Weekday::Tue => gettext("Tuesday"),
+            Weekday::Wed => gettext("Wednesday"),
+            Weekday::Thu => gettext("Thursday"),
+            Weekday::Fri => gettext("Friday"),
+            Weekday::Sat => gettext("Saturday"),
+            Weekday::Sun => gettext("Sunday"),
+        };
+        let top_line_str = if date == today {
+            format!("{}, {}", gettext("Today"), weekday_full).to_uppercase()
+        } else if Some(date) == today.succ_opt() {
+            format!("{}, {}", gettext("Tomorrow"), weekday_full).to_uppercase()
+        } else if Some(date) == today.pred_opt() {
+            format!("{}, {}", gettext("Yesterday"), weekday_full).to_uppercase()
+        } else {
+            weekday_full.to_uppercase()
+        };
+
+        let weekday_lbl = gtk::Label::builder()
+            .label(&top_line_str)
+            .xalign(0.0)
+            .ellipsize(pango::EllipsizeMode::End)
+            .css_classes(vec!["year-planner-popover-weekday"])
+            .build();
+        meta_col.append(&weekday_lbl);
+
+        let sub_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .hexpand(true)
+            .build();
+        let month_lbl = gtk::Label::builder()
+            .label(&Self::calendar_month_name(date.month()))
+            .xalign(0.0)
+            .hexpand(true)
+            .css_classes(vec!["caption", "dim-label"])
+            .build();
+        let kw_lbl = gtk::Label::builder()
+            .label(&format!("{} {}", gettext("W"), date.iso_week().week()))
+            .xalign(1.0)
+            .css_classes(vec!["caption", "dim-label"])
+            .build();
+        sub_row.append(&month_lbl);
+        sub_row.append(&kw_lbl);
+        meta_col.append(&sub_row);
+        header_row.append(&meta_col);
+
+        let add_btn = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text(&gettext("New Appointment"))
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .build();
+        {
+            let page_weak = self.downgrade();
+            let pop_weak = popover.downgrade();
+            add_btn.connect_clicked(move |_| {
+                if let Some(pop) = pop_weak.upgrade() {
+                    pop.popdown();
+                }
+                if let Some(page) = page_weak.upgrade() {
+                    let dialog = crate::dialogs::EventDialog::new_for_date(date);
+                    let page_for_refresh = page.downgrade();
+                    dialog.connect_closed(move |_| {
+                        if let Some(page) = page_for_refresh.upgrade() {
+                            page.reload_calendar_data();
+                        }
+                    });
+                    dialog.present_adaptive(&page);
+                }
+            });
+        }
+        header_row.append(&add_btn);
+        root_box.append(&header_row);
+
+        // Events on this day
+        let day_events = self
+            .events_by_date(CalendarDateRange::single(date))
+            .remove(&date)
+            .unwrap_or_default();
+
+        if day_events.is_empty() {
+            let empty_lbl = gtk::Label::builder()
+                .label(&gettext("No appointments"))
+                .xalign(0.0)
+                .margin_top(2)
+                .margin_bottom(2)
+                .css_classes(vec!["caption", "dim-label"])
+                .build();
+            root_box.append(&empty_lbl);
+        } else {
+            let events_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(4)
+                .margin_top(2)
+                .build();
+            let is_dark = adw::StyleManager::default().is_dark();
+
+            // 1. All-day & Multi-day pills first (matching BusyCal)
+            for ev in day_events.iter() {
+                let range = event_occurrence_range_for_date(ev, date)
+                    .or_else(|| event_display_range(ev))
+                    .unwrap_or_else(|| CalendarDateRange::single(date));
+                if !(ev.all_day || range.len_days() > 1) {
+                    continue;
+                }
+                let color = event_color_for_record(ev);
+                let (bg, hover, active, fg) = pastel_colors_for_hex(&color, is_dark);
+                let chip_class = ensure_event_chip_css_class(&color, &bg, &hover, &active, &fg);
+                let title = if ev.summary.trim().is_empty() {
+                    gettext("(Untitled)")
+                } else {
+                    ev.summary.clone()
+                };
+                let pill_btn = gtk::Button::builder()
+                    .label(&title)
+                    .halign(gtk::Align::Fill)
+                    .css_classes(vec!["flat", "calendar-grid-event", chip_class.as_str()])
+                    .build();
+                let identity = CalendarEventIdentity::from_event(ev);
+                let page_weak = self.downgrade();
+                let pop_weak = popover.downgrade();
+                let area_clone = area.clone();
+                pill_btn.connect_clicked(move |_| {
+                    if let Some(pop) = pop_weak.upgrade() {
+                        pop.popdown();
+                    }
+                    if let (Some(page), Some(id)) = (page_weak.upgrade(), identity.as_ref()) {
+                        page.open_event_editor_for_identity(&area_clone, id);
+                    }
+                });
+                events_box.append(&pill_btn);
+            }
+
+            // 2. Timed single-day rows: "07:30  •  Summary"
+            for ev in day_events.iter() {
+                let range = event_occurrence_range_for_date(ev, date)
+                    .or_else(|| event_display_range(ev))
+                    .unwrap_or_else(|| CalendarDateRange::single(date));
+                if ev.all_day || range.len_days() > 1 {
+                    continue;
+                }
+                let (start_min, _, _) = event_occurrence_times_for_date(ev, date, 30);
+                let time_str = format_clock_minutes(start_min);
+                let color = event_color_for_record(ev);
+                let (r, g, b) = parse_hex_color(&color).unwrap_or((53, 132, 228));
+
+                let row_btn = gtk::Button::builder()
+                    .css_classes(vec!["flat", "year-planner-popover-event-row"])
+                    .halign(gtk::Align::Fill)
+                    .build();
+                let row_box = gtk::Box::builder()
+                    .orientation(gtk::Orientation::Horizontal)
+                    .spacing(8)
+                    .valign(gtk::Align::Center)
+                    .build();
+
+                let time_lbl = gtk::Label::builder()
+                    .label(&time_str)
+                    .xalign(0.0)
+                    .width_chars(5)
+                    .css_classes(vec!["caption", "dim-label", "numeric"])
+                    .build();
+                row_box.append(&time_lbl);
+
+                let dot = gtk::DrawingArea::builder()
+                    .content_width(8)
+                    .content_height(8)
+                    .valign(gtk::Align::Center)
+                    .build();
+                dot.set_draw_func(move |_, cr, w, h| {
+                    cr.arc(w as f64 * 0.5, h as f64 * 0.5, 3.5, 0.0, 2.0 * std::f64::consts::PI);
+                    cr.set_source_rgb(r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0);
+                    let _ = cr.fill();
+                });
+                row_box.append(&dot);
+
+                let title = if ev.summary.trim().is_empty() {
+                    gettext("(Untitled)")
+                } else {
+                    ev.summary.clone()
+                };
+                let title_lbl = gtk::Label::builder()
+                    .label(&title)
+                    .xalign(0.0)
+                    .hexpand(true)
+                    .ellipsize(pango::EllipsizeMode::End)
+                    .css_classes(vec!["caption"])
+                    .build();
+                row_box.append(&title_lbl);
+
+                row_btn.set_child(Some(&row_box));
+
+                let identity = CalendarEventIdentity::from_event(ev);
+                let page_weak = self.downgrade();
+                let pop_weak = popover.downgrade();
+                let area_clone = area.clone();
+                row_btn.connect_clicked(move |_| {
+                    if let Some(pop) = pop_weak.upgrade() {
+                        pop.popdown();
+                    }
+                    if let (Some(page), Some(id)) = (page_weak.upgrade(), identity.as_ref()) {
+                        page.open_event_editor_for_identity(&area_clone, id);
+                    }
+                });
+                events_box.append(&row_btn);
+            }
+
+            let scroll = gtk::ScrolledWindow::builder()
+                .hscrollbar_policy(gtk::PolicyType::Never)
+                .vscrollbar_policy(gtk::PolicyType::Automatic)
+                .propagate_natural_height(true)
+                .max_content_height(260)
+                .child(&events_box)
+                .build();
+            root_box.append(&scroll);
+        }
+
+        popover.set_child(Some(&root_box));
+        self.imp().year_planner_popover.replace(Some(popover.clone()));
+        popover.popup();
+    }
+
     fn update_year_paned_layout(&self) {
         if let (Some(paned), Some(details_container)) = (
             self.imp().year_paned.borrow().as_ref(),
             self.imp().year_details_container.borrow().as_ref(),
         ) {
+            if self.imp().year_view_style.get() == YearViewStyle::Planner {
+                details_container.set_visible(false);
+                return;
+            }
+            details_container.set_visible(true);
             details_container.remove_css_class("side-mode");
             details_container.remove_css_class("bottom-mode");
             details_container.add_css_class("calendar-year-details-panel");
@@ -11535,19 +14765,29 @@ impl CalendarPage {
         let key = (year, revision, query.clone(), category.clone(), hidden_count);
 
         if self.imp().year_rendered_key.borrow().as_ref() != Some(&key) {
-            let markers: BTreeMap<NaiveDate, usize> = if let Some(index) = self
+            let cached = self.imp().year_projection_cache.borrow().get(&key).cloned();
+            let (markers, planner_months, day_previews) = if let Some(hit) = cached {
+                hit
+            } else if let Some(index) = self
                 .imp()
                 .calendar_snapshot_index
                 .borrow()
                 .as_ref()
             {
-                indexed_event_day_markers(
+                let built = Self::build_year_projection_from_index(
                     index,
+                    year,
                     year_range,
                     &query,
                     category.as_deref(),
                     &hidden_sources,
-                )
+                );
+                let mut cache = self.imp().year_projection_cache.borrow_mut();
+                if cache.len() >= 16 {
+                    cache.clear();
+                }
+                cache.insert(key.clone(), built.clone());
+                built
             } else {
                 let mut day_identities: BTreeMap<NaiveDate, (BTreeSet<CalendarEventIdentity>, usize)> = BTreeMap::new();
                 if let Some(records) = self.imp().event_records.borrow().as_ref() {
@@ -11566,21 +14806,81 @@ impl CalendarPage {
                         }
                     }
                 }
-                day_identities
+                let markers: BTreeMap<NaiveDate, usize> = day_identities
                     .into_iter()
                     .filter_map(|(date, (seen, no_id_count))| {
                         let count = seen.len() + no_id_count;
-                        if count > 0 {
-                            Some((date, count))
-                        } else {
-                            None
-                        }
+                        (count > 0).then_some((date, count))
                     })
-                    .collect()
+                    .collect();
+                let year_events_by_date = self.events_by_date(year_range);
+                let planner_months = Self::build_year_planner_months(year, &year_events_by_date);
+                let mut day_previews: HashMap<NaiveDate, Vec<YearPlannerDayPreviewItem>> = HashMap::new();
+                for (&date, evs) in &year_events_by_date {
+                    let mut items = Vec::with_capacity(evs.len());
+                    for ev in evs {
+                        let range = event_occurrence_range_for_date(ev, date)
+                            .or_else(|| event_display_range(ev))
+                            .unwrap_or_else(|| CalendarDateRange::single(date));
+                        let is_all_day_or_multi = ev.all_day || range.len_days() > 1;
+                        let (s_min, _, _) = event_occurrence_times_for_date(ev, date, 30);
+                        let hex = event_color_for_record(ev);
+                        let color_rgb = parse_hex_color(&hex).unwrap_or((53, 132, 228));
+                        items.push(YearPlannerDayPreviewItem {
+                            title: if ev.summary.trim().is_empty() {
+                                gettext("(Untitled)")
+                            } else {
+                                ev.summary.clone()
+                            },
+                            time_str: (!is_all_day_or_multi).then(|| format_clock_minutes(s_min)),
+                            color_rgb,
+                            is_all_day_or_multi,
+                            start_min: s_min.min(1439) as u16,
+                        });
+                    }
+                    items.sort_by(|a, b| {
+                        b.is_all_day_or_multi
+                            .cmp(&a.is_all_day_or_multi)
+                            .then_with(|| a.start_min.cmp(&b.start_min))
+                            .then_with(|| a.title.cmp(&b.title))
+                    });
+                    day_previews.insert(date, items);
+                }
+                (markers, planner_months, day_previews)
             };
 
+            *self.imp().year_planner_months.borrow_mut() = planner_months;
+            *self.imp().year_day_previews.borrow_mut() = day_previews;
             *self.imp().year_markers.borrow_mut() = markers;
             self.imp().year_rendered_key.replace(Some(key));
+
+            // Pre-warm adjacent years (year - 1, year + 1) on idle so clicking `<` or `>` is a 0.00ms cache hit
+            let page_weak = self.downgrade();
+            glib::idle_add_local_once(move || {
+                let Some(page) = page_weak.upgrade() else { return };
+                let Some(index) = page.imp().calendar_snapshot_index.borrow().as_ref().cloned() else { return };
+                let q = page.imp().calendar_search_query.borrow().clone();
+                let cat = page.imp().calendar_category_filter.borrow().clone();
+                let hidden = page.imp().hidden_calendar_sources.borrow().clone();
+                let h_cnt = hidden.len();
+                let rev = page.imp().calendar_revision.get();
+                for adj_year in [year - 1, year + 1] {
+                    let adj_key = (adj_year, rev, q.clone(), cat.clone(), h_cnt);
+                    if !page.imp().year_projection_cache.borrow().contains_key(&adj_key) {
+                        if let Some(adj_range) = calendar_year_range_option(adj_year) {
+                            let built = Self::build_year_projection_from_index(
+                                &index,
+                                adj_year,
+                                adj_range,
+                                &q,
+                                cat.as_deref(),
+                                &hidden,
+                            );
+                            page.imp().year_projection_cache.borrow_mut().insert(adj_key, built);
+                        }
+                    }
+                }
+            });
         }
 
         // Reset scroll position if year changed
@@ -11596,8 +14896,10 @@ impl CalendarPage {
         if let Some(canvas) = self.imp().year_canvas.borrow().as_ref() {
             canvas.queue_draw();
         }
-        if let Some(details) = self.imp().year_details_container.borrow().as_ref() {
-            self.render_year_day_details(details, selected_day);
+        if self.imp().year_view_style.get() == YearViewStyle::Grid {
+            if let Some(details) = self.imp().year_details_container.borrow().as_ref() {
+                self.render_year_day_details(details, selected_day);
+            }
         }
     }
 
@@ -11768,8 +15070,10 @@ impl CalendarPage {
             if let Some(canvas) = self.imp().year_canvas.borrow().as_ref() {
                 canvas.queue_draw();
             }
-            if let Some(details) = self.imp().year_details_container.borrow().as_ref() {
-                self.render_year_day_details(details, date);
+            if self.imp().year_view_style.get() == YearViewStyle::Grid {
+                if let Some(details) = self.imp().year_details_container.borrow().as_ref() {
+                    self.render_year_day_details(details, date);
+                }
             }
             self.refresh_period_label();
             return;
@@ -11967,14 +15271,31 @@ impl CalendarPage {
         let scale_pct = (configured_chip_scale() * 100.0).round() as i32;
         let key = (viewport.anchor_date, viewport.visible_range, revision, query, category, hidden_count, is_dark, scale_pct);
 
-        if self.imp().month_rendered_key.borrow().as_ref() == Some(&key)
-            && self.imp().month_layout.borrow().is_some()
-        {
-            if let Some(canvas) = self.imp().month_canvas.borrow().as_ref() {
-                canvas.queue_draw();
+        let reusable_prev_layout = {
+            let prev_key_guard = self.imp().month_rendered_key.borrow();
+            let prev_layout_guard = self.imp().month_layout.borrow();
+            if prev_key_guard.as_ref() == Some(&key) && prev_layout_guard.is_some() {
+                drop(prev_key_guard);
+                drop(prev_layout_guard);
+                if let Some(canvas) = self.imp().month_canvas.borrow().as_ref() {
+                    canvas.queue_draw();
+                }
+                return;
             }
-            return;
-        }
+            match (prev_key_guard.as_ref(), prev_layout_guard.as_ref()) {
+                (Some(pk), Some(pl))
+                    if pk.2 == key.2
+                        && pk.3 == key.3
+                        && pk.4 == key.4
+                        && pk.5 == key.5
+                        && pk.6 == key.6
+                        && pk.7 == key.7 =>
+                {
+                    Some(pl.clone())
+                }
+                _ => None,
+            }
+        };
 
         let events_by_date = self.events_by_date(viewport.visible_range);
         let today = Local::now().date_naive();
@@ -11989,7 +15310,12 @@ impl CalendarPage {
         let full_refs: Vec<&str> = weekday_names_full.iter().map(|s| s.as_str()).collect();
         let short_refs: Vec<&str> = weekday_names_short.iter().map(|s| s.as_str()).collect();
 
-        let layout = prepare_month_layout(
+        let prev_weeks = reusable_prev_layout
+            .as_ref()
+            .filter(|pl| pl.today == today)
+            .map(|pl| pl.weeks.as_slice());
+
+        let layout = prepare_month_layout_with_cache(
             &viewport,
             &events_by_date,
             today,
@@ -12000,6 +15326,7 @@ impl CalendarPage {
             &short_refs,
             is_dark,
             16,
+            prev_weeks,
         );
 
         self.imp().month_layout.replace(Some(Rc::new(layout)));
@@ -12630,11 +15957,13 @@ pub(crate) fn compute_week_cell_layouts(
     for date in week_dates.iter() {
         if let Some(events) = events_by_date.get(date) {
             for ev in events {
-                if let Some(range) = event_occurrence_range_for_date(ev, *date) {
-                    if range.len_days() > 1 {
-                        let key = (ev.uid.clone(), range.start);
-                        if seen_multi_uids.insert(key) {
-                            multi_day_events.push((ev.clone(), range));
+                if event_display_range(ev).is_some_and(|r| r.len_days() > 1) {
+                    if let Some(range) = event_occurrence_range_for_date(ev, *date) {
+                        if range.len_days() > 1 {
+                            let key = (ev.uid.clone(), range.start);
+                            if seen_multi_uids.insert(key) {
+                                multi_day_events.push((ev.clone(), range));
+                            }
                         }
                     }
                 }
@@ -12713,9 +16042,11 @@ pub(crate) fn compute_week_cell_layouts(
     for (col, date) in week_dates.iter().enumerate() {
         if let Some(events) = events_by_date.get(date) {
             for ev in events {
-                if let Some(range) = event_occurrence_range_for_date(ev, *date) {
-                    if range.len_days() > 1 && seen_multi_uids.contains(&(ev.uid.clone(), range.start)) {
-                        continue;
+                if event_display_range(ev).is_some_and(|r| r.len_days() > 1) {
+                    if let Some(range) = event_occurrence_range_for_date(ev, *date) {
+                        if range.len_days() > 1 && seen_multi_uids.contains(&(ev.uid.clone(), range.start)) {
+                            continue;
+                        }
                     }
                 }
                 let mut target_track = 0;
@@ -13393,6 +16724,35 @@ pub(crate) fn prepare_month_layout(
     is_dark: bool,
     max_events_per_cell: usize,
 ) -> PreparedMonthLayout {
+    prepare_month_layout_with_cache(
+        viewport,
+        events_by_date,
+        today,
+        show_week_numbers,
+        workdays,
+        compress_weekend,
+        weekday_names_full,
+        weekday_names_short,
+        is_dark,
+        max_events_per_cell,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_month_layout_with_cache(
+    viewport: &CalendarViewport,
+    events_by_date: &BTreeMap<NaiveDate, Vec<CalendarEventRecord>>,
+    today: NaiveDate,
+    show_week_numbers: bool,
+    workdays: &HashSet<Weekday>,
+    compress_weekend: bool,
+    weekday_names_full: &[&str],
+    weekday_names_short: &[&str],
+    is_dark: bool,
+    max_events_per_cell: usize,
+    prev_weeks: Option<&[PreparedMonthWeek]>,
+) -> PreparedMonthLayout {
     let anchor_date = viewport.anchor_date;
     let year = anchor_date.year();
     let month = anchor_date.month();
@@ -13408,6 +16768,12 @@ pub(crate) fn prepare_month_layout(
         let week_slice = &visible_dates[week_idx * 7..(week_idx + 1) * 7];
         let mut week_dates = [anchor_date; 7];
         week_dates.copy_from_slice(week_slice);
+
+        if let Some(cached) = prev_weeks.and_then(|pw| pw.iter().find(|w| w.week_dates == week_dates)) {
+            weeks.push(cached.clone());
+            continue;
+        }
+
         let week_number = week_dates[0].iso_week().week();
 
         let layouts = compute_week_cell_layouts(&week_dates, events_by_date, max_events_per_cell);
@@ -13432,7 +16798,12 @@ pub(crate) fn prepare_month_layout(
                         break;
                     }
 
-                    let event_range = event_occurrence_range_for_date(event, week_dates[col]);
+                    let is_multi_day_display = event_display_range(event).is_some_and(|r| r.len_days() > 1);
+                    let event_range = if is_multi_day_display {
+                        event_occurrence_range_for_date(event, week_dates[col])
+                    } else {
+                        None
+                    };
                     let cont_left = col == 0
                         && (*span == MonthBarSpan::Middle
                             || *span == MonthBarSpan::End
@@ -13464,7 +16835,7 @@ pub(crate) fn prepare_month_layout(
                         end_col,
                         continues_left: cont_left,
                         continues_right: cont_right,
-                        all_day: event.all_day || event_range.as_ref().map(|r| r.len_days() > 1).unwrap_or(false),
+                        all_day: event.all_day || is_multi_day_display,
                         time_str,
                         bg_hex,
                         hov_hex,
@@ -14017,9 +17388,7 @@ fn draw_month_canvas_rows(
                 parse_hex_color(&bar.bg_hex).unwrap_or(if is_dark { (40, 60, 84) } else { (205, 224, 248) });
 
             let is_past = layout.dim_past_events && !bar.all_day && is_month_bar_past(bar, layout.today, now_dt);
-            if is_past {
-                cr.push_group();
-            }
+            let alpha = if is_past { 0.55 } else { 1.0 };
 
             if bar.all_day {
                 // Multi-day / all-day event chip with optional continuation
@@ -14037,7 +17406,7 @@ fn draw_month_canvas_rows(
                     bg_r as f64 / 255.0,
                     bg_g as f64 / 255.0,
                     bg_b as f64 / 255.0,
-                    1.0,
+                    alpha,
                 );
                 let _ = cr.fill();
 
@@ -14062,7 +17431,7 @@ fn draw_month_canvas_rows(
                         col_r as f64 / 255.0,
                         col_g as f64 / 255.0,
                         col_b as f64 / 255.0,
-                        1.0,
+                        alpha,
                     );
                     let _ = cr.fill();
                     let _ = cr.restore();
@@ -14084,7 +17453,7 @@ fn draw_month_canvas_rows(
                     txt_r as f64 / 255.0,
                     txt_g as f64 / 255.0,
                     txt_b as f64 / 255.0,
-                    1.0,
+                    alpha,
                 );
                 cr.set_font_size((12.0 * font_scale * chip_scale).round());
                 cr.select_font_face(
@@ -14106,7 +17475,7 @@ fn draw_month_canvas_rows(
                     bg_r as f64 / 255.0,
                     bg_g as f64 / 255.0,
                     bg_b as f64 / 255.0,
-                    1.0,
+                    alpha,
                 );
                 let _ = cr.fill();
 
@@ -14121,7 +17490,7 @@ fn draw_month_canvas_rows(
                     col_r as f64 / 255.0,
                     col_g as f64 / 255.0,
                     col_b as f64 / 255.0,
-                    1.0,
+                    alpha,
                 );
                 let _ = cr.fill();
                 let _ = cr.restore();
@@ -14146,7 +17515,7 @@ fn draw_month_canvas_rows(
                             txt_r as f64 / 255.0,
                             txt_g as f64 / 255.0,
                             txt_b as f64 / 255.0,
-                            0.80,
+                            0.80 * alpha,
                         );
                         cr.move_to(tx, ty);
                         let _ = cr.show_text(t);
@@ -14166,7 +17535,7 @@ fn draw_month_canvas_rows(
                     txt_r as f64 / 255.0,
                     txt_g as f64 / 255.0,
                     txt_b as f64 / 255.0,
-                    1.0,
+                    alpha,
                 );
                 cr.set_font_size((12.0 * font_scale * chip_scale).round());
                 cr.select_font_face(
@@ -14181,11 +17550,6 @@ fn draw_month_canvas_rows(
                     let _ = cr.show_text(&trunc);
                 }
                 let _ = cr.restore();
-            }
-
-            if is_past {
-                let _ = cr.pop_group_to_source();
-                let _ = cr.paint_with_alpha(0.55);
             }
         }
 
@@ -14207,22 +17571,16 @@ fn draw_month_canvas_rows(
                         matches!(hovered_target, Some(MonthHoverTarget::Overflow { date }) if *date == d)
                     });
 
-                    // Evolution-style flush pill chip
-                    draw_cairo_rounded_rect(cr, of_x, of_y, of_w, of_h, 6.0);
-                    if is_dark {
-                        if is_hovered {
-                            cr.set_source_rgba(1.0, 1.0, 1.0, 0.18);
+                    // Transparent background by default; subtle highlight only when hovered
+                    if is_hovered {
+                        draw_cairo_rounded_rect(cr, of_x, of_y, of_w, of_h, 6.0);
+                        if is_dark {
+                            cr.set_source_rgba(1.0, 1.0, 1.0, 0.12);
                         } else {
-                            cr.set_source_rgba(1.0, 1.0, 1.0, 0.08);
+                            cr.set_source_rgba(0.0, 0.0, 0.0, 0.06);
                         }
-                    } else {
-                        if is_hovered {
-                            cr.set_source_rgba(0.0, 0.0, 0.0, 0.12);
-                        } else {
-                            cr.set_source_rgba(0.0, 0.0, 0.0, 0.05);
-                        }
+                        let _ = cr.fill();
                     }
-                    let _ = cr.fill();
 
                     let of_text = format!("+{}", of_count);
                     cr.set_font_size((11.0 * font_scale * chip_scale).round());
@@ -14773,6 +18131,118 @@ fn find_chip_bottom_edge_at(
     None
 }
 
+fn format_minute_of_day(minute: u32, use_12h: bool) -> String {
+    if !use_12h && minute >= 24 * 60 {
+        return "24:00".to_string();
+    }
+    let h = (minute / 60) % 24;
+    let m = minute % 60;
+    if use_12h {
+        let (display_h, am_pm) = match h {
+            0 => (12, "AM"),
+            1..=11 => (h, "AM"),
+            12 => (12, "PM"),
+            _ => (h - 12, "PM"),
+        };
+        if m == 0 {
+            format!("{display_h} {am_pm}")
+        } else {
+            format!("{display_h}:{m:02} {am_pm}")
+        }
+    } else {
+        format!("{h:02}:{m:02}")
+    }
+}
+
+fn draw_ghost_move_chip(
+    cr: &gtk::cairo::Context,
+    move_state: &MoveDragState,
+    width: f64,
+    slot_height: f64,
+    interval_minutes: u32,
+    is_dark: bool,
+    use_12h: bool,
+) {
+    let font_scale = crate::views::accessibility::get_system_font_scale();
+    let margin_start = 2.0;
+    let margin_end = 8.0;
+    let x = margin_start;
+    let w = (width - margin_start - margin_end).max(20.0);
+    let y = move_state.current_start_slot as f64 * slot_height + 1.0;
+    let h = (move_state.row_span as f64 * slot_height - 2.0).max(18.0);
+    let card_radius = 6.0;
+
+    let color_hex = event_color_for_record(&move_state.event);
+    let (bg_hex, _, _, fg_hex) = pastel_colors_for_hex(&color_hex, is_dark);
+    let (bg_r, bg_g, bg_b) = parse_hex_color(&bg_hex).unwrap_or(if is_dark { (40, 60, 84) } else { (205, 224, 248) });
+    let (stripe_r, stripe_g, stripe_b) = parse_hex_color(&color_hex).unwrap_or((53, 132, 228));
+    let (fg_r, fg_g, fg_b) = parse_hex_color(&fg_hex).unwrap_or(if is_dark { (255, 255, 255) } else { (46, 52, 54) });
+
+    // Subtle drop shadow for floating effect
+    draw_cairo_rounded_rect(cr, x + 2.0, y + 2.0, w, h, card_radius);
+    cr.set_source_rgba(0.0, 0.0, 0.0, if is_dark { 0.35 } else { 0.18 });
+    let _ = cr.fill();
+
+    // Background fill (elevated, slightly translucent)
+    draw_cairo_rounded_rect(cr, x, y, w, h, card_radius);
+    cr.set_source_rgba(bg_r as f64 / 255.0, bg_g as f64 / 255.0, bg_b as f64 / 255.0, 0.92);
+    let _ = cr.fill();
+
+    // Solid accent border to indicate active placement
+    draw_cairo_rounded_rect(cr, x, y, w, h, card_radius);
+    cr.set_source_rgba(stripe_r as f64 / 255.0, stripe_g as f64 / 255.0, stripe_b as f64 / 255.0, 0.90);
+    cr.set_line_width(2.0);
+    let _ = cr.stroke();
+
+    // Left accent stripe
+    let stripe_w = (5.0 * font_scale).clamp(4.0, 7.0).round();
+    let _ = cr.save();
+    draw_cairo_rounded_rect(cr, x, y, w, h, card_radius);
+    let _ = cr.clip();
+    cr.rectangle(x, y, stripe_w, h);
+    cr.set_source_rgba(stripe_r as f64 / 255.0, stripe_g as f64 / 255.0, stripe_b as f64 / 255.0, 1.0);
+    let _ = cr.fill();
+    let _ = cr.restore();
+
+    // Text: Snapped Time + Title
+    let start_min = (move_state.current_start_slot as u32 * interval_minutes).min(1439);
+    let end_min = ((move_state.current_start_slot + move_state.row_span) as u32 * interval_minutes).min(1440);
+    let time_str = format!("{}–{}", format_minute_of_day(start_min, use_12h), format_minute_of_day(end_min, use_12h));
+
+    let untitled = gettext("(Untitled)");
+    let title = if move_state.event.summary.trim().is_empty() {
+        untitled.as_str()
+    } else {
+        move_state.event.summary.as_str()
+    };
+
+    let text_x = x + stripe_w + (6.0 * font_scale).round();
+    let max_text_w = (w - stripe_w - (10.0 * font_scale).round()).max(10.0);
+
+    let _ = cr.save();
+    draw_cairo_rounded_rect(cr, x, y, w, h, card_radius);
+    let _ = cr.clip();
+
+    cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+    cr.set_font_size((11.0 * font_scale).round());
+    cr.set_source_rgba(fg_r as f64 / 255.0, fg_g as f64 / 255.0, fg_b as f64 / 255.0, 1.0);
+
+    let trunc_title = truncate_cairo_text(cr, title, max_text_w);
+    cr.move_to(text_x.round(), (y + 14.0 * font_scale).round());
+    let _ = cr.show_text(&trunc_title);
+
+    if h >= 32.0 {
+        cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
+        cr.set_font_size((10.0 * font_scale).round());
+        cr.set_source_rgba(fg_r as f64 / 255.0, fg_g as f64 / 255.0, fg_b as f64 / 255.0, 0.85);
+        let trunc_time = truncate_cairo_text(cr, &time_str, max_text_w);
+        cr.move_to(text_x.round(), (y + 27.0 * font_scale).round());
+        let _ = cr.show_text(&trunc_time);
+    }
+
+    let _ = cr.restore();
+}
+
 pub(crate) fn compute_current_time_line_y(height: f64, now_min: f64) -> f64 {
     let now_y = (now_min / 1440.0) * height;
     now_y.floor() + 1.0
@@ -14787,12 +18257,11 @@ fn draw_current_time_indicator_line(cr: &gtk::cairo::Context, width: f64, height
     let _ = cr.stroke();
 }
 
-fn draw_time_grid_chip(
+fn draw_time_grid_chip_card(
     cr: &gtk::cairo::Context,
     chip: &PlacedTimeGridChip,
     width: f64,
     slot_height: f64,
-    is_hovered: bool,
     is_dark: bool,
     is_past: bool,
 ) {
@@ -14802,13 +18271,10 @@ fn draw_time_grid_chip(
 
     let (x, y, w, h) = chip_rect_coordinates(chip, width, slot_height);
     let color_hex = event_color_for_record(&chip.event);
-    let (bg_hex, hov_hex, _, fg_hex) = pastel_colors_for_hex(&color_hex, is_dark);
-    let active_bg_hex = if is_hovered { &hov_hex } else { &bg_hex };
+    let (bg_hex, _, _, _) = pastel_colors_for_hex(&color_hex, is_dark);
 
     let (bg_r, bg_g, bg_b) =
-        parse_hex_color(active_bg_hex).unwrap_or(if is_dark { (40, 60, 84) } else { (205, 224, 248) });
-    let (fg_r, fg_g, fg_b) =
-        parse_hex_color(&fg_hex).unwrap_or(if is_dark { (255, 255, 255) } else { (46, 52, 54) });
+        parse_hex_color(&bg_hex).unwrap_or(if is_dark { (40, 60, 84) } else { (205, 224, 248) });
     let (stripe_r, stripe_g, stripe_b) =
         parse_hex_color(&color_hex).unwrap_or((53, 132, 228));
 
@@ -14840,6 +18306,34 @@ fn draw_time_grid_chip(
     let _ = cr.fill();
     let _ = cr.restore();
 
+    if is_past {
+        let _ = cr.pop_group_to_source();
+        let _ = cr.paint_with_alpha(0.55);
+    }
+}
+
+fn draw_time_grid_chip_content(
+    cr: &gtk::cairo::Context,
+    chip: &PlacedTimeGridChip,
+    width: f64,
+    slot_height: f64,
+    is_dark: bool,
+    is_past: bool,
+) {
+    if is_past {
+        cr.push_group();
+    }
+
+    let (x, y, w, h) = chip_rect_coordinates(chip, width, slot_height);
+    let color_hex = event_color_for_record(&chip.event);
+    let (_, _, _, fg_hex) = pastel_colors_for_hex(&color_hex, is_dark);
+    let (fg_r, fg_g, fg_b) =
+        parse_hex_color(&fg_hex).unwrap_or(if is_dark { (255, 255, 255) } else { (46, 52, 54) });
+
+    let font_scale = crate::views::accessibility::get_system_font_scale();
+    let card_radius = 6.0;
+    let stripe_w = (5.0 * font_scale).clamp(4.0, 7.0).round();
+
     let untitled = gettext("(Untitled)");
     let title = if chip.event.summary.trim().is_empty() {
         untitled.as_str()
@@ -14869,7 +18363,7 @@ fn draw_time_grid_chip(
             fg_r as f64 / 255.0,
             fg_g as f64 / 255.0,
             fg_b as f64 / 255.0,
-            0.75,
+            1.0,
         );
         let trunc_time = truncate_cairo_text(cr, &chip.time_text, max_text_w);
         cr.move_to(text_x.round(), (y + 13.0 * font_scale).round());
@@ -14901,7 +18395,7 @@ fn draw_time_grid_chip(
             fg_r as f64 / 255.0,
             fg_g as f64 / 255.0,
             fg_b as f64 / 255.0,
-            0.70,
+            0.85,
         );
         let loc = chip.event.location.trim();
         let trunc_loc = truncate_cairo_text(cr, loc, max_text_w);
@@ -14919,7 +18413,7 @@ fn draw_time_grid_chip(
             fg_r as f64 / 255.0,
             fg_g as f64 / 255.0,
             fg_b as f64 / 255.0,
-            0.80,
+            1.0,
         );
         let trunc_time = truncate_cairo_text(cr, start_time, max_text_w);
         cr.move_to(text_x.round(), (y + 13.0 * font_scale).round());
@@ -14962,16 +18456,6 @@ fn draw_time_grid_chip(
     }
 
     let _ = cr.restore();
-
-    // Subtle edge resize indicator handle on bottom border when hovered
-    if is_hovered && h >= 20.0 && event_mutation_error(&chip.event).is_none() {
-        let handle_w = (w * 0.35).clamp(16.0, 32.0);
-        let handle_x = (x + (w - handle_w) / 2.0).round();
-        let handle_y = (y + h - 3.5).round();
-        draw_cairo_rounded_rect(cr, handle_x, handle_y, handle_w, 2.5, 1.25);
-        cr.set_source_rgba(fg_r as f64 / 255.0, fg_g as f64 / 255.0, fg_b as f64 / 255.0, 0.40);
-        let _ = cr.fill();
-    }
 
     if is_past {
         let _ = cr.pop_group_to_source();
@@ -15161,21 +18645,15 @@ fn draw_agenda_date_header(
         let _ = cr.fill();
     }
 
-    // 1. Background fill
-    if is_today {
-        cr.rectangle(0.0, row_y, width, row_h);
-        cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, if is_dark { 0.12 } else { 0.08 });
-        let _ = cr.fill();
-
-        // Left accent indicator
-        cr.rectangle(0.0, row_y, 3.5, row_h);
-        cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 1.0);
-        let _ = cr.fill();
+    // 1. Background fill: Keep neutral for all headers (clean Libadwaita styling)
+    cr.rectangle(0.0, row_y, width, row_h);
+    let bg_alpha = if is_today {
+        if is_dark { 0.05 } else { 0.035 }
     } else {
-        cr.rectangle(0.0, row_y, width, row_h);
-        cr.set_source_rgba(fg, fg, fg, if is_dark { 0.035 } else { 0.025 });
-        let _ = cr.fill();
-    }
+        if is_dark { 0.035 } else { 0.025 }
+    };
+    cr.set_source_rgba(fg, fg, fg, bg_alpha);
+    let _ = cr.fill();
 
     // 2. Today badge & Date text (borderless modern Libadwaita header)
     let _ = cr.save();
@@ -15193,25 +18671,26 @@ fn draw_agenda_date_header(
         let badge_x = 16.0;
         let badge_y = row_y + (row_h - badge_h) / 2.0;
 
+        // Subtle accent capsule pill (clean tint, not aggressive solid block)
         draw_cairo_rounded_rect(cr, badge_x, badge_y, badge_w, badge_h, 9999.0);
-        cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 1.0);
+        cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, if is_dark { 0.22 } else { 0.16 });
         let _ = cr.fill();
 
-        // White text inside badge (optical centered)
-        cr.set_source_rgba(1.0, 1.0, 1.0, 1.0);
+        // Accent colored text inside badge (crisp, readable, elegant)
+        cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 1.0);
         let tx = badge_x + (badge_w - tw) / 2.0 - txb;
         let ty = badge_y + (badge_h - cap_h) / 2.0 - cap_yb;
         cr.move_to(tx, ty);
         let _ = cr.show_text(&today_str);
 
-        // Date text follows badge
+        // Date text follows badge in primary text color (calm and clean, NOT bright blue)
         let date_x = badge_x + badge_w + 10.0;
         let max_text_w = (width - date_x - 16.0).max(40.0);
         cr.rectangle(date_x, row_y, max_text_w, row_h);
-        cr.clip();
+        let _ = cr.clip();
         cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
         cr.set_font_size(14.0);
-        cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 1.0);
+        cr.set_source_rgba(fg, fg, fg, primary_alpha);
         let trunc_text = truncate_cairo_text(cr, text, max_text_w);
         cr.move_to(date_x, row_y + 23.5);
         let _ = cr.show_text(&trunc_text);
@@ -15219,7 +18698,7 @@ fn draw_agenda_date_header(
         // Regular day header
         let max_text_w = (width - 32.0).max(40.0);
         cr.rectangle(16.0, row_y, max_text_w, row_h);
-        cr.clip();
+        let _ = cr.clip();
         cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
         cr.set_font_size(14.0);
         cr.set_source_rgba(fg, fg, fg, primary_alpha);
@@ -16007,6 +19486,64 @@ fn show_calendar_day_context_menu(
     popover.popup();
 }
 
+fn ensure_month_popover_chip_css_class(
+    base_hex: &str,
+    bg: &str,
+    hover: &str,
+    active: &str,
+    fg: &str,
+    all_day: bool,
+) -> String {
+    thread_local! {
+        static CLASS_CACHE: std::cell::RefCell<std::collections::HashMap<(String, String, String, String, String, bool), String>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+    let key = (
+        base_hex.to_string(),
+        bg.to_string(),
+        hover.to_string(),
+        active.to_string(),
+        fg.to_string(),
+        all_day,
+    );
+    CLASS_CACHE.with(|cache| {
+        let mut map = cache.borrow_mut();
+        if let Some(class_name) = map.get(&key) {
+            class_name.clone()
+        } else {
+            let class_name = format!("cal-mp-chip-{}", map.len());
+            if gtk::is_initialized_main_thread() {
+                if let Some(display) = gtk::gdk::Display::default() {
+                    let provider = gtk::CssProvider::new();
+                    let css = if all_day {
+                        format!(
+                            "button.{class_name} {{ border: none; outline: none; border-radius: 5px; box-shadow: none; background-color: {bg}; min-height: 28px; padding: 2px 10px; margin: 1px 0; }} \
+                             button.{class_name} label {{ color: {fg}; }} \
+                             button.{class_name}:hover {{ border: none; outline: none; border-radius: 5px; box-shadow: none; background-color: {hover}; }} \
+                             button.{class_name}:active {{ border: none; outline: none; border-radius: 5px; box-shadow: none; background-color: {active}; }}"
+                        )
+                    } else {
+                        format!(
+                            "button.{class_name} {{ border: none; outline: none; border-left: 5px solid {base_hex}; border-radius: 5px; box-shadow: none; background-color: {bg}; min-height: 28px; padding: 2px 8px; margin: 1px 0; }} \
+                             button.{class_name} label {{ color: {fg}; }} \
+                             button.{class_name}:hover {{ border: none; outline: none; border-left: 5px solid {base_hex}; border-radius: 5px; box-shadow: none; background-color: {hover}; }} \
+                             button.{class_name}:active {{ border: none; outline: none; border-left: 5px solid {base_hex}; border-radius: 5px; box-shadow: none; background-color: {active}; }}"
+                        )
+                    };
+                    provider.load_from_string(&css);
+                    gtk::style_context_add_provider_for_display(
+                        &display,
+                        &provider,
+                        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                    );
+                }
+            }
+            map.insert(key, class_name.clone());
+            class_name
+        }
+    })
+}
+
 fn show_month_overflow_popover(
     page: &CalendarPage,
     parent: &gtk::DrawingArea,
@@ -16016,7 +19553,7 @@ fn show_month_overflow_popover(
     let popover = gtk::Popover::builder()
         .autohide(true)
         .has_arrow(true)
-        .css_classes(vec!["calendar-overflow-popover"])
+        .css_classes(vec!["calendar-month-day-popover"])
         .build();
     if let Some(ref rect) = pointing_to {
         popover.set_pointing_to(Some(rect));
@@ -16032,164 +19569,40 @@ fn show_month_overflow_popover(
 
     let content_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(8)
+        .spacing(6)
         .margin_start(12)
         .margin_end(12)
         .margin_top(10)
-        .margin_bottom(12)
+        .margin_bottom(10)
         .build();
 
-    // ── Header Bar ──
+    // ── Header Bar: Big Day Number & Close Button (GNOME Calendar Parity) ──
     let header_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(8)
+        .margin_bottom(6)
         .valign(gtk::Align::Center)
         .build();
 
-    let weekday = weekday_name(date);
-    let title_str = format!("{}, {}", weekday, date.format("%d. %B %Y"));
-    let title_label = gtk::Label::builder()
-        .label(&title_str)
-        .css_classes(vec!["heading"])
+    let day_num_label = gtk::Label::builder()
+        .label(&format!("{}", date.day()))
+        .css_classes(vec!["month-popover-day-number"])
         .hexpand(true)
         .xalign(0.0)
         .build();
-    header_box.append(&title_label);
 
-    let close_btn = gtk::Button::builder()
-        .icon_name("window-close-symbolic")
-        .css_classes(vec!["flat", "circular"])
-        .tooltip_text(&crate::i18n::gettext("Close"))
-        .valign(gtk::Align::Center)
+    let day_btn = gtk::Button::builder()
+        .child(&day_num_label)
+        .css_classes(vec!["flat", "month-popover-day-btn"])
+        .tooltip_text(&crate::i18n::gettext("Open in Day View"))
+        .hexpand(true)
+        .halign(gtk::Align::Start)
         .build();
-    let popover_close = popover.clone();
-    close_btn.connect_clicked(move |_| {
-        popover_close.popdown();
-    });
-    header_box.append(&close_btn);
-    content_box.append(&header_box);
-
-    // ── Events List ──
-    let mut events_map = page.events_by_date(CalendarDateRange::single(date));
-    let events = events_map.remove(&date).unwrap_or_default();
-
-    let scroll = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .vscrollbar_policy(gtk::PolicyType::Automatic)
-        .propagate_natural_height(true)
-        .propagate_natural_width(true)
-        .max_content_height(340)
-        .min_content_width(280)
-        .build();
-
-    let list_box = gtk::ListBox::builder()
-        .selection_mode(gtk::SelectionMode::None)
-        .css_classes(vec!["boxed-list", "calendar-overflow-list"])
-        .build();
-
-    if events.is_empty() {
-        let empty_label = gtk::Label::builder()
-            .label(&crate::i18n::gettext("No appointments"))
-            .css_classes(vec!["dim-label"])
-            .margin_top(16)
-            .margin_bottom(16)
-            .build();
-        list_box.append(&empty_label);
-    } else {
-        for event in events {
-            let row = gtk::Box::builder()
-                .orientation(gtk::Orientation::Horizontal)
-                .spacing(10)
-                .margin_start(8)
-                .margin_end(8)
-                .margin_top(6)
-                .margin_bottom(6)
-                .build();
-
-            let color_hex = event_color_for_record(&event);
-            let dot = gtk::Label::new(None);
-            dot.set_markup(&format!("<span foreground=\"{color_hex}\" size=\"large\">●</span>"));
-            dot.set_valign(gtk::Align::Center);
-            row.append(&dot);
-
-            let text_box = gtk::Box::builder()
-                .orientation(gtk::Orientation::Vertical)
-                .spacing(1)
-                .hexpand(true)
-                .build();
-
-            let summary_text = if event.summary.trim().is_empty() {
-                crate::i18n::gettext("(Untitled)")
-            } else {
-                event.summary.clone()
-            };
-            let summary_label = gtk::Label::builder()
-                .label(&summary_text)
-                .xalign(0.0)
-                .ellipsize(gtk::pango::EllipsizeMode::End)
-                .build();
-            text_box.append(&summary_label);
-
-            let time_text = if event.all_day {
-                crate::i18n::gettext("All Day")
-            } else {
-                let (start_min, end_min, _) = event_occurrence_times_for_date(&event, date, 30);
-                format!("{}-{}", format_clock_minutes(start_min), format_clock_minutes(end_min))
-            };
-            let meta_text = if !event.location.trim().is_empty() {
-                format!("{} · {}", time_text, event.location.trim())
-            } else {
-                time_text
-            };
-            let meta_label = gtk::Label::builder()
-                .label(&meta_text)
-                .css_classes(vec!["caption", "dim-label"])
-                .xalign(0.0)
-                .ellipsize(gtk::pango::EllipsizeMode::End)
-                .build();
-            text_box.append(&meta_label);
-            row.append(&text_box);
-
-            let row_button = gtk::Button::builder()
-                .child(&row)
-                .css_classes(vec!["flat", "calendar-overflow-item-btn"])
-                .build();
-
-            let page_weak = page.downgrade();
-            let parent_clone = parent.clone();
-            let event_clone = event.clone();
-            let popover_clone = popover.clone();
-            row_button.connect_clicked(move |_| {
-                popover_clone.popdown();
-                if let Some(page) = page_weak.upgrade() {
-                    show_calendar_event_details_popover_full(
-                        &page,
-                        &parent_clone,
-                        &event_clone,
-                        Some(date),
-                        pointing_to,
-                    );
-                }
-            });
-
-            list_box.append(&row_button);
-        }
-    }
-
-    scroll.set_child(Some(&list_box));
-    content_box.append(&scroll);
-
-    // ── Footer: Switch to Day View ──
-    let switch_btn = gtk::Button::builder()
-        .label(&crate::i18n::gettext("Open in Day View"))
-        .css_classes(vec!["flat"])
-        .margin_top(4)
-        .build();
-    let page_weak = page.downgrade();
-    let popover_switch = popover.clone();
-    switch_btn.connect_clicked(move |_| {
-        popover_switch.popdown();
-        if let Some(page) = page_weak.upgrade() {
+    let page_weak_day = page.downgrade();
+    let popover_day = popover.clone();
+    day_btn.connect_clicked(move |_| {
+        popover_day.popdown();
+        if let Some(page) = page_weak_day.upgrade() {
             *page.imp().current_date.borrow_mut() = date;
             page.imp()
                 .view_state
@@ -16205,7 +19618,142 @@ fn show_month_overflow_popover(
             }
         }
     });
-    content_box.append(&switch_btn);
+    header_box.append(&day_btn);
+
+    let close_btn = gtk::Button::builder()
+        .icon_name("window-close-symbolic")
+        .css_classes(vec!["flat", "circular", "month-popover-close-btn"])
+        .tooltip_text(&crate::i18n::gettext("Close"))
+        .valign(gtk::Align::Center)
+        .build();
+    let popover_close = popover.clone();
+    close_btn.connect_clicked(move |_| {
+        popover_close.popdown();
+    });
+    header_box.append(&close_btn);
+    content_box.append(&header_box);
+
+    // ── Events List ──
+    let mut events_map = page.events_by_date(CalendarDateRange::single(date));
+    let mut events = events_map.remove(&date).unwrap_or_default();
+
+    // Sort: all-day first, then timed events chronologically
+    events.sort_by(|a, b| {
+        match (a.all_day, b.all_day) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.start.cmp(&b.start).then_with(|| a.summary.cmp(&b.summary)),
+        }
+    });
+
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .propagate_natural_height(true)
+        .propagate_natural_width(true)
+        .max_content_height(340)
+        .min_content_width(260)
+        .build();
+
+    let events_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(5)
+        .build();
+
+    let is_dark = adw::StyleManager::default().is_dark();
+
+    if events.is_empty() {
+        let empty_label = gtk::Label::builder()
+            .label(&crate::i18n::gettext("No appointments"))
+            .css_classes(vec!["dim-label"])
+            .margin_top(16)
+            .margin_bottom(16)
+            .build();
+        events_box.append(&empty_label);
+    } else {
+        for event in events {
+            let color_hex = event_color_for_record(&event);
+            let (_accent_hex, bg_hex, hover_hex, active_hex, fg_hex) = {
+                let (bg, hover, active, fg) = pastel_colors_for_hex(&color_hex, is_dark);
+                (color_hex.clone(), bg, hover, active, fg)
+            };
+            let class_name = ensure_month_popover_chip_css_class(
+                &color_hex,
+                &bg_hex,
+                &hover_hex,
+                &active_hex,
+                &fg_hex,
+                event.all_day,
+            );
+
+            let summary_text = if event.summary.trim().is_empty() {
+                crate::i18n::gettext("(Untitled)")
+            } else {
+                event.summary.clone()
+            };
+
+            let title_label = gtk::Label::builder()
+                .label(&summary_text)
+                .xalign(0.0)
+                .hexpand(true)
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .css_classes(vec!["month-popover-event-title"])
+                .build();
+
+            let row_button = gtk::Button::builder()
+                .child(&title_label)
+                .css_classes(vec!["month-popover-event-chip", &class_name])
+                .tooltip_text(&summary_text)
+                .build();
+
+            let page_weak = page.downgrade();
+            let parent_clone = parent.clone();
+            let event_clone = event.clone();
+            let popover_clone = popover.clone();
+            row_button.connect_clicked(move |_| {
+                popover_clone.popdown();
+                if let Some(page) = page_weak.upgrade() {
+                    page.select_and_inspect_event(&event_clone, Some(date));
+                    if !page.is_tag_vpane_visible() {
+                        show_calendar_event_details_popover_full(
+                            &page,
+                            &parent_clone,
+                            &event_clone,
+                            Some(date),
+                            pointing_to,
+                        );
+                    }
+                }
+            });
+
+            events_box.append(&row_button);
+        }
+    }
+
+    scroll.set_child(Some(&events_box));
+    content_box.append(&scroll);
+
+    // ── Bottom Action: "New Event..." ──
+    let new_event_btn = gtk::Button::builder()
+        .label(&crate::i18n::gettext("New Event…"))
+        .css_classes(vec!["flat", "month-popover-new-event-btn"])
+        .halign(gtk::Align::Center)
+        .margin_top(10)
+        .margin_bottom(2)
+        .build();
+
+    let page_weak = page.downgrade();
+    let parent_clone = parent.clone();
+    let popover_clone = popover.clone();
+    new_event_btn.connect_clicked(move |_| {
+        popover_clone.popdown();
+        if let Some(page) = page_weak.upgrade() {
+            let start_dt = date.and_hms_opt(9, 0, 0).unwrap_or_default();
+            let end_dt = date.and_hms_opt(10, 0, 0).unwrap_or_default();
+            page.present_quick_add(&parent_clone, pointing_to, start_dt, end_dt, false);
+        }
+    });
+    content_box.append(&new_event_btn);
 
     popover.set_child(Some(&content_box));
     popover.popup();
@@ -16841,6 +20389,9 @@ pub(crate) struct DateChooserCellInfo {
     pub is_today: bool,
     pub is_selected_week: bool,
     pub is_last_col: bool,
+    pub in_visible_range: bool,
+    pub is_range_start: bool,
+    pub is_range_end: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16848,7 +20399,17 @@ pub(crate) struct DateChooserWeekInfo {
     pub week_number: u32,
     pub week_start: NaiveDate,
     pub is_selected_week: bool,
+    pub has_visible_days: bool,
     pub days: Vec<DateChooserCellInfo>,
+}
+
+fn date_chooser_grid_start(view_date: NaiveDate, first_weekday: Weekday) -> NaiveDate {
+    let first_of_month =
+        NaiveDate::from_ymd_opt(view_date.year(), view_date.month(), 1).unwrap_or(view_date);
+    let days_before = (first_of_month.weekday().num_days_from_monday() + 7
+        - first_weekday.num_days_from_monday())
+        % 7;
+    first_of_month - Duration::days(days_before as i64)
 }
 
 pub(crate) fn compute_date_chooser_weeks(
@@ -16860,30 +20421,38 @@ pub(crate) fn compute_date_chooser_weeks(
 ) -> Vec<DateChooserWeekInfo> {
     let view_year = view_date.year();
     let view_month = view_date.month();
-    let first_of_month = NaiveDate::from_ymd_opt(view_year, view_month, 1).unwrap_or(view_date);
-    let days_before = (first_of_month.weekday().num_days_from_monday() + 7 - first_weekday.num_days_from_monday()) % 7;
-    let grid_start = first_of_month - Duration::days(days_before as i64);
+    let grid_start = date_chooser_grid_start(view_date, first_weekday);
 
-    let is_week_like_view = active_view == CalendarView::Week || active_view == CalendarView::WorkWeek;
+    let is_week_like_view = matches!(
+        active_view,
+        CalendarView::Week | CalendarView::WorkWeek | CalendarView::Month
+    );
     let anchor_iso_week = anchor_date.iso_week();
+    let anchor_in_view_month =
+        anchor_date.year() == view_year && anchor_date.month() == view_month;
 
     let mut weeks = Vec::with_capacity(6);
 
     for row_idx in 0..6 {
         let week_start = grid_start + Duration::days((row_idx * 7) as i64);
         let iso_week = week_start.iso_week();
-        let is_week_selected = is_week_like_view && (iso_week == anchor_iso_week);
+        let is_week_selected =
+            is_week_like_view && anchor_in_view_month && (iso_week == anchor_iso_week);
 
         let mut days = Vec::with_capacity(7);
         for col_idx in 0..7 {
             let cell_date = week_start + Duration::days(col_idx as i64);
+            let is_outside_month = cell_date.month() != view_month;
             days.push(DateChooserCellInfo {
                 date: cell_date,
-                is_outside_month: cell_date.month() != view_month,
-                is_selected_day: cell_date == anchor_date,
-                is_today: cell_date == today,
+                is_outside_month,
+                is_selected_day: !is_outside_month && cell_date == anchor_date,
+                is_today: !is_outside_month && cell_date == today,
                 is_selected_week: is_week_selected,
                 is_last_col: col_idx == 6,
+                in_visible_range: false,
+                is_range_start: false,
+                is_range_end: false,
             });
         }
 
@@ -16891,6 +20460,89 @@ pub(crate) fn compute_date_chooser_weeks(
             week_number: iso_week.week(),
             week_start,
             is_selected_week: is_week_selected,
+            has_visible_days: false,
+            days,
+        });
+    }
+
+    weeks
+}
+
+/// Mini-calendar model that highlights exactly the range shown in the active
+/// calendar view (single day, work week, week, month window) as a continuous
+/// pill per row.
+pub(crate) fn compute_date_chooser_weeks_for_viewport(
+    view_date: NaiveDate,
+    viewport: &CalendarViewport,
+    today: NaiveDate,
+    first_weekday: Weekday,
+) -> Vec<DateChooserWeekInfo> {
+    compute_date_chooser_weeks_with_visibility(view_date, viewport.anchor_date, today, first_weekday, |d| {
+        if viewport.view == CalendarView::Day || viewport.view == CalendarView::Year || viewport.view == CalendarView::List || viewport.view == CalendarView::Agenda {
+            false
+        } else {
+            is_day_visible_in_viewport(viewport, d)
+        }
+    })
+}
+
+pub(crate) fn compute_date_chooser_weeks_for_range(
+    view_date: NaiveDate,
+    range: CalendarDateRange,
+    anchor_date: NaiveDate,
+    today: NaiveDate,
+    first_weekday: Weekday,
+) -> Vec<DateChooserWeekInfo> {
+    compute_date_chooser_weeks_with_visibility(view_date, anchor_date, today, first_weekday, |d| {
+        range.contains(d)
+    })
+}
+
+fn compute_date_chooser_weeks_with_visibility(
+    view_date: NaiveDate,
+    anchor_date: NaiveDate,
+    today: NaiveDate,
+    first_weekday: Weekday,
+    is_visible: impl Fn(NaiveDate) -> bool,
+) -> Vec<DateChooserWeekInfo> {
+    let view_month = view_date.month();
+    let grid_start = date_chooser_grid_start(view_date, first_weekday);
+    let mut weeks = Vec::with_capacity(6);
+
+    for row_idx in 0..6 {
+        let week_start = grid_start + Duration::days((row_idx * 7) as i64);
+        let visible: Vec<bool> = (0..7)
+            .map(|c| is_visible(week_start + Duration::days(c as i64)))
+            .collect();
+        let has_visible_days = visible.iter().any(|v| *v);
+        // A week is "selected" when the whole visible range of that row spans multiple days
+        let visible_count = visible.iter().filter(|v| **v).count();
+
+        let mut days = Vec::with_capacity(7);
+        for col_idx in 0..7 {
+            let cell_date = week_start + Duration::days(col_idx as i64);
+            let is_outside_month = cell_date.month() != view_month;
+            let in_range = visible[col_idx];
+            let prev_in = col_idx > 0 && visible[col_idx - 1];
+            let next_in = col_idx < 6 && visible[col_idx + 1];
+            days.push(DateChooserCellInfo {
+                date: cell_date,
+                is_outside_month,
+                is_selected_day: cell_date == anchor_date,
+                is_today: cell_date == today,
+                is_selected_week: visible_count > 1,
+                is_last_col: col_idx == 6,
+                in_visible_range: in_range,
+                is_range_start: in_range && !prev_in,
+                is_range_end: in_range && !next_in,
+            });
+        }
+
+        weeks.push(DateChooserWeekInfo {
+            week_number: week_start.iso_week().week(),
+            week_start,
+            is_selected_week: visible_count > 1,
+            has_visible_days,
             days,
         });
     }
@@ -16906,9 +20558,9 @@ fn is_day_visible_in_viewport(viewport: &CalendarViewport, date: NaiveDate) -> b
             viewport.visible_range.contains(date) && configured_workdays().contains(&date.weekday())
         }
         CalendarView::Month => viewport.visible_range.contains(date),
-        CalendarView::Agenda => viewport.visible_range.contains(date),
-        CalendarView::Year => date == viewport.anchor_date,
-        CalendarView::List => date == viewport.anchor_date,
+        CalendarView::Agenda => false,
+        CalendarView::Year => false,
+        CalendarView::List => false,
     }
 }
 
@@ -16959,7 +20611,8 @@ fn update_mini_calendar_classes(
 
                             if let Some(d) = NaiveDate::from_ymd_opt(cell_y, cell_m, day_num) {
                                 let is_visible = is_day_visible_in_viewport(viewport, d);
-                                if is_visible {
+                                let is_range = is_visible && viewport.view != CalendarView::Day && viewport.view != CalendarView::Year && viewport.view != CalendarView::List;
+                                if is_range {
                                     lbl.set_state_flags(gtk::StateFlags::CHECKED, false);
 
                                     let prev_visible = d
@@ -17361,6 +21014,29 @@ fn weekday_short_name(weekday: Weekday) -> String {
         Weekday::Fri => crate::i18n::gettext("Fri"),
         Weekday::Sat => crate::i18n::gettext("Sat"),
         Weekday::Sun => crate::i18n::gettext("Sun"),
+    }
+}
+
+fn format_month_year_range(start: NaiveDate, end: NaiveDate) -> String {
+    if start.year() == end.year() {
+        if start.month() == end.month() {
+            format!("{} {}", CalendarPage::month_name(start.month()), start.year())
+        } else {
+            format!(
+                "{} \u{2013} {} {}",
+                CalendarPage::month_name(start.month()),
+                CalendarPage::month_name(end.month()),
+                start.year()
+            )
+        }
+    } else {
+        format!(
+            "{} {} \u{2013} {} {}",
+            CalendarPage::month_name(start.month()),
+            start.year(),
+            CalendarPage::month_name(end.month()),
+            end.year()
+        )
     }
 }
 
@@ -18376,6 +22052,632 @@ pub(crate) fn is_event_running_now(event: &CalendarEventRecord, date: NaiveDate)
     now_min >= start_min && now_min < eff_end
 }
 
+fn format_event_timing_summary(
+    event: &CalendarEventRecord,
+    target_day: Option<NaiveDate>,
+) -> (String, String) {
+    let now = chrono::Local::now().naive_local();
+    let effective_date = target_day
+        .or_else(|| event_start_date(event))
+        .unwrap_or_else(|| now.date());
+
+    let (start_min, end_min, _) = event_occurrence_times_for_date(event, effective_date, 30);
+    let diff_min = end_min.saturating_sub(start_min);
+    let dur_text = if event.all_day {
+        crate::i18n::gettext("All Day")
+    } else {
+        format!("{} {}", format_duration_text(diff_min), crate::i18n::gettext("duration"))
+    };
+
+    let start_dt = effective_date
+        .and_hms_opt((start_min / 60).min(23), (start_min % 60).min(59), 0)
+        .unwrap_or_else(|| effective_date.and_hms_opt(0, 0, 0).unwrap());
+    let end_dt = effective_date
+        .and_hms_opt(
+            (end_min / 60).min(23),
+            if end_min >= 1440 { 59 } else { (end_min % 60).min(59) },
+            0,
+        )
+        .unwrap_or_else(|| effective_date.and_hms_opt(23, 59, 59).unwrap());
+
+    let rel_text = if now > end_dt {
+        let elapsed = (now - end_dt).num_minutes();
+        let days = elapsed / 1440;
+        let hours = (elapsed % 1440) / 60;
+        let mins = elapsed % 60;
+        if days > 0 {
+            crate::i18n::ngettext(
+                "Ended {d} day, {h} hours ago",
+                "Ended {d} days, {h} hours ago",
+                days as u32,
+            )
+            .replace("{d}", &days.to_string())
+            .replace("{h}", &hours.to_string())
+        } else if hours > 0 {
+            crate::i18n::gettext("Ended {h}h, {m}m ago")
+                .replace("{h}", &hours.to_string())
+                .replace("{m}", &mins.to_string())
+        } else {
+            crate::i18n::gettext("Ended {m}m ago").replace("{m}", &mins.max(1).to_string())
+        }
+    } else if now >= start_dt && now <= end_dt {
+        crate::i18n::gettext("Happening now")
+    } else {
+        let remaining = (start_dt - now).num_minutes();
+        let days = remaining / 1440;
+        let hours = (remaining % 1440) / 60;
+        let mins = remaining % 60;
+        if days > 0 {
+            crate::i18n::ngettext(
+                "Starts in {d} day, {h} hours",
+                "Starts in {d} days, {h} hours",
+                days as u32,
+            )
+            .replace("{d}", &days.to_string())
+            .replace("{h}", &hours.to_string())
+        } else if hours > 0 {
+            crate::i18n::gettext("Starts in {h}h, {m}m")
+                .replace("{h}", &hours.to_string())
+                .replace("{m}", &mins.to_string())
+        } else {
+            crate::i18n::gettext("Starts in {m}m").replace("{m}", &remaining.max(1).to_string())
+        }
+    };
+
+    (rel_text, dur_text)
+}
+
+pub(crate) fn update_event_record_inline(
+    original_component: &str,
+    uid: &str,
+    title: &str,
+    location: &str,
+    all_day: bool,
+    start: &str,
+    end: &str,
+    description: &str,
+) -> Result<String, String> {
+    let status = ical_property(original_component, "STATUS")
+        .unwrap_or_else(|| "CONFIRMED".to_string());
+    let status_str = match status.to_ascii_uppercase().as_str() {
+        "TENTATIVE" => "TENTATIVE",
+        "CANCELLED" => "CANCELLED",
+        _ => "CONFIRMED",
+    };
+    let transparent = ical_property(original_component, "TRANSP")
+        .map(|value| value.eq_ignore_ascii_case("TRANSPARENT"))
+        .unwrap_or(false);
+    let recurrence = ical_property(original_component, "RRULE").unwrap_or_default();
+    let rdates = crate::dialogs::event_dialog::ical_properties(original_component, "RDATE").join(",");
+    let exdates = crate::dialogs::event_dialog::ical_properties(original_component, "EXDATE").join(",");
+    let parsed_attendees = crate::dialogs::event_dialog::parse_component_attendees(original_component);
+    let attendees_str = parsed_attendees.individuals.join(", ");
+    let rooms_str = parsed_attendees.rooms.join(", ");
+    let categories_str = ical_property(original_component, "CATEGORIES").unwrap_or_default();
+    let is_private = ical_property(original_component, "CLASS")
+        .map(|value| value.eq_ignore_ascii_case("PRIVATE"))
+        .unwrap_or(false);
+    let conf_url = ical_property(original_component, "CONFERENCE")
+        .or_else(|| ical_property(original_component, "X-CONFERENCE"))
+        .unwrap_or_default();
+    let alarms = crate::services::reminder_service::parse_alarms(original_component);
+
+    crate::dialogs::event_dialog::update_existing_event_component(
+        original_component,
+        uid,
+        title,
+        location,
+        &conf_url,
+        status_str,
+        transparent,
+        all_day,
+        start,
+        end,
+        description,
+        &recurrence,
+        &rdates,
+        &exdates,
+        &attendees_str,
+        &categories_str,
+        "",
+        &alarms,
+        is_private,
+        &rooms_str,
+    )
+}
+
+pub(crate) fn save_calendar_event_inline(
+    page: &CalendarPage,
+    event: &CalendarEventRecord,
+    title: &str,
+    location: &str,
+    all_day: bool,
+    start: &str,
+    end: &str,
+    description: &str,
+) {
+    if let Some(err) = event_mutation_error(event) {
+        show_toast_for_widget(page, &err);
+        return;
+    }
+    let updated = match update_event_record_inline(
+        &event.component,
+        &event.uid,
+        title,
+        location,
+        all_day,
+        start,
+        end,
+        description,
+    ) {
+        Ok(comp) => comp,
+        Err(err) => {
+            show_toast_for_widget(page, &err);
+            return;
+        }
+    };
+
+    let mutation_token = page.begin_calendar_mutation(CalendarEventIdentity::from_event(event));
+    let source_uid = event.source_uid.clone();
+    let uid = event.uid.clone();
+    let (sender, receiver) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let result = ECalService::new().modify_component(
+            &source_uid,
+            ECalComponentType::Event,
+            &uid,
+            &updated,
+        );
+        let _ = sender.send_blocking(result);
+    });
+
+    let page_weak = page.downgrade();
+    glib::spawn_future_local(async move {
+        let Ok(result) = receiver.recv().await else { return; };
+        let Some(page) = page_weak.upgrade() else { return; };
+        if !page.calendar_event_mutation_is_current(&mutation_token) {
+            show_toast_for_widget(&page, &crate::i18n::gettext("The calendar state has changed; the edit was discarded"));
+            page.reload_calendar_data();
+            return;
+        }
+        match result {
+            Ok(_) => {
+                page.finish_calendar_mutation(&mutation_token);
+                show_toast_for_widget(&page, &crate::i18n::gettext("Appointment updated"));
+                page.reload_calendar_data();
+            }
+            Err(err) => {
+                page.finish_calendar_mutation(&mutation_token);
+                show_toast_for_widget(&page, &format!("{}: {err}", crate::i18n::gettext("Failed to save appointment")));
+            }
+        }
+    });
+}
+
+fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>(
+    page: &CalendarPage,
+    parent: &W,
+    event: &CalendarEventRecord,
+    target_day: Option<NaiveDate>,
+) -> gtk::Box {
+    let identity = CalendarEventIdentity::from_event(event);
+    let color = event_color_for_record(event);
+    let cal_default = crate::i18n::gettext("Calendar");
+    let cal_name = if event.source_display_name.trim().is_empty() {
+        cal_default.as_str()
+    } else {
+        event.source_display_name.trim()
+    };
+
+    let content_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(8)
+        .margin_start(8)
+        .margin_end(8)
+        .margin_top(4)
+        .margin_bottom(8)
+        .build();
+
+    // 1. Title Entry (editable directly in the sidebar)
+    let title_entry = gtk::Entry::builder()
+        .text(&event.summary)
+        .placeholder_text(&crate::i18n::gettext("Event title"))
+        .css_classes(vec!["calendar-details-title-entry"])
+        .hexpand(true)
+        .build();
+    content_box.append(&title_entry);
+
+    // 2. Calendar Source & Status Badges
+    let cal_row = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .valign(gtk::Align::Center)
+        .build();
+    let dot = gtk::Label::new(None);
+    dot.set_markup(&format!("<span foreground=\"{color}\" size=\"large\">●</span>"));
+    let cal_label = gtk::Label::builder()
+        .label(cal_name)
+        .css_classes(vec!["caption", "heading"])
+        .build();
+    cal_row.append(&dot);
+    cal_row.append(&cal_label);
+
+    let badges = extract_event_badges(&event.component);
+    for (badge_text, badge_class) in badges {
+        let badge_lbl = gtk::Label::builder()
+            .label(&badge_text)
+            .css_classes(vec!["calendar-badge-pill", badge_class])
+            .valign(gtk::Align::Center)
+            .build();
+        cal_row.append(&badge_lbl);
+    }
+    content_box.append(&cal_row);
+
+    // 3. Location Entry
+    let loc_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .valign(gtk::Align::Center)
+        .build();
+    let loc_icon = gtk::Image::from_icon_name("mark-location-symbolic");
+    loc_icon.add_css_class("dim-label");
+    let loc_entry = gtk::Entry::builder()
+        .text(&event.location)
+        .placeholder_text(&crate::i18n::gettext("Location"))
+        .css_classes(vec!["calendar-details-field-entry"])
+        .hexpand(true)
+        .build();
+    loc_box.append(&loc_icon);
+    loc_box.append(&loc_entry);
+    content_box.append(&loc_box);
+
+    // 4. Timing Summary (Relative timing + Duration, e.g. "Ended 2 days ago · 8 hr duration")
+    let (rel_text, dur_text) = format_event_timing_summary(event, target_day);
+    let timing_summary_lbl = gtk::Label::builder()
+        .label(&format!("{rel_text} · {dur_text}"))
+        .css_classes(vec!["caption", "dim-label"])
+        .xalign(0.0)
+        .build();
+    content_box.append(&timing_summary_lbl);
+
+    // 5. Date & Time Controls
+    let all_day = crate::dialogs::event_dialog::component_property_has_date_value(&event.component, "DTSTART");
+    let start_disp = crate::services::ical_time_service::property_local_display(&event.component, "DTSTART", all_day)
+        .or_else(|| ical_property(&event.component, "DTSTART").map(|s| crate::dialogs::event_dialog::format_event_datetime_for_editor(&s, all_day)))
+        .unwrap_or_else(|| {
+            let d = target_day.unwrap_or_else(|| chrono::Local::now().date_naive());
+            format!("{} 09:00", d.format("%Y-%m-%d"))
+        });
+    let (init_start_date, init_start_time) = crate::dialogs::event_dialog::split_datetime_for_entries(&start_disp);
+
+    let end_disp = crate::services::ical_time_service::property_local_display(&event.component, "DTEND", all_day)
+        .or_else(|| ical_property(&event.component, "DTEND").map(|s| crate::dialogs::event_dialog::format_event_datetime_for_editor(&s, all_day)))
+        .unwrap_or_else(|| {
+            let d = target_day.unwrap_or_else(|| chrono::Local::now().date_naive());
+            format!("{} 10:00", d.format("%Y-%m-%d"))
+        });
+    let (init_end_date, init_end_time) = crate::dialogs::event_dialog::split_datetime_for_entries(&end_disp);
+
+    // All-day switch row
+    let allday_row = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .valign(gtk::Align::Center)
+        .build();
+    let allday_lbl = gtk::Label::builder()
+        .label(&crate::i18n::gettext("All Day"))
+        .css_classes(vec!["caption"])
+        .hexpand(true)
+        .xalign(0.0)
+        .build();
+    let allday_switch = gtk::Switch::builder()
+        .active(all_day)
+        .valign(gtk::Align::Center)
+        .build();
+    allday_row.append(&allday_lbl);
+    allday_row.append(&allday_switch);
+    content_box.append(&allday_row);
+
+    // Starts row
+    let starts_row = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .valign(gtk::Align::Center)
+        .build();
+    let starts_lbl = gtk::Label::builder()
+        .label(&crate::i18n::gettext("Starts"))
+        .width_chars(6)
+        .xalign(0.0)
+        .css_classes(vec!["caption", "dim-label"])
+        .build();
+    let entry_start_date = gtk::Entry::builder()
+        .text(&init_start_date)
+        .width_chars(11)
+        .css_classes(vec!["calendar-details-compact-entry"])
+        .hexpand(true)
+        .build();
+    let entry_start_time = gtk::Entry::builder()
+        .text(&init_start_time)
+        .width_chars(6)
+        .css_classes(vec!["calendar-details-compact-entry"])
+        .visible(!all_day)
+        .build();
+    starts_row.append(&starts_lbl);
+    starts_row.append(&entry_start_date);
+    starts_row.append(&entry_start_time);
+    content_box.append(&starts_row);
+
+    // Ends row
+    let ends_row = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .valign(gtk::Align::Center)
+        .build();
+    let ends_lbl = gtk::Label::builder()
+        .label(&crate::i18n::gettext("Ends"))
+        .width_chars(6)
+        .xalign(0.0)
+        .css_classes(vec!["caption", "dim-label"])
+        .build();
+    let entry_end_date = gtk::Entry::builder()
+        .text(&init_end_date)
+        .width_chars(11)
+        .css_classes(vec!["calendar-details-compact-entry"])
+        .hexpand(true)
+        .build();
+    let entry_end_time = gtk::Entry::builder()
+        .text(&init_end_time)
+        .width_chars(6)
+        .css_classes(vec!["calendar-details-compact-entry"])
+        .visible(!all_day)
+        .build();
+    ends_row.append(&ends_lbl);
+    ends_row.append(&entry_end_date);
+    ends_row.append(&entry_end_time);
+    content_box.append(&ends_row);
+
+    // Toggle time entries visibility on switch state change
+    let start_time_clone = entry_start_time.clone();
+    let end_time_clone = entry_end_time.clone();
+    allday_switch.connect_state_set(move |_, state| {
+        start_time_clone.set_visible(!state);
+        end_time_clone.set_visible(!state);
+        glib::Propagation::Proceed
+    });
+
+    // 6. Recurrence info (if any)
+    if let Some(recurrence_text) = format_recurrence_summary(event) {
+        let rec_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .valign(gtk::Align::Center)
+            .build();
+        let rec_icon = gtk::Image::from_icon_name("media-playlist-repeat-symbolic");
+        rec_icon.add_css_class("dim-label");
+        let rec_label = gtk::Label::builder()
+            .label(&recurrence_text)
+            .css_classes(vec!["caption", "dim-label"])
+            .wrap(true)
+            .xalign(0.0)
+            .build();
+        rec_box.append(&rec_icon);
+        rec_box.append(&rec_label);
+        content_box.append(&rec_box);
+    }
+
+    // 7. Alarm info (if any)
+    if let Some(alarm_summary) = format_alarm_summary(&event.component) {
+        let alarm_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .valign(gtk::Align::Center)
+            .build();
+        let alarm_icon = gtk::Image::from_icon_name("alarm-symbolic");
+        alarm_icon.add_css_class("dim-label");
+        let alarm_label = gtk::Label::builder()
+            .label(&alarm_summary)
+            .css_classes(vec!["caption", "dim-label"])
+            .wrap(true)
+            .xalign(0.0)
+            .build();
+        alarm_box.append(&alarm_icon);
+        alarm_box.append(&alarm_label);
+        content_box.append(&alarm_box);
+    }
+
+    // 8. Conference / Video URL
+    if let Some(conf_url) = extract_conference_url(&event.component, &event.location, &event.description) {
+        let conf_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .valign(gtk::Align::Center)
+            .build();
+        let conf_btn = gtk::Button::builder()
+            .label(&crate::i18n::gettext("Join meeting"))
+            .icon_name("call-start-symbolic")
+            .css_classes(vec!["suggested-action", "pill"])
+            .hexpand(true)
+            .build();
+        let conf_url_clone = conf_url.clone();
+        conf_btn.connect_clicked(move |_| {
+            let _ = gio::AppInfo::launch_default_for_uri(&conf_url_clone, None::<&gio::AppLaunchContext>);
+        });
+        conf_box.append(&conf_btn);
+        content_box.append(&conf_box);
+    }
+
+    // 9. Attendees (if any)
+    let attendees = parse_ical_attendees(&event.component);
+    if !attendees.is_empty() {
+        let att_header = gtk::Label::builder()
+            .label(&crate::i18n::gettext("Attendees"))
+            .css_classes(vec!["caption", "heading"])
+            .xalign(0.0)
+            .build();
+        content_box.append(&att_header);
+
+        let att_flow = gtk::FlowBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .max_children_per_line(3)
+            .min_children_per_line(1)
+            .column_spacing(6)
+            .row_spacing(4)
+            .build();
+        for att in attendees.iter().take(6) {
+            let status_prefix = match att.partstat.as_deref() {
+                Some("ACCEPTED") => "✓ ",
+                Some("DECLINED") => "✗ ",
+                Some("TENTATIVE") => "? ",
+                _ => "",
+            };
+            let chip_text = format!("{status_prefix}{}", att.name);
+            let chip = gtk::Label::builder()
+                .label(&chip_text)
+                .css_classes(vec!["calendar-attendee-chip"])
+                .tooltip_text(att.email.as_deref().unwrap_or(&att.name))
+                .build();
+            att_flow.append(&chip);
+        }
+        content_box.append(&att_flow);
+    }
+
+    // 10. Notes / Description (directly editable TextView)
+    let notes_label = gtk::Label::builder()
+        .label(&crate::i18n::gettext("Notes"))
+        .css_classes(vec!["caption", "heading"])
+        .xalign(0.0)
+        .build();
+    content_box.append(&notes_label);
+
+    let notes_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .min_content_height(75)
+        .max_content_height(140)
+        .css_classes(vec!["calendar-details-note-box"])
+        .build();
+    let notes_view = gtk::TextView::builder()
+        .wrap_mode(gtk::WrapMode::WordChar)
+        .accepts_tab(false)
+        .margin_start(4)
+        .margin_end(4)
+        .margin_top(4)
+        .margin_bottom(4)
+        .build();
+    notes_view.buffer().set_text(&event.description);
+    notes_scroll.set_child(Some(&notes_view));
+    content_box.append(&notes_scroll);
+
+    // 11. Actions: Save, More Options, Delete
+    let actions_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .margin_top(4)
+        .build();
+
+    let save_btn = gtk::Button::builder()
+        .label(&crate::i18n::gettext("Save"))
+        .icon_name("document-save-symbolic")
+        .css_classes(vec!["suggested-action"])
+        .hexpand(true)
+        .build();
+
+    let more_btn = gtk::Button::builder()
+        .label(&crate::i18n::gettext("More..."))
+        .icon_name("document-edit-symbolic")
+        .tooltip_text(&crate::i18n::gettext("Open full editor dialog"))
+        .css_classes(vec!["flat"])
+        .build();
+
+    let del_btn = gtk::Button::builder()
+        .icon_name("user-trash-symbolic")
+        .tooltip_text(&crate::i18n::gettext("Delete Appointment"))
+        .css_classes(vec!["flat", "destructive-action", "circular"])
+        .build();
+
+    actions_box.append(&save_btn);
+    actions_box.append(&more_btn);
+    actions_box.append(&del_btn);
+    content_box.append(&actions_box);
+
+    // Save wiring
+    let page_save = page.downgrade();
+    let event_save = event.clone();
+    let title_save = title_entry.clone();
+    let loc_save = loc_entry.clone();
+    let allday_save = allday_switch.clone();
+    let s_date_save = entry_start_date.clone();
+    let s_time_save = entry_start_time.clone();
+    let e_date_save = entry_end_date.clone();
+    let e_time_save = entry_end_time.clone();
+    let notes_save = notes_view.clone();
+
+    let save_action = std::rc::Rc::new(move || {
+        let Some(page) = page_save.upgrade() else { return };
+        let title = title_save.text();
+        let loc = loc_save.text();
+        let is_all_day = allday_save.is_active();
+        let sd = s_date_save.text();
+        let st = s_time_save.text();
+        let ed = e_date_save.text();
+        let et = e_time_save.text();
+
+        let (b_start, b_end) = notes_save.buffer().bounds();
+        let desc = notes_save.buffer().text(&b_start, &b_end, false);
+
+        let start_val = if is_all_day {
+            sd.trim().to_string()
+        } else {
+            format!("{} {}", sd.trim(), st.trim())
+        };
+        let end_val = if is_all_day {
+            ed.trim().to_string()
+        } else {
+            format!("{} {}", ed.trim(), et.trim())
+        };
+
+        save_calendar_event_inline(
+            &page,
+            &event_save,
+            title.as_str(),
+            loc.as_str(),
+            is_all_day,
+            start_val.as_str(),
+            end_val.as_str(),
+            desc.as_str(),
+        );
+    });
+
+    let sa1 = save_action.clone();
+    save_btn.connect_clicked(move |_| sa1());
+
+    let sa2 = save_action.clone();
+    title_entry.connect_activate(move |_| sa2());
+
+    let sa3 = save_action;
+    loc_entry.connect_activate(move |_| sa3());
+
+    let page_more = page.downgrade();
+    let parent_more = parent.clone();
+    let id_more = identity.clone();
+    more_btn.connect_clicked(move |_| {
+        if let (Some(page), Some(id)) = (page_more.upgrade(), id_more.as_ref()) {
+            page.open_event_editor_for_identity(&parent_more, id);
+        }
+    });
+
+    let page_del = page.downgrade();
+    let parent_del = parent.clone();
+    let event_del = event.clone();
+    del_btn.connect_clicked(move |_| {
+        if let Some(page) = page_del.upgrade() {
+            prompt_delete_calendar_event(&page, &parent_del, &event_del);
+        }
+    });
+
+    content_box
+}
+
 pub(crate) fn build_calendar_event_details_content<W: IsA<gtk::Widget> + Clone + 'static>(
     page: &CalendarPage,
     parent: &W,
@@ -18384,6 +22686,9 @@ pub(crate) fn build_calendar_event_details_content<W: IsA<gtk::Widget> + Clone +
     is_popover: bool,
     popover_opt: Option<&gtk::Popover>,
 ) -> gtk::Box {
+    if !is_popover {
+        return build_calendar_event_inspector_sidebar(page, parent, event, target_day);
+    }
     let identity = CalendarEventIdentity::from_event(event);
     let color = event_color_for_record(event);
     let cal_default = crate::i18n::gettext("Calendar");
@@ -18962,6 +23267,453 @@ pub(crate) fn pastel_colors_for_hex(hex: &str, is_dark: bool) -> (String, String
     }
 }
 
+thread_local! {
+    static LAST_COMPACT_HOVER_INSTANT: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
+    static ACTIVE_COMPACT_POPOVER: RefCell<Option<glib::object::WeakRef<gtk::Popover>>> = const { RefCell::new(None) };
+}
+
+fn safe_cancel_source(source_slot: &Cell<Option<glib::SourceId>>) {
+    if let Some(src) = source_slot.take() {
+        let _ = unsafe { glib::ffi::g_source_remove(src.as_raw()) };
+    }
+}
+
+fn calendar_grid_compact_allday_chip(
+    page: &CalendarPage,
+    event: &CalendarEventRecord,
+    day: NaiveDate,
+    continues_left: bool,
+    continues_right: bool,
+) -> gtk::Widget {
+    let untitled_default = crate::i18n::gettext("(Untitled)");
+    let title = if event.summary.trim().is_empty() {
+        untitled_default.as_str()
+    } else {
+        event.summary.as_str()
+    };
+    let time_text = event_time_text(event);
+    let color = event_color_for_record(event);
+
+    let chip_h = 6;
+    let chip_button = gtk::Button::builder()
+        .halign(gtk::Align::Fill)
+        .valign(gtk::Align::Center)
+        .hexpand(true)
+        .vexpand(false)
+        .height_request(chip_h)
+        .css_classes(vec!["flat", "calendar-grid-event", "all-day-compact-chip"])
+        .build();
+    chip_button.set_cursor_from_name(Some("pointer"));
+
+    let dim_past = page
+        .imp()
+        .settings
+        .borrow()
+        .as_ref()
+        .map(|s| s.calendar_dim_past_events())
+        .unwrap_or_else(configured_dim_past_events);
+    let today = Local::now().date_naive();
+    if dim_past && is_allday_event_in_past_for_date(event, day, today) {
+        chip_button.set_opacity(0.55);
+    }
+
+    let drawing_area = gtk::DrawingArea::builder()
+        .hexpand(true)
+        .vexpand(false)
+        .height_request(chip_h)
+        .build();
+
+    let color_draw = color.clone();
+    let is_hovered = Rc::new(Cell::new(false));
+    let is_hovered_draw = is_hovered.clone();
+
+    drawing_area.set_draw_func(move |_area, cr, width_i32, height_i32| {
+        let w = width_i32 as f64;
+        let h = height_i32 as f64;
+        if w <= 1.0 || h <= 1.0 {
+            return;
+        }
+
+        let (bar_r, bar_g, bar_b) =
+            parse_hex_color(&color_draw).unwrap_or((53, 132, 228));
+
+        let radius = (h / 2.0).clamp(1.5, 3.0);
+        draw_month_event_bar(cr, 0.0, 0.0, w, h, radius, continues_left, continues_right);
+        cr.set_source_rgba(
+            bar_r as f64 / 255.0,
+            bar_g as f64 / 255.0,
+            bar_b as f64 / 255.0,
+            if is_hovered_draw.get() { 1.0 } else { 0.90 },
+        );
+        let _ = cr.fill();
+    });
+
+    let popover_cell: Rc<RefCell<Option<gtk::Popover>>> = Rc::new(RefCell::new(None));
+    let timer_source: Rc<Cell<Option<glib::SourceId>>> = Rc::new(Cell::new(None));
+    let leave_timer_source: Rc<Cell<Option<glib::SourceId>>> = Rc::new(Cell::new(None));
+    let is_hovering_chip = Rc::new(Cell::new(false));
+    let is_hovering_popover = Rc::new(Cell::new(false));
+    let last_cursor_x = Rc::new(Cell::new(0.0));
+
+    // Motion controller on the chip button
+    let motion = gtk::EventControllerMotion::new();
+    let area_weak1 = drawing_area.downgrade();
+    let is_hov_chip_enter = is_hovering_chip.clone();
+    let is_hov_draw_enter = is_hovered.clone();
+    let leave_timer_enter = leave_timer_source.clone();
+    let timer_source_enter = timer_source.clone();
+    let chip_btn_enter = chip_button.clone();
+    let page_weak_enter = page.downgrade();
+    let event_enter = event.clone();
+    let color_enter = color.clone();
+    let title_enter = title.to_string();
+    let time_text_enter = time_text.clone();
+    let popover_cell_enter = popover_cell.clone();
+    let is_hov_pop_for_builder = is_hovering_popover.clone();
+    let is_hov_chip_for_builder = is_hovering_chip.clone();
+    let last_cursor_x_enter = last_cursor_x.clone();
+    let last_cursor_x_timer = last_cursor_x.clone();
+    let last_cursor_x_for_builder = last_cursor_x.clone();
+
+    motion.connect_enter(move |_, x, _| {
+        last_cursor_x_enter.set(x);
+        is_hov_chip_enter.set(true);
+        is_hov_draw_enter.set(true);
+        if let Some(a) = area_weak1.upgrade() {
+            a.queue_draw();
+        }
+
+        // Cancel any pending dismissal timer
+        safe_cancel_source(&leave_timer_enter);
+
+        let in_browse_mode = LAST_COMPACT_HOVER_INSTANT.with(|c| {
+            if let Some(inst) = c.get() {
+                inst.elapsed().as_millis() < 400
+            } else {
+                false
+            }
+        });
+        let delay_ms = if in_browse_mode { 15 } else { 75 };
+
+        safe_cancel_source(&timer_source_enter);
+
+        let popover_cell_inner = popover_cell_enter.clone();
+        let chip_btn_inner = chip_btn_enter.clone();
+        let page_weak_inner = page_weak_enter.clone();
+        let event_inner = event_enter.clone();
+        let color_inner = color_enter.clone();
+        let title_inner = title_enter.clone();
+        let time_text_inner = time_text_enter.clone();
+        let leave_timer_inner = leave_timer_enter.clone();
+        let is_hov_pop_inner = is_hov_pop_for_builder.clone();
+        let is_hov_chip_inner = is_hov_chip_for_builder.clone();
+        let timer_source_inner = timer_source_enter.clone();
+        let last_cur_x_builder = last_cursor_x_for_builder.clone();
+        let last_cur_x_timer = last_cursor_x_timer.clone();
+
+        let src = glib::timeout_add_local_once(
+            std::time::Duration::from_millis(delay_ms),
+            move || {
+                timer_source_inner.set(None);
+                let existing = popover_cell_inner.borrow().clone();
+                let popover = match existing {
+                    Some(p) => p,
+                    None => {
+                        let p = build_compact_chip_preview_popover(
+                            &chip_btn_inner,
+                            &page_weak_inner,
+                            &event_inner,
+                            day,
+                            &color_inner,
+                            &title_inner,
+                            &time_text_inner,
+                            &leave_timer_inner,
+                            &is_hov_pop_inner,
+                            &is_hov_chip_inner,
+                            &last_cur_x_builder,
+                        );
+                        *popover_cell_inner.borrow_mut() = Some(p.clone());
+                        p
+                    }
+                };
+
+                let cur_x = last_cur_x_timer.get();
+                let pointing_rect = gdk::Rectangle::new(cur_x.round() as i32, 0, 1, chip_h);
+                popover.set_pointing_to(Some(&pointing_rect));
+
+                // Close any previously open compact popover
+                ACTIVE_COMPACT_POPOVER.with(|active| {
+                    if let Some(old_weak) = active.borrow_mut().take() {
+                        if let Some(old_pop) = old_weak.upgrade() {
+                            old_pop.popdown();
+                        }
+                    }
+                    *active.borrow_mut() = Some(popover.downgrade());
+                });
+                popover.popup();
+                LAST_COMPACT_HOVER_INSTANT.with(|c| c.set(Some(std::time::Instant::now())));
+            },
+        );
+        timer_source_enter.set(Some(src));
+    });
+
+    let last_cursor_x_motion = last_cursor_x.clone();
+    let popover_cell_motion = popover_cell.clone();
+    motion.connect_motion(move |_, x, _| {
+        last_cursor_x_motion.set(x);
+        if let Some(popover) = popover_cell_motion.borrow().as_ref() {
+            if popover.is_visible() {
+                let rect = gdk::Rectangle::new(x.round() as i32, 0, 1, chip_h);
+                popover.set_pointing_to(Some(&rect));
+            }
+        }
+    });
+
+    let area_weak2 = drawing_area.downgrade();
+    let is_hov_chip_leave = is_hovering_chip.clone();
+    let is_hov_draw_leave = is_hovered.clone();
+    let is_hov_pop_check = is_hovering_popover.clone();
+    let is_hov_chip_check = is_hovering_chip.clone();
+    let timer_source_leave = timer_source.clone();
+    let leave_timer_leave = leave_timer_source.clone();
+    let popover_cell_leave = popover_cell.clone();
+
+    motion.connect_leave(move |_| {
+        is_hov_chip_leave.set(false);
+        is_hov_draw_leave.set(false);
+        if let Some(a) = area_weak2.upgrade() {
+            a.queue_draw();
+        }
+
+        safe_cancel_source(&timer_source_leave);
+        safe_cancel_source(&leave_timer_leave);
+
+        let popover_cell_inner = popover_cell_leave.clone();
+        let is_hov_pop_inner = is_hov_pop_check.clone();
+        let is_hov_chip_inner = is_hov_chip_check.clone();
+        let leave_timer_inner = leave_timer_leave.clone();
+        let src = glib::timeout_add_local_once(
+            std::time::Duration::from_millis(80),
+            move || {
+                leave_timer_inner.set(None);
+                if !is_hov_pop_inner.get() && !is_hov_chip_inner.get() {
+                    if let Some(pop) = popover_cell_inner.borrow().as_ref() {
+                        pop.popdown();
+                        LAST_COMPACT_HOVER_INSTANT.with(|c| c.set(Some(std::time::Instant::now())));
+                    }
+                }
+            },
+        );
+        leave_timer_leave.set(Some(src));
+    });
+    chip_button.add_controller(motion);
+
+    // Lifecycle cleanup on unrealize
+    let timer_cleanup = timer_source.clone();
+    let leave_timer_cleanup = leave_timer_source.clone();
+    let popover_cell_unrealize = popover_cell.clone();
+    chip_button.connect_unrealize(move |_| {
+        safe_cancel_source(&timer_cleanup);
+        safe_cancel_source(&leave_timer_cleanup);
+        if let Some(pop) = popover_cell_unrealize.borrow_mut().take() {
+            pop.popdown();
+            pop.unparent();
+        }
+    });
+
+    chip_button.set_child(Some(&drawing_area));
+
+    set_accessible_label(&chip_button, &crate::i18n::gettext("Open appointment: {title}").replace("{title}", title));
+    let acc_desc = if !event.source_display_name.is_empty() {
+        format!("{time_text} · {}", event.source_display_name)
+    } else {
+        time_text.clone()
+    };
+    set_accessible_description(&chip_button, &acc_desc);
+
+    let page_weak = page.downgrade();
+    let ev_click = event.clone();
+    let popover_cell_click = popover_cell.clone();
+    let timer_click = timer_source.clone();
+    let leave_timer_click = leave_timer_source.clone();
+    let last_cursor_x_click = last_cursor_x.clone();
+    chip_button.connect_clicked(move |btn| {
+        safe_cancel_source(&timer_click);
+        safe_cancel_source(&leave_timer_click);
+        if let Some(pop) = popover_cell_click.borrow().as_ref() {
+            pop.popdown();
+        }
+        if let Some(p) = page_weak.upgrade() {
+            p.select_and_inspect_event(&ev_click, Some(day));
+            if !p.is_tag_vpane_visible() {
+                let click_x = last_cursor_x_click.get();
+                let rect = gdk::Rectangle::new(click_x.round() as i32, 0, 1, chip_h);
+                show_calendar_event_details_popover_full(
+                    &p,
+                    btn,
+                    &ev_click,
+                    Some(day),
+                    Some(rect),
+                );
+            }
+        }
+    });
+
+    chip_button.upcast()
+}
+
+fn build_compact_chip_preview_popover(
+    chip_button: &gtk::Button,
+    page_weak: &glib::object::WeakRef<CalendarPage>,
+    event: &CalendarEventRecord,
+    day: NaiveDate,
+    color: &str,
+    title: &str,
+    time_text: &str,
+    leave_timer_source: &Rc<Cell<Option<glib::SourceId>>>,
+    is_hovering_popover: &Rc<Cell<bool>>,
+    is_hovering_chip: &Rc<Cell<bool>>,
+    last_cursor_x: &Rc<Cell<f64>>,
+) -> gtk::Popover {
+    let popover = gtk::Popover::builder()
+        .autohide(false)
+        .has_arrow(true)
+        .position(gtk::PositionType::Bottom)
+        .can_focus(false)
+        .focusable(false)
+        .css_classes(vec!["compact-chip-preview-popover"])
+        .build();
+    let initial_x = last_cursor_x.get();
+    let initial_rect = gdk::Rectangle::new(initial_x.round() as i32, 0, 1, 6);
+    popover.set_pointing_to(Some(&initial_rect));
+    popover.set_parent(chip_button);
+
+    let content_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(2)
+        .margin_top(3)
+        .margin_bottom(3)
+        .margin_start(6)
+        .margin_end(6)
+        .build();
+    content_box.set_cursor_from_name(Some("pointer"));
+
+    let title_row = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .halign(gtk::Align::Start)
+        .build();
+
+    let dot = gtk::DrawingArea::builder()
+        .width_request(8)
+        .height_request(8)
+        .valign(gtk::Align::Center)
+        .build();
+    let dot_color = color.to_string();
+    dot.set_draw_func(move |_, cr, _, _| {
+        let (r, g, b) = parse_hex_color(&dot_color).unwrap_or((53, 132, 228));
+        cr.arc(4.0, 4.0, 3.5, 0.0, 2.0 * std::f64::consts::PI);
+        cr.set_source_rgb(r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0);
+        let _ = cr.fill();
+    });
+    title_row.append(&dot);
+
+    let title_lbl = gtk::Label::builder()
+        .label(title)
+        .css_classes(vec!["compact-chip-preview-title"])
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .max_width_chars(36)
+        .halign(gtk::Align::Start)
+        .build();
+    title_row.append(&title_lbl);
+    content_box.append(&title_row);
+
+    let sub_text = if !event.source_display_name.is_empty() {
+        format!("{time_text} · {}", event.source_display_name)
+    } else {
+        time_text.to_string()
+    };
+    if !sub_text.is_empty() {
+        let sub_lbl = gtk::Label::builder()
+            .label(&sub_text)
+            .css_classes(vec!["dim-label", "compact-chip-preview-subtitle"])
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .max_width_chars(36)
+            .halign(gtk::Align::Start)
+            .margin_start(14)
+            .build();
+        content_box.append(&sub_lbl);
+    }
+    popover.set_child(Some(&content_box));
+
+    // Clicking either the chip button or the preview popover opens event details
+    let pop_click = gtk::GestureClick::new();
+    let page_weak_pop = page_weak.clone();
+    let ev_click_pop = event.clone();
+    let pop_weak_click = popover.downgrade();
+    let chip_btn_weak = chip_button.downgrade();
+    let last_cursor_x_pop = last_cursor_x.clone();
+    pop_click.connect_pressed(move |_, _, _, _| {
+        if let Some(pop) = pop_weak_click.upgrade() {
+            pop.popdown();
+        }
+        if let (Some(p), Some(btn)) = (page_weak_pop.upgrade(), chip_btn_weak.upgrade()) {
+            p.select_and_inspect_event(&ev_click_pop, Some(day));
+            if !p.is_tag_vpane_visible() {
+                let click_x = last_cursor_x_pop.get();
+                let rect = gdk::Rectangle::new(click_x.round() as i32, 0, 1, 6);
+                show_calendar_event_details_popover_full(
+                    &p,
+                    &btn,
+                    &ev_click_pop,
+                    Some(day),
+                    Some(rect),
+                );
+            }
+        }
+    });
+    content_box.add_controller(pop_click);
+
+    // Motion on the popover content so hovering inside it keeps it open
+    let pop_motion = gtk::EventControllerMotion::new();
+    let is_hov_pop_enter = is_hovering_popover.clone();
+    let leave_timer_pop_enter = leave_timer_source.clone();
+    pop_motion.connect_enter(move |_, _, _| {
+        is_hov_pop_enter.set(true);
+        safe_cancel_source(&leave_timer_pop_enter);
+    });
+
+    let is_hov_pop_leave = is_hovering_popover.clone();
+    let is_hov_pop_check2 = is_hovering_popover.clone();
+    let is_hov_chip_check2 = is_hovering_chip.clone();
+    let leave_timer_pop_leave = leave_timer_source.clone();
+    let pop_weak_pop_leave = popover.downgrade();
+    pop_motion.connect_leave(move |_| {
+        is_hov_pop_leave.set(false);
+        safe_cancel_source(&leave_timer_pop_leave);
+        let pop_weak_inner = pop_weak_pop_leave.clone();
+        let is_hov_pop_inner = is_hov_pop_check2.clone();
+        let is_hov_chip_inner = is_hov_chip_check2.clone();
+        let leave_timer_inner = leave_timer_pop_leave.clone();
+        let src = glib::timeout_add_local_once(
+            std::time::Duration::from_millis(80),
+            move || {
+                leave_timer_inner.set(None);
+                if !is_hov_pop_inner.get() && !is_hov_chip_inner.get() {
+                    if let Some(pop) = pop_weak_inner.upgrade() {
+                        pop.popdown();
+                        LAST_COMPACT_HOVER_INSTANT.with(|c| c.set(Some(std::time::Instant::now())));
+                    }
+                }
+            },
+        );
+        leave_timer_pop_leave.set(Some(src));
+    });
+    content_box.add_controller(pop_motion);
+
+    popover
+}
+
 fn calendar_grid_event_chip(
     page: &CalendarPage,
     event: &CalendarEventRecord,
@@ -19132,20 +23884,21 @@ fn calendar_grid_event_chip(
 
         let gesture = gtk::GestureClick::new();
         gesture.set_button(1);
-        gesture.connect_released(move |gesture, n_press, _x, _y| {
+        gesture.connect_released(move |gesture, n_press, x, _y| {
             let (Some(page), Some(widget)) = (page_weak_for_click.upgrade(), gesture.widget()) else {
                 return;
             };
             page.clear_selected_time_slot();
-            if let Some(id) = event_identity_for_click.as_ref() {
-                page.imp().view_state.borrow_mut().select_event(Some(id.clone()), None);
-            }
+            page.select_and_inspect_event(&event_for_click, Some(target_day));
             if n_press == 2 {
                 if let Some(id) = event_identity_for_click.as_ref() {
                     page.open_event_editor_for_identity(&widget, id);
                 }
             } else if n_press == 1 {
-                show_calendar_event_details_popover(&page, &widget, &event_for_click, Some(target_day));
+                if !page.is_tag_vpane_visible() {
+                    let rect = gdk::Rectangle::new(x.round() as i32, 0, 1, chip_h as i32);
+                    show_calendar_event_details_popover_full(&page, &widget, &event_for_click, Some(target_day), Some(rect));
+                }
             }
         });
         chip_button.add_controller(gesture);
@@ -19181,7 +23934,10 @@ fn calendar_grid_event_chip(
         key_controller.connect_key_pressed(move |controller, keyval, _, _| {
             if keyval == gdk::Key::Return || keyval == gdk::Key::KP_Enter || keyval == gdk::Key::space {
                 if let (Some(page), Some(widget)) = (page_weak_for_key.upgrade(), controller.widget()) {
-                    show_calendar_event_details_popover(&page, &widget, &event_for_key, Some(target_day));
+                    page.select_and_inspect_event(&event_for_key, Some(target_day));
+                    if !page.is_tag_vpane_visible() {
+                        show_calendar_event_details_popover(&page, &widget, &event_for_key, Some(target_day));
+                    }
                     return glib::Propagation::Stop;
                 }
             } else if keyval == gdk::Key::Delete || keyval == gdk::Key::BackSpace {
@@ -19275,20 +24031,21 @@ fn calendar_grid_event_chip(
 
         let gesture = gtk::GestureClick::new();
         gesture.set_button(1);
-        gesture.connect_released(move |gesture, n_press, _x, _y| {
+        gesture.connect_released(move |gesture, n_press, x, y| {
             let (Some(page), Some(widget)) = (page_weak_for_click.upgrade(), gesture.widget()) else {
                 return;
             };
             page.clear_selected_time_slot();
-            if let Some(id) = event_identity_for_click.as_ref() {
-                page.imp().view_state.borrow_mut().select_event(Some(id.clone()), None);
-            }
+            page.select_and_inspect_event(&event_for_click, Some(target_day));
             if n_press == 2 {
                 if let Some(id) = event_identity_for_click.as_ref() {
                     page.open_event_editor_for_identity(&widget, id);
                 }
             } else if n_press == 1 {
-                show_calendar_event_details_popover(&page, &widget, &event_for_click, Some(target_day));
+                if !page.is_tag_vpane_visible() {
+                    let rect = gdk::Rectangle::new(x.round() as i32, y.round() as i32, 1, 1);
+                    show_calendar_event_details_popover_full(&page, &widget, &event_for_click, Some(target_day), Some(rect));
+                }
             }
         });
         chip_button.add_controller(gesture);
@@ -19324,7 +24081,10 @@ fn calendar_grid_event_chip(
         key_controller.connect_key_pressed(move |controller, keyval, _, _| {
             if keyval == gdk::Key::Return || keyval == gdk::Key::KP_Enter || keyval == gdk::Key::space {
                 if let (Some(page), Some(widget)) = (page_weak_for_key.upgrade(), controller.widget()) {
-                    show_calendar_event_details_popover(&page, &widget, &event_for_key, Some(target_day));
+                    page.select_and_inspect_event(&event_for_key, Some(target_day));
+                    if !page.is_tag_vpane_visible() {
+                        show_calendar_event_details_popover(&page, &widget, &event_for_key, Some(target_day));
+                    }
                     return glib::Propagation::Stop;
                 }
             } else if keyval == gdk::Key::Delete || keyval == gdk::Key::BackSpace {
@@ -19596,14 +24356,13 @@ pub(crate) fn event_color_for_record(event: &CalendarEventRecord) -> String {
     if let Some(color) = category_color_for_component(&event.component) {
         return color;
     }
-    if let Some(color) = ical_property(&event.component, "COLOR")
-        .or_else(|| ical_property(&event.component, "X-APPLE-CALENDAR-COLOR"))
-        .filter(|c| !c.trim().is_empty())
-    {
-        return color;
-    }
-    if event.source_display_name != "Local Calendar" && event.source_display_name != crate::i18n::gettext("Local Calendar") && !event.source_display_name.is_empty() {
-        return calendar_source_color(&event.source_uid, &event.source_display_name);
+    if event.component.contains("COLOR") {
+        if let Some(color) = ical_property(&event.component, "COLOR")
+            .or_else(|| ical_property(&event.component, "X-APPLE-CALENDAR-COLOR"))
+            .filter(|c| !c.trim().is_empty())
+        {
+            return color;
+        }
     }
     calendar_source_color(&event.source_uid, &event.source_display_name)
 }
@@ -19871,16 +24630,11 @@ pub(crate) fn is_month_bar_past(
         return false;
     }
 
+    let is_multi_day_display = event_display_range(&bar.event).is_some_and(|r| r.len_days() > 1);
+
     if bar.occurrence_date == today {
-        if bar.all_day || bar.event.all_day {
+        if bar.all_day || bar.event.all_day || is_multi_day_display {
             return false;
-        }
-        let range = event_occurrence_range_for_date(&bar.event, today)
-            .or_else(|| event_display_range(&bar.event));
-        if let Some(r) = range {
-            if r.len_days() > 1 {
-                return false;
-            }
         }
         let (_, end_min, _) = event_occurrence_times_for_date(&bar.event, today, 30);
         let now_min = (now_dt.hour() * 60 + now_dt.minute()) as f64;
@@ -19888,7 +24642,11 @@ pub(crate) fn is_month_bar_past(
     }
 
     // bar.occurrence_date < today:
-    // Check if this event is multi-day and still reaches into today or the future.
+    if !is_multi_day_display {
+        return true;
+    }
+
+    // Check if this multi-day event still reaches into today or the future.
     let range = event_occurrence_range_for_date(&bar.event, bar.occurrence_date)
         .or_else(|| event_display_range(&bar.event));
 
@@ -19918,16 +24676,11 @@ pub(crate) fn is_agenda_event_past(
         return false;
     }
 
+    let is_multi_day_display = event_display_range(record).is_some_and(|r| r.len_days() > 1);
+
     if date == today {
-        if record.all_day {
+        if record.all_day || is_multi_day_display {
             return false;
-        }
-        let range = event_occurrence_range_for_date(record, today)
-            .or_else(|| event_display_range(record));
-        if let Some(r) = range {
-            if r.len_days() > 1 {
-                return false;
-            }
         }
         let (_, end_min, _) = event_occurrence_times_for_date(record, today, 30);
         let now_min = (now_dt.hour() * 60 + now_dt.minute()) as f64;
@@ -19935,7 +24688,11 @@ pub(crate) fn is_agenda_event_past(
     }
 
     // date < today:
-    // Check if this event is multi-day and still reaches into today or future.
+    if !is_multi_day_display {
+        return true;
+    }
+
+    // Check if this multi-day event still reaches into today or future.
     let range = event_occurrence_range_for_date(record, date)
         .or_else(|| event_display_range(record));
 
@@ -20506,29 +25263,63 @@ fn event_matches_calendar_filter_with_options(
     })
 }
 
+fn index_event_matches_filter(
+    index: &CalendarSnapshotIndex,
+    idx: usize,
+    search_query_lower: &str,
+    category_filter: Option<&str>,
+    hidden_sources: &HashSet<String>,
+    hide_cancelled: bool,
+) -> bool {
+    let Some(event) = index.snapshot.events.get(idx) else {
+        return false;
+    };
+    let Some(meta) = index.metas.get(idx) else {
+        return false;
+    };
+    if !hidden_sources.is_empty()
+        && (hidden_sources.contains(&event.source_uid)
+            || hidden_sources.contains(&event.source_display_name)
+            || hidden_sources
+                .iter()
+                .any(|h| !event.source_uid.is_empty() && h.ends_with(&format!(":{}", event.source_uid))))
+    {
+        return false;
+    }
+    if hide_cancelled && meta.is_cancelled {
+        return false;
+    }
+    if !search_query_lower.is_empty() && !meta.search_text.contains(search_query_lower) {
+        return false;
+    }
+    category_filter.is_none_or(|filter| {
+        meta.categories
+            .iter()
+            .any(|category| category.eq_ignore_ascii_case(filter))
+    })
+}
+
 fn filtered_sorted_event_indices(
     index: &CalendarSnapshotIndex,
     search_query: &str,
     category_filter: Option<&str>,
     hidden_sources: &HashSet<String>,
 ) -> Vec<usize> {
+    let hide_cancelled = configured_hide_cancelled_events();
+    let search_query_lower = search_query.trim().to_lowercase();
     index
         .all_event_indices
         .iter()
         .copied()
         .filter(|&event_index| {
-            index
-                .snapshot
-                .events
-                .get(event_index)
-                .is_some_and(|event| {
-                    event_matches_calendar_filter(
-                        event,
-                        search_query,
-                        category_filter,
-                        hidden_sources,
-                    )
-                })
+            index_event_matches_filter(
+                index,
+                event_index,
+                &search_query_lower,
+                category_filter,
+                hidden_sources,
+                hide_cancelled,
+            )
         })
         .collect()
 }
@@ -20541,13 +25332,21 @@ fn indexed_events_by_date(
     hidden_sources: &HashSet<String>,
 ) -> BTreeMap<NaiveDate, Vec<CalendarEventRecord>> {
     let mut day_indices: BTreeMap<NaiveDate, Vec<usize>> = BTreeMap::new();
+    let hide_cancelled = configured_hide_cancelled_events();
+    let search_query_lower = search_query.trim().to_lowercase();
 
     // 1. Direct date bucket lookup for non-recurring events (O(1) per date)
     for date in range.dates() {
         if let Some(bucket) = index.date_buckets.get(&date) {
             for &idx in bucket {
-                let event = &index.snapshot.events[idx];
-                if event_matches_calendar_filter(event, search_query, category_filter, hidden_sources) {
+                if index_event_matches_filter(
+                    index,
+                    idx,
+                    &search_query_lower,
+                    category_filter,
+                    hidden_sources,
+                    hide_cancelled,
+                ) {
                     day_indices.entry(date).or_default().push(idx);
                 }
             }
@@ -20556,8 +25355,14 @@ fn indexed_events_by_date(
 
     // 2. Expand recurring events in range
     for &idx in &index.recurring_events {
-        let event = &index.snapshot.events[idx];
-        if !event_matches_calendar_filter(event, search_query, category_filter, hidden_sources) {
+        if !index_event_matches_filter(
+            index,
+            idx,
+            &search_query_lower,
+            category_filter,
+            hidden_sources,
+            hide_cancelled,
+        ) {
             continue;
         }
         for date in index.recurring_occurrences_in_range(idx, range) {
@@ -20570,8 +25375,14 @@ fn indexed_events_by_date(
         if !long_range.intersects(range) {
             continue;
         }
-        let event = &index.snapshot.events[idx];
-        if !event_matches_calendar_filter(event, search_query, category_filter, hidden_sources) {
+        if !index_event_matches_filter(
+            index,
+            idx,
+            &search_query_lower,
+            category_filter,
+            hidden_sources,
+            hide_cancelled,
+        ) {
             continue;
         }
         for date in long_range.dates() {
@@ -20617,10 +25428,9 @@ fn indexed_events_by_date(
                     }
                 })
                 .then_with(|| {
-                    index.snapshot.events[a.idx].summary
-                        .chars()
-                        .flat_map(char::to_lowercase)
-                        .cmp(index.snapshot.events[b.idx].summary.chars().flat_map(char::to_lowercase))
+                    index.metas[a.idx]
+                        .summary_lowercase
+                        .cmp(&index.metas[b.idx].summary_lowercase)
                 })
                 .then_with(|| index.snapshot.events[a.idx].source_uid.cmp(&index.snapshot.events[b.idx].source_uid))
                 .then_with(|| index.snapshot.events[a.idx].uid.cmp(&index.snapshot.events[b.idx].uid))
@@ -20654,13 +25464,21 @@ fn indexed_event_day_markers(
     hidden_sources: &HashSet<String>,
 ) -> BTreeMap<NaiveDate, usize> {
     let mut day_identities: BTreeMap<NaiveDate, (BTreeSet<&CalendarEventIdentity>, usize)> = BTreeMap::new();
+    let hide_cancelled = configured_hide_cancelled_events();
+    let search_query_lower = search_query.trim().to_lowercase();
 
     // 1. Non-recurring events from date_buckets
     for date in range.dates() {
         if let Some(bucket) = index.date_buckets.get(&date) {
             for &idx in bucket {
-                let event = &index.snapshot.events[idx];
-                if !event_matches_calendar_filter(event, search_query, category_filter, hidden_sources) {
+                if !index_event_matches_filter(
+                    index,
+                    idx,
+                    &search_query_lower,
+                    category_filter,
+                    hidden_sources,
+                    hide_cancelled,
+                ) {
                     continue;
                 }
                 let (seen, no_id_count) = day_identities.entry(date).or_default();
@@ -20675,8 +25493,14 @@ fn indexed_event_day_markers(
 
     // 2. Recurring events
     for &idx in &index.recurring_events {
-        let event = &index.snapshot.events[idx];
-        if !event_matches_calendar_filter(event, search_query, category_filter, hidden_sources) {
+        if !index_event_matches_filter(
+            index,
+            idx,
+            &search_query_lower,
+            category_filter,
+            hidden_sources,
+            hide_cancelled,
+        ) {
             continue;
         }
         for date in index.recurring_occurrences_in_range(idx, range) {
@@ -20694,8 +25518,14 @@ fn indexed_event_day_markers(
         if !long_range.intersects(range) {
             continue;
         }
-        let event = &index.snapshot.events[idx];
-        if !event_matches_calendar_filter(event, search_query, category_filter, hidden_sources) {
+        if !index_event_matches_filter(
+            index,
+            idx,
+            &search_query_lower,
+            category_filter,
+            hidden_sources,
+            hide_cancelled,
+        ) {
             continue;
         }
         for date in long_range.dates() {
@@ -20855,15 +25685,43 @@ fn exdate_values(event: &CalendarEventRecord) -> Vec<NaiveDate> {
 }
 
 fn ical_property(raw: &str, target: &str) -> Option<String> {
-    unfold_ical_lines(raw).into_iter().find_map(|line| {
-        let (property, value) = line.split_once(':')?;
-        let name = property
-            .split(';')
-            .next()
-            .unwrap_or(property)
-            .to_ascii_uppercase();
-        (name == target.to_ascii_uppercase()).then(|| unescape_ical_text(value))
-    })
+    let target_first = *target.as_bytes().first()?;
+    let target_len = target.len();
+    let mut matched: Option<String> = None;
+
+    for raw_line in raw.split('\n') {
+        let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+
+        if line.starts_with(' ') || line.starts_with('\t') {
+            if let Some(ref mut buf) = matched {
+                buf.push_str(line.trim_start());
+            }
+            continue;
+        }
+
+        if let Some(full_line) = matched.take() {
+            if let Some((_, value)) = full_line.split_once(':') {
+                return Some(unescape_ical_text(value));
+            }
+        }
+
+        if line.len() > target_len && line.as_bytes()[0].eq_ignore_ascii_case(&target_first) {
+            if let Some(colon_idx) = line.find(':') {
+                let prop = &line[..colon_idx];
+                let name = prop.split(';').next().unwrap_or(prop);
+                if name.eq_ignore_ascii_case(target) {
+                    matched = Some(line.to_string());
+                }
+            }
+        }
+    }
+
+    if let Some(full_line) = matched {
+        if let Some((_, value)) = full_line.split_once(':') {
+            return Some(unescape_ical_text(value));
+        }
+    }
+    None
 }
 
 fn unfold_ical_lines(raw: &str) -> Vec<String> {
@@ -25665,6 +30523,85 @@ mod tests {
     }
 
     #[test]
+    fn test_year_planner_matrix_layout_and_rendering() {
+        let year = 2026;
+        let pl = CalendarPage::prepare_year_planner_layout(year, 1200.0, 720.0);
+        assert_eq!(pl.year, 2026);
+        assert!((pl.height - 720.0).abs() < 1e-6);
+        assert!((pl.width - 1200.0).abs() < 1e-6);
+        assert_eq!(pl.month_header_w, 32.0);
+
+        // Hit-test month header column
+        let hit_jan_hdr = CalendarPage::hit_test_year_planner_canvas(&pl, 10.0, 10.0);
+        assert_eq!(hit_jan_hdr, Some(YearCanvasHitTarget::MonthHeader(1)));
+
+        // Hit-test valid day cell (Jan 1)
+        let hit_jan_1 = CalendarPage::hit_test_year_planner_canvas(&pl, pl.month_header_w + 5.0, 10.0);
+        assert_eq!(
+            hit_jan_1,
+            Some(YearCanvasHitTarget::Day(NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()))
+        );
+
+        // Hit-test invalid trailing day cell (Feb 30 in 2026) -> None
+        let feb_y = pl.row_h * 1.5;
+        let day30_x = pl.month_header_w + 29.5 * pl.col_w;
+        assert_eq!(CalendarPage::hit_test_year_planner_canvas(&pl, day30_x, feb_y), None);
+
+        // Cairo vector drawing smoke test for Planner view (including hover preview card)
+        let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 1200, 720).unwrap();
+        let cr = gtk::cairo::Context::new(&surface).unwrap();
+        let empty_months = CalendarPage::build_year_planner_months(year, &BTreeMap::new());
+        let mut previews = HashMap::new();
+        let hover_date = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
+        previews.insert(
+            hover_date,
+            vec![
+                YearPlannerDayPreviewItem {
+                    title: "Columbus Day".to_string(),
+                    time_str: None,
+                    color_rgb: (46, 194, 126),
+                    is_all_day_or_multi: true,
+                    start_min: 0,
+                },
+                YearPlannerDayPreviewItem {
+                    title: "Daily Standup".to_string(),
+                    time_str: Some("09:30".to_string()),
+                    color_rgb: (53, 132, 228),
+                    is_all_day_or_multi: false,
+                    start_min: 9 * 60 + 30,
+                },
+            ],
+        );
+        let today = NaiveDate::from_ymd_opt(2026, 10, 11).unwrap();
+        let selected = Some(hover_date);
+        let hovered = YearCanvasHitTarget::Day(hover_date);
+        CalendarPage::draw_year_planner_canvas(
+            &cr,
+            &pl,
+            &empty_months,
+            &previews,
+            selected,
+            today,
+            Some(&hovered),
+            0.0,
+            720.0,
+            false,
+        );
+        CalendarPage::draw_year_planner_canvas(
+            &cr,
+            &pl,
+            &empty_months,
+            &previews,
+            selected,
+            today,
+            Some(&hovered),
+            0.0,
+            720.0,
+            true,
+        );
+    }
+
+    #[test]
     fn test_drag_selection_end_time_calculation_at_day_boundary() {
         let target_date = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
 
@@ -26576,12 +31513,12 @@ mod tests {
             .and_then(|w| w.downcast::<gtk::Grid>().ok())
             .expect("First child must be header_grid");
 
-        // all_day_label is at col 0, row 1
-        let all_day_label = header_grid
+        // all_day_container is at col 0, row 1
+        let all_day_container = header_grid
             .child_at(0, 1)
-            .and_then(|w| w.downcast::<gtk::Label>().ok())
-            .expect("all_day_label must exist at (0, 1)");
-        assert_eq!(all_day_label.valign(), gtk::Align::Fill);
+            .and_then(|w| w.downcast::<gtk::Box>().ok())
+            .expect("all_day_container must exist at (0, 1)");
+        assert_eq!(all_day_container.vexpands(), false);
 
         // days_overlay is at col 1, row 1 (when no secondary timezone)
         let days_overlay = header_grid
@@ -26612,6 +31549,37 @@ mod tests {
         let chip_track1 = allday_grid.child_at(1, 1);
         assert!(chip_track0.is_some(), "Track 0 must contain event 1");
         assert!(chip_track1.is_some(), "Track 1 must contain event 2");
+    }
+
+    #[test]
+    fn test_period_label_text_non_redundant_complements() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let page = CalendarPage::new();
+        let target = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+        page.navigate_to_date(target);
+
+        // Day view: title complements column "THU 15" with month and year
+        page.select_calendar_view(CalendarView::Day);
+        assert_eq!(page.period_label_text(), "October 2026");
+
+        // Week view: within same month should be "October 2026"
+        page.select_calendar_view(CalendarView::Week);
+        assert_eq!(page.period_label_text(), "October 2026");
+
+        // Week view: cross-month should be "September – October 2026"
+        let cross_date = NaiveDate::from_ymd_opt(2026, 9, 30).unwrap();
+        page.navigate_to_date(cross_date);
+        page.select_calendar_view(CalendarView::Week);
+        assert_eq!(page.period_label_text(), "September \u{2013} October 2026");
+
+        // WorkWeek view: should also be month/year
+        page.select_calendar_view(CalendarView::WorkWeek);
+        assert_eq!(page.period_label_text(), "September \u{2013} October 2026");
     }
 
     #[test]
@@ -27095,8 +32063,8 @@ mod tests {
     #[test]
     fn test_continuous_time_grid_default_scroll_anchor() {
         let source = include_str!("calendar_page.rs");
-        // Verify default scroll anchors to 06:00 (360 min) or 2h before workday start
-        assert!(source.contains("let base_start_min = (workday_start.saturating_sub(120)).min(360);"));
+        // Verify default scroll anchors to 2h before workday start (earlier only for morning events after 05:00)
+        assert!(source.contains("let base_start_min = workday_start.saturating_sub(120);"));
         assert!(source.contains("let target_start_min = earliest_event_min;"));
         assert!(source.contains("let start_slot = (target_start_min / interval_minutes as u32) as usize;"));
     }
@@ -27616,9 +32584,68 @@ mod tests {
         assert!(!sat.is_empty());
         assert!(!sun.is_empty());
 
+        let provider = gtk::CssProvider::new();
+        provider.load_from_string(include_str!("../style.css"));
+        if let Some(display) = gtk::gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
+
         let page = CalendarPage::new();
         assert!(page.imp().sidebar_date_chooser.borrow().is_some());
         assert!(page.imp().toolbar_title_stack.borrow().is_some());
+
+        if let Some(chooser) = page.imp().sidebar_date_chooser.borrow().as_ref() {
+            assert!(chooser.container.has_css_class("sidebar-date-chooser"));
+            let (min_w, nat_w, _, _) = chooser
+                .container
+                .measure(gtk::Orientation::Horizontal, -1);
+            let (min_h, nat_h, _, _) = chooser
+                .container
+                .measure(gtk::Orientation::Vertical, -1);
+            println!(
+                "[SIDEBAR MINI-CAL] width: min={min_w}px nat={nat_w}px, height: min={min_h}px nat={nat_h}px"
+            );
+            assert!(
+                min_w <= 225,
+                "Sidebar mini-calendar min width ({min_w}px) must stay compact (<= 225px) so the sidebar stays narrow"
+            );
+        }
+
+        // By default, 1 mini-calendar is visible; pulling down the vertical handle reveals 2 or 3 subsequent months
+        {
+            let choosers = page.imp().sidebar_date_choosers.borrow();
+            assert_eq!(choosers.len(), 3);
+            assert!(choosers[0].container.is_visible());
+            assert!(!choosers[1].container.is_visible());
+            assert!(!choosers[2].container.is_visible());
+        }
+        page.update_sidebar_date_chooser_count(2);
+        {
+            let choosers = page.imp().sidebar_date_choosers.borrow();
+            assert!(choosers[0].container.is_visible());
+            assert!(choosers[1].container.is_visible());
+            assert!(!choosers[2].container.is_visible());
+            assert_eq!(
+                choosers[1].browse_date.get(),
+                step_date_by_month(choosers[0].browse_date.get(), 1)
+            );
+        }
+        page.update_sidebar_date_chooser_count(3);
+        {
+            let choosers = page.imp().sidebar_date_choosers.borrow();
+            assert!(choosers[0].container.is_visible());
+            assert!(choosers[1].container.is_visible());
+            assert!(choosers[2].container.is_visible());
+            assert_eq!(
+                choosers[2].browse_date.get(),
+                step_date_by_month(choosers[0].browse_date.get(), 2)
+            );
+        }
+        page.update_sidebar_date_chooser_count(1);
 
         // When sidebar is visible, navigation title displays static label
         page.set_sidebar_visible(true);
@@ -27633,7 +32660,684 @@ mod tests {
         if let Some(stack) = page.imp().toolbar_title_stack.borrow().as_ref() {
             assert_eq!(stack.visible_child_name().as_deref(), Some("button"));
         }
+
+        // Restore default visible state
+        page.set_sidebar_visible(true);
+    }
+
+    #[test]
+    fn test_month_view_scroll_with_large_ews_components_is_instant() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        // Construct a synthetic 95 KB folded EWS component (matching real Exchange X-ALT-DESC + X-EWS-ORIGINAL-COMP payloads)
+        let mut folded_blob = String::with_capacity(96_000);
+        folded_blob.push_str("X-EWS-ORIGINAL-COMP:");
+        for _ in 0..1200 {
+            folded_blob.push_str("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz0123456789\r\n ");
+        }
+        folded_blob.push_str("END\r\n");
+
+        let today = Local::now().date_naive();
+        let mut events = Vec::with_capacity(60);
+        for i in 0..60 {
+            let offset_days = (i as i64) - 30;
+            let date = today + Duration::days(offset_days);
+            let comp = format!(
+                "BEGIN:VEVENT\r\nUID:ews-heavy-{i}\r\nDTSTART:{}T090000Z\r\nDTEND:{}T100000Z\r\nSUMMARY:Heavy EWS Meeting {i}\r\nSTATUS:CONFIRMED\r\nCATEGORIES:Business,Engineering\r\n{}END:VEVENT\r\n",
+                date.format("%Y%m%d"),
+                date.format("%Y%m%d"),
+                folded_blob
+            );
+            events.push(CalendarEventRecord {
+                uid: format!("ews-heavy-{i}"),
+                source_uid: "ews-corp".to_string(),
+                source_display_name: "Exchange".to_string(),
+                component: comp,
+                summary: format!("Heavy EWS Meeting {i}"),
+                start: format!("{}T09:00:00Z", date.format("%Y-%m-%d")),
+                end: format!("{}T10:00:00Z", date.format("%Y-%m-%d")),
+                location: "Room 42".to_string(),
+                description: "Agenda".to_string(),
+                all_day: false,
+            });
+        }
+
+        let page = CalendarPage::new();
+        page.imp().event_records.replace(Some(Rc::new(RefCell::new(events))));
+        page.bump_calendar_revision();
+        page.rebuild_calendar_index_from_records();
+        page.select_calendar_view(CalendarView::Month);
+
+        // Warm up initial layout
+        page.refresh_month_grid();
+
+        // Measure 5 consecutive week scroll steps + full dual-layout animation frame draws
+        let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 1400, 900).unwrap();
+        let cr = gtk::cairo::Context::new(&surface).unwrap();
+
+        let start = std::time::Instant::now();
+        for step in 0..5 {
+            page.shift_month_week(if step % 2 == 0 { 1 } else { -1 });
+            let layout_rc = page.imp().month_layout.borrow().as_ref().cloned().expect("month_layout");
+            let anim = page.imp().month_scroll_anim.borrow().clone();
+            draw_month_canvas(
+                &cr,
+                1400.0,
+                900.0,
+                &layout_rc,
+                None,
+                None,
+                None,
+                false,
+                anim.as_ref(),
+            );
+        }
+        let total_elapsed = start.elapsed();
+        let avg_ms = total_elapsed.as_secs_f64() * 1000.0 / 5.0;
+        eprintln!("[PERF] Average shift_month_week + draw_month_canvas with 60x95KB EWS events: {:.3} ms", avg_ms);
+        assert!(
+            avg_ms < 15.0,
+            "Month scroll step + dual-layout render with 95 KB EWS events took {:.3} ms (must be well under 16.6ms 60fps frame budget even in unoptimized debug builds)",
+            avg_ms
+        );
+    }
+
+    #[test]
+    fn test_compact_allday_chip_fast_preview_structure() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let page = CalendarPage::new();
+        let mut event = event_with_start("2026-10-15");
+        event.summary = "All-day Team Strategy Offsite".to_string();
+        event.all_day = true;
+        event.source_display_name = "Work Calendar".to_string();
+
+        let day = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+        let chip = calendar_grid_compact_allday_chip(&page, &event, day, false, false);
+
+        assert!(chip.has_css_class("all-day-compact-chip"));
+        assert!(chip.has_css_class("calendar-grid-event"));
+        assert_eq!(chip.height_request(), 6);
+    }
+
+    #[test]
+    fn test_compact_allday_chip_popover_lazy_borrow_safety() {
+        let popover_cell: std::rc::Rc<std::cell::RefCell<Option<String>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        let popover_cell_inner = popover_cell.clone();
+
+        // Simulate the hover callback logic
+        let existing = popover_cell_inner.borrow().clone();
+        let val = match existing {
+            Some(p) => p,
+            None => {
+                let p = "preview_popover_test".to_string();
+                *popover_cell_inner.borrow_mut() = Some(p.clone());
+                p
+            }
+        };
+        assert_eq!(val, "preview_popover_test");
+        assert_eq!(*popover_cell.borrow(), Some("preview_popover_test".to_string()));
+
+        // Second hover should reuse existing without panicking
+        let existing2 = popover_cell_inner.borrow().clone();
+        let val2 = match existing2 {
+            Some(p) => p,
+            None => panic!("Must reuse existing popover"),
+        };
+        assert_eq!(val2, "preview_popover_test");
+    }
+
+    #[test]
+    fn test_compact_allday_chip_popover_pointing_to_cursor() {
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let page = CalendarPage::new();
+        let page_weak = page.downgrade();
+        let mut event = event_with_start("2026-10-15");
+        event.summary = "All-day Conference".to_string();
+        event.all_day = true;
+
+        let chip_btn = gtk::Button::builder().height_request(6).build();
+        let day = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+        let leave_timer: Rc<Cell<Option<glib::SourceId>>> = Rc::new(Cell::new(None));
+        let is_hov_pop = Rc::new(Cell::new(false));
+        let is_hov_chip = Rc::new(Cell::new(false));
+        let last_cursor_x = Rc::new(Cell::new(142.0));
+
+        let popover = build_compact_chip_preview_popover(
+            &chip_btn,
+            &page_weak,
+            &event,
+            day,
+            "#3584e4",
+            "All-day Conference",
+            "All Day",
+            &leave_timer,
+            &is_hov_pop,
+            &is_hov_chip,
+            &last_cursor_x,
+        );
+
+        let pointing = popover.pointing_to();
+        assert_eq!(pointing, (true, gdk::Rectangle::new(142, 0, 1, 6)));
+
+        // On cursor motion, pointing rect moves along with cursor x
+        last_cursor_x.set(285.0);
+        let updated_rect = gdk::Rectangle::new(285, 0, 1, 6);
+        popover.set_pointing_to(Some(&updated_rect));
+        assert_eq!(popover.pointing_to(), (true, gdk::Rectangle::new(285, 0, 1, 6)));
+
+        popover.unparent();
+    }
+
+    #[test]
+    fn test_month_day_popover_sorting_and_css_classes() {
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let class_allday = ensure_month_popover_chip_css_class(
+            "#ff7800",
+            "#ffe8d6",
+            "#ffd8b8",
+            "#ffc89a",
+            "#2e3436",
+            true,
+        );
+        assert!(!class_allday.is_empty());
+
+        let class_timed = ensure_month_popover_chip_css_class(
+            "#e01b24",
+            "#fcd3d5",
+            "#fbbec1",
+            "#f9a9ad",
+            "#2e3436",
+            false,
+        );
+        assert!(!class_timed.is_empty());
+        assert_ne!(class_allday, class_timed);
+
+        let mut events = vec![
+            CalendarEventRecord {
+                uid: "timed-2".to_string(),
+                source_uid: "s1".to_string(),
+                source_display_name: "Calendar".to_string(),
+                component: String::new(),
+                summary: "Simon".to_string(),
+                start: "2026-10-19T14:00:00".to_string(),
+                end: "2026-10-19T15:00:00".to_string(),
+                location: String::new(),
+                description: String::new(),
+                all_day: false,
+            },
+            CalendarEventRecord {
+                uid: "allday-1".to_string(),
+                source_uid: "s1".to_string(),
+                source_display_name: "Calendar".to_string(),
+                component: String::new(),
+                summary: "Urlaub SRU".to_string(),
+                start: "2026-10-19T00:00:00".to_string(),
+                end: "2026-10-20T00:00:00".to_string(),
+                location: String::new(),
+                description: String::new(),
+                all_day: true,
+            },
+            CalendarEventRecord {
+                uid: "timed-1".to_string(),
+                source_uid: "s1".to_string(),
+                source_display_name: "Calendar".to_string(),
+                component: String::new(),
+                summary: "Arbeit".to_string(),
+                start: "2026-10-19T09:00:00".to_string(),
+                end: "2026-10-19T17:00:00".to_string(),
+                location: String::new(),
+                description: String::new(),
+                all_day: false,
+            },
+        ];
+
+        events.sort_by(|a, b| {
+            match (a.all_day, b.all_day) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.start.cmp(&b.start).then_with(|| a.summary.cmp(&b.summary)),
+            }
+        });
+
+        assert_eq!(events[0].summary, "Urlaub SRU", "All-day event must come first");
+        assert_eq!(events[1].summary, "Arbeit", "Earlier timed event must come second");
+        assert_eq!(events[2].summary, "Simon", "Later timed event must come third");
+    }
+
+    #[test]
+    fn test_custom_date_range_navigation_and_highlights() {
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let page = CalendarPage::new();
+        let start = NaiveDate::from_ymd_opt(2026, 10, 19).unwrap();
+        let end = NaiveDate::from_ymd_opt(2026, 10, 21).unwrap();
+
+        // 1. Navigate to 3-day custom range
+        page.navigate_to_custom_date_range(start, end);
+        assert_eq!(*page.imp().current_view.borrow(), CalendarView::Week);
+        let custom = page.imp().custom_selected_range.borrow().clone().expect("custom range set");
+        assert_eq!(custom.start, start);
+        assert_eq!(custom.last_inclusive(), end);
+        assert_eq!(custom.len_days(), 3);
+
+        // 2. Period label reflects the 3-day range
+        let label = page.period_label_text();
+        assert!(label.contains("19") && label.contains("21"), "Label must contain both dates: {label}");
+
+        // 3. Mini-calendar weeks computation highlights all 3 days
+        let weeks = compute_date_chooser_weeks_for_range(start, custom, start, start, Weekday::Mon);
+        let row_with_start = weeks.iter().find(|w| w.days.iter().any(|d| d.date == start)).expect("row found");
+        let cell_19 = row_with_start.days.iter().find(|d| d.date == start).unwrap();
+        let cell_20 = row_with_start.days.iter().find(|d| d.date == start + Duration::days(1)).unwrap();
+        let cell_21 = row_with_start.days.iter().find(|d| d.date == end).unwrap();
+        assert!(cell_19.in_visible_range);
+        assert!(cell_19.is_range_start);
+        assert!(!cell_19.is_range_end);
+        assert!(cell_20.in_visible_range);
+        assert!(!cell_20.is_range_start);
+        assert!(!cell_20.is_range_end);
+        assert!(cell_21.in_visible_range);
+        assert!(!cell_21.is_range_start);
+        assert!(cell_21.is_range_end);
+
+        // 4. Stepping period advances by 3 days
+        page.shift_period(1);
+        let shifted = page.imp().custom_selected_range.borrow().clone().expect("shifted range");
+        assert_eq!(shifted.start, NaiveDate::from_ymd_opt(2026, 10, 22).unwrap());
+        assert_eq!(shifted.last_inclusive(), NaiveDate::from_ymd_opt(2026, 10, 24).unwrap());
+
+        // 5. Selecting standard view resets custom range
+        page.select_calendar_view(CalendarView::Month);
+        assert!(page.imp().custom_selected_range.borrow().is_none());
+
+        // 6. Navigating to single date resets custom range
+        page.navigate_to_custom_date_range(start, end);
+        assert!(page.imp().custom_selected_range.borrow().is_some());
+        page.navigate_to_date(start);
+        assert!(page.imp().custom_selected_range.borrow().is_none());
+    }
+
+    #[test]
+    fn test_format_minute_of_day_24h_and_12h() {
+        assert_eq!(format_minute_of_day(0, false), "00:00");
+        assert_eq!(format_minute_of_day(9 * 60 + 30, false), "09:30");
+        assert_eq!(format_minute_of_day(14 * 60 + 15, false), "14:15");
+        assert_eq!(format_minute_of_day(23 * 60 + 59, false), "23:59");
+        assert_eq!(format_minute_of_day(24 * 60, false), "24:00");
+
+        assert_eq!(format_minute_of_day(0, true), "12 AM");
+        assert_eq!(format_minute_of_day(11 * 60 + 45, true), "11:45 AM");
+        assert_eq!(format_minute_of_day(12 * 60, true), "12 PM");
+        assert_eq!(format_minute_of_day(14 * 60 + 15, true), "2:15 PM");
+        assert_eq!(format_minute_of_day(24 * 60, true), "12 AM");
+    }
+
+    #[test]
+    fn test_safe_cancel_source_none_and_repeated() {
+        let slot = std::cell::Cell::new(None);
+        safe_cancel_source(&slot);
+        assert!(slot.take().is_none());
+        safe_cancel_source(&slot);
+        assert!(slot.take().is_none());
+    }
+
+    #[test]
+    fn test_move_drag_state_delta_and_time_computations() {
+        let original_date = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+        let target_date = NaiveDate::from_ymd_opt(2026, 10, 16).unwrap();
+        let mut state = MoveDragState {
+            origin_day_index: 0,
+            origin_date: original_date,
+            event: event_with_start("2026-10-15T09:00:00"),
+            initial_start_slot: 36, // 9:00 AM (36 * 15m)
+            row_span: 4,           // 60 minutes
+            grab_slot_offset: 1,   // grabbed at 9:15 AM
+            current_day_index: 0,
+            current_date: original_date,
+            current_start_slot: 36,
+            is_active: true,
+        };
+
+        // Moving by +1 day and +2 slots (30 mins forward: starts 9:30 AM)
+        state.current_day_index = 1;
+        state.current_date = target_date;
+        state.current_start_slot = 38;
+
+        let delta_days = (state.current_date - state.origin_date).num_days();
+        assert_eq!(delta_days, 1);
+
+        let delta_minutes = (state.current_start_slot as i64 - state.initial_start_slot as i64) * 15;
+        assert_eq!(delta_minutes, 30);
+
+        let start_min = state.current_start_slot as u32 * 15;
+        let end_min = start_min + state.row_span as u32 * 15;
+        assert_eq!(start_min, 38 * 15); // 570 min = 9:30 AM
+        assert_eq!(end_min, 570 + 60);   // 630 min = 10:30 AM
+        assert_eq!(format_minute_of_day(start_min, false), "09:30");
+        assert_eq!(format_minute_of_day(end_min, false), "10:30");
+    }
+
+    #[test]
+    fn test_bottom_edge_hit_test_and_selection_suppression() {
+        let mut event = event_with_start("2026-10-15T09:00:00");
+        event.component = "BEGIN:VEVENT\r\nUID:event-1\r\nSUMMARY:Appointment\r\nEND:VEVENT".to_string();
+        let chip = PlacedTimeGridChip {
+            event,
+            start_slot: 36, // 9:00 AM
+            row_span: 4,    // until 10:00 AM (slots 36..40)
+            col_idx: 0,
+            total_cols: 1,
+            time_text: "09:00–10:00".to_string(),
+        };
+        let chips = vec![chip];
+        let slot_h = 20.0;
+        let w = 100.0;
+
+        // Bottom edge is at y = 40 * 20.0 = 800.0
+        // Point exactly on the bottom edge (800.0):
+        let edge_hit = find_chip_bottom_edge_at(&chips, 50.0, 800.0, w, slot_h);
+        assert_eq!(edge_hit, Some(0));
+
+        // Point 2px below the bottom edge (802.0) - inside 5px tolerance:
+        let edge_hit_below = find_chip_bottom_edge_at(&chips, 50.0, 802.0, w, slot_h);
+        assert_eq!(edge_hit_below, Some(0));
+
+        // But find_chip_at checks only strictly inside chip (cy..=cy+ch):
+        let inside_hit = find_chip_at(&chips, 50.0, 802.0, w, slot_h);
+        assert_eq!(inside_hit, None, "Point below chip is outside normal chip body");
+
+        // Combining edge or chip body must detect the chip so empty-slot selection is skipped:
+        let combined = edge_hit_below.or_else(|| inside_hit);
+        assert_eq!(combined, Some(0));
+    }
+
+    #[test]
+    fn test_calendar_sidebar_event_inspector_lifecycle() {
+        let _guard = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let page = CalendarPage::new();
+
+        // 1. Initial state: no event inspected
+        assert!(page.imp().current_inspected_event.borrow().is_none());
+        assert!(page.imp().event_inspector_content.borrow().is_some());
+        assert!(page.imp().sidebar_lower_stack.borrow().is_some());
+
+        // 2. Inspect an event
+        let mut ev = event_with_start("2026-10-15T10:00:00");
+        ev.summary = "Meeting with Team".to_string();
+        ev.component = "BEGIN:VEVENT\r\nUID:meeting-team-1\r\nSUMMARY:Meeting with Team\r\nEND:VEVENT".to_string();
+        let target_date = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+
+        page.select_and_inspect_event(&ev, Some(target_date));
+        assert!(page.imp().current_inspected_event.borrow().is_some());
+        let (inspected_ev, inspected_day) = page.imp().current_inspected_event.borrow().as_ref().unwrap().clone();
+        assert_eq!(inspected_ev.summary, "Meeting with Team");
+        assert_eq!(inspected_day, Some(target_date));
+
+        // Lower stack child name must be "details"
+        let stack = page.imp().sidebar_lower_stack.borrow().as_ref().unwrap().clone();
+        assert_eq!(stack.visible_child_name().as_deref(), Some("details"));
+
+        // Content box must have child widget (the details content)
+        let content_box = page.imp().event_inspector_content.borrow().as_ref().unwrap().clone();
+        assert!(content_box.first_child().is_some());
+
+        // 3. Clear inspected event
+        page.clear_inspected_event();
+        assert!(page.imp().current_inspected_event.borrow().is_none());
+        assert!(content_box.first_child().is_some());
+    }
+
+    #[test]
+    fn test_calendar_sidebar_collapsible_sections() {
+        let _guard = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let page = CalendarPage::new();
+
+        // Tasks collapse button
+        let taskpad_scroll = page.imp().taskpad_scroll.borrow().as_ref().unwrap().clone();
+        let taskpad_btn = page.imp().taskpad_collapse_btn.borrow().as_ref().unwrap().clone();
+        assert!(taskpad_scroll.is_visible());
+        assert_eq!(taskpad_btn.icon_name().as_deref(), Some("pan-down-symbolic"));
+
+        // Click to collapse
+        taskpad_btn.emit_clicked();
+        assert!(!taskpad_scroll.is_visible());
+        assert_eq!(taskpad_btn.icon_name().as_deref(), Some("pan-end-symbolic"));
+
+        // Click to expand
+        taskpad_btn.emit_clicked();
+        assert!(taskpad_scroll.is_visible());
+        assert_eq!(taskpad_btn.icon_name().as_deref(), Some("pan-down-symbolic"));
+
+        // Inspector collapse button
+        let lower_stack = page.imp().sidebar_lower_stack.borrow().as_ref().unwrap().clone();
+        let insp_btn = page.imp().inspector_collapse_btn.borrow().as_ref().unwrap().clone();
+        assert!(lower_stack.is_visible());
+        assert_eq!(insp_btn.icon_name().as_deref(), Some("pan-down-symbolic"));
+
+        // Click to collapse
+        insp_btn.emit_clicked();
+        assert!(!lower_stack.is_visible());
+        assert_eq!(insp_btn.icon_name().as_deref(), Some("pan-end-symbolic"));
+
+        // Click to expand
+        insp_btn.emit_clicked();
+        assert!(lower_stack.is_visible());
+        assert_eq!(insp_btn.icon_name().as_deref(), Some("pan-down-symbolic"));
+    }
+
+    #[test]
+    fn test_calendar_sidebar_memos_toggle_and_reconciliation() {
+        let _guard = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let page = CalendarPage::new();
+
+        let title = page.imp().sidebar_details_title.borrow().as_ref().unwrap().clone();
+        let switcher = page.imp().sidebar_stack_switcher.borrow().as_ref().unwrap().clone();
+
+        // By default, sidebar_show_memos is false: title is visible, switcher is hidden
+        assert_eq!(page.imp().sidebar_show_memos.get(), false);
+        assert!(title.is_visible());
+        assert!(!switcher.is_visible());
+
+        // Toggle memos on
+        page.imp().sidebar_show_memos.set(true);
+        title.set_visible(false);
+        switcher.set_visible(true);
+        assert!(!title.is_visible());
+        assert!(switcher.is_visible());
+
+        // Inspect an event, then trigger refresh_calendar_views when event is not in records
+        let mut ev = event_with_start("2026-10-15T10:00:00");
+        ev.summary = "Standup".to_string();
+        ev.uid = "standup-999".to_string();
+        ev.component = "BEGIN:VEVENT\r\nUID:standup-999\r\nSUMMARY:Standup\r\nEND:VEVENT".to_string();
+        page.select_and_inspect_event(&ev, None);
+        assert!(page.imp().current_inspected_event.borrow().is_some());
+
+        // Since standup-999 is not in loaded records, refresh_calendar_views should clear it
+        page.refresh_calendar_views();
+        assert!(page.imp().current_inspected_event.borrow().is_none());
+    }
+
+    #[test]
+    fn test_sidebar_headings_subtle_and_taskpad_flush() {
+        let _guard = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let page = CalendarPage::new();
+        let details_title = page.imp().sidebar_details_title.borrow();
+
+        // 1. Details title should not have oversized "title-4", only "heading"
+        if let Some(lbl) = details_title.as_ref() {
+            assert!(lbl.has_css_class("heading"));
+            assert!(!lbl.has_css_class("title-4"));
+        }
+
+        // 2. Taskpad box margin_bottom is 0 so tasks run flush to divider
+        if let Some(scroll) = page.imp().taskpad_scroll.borrow().as_ref() {
+            if let Some(parent) = scroll.parent().and_then(|p| p.downcast::<gtk::Box>().ok()) {
+                assert_eq!(parent.margin_bottom(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_mini_calendar_selective_marking_for_year_and_agenda() {
+        let view_date = NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();
+        let anchor = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+        let today = anchor;
+        let first_weekday = Weekday::Mon;
+
+        // Year view viewport: compute_date_chooser_weeks_for_viewport returns no range marking
+        let year_vp = CalendarViewport::for_view(CalendarView::Year, anchor, first_weekday);
+        let year_weeks = compute_date_chooser_weeks_for_viewport(view_date, &year_vp, today, first_weekday);
+        for w in &year_weeks {
+            assert!(!w.is_selected_week);
+            for d in &w.days {
+                assert!(!d.in_visible_range);
+            }
+        }
+
+        // Agenda view viewport: compute_date_chooser_weeks_for_viewport returns no blind 180-day range
+        let agenda_vp = CalendarViewport::for_view(CalendarView::Agenda, anchor, first_weekday);
+        let agenda_weeks = compute_date_chooser_weeks_for_viewport(view_date, &agenda_vp, today, first_weekday);
+        for w in &agenda_weeks {
+            assert!(!w.is_selected_week);
+            for d in &w.days {
+                assert!(!d.in_visible_range);
+            }
+        }
+
+        // Agenda view selective date marking: only dates with events get highlighted
+        let active_dates: std::collections::HashSet<NaiveDate> = [
+            NaiveDate::from_ymd_opt(2026, 10, 9).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 10, 12).unwrap(),
+        ].into_iter().collect();
+
+        let selective_weeks = compute_date_chooser_weeks_with_visibility(
+            view_date,
+            anchor,
+            today,
+            first_weekday,
+            |d| active_dates.contains(&d),
+        );
+
+        let oct_9 = NaiveDate::from_ymd_opt(2026, 10, 9).unwrap();
+        let oct_10 = NaiveDate::from_ymd_opt(2026, 10, 10).unwrap();
+        let oct_12 = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
+
+        let cell_9 = selective_weeks.iter().flat_map(|w| &w.days).find(|d| d.date == oct_9).unwrap();
+        assert!(cell_9.in_visible_range);
+
+        let cell_10 = selective_weeks.iter().flat_map(|w| &w.days).find(|d| d.date == oct_10).unwrap();
+        assert!(!cell_10.in_visible_range);
+
+        let cell_12 = selective_weeks.iter().flat_map(|w| &w.days).find(|d| d.date == oct_12).unwrap();
+        assert!(cell_12.in_visible_range);
+    }
+
+    #[test]
+    fn test_busycal_sidebar_inspector_timing_and_inline_mutation() {
+        let event = CalendarEventRecord {
+            uid: "busycal-test-1".to_string(),
+            source_uid: "src-1".to_string(),
+            source_display_name: "Arbeit".to_string(),
+            component: "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:busycal-test-1\r\nSUMMARY:Altes Meeting\r\nLOCATION:Alter Raum\r\nDTSTART:20261015T090000\r\nDTEND:20261015T103000\r\nDESCRIPTION:Alte Notizen\r\nSTATUS:CONFIRMED\r\nEND:VEVENT\r\nEND:VCALENDAR".to_string(),
+            summary: "Altes Meeting".to_string(),
+            start: "2026-10-15T09:00:00".to_string(),
+            end: "2026-10-15T10:30:00".to_string(),
+            location: "Alter Raum".to_string(),
+            description: "Alte Notizen".to_string(),
+            all_day: false,
+        };
+
+        // 1. Timing calculation
+        let (rel, dur) = format_event_timing_summary(&event, Some(NaiveDate::from_ymd_opt(2026, 10, 15).unwrap()));
+        assert!(!rel.is_empty());
+        assert!(dur.contains("90") || dur.contains("1"));
+
+        // 2. Inline component mutation
+        let updated = update_event_record_inline(
+            &event.component,
+            &event.uid,
+            "Neuer Titel",
+            "Neuer Raum",
+            false,
+            "2026-10-15 14:00",
+            "2026-10-15 15:30",
+            "Neue wichtige Notizen",
+        ).expect("inline update succeeds");
+
+        assert!(updated.contains("SUMMARY:Neuer Titel"));
+        assert!(updated.contains("LOCATION:Neuer Raum"));
+        assert!(updated.contains("DESCRIPTION:Neue wichtige Notizen"));
+        assert!(updated.contains("DTSTART:20261015T140000"));
+        assert!(updated.contains("DTEND:20261015T153000"));
+        assert!(updated.contains("STATUS:CONFIRMED"));
+
+        // 3. All-day mutation
+        let all_day_updated = update_event_record_inline(
+            &event.component,
+            &event.uid,
+            "Ganztägiger Workshop",
+            "Offsite",
+            true,
+            "2026-10-16",
+            "2026-10-17",
+            "Ganztägig Notizen",
+        ).expect("all-day update succeeds");
+
+        assert!(all_day_updated.contains("SUMMARY:Ganztägiger Workshop"));
+        assert!(all_day_updated.contains("DTSTART;VALUE=DATE:20261016"));
+        assert!(all_day_updated.contains("DTEND;VALUE=DATE:20261017"));
     }
 }
+
 
 

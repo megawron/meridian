@@ -263,6 +263,10 @@
       <default>320</default>
       <summary>Width/position of the Tasks and Memos pane</summary>
     </key>
+    <key name="calendar-sidebar-show-memos" type="b">
+      <default>false</default>
+      <summary>Show Memos section in the Calendar right sidebar</summary>
+    </key>
     <key name="calendar-show-agenda-preview" type="b">
       <default>true</default>
       <summary>Show appointment details preview pane in the Agenda view</summary>
