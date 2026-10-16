@@ -282,6 +282,9 @@ fn create_date_picker_popover(entry: &gtk::Entry) -> (gtk::Button, gtk::Popover)
     let popover = gtk::Popover::builder().has_arrow(true).build();
     let cal = gtk::Calendar::new();
 
+    let is_syncing = std::rc::Rc::new(std::cell::Cell::new(false));
+    let is_nav_button_click = std::rc::Rc::new(std::cell::Cell::new(false));
+
     if let Some(date) = parse_date_lenient(&entry.text()) {
         if let Ok(dt) = glib::DateTime::new(
             &glib::TimeZone::local(),
@@ -292,13 +295,46 @@ fn create_date_picker_popover(entry: &gtk::Entry) -> (gtk::Button, gtk::Popover)
             0,
             0.0,
         ) {
+            is_syncing.set(true);
             cal.select_day(&dt);
+            is_syncing.set(false);
         }
     }
 
+    let nav_flag_click = is_nav_button_click.clone();
+    let cal_weak_click = cal.downgrade();
+    let click_gesture = gtk::GestureClick::new();
+    click_gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+    click_gesture.connect_pressed(move |_, _, x, y| {
+        let mut clicked_header_btn = false;
+        if let Some(cal_widget) = cal_weak_click.upgrade() {
+            let mut cur = cal_widget.pick(x, y, gtk::PickFlags::DEFAULT);
+            while let Some(w) = cur {
+                if w == *cal_widget.upcast_ref::<gtk::Widget>() {
+                    break;
+                }
+                if w.downcast_ref::<gtk::Button>().is_some() {
+                    clicked_header_btn = true;
+                    break;
+                }
+                cur = w.parent();
+            }
+        }
+        nav_flag_click.set(clicked_header_btn);
+    });
+    cal.add_controller(click_gesture);
+
     let entry_weak = entry.downgrade();
     let popover_weak = popover.downgrade();
+    let is_syncing_sel = is_syncing.clone();
+    let nav_flag_sel = is_nav_button_click.clone();
     cal.connect_day_selected(move |c| {
+        if is_syncing_sel.get() {
+            return;
+        }
+        if nav_flag_sel.replace(false) {
+            return;
+        }
         let dt = c.date();
         let formatted = format!("{:04}-{:02}-{:02}", dt.year(), dt.month(), dt.day_of_month());
         if let Some(entry) = entry_weak.upgrade() {
@@ -312,7 +348,27 @@ fn create_date_picker_popover(entry: &gtk::Entry) -> (gtk::Button, gtk::Popover)
     popover.set_child(Some(&cal));
     popover.set_parent(&btn);
     let popover_clone = popover.clone();
+    let entry_weak_open = entry.downgrade();
+    let cal_weak_open = cal.downgrade();
+    let is_syncing_open = is_syncing.clone();
     btn.connect_clicked(move |_| {
+        if let (Some(entry_widget), Some(cal_widget)) = (entry_weak_open.upgrade(), cal_weak_open.upgrade()) {
+            if let Some(date) = parse_date_lenient(&entry_widget.text()) {
+                if let Ok(dt) = glib::DateTime::new(
+                    &glib::TimeZone::local(),
+                    date.year(),
+                    date.month() as i32,
+                    date.day() as i32,
+                    0,
+                    0,
+                    0.0,
+                ) {
+                    is_syncing_open.set(true);
+                    cal_widget.select_day(&dt);
+                    is_syncing_open.set(false);
+                }
+            }
+        }
         popover_clone.popup();
     });
 
