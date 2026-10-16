@@ -4107,13 +4107,13 @@ impl TasksPage {
                     child_box.append(&primary_ind);
                 }
 
-                // Remote sync icon
-                if item.backend_name != "local" && source_uid != "local-calendar" {
-                    let sync_icon = gtk::Image::from_icon_name("media-playlist-repeat-symbolic");
-                    sync_icon.add_css_class("dim-label");
-                    sync_icon.set_tooltip_text(Some(&gettext("Synchronized task list")));
-                    sync_icon.set_valign(gtk::Align::Center);
-                    child_box.append(&sync_icon);
+                // Remote sync problem indicator (only shown if NOT synchronized / error present)
+                if !item.enabled {
+                    let sync_error_icon = gtk::Image::from_icon_name("dialog-warning-symbolic");
+                    sync_error_icon.add_css_class("warning");
+                    sync_error_icon.set_tooltip_text(Some(&gettext("Task list not synchronized or offline")));
+                    sync_error_icon.set_valign(gtk::Align::Center);
+                    child_box.append(&sync_error_icon);
                 }
 
                 let row = gtk::ListBoxRow::builder()
