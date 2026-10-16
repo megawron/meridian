@@ -3622,10 +3622,22 @@ button.month-bar-chip.span-end {
 }
 
 .calendar-details-note-box {
-  background-color: alpha(@window_fg_color, 0.04);
+  background-color: transparent;
   border-radius: 6px;
-  border: 1px solid alpha(@borders, 0.35);
-  padding: 6px 8px;
+  border: 1px solid transparent;
+  padding: 4px 6px;
+  transition: all 120ms ease-in-out;
+}
+
+.calendar-details-note-box:hover {
+  background-color: alpha(@window_fg_color, 0.03);
+  border-color: alpha(@borders, 0.35);
+}
+
+.calendar-details-note-box:focus-within {
+  background-color: @view_bg_color;
+  border-color: @accent_color;
+  box-shadow: 0 0 0 1px @accent_color;
 }
 
 .calendar-details-note-box textview {
@@ -3633,22 +3645,72 @@ button.month-bar-chip.span-end {
 }
 
 .calendar-details-title-entry {
-  font-size: 1.12rem;
-  font-weight: 600;
-  padding: 4px 6px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  padding: 2px 4px;
   border-radius: 6px;
+  background-color: transparent;
+  border: 1px solid transparent;
+  box-shadow: none;
+  color: @window_fg_color;
+  transition: all 120ms ease-in-out;
+}
+
+.calendar-details-title-entry:hover {
+  background-color: alpha(@window_fg_color, 0.05);
+  border-color: alpha(@borders, 0.35);
+}
+
+.calendar-details-title-entry:focus,
+.calendar-details-title-entry:focus-within {
+  background-color: @view_bg_color;
+  border-color: @accent_color;
+  box-shadow: 0 0 0 1px @accent_color;
 }
 
 .calendar-details-field-entry {
-  font-size: 0.92rem;
-  padding: 3px 6px;
+  font-size: 0.88rem;
+  padding: 2px 4px;
   border-radius: 6px;
+  background-color: transparent;
+  border: 1px solid transparent;
+  box-shadow: none;
+  transition: all 120ms ease-in-out;
+}
+
+.calendar-details-field-entry:hover {
+  background-color: alpha(@window_fg_color, 0.05);
+  border-color: alpha(@borders, 0.35);
+}
+
+.calendar-details-field-entry:focus,
+.calendar-details-field-entry:focus-within {
+  background-color: @view_bg_color;
+  border-color: @accent_color;
+  box-shadow: 0 0 0 1px @accent_color;
 }
 
 .calendar-details-compact-entry {
-  font-size: 0.88rem;
-  padding: 2px 5px;
-  border-radius: 6px;
+  font-size: 0.85rem;
+  padding: 2px 4px;
+  border-radius: 5px;
+  background-color: transparent;
+  border: 1px solid transparent;
+  box-shadow: none;
+  min-height: 24px;
+  transition: all 120ms ease-in-out;
+}
+
+.calendar-details-compact-entry:hover {
+  background-color: alpha(@window_fg_color, 0.05);
+  border-color: alpha(@borders, 0.35);
+}
+
+.calendar-details-compact-entry:focus,
+.calendar-details-compact-entry:focus-within {
+  background-color: @view_bg_color;
+  border-color: @accent_color;
+  box-shadow: 0 0 0 1px @accent_color;
 }
 
 .calendar-badge-pill {
@@ -4424,25 +4486,28 @@ button.month-bar-chip.span-end {
   border-radius: 12px;
 }
 
-/* ── Agenda / To Do Sidebar (Parity with Left Sidebar Drawer) ── */
+/* ── Agenda / To Do Sidebar (Parity with Calendar Taskpad / Views) ── */
 .todo-sidebar {
-  background-color: var(--sidebar-bg-color, @sidebar_bg_color);
-  color: var(--sidebar-fg-color, @sidebar_fg_color);
-  border: none;
+  background-color: @view_bg_color;
+  color: @view_fg_color;
+  border-left: 1px solid @borders;
+  border-right: none;
 }
 
 .todo-sidebar:backdrop {
-  background-color: var(--sidebar-backdrop-color, @sidebar_backdrop_color);
-  color: var(--sidebar-fg-color, @sidebar_fg_color);
-  border: none;
+  background-color: @view_bg_color;
+  color: @view_fg_color;
+  border-left: 1px solid @borders;
+  border-right: none;
 }
 
 .todo-sidebar:dir(rtl) {
-  border: none;
+  border-left: none;
+  border-right: 1px solid @borders;
 }
 
 .agenda-sidebar-canvas {
-  background-color: transparent;
+  background-color: @view_bg_color;
 }
 
 .agenda-sidebar-canvas:focus-visible {

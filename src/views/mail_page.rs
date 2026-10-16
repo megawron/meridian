@@ -29995,55 +29995,55 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                         if is_dark { 1.0 } else { 0.0 },
                         bg_alpha,
                     );
-                    draw_cairo_rounded_rect(cr, 2.0, *y, (width - 4.0).max(10.0), *height, 3.0);
+                    draw_cairo_rounded_rect(cr, 4.0, *y + 1.0, (width - 8.0).max(10.0), *height - 2.0, 4.0);
                     let _ = cr.fill();
                 }
 
-                // Expander arrow
+                // Sleek Libadwaita chevron
+                cr.set_line_width(1.5);
+                cr.set_line_cap(gtk::cairo::LineCap::Round);
+                cr.set_line_join(gtk::cairo::LineJoin::Round);
                 if is_dark {
-                    cr.set_source_rgba(0.75, 0.75, 0.75, 0.9);
+                    cr.set_source_rgba(0.75, 0.75, 0.75, 0.85);
                 } else {
-                    cr.set_source_rgba(0.40, 0.40, 0.40, 0.9);
+                    cr.set_source_rgba(0.40, 0.40, 0.40, 0.85);
                 }
                 if *is_expanded {
-                    // Downward triangle ▼
-                    cr.new_sub_path();
-                    cr.move_to(8.0, *y + 11.0);
-                    cr.line_to(16.0, *y + 11.0);
-                    cr.line_to(12.0, *y + 17.0);
-                    cr.close_path();
-                    let _ = cr.fill();
+                    // Downward chevron
+                    cr.move_to(8.5, *y + 11.0);
+                    cr.line_to(12.0, *y + 14.5);
+                    cr.line_to(15.5, *y + 11.0);
+                    let _ = cr.stroke();
                 } else {
-                    // Rightward triangle ▶
-                    cr.new_sub_path();
-                    cr.move_to(9.5, *y + 9.5);
-                    cr.line_to(15.5, *y + 13.5);
-                    cr.line_to(9.5, *y + 17.5);
-                    cr.close_path();
-                    let _ = cr.fill();
+                    // Rightward chevron
+                    cr.move_to(10.0, *y + 9.5);
+                    cr.line_to(13.5, *y + 13.0);
+                    cr.line_to(10.0, *y + 16.5);
+                    let _ = cr.stroke();
                 }
 
-                // Date label
+                // Date label / header title
+                let is_today = title == "Heute" || title == "Today";
                 cr.select_font_face(
                     "sans-serif",
                     gtk::cairo::FontSlant::Normal,
                     gtk::cairo::FontWeight::Bold,
                 );
-                cr.set_font_size(13.5);
-                if is_dark {
-                    cr.set_source_rgba(0.92, 0.92, 0.92, 1.0);
+                cr.set_font_size(12.5);
+                if is_today {
+                    // Distinct Libadwaita accent blue for Today matching GNOME Calendar
+                    if is_dark {
+                        cr.set_source_rgb(0.47, 0.68, 0.93);
+                    } else {
+                        cr.set_source_rgb(0.20, 0.52, 0.89);
+                    }
+                } else if is_dark {
+                    cr.set_source_rgba(0.85, 0.85, 0.85, 0.90);
                 } else {
-                    cr.set_source_rgba(0.12, 0.12, 0.12, 1.0);
+                    cr.set_source_rgba(0.20, 0.20, 0.20, 0.85);
                 }
-                cr.move_to(22.0, *y + 19.0);
+                cr.move_to(22.0, *y + (*height / 2.0) + 4.5);
                 let _ = cr.show_text(title);
-
-                // Subtle bottom separator
-                cr.set_source_rgba(0.5, 0.5, 0.5, if is_dark { 0.18 } else { 0.12 });
-                cr.set_line_width(0.75);
-                cr.move_to(4.0, *y + *height - 0.5);
-                cr.line_to(width - 4.0, *y + *height - 0.5);
-                let _ = cr.stroke();
             }
             AgendaSidebarCanvasItem::EventBar {
                 summary,
@@ -30060,22 +30060,35 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                 let bar_h = *height - 2.0;
                 let radius = 4.0;
 
-                let (r, g, b) = parse_hex_color(color).unwrap_or((53, 132, 228));
-                let cr_r = r as f64 / 255.0;
-                let cr_g = g as f64 / 255.0;
-                let cr_b = b as f64 / 255.0;
+                let (bg_hex, hov_hex, act_hex, fg_hex) =
+                    crate::views::calendar_page::pastel_colors_for_hex(color, is_dark);
+                let active_bg_hex = if is_selected {
+                    &act_hex
+                } else if is_hovered {
+                    &hov_hex
+                } else {
+                    &bg_hex
+                };
 
-                // Full colored bar
+                let (bg_r, bg_g, bg_b) = parse_hex_color(active_bg_hex).unwrap_or((205, 224, 248));
+                let (accent_r, accent_g, accent_b) = parse_hex_color(color).unwrap_or((53, 132, 228));
+                let (fg_r, fg_g, fg_b) = parse_hex_color(&fg_hex).unwrap_or((46, 52, 54));
+
+                // 1. Pastel tinted background rounded rect (GNOME Calendar 25% tint palette)
                 draw_cairo_rounded_rect(cr, bar_x, bar_y, bar_w, bar_h, radius);
-                cr.set_source_rgb(cr_r, cr_g, cr_b);
+                cr.set_source_rgb(bg_r as f64 / 255.0, bg_g as f64 / 255.0, bg_b as f64 / 255.0);
                 let _ = cr.fill();
 
-                if is_hovered {
-                    draw_cairo_rounded_rect(cr, bar_x, bar_y, bar_w, bar_h, radius);
-                    cr.set_source_rgba(1.0, 1.0, 1.0, 0.18);
-                    let _ = cr.fill();
-                }
+                // 2. Solid color accent stripe on left edge (3.5px) matching calendar style
+                let _ = cr.save();
+                draw_cairo_rounded_rect(cr, bar_x, bar_y, bar_w, bar_h, radius);
+                let _ = cr.clip();
+                cr.rectangle(bar_x, bar_y, 3.5, bar_h);
+                cr.set_source_rgb(accent_r as f64 / 255.0, accent_g as f64 / 255.0, accent_b as f64 / 255.0);
+                let _ = cr.fill();
+                let _ = cr.restore();
 
+                // 3. Selection border
                 if is_selected {
                     draw_cairo_rounded_rect(
                         cr,
@@ -30085,33 +30098,31 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                         bar_h - 1.0,
                         radius,
                     );
-                    cr.set_source_rgba(1.0, 1.0, 1.0, 0.90);
+                    cr.set_source_rgba(accent_r as f64 / 255.0, accent_g as f64 / 255.0, accent_b as f64 / 255.0, 0.95);
                     cr.set_line_width(1.5);
                     let _ = cr.stroke();
                 }
 
-                let is_dark_bg = MailPage::is_dark_color(color);
-                if is_dark_bg {
-                    cr.set_source_rgb(1.0, 1.0, 1.0);
-                } else {
-                    cr.set_source_rgb(0.12, 0.12, 0.12);
-                }
+                // 4. Text content with high contrast GNOME Calendar typography
+                cr.set_source_rgb(fg_r as f64 / 255.0, fg_g as f64 / 255.0, fg_b as f64 / 255.0);
 
                 let _ = cr.save();
-                cr.rectangle(bar_x + 8.0, bar_y, (bar_w - 16.0).max(0.0), bar_h);
+                let content_x = bar_x + 8.0;
+                let content_w = (bar_w - 12.0).max(0.0);
+                cr.rectangle(content_x, bar_y, content_w, bar_h);
                 let _ = cr.clip();
 
-                let text_y = bar_y + (bar_h / 2.0) + 4.5;
+                let text_y = bar_y + (bar_h / 2.0) + 4.0;
                 if let Some(t) = time_str {
                     cr.select_font_face(
                         "sans-serif",
                         gtk::cairo::FontSlant::Normal,
                         gtk::cairo::FontWeight::Bold,
                     );
-                    cr.set_font_size(13.0);
+                    cr.set_font_size(11.5);
                     let time_text = format!("{} ", t);
-                    let time_w = cr.text_extents(&time_text).map(|e| e.x_advance()).unwrap_or(42.0);
-                    cr.move_to(bar_x + 8.0, text_y);
+                    let time_w = cr.text_extents(&time_text).map(|e| e.x_advance()).unwrap_or(40.0);
+                    cr.move_to(content_x, text_y);
                     let _ = cr.show_text(&time_text);
 
                     cr.select_font_face(
@@ -30119,9 +30130,10 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                         gtk::cairo::FontSlant::Normal,
                         gtk::cairo::FontWeight::Normal,
                     );
-                    let title_avail = (bar_w - 16.0 - time_w).max(0.0);
+                    cr.set_font_size(12.0);
+                    let title_avail = (content_w - time_w).max(0.0);
                     let trunc_summary = truncate_cairo_text(cr, summary, title_avail);
-                    cr.move_to(bar_x + 8.0 + time_w, text_y);
+                    cr.move_to(content_x + time_w, text_y);
                     let _ = cr.show_text(&trunc_summary);
                 } else {
                     cr.select_font_face(
@@ -30129,10 +30141,9 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                         gtk::cairo::FontSlant::Normal,
                         gtk::cairo::FontWeight::Bold,
                     );
-                    cr.set_font_size(13.0);
-                    let title_avail = (bar_w - 16.0).max(0.0);
-                    let trunc_summary = truncate_cairo_text(cr, summary, title_avail);
-                    cr.move_to(bar_x + 8.0, text_y);
+                    cr.set_font_size(12.0);
+                    let trunc_summary = truncate_cairo_text(cr, summary, content_w);
+                    cr.move_to(content_x, text_y);
                     let _ = cr.show_text(&trunc_summary);
                 }
                 let _ = cr.restore();
@@ -30153,7 +30164,7 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                         if is_dark { 1.0 } else { 0.0 },
                         bg_alpha,
                     );
-                    draw_cairo_rounded_rect(cr, 4.0, *y, (width - 8.0).max(10.0), *height, 3.0);
+                    draw_cairo_rounded_rect(cr, 4.0, *y, (width - 8.0).max(10.0), *height, 4.0);
                     let _ = cr.fill();
                 }
 
@@ -30169,7 +30180,7 @@ pub(crate) fn draw_agenda_sidebar_canvas(
 
                     // White checkmark
                     cr.set_source_rgb(1.0, 1.0, 1.0);
-                    cr.set_line_width(2.0);
+                    cr.set_line_width(1.8);
                     cr.set_line_cap(gtk::cairo::LineCap::Round);
                     cr.set_line_join(gtk::cairo::LineJoin::Round);
                     cr.move_to(cx + 3.5, cy + 8.0);
@@ -30177,14 +30188,14 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                     cr.line_to(cx + 12.5, cy + 4.5);
                     let _ = cr.stroke();
                 } else {
-                    cr.set_source_rgba(0.5, 0.5, 0.5, if is_dark { 0.6 } else { 0.5 });
-                    cr.set_line_width(1.5);
+                    cr.set_source_rgba(0.5, 0.5, 0.5, if is_dark { 0.5 } else { 0.4 });
+                    cr.set_line_width(1.2);
                     let _ = cr.stroke();
                 }
 
                 // Summary text
                 let text_x = cx + cw + 8.0;
-                let text_y = *y + (*height / 2.0) + 4.5;
+                let text_y = *y + (*height / 2.0) + 4.0;
                 let max_w = (width - text_x - 6.0).max(10.0);
 
                 cr.select_font_face(
@@ -30192,7 +30203,7 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                     gtk::cairo::FontSlant::Normal,
                     gtk::cairo::FontWeight::Normal,
                 );
-                cr.set_font_size(13.0);
+                cr.set_font_size(12.5);
 
                 if *completed {
                     if is_dark {
@@ -30201,7 +30212,7 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                         cr.set_source_rgba(0.5, 0.5, 0.5, 0.7);
                     }
                 } else if is_dark {
-                    cr.set_source_rgba(0.90, 0.90, 0.90, 1.0);
+                    cr.set_source_rgba(0.92, 0.92, 0.92, 1.0);
                 } else {
                     cr.set_source_rgba(0.15, 0.15, 0.15, 1.0);
                 }
@@ -30214,7 +30225,7 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                 if *completed {
                     if let Ok(ext) = cr.text_extents(&trunc_summary) {
                         cr.set_line_width(1.0);
-                        let strike_y = text_y - (ext.height() / 2.0) + 1.0;
+                        let strike_y = text_y - (ext.height() / 2.0) + 0.5;
                         cr.move_to(text_x, strike_y);
                         cr.line_to(text_x + ext.width(), strike_y);
                         let _ = cr.stroke();
@@ -30736,9 +30747,6 @@ impl MailPage {
         let popover = self.imp().active_agenda_popover.take();
         if let Some(popover) = popover {
             popover.popdown();
-            if popover.parent().is_some() {
-                popover.unparent();
-            }
             self.imp().agenda_canvas_selected_row.set(None);
             if let Some(canvas) = self.imp().agenda_canvas.borrow().as_ref() {
                 canvas.queue_draw();
@@ -30790,7 +30798,7 @@ impl MailPage {
         self.dismiss_active_agenda_popover();
 
         let popover = gtk::Popover::builder()
-            .autohide(false)
+            .autohide(true)
             .has_arrow(true)
             .position(gtk::PositionType::Left)
             .pointing_to(rect)
@@ -30799,9 +30807,12 @@ impl MailPage {
         popover.set_parent(canvas);
 
         let page_weak_closed = self.downgrade();
+        let pop_weak = popover.downgrade();
         popover.connect_closed(move |p| {
-            if p.parent().is_some() {
-                p.unparent();
+            if let Some(pop) = pop_weak.upgrade() {
+                if pop.parent().is_some() {
+                    pop.unparent();
+                }
             }
             if let Some(page) = page_weak_closed.upgrade() {
                 page.imp().agenda_canvas_selected_row.set(None);
@@ -30843,6 +30854,9 @@ impl MailPage {
         use_12h: bool,
     ) {
         let Some(page) = page_weak.upgrade() else { return; };
+        if canvas.root().is_none() {
+            return;
+        }
         let (popover, is_reused) = page.get_or_create_agenda_popover(canvas, &rect);
 
         let content = gtk::Box::builder()
@@ -31125,6 +31139,9 @@ impl MailPage {
         page_weak: glib::WeakRef<MailPage>,
     ) {
         let Some(page) = page_weak.upgrade() else { return; };
+        if canvas.root().is_none() {
+            return;
+        }
         let (popover, is_reused) = page.get_or_create_agenda_popover(canvas, &rect);
 
         let content = gtk::Box::builder()
@@ -42211,10 +42228,11 @@ mod tests {
             return;
         };
         let page = MailPage::new();
-        let _sidebar = page.build_today_todo_sidebar();
+        let canvas = page.imp().agenda_canvas.borrow().clone().expect("agenda canvas");
+        let window = gtk::Window::builder().child(&page).build();
+        window.present();
 
         let rect1 = gdk::Rectangle::new(4, 10, 100, 26);
-        let canvas = page.imp().agenda_canvas.borrow().clone().expect("agenda canvas");
         let (pop1, reused1) = page.get_or_create_agenda_popover(&canvas, &rect1);
         assert!(!reused1);
         assert!(pop1.parent().is_some());
@@ -42228,6 +42246,26 @@ mod tests {
         assert_eq!(pop2.pointing_to(), (true, rect2));
 
         // Dismiss cleans up
+        page.dismiss_active_agenda_popover();
+        assert!(page.imp().active_agenda_popover.borrow().is_none());
+
+
+        let event = crate::services::calendar_store_service::CalendarEventRecord {
+            uid: "test-ev-1".to_string(),
+            source_uid: "src-1".to_string(),
+            source_display_name: "Calendar".to_string(),
+            component: "BEGIN:VEVENT\nSUMMARY:Test\nDTSTART:20261016T100000Z\nDTEND:20261016T110000Z\nEND:VEVENT".to_string(),
+            summary: "Test Event".to_string(),
+            start: "20261016T100000Z".to_string(),
+            end: "20261016T110000Z".to_string(),
+            location: "Room 1".to_string(),
+            description: "A meeting".to_string(),
+            all_day: false,
+        };
+        MailPage::show_agenda_event_popover(&canvas, rect1, &event, page.downgrade(), false);
+        assert!(page.imp().active_agenda_popover.borrow().is_some());
+        MailPage::show_agenda_event_popover(&canvas, rect2, &event, page.downgrade(), false);
+        assert!(page.imp().active_agenda_popover.borrow().is_some());
         page.dismiss_active_agenda_popover();
         assert!(page.imp().active_agenda_popover.borrow().is_none());
     }

@@ -8340,6 +8340,7 @@ impl CalendarPage {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_height(false)
+            .propagate_natural_width(false)
             .min_content_height(40)
             .vexpand(true)
             .child(&taskpad_canvas)
@@ -8703,7 +8704,9 @@ impl CalendarPage {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_height(false)
+            .propagate_natural_width(false)
             .min_content_height(40)
+            .min_content_width(260)
             .vexpand(true)
             .hexpand(true)
             .child(&event_inspector_content)
@@ -8776,7 +8779,7 @@ impl CalendarPage {
         content_hpaned.set_resize_end_child(false);
         content_hpaned.set_shrink_start_child(true);
         content_hpaned.set_shrink_end_child(true);
-        tag_vpaned.set_width_request(-1);
+        tag_vpaned.set_width_request(280);
 
         self.imp()
             .content_hpaned
@@ -16143,7 +16146,7 @@ pub(crate) struct PreparedMemopadLayout {
 }
 
 pub(crate) fn prepare_taskpad_layout(tasks: &[TaskRecord], today: NaiveDate) -> PreparedTaskpadLayout {
-    let row_height = 36.0;
+    let row_height = 28.0;
     let mut items = Vec::with_capacity(tasks.len());
     let mut current_y = 0.0;
 
@@ -16175,7 +16178,9 @@ pub(crate) fn prepare_taskpad_layout(tasks: &[TaskRecord], today: NaiveDate) -> 
             (None, false)
         };
 
-        let checkbox_rect = (8.0, current_y + (row_height - 18.0) / 2.0, 18.0, 18.0);
+        let checkbox_size: f64 = 16.0;
+        let checkbox_y = (current_y + (row_height - checkbox_size) / 2.0).round();
+        let checkbox_rect = (8.0, checkbox_y, checkbox_size, checkbox_size);
         items.push(TaskpadRowItem {
             record: task.clone(),
             title,
@@ -16271,11 +16276,11 @@ pub(crate) fn draw_taskpad_canvas(
 
         if is_selected {
             cr.set_source_rgba(0.2, 0.5, 0.9, 0.25);
-            draw_cairo_rounded_rect(cr, 4.0, item.y + 2.0, (width - 8.0).max(10.0), item.height - 4.0, 4.0);
+            draw_cairo_rounded_rect(cr, 4.0, (item.y + 1.0).round(), (width - 8.0).max(10.0), item.height - 2.0, 4.0);
             cr.fill().ok();
             cr.set_source_rgba(0.2, 0.5, 0.9, 0.5);
             cr.set_line_width(1.0);
-            draw_cairo_rounded_rect(cr, 4.0, item.y + 2.0, (width - 8.0).max(10.0), item.height - 4.0, 4.0);
+            draw_cairo_rounded_rect(cr, 4.0, (item.y + 1.0).round(), (width - 8.0).max(10.0), item.height - 2.0, 4.0);
             cr.stroke().ok();
         } else if is_hovered {
             if is_dark {
@@ -16283,7 +16288,7 @@ pub(crate) fn draw_taskpad_canvas(
             } else {
                 cr.set_source_rgba(0.0, 0.0, 0.0, 0.04);
             }
-            draw_cairo_rounded_rect(cr, 4.0, item.y + 2.0, (width - 8.0).max(10.0), item.height - 4.0, 4.0);
+            draw_cairo_rounded_rect(cr, 4.0, (item.y + 1.0).round(), (width - 8.0).max(10.0), item.height - 2.0, 4.0);
             cr.fill().ok();
         }
 
@@ -16298,12 +16303,12 @@ pub(crate) fn draw_taskpad_canvas(
             cr.stroke().ok();
 
             cr.set_source_rgb(1.0, 1.0, 1.0);
-            cr.set_line_width(2.0);
+            cr.set_line_width(1.8);
             cr.set_line_cap(gtk::cairo::LineCap::Round);
             cr.set_line_join(gtk::cairo::LineJoin::Round);
-            cr.move_to(cx + 4.0, cy + 9.0);
-            cr.line_to(cx + 7.5, cy + 12.5);
-            cr.line_to(cx + 14.0, cy + 5.0);
+            cr.move_to(cx + 3.0, cy + 8.0);
+            cr.line_to(cx + 6.0, cy + 11.5);
+            cr.line_to(cx + 12.5, cy + 4.5);
             cr.stroke().ok();
         } else {
             if is_dark {
@@ -16311,7 +16316,7 @@ pub(crate) fn draw_taskpad_canvas(
             } else {
                 cr.set_source_rgba(0.3, 0.3, 0.3, 0.6);
             }
-            cr.set_line_width(1.5);
+            cr.set_line_width(1.2);
             cr.stroke().ok();
         }
 
@@ -16319,11 +16324,11 @@ pub(crate) fn draw_taskpad_canvas(
         let mut right_reserve = 12.0;
         if let Some(due) = &item.due_text {
             cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
-            cr.set_font_size(10.5);
+            cr.set_font_size(10.0);
             if let Ok(extents) = cr.text_extents(due) {
                 let due_w = extents.width();
                 let due_x = width - due_w - 12.0;
-                let due_y = item.y + (item.height / 2.0) + 4.0;
+                let due_y = (item.y + (item.height / 2.0) + 3.5).round();
                 if item.is_overdue {
                     cr.set_source_rgba(0.95, 0.25, 0.25, 1.0);
                 } else if is_dark {
@@ -16333,23 +16338,23 @@ pub(crate) fn draw_taskpad_canvas(
                 }
                 cr.move_to(due_x, due_y);
                 cr.show_text(due).ok();
-                right_reserve = due_w + 20.0;
+                right_reserve = due_w + 18.0;
             }
         }
 
         // Title text
-        let title_x = cx + cw + 8.0;
+        let title_x = cx + cw + 7.0;
         let title_max_w = (width - title_x - right_reserve).max(20.0);
-        let title_y = item.y + (item.height / 2.0) + 4.0;
+        let title_y = (item.y + (item.height / 2.0) + 3.5).round();
 
         cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
-        cr.set_font_size(12.0);
+        cr.set_font_size(11.5);
 
         if item.record.completed {
             if is_dark {
-                cr.set_source_rgba(0.55, 0.55, 0.55, 0.7);
+                cr.set_source_rgba(0.55, 0.55, 0.55, 0.75);
             } else {
-                cr.set_source_rgba(0.5, 0.5, 0.5, 0.7);
+                cr.set_source_rgba(0.48, 0.48, 0.48, 0.75);
             }
         } else if is_dark {
             cr.set_source_rgba(0.92, 0.92, 0.92, 1.0);
@@ -16361,12 +16366,20 @@ pub(crate) fn draw_taskpad_canvas(
         cr.move_to(title_x, title_y);
         cr.show_text(&display_title).ok();
 
-        // Strikethrough if completed
+        // Strikethrough if completed - sharp pixel-aligned
         if item.record.completed {
             if let Ok(extents) = cr.text_extents(&display_title) {
+                let strike_y = (title_y - 3.5).floor() + 0.5;
+                let strike_x1 = title_x.round();
+                let strike_x2 = (title_x + extents.width()).round();
                 cr.set_line_width(1.0);
-                cr.move_to(title_x, title_y - 4.0);
-                cr.line_to(title_x + extents.width(), title_y - 4.0);
+                if is_dark {
+                    cr.set_source_rgba(0.55, 0.55, 0.55, 0.8);
+                } else {
+                    cr.set_source_rgba(0.48, 0.48, 0.48, 0.8);
+                }
+                cr.move_to(strike_x1, strike_y);
+                cr.line_to(strike_x2, strike_y);
                 cr.stroke().ok();
             }
         }
@@ -22254,6 +22267,70 @@ pub(crate) fn save_calendar_event_inline(
     });
 }
 
+fn format_rrule_detail_description(rrule: &str) -> Option<String> {
+    if rrule.trim().is_empty() {
+        return None;
+    }
+    let parts: Vec<&str> = rrule.split(';').collect();
+    let mut byday_str = None;
+    for p in parts {
+        if let Some(val) = p.strip_prefix("BYDAY=") {
+            byday_str = Some(val);
+        }
+    }
+    if let Some(bydays) = byday_str {
+        let day_names: Vec<String> = bydays
+            .split(',')
+            .map(|code| match code.trim() {
+                "MO" => crate::i18n::gettext("Monday"),
+                "TU" => crate::i18n::gettext("Tuesday"),
+                "WE" => crate::i18n::gettext("Wednesday"),
+                "TH" => crate::i18n::gettext("Thursday"),
+                "FR" => crate::i18n::gettext("Friday"),
+                "SA" => crate::i18n::gettext("Saturday"),
+                "SU" => crate::i18n::gettext("Sunday"),
+                other => other.to_string(),
+            })
+            .collect();
+        if !day_names.is_empty() {
+            return Some(format!("{}: {}", crate::i18n::gettext("On"), day_names.join(", ")));
+        }
+    }
+    None
+}
+
+fn format_recurrence_end_summary(component: &str) -> String {
+    let Some(rrule) = ical_property(component, "RRULE") else {
+        return crate::i18n::gettext("Never");
+    };
+    for part in rrule.split(';') {
+        if let Some(until) = part.strip_prefix("UNTIL=") {
+            let clean = until.trim_end_matches('Z');
+            if clean.len() >= 8 {
+                let y = &clean[0..4];
+                let m = &clean[4..6];
+                let d = &clean[6..8];
+                return format!("{d}.{m}.{y}");
+            }
+            return until.to_string();
+        } else if let Some(count) = part.strip_prefix("COUNT=") {
+            return format!("{} {}", count, crate::i18n::gettext("times"));
+        }
+    }
+    crate::i18n::gettext("Never")
+}
+
+fn inspector_field_label(text: &str) -> gtk::Label {
+    gtk::Label::builder()
+        .label(text)
+        .css_classes(vec!["caption", "dim-label"])
+        .halign(gtk::Align::End)
+        .valign(gtk::Align::Center)
+        .width_chars(11)
+        .xalign(1.0)
+        .build()
+}
+
 fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>(
     page: &CalendarPage,
     parent: &W,
@@ -22271,19 +22348,21 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
 
     let content_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(8)
+        .spacing(6)
         .margin_start(8)
         .margin_end(8)
         .margin_top(4)
         .margin_bottom(8)
+        .hexpand(true)
         .build();
 
-    // 1. Title Entry (editable directly in the sidebar)
+    // 1. Title Entry (editable directly in the sidebar, clean flat style)
     let title_entry = gtk::Entry::builder()
         .text(&event.summary)
         .placeholder_text(&crate::i18n::gettext("Event title"))
         .css_classes(vec!["calendar-details-title-entry"])
         .hexpand(true)
+        .width_chars(1)
         .build();
     content_box.append(&title_entry);
 
@@ -22294,13 +22373,17 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
         .valign(gtk::Align::Center)
         .build();
     let dot = gtk::Label::new(None);
-    dot.set_markup(&format!("<span foreground=\"{color}\" size=\"large\">●</span>"));
+    dot.set_markup(&format!("<span foreground=\"{color}\">●</span>"));
     let cal_label = gtk::Label::builder()
         .label(cal_name)
         .css_classes(vec!["caption", "heading"])
+        .ellipsize(pango::EllipsizeMode::End)
         .build();
+    let cal_chevron = gtk::Image::from_icon_name("pan-down-symbolic");
+    cal_chevron.add_css_class("dim-label");
     cal_row.append(&dot);
     cal_row.append(&cal_label);
+    cal_row.append(&cal_chevron);
 
     let badges = extract_event_badges(&event.component);
     for (badge_text, badge_class) in badges {
@@ -22313,10 +22396,10 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
     }
     content_box.append(&cal_row);
 
-    // 3. Location Entry
+    // 3. Location Entry (flat click-to-edit style)
     let loc_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
-        .spacing(8)
+        .spacing(6)
         .valign(gtk::Align::Center)
         .build();
     let loc_icon = gtk::Image::from_icon_name("mark-location-symbolic");
@@ -22326,19 +22409,37 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
         .placeholder_text(&crate::i18n::gettext("Location"))
         .css_classes(vec!["calendar-details-field-entry"])
         .hexpand(true)
+        .width_chars(1)
         .build();
     loc_box.append(&loc_icon);
     loc_box.append(&loc_entry);
     content_box.append(&loc_box);
 
-    // 4. Timing Summary (Relative timing + Duration, e.g. "Ended 2 days ago · 8 hr duration")
+    // 4. Timing Summary (Relative timing + Duration, e.g. "Ended 2 days ago" / "8 hr duration")
     let (rel_text, dur_text) = format_event_timing_summary(event, target_day);
-    let timing_summary_lbl = gtk::Label::builder()
-        .label(&format!("{rel_text} · {dur_text}"))
+    let timing_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(1)
+        .margin_top(2)
+        .margin_bottom(2)
+        .build();
+    let rel_lbl = gtk::Label::builder()
+        .label(&rel_text)
         .css_classes(vec!["caption", "dim-label"])
+        .wrap(true)
+        .wrap_mode(pango::WrapMode::WordChar)
         .xalign(0.0)
         .build();
-    content_box.append(&timing_summary_lbl);
+    let dur_lbl = gtk::Label::builder()
+        .label(&dur_text)
+        .css_classes(vec!["caption", "dim-label"])
+        .wrap(true)
+        .wrap_mode(pango::WrapMode::WordChar)
+        .xalign(0.0)
+        .build();
+    timing_box.append(&rel_lbl);
+    timing_box.append(&dur_lbl);
+    content_box.append(&timing_box);
 
     // 5. Date & Time Controls
     let all_day = crate::dialogs::event_dialog::component_property_has_date_value(&event.component, "DTSTART");
@@ -22358,83 +22459,35 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
         });
     let (init_end_date, init_end_time) = crate::dialogs::event_dialog::split_datetime_for_entries(&end_disp);
 
-    // All-day switch row
-    let allday_row = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(8)
-        .valign(gtk::Align::Center)
-        .build();
-    let allday_lbl = gtk::Label::builder()
-        .label(&crate::i18n::gettext("All Day"))
-        .css_classes(vec!["caption"])
-        .hexpand(true)
-        .xalign(0.0)
-        .build();
     let allday_switch = gtk::Switch::builder()
         .active(all_day)
+        .halign(gtk::Align::Start)
         .valign(gtk::Align::Center)
         .build();
-    allday_row.append(&allday_lbl);
-    allday_row.append(&allday_switch);
-    content_box.append(&allday_row);
 
-    // Starts row
-    let starts_row = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(6)
-        .valign(gtk::Align::Center)
-        .build();
-    let starts_lbl = gtk::Label::builder()
-        .label(&crate::i18n::gettext("Starts"))
-        .width_chars(6)
-        .xalign(0.0)
-        .css_classes(vec!["caption", "dim-label"])
-        .build();
     let entry_start_date = gtk::Entry::builder()
         .text(&init_start_date)
-        .width_chars(11)
+        .width_chars(10)
         .css_classes(vec!["calendar-details-compact-entry"])
-        .hexpand(true)
         .build();
     let entry_start_time = gtk::Entry::builder()
         .text(&init_start_time)
-        .width_chars(6)
+        .width_chars(5)
         .css_classes(vec!["calendar-details-compact-entry"])
         .visible(!all_day)
         .build();
-    starts_row.append(&starts_lbl);
-    starts_row.append(&entry_start_date);
-    starts_row.append(&entry_start_time);
-    content_box.append(&starts_row);
 
-    // Ends row
-    let ends_row = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(6)
-        .valign(gtk::Align::Center)
-        .build();
-    let ends_lbl = gtk::Label::builder()
-        .label(&crate::i18n::gettext("Ends"))
-        .width_chars(6)
-        .xalign(0.0)
-        .css_classes(vec!["caption", "dim-label"])
-        .build();
     let entry_end_date = gtk::Entry::builder()
         .text(&init_end_date)
-        .width_chars(11)
+        .width_chars(10)
         .css_classes(vec!["calendar-details-compact-entry"])
-        .hexpand(true)
         .build();
     let entry_end_time = gtk::Entry::builder()
         .text(&init_end_time)
-        .width_chars(6)
+        .width_chars(5)
         .css_classes(vec!["calendar-details-compact-entry"])
         .visible(!all_day)
         .build();
-    ends_row.append(&ends_lbl);
-    ends_row.append(&entry_end_date);
-    ends_row.append(&entry_end_time);
-    content_box.append(&ends_row);
 
     // Toggle time entries visibility on switch state change
     let start_time_clone = entry_start_time.clone();
@@ -22445,52 +22498,136 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
         glib::Propagation::Proceed
     });
 
-    // 6. Recurrence info (if any)
-    if let Some(recurrence_text) = format_recurrence_summary(event) {
-        let rec_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(6)
-            .valign(gtk::Align::Center)
-            .build();
-        let rec_icon = gtk::Image::from_icon_name("media-playlist-repeat-symbolic");
-        rec_icon.add_css_class("dim-label");
-        let rec_label = gtk::Label::builder()
-            .label(&recurrence_text)
+    // BusyCal 2-column Property Grid
+    let grid = gtk::Grid::builder()
+        .column_spacing(10)
+        .row_spacing(4)
+        .hexpand(true)
+        .margin_top(4)
+        .margin_bottom(4)
+        .build();
+
+    // Row 0: all-day
+    grid.attach(&inspector_field_label(&crate::i18n::gettext("all-day")), 0, 0, 1, 1);
+    grid.attach(&allday_switch, 1, 0, 1, 1);
+
+    // Row 1: starts
+    let starts_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(4)
+        .valign(gtk::Align::Center)
+        .build();
+    starts_box.append(&entry_start_date);
+    starts_box.append(&entry_start_time);
+    grid.attach(&inspector_field_label(&crate::i18n::gettext("starts")), 0, 1, 1, 1);
+    grid.attach(&starts_box, 1, 1, 1, 1);
+
+    // Row 2: ends
+    let ends_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(4)
+        .valign(gtk::Align::Center)
+        .build();
+    ends_box.append(&entry_end_date);
+    ends_box.append(&entry_end_time);
+    grid.attach(&inspector_field_label(&crate::i18n::gettext("ends")), 0, 2, 1, 1);
+    grid.attach(&ends_box, 1, 2, 1, 1);
+
+    // Row 3: repeat
+    let rec_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(1)
+        .halign(gtk::Align::Start)
+        .valign(gtk::Align::Center)
+        .build();
+    let (rec_title, rec_subtitle) = if let Some(rec_text) = format_recurrence_summary(event) {
+        let rrule_raw = ical_property(&event.component, "RRULE").unwrap_or_default();
+        let sub = format_rrule_detail_description(&rrule_raw);
+        (rec_text, sub)
+    } else {
+        (crate::i18n::gettext("None"), None)
+    };
+    let rec_main_lbl = gtk::Label::builder()
+        .label(&rec_title)
+        .css_classes(vec!["caption"])
+        .halign(gtk::Align::Start)
+        .build();
+    rec_box.append(&rec_main_lbl);
+    if let Some(sub) = rec_subtitle {
+        let rec_sub_lbl = gtk::Label::builder()
+            .label(&sub)
             .css_classes(vec!["caption", "dim-label"])
             .wrap(true)
-            .xalign(0.0)
+            .wrap_mode(pango::WrapMode::WordChar)
+            .halign(gtk::Align::Start)
             .build();
-        rec_box.append(&rec_icon);
-        rec_box.append(&rec_label);
-        content_box.append(&rec_box);
+        rec_box.append(&rec_sub_lbl);
     }
+    grid.attach(&inspector_field_label(&crate::i18n::gettext("repeat")), 0, 3, 1, 1);
+    grid.attach(&rec_box, 1, 3, 1, 1);
 
-    // 7. Alarm info (if any)
-    if let Some(alarm_summary) = format_alarm_summary(&event.component) {
-        let alarm_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(6)
-            .valign(gtk::Align::Center)
-            .build();
-        let alarm_icon = gtk::Image::from_icon_name("alarm-symbolic");
-        alarm_icon.add_css_class("dim-label");
-        let alarm_label = gtk::Label::builder()
-            .label(&alarm_summary)
-            .css_classes(vec!["caption", "dim-label"])
-            .wrap(true)
-            .xalign(0.0)
-            .build();
-        alarm_box.append(&alarm_icon);
-        alarm_box.append(&alarm_label);
-        content_box.append(&alarm_box);
-    }
+    // Row 4: end
+    let end_summary = format_recurrence_end_summary(&event.component);
+    let end_lbl = gtk::Label::builder()
+        .label(&end_summary)
+        .css_classes(vec!["caption"])
+        .halign(gtk::Align::Start)
+        .valign(gtk::Align::Center)
+        .build();
+    grid.attach(&inspector_field_label(&crate::i18n::gettext("end")), 0, 4, 1, 1);
+    grid.attach(&end_lbl, 1, 4, 1, 1);
 
-    // 8. Conference / Video URL
+    // Row 5: travel time
+    let travel_val_lbl = gtk::Label::builder()
+        .label(&crate::i18n::gettext("None"))
+        .css_classes(vec!["caption", "dim-label"])
+        .halign(gtk::Align::Start)
+        .valign(gtk::Align::Center)
+        .build();
+    grid.attach(&inspector_field_label(&crate::i18n::gettext("travel time")), 0, 5, 1, 1);
+    grid.attach(&travel_val_lbl, 1, 5, 1, 1);
+
+    // Row 6: alarm
+    let alarm_summary = format_alarm_summary(&event.component).unwrap_or_else(|| crate::i18n::gettext("None"));
+    let alarm_val_lbl = gtk::Label::builder()
+        .label(&alarm_summary)
+        .css_classes(vec!["caption"])
+        .halign(gtk::Align::Start)
+        .valign(gtk::Align::Center)
+        .wrap(true)
+        .wrap_mode(pango::WrapMode::WordChar)
+        .build();
+    grid.attach(&inspector_field_label(&crate::i18n::gettext("alarm")), 0, 6, 1, 1);
+    grid.attach(&alarm_val_lbl, 1, 6, 1, 1);
+
+    // Row 7: color
+    let color_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(4)
+        .halign(gtk::Align::Start)
+        .valign(gtk::Align::Center)
+        .build();
+    let cdot = gtk::Label::new(None);
+    cdot.set_markup(&format!("<span foreground=\"{color}\">●</span>"));
+    let cname_lbl = gtk::Label::builder()
+        .label(cal_name)
+        .css_classes(vec!["caption"])
+        .ellipsize(pango::EllipsizeMode::End)
+        .build();
+    color_box.append(&cdot);
+    color_box.append(&cname_lbl);
+    grid.attach(&inspector_field_label(&crate::i18n::gettext("color")), 0, 7, 1, 1);
+    grid.attach(&color_box, 1, 7, 1, 1);
+
+    content_box.append(&grid);
+
+    // 6. Conference / Video URL
     if let Some(conf_url) = extract_conference_url(&event.component, &event.location, &event.description) {
         let conf_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
             .valign(gtk::Align::Center)
+            .margin_top(2)
             .build();
         let conf_btn = gtk::Button::builder()
             .label(&crate::i18n::gettext("Join meeting"))
@@ -22506,19 +22643,27 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
         content_box.append(&conf_box);
     }
 
-    // 9. Attendees (if any)
+    // 7. Attendees (if any)
     let attendees = parse_ical_attendees(&event.component);
     if !attendees.is_empty() {
-        let att_header = gtk::Label::builder()
+        let att_header = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .margin_top(4)
+            .build();
+        let att_icon = gtk::Image::from_icon_name("avatar-default-symbolic");
+        att_icon.add_css_class("dim-label");
+        let att_lbl = gtk::Label::builder()
             .label(&crate::i18n::gettext("Attendees"))
             .css_classes(vec!["caption", "heading"])
-            .xalign(0.0)
             .build();
+        att_header.append(&att_icon);
+        att_header.append(&att_lbl);
         content_box.append(&att_header);
 
         let att_flow = gtk::FlowBox::builder()
             .selection_mode(gtk::SelectionMode::None)
-            .max_children_per_line(3)
+            .max_children_per_line(2)
             .min_children_per_line(1)
             .column_spacing(6)
             .row_spacing(4)
@@ -22535,25 +22680,28 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
                 .label(&chip_text)
                 .css_classes(vec!["calendar-attendee-chip"])
                 .tooltip_text(att.email.as_deref().unwrap_or(&att.name))
+                .ellipsize(pango::EllipsizeMode::End)
                 .build();
             att_flow.append(&chip);
         }
         content_box.append(&att_flow);
     }
 
-    // 10. Notes / Description (directly editable TextView)
+    // 8. Notes / Description (directly editable TextView with clean flat styling)
     let notes_label = gtk::Label::builder()
         .label(&crate::i18n::gettext("Notes"))
         .css_classes(vec!["caption", "heading"])
         .xalign(0.0)
+        .margin_top(4)
         .build();
     content_box.append(&notes_label);
 
     let notes_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
-        .min_content_height(75)
-        .max_content_height(140)
+        .propagate_natural_width(false)
+        .min_content_height(60)
+        .max_content_height(120)
         .css_classes(vec!["calendar-details-note-box"])
         .build();
     let notes_view = gtk::TextView::builder()
@@ -22561,14 +22709,15 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
         .accepts_tab(false)
         .margin_start(4)
         .margin_end(4)
-        .margin_top(4)
-        .margin_bottom(4)
+        .margin_top(2)
+        .margin_bottom(2)
+        .hexpand(true)
         .build();
     notes_view.buffer().set_text(&event.description);
     notes_scroll.set_child(Some(&notes_view));
     content_box.append(&notes_scroll);
 
-    // 11. Actions: Save, More Options, Delete
+    // 9. Actions: Save, More Options, Delete
     let actions_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(6)
@@ -22654,8 +22803,20 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
     let sa2 = save_action.clone();
     title_entry.connect_activate(move |_| sa2());
 
-    let sa3 = save_action;
+    let sa3 = save_action.clone();
     loc_entry.connect_activate(move |_| sa3());
+
+    let sa4 = save_action.clone();
+    entry_start_date.connect_activate(move |_| sa4());
+
+    let sa5 = save_action.clone();
+    entry_start_time.connect_activate(move |_| sa5());
+
+    let sa6 = save_action.clone();
+    entry_end_date.connect_activate(move |_| sa6());
+
+    let sa7 = save_action;
+    entry_end_time.connect_activate(move |_| sa7());
 
     let page_more = page.downgrade();
     let parent_more = parent.clone();
@@ -30893,7 +31054,7 @@ mod tests {
 
         let layout = prepare_taskpad_layout(&tasks, today);
         assert_eq!(layout.items.len(), 3);
-        assert_eq!(layout.total_height, 36.0 * 3.0);
+        assert_eq!(layout.total_height, 28.0 * 3.0);
 
         // Task 1: Due today -> "Today", not overdue
         let due0 = layout.items[0].due_text.as_deref();
@@ -30908,14 +31069,14 @@ mod tests {
         assert!(layout.items[2].record.completed);
 
         // Hit testing
-        // Checkbox is at (8, y + 9, 18, 18)
-        let hit_check = hit_test_taskpad(&layout, 12.0, 15.0);
+        // Checkbox is at (8, y + 6, 16, 16)
+        let hit_check = hit_test_taskpad(&layout, 12.0, 14.0);
         assert_eq!(hit_check, Some((0, true))); // in checkbox of item 0
 
-        let hit_row = hit_test_taskpad(&layout, 100.0, 15.0);
+        let hit_row = hit_test_taskpad(&layout, 100.0, 14.0);
         assert_eq!(hit_row, Some((0, false))); // in row of item 0, not in checkbox
 
-        let hit_item1_check = hit_test_taskpad(&layout, 12.0, 45.0);
+        let hit_item1_check = hit_test_taskpad(&layout, 12.0, 42.0);
         assert_eq!(hit_item1_check, Some((1, true))); // in checkbox of item 1
 
         let hit_none = hit_test_taskpad(&layout, 50.0, 200.0);
@@ -33336,6 +33497,53 @@ mod tests {
         assert!(all_day_updated.contains("SUMMARY:Ganztägiger Workshop"));
         assert!(all_day_updated.contains("DTSTART;VALUE=DATE:20261016"));
         assert!(all_day_updated.contains("DTEND;VALUE=DATE:20261017"));
+    }
+
+    #[test]
+    fn test_busycal_inspector_grid_layout_and_recurrence_end() {
+        // 1. Recurrence end parsing
+        let rrule_until = "BEGIN:VEVENT\r\nRRULE:FREQ=WEEKLY;UNTIL=20261231T235959Z\r\nEND:VEVENT";
+        assert_eq!(format_recurrence_end_summary(rrule_until), "31.12.2026");
+
+        let rrule_count = "BEGIN:VEVENT\r\nRRULE:FREQ=DAILY;COUNT=10\r\nEND:VEVENT";
+        assert!(format_recurrence_end_summary(rrule_count).contains("10"));
+
+        let rrule_forever = "BEGIN:VEVENT\r\nRRULE:FREQ=YEARLY\r\nEND:VEVENT";
+        assert_eq!(format_recurrence_end_summary(rrule_forever), crate::i18n::gettext("Never"));
+
+        let rrule_none = "BEGIN:VEVENT\r\nSUMMARY:Simple\r\nEND:VEVENT";
+        assert_eq!(format_recurrence_end_summary(rrule_none), crate::i18n::gettext("Never"));
+
+        // 2. Recurrence day description
+        let desc = format_rrule_detail_description("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR");
+        assert!(desc.is_some());
+        let desc_text = desc.unwrap();
+        assert!(desc_text.contains("Monday") || desc_text.contains("Montag"));
+        assert!(desc_text.contains("Friday") || desc_text.contains("Freitag"));
+
+        // 3. Inspector widget creation
+        let _guard = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let page = CalendarPage::new();
+        let ev = CalendarEventRecord {
+            uid: "grid-test-1".to_string(),
+            source_uid: "src-1".to_string(),
+            source_display_name: "Google".to_string(),
+            component: "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:grid-test-1\r\nSUMMARY:Weekly Sync\r\nLOCATION:Room 404\r\nDTSTART:20261015T090000\r\nDTEND:20261015T100000\r\nRRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR\r\nEND:VEVENT\r\nEND:VCALENDAR".to_string(),
+            summary: "Weekly Sync".to_string(),
+            start: "2026-10-15T09:00:00".to_string(),
+            end: "2026-10-15T10:00:00".to_string(),
+            location: "Room 404".to_string(),
+            description: "Sync meeting notes".to_string(),
+            all_day: false,
+        };
+        let dummy = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let inspector_box = build_calendar_event_inspector_sidebar(&page, &dummy, &ev, None);
+        assert!(inspector_box.first_child().is_some());
     }
 }
 
