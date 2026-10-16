@@ -49,6 +49,10 @@
       <default>true</default>
       <summary>Compress weekends in month view</summary>
     </key>
+    <key name="calendar-allday-collapsed" type="b">
+      <default>false</default>
+      <summary>Whether the all-day events header is collapsed in day, week, and workweek views</summary>
+    </key>
     <key name="calendar-month-scroll-by-week" type="b">
       <default>true</default>
       <summary>Scroll month view by a week instead of a month</summary>

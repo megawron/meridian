@@ -1138,6 +1138,20 @@ impl AppSettings {
         self.set_boolean("calendar-show-week-numbers", value);
     }
 
+    pub fn calendar_allday_collapsed(&self) -> bool {
+        if self.settings.settings_schema().is_some_and(|s| s.has_key("calendar-allday-collapsed")) {
+            self.settings.boolean("calendar-allday-collapsed")
+        } else {
+            false
+        }
+    }
+
+    pub fn set_calendar_allday_collapsed(&self, value: bool) {
+        if self.settings.settings_schema().is_some_and(|s| s.has_key("calendar-allday-collapsed")) {
+            self.set_boolean("calendar-allday-collapsed", value);
+        }
+    }
+
     pub fn calendar_show_tag_vpane(&self) -> bool {
         self.settings.boolean("calendar-show-tag-vpane")
     }
@@ -1504,40 +1518,66 @@ impl AppSettings {
     }
 
     pub fn calendar_month_scroll_by_week(&self) -> bool {
-        self.settings.boolean("calendar-month-scroll-by-week")
+        if self.settings.settings_schema().is_some_and(|s| s.has_key("calendar-month-scroll-by-week")) {
+            self.settings.boolean("calendar-month-scroll-by-week")
+        } else {
+            true
+        }
     }
 
     pub fn set_calendar_month_scroll_by_week(&self, value: bool) {
-        self.set_boolean("calendar-month-scroll-by-week", value);
+        if self.settings.settings_schema().is_some_and(|s| s.has_key("calendar-month-scroll-by-week")) {
+            self.set_boolean("calendar-month-scroll-by-week", value);
+        }
     }
 
     pub fn calendar_month_scroll_animation(&self) -> bool {
-        self.settings.boolean("calendar-month-scroll-animation")
+        if self.settings.settings_schema().is_some_and(|s| s.has_key("calendar-month-scroll-animation")) {
+            self.settings.boolean("calendar-month-scroll-animation")
+        } else {
+            true
+        }
     }
 
     pub fn set_calendar_month_scroll_animation(&self, value: bool) {
-        self.set_boolean("calendar-month-scroll-animation", value);
+        if self.settings.settings_schema().is_some_and(|s| s.has_key("calendar-month-scroll-animation")) {
+            self.set_boolean("calendar-month-scroll-animation", value);
+        }
     }
 
     pub fn calendar_month_view_rows(&self) -> i32 {
+        if !self.settings.settings_schema().is_some_and(|s| s.has_key("calendar-month-view-rows")) {
+            return 5;
+        }
         let val = self.settings.int("calendar-month-view-rows");
         if val == 6 { 6 } else { 5 }
     }
 
     pub fn set_calendar_month_view_rows(&self, value: i32) {
-        let clamped = if value == 6 { 6 } else { 5 };
-        let _ = self.settings.set_int("calendar-month-view-rows", clamped);
+        if self.settings.settings_schema().is_some_and(|s| s.has_key("calendar-month-view-rows")) {
+            let clamped = if value == 6 { 6 } else { 5 };
+            let _ = self.settings.set_int("calendar-month-view-rows", clamped);
+        }
     }
 
     pub fn calendar_dim_past_events(&self) -> bool {
-        self.settings.boolean("calendar-dim-past-events")
+        if self.settings.settings_schema().is_some_and(|s| s.has_key("calendar-dim-past-events")) {
+            self.settings.boolean("calendar-dim-past-events")
+        } else {
+            true
+        }
     }
 
     pub fn set_calendar_dim_past_events(&self, value: bool) {
-        self.set_boolean("calendar-dim-past-events", value);
+        if self.settings.settings_schema().is_some_and(|s| s.has_key("calendar-dim-past-events")) {
+            self.set_boolean("calendar-dim-past-events", value);
+        }
     }
 
     pub fn calendar_chip_scale(&self) -> f64 {
+        if !self.settings.settings_schema().is_some_and(|s| s.has_key("calendar-chip-scale")) {
+            return 1.0;
+        }
         let val = self.settings.double("calendar-chip-scale");
         if val.is_finite() && val >= 0.75 && val <= 1.50 {
             val
@@ -4301,6 +4341,7 @@ impl AppSettings {
             "confirm-destructive-actions",
             "debug-console-enabled",
             "calendar-show-week-numbers",
+            "calendar-allday-collapsed",
             "calendar-time-divisions",
             "calendar-compress-weekend",
             "calendar-month-scroll-by-week",
@@ -4490,7 +4531,9 @@ impl AppSettings {
             "mail-headers-collapsed",
             "mail-show-real-date",
         ] {
-            self.settings.reset(key);
+            if self.settings.settings_schema().is_some_and(|s| s.has_key(key)) {
+                self.settings.reset(key);
+            }
         }
     }
 
@@ -6245,6 +6288,26 @@ mod tests {
         assert_eq!(settings.reminder_notify_with_tray(), true);
         assert_eq!(settings.mail_notification_sound_enabled(), false);
         assert_eq!(settings.show_window_title_unread_counter(), true);
+    }
+
+    #[test]
+    fn test_calendar_allday_collapsed_persistence_and_defaults() {
+        let backend = gio::memory_settings_backend_new();
+        let settings = settings_with_backend(&backend);
+
+        // Canonical default is false (ausgeklappt / expanded on first use)
+        assert_eq!(settings.calendar_allday_collapsed(), false);
+
+        settings.set_calendar_allday_collapsed(true);
+        assert_eq!(settings.calendar_allday_collapsed(), true);
+
+        settings.set_calendar_allday_collapsed(false);
+        assert_eq!(settings.calendar_allday_collapsed(), false);
+
+        settings.set_calendar_allday_collapsed(true);
+        assert_eq!(settings.calendar_allday_collapsed(), true);
+        settings.reset_to_defaults();
+        assert_eq!(settings.calendar_allday_collapsed(), false);
     }
 
     #[test]
