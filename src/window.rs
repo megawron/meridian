@@ -63,6 +63,7 @@ mod imp {
         pub agenda_preview_toggle: RefCell<Option<gtk::ToggleButton>>,
         pub mail_view_options_button: RefCell<Option<adw::SplitButton>>,
         pub contacts_view_options_button: RefCell<Option<adw::SplitButton>>,
+        pub calendar_year_view_options_button: RefCell<Option<adw::SplitButton>>,
         pub sidebar_visible: Cell<bool>,
         pub sidebar_animation: RefCell<Option<adw::TimedAnimation>>,
         pub search_button: RefCell<Option<gtk::ToggleButton>>,
@@ -1069,6 +1070,12 @@ impl MeridianWindow {
         if let Some(toggle) = self.imp().right_sidebar_toggle.borrow().as_ref() {
             if self.imp().is_mobile.get() {
                 toggle.set_visible(false);
+                if let Some(agenda_btn) = self.imp().agenda_preview_toggle.borrow().as_ref() {
+                    agenda_btn.set_visible(false);
+                }
+                if let Some(year_btn) = self.imp().calendar_year_view_options_button.borrow().as_ref() {
+                    year_btn.set_visible(false);
+                }
                 return;
             }
             toggle.set_visible(true);
@@ -1126,6 +1133,22 @@ impl MeridianWindow {
                 }
             }
         }
+
+        if self.imp().calendar_year_view_options_button.borrow().is_none() {
+            if let Some(cal) = self.calendar_page() {
+                self.attach_calendar_year_view_options_button(&cal);
+            }
+        }
+
+        if let Some(year_btn) = self.imp().calendar_year_view_options_button.borrow().as_ref() {
+            let is_year_view = self.active_view_name().as_str() == "calendar"
+                && self
+                    .calendar_page()
+                    .map(|p| p.current_calendar_view() == CalendarView::Year)
+                    .unwrap_or(false);
+            let should_show = is_year_view && !self.imp().is_mobile.get();
+            year_btn.set_visible(should_show);
+        }
     }
 
     pub fn back_button(&self) -> Option<gtk::Button> {
@@ -1142,6 +1165,29 @@ impl MeridianWindow {
 
     pub fn contacts_view_options_button(&self) -> Option<adw::SplitButton> {
         self.imp().contacts_view_options_button.borrow().clone()
+    }
+
+    pub fn calendar_year_view_options_button(&self) -> Option<adw::SplitButton> {
+        self.imp().calendar_year_view_options_button.borrow().clone()
+    }
+
+    pub fn attach_calendar_year_view_options_button(&self, page: &CalendarPage) {
+        if self.imp().calendar_year_view_options_button.borrow().is_some() {
+            return;
+        }
+        let Some(header_bar) = self.imp().header_bar.borrow().clone() else {
+            return;
+        };
+        if let Some(view_btn) = page.year_view_options_split_button() {
+            let is_initially_year = self.active_view_name().as_str() == "calendar"
+                && page.current_calendar_view() == CalendarView::Year
+                && !self.imp().is_mobile.get();
+            view_btn.set_visible(is_initially_year);
+            header_bar.pack_end(&view_btn);
+            self.imp()
+                .calendar_year_view_options_button
+                .replace(Some(view_btn));
+        }
     }
 
     pub fn attach_contacts_view_options_button(&self, page: &ContactsPage) {
@@ -1663,6 +1709,11 @@ impl MeridianWindow {
 
     pub fn toggle_sidebar_animated(&self, show: bool) {
         self.imp().sidebar_visible.set(show);
+        if let Some(settings) = AppSettings::try_new() {
+            if settings.mail_show_sidebar() != show {
+                settings.set_mail_show_sidebar(show);
+            }
+        }
 
         let is_mail = self.active_view_name() == "mail";
         if is_mail {
@@ -3343,6 +3394,7 @@ impl MeridianWindow {
 
         let memos_bin = Self::lazy_module_bin(&crate::i18n::gettext("Memos"));
         view_stack.add_named(&memos_bin, Some("memos"));
+        self.imp().view_stack.replace(Some(view_stack.clone()));
 
         let ensure_module_loaded: Rc<dyn Fn(&str)> = {
             let calendar_bin = calendar_bin.clone();
@@ -3384,6 +3436,7 @@ impl MeridianWindow {
                         page.set_screen_mode(is_mobile, is_tablet);
                         if let Some(win) = window_weak.upgrade() {
                             page.set_medium_mode(win.imp().is_medium.get());
+                            win.attach_calendar_year_view_options_button(&page);
                         }
                         page.set_sidebar_position(sidebar_pos);
                         page.set_sidebar_visible(effective_vis);
@@ -3859,7 +3912,7 @@ impl MeridianWindow {
         self.imp().right_sidebar_toggle.replace(Some(right_sidebar_toggle.clone()));
 
         let agenda_preview_toggle = gtk::ToggleButton::builder()
-            .icon_name("sidebar-show-right-symbolic")
+            .icon_name("view-dual-symbolic")
             .tooltip_text(&crate::i18n::gettext("Toggle event details (Ctrl+Shift+D)"))
             .css_classes(vec!["flat"])
             .visible(false)
@@ -3900,6 +3953,9 @@ impl MeridianWindow {
         if let Some(contacts) = self.contacts_page() {
             self.attach_contacts_view_options_button(&contacts);
         }
+        if let Some(cal) = self.calendar_page() {
+            self.attach_calendar_year_view_options_button(&cal);
+        }
 
         if let Some(settings) = AppSettings::try_new() {
             let win_weak_right_sync = self.downgrade();
@@ -3934,6 +3990,7 @@ impl MeridianWindow {
                 });
             }
         }
+        self.sync_sidebar_state_for_current_view();
         self.sync_right_sidebar_toggle();
         self.sync_toolbar_state_for_current_view();
 
@@ -4321,6 +4378,7 @@ impl MeridianWindow {
 
         self.imp().view_stack.replace(Some(view_stack));
         self.set_content(Some(toast_overlay));
+        self.sync_right_sidebar_toggle();
         tracing::debug!(
             elapsed_ms = setup_started.elapsed().as_millis() as u64,
             "Main window layout installed"
@@ -4330,15 +4388,22 @@ impl MeridianWindow {
         // module from settings.  Mail remains the fast default; a previously
         // selected calendar/contacts/tasks/memos view is initialized on the
         // next main-loop turn instead of inside window construction.
+        let win_weak_init = self.downgrade();
         if active_view != "mail" {
             let ensure_module_loaded_for_initial = Rc::clone(&ensure_module_loaded);
             glib::idle_add_local_once(move || {
                 ensure_module_loaded_for_initial(&active_view);
+                if let Some(win) = win_weak_init.upgrade() {
+                    win.sync_right_sidebar_toggle();
+                }
             });
         } else {
             let ensure_module_loaded_for_calendar = Rc::clone(&ensure_module_loaded);
             glib::timeout_add_local_once(std::time::Duration::from_millis(350), move || {
                 ensure_module_loaded_for_calendar("calendar");
+                if let Some(win) = win_weak_init.upgrade() {
+                    win.sync_right_sidebar_toggle();
+                }
             });
         }
     }
