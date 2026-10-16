@@ -166,19 +166,9 @@ pub(crate) fn property_local_display(
 /// Return all local calendar dates represented by a repeated property such as
 /// RDATE or EXDATE.  Comma-separated values share the property parameters.
 pub(crate) fn property_local_dates(component: &str, target: &str) -> Vec<NaiveDate> {
-    let target = target.trim().to_ascii_uppercase();
-    unfold_lines(component)
+    let target = target.trim();
+    matching_unfolded_lines(component, target)
         .into_iter()
-        .filter_map(|line| {
-            let (property, value) = line.split_once(':')?;
-            let name = property
-                .split(';')
-                .next()
-                .unwrap_or(property)
-                .trim()
-                .to_ascii_uppercase();
-            (name == target).then_some((property.to_string(), value.to_string()))
-        })
         .flat_map(|(property, values)| {
             let all_day = property_has_parameter(&property, "VALUE", "DATE");
             values
@@ -193,17 +183,85 @@ pub(crate) fn property_local_dates(component: &str, target: &str) -> Vec<NaiveDa
 }
 
 fn property_line(component: &str, target: &str) -> Option<(String, String)> {
-    let target = target.trim().to_ascii_uppercase();
-    unfold_lines(component).into_iter().find_map(|line| {
-        let (property, value) = line.split_once(':')?;
-        let name = property
-            .split(';')
-            .next()
-            .unwrap_or(property)
-            .trim()
-            .to_ascii_uppercase();
-        (name == target).then_some((property.to_string(), value.to_string()))
-    })
+    let target = target.trim();
+    let mut current_match: Option<String> = None;
+    for raw_line in iter_physical_lines(component) {
+        if raw_line.starts_with(' ') || raw_line.starts_with('\t') {
+            if let Some(prev) = current_match.as_mut() {
+                prev.push_str(raw_line.trim_start());
+            }
+            continue;
+        }
+        if let Some(unfolded) = current_match.take() {
+            if let Some((property, value)) = unfolded.split_once(':') {
+                let name = property.split(';').next().unwrap_or(property).trim();
+                if name.eq_ignore_ascii_case(target) {
+                    return Some((property.to_string(), value.to_string()));
+                }
+            }
+        }
+        let first_token = raw_line.split([':', ';']).next().unwrap_or(raw_line).trim();
+        let can_match = first_token.eq_ignore_ascii_case(target)
+            || (!raw_line.contains([':', ';'])
+                && target
+                    .get(..first_token.len())
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(first_token)));
+        if can_match {
+            current_match = Some(raw_line.to_string());
+        }
+    }
+    if let Some(unfolded) = current_match.take() {
+        if let Some((property, value)) = unfolded.split_once(':') {
+            let name = property.split(';').next().unwrap_or(property).trim();
+            if name.eq_ignore_ascii_case(target) {
+                return Some((property.to_string(), value.to_string()));
+            }
+        }
+    }
+    None
+}
+
+fn matching_unfolded_lines(component: &str, target: &str) -> Vec<(String, String)> {
+    let mut results = Vec::new();
+    let mut current_match: Option<String> = None;
+    for raw_line in iter_physical_lines(component) {
+        if raw_line.starts_with(' ') || raw_line.starts_with('\t') {
+            if let Some(prev) = current_match.as_mut() {
+                prev.push_str(raw_line.trim_start());
+            }
+            continue;
+        }
+        if let Some(unfolded) = current_match.take() {
+            if let Some((property, value)) = unfolded.split_once(':') {
+                let name = property.split(';').next().unwrap_or(property).trim();
+                if name.eq_ignore_ascii_case(target) {
+                    results.push((property.to_string(), value.to_string()));
+                }
+            }
+        }
+        let first_token = raw_line.split([':', ';']).next().unwrap_or(raw_line).trim();
+        let can_match = first_token.eq_ignore_ascii_case(target)
+            || (!raw_line.contains([':', ';'])
+                && target
+                    .get(..first_token.len())
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(first_token)));
+        if can_match {
+            current_match = Some(raw_line.to_string());
+        }
+    }
+    if let Some(unfolded) = current_match.take() {
+        if let Some((property, value)) = unfolded.split_once(':') {
+            let name = property.split(';').next().unwrap_or(property).trim();
+            if name.eq_ignore_ascii_case(target) {
+                results.push((property.to_string(), value.to_string()));
+            }
+        }
+    }
+    results
+}
+
+fn iter_physical_lines(raw: &str) -> impl Iterator<Item = &str> {
+    raw.split('\n').map(|line| line.strip_suffix('\r').unwrap_or(line))
 }
 
 fn local_datetime_from_property(
@@ -285,20 +343,6 @@ fn display_timezone() -> TimeZone {
     } else {
         TimeZone::from_identifier(Some(&identifier)).unwrap_or_else(TimeZone::local)
     }
-}
-
-fn unfold_lines(raw: &str) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
-    for line in raw.replace("\r\n", "\n").replace('\r', "\n").lines() {
-        if line.starts_with(' ') || line.starts_with('\t') {
-            if let Some(previous) = lines.last_mut() {
-                previous.push_str(line.trim_start());
-            }
-        } else {
-            lines.push(line.to_string());
-        }
-    }
-    lines
 }
 
 #[cfg(test)]

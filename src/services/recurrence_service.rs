@@ -250,8 +250,58 @@ fn generated_occurrences_in_period(
         return Vec::new();
     }
 
+    // Fast paths for the overwhelmingly common cases without BYDAY or BYSETPOS
+    // (avoids scanning 365 days per year for every birthday/anniversary/holiday).
+    if rule.by_days.is_empty() && rule.by_month_days.is_empty() && rule.by_set_positions.is_empty() {
+        match rule.frequency.as_str() {
+            "YEARLY" if rule.by_months.is_empty() => {
+                if let Some(candidate) = NaiveDate::from_ymd_opt(
+                    period_start.year(),
+                    initial_start.month(),
+                    initial_start.day(),
+                ) {
+                    if candidate >= initial_start
+                        && rule.until.is_none_or(|until| candidate <= until)
+                    {
+                        return vec![candidate];
+                    }
+                }
+                return Vec::new();
+            }
+            "MONTHLY" if rule.by_months.is_empty() || rule.by_months.contains(&period_start.month()) => {
+                if let Some(candidate) = NaiveDate::from_ymd_opt(
+                    period_start.year(),
+                    period_start.month(),
+                    initial_start.day(),
+                ) {
+                    if candidate >= initial_start
+                        && rule.until.is_none_or(|until| candidate <= until)
+                    {
+                        return vec![candidate];
+                    }
+                }
+                return Vec::new();
+            }
+            "WEEKLY" if rule.by_months.is_empty() => {
+                let offset = (7 + initial_start.weekday().num_days_from_monday() as i64
+                    - period_start.weekday().num_days_from_monday() as i64)
+                    % 7;
+                if let Some(candidate) = period_start.checked_add_signed(Duration::days(offset)) {
+                    if candidate >= initial_start
+                        && candidate <= period_end
+                        && rule.until.is_none_or(|until| candidate <= until)
+                    {
+                        return vec![candidate];
+                    }
+                }
+                return Vec::new();
+            }
+            _ => {}
+        }
+    }
+
     let total_days = (period_end - period_start).num_days();
-    let mut candidates = Vec::with_capacity((total_days + 1) as usize);
+    let mut candidates = Vec::with_capacity((total_days + 1).min(32) as usize);
     for offset in 0..=total_days {
         let Some(candidate) = period_start.checked_add_signed(Duration::days(offset)) else {
             break;

@@ -50,15 +50,29 @@ pub(crate) fn is_high_contrast_active() -> bool {
     adw::StyleManager::default().is_high_contrast()
 }
 
+thread_local! {
+    static DESKTOP_INTERFACE_SETTINGS: std::cell::RefCell<Option<Option<gio::Settings>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn with_desktop_interface_settings<R>(f: impl FnOnce(&gio::Settings) -> R) -> Option<R> {
+    DESKTOP_INTERFACE_SETTINGS.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        if borrow.is_none() {
+            let resolved = gio::SettingsSchemaSource::default()
+                .and_then(|source| source.lookup("org.gnome.desktop.interface", true))
+                .map(|_| gio::Settings::new("org.gnome.desktop.interface"));
+            *borrow = Some(resolved);
+        }
+        borrow.as_ref().and_then(|opt| opt.as_ref()).map(f)
+    })
+}
+
 /// Returns the system text scaling factor (e.g. 1.0, 1.25, 1.5) configured by GNOME Large Text.
 pub(crate) fn get_system_font_scale() -> f64 {
-    if let Some(schema_source) = gio::SettingsSchemaSource::default() {
-        if schema_source.lookup("org.gnome.desktop.interface", true).is_some() {
-            let settings = gio::Settings::new("org.gnome.desktop.interface");
-            let scale = settings.double("text-scaling-factor");
-            if scale >= 0.5 && scale <= 4.0 {
-                return scale;
-            }
+    if let Some(scale) = with_desktop_interface_settings(|s| s.double("text-scaling-factor")) {
+        if (0.5..=4.0).contains(&scale) {
+            return scale;
         }
     }
     1.0
@@ -71,12 +85,9 @@ pub(crate) fn are_animations_enabled() -> bool {
             return false;
         }
     }
-    if let Some(schema_source) = gio::SettingsSchemaSource::default() {
-        if schema_source.lookup("org.gnome.desktop.interface", true).is_some() {
-            let settings = gio::Settings::new("org.gnome.desktop.interface");
-            if !settings.boolean("enable-animations") {
-                return false;
-            }
+    if let Some(enabled) = with_desktop_interface_settings(|s| s.boolean("enable-animations")) {
+        if !enabled {
+            return false;
         }
     }
     true

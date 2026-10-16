@@ -11,11 +11,12 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 const CURRENT_VERSION: u32 = 1;
 
-static CATEGORY_CACHE: Mutex<Option<(PathBuf, Option<SystemTime>, CategoryFile)>> = Mutex::new(None);
+static CATEGORY_CACHE: Mutex<Option<(PathBuf, Instant, Option<SystemTime>, CategoryFile)>> =
+    Mutex::new(None);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CalendarCategory {
@@ -42,9 +43,17 @@ impl CalendarCategoryStore {
     }
 
     pub fn from_environment() -> Self {
-        let path = std::env::var_os("MERIDIAN_CATEGORY_FILE").or_else(|| std::env::var_os("EVOLUTION_GTK4_CATEGORY_FILE"))
+        let path = std::env::var_os("MERIDIAN_CATEGORY_FILE")
+            .or_else(|| std::env::var_os("EVOLUTION_GTK4_CATEGORY_FILE"))
             .map(PathBuf::from)
-            .unwrap_or_else(|| crate::services::app_data_dir().join("calendar-categories.json"));
+            .unwrap_or_else(|| {
+                if let Ok(guard) = CATEGORY_CACHE.lock() {
+                    if let Some((ref cached_path, _, _, _)) = *guard {
+                        return cached_path.clone();
+                    }
+                }
+                crate::services::app_data_dir().join("calendar-categories.json")
+            });
         Self::new(path)
     }
 
@@ -69,12 +78,24 @@ impl CalendarCategoryStore {
     }
 
     pub fn color_for_component(&self, component: &str) -> Option<String> {
-        if !component.contains("CATEGORIES") {
+        let names = category_names_from_ical_component(component);
+        if names.is_empty() {
             return None;
         }
-        category_names_from_ical_component(component)
-            .into_iter()
-            .find_map(|name| self.color_for(&name))
+        let categories = self.load();
+        if categories.is_empty() {
+            return None;
+        }
+        names.into_iter().find_map(|name| {
+            let name = name.trim();
+            if name.is_empty() {
+                return None;
+            }
+            categories
+                .iter()
+                .find(|category| category.name.eq_ignore_ascii_case(name))
+                .map(|category| category.color.clone())
+        })
     }
 
     pub fn upsert(&self, category: CalendarCategory) -> io::Result<()> {
@@ -145,10 +166,19 @@ impl CalendarCategoryStore {
     }
 
     fn load_file(&self) -> CategoryFile {
-        let mtime = fs::metadata(&self.path).and_then(|m| m.modified()).ok();
         if let Ok(guard) = CATEGORY_CACHE.lock() {
-            if let Some((ref cached_path, ref cached_mtime, ref file)) = *guard {
+            if let Some((ref cached_path, last_checked, _, ref file)) = *guard {
+                if cached_path == &self.path && last_checked.elapsed() < Duration::from_secs(2) {
+                    return file.clone();
+                }
+            }
+        }
+        let now = Instant::now();
+        let mtime = fs::metadata(&self.path).and_then(|m| m.modified()).ok();
+        if let Ok(mut guard) = CATEGORY_CACHE.lock() {
+            if let Some((ref cached_path, ref mut last_checked, ref cached_mtime, ref file)) = *guard {
                 if cached_path == &self.path && *cached_mtime == mtime {
+                    *last_checked = now;
                     return file.clone();
                 }
             }
@@ -159,7 +189,7 @@ impl CalendarCategoryStore {
                 categories: default_categories(),
             };
             if let Ok(mut guard) = CATEGORY_CACHE.lock() {
-                *guard = Some((self.path.clone(), mtime, file.clone()));
+                *guard = Some((self.path.clone(), now, mtime, file.clone()));
             }
             return file;
         };
@@ -170,7 +200,7 @@ impl CalendarCategoryStore {
                 categories: default_categories(),
             };
             if let Ok(mut guard) = CATEGORY_CACHE.lock() {
-                *guard = Some((self.path.clone(), mtime, file.clone()));
+                *guard = Some((self.path.clone(), now, mtime, file.clone()));
             }
             return file;
         };
@@ -186,7 +216,7 @@ impl CalendarCategoryStore {
                 categories: default_categories(),
             };
             if let Ok(mut guard) = CATEGORY_CACHE.lock() {
-                *guard = Some((self.path.clone(), mtime, file.clone()));
+                *guard = Some((self.path.clone(), now, mtime, file.clone()));
             }
             return file;
         }
@@ -197,7 +227,7 @@ impl CalendarCategoryStore {
         });
         sort_categories(&mut file.categories);
         if let Ok(mut guard) = CATEGORY_CACHE.lock() {
-            *guard = Some((self.path.clone(), mtime, file.clone()));
+            *guard = Some((self.path.clone(), now, mtime, file.clone()));
         }
         file
     }
@@ -217,7 +247,7 @@ impl CalendarCategoryStore {
         fs::rename(temporary_path, &self.path)?;
         let mtime = fs::metadata(&self.path).and_then(|m| m.modified()).ok();
         if let Ok(mut guard) = CATEGORY_CACHE.lock() {
-            *guard = Some((self.path.clone(), mtime, file));
+            *guard = Some((self.path.clone(), Instant::now(), mtime, file));
         }
         Ok(())
     }
@@ -232,16 +262,51 @@ impl Default for CalendarCategoryStore {
 /// Extract RFC5545 `CATEGORIES` values while respecting escaped commas inside
 /// one category name.  This is shared by VEVENT, VTODO, and VJOURNAL views.
 pub fn category_names_from_ical_component(raw: &str) -> Vec<String> {
-    unfold_ical_lines(raw)
-        .into_iter()
-        .filter_map(|line| {
-            let (property, value) = line.split_once(':')?;
+    let mut values = Vec::new();
+    let mut current_match: Option<String> = None;
+    for raw_line in raw.split('\n') {
+        let raw_line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+        if raw_line.starts_with(' ') || raw_line.starts_with('\t') {
+            if let Some(prev) = current_match.as_mut() {
+                prev.push_str(raw_line.trim_start());
+            }
+            continue;
+        }
+        if let Some(unfolded) = current_match.take() {
+            if let Some((property, value)) = unfolded.split_once(':') {
+                let name = property.split(';').next().unwrap_or(property);
+                if name.eq_ignore_ascii_case("CATEGORIES") {
+                    values.extend(category_names_from_ical_value(value));
+                }
+            }
+        }
+        if raw_line.starts_with("X-EWS-ORIGINAL-COMP:") {
+            break;
+        }
+        if raw_line.len() >= 10 && raw_line.as_bytes()[0].eq_ignore_ascii_case(&b'C') {
+            let first_token = raw_line.split([':', ';']).next().unwrap_or(raw_line);
+            if first_token.eq_ignore_ascii_case("CATEGORIES") {
+                current_match = Some(raw_line.to_string());
+            }
+        } else if !raw_line.is_empty()
+            && raw_line.as_bytes()[0].eq_ignore_ascii_case(&b'C')
+            && !raw_line.contains([':', ';'])
+            && "CATEGORIES"
+                .get(..raw_line.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(raw_line))
+        {
+            current_match = Some(raw_line.to_string());
+        }
+    }
+    if let Some(unfolded) = current_match.take() {
+        if let Some((property, value)) = unfolded.split_once(':') {
             let name = property.split(';').next().unwrap_or(property);
-            name.eq_ignore_ascii_case("CATEGORIES")
-                .then(|| value.to_string())
-        })
-        .flat_map(|value| category_names_from_ical_value(&value))
-        .collect()
+            if name.eq_ignore_ascii_case("CATEGORIES") {
+                values.extend(category_names_from_ical_value(value));
+            }
+        }
+    }
+    values
 }
 
 pub fn category_names_from_ical_value(value: &str) -> Vec<String> {
@@ -273,20 +338,6 @@ pub fn category_names_from_ical_value(value: &str) -> Vec<String> {
         values.push(category);
     }
     values
-}
-
-fn unfold_ical_lines(raw: &str) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
-    for line in raw.replace("\r\n", "\n").replace('\r', "\n").lines() {
-        if line.starts_with(' ') || line.starts_with('\t') {
-            if let Some(previous) = lines.last_mut() {
-                previous.push_str(line.trim_start());
-            }
-        } else {
-            lines.push(line.to_string());
-        }
-    }
-    lines
 }
 
 fn unescape_ical_text(value: &str) -> String {
