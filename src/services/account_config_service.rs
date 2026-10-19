@@ -244,6 +244,10 @@ struct AccountFile {
     accounts: Vec<AccountProfile>,
 }
 
+static ACCOUNT_PROFILES_CACHE: std::sync::LazyLock<
+    std::sync::RwLock<std::collections::HashMap<PathBuf, std::sync::Arc<[AccountProfile]>>>,
+> = std::sync::LazyLock::new(|| std::sync::RwLock::new(std::collections::HashMap::new()));
+
 #[derive(Debug, Clone)]
 pub struct AccountConfigStore {
     path: PathBuf,
@@ -264,6 +268,35 @@ impl AccountConfigStore {
     #[allow(dead_code)]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Zero-I/O cached profile reader for hot paths (GTK filter callbacks, SQLite row mappers).
+    /// Automatically updated whenever `save()` mutates the profile store.
+    pub fn load_cached(&self) -> std::sync::Arc<[AccountProfile]> {
+        #[cfg(test)]
+        {
+            return std::sync::Arc::from(self.load());
+        }
+        #[cfg(not(test))]
+        {
+            if let Ok(guard) = ACCOUNT_PROFILES_CACHE.read() {
+                if let Some(cached) = guard.get(&self.path) {
+                    return std::sync::Arc::clone(cached);
+                }
+            }
+            let loaded: std::sync::Arc<[AccountProfile]> = std::sync::Arc::from(self.load());
+            if let Ok(mut guard) = ACCOUNT_PROFILES_CACHE.write() {
+                guard.insert(self.path.clone(), std::sync::Arc::clone(&loaded));
+            }
+            loaded
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn invalidate_cache() {
+        if let Ok(mut guard) = ACCOUNT_PROFILES_CACHE.write() {
+            guard.clear();
+        }
     }
 
     pub fn load(&self) -> Vec<AccountProfile> {
@@ -369,7 +402,11 @@ impl AccountConfigStore {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         let temporary_path = self.path.with_extension("json.tmp");
         fs::write(&temporary_path, encoded)?;
-        fs::rename(temporary_path, &self.path)
+        fs::rename(temporary_path, &self.path)?;
+        if let Ok(mut guard) = ACCOUNT_PROFILES_CACHE.write() {
+            guard.insert(self.path.clone(), std::sync::Arc::from(accounts.to_vec()));
+        }
+        Ok(())
     }
 }
 
