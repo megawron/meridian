@@ -1,15 +1,18 @@
 # Meridian — Agent & Developer Guidelines
 
 This document defines the mandatory design, architecture, and coding rules for Meridian. All agents and developers must follow these principles strictly.
+For the complete visual specification (card shadows, borders, banners, typography, thread controls, and context menus), see **[DESIGN.md](DESIGN.md)**.
 
 ---
 
-## 1. GNOME HIG & Libadwaita Standard (First & Foremost)
+## 1. GNOME HIG, Libadwaita & Unified Design System (First & Foremost)
 
-Meridian is a native GNOME application.
+Meridian is a native GNOME application. All visual design decisions are codified in **[DESIGN.md](DESIGN.md)**:
 - **Reference Project**: The official Libadwaita source and demo project is located at `../libadwaita/demo` (and `../libadwaita/src`). Whenever creating or modifying UI elements, **always inspect the Libadwaita demo first** and replicate its widgets and layout patterns.
 - **No Anti-Libadwaita CSS Hacks**: Do NOT write custom CSS overrides that fight against or shrink Libadwaita defaults. For example, never reduce standard button min-heights (e.g. forcing `26px`), never shrink font sizes (e.g. `0.90rem` or `0.76rem`), and never tamper with standard border-radii.
-- **Native Widgets**: Use `AdwPreferencesWindow`, `AdwActionRow`, `AdwHeaderBar`, `AdwViewSwitcher`, `GtkPopoverMenu`, etc., instead of reinventing them with custom boxes.
+- **Native Widgets**: Use `AdwPreferencesWindow`, `AdwPreferencesGroup`, `AdwActionRow`, `AdwHeaderBar`, `AdwViewSwitcher`, `GtkPopoverMenu`, etc., instead of reinventing them with custom boxes.
+- **Unified Libadwaita Card Style (Adwaita Demo & Hylki Parity)**: Never override `.card` or `list.boxed-list` with custom borders or flat 1px shadows. All cards (`.card`, `list.boxed-list`, `.composer-header-card`, `.appointment-form-page list.boxed-list`, `.appointment-form-page .card`, `.mail-preview-card`, `.task-boxed-list`, `.calendar-year-month-card`) use Libadwaita's exact `%card` specification (`border: none`, `border-radius: 12px`, `background-color: var(--card-bg-color)`, `box-shadow: 0 0 0 1px RGB(0 0 6 / 3%), 0 1px 3px 1px RGB(0 0 6 / 7%), 0 2px 6px 2px RGB(0 0 6 / 3%)`) on a `var(--window-bg-color)` (`#fafafb`) surface, with `1px solid var(--card-shade-color)` internal row dividers.
+- **Strict 1px Dividers**: Paned separators (`GtkPaned`) draw their own `1px` border. Never add redundant `border-left`/`border-right` on paned children (e.g. `.todo-sidebar`) or bottom borders on `.mail-status-banner`.
 
 ---
 
