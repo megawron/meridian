@@ -1439,6 +1439,80 @@ pub struct ReminderCandidate {
     pub title: String,
     pub due_at: i64,
     pub kind: ReminderKind,
+    #[serde(default)]
+    pub start_at: Option<i64>,
+    #[serde(default)]
+    pub end_at: Option<i64>,
+    #[serde(default)]
+    pub all_day: bool,
+    #[serde(default)]
+    pub location: Option<String>,
+}
+
+/// Format a duration in seconds into a human-readable string using gettext localization,
+/// matching Evolution's `e_cal_util_seconds_to_string` convention.
+pub fn format_duration(seconds: i64) -> String {
+    let seconds = seconds.max(0);
+    if seconds == 0 {
+        return String::new();
+    }
+
+    const MINUTE: i64 = 60;
+    const HOUR: i64 = 60 * MINUTE;
+    const DAY: i64 = 24 * HOUR;
+    const WEEK: i64 = 7 * DAY;
+
+    if seconds >= WEEK {
+        let weeks = (seconds / WEEK) as u32;
+        let remaining_days = ((seconds % WEEK) / DAY) as u32;
+        let remaining_hours = ((seconds % DAY) / HOUR) as u32;
+        if remaining_hours == 0 {
+            let week_str = crate::i18n::ngettext("%d week", "%d weeks", weeks)
+                .replace("%d", &weeks.to_string());
+            if remaining_days > 0 {
+                let day_str = crate::i18n::ngettext("%d day", "%d days", remaining_days)
+                    .replace("%d", &remaining_days.to_string());
+                return format!("{week_str} {day_str}");
+            }
+            return week_str;
+        }
+    }
+
+    if seconds >= DAY {
+        let days = (seconds / DAY) as u32;
+        let remaining_hours = ((seconds % DAY) / HOUR) as u32;
+        let day_str = crate::i18n::ngettext("%d day", "%d days", days)
+            .replace("%d", &days.to_string());
+        if remaining_hours > 0 {
+            let hour_str = crate::i18n::ngettext("%d hour", "%d hours", remaining_hours)
+                .replace("%d", &remaining_hours.to_string());
+            return format!("{day_str} {hour_str}");
+        }
+        return day_str;
+    }
+
+    if seconds >= HOUR {
+        let hours = (seconds / HOUR) as u32;
+        let remaining_minutes = ((seconds % HOUR) / MINUTE) as u32;
+        let hour_str = crate::i18n::ngettext("%d hour", "%d hours", hours)
+            .replace("%d", &hours.to_string());
+        if remaining_minutes > 0 {
+            let min_str = crate::i18n::ngettext("%d minute", "%d minutes", remaining_minutes)
+                .replace("%d", &remaining_minutes.to_string());
+            return format!("{hour_str} {min_str}");
+        }
+        return hour_str;
+    }
+
+    if seconds >= MINUTE {
+        let minutes = (seconds / MINUTE) as u32;
+        return crate::i18n::ngettext("%d minute", "%d minutes", minutes)
+            .replace("%d", &minutes.to_string());
+    }
+
+    let secs = seconds as u32;
+    crate::i18n::ngettext("%d second", "%d seconds", secs)
+        .replace("%d", &secs.to_string())
 }
 
 impl ReminderCandidate {
@@ -1452,6 +1526,88 @@ impl ReminderCandidate {
 
     pub fn deep_link(&self) -> Result<String, ReminderIdentityError> {
         self.identity().map(|identity| identity.to_uri())
+    }
+
+    /// Formats the reminder into a descriptive body matching Evolution's notification convention:
+    /// "{Title}\n{Date} {Time} ({Duration}) {Location}"
+    pub fn format_description(&self) -> String {
+        let mut description = String::new();
+        description.push_str(&self.title);
+
+        let time_anchor = self.start_at.or(Some(self.due_at));
+        if let Some(timestamp) = time_anchor {
+            let dt = glib::DateTime::from_unix_local(timestamp).ok();
+            let time_str = if self.all_day {
+                dt.as_ref()
+                    .and_then(|d| d.format("%x").ok().map(|s| s.to_string()))
+                    .unwrap_or_else(|| {
+                        chrono::DateTime::from_timestamp(timestamp, 0)
+                            .map(|d| d.with_timezone(&chrono::Local).format("%d.%m.%Y").to_string())
+                            .unwrap_or_default()
+                    })
+            } else {
+                let date_part = dt.as_ref()
+                    .and_then(|d| d.format("%x").ok().map(|s| s.to_string()))
+                    .unwrap_or_else(|| {
+                        chrono::DateTime::from_timestamp(timestamp, 0)
+                            .map(|d| d.with_timezone(&chrono::Local).format("%d.%m.%Y").to_string())
+                            .unwrap_or_default()
+                    });
+                let time_part = dt.as_ref()
+                    .and_then(|d| d.format("%H:%M").ok().map(|s| s.to_string()))
+                    .unwrap_or_else(|| {
+                        chrono::DateTime::from_timestamp(timestamp, 0)
+                            .map(|d| d.with_timezone(&chrono::Local).format("%H:%M").to_string())
+                            .unwrap_or_default()
+                    });
+                if date_part.is_empty() {
+                    time_part
+                } else if time_part.is_empty() {
+                    date_part
+                } else {
+                    format!("{date_part} {time_part}")
+                }
+            };
+
+            let duration_str = match (self.start_at, self.end_at) {
+                (Some(s), Some(e)) if e > s => {
+                    let dur = format_duration(e - s);
+                    if dur.is_empty() {
+                        None
+                    } else {
+                        Some(format!("({dur})"))
+                    }
+                }
+                _ => None,
+            };
+
+            let location_str = self
+                .location
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+
+            let mut details = time_str;
+            if let Some(duration) = duration_str {
+                if !details.is_empty() {
+                    details.push(' ');
+                }
+                details.push_str(&duration);
+            }
+            if let Some(loc) = location_str {
+                if !details.is_empty() {
+                    details.push(' ');
+                }
+                details.push_str(loc);
+            }
+
+            if !details.is_empty() {
+                description.push('\n');
+                description.push_str(&details);
+            }
+        }
+
+        description
     }
 }
 
@@ -2228,6 +2384,10 @@ pub fn contact_birthday_candidates(
                     title,
                     due_at,
                     kind: ReminderKind::Contact,
+                    start_at: Some(occ_timestamp),
+                    end_at: Some(occ_timestamp + 86400),
+                    all_day: true,
+                    location: None,
                 });
             }
         }
@@ -2292,6 +2452,7 @@ fn event_reminder_candidates(event: &CalendarEventRecord, now: i64) -> Vec<Remin
                     duration_seconds.map(|duration| value.saturating_add(duration))
                 })
             });
+        let location = ical_property_line(&event.component, "LOCATION").map(|(_, v)| v);
         candidates.extend(alarm_candidates_from_specs(
             &alarms,
             occurrence_start_timestamp,
@@ -2302,6 +2463,8 @@ fn event_reminder_candidates(event: &CalendarEventRecord, now: i64) -> Vec<Remin
             &event.summary,
             &date.format("%Y%m%d").to_string(),
             date == initial_date,
+            event.all_day,
+            location.as_deref(),
         ));
     }
     candidates
@@ -2312,6 +2475,7 @@ fn task_reminder_candidates(task: &TaskRecord) -> Vec<ReminderCandidate> {
         .or_else(|| parse_display_datetime(&task.due, task.due.len() == 10));
     let start = ical_property_timestamp(&task.component, "DTSTART", false).or(due);
     let end = due.or(start);
+    let location = ical_property_line(&task.component, "LOCATION").map(|(_, v)| v);
     alarm_candidates_from_specs(
         &parse_alarms(&task.component),
         start,
@@ -2322,6 +2486,8 @@ fn task_reminder_candidates(task: &TaskRecord) -> Vec<ReminderCandidate> {
         &task.summary,
         "single",
         true,
+        task.due.len() == 10,
+        location.as_deref(),
     )
 }
 
@@ -2341,6 +2507,8 @@ fn memo_reminder_candidates(
         &memo.summary,
         "single",
         true,
+        false,
+        None,
     )
 }
 
@@ -2354,6 +2522,8 @@ fn alarm_candidates_from_specs(
     title: &str,
     occurrence_id: &str,
     include_absolute: bool,
+    all_day: bool,
+    location: Option<&str>,
 ) -> Vec<ReminderCandidate> {
     let Ok(identity) = ReminderIdentity::new(component_kind, source_uid, uid) else {
         return Vec::new();
@@ -2401,6 +2571,10 @@ fn alarm_candidates_from_specs(
                             .to_string(),
                         due_at,
                         kind,
+                        start_at: start,
+                        end_at: end,
+                        all_day,
+                        location: location.map(str::to_string),
                     })
                 })
                 .collect::<Vec<_>>()
@@ -2855,6 +3029,10 @@ mod tests {
             title: "Meeting".to_string(),
             due_at: 100,
             kind: ReminderKind::Event,
+            start_at: None,
+            end_at: None,
+            all_day: false,
+            location: None,
         };
         assert_eq!(
             store.due_reminders(std::slice::from_ref(&candidate), 100),
@@ -3093,6 +3271,10 @@ mod tests {
             title: "Long reminder".to_string(),
             due_at: 100,
             kind: ReminderKind::Event,
+            start_at: None,
+            end_at: None,
+            all_day: false,
+            location: None,
         };
         let long_delivery = ReminderDelivery {
             candidate: long_candidate,
@@ -3433,6 +3615,10 @@ mod tests {
             title: "Test reminder".to_string(),
             due_at,
             kind: kind.into(),
+            start_at: None,
+            end_at: None,
+            all_day: false,
+            location: None,
         }
     }
 
@@ -4131,6 +4317,58 @@ mod tests {
         assert!(!store.dismiss_if_current_at(&candidate3.key, &token3, ancient_time).unwrap());
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn format_duration_handles_various_ranges() {
+        assert_eq!(format_duration(0), "");
+        assert_eq!(format_duration(45), "45 seconds");
+        assert_eq!(format_duration(60), "1 minute");
+        assert_eq!(format_duration(120), "2 minutes");
+        assert_eq!(format_duration(3600), "1 hour");
+        assert_eq!(format_duration(3600 + 30 * 60), "1 hour 30 minutes");
+        assert_eq!(format_duration(8 * 3600 + 30 * 60), "8 hours 30 minutes");
+        assert_eq!(format_duration(24 * 3600), "1 day");
+        assert_eq!(format_duration(24 * 3600 + 4 * 3600), "1 day 4 hours");
+        assert_eq!(format_duration(7 * 24 * 3600), "1 week");
+        assert_eq!(format_duration(14 * 24 * 3600 + 2 * 24 * 3600), "2 weeks 2 days");
+    }
+
+    #[test]
+    fn candidate_format_description_includes_datetime_duration_and_location() {
+        let ts = 1776585600; // 2026-04-19 08:00:00 UTC
+        let identity = ReminderIdentity::new(ReminderComponentKind::Event, "cal", "1").unwrap();
+        let candidate = ReminderCandidate {
+            key: reminder_key(&identity, "single", 0, 0, ts),
+            title: "Project Meeting".to_string(),
+            due_at: ts,
+            kind: ReminderKind::Event,
+            start_at: Some(ts),
+            end_at: Some(ts + 3600),
+            all_day: false,
+            location: Some("Conference Room A".to_string()),
+        };
+
+        let desc = candidate.format_description();
+        assert!(desc.starts_with("Project Meeting\n"));
+        assert!(desc.contains("(1 hour)"));
+        assert!(desc.contains("Conference Room A"));
+
+        let all_day_candidate = ReminderCandidate {
+            key: reminder_key(&identity, "single", 0, 0, ts),
+            title: "Holiday".to_string(),
+            due_at: ts,
+            kind: ReminderKind::Event,
+            start_at: Some(ts),
+            end_at: Some(ts + 86400),
+            all_day: true,
+            location: None,
+        };
+        let all_day_desc = all_day_candidate.format_description();
+        assert!(all_day_desc.starts_with("Holiday\n"));
+        assert!(all_day_desc.contains("(1 day)"));
+        // All-day event shouldn't contain a colon (time of day)
+        assert!(!all_day_desc.contains(':'));
     }
 }
 

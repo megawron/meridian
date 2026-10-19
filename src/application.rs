@@ -10,13 +10,12 @@
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
-use glib::prelude::ToVariant;
 use gtk::{gdk, gio, glib};
 
 use crate::i18n::gettext;
 use crate::services::AppSettings;
 use crate::services::reminder_service::{
-    self, ReminderComponentKind, ReminderIdentity, ReminderKind, ReminderScheduler, ReminderStore,
+    self, ReminderComponentKind, ReminderIdentity, ReminderScheduler, ReminderStore,
     SystemClock, parse_reminder_action_target, parse_reminder_deep_link,
 };
 use crate::window::MeridianWindow;
@@ -644,6 +643,18 @@ impl MeridianApplication {
         ));
         self.add_action(&action);
 
+        let action = gio::SimpleAction::new("show-reminders", None);
+        action.connect_activate(glib::clone!(
+            #[weak(rename_to = app)]
+            self,
+            move |_, _| {
+                let window = app.main_window();
+                window.present();
+                window.present_existing_reminders();
+            }
+        ));
+        self.add_action(&action);
+
         let action = gio::SimpleAction::new("open-mail", Some(glib::VariantTy::STRING));
         action.connect_activate(glib::clone!(
             #[weak(rename_to = app)]
@@ -973,45 +984,22 @@ impl MeridianApplication {
             };
             let mut delivered = Vec::with_capacity(due.len());
             for delivery in due {
-                let Ok(target) = delivery.action_target() else {
+                let Ok(_target) = delivery.action_target() else {
                     tracing::warn!(key = %delivery.candidate.key, "Skipping reminder with invalid action target");
                     continue;
                 };
-                let notification = gio::Notification::new(&delivery.candidate.title);
-                let body = match delivery.candidate.kind {
-                    ReminderKind::Event => gettext("Calendar event is due"),
-                    ReminderKind::Task => gettext("Task is due"),
-                    ReminderKind::Memo => gettext("Memo is due"),
-                    ReminderKind::Contact => gettext("Birthday or anniversary"),
-                };
+                let notification_title = gettext("Reminders");
+                let notification = gio::Notification::new(&notification_title);
+                let body = delivery.candidate.format_description();
                 notification.set_body(Some(&body));
-                let target = target.to_variant();
-                let open_label = gettext("Open");
-                let snooze_10m = gettext("Snooze 10 minutes");
-                let snooze_1h = gettext("Snooze 1 hour");
-                let dismiss_label = gettext("Dismiss");
-                notification.add_button_with_target_value(
-                    &open_label,
-                    "app.open-reminder",
-                    Some(&target),
-                );
-                notification.add_button_with_target_value(
-                    &snooze_10m,
-                    "app.snooze-reminder-10m",
-                    Some(&target),
-                );
-                notification.add_button_with_target_value(
-                    &snooze_1h,
-                    "app.snooze-reminder-1h",
-                    Some(&target),
-                );
-                notification.add_button_with_target_value(
-                    &dismiss_label,
-                    "app.dismiss-reminder",
-                    Some(&target),
-                );
-                notification
-                    .set_default_action_and_target_value("app.open-reminder", Some(&target));
+                let icon = gio::ThemedIcon::from_names(&[
+                    "appointment-soon",
+                    "appointment-soon-symbolic",
+                    "alarm-symbolic",
+                ]);
+                notification.set_icon(&icon);
+                notification.set_default_action("app.show-reminders");
+                notification.add_button(&notification_title, "app.show-reminders");
                 let notification_id = reminder_notification_id(&delivery.candidate.key);
                 app.send_notification(Some(&notification_id), &notification);
                 delivered.push(delivery);
@@ -1185,5 +1173,9 @@ mod tests {
         app.setup_actions();
         assert!(app.lookup_action("open-mail").is_some());
         assert!(app.lookup_action("mark-mail-read").is_some());
+        assert!(app.lookup_action("show-reminders").is_some());
+        assert!(app.lookup_action("open-reminder").is_some());
+        assert!(app.lookup_action("dismiss-reminder").is_some());
+        assert!(app.lookup_action("snooze-reminder-10m").is_some());
     }
 }

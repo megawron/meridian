@@ -231,9 +231,8 @@ impl ReminderDialog {
     }
 
     pub fn present_existing(&self) {
-        if self.has_entries() {
-            self.window.present();
-        }
+        self.update_action_sensitivity();
+        self.window.present();
     }
 
     pub fn has_entries(&self) -> bool {

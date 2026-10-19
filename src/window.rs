@@ -437,6 +437,11 @@ impl MeridianWindow {
     pub(crate) fn present_existing_reminders(&self) {
         if let Some(dialog) = self.imp().reminder_dialog.borrow().as_ref() {
             dialog.present_existing();
+        } else {
+            self.present_reminders(Vec::new(), false);
+            if let Some(dialog) = self.imp().reminder_dialog.borrow().as_ref() {
+                dialog.present_existing();
+            }
         }
     }
 
