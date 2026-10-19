@@ -243,8 +243,8 @@ pub(crate) fn account_sources_match(source_a: &str, source_b: &str) -> bool {
     if strip_acc(canon_a).eq_ignore_ascii_case(strip_acc(canon_b)) {
         return true;
     }
-    let profiles = crate::services::account_config_service::AccountConfigStore::default().load();
-    for profile in &profiles {
+    let profiles = crate::services::account_config_service::AccountConfigStore::default().load_cached();
+    for profile in profiles.iter() {
         let matches_a = profile.id.eq_ignore_ascii_case(a)
             || profile.id.eq_ignore_ascii_case(canon_a)
             || strip_acc(&profile.id).eq_ignore_ascii_case(strip_acc(canon_a))
@@ -263,34 +263,74 @@ pub(crate) fn account_sources_match(source_a: &str, source_b: &str) -> bool {
 }
 
 pub(crate) fn folder_names_match(a: &str, b: &str) -> bool {
+    fn strip_gmail(s: &str) -> &str {
+        let trimmed = s.trim();
+        if trimmed.len() > 8 && trimmed[..8].eq_ignore_ascii_case("[gmail]/") {
+            trimmed[8..].trim()
+        } else {
+            trimmed
+        }
+    }
     let a = a.trim();
     let b = b.trim();
     if a.eq_ignore_ascii_case(b) {
         return true;
     }
-    let is_inbox_a = a.eq_ignore_ascii_case("inbox") || a.eq_ignore_ascii_case("posteingang");
-    let is_inbox_b = b.eq_ignore_ascii_case("inbox") || b.eq_ignore_ascii_case("posteingang");
-    if is_inbox_a && is_inbox_b {
+    let sa = strip_gmail(a);
+    let sb = strip_gmail(b);
+    if sa.eq_ignore_ascii_case(sb) {
         return true;
     }
-    let is_sent_a = a.eq_ignore_ascii_case("sent") || a.eq_ignore_ascii_case("sent items") || a.eq_ignore_ascii_case("gesendete elemente") || a.eq_ignore_ascii_case("gesendet");
-    let is_sent_b = b.eq_ignore_ascii_case("sent") || b.eq_ignore_ascii_case("sent items") || b.eq_ignore_ascii_case("gesendete elemente") || b.eq_ignore_ascii_case("gesendet");
-    if is_sent_a && is_sent_b {
+    let is_inbox = |s: &str| s.eq_ignore_ascii_case("inbox") || s.eq_ignore_ascii_case("posteingang");
+    if is_inbox(sa) && is_inbox(sb) {
         return true;
     }
-    let is_trash_a = a.eq_ignore_ascii_case("trash") || a.eq_ignore_ascii_case("deleted items") || a.eq_ignore_ascii_case("gelöschte elemente") || a.eq_ignore_ascii_case("papierkorb");
-    let is_trash_b = b.eq_ignore_ascii_case("trash") || b.eq_ignore_ascii_case("deleted items") || b.eq_ignore_ascii_case("gelöschte elemente") || b.eq_ignore_ascii_case("papierkorb");
-    if is_trash_a && is_trash_b {
+    let is_sent = |s: &str| {
+        s.eq_ignore_ascii_case("sent")
+            || s.eq_ignore_ascii_case("sent items")
+            || s.eq_ignore_ascii_case("sent mail")
+            || s.eq_ignore_ascii_case("gesendete elemente")
+            || s.eq_ignore_ascii_case("gesendete")
+            || s.eq_ignore_ascii_case("gesendet")
+    };
+    if is_sent(sa) && is_sent(sb) {
         return true;
     }
-    let is_drafts_a = a.eq_ignore_ascii_case("drafts") || a.eq_ignore_ascii_case("draft") || a.eq_ignore_ascii_case("entwürfe");
-    let is_drafts_b = b.eq_ignore_ascii_case("drafts") || b.eq_ignore_ascii_case("draft") || b.eq_ignore_ascii_case("entwürfe");
-    if is_drafts_a && is_drafts_b {
+    let is_trash = |s: &str| {
+        s.eq_ignore_ascii_case("trash")
+            || s.eq_ignore_ascii_case("deleted items")
+            || s.eq_ignore_ascii_case("gelöschte elemente")
+            || s.eq_ignore_ascii_case("gelöscht")
+            || s.eq_ignore_ascii_case("papierkorb")
+            || s.eq_ignore_ascii_case("bin")
+    };
+    if is_trash(sa) && is_trash(sb) {
         return true;
     }
-    let is_junk_a = a.eq_ignore_ascii_case("junk") || a.eq_ignore_ascii_case("junk-e-mail") || a.eq_ignore_ascii_case("spam");
-    let is_junk_b = b.eq_ignore_ascii_case("junk") || b.eq_ignore_ascii_case("junk-e-mail") || b.eq_ignore_ascii_case("spam");
-    if is_junk_a && is_junk_b {
+    let is_drafts = |s: &str| {
+        s.eq_ignore_ascii_case("drafts")
+            || s.eq_ignore_ascii_case("draft")
+            || s.eq_ignore_ascii_case("entwürfe")
+    };
+    if is_drafts(sa) && is_drafts(sb) {
+        return true;
+    }
+    let is_junk = |s: &str| {
+        s.eq_ignore_ascii_case("junk")
+            || s.eq_ignore_ascii_case("junk-e-mail")
+            || s.eq_ignore_ascii_case("junk email")
+            || s.eq_ignore_ascii_case("spam")
+    };
+    if is_junk(sa) && is_junk(sb) {
+        return true;
+    }
+    let is_archive = |s: &str| {
+        s.eq_ignore_ascii_case("archive")
+            || s.eq_ignore_ascii_case("archiv")
+            || s.eq_ignore_ascii_case("all mail")
+            || s.eq_ignore_ascii_case("alle nachrichten")
+    };
+    if is_archive(sa) && is_archive(sb) {
         return true;
     }
     false
@@ -1212,8 +1252,12 @@ pub(crate) fn parse_flexible_datetime(value: &str) -> Option<chrono::DateTime<ch
         return None;
     }
 
-    let cleaned_comments = strip_date_comments(trimmed);
-    let cleaned = cleaned_comments.trim();
+    let cleaned_cow: std::borrow::Cow<'_, str> = if trimmed.contains('(') || trimmed.contains('[') {
+        std::borrow::Cow::Owned(strip_date_comments(trimmed))
+    } else {
+        std::borrow::Cow::Borrowed(trimmed)
+    };
+    let cleaned = cleaned_cow.trim();
     if cleaned.is_empty() {
         return None;
     }
@@ -2327,7 +2371,7 @@ impl PreparedMailTableLayout {
         f64,
     ) {
         let primary_font_size = font_size;
-        let secondary_font_size = (font_size * 0.92).max(10.0);
+        let secondary_font_size = (font_size * 0.96).max(10.5);
 
         let mut primary_desc_normal = gtk::pango::FontDescription::new();
         primary_desc_normal.set_family(font_family);
@@ -2582,7 +2626,7 @@ pub(crate) fn prepare_mail_table_layout_from_rows(
     }
     let height = (rows.len() as f64 * row_height).max(40.0);
     let font_size = 13.0;
-    let font_family = "Sans".to_string();
+    let font_family = "Adwaita Sans, Cantarell, Sans".to_string();
     let (
         primary_desc_normal,
         primary_desc_bold,
@@ -3269,11 +3313,11 @@ pub(crate) fn format_mail_table_subject_markup(
             (DEFAULT_IMPORTANT_FG_COLOR_LIGHT, DEFAULT_IMPORTANT_FG_COLOR_LIGHT)
         }
     } else if is_dark {
-        ("#ffffff", "#deddda")
+        ("#ffffff", "#f2f2f0")
     } else {
-        ("#000000", "#1f1f1f")
+        ("#000000", "#000000")
     };
-    let dim_hex = if is_dark { "#9a9996" } else { "#5f6368" };
+    let dim_hex = if is_dark { "#b0afac" } else { "#4a4e52" };
 
     let clean_subject = if raw_subject.contains('\n') || raw_subject.contains('\r') {
         raw_subject.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -3361,17 +3405,23 @@ pub(crate) fn draw_mail_table_canvas(
         (0.0, 0.0, 0.0) // Deep crisp solid black for unread
     };
     let (read_r, read_g, read_b) = if is_dark {
-        (0.90, 0.90, 0.90)
+        (0.95, 0.95, 0.95)
     } else {
-        (0.08, 0.08, 0.08) // Crisp, dark high-contrast charcoal/black for read
+        (0.0, 0.0, 0.0) // Crisp solid black for read (Evolution parity)
     };
     let (dim_r, dim_g, dim_b) = if is_dark {
-        (0.68, 0.68, 0.68)
+        (0.76, 0.76, 0.76)
     } else {
-        (0.38, 0.38, 0.38) // Clearly visible secondary text for date and size
+        (0.24, 0.24, 0.24) // High-contrast secondary text for date and size
     };
     let accent_rgb = (0.208, 0.518, 0.894); // Adwaita blue #3584e4
 
+    if let Ok(mut font_opts) = gtk::cairo::FontOptions::new() {
+        font_opts.set_antialias(gtk::cairo::Antialias::Gray);
+        font_opts.set_hint_style(gtk::cairo::HintStyle::Slight);
+        font_opts.set_hint_metrics(gtk::cairo::HintMetrics::On);
+        cr.set_font_options(&font_opts);
+    }
     let pango_layout = pangocairo_ffi::create_layout(cr);
     let primary_desc_normal = &layout.primary_desc_normal;
     let primary_desc_bold = &layout.primary_desc_bold;
@@ -3559,13 +3609,13 @@ pub(crate) fn draw_mail_table_canvas(
                 let pill_h = 16.0;
                 line2_right_x -= pill_w + 4.0;
                 if is_dark {
-                    cr.set_source_rgba(1.0, 1.0, 1.0, 0.12);
+                    cr.set_source_rgba(1.0, 1.0, 1.0, 0.18);
                 } else {
-                    cr.set_source_rgba(0.0, 0.0, 0.0, 0.08);
+                    cr.set_source_rgba(0.0, 0.0, 0.0, 0.12);
                 }
                 draw_cairo_rounded_rect(cr, line2_right_x, y + 31.0, pill_w, pill_h, 4.0);
                 let _ = cr.fill();
-                cr.set_source_rgb(dim_r, dim_g, dim_b);
+                cr.set_source_rgba(r, g, b, 0.88);
                 cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
                 cr.set_font_size(9.5);
                 cr.move_to(line2_right_x + 4.5, y + 42.5);
@@ -3599,9 +3649,9 @@ pub(crate) fn draw_mail_table_canvas(
                     cr.set_source_rgb(0.655, 0.271, 0.243);
                 }
             } else if is_dark {
-                cr.set_source_rgb(0.92, 0.92, 0.92);
+                cr.set_source_rgb(0.95, 0.95, 0.95);
             } else {
-                cr.set_source_rgb(0.12, 0.12, 0.12);
+                cr.set_source_rgb(0.0, 0.0, 0.0);
             }
             cr.move_to(subj_x, y + 30.0);
             pangocairo_ffi::update_layout(cr, &pango_layout);
@@ -3844,8 +3894,8 @@ pub(crate) fn draw_mail_table_canvas(
             let indent = (row.depth as f64) * 16.0;
 
             if row.is_expandable {
-                cr.set_source_rgba(dim_r, dim_g, dim_b, 0.80);
-                cr.set_line_width(1.7);
+                cr.set_source_rgba(r, g, b, 0.88);
+                cr.set_line_width(1.9);
                 cr.set_line_cap(gtk::cairo::LineCap::Round);
                 cr.set_line_join(gtk::cairo::LineJoin::Round);
                 let cx = subject_x + indent + 9.0;
@@ -5558,11 +5608,14 @@ fn prepare_searchable_body_texts(
             return Err("Mail search index was cancelled".to_string());
         }
         if !message.id.trim().is_empty() {
-            insert_searchable_body_text_first(
-                &mut texts,
-                parsed_mail_identity(message),
-                &message.html_body,
-            );
+            let identity = parsed_mail_identity(message);
+            texts.entry(identity).or_insert_with(|| {
+                if message.is_preview_only || message.html_body.is_empty() {
+                    Arc::<str>::from(message.preview_snippet.to_lowercase())
+                } else {
+                    prepare_searchable_body_text(&message.html_body)
+                }
+            });
         }
     }
     Ok(texts)
@@ -5591,8 +5644,8 @@ fn prepared_camel_result(camel: CamelMailLoad, cancelled: &AtomicBool) -> MailPa
     }
 }
 
-const MAIL_MODEL_CHUNK_SIZE: usize = 1024;
-const MAIL_SORT_WORKER_THRESHOLD: usize = 128;
+const MAIL_MODEL_CHUNK_SIZE: usize = 4096;
+const MAIL_SORT_WORKER_THRESHOLD: usize = 25_000;
 const MESSAGE_CONTEXT_ACTIONS: &[(&str, &str)] = &[
     ("Reply", "win.reply"),
     ("Reply to All", "win.reply-all"),
@@ -5713,7 +5766,7 @@ fn sorted_record_indices<T>(mut records: Vec<T>, descending: bool) -> Vec<usize>
 where
     T: Ord + RecordIndex,
 {
-    records.sort();
+    records.sort_unstable();
     if descending {
         records.reverse();
     }
@@ -6224,7 +6277,7 @@ fn load_mail_backend(
         request.folder_name.as_deref(),
         request.offset,
         if request.source_uid.is_some() || request.folder_name.is_some() {
-            0
+            request.max_messages_per_folder.max(500)
         } else {
             request.max_messages_per_folder
         },
@@ -6232,7 +6285,11 @@ fn load_mail_backend(
         progress_sender,
     );
     if let Ok(ref camel) = camel_result {
-        if !camel.messages.is_empty() || !camel.folders.is_empty() {
+        if request.source_uid.is_none()
+            && request.folder_name.is_none()
+            && request.offset == 0
+            && (!camel.messages.is_empty() || !camel.folders.is_empty())
+        {
             camel_mail_service::save_mail_load_cache(camel);
         }
     }
@@ -6618,6 +6675,7 @@ mod imp {
         pub dynamic_folder_expanded: RefCell<HashSet<String>>,
         pub(crate) mail_folder_summaries: RefCell<Vec<CamelFolderSummary>>,
         pub(crate) known_unread_message_ids: RefCell<HashSet<String>>,
+        pub(crate) initialized_unread_scopes: RefCell<HashSet<String>>,
         pub(crate) initial_mail_load_completed: Cell<bool>,
         pub is_same_folder_refresh: Cell<bool>,
         pub on_unread_count_changed: RefCell<Option<UnreadCountCallback>>,
@@ -6786,6 +6844,15 @@ mod imp {
         pub agenda_canvas_selected_row: Cell<Option<usize>>,
         pub agenda_canvas_collapsed_days: RefCell<HashSet<chrono::NaiveDate>>,
         pub agenda_canvas_collapsed_tasks: Cell<bool>,
+        pub agenda_vpaned: RefCell<Option<gtk::Paned>>,
+        pub agenda_tasks_box: RefCell<Option<gtk::Box>>,
+        pub agenda_tasks_scroll: RefCell<Option<gtk::ScrolledWindow>>,
+        pub agenda_tasks_canvas: RefCell<Option<gtk::DrawingArea>>,
+        pub(crate) agenda_tasks_canvas_items: RefCell<Vec<AgendaSidebarCanvasItem>>,
+        pub agenda_tasks_hovered_row: Cell<Option<usize>>,
+        pub agenda_tasks_selected_row: Cell<Option<usize>>,
+        pub agenda_tasks_collapse_btn: RefCell<Option<gtk::Button>>,
+        pub agenda_tasks_count_badge: RefCell<Option<gtk::Label>>,
         pub agenda_canvas_cached_data: RefCell<Option<(Vec<crate::services::calendar_store_service::CalendarEventRecord>, Vec<crate::services::calendar_store_service::TaskRecord>)>>,
         pub(crate) agenda_canvas_grouped_data: RefCell<Option<AgendaGroupedData>>,
         pub agenda_refresh_in_flight: Cell<bool>,
@@ -7741,6 +7808,7 @@ impl MailPage {
         if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
             filter.changed(gtk::FilterChange::Different);
         }
+        self.queue_mail_table_draw();
     }
 
     pub(crate) fn has_active_search(&self) -> bool {
@@ -13006,7 +13074,19 @@ impl MailPage {
     }
 
     pub fn mark_message_unread(&self, message: &MailMessageObject) -> Result<bool, MailOperationError> {
+        let was_unread = message.is_unread();
+        self.imp().known_unread_message_ids.borrow_mut().insert(message.id());
         message.set_unread(true);
+        if !was_unread {
+            if let Some(loc) = message.backend_location() {
+                self.apply_camel_folder_counter_delta(&loc.source_uid, &loc.folder_name, 1, 0);
+            }
+        }
+        self.refresh_unread_counters();
+        if let Some(selected) = self.selected_message() {
+            self.render_thread_context(&selected);
+        }
+        self.queue_mail_table_draw();
 
         let command = MailCommand::set_message_state(
             message.id(),
@@ -13017,8 +13097,6 @@ impl MailPage {
             message.is_flagged(),
         );
         self.execute_mail_command(command)?;
-        self.refresh_unread_counters();
-        self.queue_mail_table_draw();
         Ok(true)
     }
 
@@ -13037,8 +13115,19 @@ impl MailPage {
     }
 
     pub fn mark_message_read(&self, message: &MailMessageObject) -> Result<bool, MailOperationError> {
+        let was_unread = message.is_unread();
         self.imp().known_unread_message_ids.borrow_mut().remove(&message.id());
         message.set_unread(false);
+        if was_unread {
+            if let Some(loc) = message.backend_location() {
+                self.apply_camel_folder_counter_delta(&loc.source_uid, &loc.folder_name, -1, 0);
+            }
+        }
+        self.refresh_unread_counters();
+        if let Some(selected) = self.selected_message() {
+            self.render_thread_context(&selected);
+        }
+        self.queue_mail_table_draw();
 
         let command = MailCommand::set_message_state(
             message.id(),
@@ -13049,8 +13138,6 @@ impl MailPage {
             message.is_flagged(),
         );
         self.execute_mail_command(command)?;
-        self.refresh_unread_counters();
-        self.queue_mail_table_draw();
         Ok(true)
     }
 
@@ -20176,9 +20263,9 @@ impl MailPage {
             || configured_family == "system-ui, sans-serif"
             || configured_family.contains("sans-serif")
         {
-            format!("Cantarell, {}, sans-serif", desktop_family)
+            format!("{}, Adwaita Sans, Cantarell, sans-serif", desktop_family)
         } else {
-            format!("{}, Cantarell, {}, sans-serif", configured_family, desktop_family)
+            format!("{}, {}, Adwaita Sans, Cantarell, sans-serif", configured_family, desktop_family)
         };
 
         let user_font_size = settings
@@ -25761,6 +25848,7 @@ impl MailPage {
                 }
                 custom_filter_for_unified.changed(gtk::FilterChange::Different);
                 thread_filter_for_unified.changed(gtk::FilterChange::Different);
+                page.queue_mail_table_draw();
 
                 let needs_all_mail_reload = page
                     .imp()
@@ -25775,6 +25863,7 @@ impl MailPage {
                 } else {
                     let anchor = page.anchor_for_folder(&selection);
                     page.select_message_after_reload(&anchor);
+                    page.queue_mail_table_draw();
                 }
                 if page.imp().is_mobile.get() || page.imp().is_tablet.get() {
                     page.set_drill_down_level(MailDrillDownLevel::Messages);
@@ -26726,33 +26815,34 @@ impl MailPage {
             .vscrollbar_policy(gtk::PolicyType::Never)
             .propagate_natural_width(false)
             .min_content_width(0)
-            .min_content_height(28)
-            .max_content_height(34)
+            .min_content_height(24)
+            .max_content_height(28)
             .vexpand(false)
             .valign(gtk::Align::Start)
             .child(&thread_bar_box)
             .margin_start(8)
             .margin_end(8)
-            .margin_top(2)
-            .margin_bottom(2)
+            .margin_top(1)
+            .margin_bottom(1)
             .css_classes(vec!["mail-conversation-bar"])
             .visible(false)
             .build();
 
         let thread_accordion_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(3)
+            .spacing(1)
             .margin_start(8)
             .margin_end(8)
-            .margin_top(2)
+            .margin_top(0)
             .margin_bottom(2)
+            .css_classes(vec!["mail-thread-accordion-list"])
             .build();
         self.imp().thread_accordion_box.replace(Some(thread_accordion_box.clone()));
         let thread_accordion_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_height(true)
-            .max_content_height(140)
+            .max_content_height(130)
             .vexpand(false)
             .child(&thread_accordion_box)
             .visible(false)
@@ -27617,6 +27707,125 @@ impl MailPage {
                         false
                     };
                     drop(current_id);
+                    let was_unread = msg.is_unread();
+                    let settings = AppSettings::try_new();
+                    let mark_read_on_selection = settings
+                        .as_ref()
+                        .map(|s| s.mail_mark_seen())
+                        .unwrap_or(true);
+                    let timeout_ms = settings
+                        .as_ref()
+                        .map(|s| s.mail_mark_seen_timeout())
+                        .unwrap_or(1500);
+
+                    if let Some(source) = page_for_read.upgrade().and_then(|p| p.imp().mark_read_timeout_source.borrow_mut().take()) {
+                        source.remove();
+                    }
+
+                    if was_unread && mark_read_on_selection {
+                        let msg_id = msg.id().to_string();
+                        let backend_location = msg.backend_location();
+                        let is_flagged = msg.is_flagged();
+
+                        if timeout_ms <= 0 {
+                            msg.set_unread(false);
+                            if let Some(page) = page_for_read.upgrade() {
+                                page.imp().known_unread_message_ids.borrow_mut().remove(&msg_id);
+                                if let Some(ref loc) = backend_location {
+                                    page.apply_camel_folder_counter_delta(&loc.source_uid, &loc.folder_name, -1, 0);
+                                }
+                                page.refresh_unread_counters();
+                                page.render_thread_context(&msg);
+                                page.queue_mail_table_draw();
+
+                                let command = MailCommand::set_message_state(
+                                    &msg_id,
+                                    backend_location.clone(),
+                                    true,
+                                    is_flagged,
+                                    false,
+                                    is_flagged,
+                                );
+                                if let Err(error) = page.execute_mail_command(command) {
+                                    tracing::warn!(%error, "Immediate read-state mutation busy/failed, scheduling retry");
+                                    let page_retry = page.downgrade();
+                                    let msg_id_retry = msg_id.clone();
+                                    let loc_retry = backend_location.clone();
+                                    glib::timeout_add_local_once(
+                                        std::time::Duration::from_millis(600),
+                                        move || {
+                                            if let Some(page) = page_retry.upgrade() {
+                                                let retry_cmd = MailCommand::set_message_state(
+                                                    &msg_id_retry,
+                                                    loc_retry,
+                                                    true,
+                                                    is_flagged,
+                                                    false,
+                                                    is_flagged,
+                                                );
+                                                let _ = page.execute_mail_command(retry_cmd);
+                                            }
+                                        },
+                                    );
+                                }
+                            }
+                        } else if let Some(page) = page_for_read.upgrade() {
+                            let page_weak = page.downgrade();
+                            let timeout_source = glib::timeout_add_local_once(
+                                std::time::Duration::from_millis(timeout_ms as u64),
+                                move || {
+                                    if let Some(page) = page_weak.upgrade() {
+                                        page.imp().mark_read_timeout_source.replace(None);
+                                        if let Some(current_msg) = page.selected_message() {
+                                            if current_msg.id() == msg_id && current_msg.is_unread() {
+                                                current_msg.set_unread(false);
+                                                page.imp().known_unread_message_ids.borrow_mut().remove(&msg_id);
+                                                if let Some(ref loc) = backend_location {
+                                                    page.apply_camel_folder_counter_delta(&loc.source_uid, &loc.folder_name, -1, 0);
+                                                }
+                                                page.refresh_unread_counters();
+                                                page.render_thread_context(&current_msg);
+                                                page.queue_mail_table_draw();
+
+                                                let command = MailCommand::set_message_state(
+                                                    &msg_id,
+                                                    backend_location.clone(),
+                                                    true,
+                                                    is_flagged,
+                                                    false,
+                                                    is_flagged,
+                                                );
+                                                if let Err(error) = page.execute_mail_command(command) {
+                                                    tracing::warn!(%error, "Delayed read-state mutation busy/failed, scheduling retry");
+                                                    let page_retry = page.downgrade();
+                                                    let msg_id_retry = msg_id.clone();
+                                                    let loc_retry = backend_location.clone();
+                                                    glib::timeout_add_local_once(
+                                                        std::time::Duration::from_millis(600),
+                                                        move || {
+                                                            if let Some(page) = page_retry.upgrade() {
+                                                                let retry_cmd = MailCommand::set_message_state(
+                                                                    &msg_id_retry,
+                                                                    loc_retry,
+                                                                    true,
+                                                                    is_flagged,
+                                                                    false,
+                                                                    is_flagged,
+                                                                );
+                                                                let _ = page.execute_mail_command(retry_cmd);
+                                                            }
+                                                        },
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                            );
+                            page.imp().mark_read_timeout_source.replace(Some(timeout_source));
+                        }
+                    }
+
                     if same_id || same_uid {
                         if same_uid && !same_id {
                             mail_viewer.imp().current_message_id.replace(Some(msg.id().to_string()));
@@ -27634,69 +27843,34 @@ impl MailPage {
                         }
                         page.reset_displayed_message_search_for_selection();
                     }
-                    if let Some(source) = page_for_read.upgrade().and_then(|p| p.imp().mark_read_timeout_source.borrow_mut().take()) {
-                        source.remove();
-                    }
-                    let was_unread = msg.is_unread();
-                    let settings = AppSettings::try_new();
-                    let mark_read_on_selection = settings
-                        .as_ref()
-                        .map(|s| s.mail_mark_seen())
-                        .unwrap_or(true);
-                    let timeout_ms = settings
-                        .as_ref()
-                        .map(|s| s.mail_mark_seen_timeout())
-                        .unwrap_or(1500);
-
-                    if was_unread && mark_read_on_selection {
-                        let msg_id = msg.id().to_string();
-                        let backend_location = msg.backend_location();
-                        let is_flagged = msg.is_flagged();
-
-                        if timeout_ms <= 0 {
-                            msg.set_unread(false);
-                            let command = MailCommand::set_message_state(
-                                &msg_id,
-                                backend_location,
-                                true,
-                                is_flagged,
-                                false,
-                                is_flagged,
-                            );
-                            if let Some(page) = page_for_read.upgrade() {
-                                if let Err(error) = page.execute_mail_command(command) {
-                                    tracing::error!(%error, "Could not queue read-state mutation");
+                    if msg.is_preview_only() {
+                        if let Some(location) = msg.backend_location()
+                            && let Some(raw) =
+                                camel_mail_service::try_load_cached_raw_message(&location)
+                            && raw.len() <= 1024 * 1024
+                        {
+                            let cancellation = AtomicBool::new(false);
+                            if let Ok((parsed, searchable)) = prepare_loaded_message_body(
+                                &msg.id(),
+                                &msg.folder_id(),
+                                &raw,
+                                msg.is_unread(),
+                                &cancellation,
+                            ) {
+                                msg.set_raw_headers(parsed.raw_headers);
+                                msg.set_raw_mime(parsed.raw_mime);
+                                msg.replace_rendered_content(
+                                    parsed.html_body,
+                                    parsed.preview_snippet,
+                                    parsed.attachments,
+                                    Some(searchable),
+                                );
+                                if let Some(page) = page_for_read.upgrade()
+                                    && page.has_active_search()
+                                {
+                                    page.invalidate_message_filters();
                                 }
-                                page.refresh_unread_counters();
                             }
-                        } else if let Some(page) = page_for_read.upgrade() {
-                            let page_weak = page.downgrade();
-                            let timeout_source = glib::timeout_add_local_once(
-                                std::time::Duration::from_millis(timeout_ms as u64),
-                                move || {
-                                    if let Some(page) = page_weak.upgrade() {
-                                        page.imp().mark_read_timeout_source.replace(None);
-                                        if let Some(current_msg) = page.selected_message() {
-                                            if current_msg.id() == msg_id && current_msg.is_unread() {
-                                                current_msg.set_unread(false);
-                                                let command = MailCommand::set_message_state(
-                                                    &msg_id,
-                                                    backend_location,
-                                                    true,
-                                                    is_flagged,
-                                                    false,
-                                                    is_flagged,
-                                                );
-                                                if let Err(error) = page.execute_mail_command(command) {
-                                                    tracing::error!(%error, "Could not queue delayed read-state mutation");
-                                                }
-                                                page.refresh_unread_counters();
-                                            }
-                                        }
-                                    }
-                                },
-                            );
-                            page.imp().mark_read_timeout_source.replace(Some(timeout_source));
                         }
                     }
                     if let Some(page) = page_for_read.upgrade() {
@@ -29152,7 +29326,6 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
             .spacing(6)
             .valign(gtk::Align::Center)
             .hexpand(true)
-            .css_classes(vec!["dim-label"])
             .build();
         let icon_thread = gtk::Image::new();
         set_image_icon_with_fallback(
@@ -29343,7 +29516,11 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
                     };
                     let lbl_snippet = gtk::Label::builder()
                         .label(&content_text)
-                        .css_classes(vec!["caption", "dim-label"])
+                        .css_classes(if is_current || message.is_unread() {
+                            vec!["caption"]
+                        } else {
+                            vec!["caption", "dim-label"]
+                        })
                         .valign(gtk::Align::Center)
                         .halign(gtk::Align::Start)
                         .hexpand(true)
@@ -29354,7 +29531,11 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
                     // Date
                     let lbl_date = gtk::Label::builder()
                         .label(&format_message_date(&message.date_str()))
-                        .css_classes(vec!["caption", "dim-label"])
+                        .css_classes(if is_current || message.is_unread() {
+                            vec!["caption", "heading"]
+                        } else {
+                            vec!["caption"]
+                        })
                         .valign(gtk::Align::Center)
                         .halign(gtk::Align::End)
                         .build();
@@ -29925,6 +30106,183 @@ pub(crate) fn layout_agenda_canvas_items(
     (items, current_y)
 }
 
+pub(crate) fn format_task_due_short(due: &str, today: chrono::NaiveDate) -> Option<String> {
+    let t = due.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let date_str = t.split_whitespace().next().unwrap_or(t);
+    let due_date = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
+        .or_else(|_| chrono::NaiveDate::parse_from_str(date_str, "%Y%m%d"))
+        .ok()?;
+
+    if due_date == today {
+        Some(crate::i18n::gettext("Today"))
+    } else if due_date == today + chrono::Duration::days(1) {
+        Some(crate::i18n::gettext("Tomorrow"))
+    } else if due_date == today - chrono::Duration::days(1) {
+        Some(crate::i18n::gettext("Yesterday"))
+    } else {
+        Some(due_date.format("%d.%m.").to_string())
+    }
+}
+
+pub(crate) fn is_task_overdue(due: &str, today: chrono::NaiveDate) -> bool {
+    let t = due.trim();
+    if t.is_empty() {
+        return false;
+    }
+    let date_str = t.split_whitespace().next().unwrap_or(t);
+    if let Ok(due_date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
+        .or_else(|_| chrono::NaiveDate::parse_from_str(date_str, "%Y%m%d"))
+    {
+        due_date < today
+    } else {
+        false
+    }
+}
+
+pub(crate) fn layout_agenda_events_canvas_items(
+    grouped: &AgendaGroupedData,
+    today: chrono::NaiveDate,
+    collapsed_days: &std::collections::HashSet<chrono::NaiveDate>,
+    date_format: &str,
+    use_12h: bool,
+) -> (Vec<AgendaSidebarCanvasItem>, f64) {
+    let mut items = Vec::new();
+    let mut current_y = 4.0;
+
+    for day in &grouped.days {
+        let is_expanded = !collapsed_days.contains(&day.date);
+        let date_label = MailPage::format_agenda_date(day.date, today, date_format);
+        let header_h = 28.0;
+        items.push(AgendaSidebarCanvasItem::DateHeader {
+            date: day.date,
+            title: date_label,
+            is_expanded,
+            y: current_y,
+            height: header_h,
+        });
+        current_y += header_h + 2.0;
+
+        if is_expanded {
+            if day.events.is_empty() {
+                let empty_h = 24.0;
+                items.push(AgendaSidebarCanvasItem::EmptyState {
+                    text: crate::i18n::gettext("No events"),
+                    y: current_y,
+                    height: empty_h,
+                });
+                current_y += empty_h + 2.0;
+            } else {
+                for event in &day.events {
+                    let color = crate::views::calendar_page::event_color_for_record(event);
+                    let is_dark_bg = MailPage::is_dark_color(&color);
+                    let time_str = if !event.all_day {
+                        crate::views::calendar_page::event_start_datetime(event)
+                            .map(|st| MailPage::format_agenda_time(st, use_12h))
+                    } else {
+                        None
+                    };
+                    let bar_h = 28.0;
+                    items.push(AgendaSidebarCanvasItem::EventBar {
+                        summary: event.summary.clone(),
+                        event: event.clone(),
+                        color,
+                        is_dark: is_dark_bg,
+                        time_str,
+                        y: current_y,
+                        height: bar_h,
+                    });
+                    current_y += bar_h + 2.0;
+                }
+            }
+            current_y += 4.0;
+        }
+    }
+
+    current_y += 4.0;
+    (items, current_y)
+}
+
+pub(crate) fn layout_agenda_tasks_canvas_items(
+    grouped: &AgendaGroupedData,
+    _today: chrono::NaiveDate,
+    collapsed_tasks: bool,
+) -> (Vec<AgendaSidebarCanvasItem>, f64) {
+    if collapsed_tasks {
+        return (Vec::new(), 0.0);
+    }
+
+    let mut items = Vec::new();
+    let mut current_y = 4.0;
+
+    let mut all_tasks = Vec::new();
+    for day in &grouped.days {
+        for task in &day.tasks {
+            all_tasks.push(task.clone());
+        }
+    }
+    for task in &grouped.undated_tasks {
+        all_tasks.push(task.clone());
+    }
+
+    let parse_date = |due: &str| -> Option<chrono::NaiveDate> {
+        let t = due.trim();
+        if t.is_empty() {
+            return None;
+        }
+        let date_str = t.split_whitespace().next().unwrap_or(t);
+        chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
+            .or_else(|_| chrono::NaiveDate::parse_from_str(date_str, "%Y%m%d"))
+            .ok()
+    };
+
+    all_tasks.sort_by(|a, b| {
+        a.completed
+            .cmp(&b.completed)
+            .then_with(|| {
+                let a_due = parse_date(&a.due);
+                let b_due = parse_date(&b.due);
+                match (a_due, b_due) {
+                    (Some(ad), Some(bd)) => ad.cmp(&bd),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                }
+            })
+            .then_with(|| a.priority.cmp(&b.priority))
+            .then_with(|| a.summary.to_lowercase().cmp(&b.summary.to_lowercase()))
+    });
+
+    if all_tasks.is_empty() {
+        let empty_h = 24.0;
+        items.push(AgendaSidebarCanvasItem::EmptyState {
+            text: crate::i18n::gettext("No tasks"),
+            y: current_y,
+            height: empty_h,
+        });
+        current_y += empty_h + 4.0;
+    } else {
+        for task in all_tasks {
+            let task_h = 28.0;
+            let cb_rect = (8.0, current_y + 6.0, 16.0, 16.0);
+            items.push(AgendaSidebarCanvasItem::TaskRow {
+                completed: task.completed,
+                summary: task.summary.clone(),
+                checkbox_rect: cb_rect,
+                task,
+                y: current_y,
+                height: task_h,
+            });
+            current_y += task_h + 2.0;
+        }
+        current_y += 4.0;
+    }
+
+    (items, current_y)
+}
+
 #[allow(dead_code)]
 pub(crate) fn calculate_agenda_canvas_items(
     events: &[crate::services::calendar_store_service::CalendarEventRecord],
@@ -30159,9 +30517,9 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                 completed,
                 summary,
                 checkbox_rect,
+                task,
                 y,
                 height,
-                ..
             } => {
                 if is_hovered {
                     let bg_alpha = if is_dark { 0.06 } else { 0.04 };
@@ -30173,6 +30531,21 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                     );
                     draw_cairo_rounded_rect(cr, 4.0, *y, (width - 8.0).max(10.0), *height, 4.0);
                     let _ = cr.fill();
+                }
+
+                if is_selected {
+                    let (accent_r, accent_g, accent_b) = (53, 132, 228);
+                    draw_cairo_rounded_rect(
+                        cr,
+                        4.5,
+                        *y + 0.5,
+                        (width - 9.0).max(10.0),
+                        *height - 1.0,
+                        4.0,
+                    );
+                    cr.set_source_rgba(accent_r as f64 / 255.0, accent_g as f64 / 255.0, accent_b as f64 / 255.0, 0.85);
+                    cr.set_line_width(1.2);
+                    let _ = cr.stroke();
                 }
 
                 // Checkbox
@@ -30200,10 +30573,38 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                     let _ = cr.stroke();
                 }
 
+                // Due text on the right (if present)
+                let mut right_reserve = 6.0;
+                let today = chrono::Local::now().date_naive();
+                if let Some(due_str) = format_task_due_short(&task.due, today) {
+                    let is_overdue = !*completed && is_task_overdue(&task.due, today);
+                    cr.select_font_face(
+                        "sans-serif",
+                        gtk::cairo::FontSlant::Normal,
+                        gtk::cairo::FontWeight::Normal,
+                    );
+                    cr.set_font_size(10.5);
+                    if let Ok(ext) = cr.text_extents(&due_str) {
+                        let due_w = ext.x_advance();
+                        let due_x = width - due_w - 10.0;
+                        let due_y = *y + (*height / 2.0) + 3.5;
+                        if is_overdue {
+                            cr.set_source_rgba(0.95, 0.25, 0.25, 0.95);
+                        } else if is_dark {
+                            cr.set_source_rgba(0.70, 0.70, 0.70, 0.75);
+                        } else {
+                            cr.set_source_rgba(0.45, 0.45, 0.45, 0.75);
+                        }
+                        cr.move_to(due_x, due_y);
+                        let _ = cr.show_text(&due_str);
+                        right_reserve = due_w + 14.0;
+                    }
+                }
+
                 // Summary text
                 let text_x = cx + cw + 8.0;
                 let text_y = *y + (*height / 2.0) + 4.0;
-                let max_w = (width - text_x - 6.0).max(10.0);
+                let max_w = (width - text_x - right_reserve).max(10.0);
 
                 cr.select_font_face(
                     "sans-serif",
@@ -30308,21 +30709,44 @@ impl MailPage {
 
         container.append(&header_bar);
 
-        // Content: ScrolledWindow with DrawingArea (Cairo Canvas)
-        let scrolled = gtk::ScrolledWindow::builder()
+        // Vertical Paned dividing Events (Top) and Tasks (Bottom)
+        let todo_vpaned = gtk::Paned::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .wide_handle(false)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        let initial_vpos = AppSettings::try_new()
+            .map(|s| s.mail_todo_vpane_position())
+            .unwrap_or(280);
+        todo_vpaned.set_position(initial_vpos);
+        self.imp().agenda_vpaned.replace(Some(todo_vpaned.clone()));
+
+        todo_vpaned.connect_position_notify(move |paned| {
+            let pos = paned.position();
+            if pos > 60 {
+                if let Some(settings) = AppSettings::try_new() {
+                    settings.set_mail_todo_vpane_position(pos);
+                }
+            }
+        });
+
+        // 1. Events Section (Start child of todo_vpaned)
+        let events_scrolled = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .vexpand(true)
             .hexpand(true)
+            .min_content_height(60)
             .build();
 
         let agenda_canvas = gtk::DrawingArea::builder()
             .hexpand(true)
             .vexpand(true)
-            .content_height(400)
+            .content_height(200)
             .css_classes(vec!["agenda-sidebar-canvas"])
             .build();
-        set_accessible_label(&agenda_canvas, "Agenda Canvas");
+        set_accessible_label(&agenda_canvas, "Agenda Events Canvas");
         self.imp().agenda_canvas.replace(Some(agenda_canvas.clone()));
 
         let page_for_draw = self.downgrade();
@@ -30338,14 +30762,13 @@ impl MailPage {
             draw_agenda_sidebar_canvas(cr, &items, width as f64, hovered_idx, selected_idx, is_dark);
         });
 
-        // Click gesture for agenda canvas
         let click_gesture = gtk::GestureClick::new();
         let page_for_click = self.downgrade();
         let canvas_for_click = agenda_canvas.clone();
-        click_gesture.connect_pressed(move |gesture, n_press, x, y| {
+        click_gesture.connect_pressed(move |gesture, n_press, _x, y| {
             let Some(page) = page_for_click.upgrade() else { return; };
             let items = page.imp().agenda_canvas_items.borrow().clone();
-            let Some(idx) = hit_test_agenda_canvas(&items, x, y) else {
+            let Some(idx) = hit_test_agenda_canvas(&items, _x, y) else {
                 page.dismiss_active_agenda_popover();
                 return;
             };
@@ -30364,25 +30787,22 @@ impl MailPage {
                     drop(collapsed);
                     page.rebuild_agenda_canvas_layout();
                 }
-                AgendaSidebarCanvasItem::TasksSectionHeader { .. } => {
-                    page.dismiss_active_agenda_popover();
-                    let prev = page.imp().agenda_canvas_collapsed_tasks.get();
-                    page.imp().agenda_canvas_collapsed_tasks.set(!prev);
-                    page.rebuild_agenda_canvas_layout();
-                }
                 AgendaSidebarCanvasItem::EventBar { event, y: bar_y, height: bar_h, .. } => {
                     let settings = AppSettings::try_new();
                     let use_12h = settings.as_ref().map(|s| s.resolved_time_format() == "12h").unwrap_or(false);
                     if n_press == 1 {
-                        // If clicking the already selected and active item, do nothing
                         if page.imp().agenda_canvas_selected_row.get() == Some(idx)
                             && page.imp().active_agenda_popover.borrow().as_ref().map(|p| p.parent().is_some()).unwrap_or(false)
                         {
                             return;
                         }
 
+                        page.imp().agenda_tasks_selected_row.set(None);
                         page.imp().agenda_canvas_selected_row.set(Some(idx));
                         canvas_for_click.queue_draw();
+                        if let Some(tasks_c) = page.imp().agenda_tasks_canvas.borrow().as_ref() {
+                            tasks_c.queue_draw();
+                        }
 
                         let width = canvas_for_click.width();
                         let rect = gdk::Rectangle::new(4, (*bar_y as i32 + 1).max(0), (width - 8).max(10), (*bar_h as i32 - 2).max(10));
@@ -30393,6 +30813,173 @@ impl MailPage {
                         dialog.present_adaptive(&page);
                     }
                 }
+                _ => {
+                    page.dismiss_active_agenda_popover();
+                }
+            }
+        });
+        agenda_canvas.add_controller(click_gesture);
+
+        let motion = gtk::EventControllerMotion::new();
+        let page_for_motion = self.downgrade();
+        let canvas_for_motion = agenda_canvas.clone();
+        motion.connect_motion(move |_ctrl, x, y| {
+            let Some(page) = page_for_motion.upgrade() else { return; };
+            let items = page.imp().agenda_canvas_items.borrow();
+            let hovered = hit_test_agenda_canvas(&items, x, y);
+            let prev = page.imp().agenda_canvas_hovered_row.get();
+            if hovered != prev {
+                page.imp().agenda_canvas_hovered_row.set(hovered);
+                if hovered.is_some() {
+                    canvas_for_motion.set_cursor_from_name(Some("pointer"));
+                } else {
+                    canvas_for_motion.set_cursor_from_name(None);
+                }
+                canvas_for_motion.queue_draw();
+            }
+        });
+        let page_for_leave = self.downgrade();
+        let canvas_for_leave = agenda_canvas.clone();
+        motion.connect_leave(move |_ctrl| {
+            let Some(page) = page_for_leave.upgrade() else { return; };
+            if page.imp().agenda_canvas_hovered_row.get().is_some() {
+                page.imp().agenda_canvas_hovered_row.set(None);
+                canvas_for_leave.set_cursor_from_name(None);
+                canvas_for_leave.queue_draw();
+            }
+        });
+        agenda_canvas.add_controller(motion);
+
+        events_scrolled.set_child(Some(&agenda_canvas));
+        todo_vpaned.set_start_child(Some(&events_scrolled));
+        todo_vpaned.set_resize_start_child(true);
+        todo_vpaned.set_shrink_start_child(true);
+
+        // 2. Tasks Section (End child of todo_vpaned)
+        let tasks_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(0)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        self.imp().agenda_tasks_box.replace(Some(tasks_box.clone()));
+
+        let tasks_header = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .margin_start(4)
+            .margin_end(4)
+            .css_classes(vec!["sidebar-drawer-header"])
+            .build();
+
+        let tasks_icon = gtk::Image::from_icon_name("checkbox-checked-symbolic");
+        tasks_header.append(&tasks_icon);
+
+        let tasks_title = gtk::Label::builder()
+            .label(&crate::i18n::gettext("Tasks"))
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .ellipsize(pango::EllipsizeMode::End)
+            .build();
+        tasks_header.append(&tasks_title);
+
+        let tasks_count_badge = gtk::Label::builder()
+            .label("")
+            .halign(gtk::Align::End)
+            .css_classes(vec!["sidebar-drawer-total", "dim-label"])
+            .build();
+        self.imp().agenda_tasks_count_badge.replace(Some(tasks_count_badge.clone()));
+        tasks_header.append(&tasks_count_badge);
+
+        let tasks_collapse_btn = gtk::Button::builder()
+            .icon_name("pan-down-symbolic")
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .tooltip_text(&crate::i18n::gettext("Toggle Tasks Section"))
+            .build();
+        self.imp().agenda_tasks_collapse_btn.replace(Some(tasks_collapse_btn.clone()));
+
+        let page_weak_collapse = self.downgrade();
+        tasks_collapse_btn.connect_clicked(move |_| {
+            if let Some(page) = page_weak_collapse.upgrade() {
+                let prev = page.imp().agenda_canvas_collapsed_tasks.get();
+                let next = !prev;
+                page.imp().agenda_canvas_collapsed_tasks.set(next);
+                if let Some(scroll) = page.imp().agenda_tasks_scroll.borrow().as_ref() {
+                    scroll.set_visible(!next);
+                }
+                if let Some(btn) = page.imp().agenda_tasks_collapse_btn.borrow().as_ref() {
+                    btn.set_icon_name(if next { "pan-end-symbolic" } else { "pan-down-symbolic" });
+                }
+            }
+        });
+        tasks_header.append(&tasks_collapse_btn);
+
+        let page_weak_tasks_header = self.downgrade();
+        let tasks_header_click = gtk::GestureClick::new();
+        tasks_header_click.connect_pressed(move |_, n_press, _, _| {
+            if n_press == 2 {
+                if let Some(page) = page_weak_tasks_header.upgrade() {
+                    let prev = page.imp().agenda_canvas_collapsed_tasks.get();
+                    let next = !prev;
+                    page.imp().agenda_canvas_collapsed_tasks.set(next);
+                    if let Some(scroll) = page.imp().agenda_tasks_scroll.borrow().as_ref() {
+                        scroll.set_visible(!next);
+                    }
+                    if let Some(btn) = page.imp().agenda_tasks_collapse_btn.borrow().as_ref() {
+                        btn.set_icon_name(if next { "pan-end-symbolic" } else { "pan-down-symbolic" });
+                    }
+                }
+            }
+        });
+        tasks_header.add_controller(tasks_header_click);
+
+        tasks_box.append(&tasks_header);
+
+        let tasks_scrolled = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .vexpand(true)
+            .hexpand(true)
+            .min_content_height(40)
+            .build();
+        self.imp().agenda_tasks_scroll.replace(Some(tasks_scrolled.clone()));
+
+        let agenda_tasks_canvas = gtk::DrawingArea::builder()
+            .hexpand(true)
+            .vexpand(true)
+            .content_height(200)
+            .css_classes(vec!["agenda-sidebar-canvas"])
+            .build();
+        set_accessible_label(&agenda_tasks_canvas, "Agenda Tasks Canvas");
+        self.imp().agenda_tasks_canvas.replace(Some(agenda_tasks_canvas.clone()));
+
+        let page_for_tasks_draw = self.downgrade();
+        agenda_tasks_canvas.set_draw_func(move |_canvas, cr, width, _height| {
+            let Some(page) = page_for_tasks_draw.upgrade() else { return; };
+            let items = page.imp().agenda_tasks_canvas_items.borrow().clone();
+            let hovered_idx = page.imp().agenda_tasks_hovered_row.get();
+            let selected_idx = page.imp().agenda_tasks_selected_row.get();
+            let is_dark = adw::StyleManager::default().is_dark()
+                || AppSettings::try_new()
+                    .map(|s| s.force_dark_mode())
+                    .unwrap_or(false);
+            draw_agenda_sidebar_canvas(cr, &items, width as f64, hovered_idx, selected_idx, is_dark);
+        });
+
+        let tasks_click = gtk::GestureClick::new();
+        let page_for_tasks_click = self.downgrade();
+        let canvas_for_tasks_click = agenda_tasks_canvas.clone();
+        tasks_click.connect_pressed(move |gesture, n_press, x, y| {
+            let Some(page) = page_for_tasks_click.upgrade() else { return; };
+            let items = page.imp().agenda_tasks_canvas_items.borrow().clone();
+            let Some(idx) = hit_test_agenda_canvas(&items, x, y) else {
+                page.dismiss_active_agenda_popover();
+                return;
+            };
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+
+            match &items[idx] {
                 AgendaSidebarCanvasItem::TaskRow { task, completed, checkbox_rect, y: row_y, height: row_h, .. } => {
                     let (cx, cy, cw, ch) = *checkbox_rect;
                     let hit_cb = x >= (cx - 4.0) && x <= (cx + cw + 4.0) && y >= (cy - 4.0) && y <= (cy + ch + 4.0);
@@ -30438,7 +31025,6 @@ impl MailPage {
                             );
                         });
 
-                        // Update in-memory cached tasks
                         let mut cached = page.imp().agenda_canvas_cached_data.borrow_mut();
                         if let Some((_, ref mut tasks)) = *cached {
                             if let Some(t) = tasks.iter_mut().find(|t| t.uid == task.uid) {
@@ -30449,63 +31035,74 @@ impl MailPage {
                         page.imp().agenda_canvas_grouped_data.replace(None);
                         page.rebuild_agenda_canvas_layout();
                     } else if n_press == 1 {
-                        // If clicking the already selected and active item, do nothing
-                        if page.imp().agenda_canvas_selected_row.get() == Some(idx)
+                        if page.imp().agenda_tasks_selected_row.get() == Some(idx)
                             && page.imp().active_agenda_popover.borrow().as_ref().map(|p| p.parent().is_some()).unwrap_or(false)
                         {
                             return;
                         }
 
-                        page.imp().agenda_canvas_selected_row.set(Some(idx));
-                        canvas_for_click.queue_draw();
+                        page.imp().agenda_canvas_selected_row.set(None);
+                        page.imp().agenda_tasks_selected_row.set(Some(idx));
+                        canvas_for_tasks_click.queue_draw();
+                        if let Some(ev_canvas) = page.imp().agenda_canvas.borrow().as_ref() {
+                            ev_canvas.queue_draw();
+                        }
 
-                        let width = canvas_for_click.width();
+                        let width = canvas_for_tasks_click.width();
                         let rect = gdk::Rectangle::new(4, (*row_y as i32).max(0), (width - 8).max(10), (*row_h as i32).max(10));
-                        Self::show_agenda_task_popover(&canvas_for_click, rect, task, page.downgrade());
+                        Self::show_agenda_task_popover(&canvas_for_tasks_click, rect, task, page.downgrade());
                     }
                 }
-                AgendaSidebarCanvasItem::EmptyState { .. } => {
+                _ => {
                     page.dismiss_active_agenda_popover();
                 }
             }
         });
-        agenda_canvas.add_controller(click_gesture);
+        agenda_tasks_canvas.add_controller(tasks_click);
 
-        // Motion controller for hover state and pointer cursor
-        let motion = gtk::EventControllerMotion::new();
-        let page_for_motion = self.downgrade();
-        let canvas_for_motion = agenda_canvas.clone();
-        motion.connect_motion(move |_ctrl, x, y| {
-            let Some(page) = page_for_motion.upgrade() else { return; };
-            let items = page.imp().agenda_canvas_items.borrow();
+        let tasks_motion = gtk::EventControllerMotion::new();
+        let page_for_tasks_motion = self.downgrade();
+        let canvas_for_tasks_motion = agenda_tasks_canvas.clone();
+        tasks_motion.connect_motion(move |_ctrl, x, y| {
+            let Some(page) = page_for_tasks_motion.upgrade() else { return; };
+            let items = page.imp().agenda_tasks_canvas_items.borrow();
             let hovered = hit_test_agenda_canvas(&items, x, y);
-            let prev = page.imp().agenda_canvas_hovered_row.get();
+            let prev = page.imp().agenda_tasks_hovered_row.get();
             if hovered != prev {
-                page.imp().agenda_canvas_hovered_row.set(hovered);
+                page.imp().agenda_tasks_hovered_row.set(hovered);
                 if hovered.is_some() {
-                    canvas_for_motion.set_cursor_from_name(Some("pointer"));
+                    canvas_for_tasks_motion.set_cursor_from_name(Some("pointer"));
                 } else {
-                    canvas_for_motion.set_cursor_from_name(None);
+                    canvas_for_tasks_motion.set_cursor_from_name(None);
                 }
-                canvas_for_motion.queue_draw();
+                canvas_for_tasks_motion.queue_draw();
             }
         });
-        let page_for_leave = self.downgrade();
-        let canvas_for_leave = agenda_canvas.clone();
-        motion.connect_leave(move |_ctrl| {
-            let Some(page) = page_for_leave.upgrade() else { return; };
-            if page.imp().agenda_canvas_hovered_row.get().is_some() {
-                page.imp().agenda_canvas_hovered_row.set(None);
-                canvas_for_leave.set_cursor_from_name(None);
-                canvas_for_leave.queue_draw();
+        let page_for_tasks_leave = self.downgrade();
+        let canvas_for_tasks_leave = agenda_tasks_canvas.clone();
+        tasks_motion.connect_leave(move |_ctrl| {
+            let Some(page) = page_for_tasks_leave.upgrade() else { return; };
+            if page.imp().agenda_tasks_hovered_row.get().is_some() {
+                page.imp().agenda_tasks_hovered_row.set(None);
+                canvas_for_tasks_leave.set_cursor_from_name(None);
+                canvas_for_tasks_leave.queue_draw();
             }
         });
-        agenda_canvas.add_controller(motion);
+        agenda_tasks_canvas.add_controller(tasks_motion);
 
-        scrolled.set_child(Some(&agenda_canvas));
-        container.append(&scrolled);
+        tasks_scrolled.set_child(Some(&agenda_tasks_canvas));
+        tasks_box.append(&tasks_scrolled);
 
-        // Listen for date-format, time-format, and agenda-show-tasks changes in settings to live-update the agenda
+        let show_tasks_initial = AppSettings::try_new().map(|s| s.agenda_show_tasks()).unwrap_or(true);
+        tasks_box.set_visible(show_tasks_initial);
+
+        todo_vpaned.set_end_child(Some(&tasks_box));
+        todo_vpaned.set_resize_end_child(true);
+        todo_vpaned.set_shrink_end_child(true);
+
+        container.append(&todo_vpaned);
+
+        // Listen for settings changes to live-update the agenda
         if let Some(settings) = AppSettings::try_new() {
             let page_weak_date = self.downgrade();
             settings.connect_changed(Some("date-format"), move |_, _| {
@@ -30522,6 +31119,10 @@ impl MailPage {
             let page_weak_tasks = self.downgrade();
             settings.connect_changed(Some("agenda-show-tasks"), move |_, _| {
                 if let Some(page) = page_weak_tasks.upgrade() {
+                    let show = AppSettings::try_new().map(|s| s.agenda_show_tasks()).unwrap_or(true);
+                    if let Some(box_) = page.imp().agenda_tasks_box.borrow().as_ref() {
+                        box_.set_visible(show);
+                    }
                     page.imp().agenda_canvas_grouped_data.replace(None);
                     page.rebuild_agenda_canvas_layout();
                 }
@@ -30549,6 +31150,10 @@ impl MailPage {
             .map(|s| s.agenda_show_tasks())
             .unwrap_or(true);
 
+        if let Some(tasks_box) = self.imp().agenda_tasks_box.borrow().as_ref() {
+            tasks_box.set_visible(show_tasks);
+        }
+
         // Fast path: reuse pre-calculated grouped data if valid for today
         let mut grouped_opt = self.imp().agenda_canvas_grouped_data.borrow().clone();
         if let Some(ref g) = grouped_opt {
@@ -30569,19 +31174,41 @@ impl MailPage {
         let collapsed = self.imp().agenda_canvas_collapsed_days.borrow().clone();
         let collapsed_tasks = self.imp().agenda_canvas_collapsed_tasks.get();
 
-        let (items, total_height) = layout_agenda_canvas_items(
+        // 1. Layout Events for top canvas
+        let (events_items, events_height) = layout_agenda_events_canvas_items(
             &grouped,
             today,
             &collapsed,
-            collapsed_tasks,
             &resolved_date_fmt,
             use_12h,
-            show_tasks,
         );
 
-        self.imp().agenda_canvas_items.replace(items);
-        canvas.set_content_height(total_height as i32);
+        self.imp().agenda_canvas_items.replace(events_items);
+        canvas.set_content_height(events_height as i32);
         canvas.queue_draw();
+
+        // 2. Layout Tasks for bottom canvas
+        if let Some(tasks_canvas) = self.imp().agenda_tasks_canvas.borrow().clone() {
+            let (tasks_items, tasks_height) = layout_agenda_tasks_canvas_items(
+                &grouped,
+                today,
+                collapsed_tasks,
+            );
+
+            // Update badge count with active uncompleted tasks
+            let active_count = tasks_items
+                .iter()
+                .filter(|item| matches!(item, AgendaSidebarCanvasItem::TaskRow { completed: false, .. }))
+                .count();
+            let badge_str = if active_count > 0 { active_count.to_string() } else { String::new() };
+            if let Some(badge) = self.imp().agenda_tasks_count_badge.borrow().as_ref() {
+                badge.set_label(&badge_str);
+            }
+
+            self.imp().agenda_tasks_canvas_items.replace(tasks_items);
+            tasks_canvas.set_content_height(tasks_height as i32);
+            tasks_canvas.queue_draw();
+        }
     }
 
     pub fn refresh_today_tasks(&self) {
@@ -30756,12 +31383,16 @@ impl MailPage {
         if let Some(popover) = popover {
             popover.popdown();
             glib::idle_add_local_once(move || {
-                if popover.parent().is_some() {
+                if !popover.is_visible() && popover.parent().is_some() {
                     popover.unparent();
                 }
             });
             self.imp().agenda_canvas_selected_row.set(None);
             if let Some(canvas) = self.imp().agenda_canvas.borrow().as_ref() {
+                canvas.queue_draw();
+            }
+            self.imp().agenda_tasks_selected_row.set(None);
+            if let Some(canvas) = self.imp().agenda_tasks_canvas.borrow().as_ref() {
                 canvas.queue_draw();
             }
         }
@@ -30802,7 +31433,7 @@ impl MailPage {
     ) -> (gtk::Popover, bool) {
         let existing = self.imp().active_agenda_popover.borrow().clone();
         if let Some(popover) = existing {
-            if popover.parent().is_some() {
+            if popover.parent().as_ref() == Some(canvas.upcast_ref()) {
                 popover.set_pointing_to(Some(rect));
                 return (popover, true);
             }
@@ -30822,25 +31453,31 @@ impl MailPage {
         let page_weak_closed = self.downgrade();
         let pop_weak = popover.downgrade();
         popover.connect_closed(move |p| {
+            let mut was_active = false;
+            if let Some(page) = page_weak_closed.upgrade() {
+                if let Ok(mut active) = page.imp().active_agenda_popover.try_borrow_mut() {
+                    if active.as_ref() == Some(p) {
+                        *active = None;
+                        was_active = true;
+                    }
+                }
+                if was_active {
+                    page.imp().agenda_canvas_selected_row.set(None);
+                    if let Some(canvas) = page.imp().agenda_canvas.borrow().as_ref() {
+                        canvas.queue_draw();
+                    }
+                    page.imp().agenda_tasks_selected_row.set(None);
+                    if let Some(canvas) = page.imp().agenda_tasks_canvas.borrow().as_ref() {
+                        canvas.queue_draw();
+                    }
+                }
+            }
             if let Some(pop) = pop_weak.upgrade() {
                 glib::idle_add_local_once(move || {
-                    if pop.parent().is_some() {
+                    if !pop.is_visible() && pop.parent().is_some() {
                         pop.unparent();
                     }
                 });
-            }
-            if let Some(page) = page_weak_closed.upgrade() {
-                page.imp().agenda_canvas_selected_row.set(None);
-                if let Some(canvas) = page.imp().agenda_canvas.borrow().as_ref() {
-                    canvas.queue_draw();
-                }
-                if let Ok(mut active) = page.imp().active_agenda_popover.try_borrow_mut() {
-                    if let Some(active_pop) = active.as_ref() {
-                        if active_pop == p {
-                            *active = None;
-                        }
-                    }
-                }
             }
         });
 
@@ -30872,7 +31509,7 @@ impl MailPage {
         if canvas.root().is_none() {
             return;
         }
-        let (popover, is_reused) = page.get_or_create_agenda_popover(canvas, &rect);
+        let (popover, _is_reused) = page.get_or_create_agenda_popover(canvas, &rect);
 
         let content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -30890,6 +31527,11 @@ impl MailPage {
         } else {
             event.summary.trim()
         };
+
+        let header_group = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .build();
 
         // Header row: Colored Dot, Title (heading), Close Button
         let header_row = gtk::Box::builder()
@@ -30939,7 +31581,7 @@ impl MailPage {
             }
         });
         header_row.append(&close_btn);
-        content.append(&header_row);
+        header_group.append(&header_row);
 
         // Calendar source name (only display if it differs from the title and is not generic "Kalender")
         let cal_name = event.source_display_name.trim();
@@ -30953,10 +31595,10 @@ impl MailPage {
                 .css_classes(vec!["caption", "dim-label"])
                 .xalign(0.0)
                 .margin_start(22)
-                .margin_top(-6)
                 .build();
-            content.append(&cal_label);
+            header_group.append(&cal_label);
         }
+        content.append(&header_group);
 
         // Date & Time
         let settings = AppSettings::try_new();
@@ -31141,9 +31783,6 @@ impl MailPage {
         actions_box.append(&edit_btn);
         content.append(&actions_box);
 
-        if is_reused && popover.is_visible() {
-            popover.popdown();
-        }
         popover.set_child(Some(&content));
         popover.popup();
     }
@@ -31158,7 +31797,7 @@ impl MailPage {
         if canvas.root().is_none() {
             return;
         }
-        let (popover, is_reused) = page.get_or_create_agenda_popover(canvas, &rect);
+        let (popover, _is_reused) = page.get_or_create_agenda_popover(canvas, &rect);
 
         let content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -31176,6 +31815,11 @@ impl MailPage {
         } else {
             task.summary.trim()
         };
+
+        let header_group = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .build();
 
         // Header row: Checkmark/Task icon, Title (heading), Close Button
         let header_row = gtk::Box::builder()
@@ -31217,7 +31861,7 @@ impl MailPage {
             }
         });
         header_row.append(&close_btn);
-        content.append(&header_row);
+        header_group.append(&header_row);
 
         // List source name (only display if it differs from the title and is not generic "Aufgaben" / "Tasks")
         let list_name = task.source_display_name.trim();
@@ -31233,10 +31877,10 @@ impl MailPage {
                 .css_classes(vec!["caption", "dim-label"])
                 .xalign(0.0)
                 .margin_start(26)
-                .margin_top(-6)
                 .build();
-            content.append(&list_label);
+            header_group.append(&list_label);
         }
+        content.append(&header_group);
 
         // Status row
         let status_box = gtk::Box::builder()
@@ -31317,9 +31961,6 @@ impl MailPage {
         actions_box.append(&tasks_btn);
         content.append(&actions_box);
 
-        if is_reused && popover.is_visible() {
-            popover.popdown();
-        }
         popover.set_child(Some(&content));
         popover.popup();
     }
@@ -31681,8 +32322,7 @@ impl MailPage {
         if interval == 0 {
             return;
         }
-        // If interval is the legacy default of 300s (5 minutes), use a snappier 15s interval for fast background updates.
-        let effective_interval = if interval == 300 { 15 } else { interval.max(5) };
+        let effective_interval = interval.max(60);
 
         let page = self.downgrade();
         let source = glib::timeout_add_seconds_local(effective_interval, move || {
@@ -31928,9 +32568,7 @@ impl MailPage {
                 unread_delta,
                 total_delta,
             );
-            if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
-                filter.changed(gtk::FilterChange::Different);
-            }
+            self.invalidate_message_filters();
             if let Some(state) = self.imp().message_state.borrow().as_ref() {
                 state.set_label(&format!("{} {}", gettext("Changes applied to"), change.folder_name));
             }
@@ -32100,8 +32738,9 @@ impl MailPage {
                         .borrow()
                         .as_ref()
                         .map_or(false, |req| {
-                            req.folder_name.as_deref() == Some(&change_for_result.folder_name)
-                                && req.source_uid.as_deref() == Some(&change_for_result.source_uid)
+                            (req.folder_name.is_none() && req.source_uid.is_none())
+                                || (req.folder_name.as_deref() == Some(&change_for_result.folder_name)
+                                    && req.source_uid.as_deref() == Some(&change_for_result.source_uid))
                         });
 
                     let mut structure_changed = false;
@@ -32117,9 +32756,7 @@ impl MailPage {
                         }
                     }
                     if structure_changed {
-                        if let Some(filter) = page.imp().message_filter.borrow().as_ref() {
-                            filter.changed(gtk::FilterChange::Different);
-                        }
+                        page.invalidate_message_filters();
                         if let Some(store) = page.imp().message_store.borrow().as_ref().cloned() {
                             page.begin_incremental_thread_refresh(store, previous_selection);
                         }
@@ -32132,9 +32769,7 @@ impl MailPage {
                             .map(|f| f.get())
                             .unwrap_or(MessageFilter::All);
                         if current_filter != MessageFilter::All {
-                            if let Some(filter) = page.imp().message_filter.borrow().as_ref() {
-                                filter.changed(gtk::FilterChange::Different);
-                            }
+                            page.invalidate_message_filters();
                         }
                         page.queue_mail_table_draw();
                     }
@@ -32660,45 +33295,75 @@ impl MailPage {
         let worker_input = MailLoadWorkerInput::from_main_thread(request.clone());
         std::thread::spawn(move || {
             let started = Instant::now();
+            let mut sqlite_supplement: Vec<ParsedMail> = Vec::new();
+            let mut sqlite_folders_supplement: Vec<camel_mail_service::CamelFolderSummary> = Vec::new();
+            let req_source_uid = worker_input.request.source_uid.clone();
+            let req_folder_name = worker_input.request.folder_name.clone();
+            let req_offset = worker_input.request.offset;
+            let req_offline = worker_input.offline_mode;
+            let page_limit = worker_input
+                .request
+                .max_messages_per_folder
+                .max(1) as usize;
+            let sqlite_folder_limit = page_limit.max(2_500);
 
             // SQLite-First Fast Path: Deliver local database summary immediately (<10ms)
-            if !worker_input.offline_mode && worker_input.request.offset == 0 {
-                let hint = worker_input.request.source_uid.as_deref();
-                if let Some(cache) = crate::services::evolution_summary_cache::find_evolution_account_cache(hint) {
-                    let effective_source = hint.unwrap_or(&cache.source_uid);
-                    let folder_to_load = worker_input
-                        .request
-                        .folder_name
-                        .as_deref()
-                        .unwrap_or("");
-                    let sqlite_folders = crate::services::evolution_summary_cache::load_folders_from_sqlite(
-                        &cache.folders_db,
-                        &cache.source_uid,
-                        &cache.display_name,
-                    )
-                    .unwrap_or_default();
-                    let page_limit = worker_input
-                        .request
-                        .max_messages_per_folder
-                        .max(1) as usize;
-                    let sqlite_msgs = crate::services::evolution_summary_cache::load_folder_messages_from_sqlite(
-                        &cache.folders_db,
-                        effective_source,
-                        folder_to_load,
-                        Some(page_limit),
-                    )
-                    .unwrap_or_default();
-                    let should_send_fast_path = if !folder_to_load.is_empty() {
-                        !sqlite_msgs.is_empty()
-                    } else {
-                        !sqlite_msgs.is_empty() || !sqlite_folders.is_empty()
-                    };
-                    if should_send_fast_path {
+            if !req_offline && req_offset == 0 {
+                if let Some(hint) = req_source_uid.as_deref() {
+                    if let Some(cache) = crate::services::evolution_summary_cache::find_evolution_account_cache(Some(hint)) {
+                        let effective_source = hint;
+                        let folder_to_load = req_folder_name.as_deref().unwrap_or("");
+                        let sqlite_folders = crate::services::evolution_summary_cache::load_folders_from_sqlite(
+                            &cache.folders_db,
+                            &cache.source_uid,
+                            &cache.display_name,
+                        )
+                        .unwrap_or_default();
+                        let sqlite_msgs = crate::services::evolution_summary_cache::load_folder_messages_from_sqlite(
+                            &cache.folders_db,
+                            effective_source,
+                            folder_to_load,
+                            Some(sqlite_folder_limit),
+                        )
+                        .unwrap_or_default();
+                        sqlite_supplement = sqlite_msgs.clone();
+                        sqlite_folders_supplement = sqlite_folders.clone();
+                        let should_send_fast_path = if !folder_to_load.is_empty() {
+                            !sqlite_msgs.is_empty()
+                        } else {
+                            !sqlite_msgs.is_empty() || !sqlite_folders.is_empty()
+                        };
+                        if should_send_fast_path {
+                            let fast_load = camel_mail_service::CamelMailLoad {
+                                messages: sqlite_msgs,
+                                folders: sqlite_folders,
+                                configured_sources: 1,
+                                successful_sources: 1,
+                                failed_sources: 0,
+                                warning: Some(format!("{} · {} …", gettext("Local database"), gettext("Synchronizing"))),
+                                is_graph: false,
+                                search_query: None,
+                                graph_next_links: HashMap::new(),
+                                graph_search_next_cursor: None,
+                            };
+                            let cached_result = prepared_camel_result(fast_load, &cancellation);
+                            if !cancellation.load(Ordering::Relaxed) {
+                                let _ = sender.send_blocking((cached_result, true));
+                            }
+                        }
+                    }
+                } else {
+                    let (sqlite_folders, sqlite_msgs, source_count) =
+                        crate::services::evolution_summary_cache::load_unified_accounts_from_sqlite(page_limit);
+                    sqlite_supplement = sqlite_msgs.clone();
+                    sqlite_folders_supplement = sqlite_folders.clone();
+                    if !sqlite_msgs.is_empty() || !sqlite_folders.is_empty() {
+                        let source_count = source_count.max(1);
                         let fast_load = camel_mail_service::CamelMailLoad {
                             messages: sqlite_msgs,
                             folders: sqlite_folders,
-                            configured_sources: 1,
-                            successful_sources: 1,
+                            configured_sources: source_count,
+                            successful_sources: source_count,
                             failed_sources: 0,
                             warning: Some(format!("{} · {} …", gettext("Local database"), gettext("Synchronizing"))),
                             is_graph: false,
@@ -32712,7 +33377,7 @@ impl MailPage {
                         }
                     }
                 }
-            } else if load_startup_cache && !worker_input.offline_mode {
+            } else if load_startup_cache && !req_offline {
                 if let Some(mut cached) = camel_mail_service::load_mail_load_cache() {
                     if !cached.folders.is_empty() || !cached.messages.is_empty() {
                         cached.warning =
@@ -32724,11 +33389,111 @@ impl MailPage {
                     }
                 }
             }
-            let result = load_mail_backend(
+            let mut result = load_mail_backend(
                 worker_input,
                 &cancellation,
                 Some(&progress_sender_for_worker),
             );
+            // Re-read SQLite after Camel refresh so any newly synchronized rows in folders.db are included
+            if !req_offline && req_offset == 0 {
+                if let Some(hint) = req_source_uid.as_deref() {
+                    if let Some(cache) = crate::services::evolution_summary_cache::find_evolution_account_cache(Some(hint)) {
+                        let folder_to_load = req_folder_name.as_deref().unwrap_or("");
+                        if let Ok(fresh_msgs) = crate::services::evolution_summary_cache::load_folder_messages_from_sqlite(
+                            &cache.folders_db,
+                            hint,
+                            folder_to_load,
+                            Some(sqlite_folder_limit),
+                        ) {
+                            if !fresh_msgs.is_empty() {
+                                sqlite_supplement = fresh_msgs;
+                            }
+                        }
+                        if let Ok(fresh_folders) = crate::services::evolution_summary_cache::load_folders_from_sqlite(
+                            &cache.folders_db,
+                            &cache.source_uid,
+                            &cache.display_name,
+                        ) {
+                            if !fresh_folders.is_empty() {
+                                sqlite_folders_supplement = fresh_folders;
+                            }
+                        }
+                    }
+                }
+            }
+            if !sqlite_supplement.is_empty() || !sqlite_folders_supplement.is_empty() {
+                match &mut result {
+                    MailPageLoadResult::Camel {
+                        camel,
+                        searchable_body_texts,
+                    }
+                    | MailPageLoadResult::Combined {
+                        camel,
+                        searchable_body_texts,
+                        ..
+                    } => {
+                        if camel.folders.is_empty() && !sqlite_folders_supplement.is_empty() {
+                            camel.folders = sqlite_folders_supplement;
+                        }
+                        let mut existing_ids: HashSet<String> =
+                            camel.messages.iter().map(|m| m.id.clone()).collect();
+                        let mut existing_uids: HashSet<String> = camel
+                            .messages
+                            .iter()
+                            .filter_map(|m| m.backend_location.as_ref().map(|loc| loc.message_uid.clone()))
+                            .collect();
+                        for msg in sqlite_supplement {
+                            let uid_dup = msg
+                                .backend_location
+                                .as_ref()
+                                .is_some_and(|loc| existing_uids.contains(&loc.message_uid));
+                            if !existing_ids.contains(&msg.id) && !uid_dup {
+                                existing_ids.insert(msg.id.clone());
+                                if let Some(ref loc) = msg.backend_location {
+                                    existing_uids.insert(loc.message_uid.clone());
+                                }
+                                searchable_body_texts
+                                    .entry(parsed_mail_identity(&msg))
+                                    .or_insert_with(|| Arc::<str>::from(msg.preview_snippet.to_lowercase()));
+                                camel.messages.push(msg);
+                            }
+                        }
+                    }
+                    MailPageLoadResult::Local {
+                        messages: local_messages,
+                        local_deleted_ids,
+                        local_folders,
+                        searchable_body_texts,
+                        ..
+                    } if !sqlite_supplement.is_empty() || !sqlite_folders_supplement.is_empty() => {
+                        for msg in &sqlite_supplement {
+                            searchable_body_texts
+                                .entry(parsed_mail_identity(msg))
+                                .or_insert_with(|| Arc::<str>::from(msg.preview_snippet.to_lowercase()));
+                        }
+                        let camel = camel_mail_service::CamelMailLoad {
+                            messages: sqlite_supplement,
+                            folders: sqlite_folders_supplement,
+                            configured_sources: 1,
+                            successful_sources: 1,
+                            failed_sources: 0,
+                            warning: None,
+                            is_graph: false,
+                            search_query: None,
+                            graph_next_links: HashMap::new(),
+                            graph_search_next_cursor: None,
+                        };
+                        result = MailPageLoadResult::Combined {
+                            camel,
+                            local_messages: std::mem::take(local_messages),
+                            local_deleted_ids: std::mem::take(local_deleted_ids),
+                            local_folders: std::mem::take(local_folders),
+                            searchable_body_texts: std::mem::take(searchable_body_texts),
+                        };
+                    }
+                    _ => {}
+                }
+            }
             tracing::debug!(
                 elapsed_ms = started.elapsed().as_millis() as u64,
                 "Mail load worker completed"
@@ -32759,7 +33524,7 @@ impl MailPage {
                 };
                 if !generation_is_current(page.imp().load_generation.get(), generation) {
                     return;
-                }
+                };
                 // Both snapshots use the bounded model/thread builder. A live
                 // result supersedes any partially applied startup snapshot.
                 page.cancel_pending_mail_apply();
@@ -32767,7 +33532,7 @@ impl MailPage {
                     page.imp().mail_backend_load_pending.set(false);
                 }
                 let was_same_folder_refresh = page.imp().is_same_folder_refresh.get();
-                page.apply_mail_load(request.clone(), result, replace);
+                page.apply_mail_load(request.clone(), result, replace, from_cache);
                 if was_same_folder_refresh {
                     page.imp().is_same_folder_refresh.set(true);
                 }
@@ -33222,6 +33987,7 @@ impl MailPage {
                             searchable_body_texts,
                         },
                         replace,
+                        false,
                     );
                 }
                 Ok(Err(error)) => {
@@ -33303,7 +34069,13 @@ impl MailPage {
             .set(Some(self.imp().load_generation.get()));
     }
 
-    fn apply_mail_load(&self, request: MailLoadRequest, result: MailPageLoadResult, replace: bool) {
+    fn apply_mail_load(
+        &self,
+        request: MailLoadRequest,
+        result: MailPageLoadResult,
+        replace: bool,
+        from_cache: bool,
+    ) {
         let suppress_pending_search = self
             .imp()
             .suppress_pending_search_generation
@@ -33366,6 +34138,32 @@ impl MailPage {
             self.clear_batch_selection();
         }
 
+        let has_existing_items = self
+            .imp()
+            .message_store
+            .borrow()
+            .as_ref()
+            .map_or(false, |s| s.n_items() > 0);
+        let matches_active_folder = self.imp().active_request.borrow().as_ref().map_or(false, |active| {
+            let accounts_match = match (active.source_uid.as_deref(), request.source_uid.as_deref()) {
+                (Some(a), Some(b)) => account_sources_match(a, b),
+                (None, None) => true,
+                _ => false,
+            };
+            let folders_match = match (active.folder_name.as_deref(), request.folder_name.as_deref()) {
+                (Some(a), Some(b)) => folder_names_match(a, b),
+                (None, None) => true,
+                _ => false,
+            };
+            accounts_match && folders_match
+        });
+        let is_same_folder_refresh = replace
+            && (self.imp().is_same_folder_refresh.get()
+                || (has_existing_items && matches_active_folder && self.imp().initial_mail_load_completed.get()));
+        if is_same_folder_refresh {
+            self.imp().is_same_folder_refresh.set(true);
+        }
+
         let unread_messages: Vec<&ParsedMail> = match &result {
             MailPageLoadResult::Camel { camel, .. } => {
                 camel.messages.iter().filter(|m| m.is_unread).collect()
@@ -33392,18 +34190,57 @@ impl MailPage {
             MailPageLoadResult::Error(_) => Vec::new(),
         };
 
-        if !self.imp().initial_mail_load_completed.get() {
+        let scope_key = format!(
+            "{}:{}",
+            request
+                .source_uid
+                .as_deref()
+                .map(Self::canonical_account_uid)
+                .unwrap_or("*"),
+            request
+                .folder_name
+                .as_deref()
+                .unwrap_or("INBOX")
+                .to_ascii_lowercase()
+        );
+        let is_first_live_load_for_scope = !from_cache
+            && self
+                .imp()
+                .initialized_unread_scopes
+                .borrow_mut()
+                .insert(scope_key);
+
+        if from_cache
+            || !self.imp().initial_mail_load_completed.get()
+            || is_first_live_load_for_scope
+            || !is_same_folder_refresh
+            || !replace
+        {
             let mut known = self.imp().known_unread_message_ids.borrow_mut();
             for m in &unread_messages {
                 known.insert(m.id.clone());
+                if let Some(ref loc) = m.backend_location {
+                    known.insert(format!("uid:{}:{}", Self::canonical_account_uid(&loc.source_uid), loc.message_uid));
+                }
             }
-            self.imp().initial_mail_load_completed.set(true);
+            if !from_cache {
+                self.imp().initial_mail_load_completed.set(true);
+            }
         } else if !unread_messages.is_empty() {
             let mut new_unreads = Vec::new();
             {
                 let mut known = self.imp().known_unread_message_ids.borrow_mut();
                 for m in &unread_messages {
-                    if known.insert(m.id.clone()) {
+                    let uid_key = m.backend_location.as_ref().map(|loc| {
+                        format!("uid:{}:{}", Self::canonical_account_uid(&loc.source_uid), loc.message_uid)
+                    });
+                    let already_known = known.contains(&m.id)
+                        || uid_key.as_ref().is_some_and(|k| known.contains(k));
+                    known.insert(m.id.clone());
+                    if let Some(k) = uid_key {
+                        known.insert(k);
+                    }
+                    if !already_known {
                         new_unreads.push(*m);
                     }
                 }
@@ -33474,32 +34311,6 @@ impl MailPage {
                     );
                 }
             }
-        }
-
-        let has_existing_items = self
-            .imp()
-            .message_store
-            .borrow()
-            .as_ref()
-            .map_or(false, |s| s.n_items() > 0);
-        let matches_active_folder = self.imp().active_request.borrow().as_ref().map_or(false, |active| {
-            let accounts_match = match (active.source_uid.as_deref(), request.source_uid.as_deref()) {
-                (Some(a), Some(b)) => account_sources_match(a, b),
-                (None, None) => true,
-                _ => false,
-            };
-            let folders_match = match (active.folder_name.as_deref(), request.folder_name.as_deref()) {
-                (Some(a), Some(b)) => folder_names_match(a, b),
-                (None, None) => true,
-                _ => false,
-            };
-            accounts_match && folders_match
-        });
-        let is_same_folder_refresh = replace
-            && (self.imp().is_same_folder_refresh.get()
-                || (has_existing_items && matches_active_folder && self.imp().initial_mail_load_completed.get()));
-        if is_same_folder_refresh {
-            self.imp().is_same_folder_refresh.set(true);
         }
 
         match result {
@@ -33847,7 +34658,13 @@ impl MailPage {
                 if let Some(existing) = existing_msg {
                     pending.incoming_ids.insert(existing.id());
                     pending.incoming_ids.insert(record.id.clone());
-                    existing.set_unread(record.is_unread);
+                    let preserve_optimistic_read = self.imp().mail_operations_active.get() > 0
+                        && !existing.is_unread()
+                        && record.is_unread
+                        && !self.imp().known_unread_message_ids.borrow().contains(&existing.id());
+                    if !preserve_optimistic_read {
+                        existing.set_unread(record.is_unread);
+                    }
                     existing.set_flagged(record.is_flagged);
                     existing.set_important(record.is_important);
                     existing.set_replied(record.is_replied);
@@ -33906,9 +34723,13 @@ impl MailPage {
 
     fn finish_pending_mail_apply(&self, pending: &PendingMailApply) {
         if pending.is_same_folder_refresh {
+            let has_incoming_remote = pending.incoming_ids.iter().any(|id| id.starts_with("eds:"));
             let mut removed_ids = HashSet::new();
             for id in pending.existing_messages.keys() {
                 if !pending.incoming_ids.contains(id) {
+                    if id.starts_with("eds:") && !has_incoming_remote {
+                        continue;
+                    }
                     removed_ids.insert(id.clone());
                 }
             }
@@ -34027,12 +34848,24 @@ impl MailPage {
         // Preserve the live tree/filter maps during the rebuild, but prevent
         // the context pane from presenting their stale membership/order.
         self.imp().thread_context_members_generation.set(None);
-        let state = Rc::new(RefCell::new(PendingThreadModelApply::from_store(
+        let mut initial_state = PendingThreadModelApply::from_store(
             completion.generation,
             store,
             self.imp().mail_threading.get(),
             completion,
-        )));
+        );
+        // Complete small-to-medium folders synchronously within a 6ms frame budget
+        // so the message list updates in a single paint without any intermediate blank frame.
+        let sync_budget = Instant::now();
+        while sync_budget.elapsed() < std::time::Duration::from_millis(6) {
+            if self.process_pending_thread_models(&mut initial_state) {
+                self.finalize_pending_mail_apply(&initial_state.completion);
+                self.imp().is_same_folder_refresh.set(false);
+                return;
+            }
+        }
+
+        let state = Rc::new(RefCell::new(initial_state));
         let page = self.downgrade();
         let state_for_source = state.clone();
         let source = glib::idle_add_local_full(
@@ -34051,7 +34884,15 @@ impl MailPage {
 
                 let done = {
                     let mut state = state_for_source.borrow_mut();
-                    page.process_pending_thread_models(&mut state)
+                    let tick_budget = Instant::now();
+                    let mut finished = false;
+                    while tick_budget.elapsed() < std::time::Duration::from_millis(6) {
+                        if page.process_pending_thread_models(&mut state) {
+                            finished = true;
+                            break;
+                        }
+                    }
+                    finished
                 };
                 if !done {
                     return glib::ControlFlow::Continue;
@@ -34313,9 +35154,7 @@ impl MailPage {
             return;
         }
         self.restore_expanded_threads();
-        if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
-            filter.changed(gtk::FilterChange::Different);
-        }
+        self.invalidate_message_filters();
 
         let selected_folder = self
             .imp()
@@ -34553,7 +35392,13 @@ impl MailPage {
         let mut structure_changed = false;
         for (message, searchable_body_text) in unique_messages {
             if let Some(existing) = existing_map.get(&message.id) {
-                existing.set_unread(message.is_unread);
+                let preserve_optimistic_read = self.imp().mail_operations_active.get() > 0
+                    && !existing.is_unread()
+                    && message.is_unread
+                    && !self.imp().known_unread_message_ids.borrow().contains(&existing.id());
+                if !preserve_optimistic_read {
+                    existing.set_unread(message.is_unread);
+                }
                 existing.set_flagged(message.is_flagged);
                 existing.set_important(message.is_important);
                 existing.set_replied(message.is_replied);
@@ -42270,7 +43115,7 @@ mod tests {
         let event = crate::services::calendar_store_service::CalendarEventRecord {
             uid: "test-ev-1".to_string(),
             source_uid: "src-1".to_string(),
-            source_display_name: "Calendar".to_string(),
+            source_display_name: "Persönlich".to_string(),
             component: "BEGIN:VEVENT\nSUMMARY:Test\nDTSTART:20261016T100000Z\nDTEND:20261016T110000Z\nEND:VEVENT".to_string(),
             summary: "Test Event".to_string(),
             start: "20261016T100000Z".to_string(),
@@ -42283,8 +43128,114 @@ mod tests {
         assert!(page.imp().active_agenda_popover.borrow().is_some());
         MailPage::show_agenda_event_popover(&canvas, rect2, &event, page.downgrade(), false);
         assert!(page.imp().active_agenda_popover.borrow().is_some());
+
+        let tasks_canvas = page.imp().agenda_tasks_canvas.borrow().clone().expect("agenda tasks canvas");
+        let task = crate::services::calendar_store_service::TaskRecord {
+            uid: "test-task-1".to_string(),
+            source_uid: "src-1".to_string(),
+            source_display_name: "Arbeit".to_string(),
+            component: "BEGIN:VTODO\nSUMMARY:Test Task\nEND:VTODO".to_string(),
+            summary: "Test Task".to_string(),
+            due: "2026-10-19".to_string(),
+            completed: false,
+            priority: 1,
+        };
+        MailPage::show_agenda_task_popover(&tasks_canvas, rect1, &task, page.downgrade());
+        assert!(page.imp().active_agenda_popover.borrow().is_some());
+
         page.dismiss_active_agenda_popover();
         assert!(page.imp().active_agenda_popover.borrow().is_none());
+    }
+
+    #[test]
+    fn test_agenda_split_sections_and_due_date_formatting() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 19).unwrap();
+
+        // Due date format and overdue checks
+        assert_eq!(format_task_due_short("2026-10-19", today), Some("Today".to_string()));
+        assert!(!is_task_overdue("2026-10-19", today));
+
+        assert_eq!(format_task_due_short("2026-10-20", today), Some("Tomorrow".to_string()));
+        assert!(!is_task_overdue("2026-10-20", today));
+
+        assert_eq!(format_task_due_short("2026-10-18", today), Some("Yesterday".to_string()));
+        assert!(is_task_overdue("2026-10-18", today));
+
+        assert_eq!(format_task_due_short("2026-10-15", today), Some("15.10.".to_string()));
+        assert!(is_task_overdue("2026-10-15", today));
+
+        assert_eq!(format_task_due_short("", today), None);
+        assert!(!is_task_overdue("", today));
+
+        // Grouped agenda data
+        let ev = crate::services::calendar_store_service::CalendarEventRecord {
+            uid: "ev-split-1".to_string(),
+            source_uid: "src-1".to_string(),
+            source_display_name: "Kalender".to_string(),
+            component: String::new(),
+            summary: "Sprint Planning".to_string(),
+            start: "2026-10-19T10:00:00".to_string(),
+            end: "2026-10-19T11:00:00".to_string(),
+            all_day: false,
+            location: "".to_string(),
+            description: "".to_string(),
+        };
+        let t1 = crate::services::calendar_store_service::TaskRecord {
+            uid: "t-1".to_string(),
+            source_uid: "src-1".to_string(),
+            source_display_name: "Aufgaben".to_string(),
+            component: String::new(),
+            summary: "Prepare report".to_string(),
+            due: "2026-10-19".to_string(),
+            completed: false,
+            priority: 1,
+        };
+        let t2 = crate::services::calendar_store_service::TaskRecord {
+            uid: "t-2".to_string(),
+            source_uid: "src-1".to_string(),
+            source_display_name: "Aufgaben".to_string(),
+            component: String::new(),
+            summary: "Completed item".to_string(),
+            due: "2026-10-19".to_string(),
+            completed: true,
+            priority: 0,
+        };
+
+        let grouped = group_agenda_data(&[ev], &[t1, t2], today, true);
+        let collapsed = std::collections::HashSet::new();
+
+        // Events items must only contain DateHeader and EventBar, no TaskRow
+        let (events_items, events_h) = layout_agenda_events_canvas_items(
+            &grouped,
+            today,
+            &collapsed,
+            "german",
+            false,
+        );
+        assert!(events_h > 0.0);
+        assert!(events_items.iter().any(|i| matches!(i, AgendaSidebarCanvasItem::EventBar { summary, .. } if summary == "Sprint Planning")));
+        assert!(!events_items.iter().any(|i| matches!(i, AgendaSidebarCanvasItem::TaskRow { .. })));
+        assert!(!events_items.iter().any(|i| matches!(i, AgendaSidebarCanvasItem::TasksSectionHeader { .. })));
+
+        // Tasks items must contain TaskRow items
+        let (tasks_items, tasks_h) = layout_agenda_tasks_canvas_items(
+            &grouped,
+            today,
+            false,
+        );
+        assert!(tasks_h > 0.0);
+        assert_eq!(tasks_items.len(), 2);
+        assert!(tasks_items.iter().any(|i| matches!(i, AgendaSidebarCanvasItem::TaskRow { summary, completed: false, .. } if summary == "Prepare report")));
+        assert!(tasks_items.iter().any(|i| matches!(i, AgendaSidebarCanvasItem::TaskRow { summary, completed: true, .. } if summary == "Completed item")));
+
+        // When tasks are collapsed, tasks_items should be empty
+        let (tasks_items_collapsed, tasks_h_collapsed) = layout_agenda_tasks_canvas_items(
+            &grouped,
+            today,
+            true,
+        );
+        assert_eq!(tasks_items_collapsed.len(), 0);
+        assert_eq!(tasks_h_collapsed, 0.0);
     }
 
     #[test]
@@ -44205,7 +45156,7 @@ mod tests {
             searchable_body_texts: HashMap::new(),
         };
 
-        page.apply_mail_load(req, local_result, true);
+        page.apply_mail_load(req, local_result, true, false);
 
         let preserved = page.imp().mail_folder_summaries.borrow().clone();
         assert!(!preserved.is_empty(), "Folder summaries must be preserved during local/offline fallback");
