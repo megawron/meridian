@@ -2307,6 +2307,32 @@ impl AppSettings {
         self.set_int("mail-todo-bar-position", value.clamp(160, 1_200));
     }
 
+    pub fn mail_todo_vpane_position(&self) -> i32 {
+        if self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("mail-todo-vpane-position"))
+            .unwrap_or(false)
+        {
+            let val = self.settings.int("mail-todo-vpane-position");
+            if val > 0 {
+                return val.clamp(60, 2_000);
+            }
+        }
+        280
+    }
+
+    pub fn set_mail_todo_vpane_position(&self, value: i32) {
+        if self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("mail-todo-vpane-position"))
+            .unwrap_or(false)
+        {
+            self.set_int("mail-todo-vpane-position", value.clamp(60, 2_000));
+        }
+    }
+
     pub fn mail_preview_position(&self, layout: &str) -> i32 {
         let key = if layout == "classic" || layout == "horizontal" {
             "mail-classic-preview-position"
@@ -3897,6 +3923,9 @@ impl AppSettings {
             "mail-todo-bar-position" => {
                 self.set_mail_todo_bar_position(parse_migrated_i32_in_range(key, value, 160, 1_200)?);
             }
+            "mail-todo-vpane-position" => {
+                self.set_mail_todo_vpane_position(parse_migrated_i32_in_range(key, value, 60, 2_000)?);
+            }
             "mail-sidebar-position" => {
                 self.set_mail_sidebar_position(parse_migrated_i32_in_range(key, value, 0, 2_000)?);
             }
@@ -4417,6 +4446,7 @@ impl AppSettings {
             "mail-show-sidebar",
             "mail-show-todo-bar",
             "mail-todo-bar-position",
+            "mail-todo-vpane-position",
             "mail-sidebar-position",
             "mail-modern-preview-position",
             "mail-classic-preview-position",

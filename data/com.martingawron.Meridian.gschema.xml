@@ -475,6 +475,11 @@
       <range min="160" max="1200"/>
       <summary>Width of today's to-do bar in mail view</summary>
     </key>
+    <key name="mail-todo-vpane-position" type="i">
+      <default>280</default>
+      <range min="60" max="2000"/>
+      <summary>Vertical split position between events and tasks in mail agenda sidebar</summary>
+    </key>
     <key name="mail-show-toolbar" type="b">
       <default>false</default>
       <summary>Show the mail toolbar</summary>
