@@ -29969,6 +29969,13 @@ pub(crate) fn draw_agenda_sidebar_canvas(
     selected_idx: Option<usize>,
     is_dark: bool,
 ) {
+    if is_dark {
+        cr.set_source_rgb(0.14, 0.14, 0.14);
+    } else {
+        cr.set_source_rgb(1.0, 1.0, 1.0);
+    }
+    let _ = cr.paint();
+
     for (idx, item) in items.iter().enumerate() {
         let is_hovered = hovered_idx == Some(idx);
         let is_selected = selected_idx == Some(idx);
@@ -30335,13 +30342,14 @@ impl MailPage {
         let click_gesture = gtk::GestureClick::new();
         let page_for_click = self.downgrade();
         let canvas_for_click = agenda_canvas.clone();
-        click_gesture.connect_pressed(move |_gesture, n_press, x, y| {
+        click_gesture.connect_pressed(move |gesture, n_press, x, y| {
             let Some(page) = page_for_click.upgrade() else { return; };
             let items = page.imp().agenda_canvas_items.borrow().clone();
             let Some(idx) = hit_test_agenda_canvas(&items, x, y) else {
                 page.dismiss_active_agenda_popover();
                 return;
             };
+            gesture.set_state(gtk::EventSequenceState::Claimed);
 
             match &items[idx] {
                 AgendaSidebarCanvasItem::DateHeader { date, .. } => {
@@ -30377,7 +30385,7 @@ impl MailPage {
                         canvas_for_click.queue_draw();
 
                         let width = canvas_for_click.width();
-                        let rect = gdk::Rectangle::new(4, *bar_y as i32 + 1, (width - 8).max(10), *bar_h as i32 - 2);
+                        let rect = gdk::Rectangle::new(4, (*bar_y as i32 + 1).max(0), (width - 8).max(10), (*bar_h as i32 - 2).max(10));
                         Self::show_agenda_event_popover(&canvas_for_click, rect, event, page.downgrade(), use_12h);
                     } else if n_press == 2 {
                         page.dismiss_active_agenda_popover();
@@ -30452,7 +30460,7 @@ impl MailPage {
                         canvas_for_click.queue_draw();
 
                         let width = canvas_for_click.width();
-                        let rect = gdk::Rectangle::new(4, *row_y as i32, (width - 8).max(10), *row_h as i32);
+                        let rect = gdk::Rectangle::new(4, (*row_y as i32).max(0), (width - 8).max(10), (*row_h as i32).max(10));
                         Self::show_agenda_task_popover(&canvas_for_click, rect, task, page.downgrade());
                     }
                 }
@@ -30747,6 +30755,11 @@ impl MailPage {
         let popover = self.imp().active_agenda_popover.take();
         if let Some(popover) = popover {
             popover.popdown();
+            glib::idle_add_local_once(move || {
+                if popover.parent().is_some() {
+                    popover.unparent();
+                }
+            });
             self.imp().agenda_canvas_selected_row.set(None);
             if let Some(canvas) = self.imp().agenda_canvas.borrow().as_ref() {
                 canvas.queue_draw();
@@ -30810,9 +30823,11 @@ impl MailPage {
         let pop_weak = popover.downgrade();
         popover.connect_closed(move |p| {
             if let Some(pop) = pop_weak.upgrade() {
-                if pop.parent().is_some() {
-                    pop.unparent();
-                }
+                glib::idle_add_local_once(move || {
+                    if pop.parent().is_some() {
+                        pop.unparent();
+                    }
+                });
             }
             if let Some(page) = page_weak_closed.upgrade() {
                 page.imp().agenda_canvas_selected_row.set(None);
@@ -31126,10 +31141,11 @@ impl MailPage {
         actions_box.append(&edit_btn);
         content.append(&actions_box);
 
-        popover.set_child(Some(&content));
-        if !is_reused {
-            popover.popup();
+        if is_reused && popover.is_visible() {
+            popover.popdown();
         }
+        popover.set_child(Some(&content));
+        popover.popup();
     }
 
     fn show_agenda_task_popover(
@@ -31301,10 +31317,11 @@ impl MailPage {
         actions_box.append(&tasks_btn);
         content.append(&actions_box);
 
-        popover.set_child(Some(&content));
-        if !is_reused {
-            popover.popup();
+        if is_reused && popover.is_visible() {
+            popover.popdown();
         }
+        popover.set_child(Some(&content));
+        popover.popup();
     }
 
     fn load_initial_data(&self, source_store: &gio::ListStore, source_state: &gtk::Label) {
