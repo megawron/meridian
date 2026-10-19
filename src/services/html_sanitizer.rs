@@ -1333,8 +1333,27 @@ fn sanitize_stylesheet(value: &str, allow_remote_resources: bool) -> Option<Stri
     (!sanitized.trim().is_empty()).then_some(sanitized)
 }
 
+fn decode_inline_css_entities(value: &str) -> String {
+    if !value.contains('&') {
+        return value.to_string();
+    }
+    value
+        .replace("&quot;", "\"")
+        .replace("&QUOT;", "\"")
+        .replace("&#34;", "\"")
+        .replace("&#x22;", "\"")
+        .replace("&#X22;", "\"")
+        .replace("&apos;", "'")
+        .replace("&#39;", "'")
+        .replace("&#x27;", "'")
+        .replace("&#X27;", "'")
+        .replace("&amp;", "&")
+        .replace("&AMP;", "&")
+}
+
 fn sanitize_inline_css(value: &str, allow_remote_resources: bool) -> Option<String> {
-    let without_comments = strip_css_comments(value);
+    let decoded = decode_inline_css_entities(value);
+    let without_comments = strip_css_comments(&decoded);
     let declarations = sanitize_css_declarations(&without_comments, allow_remote_resources)?;
     let declarations = declarations.trim().trim_end_matches(';').trim();
     (!declarations.is_empty()).then_some(declarations.to_string())
@@ -2023,6 +2042,9 @@ fn strip_css_comments(value: &str) -> String {
             break;
         };
         cursor = start + 2 + relative_end + 2;
+    }
+    if output.contains("<!--") || output.contains("-->") {
+        output = output.replace("<!--", " ").replace("-->", " ");
     }
     output
 }
@@ -2819,6 +2841,22 @@ Content-Type: text/html; charset=utf-8
         assert!(banner_blocked.contains("aspect-ratio: 322 / 155"));
         assert!(banner_blocked.contains("max-height: 155px"));
         assert!(banner_blocked.contains("border:1px solid #ddd"));
+    }
+
+    #[test]
+    fn test_outlook_inline_style_entities_and_cdo_cdc_comments_preserved() {
+        let outlook_html = r#"<html><head><style><!--
+p.MsoNormal { margin: 0cm; font-size: 11.0pt; font-family: "Calibri", sans-serif; }
+--></style></head><body><p class="MsoNormal"><span style="font-size:10.0pt;font-family:&quot;Arial&quot;,sans-serif;color:black">Mit freundlichen Grüßen</span></p></body></html>"#;
+        let sanitized = sanitize_html(outlook_html);
+        assert!(
+            sanitized.contains("p.MsoNormal { margin: 0cm; font-size: 11.0pt; font-family: \"Calibri\", sans-serif; }"),
+            "First CSS rule inside <style><!-- ... --></style> must not be prefixed with <!--: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("font-family: &quot;Arial&quot;,sans-serif; color: black"),
+            "Inline style with &quot; entities must not split on entity semicolon: {sanitized}"
+        );
     }
 }
 
