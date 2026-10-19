@@ -136,6 +136,12 @@ pub fn discover_meridian_mail_caches() -> Vec<MeridianAccountCache> {
                 let db_path = path.join("folders.db");
                 if db_path.is_file() {
                     let source_uid = entry.file_name().to_string_lossy().to_string();
+                    if matches!(
+                        source_uid.as_str(),
+                        "local" | "vfolder" | "rss" | "trash" | "system-proxy"
+                    ) {
+                        continue;
+                    }
                     if !crate::services::eds_service::is_source_enabled_for_service(
                         &source_uid,
                         crate::services::eds_service::EdsSourceKind::Mail,
@@ -143,8 +149,14 @@ pub fn discover_meridian_mail_caches() -> Vec<MeridianAccountCache> {
                         continue;
                     }
                     if !results.iter().any(|r: &MeridianAccountCache| r.source_uid == source_uid) {
-                        let display_name = resolve_source_display_name(&source_uid, &home)
-                            .unwrap_or_else(|| "E-Mail-Konto".to_string());
+                        let resolved_name = resolve_source_display_name(&source_uid, &home);
+                        let display_name = match resolved_name {
+                            Some(name) => name,
+                            None if std::env::var_os("MERIDIAN_CAMEL_CACHE_DIR").is_some() => {
+                                "E-Mail-Konto".to_string()
+                            }
+                            None => continue,
+                        };
                         results.push(MeridianAccountCache {
                             source_uid,
                             display_name,
@@ -254,8 +266,8 @@ impl SqliteDb {
         Ok(Self { ptr })
     }
 
-    fn query_folders_map(&self) -> Result<HashMap<String, (i64, String)>, String> {
-        let sql = CString::new("SELECT folder_name, folder_id FROM folders;").unwrap();
+    fn query_folders_map(&self) -> Result<HashMap<String, (i64, String, i64)>, String> {
+        let sql = CString::new("SELECT folder_name, folder_id, saved_count FROM folders ORDER BY saved_count ASC;").unwrap();
         let mut stmt: *mut Sqlite3Stmt = std::ptr::null_mut();
         let rc = unsafe { sqlite3_prepare_v2(self.ptr, sql.as_ptr(), -1, &mut stmt, std::ptr::null_mut()) };
         if rc != SQLITE_OK || stmt.is_null() {
@@ -267,12 +279,13 @@ impl SqliteDb {
             while sqlite3_step(stmt) == SQLITE_ROW {
                 let text_ptr = sqlite3_column_text(stmt, 0);
                 let id = sqlite3_column_int64(stmt, 1);
+                let saved_count = sqlite3_column_int64(stmt, 2).max(0);
                 if !text_ptr.is_null() {
                     let name = CStr::from_ptr(text_ptr).to_string_lossy().into_owned();
-                    map.insert(name.to_lowercase(), (id, name.clone()));
+                    map.insert(name.to_lowercase(), (id, name.clone(), saved_count));
                     // Also store with stripped "[Gmail]/" prefix for easy matching
                     if let Some(stripped) = name.strip_prefix("[Gmail]/") {
-                        map.insert(stripped.to_lowercase(), (id, name.clone()));
+                        map.insert(stripped.to_lowercase(), (id, name.clone(), saved_count));
                     }
                 }
             }
@@ -289,79 +302,119 @@ impl SqliteDb {
         // 0. Empty folder name defaults to inbox
         if target_lower.is_empty() {
             for cand in ["posteingang", "inbox", "[gmail]/alle nachrichten"] {
-                if let Some(res) = map.get(cand) {
-                    return Ok(Some(res.clone()));
+                if let Some((id, name, _)) = map.get(cand) {
+                    return Ok(Some((*id, name.clone())));
                 }
             }
+            return Ok(None);
         }
 
-        // 1. Exact or lower match
-        if let Some(res) = map.get(&target_lower) {
-            return Ok(Some(res.clone()));
-        }
-
-        // 1b. Dash-normalized match (handles em-dash '—' vs en-dash '–' vs hyphen '-')
         let norm = |s: &str| s.replace('—', "-").replace('–', "-").to_lowercase();
         let target_norm = norm(target_folder.trim());
-        for (key, res) in &map {
-            if norm(key) == target_norm {
-                return Ok(Some(res.clone()));
+
+        // Handle Foreign Folders (shared mailboxes) strictly within Foreign Folders namespace
+        if target_lower.starts_with("foreign folders") {
+            let mut best_match: Option<(i64, String, i64)> = None;
+
+            if let Some(res) = map.get(&target_lower) {
+                if res.2 > 0 {
+                    return Ok(Some((res.0, res.1.clone())));
+                }
+                best_match = Some(res.clone());
             }
-        }
 
-        // 2. Common German/English aliases (only for non-foreign folders to avoid cross-account hijacking)
-        if !target_lower.starts_with("foreign folders") {
-            let aliases: &[(&[&str], &[&str])] = &[
-                (
-                    &["posteingang", "inbox"],
-                    &["inbox", "posteingang"],
-                ),
-                (
-                    &["gesendet", "gesendete elemente", "sent", "sent items"],
-                    &["[gmail]/gesendet", "gesendet", "sent", "sent items", "gesendete elemente"],
-                ),
-                (
-                    &["entwürfe", "entwuerfe", "drafts"],
-                    &["[gmail]/entwürfe", "entwürfe", "entwuerfe", "drafts"],
-                ),
-                (
-                    &["papierkorb", "trash", "gelöschte elemente"],
-                    &["[gmail]/papierkorb", "papierkorb", "trash", "gelöschte elemente"],
-                ),
-                (
-                    &["spam", "junk", "junk-e-mail"],
-                    &["[gmail]/spam", "spam", "junk", "junk-e-mail"],
-                ),
-                (
-                    &["markiert", "starred"],
-                    &["[gmail]/markiert", "markiert", "starred"],
-                ),
-                (
-                    &["wichtig", "important"],
-                    &["[gmail]/wichtig", "wichtig", "important"],
-                ),
-                (
-                    &["alle nachrichten", "all mail"],
-                    &["[gmail]/alle nachrichten", "alle nachrichten", "all mail"],
-                ),
-            ];
+            for (key, res) in &map {
+                if norm(key) == target_norm {
+                    if res.2 > 0 {
+                        return Ok(Some((res.0, res.1.clone())));
+                    }
+                    if best_match.as_ref().is_none_or(|b| res.2 > b.2) {
+                        best_match = Some(res.clone());
+                    }
+                }
+            }
 
-            for (inputs, targets) in aliases {
-                if inputs.iter().any(|&i| i == target_lower || target_lower.ends_with(i)) {
-                    for &cand in *targets {
-                        if let Some(res) = map.get(cand) {
-                            return Ok(Some(res.clone()));
+            // Match across alternative shared mailbox container prefixes (e.g. "Postfach — EDV" vs "Postfach — edv@...")
+            fn foreign_subpath(s: &str) -> Option<&str> {
+                let rest = s.strip_prefix("foreign folders/")?;
+                let (_, sub) = rest.split_once('/')?;
+                (!sub.is_empty()).then_some(sub)
+            }
+
+            if let Some(target_sub) = foreign_subpath(&target_norm) {
+                let target_id = crate::services::camel_mail_service::normalized_camel_folder_id("", target_sub);
+                for (key, res) in &map {
+                    let key_norm = norm(key);
+                    if let Some(key_sub) = foreign_subpath(&key_norm) {
+                        let key_id = crate::services::camel_mail_service::normalized_camel_folder_id("", key_sub);
+                        if key_sub == target_sub || key_id == target_id {
+                            if best_match.as_ref().is_none_or(|b| res.2 > b.2) {
+                                best_match = Some(res.clone());
+                            }
                         }
                     }
                 }
             }
+
+            return Ok(best_match.map(|(id, name, _)| (id, name)));
         }
 
-        // 3. Substring matching (only if non-empty to prevent matching arbitrary map items)
-        if !target_norm.is_empty() {
-            for (key, res) in &map {
-                if norm(key).contains(&target_norm) || target_norm.contains(&norm(key)) {
-                    return Ok(Some(res.clone()));
+        // 1. Exact or lower match (non-foreign)
+        if let Some((id, name, _)) = map.get(&target_lower) {
+            if !name.to_lowercase().starts_with("foreign folders") {
+                return Ok(Some((*id, name.clone())));
+            }
+        }
+
+        // 1b. Dash-normalized match (handles em-dash '—' vs en-dash '–' vs hyphen '-')
+        for (key, (id, name, _)) in &map {
+            if !key.starts_with("foreign folders") && norm(key) == target_norm {
+                return Ok(Some((*id, name.clone())));
+            }
+        }
+
+        // 2. Common German/English aliases for top-level system folders only
+        let aliases: &[(&[&str], &[&str])] = &[
+            (
+                &["posteingang", "inbox"],
+                &["inbox", "posteingang"],
+            ),
+            (
+                &["gesendet", "gesendete elemente", "sent", "sent items", "[gmail]/gesendet", "[gmail]/sent mail"],
+                &["[gmail]/gesendet", "gesendet", "sent", "sent items", "gesendete elemente", "[gmail]/sent mail"],
+            ),
+            (
+                &["entwürfe", "entwuerfe", "drafts", "draft", "[gmail]/entwürfe", "[gmail]/drafts"],
+                &["[gmail]/entwürfe", "entwürfe", "entwuerfe", "drafts", "draft", "[gmail]/drafts"],
+            ),
+            (
+                &["papierkorb", "trash", "deleted items", "gelöschte elemente", "[gmail]/papierkorb", "[gmail]/trash"],
+                &["[gmail]/papierkorb", "papierkorb", "trash", "deleted items", "gelöschte elemente", "[gmail]/trash"],
+            ),
+            (
+                &["spam", "junk", "junk-e-mail", "junk email", "[gmail]/spam"],
+                &["[gmail]/spam", "spam", "junk", "junk-e-mail", "junk email"],
+            ),
+            (
+                &["markiert", "starred", "[gmail]/markiert", "[gmail]/starred"],
+                &["[gmail]/markiert", "markiert", "starred", "[gmail]/starred"],
+            ),
+            (
+                &["wichtig", "important", "[gmail]/wichtig", "[gmail]/important"],
+                &["[gmail]/wichtig", "wichtig", "important", "[gmail]/important"],
+            ),
+            (
+                &["alle nachrichten", "all mail", "archiv", "archive", "[gmail]/alle nachrichten", "[gmail]/all mail"],
+                &["[gmail]/alle nachrichten", "alle nachrichten", "all mail", "archiv", "archive", "[gmail]/all mail"],
+            ),
+        ];
+
+        for (inputs, targets) in aliases {
+            if inputs.contains(&target_lower.as_str()) {
+                for &cand in *targets {
+                    if let Some((id, name, _)) = map.get(cand) {
+                        return Ok(Some((*id, name.clone())));
+                    }
                 }
             }
         }
@@ -394,12 +447,14 @@ pub fn load_folders_from_sqlite(
     }
 
     let shared_profiles = crate::services::account_config_service::AccountConfigStore::default()
-        .load()
-        .into_iter()
+        .load_cached()
+        .iter()
         .filter(|p| p.is_shared_mailbox)
+        .cloned()
         .collect::<Vec<_>>();
 
-    let mut folders = Vec::new();
+    let mut folders: Vec<crate::services::camel_mail_service::CamelFolderSummary> = Vec::new();
+    let mut index_by_key: HashMap<(String, String), usize> = HashMap::new();
     unsafe {
         while sqlite3_step(stmt) == SQLITE_ROW {
             let text_ptr = sqlite3_column_text(stmt, 0);
@@ -457,16 +512,24 @@ pub fn load_folders_from_sqlite(
                 }
 
                 let folder_id = format!("{}:{}", mapped_source_uid, mapped_folder_name);
-                folders.push(crate::services::camel_mail_service::CamelFolderSummary {
-                    source_uid: mapped_source_uid,
-                    source_display_name: mapped_source_display_name,
-                    folder_name: mapped_folder_name,
-                    folder_id,
-                    display_name: mapped_display_name,
-                    unread_count: unread,
-                    total_count: total,
-                    is_selectable: true,
-                });
+                let key = (mapped_source_uid.clone(), mapped_folder_name.clone());
+                if let Some(&existing_idx) = index_by_key.get(&key) {
+                    let existing = &mut folders[existing_idx];
+                    existing.unread_count = existing.unread_count.max(unread);
+                    existing.total_count = existing.total_count.max(total);
+                } else {
+                    index_by_key.insert(key, folders.len());
+                    folders.push(crate::services::camel_mail_service::CamelFolderSummary {
+                        source_uid: mapped_source_uid,
+                        source_display_name: mapped_source_display_name,
+                        folder_name: mapped_folder_name,
+                        folder_id,
+                        display_name: mapped_display_name,
+                        unread_count: unread,
+                        total_count: total,
+                        is_selectable: true,
+                    });
+                }
             }
         }
         sqlite3_finalize(stmt);
@@ -768,9 +831,10 @@ pub fn load_folder_messages_page_from_sqlite(
     }
 
     let shared_profiles = crate::services::account_config_service::AccountConfigStore::default()
-        .load()
-        .into_iter()
+        .load_cached()
+        .iter()
         .filter(|p| p.is_shared_mailbox)
+        .cloned()
         .collect::<Vec<_>>();
 
     let is_shared_target = effective_source_uid != source_uid;
@@ -990,6 +1054,349 @@ pub fn load_folder_messages_page_from_sqlite(
     };
 
     Ok((messages, next_cursor))
+}
+
+/// Fast reader for unread or flagged messages in a specific folder from Evolution's local `folders.db`.
+pub fn load_folder_unread_or_flagged_from_sqlite(
+    db_path: &Path,
+    source_uid: &str,
+    folder_name: &str,
+    limit: usize,
+) -> Result<Vec<ParsedMail>, String> {
+    let (effective_source_uid, effective_folder_name) =
+        crate::services::camel_mail_service::resolve_shared_mailbox_target(source_uid, folder_name);
+
+    let db = SqliteDb::open(db_path)?;
+    let Some((folder_id, real_folder_name)) = db.resolve_folder_id(&effective_folder_name)? else {
+        return Ok(Vec::new());
+    };
+
+    let table_name = format!("messages_{folder_id}");
+    let limit_clause = if limit > 0 && limit < usize::MAX {
+        format!(" LIMIT {limit}")
+    } else {
+        String::new()
+    };
+
+    let sql_str = format!(
+        "SELECT uid, flags, size, dsent, dreceived, subject, mail_from, mail_to, preview, labels, bdata, usertags, part \
+         FROM {table_name} WHERE ((flags & 16) = 0 OR (flags & 8) != 0 OR labels LIKE '%$Flagged%') \
+         ORDER BY dreceived DESC, dsent DESC{limit_clause};"
+    );
+
+    let c_sql = CString::new(sql_str).map_err(|_| "Ungültiger SQL-String".to_string())?;
+    let mut stmt: *mut Sqlite3Stmt = std::ptr::null_mut();
+    let rc = unsafe { sqlite3_prepare_v2(db.ptr, c_sql.as_ptr(), -1, &mut stmt, std::ptr::null_mut()) };
+    if rc != SQLITE_OK || stmt.is_null() {
+        return Ok(Vec::new());
+    }
+
+    let shared_profiles = crate::services::account_config_service::AccountConfigStore::default()
+        .load_cached()
+        .iter()
+        .filter(|p| p.is_shared_mailbox)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let is_shared_target = effective_source_uid != source_uid;
+    let mut messages = Vec::new();
+
+    unsafe {
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let uid_ptr = sqlite3_column_text(stmt, 0);
+            if uid_ptr.is_null() {
+                continue;
+            }
+            let uid = CStr::from_ptr(uid_ptr).to_string_lossy().into_owned();
+            let flags = sqlite3_column_int(stmt, 1) as u32;
+            let size = sqlite3_column_int64(stmt, 2) as usize;
+            let dsent = sqlite3_column_int64(stmt, 3);
+            let dreceived = sqlite3_column_int64(stmt, 4);
+
+            let subject_ptr = sqlite3_column_text(stmt, 5);
+            let subject = if !subject_ptr.is_null() {
+                CStr::from_ptr(subject_ptr).to_string_lossy().into_owned()
+            } else {
+                String::new()
+            };
+
+            let mail_from_ptr = sqlite3_column_text(stmt, 6);
+            let mail_from = if !mail_from_ptr.is_null() {
+                CStr::from_ptr(mail_from_ptr).to_string_lossy().into_owned()
+            } else {
+                String::new()
+            };
+
+            let mail_to_ptr = sqlite3_column_text(stmt, 7);
+            let mail_to = if !mail_to_ptr.is_null() {
+                CStr::from_ptr(mail_to_ptr).to_string_lossy().into_owned()
+            } else {
+                String::new()
+            };
+
+            let preview_ptr = sqlite3_column_text(stmt, 8);
+            let preview = if !preview_ptr.is_null() {
+                CStr::from_ptr(preview_ptr).to_string_lossy().into_owned()
+            } else {
+                String::new()
+            };
+
+            let labels_ptr = sqlite3_column_text(stmt, 9);
+            let labels = if !labels_ptr.is_null() {
+                CStr::from_ptr(labels_ptr).to_string_lossy().into_owned()
+            } else {
+                String::new()
+            };
+
+            let usertags_ptr = sqlite3_column_text(stmt, 11);
+            let (follow_up_state, follow_up) = if !usertags_ptr.is_null() {
+                let raw_bytes = CStr::from_ptr(usertags_ptr).to_bytes();
+                parse_evolution_usertags_bytes(raw_bytes)
+            } else {
+                (MailFollowUpState::None, MailFollowUpMetadata::default())
+            };
+
+            let is_unread = (flags & 16) == 0;
+            let is_flagged = (flags & 8) != 0 || labels.contains("$Flagged");
+            let is_important = labels.contains("$Important")
+                || labels.contains("Important")
+                || labels.contains("Wichtig")
+                || labels.contains("wichtig");
+            let is_replied = (flags & (1 | 64)) != 0 || labels.contains("$Answered");
+            let is_forwarded = (flags & 128) != 0 || labels.contains("$Forwarded");
+            let has_cal = labels.contains("$has_cal")
+                || is_calendar_invitation_subject_or_preview(&subject, &preview);
+            let has_attachments = (flags & 32) != 0 || has_cal;
+            let parsed_labels = labels
+                .split_whitespace()
+                .filter(|s| !s.starts_with('$'))
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>();
+
+            let effective_ts = if dreceived > 0 { dreceived } else { dsent };
+            let date_str = if effective_ts > 0 {
+                Utc.timestamp_opt(effective_ts, 0)
+                    .single()
+                    .map(|dt: DateTime<Utc>| dt.to_rfc2822())
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+
+            let (sender_name, sender_email) = parse_address(&mail_from);
+
+            let mut mapped_source_uid = source_uid.to_string();
+            let mut mapped_folder_name = real_folder_name.clone();
+
+            for profile in &shared_profiles {
+                if let Some((rel, is_container)) =
+                    crate::services::camel_mail_service::strip_shared_mailbox_prefix(&real_folder_name, &profile.email, &profile.display_name)
+                {
+                    let target_rel = if is_container || rel.is_empty() {
+                        "Posteingang".to_string()
+                    } else {
+                        rel.to_string()
+                    };
+                    mapped_source_uid = profile.id.clone();
+                    mapped_folder_name = target_rel;
+                    break;
+                } else if is_shared_target && (profile.id == source_uid || profile.email == source_uid) {
+                    mapped_source_uid = profile.id.clone();
+                    mapped_folder_name = if folder_name.trim().is_empty() {
+                        "Posteingang".to_string()
+                    } else {
+                        folder_name.to_string()
+                    };
+                    break;
+                }
+            }
+
+            let id = format!("eds:{mapped_source_uid}:{mapped_folder_name}:{uid}");
+            let backend_location = Some(MailBackendLocation {
+                source_uid: mapped_source_uid,
+                folder_name: mapped_folder_name.clone(),
+                message_uid: uid.clone(),
+                message_id: Some(id.clone()),
+            });
+
+            let attachments = if has_cal {
+                vec![AttachmentInfo {
+                    filename: "invite.ics".to_string(),
+                    size_formatted: String::new(),
+                    mime_type: "text/calendar".to_string(),
+                    content_id: None,
+                    is_inline: false,
+                    content: std::sync::Arc::from([]),
+                }]
+            } else if has_attachments {
+                vec![AttachmentInfo {
+                    filename: "Anhang".to_string(),
+                    size_formatted: String::new(),
+                    mime_type: "application/octet-stream".to_string(),
+                    content_id: None,
+                    is_inline: false,
+                    content: std::sync::Arc::from([]),
+                }]
+            } else {
+                Vec::new()
+            };
+
+            let normalized_folder_id =
+                crate::services::camel_mail_service::normalized_camel_folder_id("", &mapped_folder_name);
+            let part_ptr = sqlite3_column_text(stmt, 12);
+            let (parsed_msg_id, in_reply_to, references) = if !part_ptr.is_null() {
+                let part_bytes = CStr::from_ptr(part_ptr).to_bytes();
+                if let Ok(part_str) = std::str::from_utf8(part_bytes) {
+                    parse_camel_part_fast(part_str)
+                } else {
+                    (None, Vec::new(), Vec::new())
+                }
+            } else {
+                (None, Vec::new(), Vec::new())
+            };
+
+            messages.push(ParsedMail {
+                id,
+                folder_id: normalized_folder_id,
+                folder_name: mapped_folder_name,
+                backend_location,
+                sender_name,
+                sender_email,
+                recipient_to: mail_to,
+                recipient_cc: String::new(),
+                recipient_bcc: String::new(),
+                reply_to: String::new(),
+                subject,
+                message_id: parsed_msg_id,
+                in_reply_to,
+                references,
+                thread_id: uid,
+                thread_size: 1,
+                thread_position: 0,
+                date_str,
+                message_size: size,
+                preview_snippet: preview,
+                html_body: String::new(),
+                raw_headers: None,
+                raw_mime: None,
+                is_unread,
+                is_flagged,
+                is_important,
+                is_replied,
+                is_forwarded,
+                follow_up_state,
+                follow_up,
+                labels: parsed_labels,
+                attachments,
+                is_preview_only: true,
+            });
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    crate::services::mail_store_service::assign_thread_metadata(&mut messages);
+    Ok(messages)
+}
+
+/// Fast multi-account SQLite loader for Unified Views (All Inboxes, All Unread, All Flagged, All Sent).
+/// Loads folder trees for all discovered accounts, plus Inbox messages, Sent messages, and any
+/// unread or flagged messages from non-trash/non-junk folders across all accounts.
+pub fn load_unified_accounts_from_sqlite(
+    page_limit_per_folder: usize,
+) -> (
+    Vec<crate::services::camel_mail_service::CamelFolderSummary>,
+    Vec<ParsedMail>,
+    usize,
+) {
+    let caches = discover_meridian_mail_caches();
+    if caches.is_empty() {
+        return (Vec::new(), Vec::new(), 0);
+    }
+
+    let mut all_folders = Vec::new();
+    let mut all_messages = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
+    let mut successful_sources = 0usize;
+
+    for cache in &caches {
+        let folders = load_folders_from_sqlite(&cache.folders_db, &cache.source_uid, &cache.display_name)
+            .unwrap_or_default();
+        if !folders.is_empty() {
+            successful_sources += 1;
+        }
+
+        let mut loaded_primary_inbox = false;
+        for f in &folders {
+            let norm_id =
+                crate::services::camel_mail_service::normalized_camel_folder_id("", &f.folder_name);
+            if norm_id.eq_ignore_ascii_case("inbox") {
+                if f.source_uid == cache.source_uid {
+                    loaded_primary_inbox = true;
+                }
+                if let Ok(msgs) = load_folder_messages_from_sqlite(
+                    &cache.folders_db,
+                    &f.source_uid,
+                    &f.folder_name,
+                    Some(page_limit_per_folder),
+                ) {
+                    for m in msgs {
+                        if seen_ids.insert(m.id.clone()) {
+                            all_messages.push(m);
+                        }
+                    }
+                }
+            } else if norm_id.eq_ignore_ascii_case("sent") {
+                if let Ok(msgs) = load_folder_messages_from_sqlite(
+                    &cache.folders_db,
+                    &f.source_uid,
+                    &f.folder_name,
+                    Some(page_limit_per_folder.min(100)),
+                ) {
+                    for m in msgs {
+                        if seen_ids.insert(m.id.clone()) {
+                            all_messages.push(m);
+                        }
+                    }
+                }
+            } else if !norm_id.eq_ignore_ascii_case("trash")
+                && !norm_id.eq_ignore_ascii_case("junk")
+                && !norm_id.eq_ignore_ascii_case("spam")
+                && f.total_count > 0
+            {
+                if let Ok(msgs) = load_folder_unread_or_flagged_from_sqlite(
+                    &cache.folders_db,
+                    &f.source_uid,
+                    &f.folder_name,
+                    page_limit_per_folder,
+                ) {
+                    for m in msgs {
+                        if seen_ids.insert(m.id.clone()) {
+                            all_messages.push(m);
+                        }
+                    }
+                }
+            }
+        }
+
+        if !loaded_primary_inbox {
+            if let Ok(msgs) = load_folder_messages_from_sqlite(
+                &cache.folders_db,
+                &cache.source_uid,
+                "",
+                Some(page_limit_per_folder),
+            ) {
+                for m in msgs {
+                    if seen_ids.insert(m.id.clone()) {
+                        all_messages.push(m);
+                    }
+                }
+            }
+        }
+
+        all_folders.extend(folders);
+    }
+
+    (all_folders, all_messages, successful_sources.max(1))
 }
 
 /// Fast reader for folder messages directly from Evolution's local `folders.db`.
