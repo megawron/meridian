@@ -813,6 +813,22 @@ pub(crate) fn load_evolution_cached_folders(
     source_uid: &str,
     source_display_name: &str,
 ) -> Vec<CamelFolderSummary> {
+    if let Some(cache) = crate::services::evolution_summary_cache::find_evolution_account_cache(Some(source_uid)) {
+        if let Ok(folders) = crate::services::evolution_summary_cache::load_folders_from_sqlite(
+            &cache.folders_db,
+            &cache.source_uid,
+            source_display_name,
+        ) {
+            let matching: Vec<_> = folders
+                .into_iter()
+                .filter(|f| f.source_uid == source_uid || f.source_uid == cache.source_uid)
+                .collect();
+            if !matching.is_empty() {
+                return matching;
+            }
+        }
+    }
+
     let cache_dir = crate::services::non_empty_env_path("XDG_CACHE_HOME")
         .unwrap_or_else(|| crate::services::home_dir().join(".cache"))
         .join("evolution/mail")
@@ -1182,8 +1198,8 @@ pub(crate) fn resolve_shared_mailbox_target(
     source_uid: &str,
     folder_name: &str,
 ) -> (String, String) {
-    let profiles = crate::services::account_config_service::AccountConfigStore::default().load();
-    for profile in &profiles {
+    let profiles = crate::services::account_config_service::AccountConfigStore::default().load_cached();
+    for profile in profiles.iter() {
         if !profile.is_shared_mailbox {
             continue;
         }
@@ -1972,12 +1988,13 @@ fn load_messages_native(
     }
 
     let shared_profiles = crate::services::account_config_service::AccountConfigStore::default()
-        .load()
-        .into_iter()
+        .load_cached()
+        .iter()
         .filter(|p| p.is_shared_mailbox)
+        .cloned()
         .collect::<Vec<_>>();
 
-    let mut folder_summaries = Vec::with_capacity(folder_count);
+    let mut folder_summaries: Vec<CamelFolderSummary> = Vec::with_capacity(folder_count);
     if !folders.is_null() {
         let folders_slice = unsafe { slice::from_raw_parts(folders, folder_count) };
         for folder in folders_slice {
@@ -2040,21 +2057,29 @@ fn load_messages_native(
                 mapped_display_name
             };
 
-            folder_summaries.push(CamelFolderSummary {
-                source_uid: mapped_source_uid,
-                source_display_name: mapped_source_display_name,
-                folder_id: normalized_camel_folder_id(&c_string(folder.folder_id), &mapped_folder_name),
-                folder_name: mapped_folder_name,
-                display_name: clean_display,
-                unread_count: folder.unread_count,
-                total_count: folder.total_count,
-                is_selectable: folder.is_selectable != 0,
-            });
+            if let Some(existing) = folder_summaries.iter_mut().find(|f| {
+                f.source_uid == mapped_source_uid && f.folder_name == mapped_folder_name
+            }) {
+                existing.unread_count = existing.unread_count.max(folder.unread_count);
+                existing.total_count = existing.total_count.max(folder.total_count);
+                existing.is_selectable |= folder.is_selectable != 0;
+            } else {
+                folder_summaries.push(CamelFolderSummary {
+                    source_uid: mapped_source_uid,
+                    source_display_name: mapped_source_display_name,
+                    folder_id: normalized_camel_folder_id(&c_string(folder.folder_id), &mapped_folder_name),
+                    folder_name: mapped_folder_name,
+                    display_name: clean_display,
+                    unread_count: folder.unread_count,
+                    total_count: folder.total_count,
+                    is_selectable: folder.is_selectable != 0,
+                });
+            }
         }
         unsafe { ffi::meridian_eds_camel_free_folders(folders, folder_count) };
     }
 
-    let messages = parse_native_messages(records, record_count, cancelled);
+    let messages = parse_native_messages(records, record_count, true, cancelled);
     if !records.is_null() {
         unsafe { ffi::meridian_eds_camel_free_messages(records, record_count) };
     }
@@ -2530,6 +2555,7 @@ fn follow_up_metadata_from_native(
 fn parse_native_messages(
     records: *const ffi::MeridianEdsCamelMessage,
     record_count: usize,
+    is_preview_only: bool,
     cancelled: Option<&AtomicBool>,
 ) -> Result<Vec<ParsedMail>, String> {
     use std::slice;
@@ -2561,6 +2587,10 @@ fn parse_native_messages(
             raw,
             record.is_unread != 0,
         ) {
+            if is_preview_only {
+                parsed.is_preview_only = true;
+                parsed.html_body.clear();
+            }
             parsed.is_flagged = record.is_flagged != 0;
             parsed.is_replied = record.is_replied != 0;
             parsed.is_forwarded = record.is_forwarded != 0;
@@ -2630,6 +2660,47 @@ pub(crate) fn load_messages_for_uids(
         let _ = (source_uid, folder_name, message_uids, cancelled);
         Err("native EDS/Camel adapter is not available in this build".to_string())
     }
+}
+
+/// Fast, lock-free local lookup for an already cached RFC822 message (in-memory LRU or local disk cache).
+/// Never touches network or Camel native locks.
+pub(crate) fn try_load_cached_raw_message(location: &MailBackendLocation) -> Option<Vec<u8>> {
+    let cache_key = (
+        location.source_uid.clone(),
+        location.folder_name.clone(),
+        location.message_uid.clone(),
+    );
+    if let Some(cached) = get_cached_raw_message(&cache_key) {
+        return Some(cached);
+    }
+
+    let (resolved_source_uid, resolved_folder_name) =
+        resolve_shared_mailbox_target(&location.source_uid, &location.folder_name);
+    if let Some(cache) = crate::services::evolution_summary_cache::find_evolution_account_cache(
+        Some(&resolved_source_uid),
+    ) {
+        if let Some(raw) = crate::services::evolution_summary_cache::read_cached_raw_message_direct(
+            &cache.cache_dir,
+            &resolved_folder_name,
+            &location.message_uid,
+        ) {
+            put_cached_raw_message(cache_key, raw.clone());
+            return Some(raw);
+        }
+        if resolved_folder_name != location.folder_name {
+            if let Some(raw) =
+                crate::services::evolution_summary_cache::read_cached_raw_message_direct(
+                    &cache.cache_dir,
+                    &location.folder_name,
+                    &location.message_uid,
+                )
+            {
+                put_cached_raw_message(cache_key, raw.clone());
+                return Some(raw);
+            }
+        }
+    }
+    None
 }
 
 /// Load the exact RFC822 payload for one backend message without retaining a
@@ -2856,7 +2927,7 @@ fn load_messages_for_uids_native(
             .unwrap_or_else(|| "Inkrementelles EDS/Camel-Laden ist fehlgeschlagen".to_string()));
     }
 
-    let messages = parse_native_messages(records, record_count, Some(cancelled));
+    let messages = parse_native_messages(records, record_count, false, Some(cancelled));
     if !records.is_null() {
         unsafe { ffi::meridian_eds_camel_free_messages(records, record_count) };
     }

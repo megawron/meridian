@@ -1125,6 +1125,147 @@ compare_message_sort_entries_desc (gconstpointer a, gconstpointer b)
     return 0;
 }
 
+static gboolean
+is_inbox_alias (const gchar *name)
+{
+    return name && (g_ascii_strcasecmp (name, "INBOX") == 0 ||
+                    g_ascii_strcasecmp (name, "Posteingang") == 0);
+}
+
+static gboolean
+is_sent_alias (const gchar *name)
+{
+    return name && (g_ascii_strcasecmp (name, "Sent") == 0 ||
+                    g_ascii_strcasecmp (name, "Sent Items") == 0 ||
+                    g_ascii_strcasecmp (name, "Gesendet") == 0 ||
+                    g_ascii_strcasecmp (name, "Gesendete Elemente") == 0 ||
+                    g_ascii_strcasecmp (name, "[Gmail]/Gesendet") == 0 ||
+                    g_ascii_strcasecmp (name, "[Gmail]/Sent Mail") == 0);
+}
+
+static gboolean
+is_drafts_alias (const gchar *name)
+{
+    return name && (g_ascii_strcasecmp (name, "Drafts") == 0 ||
+                    g_ascii_strcasecmp (name, "Draft") == 0 ||
+                    g_ascii_strcasecmp (name, "Entwürfe") == 0 ||
+                    g_ascii_strcasecmp (name, "[Gmail]/Entwürfe") == 0 ||
+                    g_ascii_strcasecmp (name, "[Gmail]/Drafts") == 0);
+}
+
+static gboolean
+is_trash_alias (const gchar *name)
+{
+    return name && (g_ascii_strcasecmp (name, "Trash") == 0 ||
+                    g_ascii_strcasecmp (name, "Deleted Items") == 0 ||
+                    g_ascii_strcasecmp (name, "Papierkorb") == 0 ||
+                    g_ascii_strcasecmp (name, "Gelöschte Elemente") == 0 ||
+                    g_ascii_strcasecmp (name, "[Gmail]/Papierkorb") == 0 ||
+                    g_ascii_strcasecmp (name, "[Gmail]/Trash") == 0);
+}
+
+static gboolean
+is_junk_alias (const gchar *name)
+{
+    return name && (g_ascii_strcasecmp (name, "Junk") == 0 ||
+                    g_ascii_strcasecmp (name, "Spam") == 0 ||
+                    g_ascii_strcasecmp (name, "Junk-E-Mail") == 0 ||
+                    g_ascii_strcasecmp (name, "Junk Email") == 0 ||
+                    g_ascii_strcasecmp (name, "[Gmail]/Spam") == 0);
+}
+
+static const gchar *
+foreign_folder_subpath (const gchar *path)
+{
+    const gchar *first_slash;
+    const gchar *second_slash;
+
+    if (!path || !g_str_has_prefix (path, "Foreign Folders/"))
+        return NULL;
+
+    first_slash = strchr (path, '/');
+    if (!first_slash)
+        return NULL;
+    second_slash = strchr (first_slash + 1, '/');
+    if (!second_slash || !*(second_slash + 1))
+        return NULL;
+    return second_slash + 1;
+}
+
+static gboolean
+camel_folder_matches_target (const gchar *full_name,
+                             guint32 flags,
+                             const gchar *target)
+{
+    gboolean full_is_foreign;
+    gboolean target_is_foreign;
+    guint32 folder_type;
+
+    if (!full_name || !target || !*target)
+        return FALSE;
+
+    if (g_ascii_strcasecmp (full_name, target) == 0)
+        return TRUE;
+
+    full_is_foreign = g_str_has_prefix (full_name, "Foreign Folders");
+    target_is_foreign = g_str_has_prefix (target, "Foreign Folders");
+
+    if (full_is_foreign != target_is_foreign)
+        return FALSE;
+
+    if (full_is_foreign && target_is_foreign) {
+        const gchar *sub_a = foreign_folder_subpath (full_name);
+        const gchar *sub_b = foreign_folder_subpath (target);
+        if (sub_a && sub_b) {
+            if (g_ascii_strcasecmp (sub_a, sub_b) == 0)
+                return TRUE;
+            if (is_inbox_alias (sub_a) && is_inbox_alias (sub_b))
+                return TRUE;
+            if (is_sent_alias (sub_a) && is_sent_alias (sub_b))
+                return TRUE;
+            if (is_drafts_alias (sub_a) && is_drafts_alias (sub_b))
+                return TRUE;
+            if (is_trash_alias (sub_a) && is_trash_alias (sub_b))
+                return TRUE;
+            if (is_junk_alias (sub_a) && is_junk_alias (sub_b))
+                return TRUE;
+        }
+        return FALSE;
+    }
+
+    if (g_str_has_prefix (full_name, "[Gmail]/") &&
+        g_ascii_strcasecmp (full_name + 8, target) == 0)
+        return TRUE;
+
+    if (g_str_has_prefix (target, "[Gmail]/") &&
+        g_ascii_strcasecmp (full_name, target + 8) == 0)
+        return TRUE;
+
+    folder_type = flags & CAMEL_FOLDER_TYPE_MASK;
+
+    if (is_inbox_alias (target) &&
+        (folder_type == CAMEL_FOLDER_TYPE_INBOX || is_inbox_alias (full_name)))
+        return TRUE;
+
+    if (is_sent_alias (target) &&
+        (folder_type == CAMEL_FOLDER_TYPE_SENT || is_sent_alias (full_name)))
+        return TRUE;
+
+    if (is_drafts_alias (target) &&
+        (folder_type == CAMEL_FOLDER_TYPE_DRAFTS || is_drafts_alias (full_name)))
+        return TRUE;
+
+    if (is_trash_alias (target) &&
+        (folder_type == CAMEL_FOLDER_TYPE_TRASH || is_trash_alias (full_name)))
+        return TRUE;
+
+    if (is_junk_alias (target) &&
+        (folder_type == CAMEL_FOLDER_TYPE_JUNK || is_junk_alias (full_name)))
+        return TRUE;
+
+    return FALSE;
+}
+
 static void
 load_folder (LoadContext *context,
              CamelStore *store,
@@ -1140,10 +1281,12 @@ load_folder (LoadContext *context,
         CamelFolder *folder = NULL;
         GPtrArray *uids = NULL;
         GError *error = NULL;
+        gsize folder_index_before;
 
         if (load_cancelled (context))
             return;
 
+        folder_index_before = context->folder_count;
         append_folder (
             context, source_uid, source_display_name, current);
 
@@ -1154,17 +1297,13 @@ load_folder (LoadContext *context,
         gboolean should_load_messages = FALSE;
         if (is_mail_folder (current) && (current->flags & CAMEL_FOLDER_NOSELECT) == 0) {
             if (folder_name && current->full_name) {
-                should_load_messages = (g_ascii_strcasecmp (current->full_name, folder_name) == 0);
+                should_load_messages = camel_folder_matches_target (
+                    current->full_name, current->flags, folder_name);
             } else if (!folder_name) {
                 gboolean is_foreign = current->full_name && g_str_has_prefix (current->full_name, "Foreign Folders");
                 if (!is_foreign) {
                     should_load_messages = ((current->flags & CAMEL_FOLDER_TYPE_MASK) == CAMEL_FOLDER_TYPE_INBOX) ||
-                        (current->full_name && (g_ascii_strcasecmp (current->full_name, "INBOX") == 0 ||
-                                                g_ascii_strcasecmp (current->full_name, "Inbox") == 0 ||
-                                                g_ascii_strcasecmp (current->full_name, "Posteingang") == 0 ||
-                                                g_str_has_suffix (current->full_name, "/Posteingang") ||
-                                                g_str_has_suffix (current->full_name, "/INBOX") ||
-                                                g_str_has_suffix (current->full_name, "/Inbox")));
+                        is_inbox_alias (current->full_name);
                 }
             }
         }
@@ -1194,6 +1333,16 @@ load_folder (LoadContext *context,
                                 current->full_name ? current->full_name : "",
                                 refresh_err->message);
                     g_clear_error (&refresh_err);
+                }
+
+                if (summary && context->folder_count > folder_index_before) {
+                    MeridianEdsCamelFolder *f_rec = &context->folders[folder_index_before];
+                    guint32 saved_cnt = camel_folder_summary_get_saved_count (summary);
+                    guint32 unread_cnt = camel_folder_summary_get_unread_count (summary);
+                    if (saved_cnt > 0 || f_rec->total_count == 0)
+                        f_rec->total_count = saved_cnt;
+                    if (saved_cnt > 0 || f_rec->unread_count == 0)
+                        f_rec->unread_count = unread_cnt;
                 }
 
                 #if EDS_BRIDGE_HAS_DUP_UIDS
@@ -1781,6 +1930,9 @@ ensure_foreign_folders_for_ews_store (CamelStore *store,
     if (!store || !CAMEL_IS_STORE (store))
         return;
 
+    if (g_object_get_data (G_OBJECT (store), "meridian-foreign-folders-initialized"))
+        return;
+
     const gchar *type_name = G_OBJECT_TYPE_NAME (store);
     if (!type_name || !g_str_has_prefix (type_name, "CamelEwsStore"))
         return;
@@ -1974,6 +2126,7 @@ ensure_foreign_folders_for_ews_store (CamelStore *store,
         g_free (email);
     }
     g_free (json);
+    g_object_set_data (G_OBJECT (store), "meridian-foreign-folders-initialized", GINT_TO_POINTER (1));
 }
 
 static gboolean
@@ -2044,14 +2197,17 @@ load_source (LoadContext *context,
 
     ensure_foreign_folders_for_ews_store (store, session ? session->registry : NULL, cancellable);
 
-    CamelStoreGetFolderInfoFlags folder_info_flags = CAMEL_STORE_FOLDER_INFO_RECURSIVE;
-    if (!folder_name || !*folder_name) {
-        folder_info_flags |= CAMEL_STORE_FOLDER_INFO_REFRESH;
-    }
     folder_info = camel_store_get_folder_info_sync (
         store, NULL,
-        folder_info_flags,
+        CAMEL_STORE_FOLDER_INFO_RECURSIVE,
         cancellable, &error);
+    if (!folder_info) {
+        g_clear_error (&error);
+        folder_info = camel_store_get_folder_info_sync (
+            store, NULL,
+            CAMEL_STORE_FOLDER_INFO_RECURSIVE | CAMEL_STORE_FOLDER_INFO_REFRESH,
+            cancellable, &error);
+    }
     if (!folder_info) {
         context->failed_sources++;
         context->processed_sources++;
@@ -2176,9 +2332,6 @@ meridian_eds_camel_load_messages (const char *source_uid,
 
         if (source_uid &&
             !g_str_equal (source_uid, e_source_get_uid (source))) {
-            if (context.message_offset == 0) {
-                load_source (&context, session, source, "", cancellable);
-            }
             continue;
         }
 
