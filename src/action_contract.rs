@@ -359,20 +359,8 @@ pub(crate) const SHORTCUTS: &[ShortcutSpec] = &[
     ShortcutSpec {
         section: ShortcutSection::Mail,
         group: ShortcutGroup::MailNavigation,
-        title: "Refresh Mail",
-        action: "win.refresh-mail",
-    },
-    ShortcutSpec {
-        section: ShortcutSection::Mail,
-        group: ShortcutGroup::MailNavigation,
         title: "Send & Receive All",
         action: "win.mail-send-receive",
-    },
-    ShortcutSpec {
-        section: ShortcutSection::Mail,
-        group: ShortcutGroup::MailNavigation,
-        title: "Apply Filters",
-        action: "win.apply-filters",
     },
 
     // ── Mail: Message Actions ──
@@ -420,15 +408,27 @@ pub(crate) const SHORTCUTS: &[ShortcutSpec] = &[
     },
     ShortcutSpec {
         section: ShortcutSection::Mail,
-        group: ShortcutGroup::MailMessage,
+        group: ShortcutGroup::MailOrganize,
         title: "Move to Folder",
         action: "win.move-message",
     },
     ShortcutSpec {
         section: ShortcutSection::Mail,
-        group: ShortcutGroup::MailMessage,
+        group: ShortcutGroup::MailOrganize,
         title: "Copy to Folder",
         action: "win.copy-message",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailOrganize,
+        title: "Refresh Mail",
+        action: "win.refresh-mail",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailOrganize,
+        title: "Apply Filters",
+        action: "win.apply-filters",
     },
     ShortcutSpec {
         section: ShortcutSection::Mail,

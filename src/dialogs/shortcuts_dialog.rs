@@ -31,7 +31,70 @@ pub(crate) fn format_accelerators_for_display(action: &str) -> String {
         .to_string()
 }
 
+/// Helper that adds a `gtk::ShortcutsSection` to `window` and arranges its groups
+/// into balanced side-by-side columns on a single page without triggering GTK 4.22's
+/// multi-page reflow bugs or negative min-width label warnings.
+#[allow(deprecated)]
+fn add_section_with_columns(
+    window: &gtk::ShortcutsWindow,
+    section_name: &str,
+    title: &str,
+    columns: Vec<Vec<gtk::ShortcutsGroup>>,
+) {
+    let max_h = columns
+        .iter()
+        .map(|col| {
+            col.iter()
+                .map(|g| g.property::<u32>("height"))
+                .sum::<u32>()
+        })
+        .max()
+        .unwrap_or(15)
+        .max(5);
+    let section = gtk::ShortcutsSection::builder()
+        .section_name(section_name)
+        .title(title)
+        .max_height(max_h)
+        .build();
+    for col_groups in &columns {
+        for group in col_groups {
+            section.add_group(group);
+        }
+    }
+    window.add_section(&section);
+}
+
+#[allow(deprecated)]
+fn build_spec_group(
+    section: ShortcutSection,
+    group_kind: ShortcutGroup,
+    group_title: &str,
+    extra_shortcuts: &[(&str, &str)],
+) -> gtk::ShortcutsGroup {
+    let group = gtk::ShortcutsGroup::builder().title(group_title).build();
+    for &(title, accel) in extra_shortcuts {
+        let shortcut = gtk::ShortcutsShortcut::builder()
+            .title(&crate::i18n::gettext(title))
+            .accelerator(accel)
+            .build();
+        group.add_shortcut(&shortcut);
+    }
+    for spec in SHORTCUTS
+        .iter()
+        .filter(|s| s.section == section && s.group == group_kind)
+    {
+        let accel = format_accelerators_for_display(spec.action);
+        let shortcut = gtk::ShortcutsShortcut::builder()
+            .title(&crate::i18n::gettext(spec.title))
+            .accelerator(&accel)
+            .build();
+        group.add_shortcut(&shortcut);
+    }
+    group
+}
+
 /// Creates a fully populated `gtk::ShortcutsWindow` matching Evolution / GNOME HIG standards.
+#[allow(deprecated)]
 pub fn create_shortcuts_window<W: IsA<gtk::Window>>(
     parent: Option<&W>,
     initial_section: Option<&str>,
@@ -43,40 +106,39 @@ pub fn create_shortcuts_window<W: IsA<gtk::Window>>(
         builder.build()
     };
 
-    // 1. Mail section
-    let mail_section = gtk::ShortcutsSection::builder()
-        .section_name("mail")
-        .title(crate::i18n::gettext("Mail"))
-        .max_height(14)
-        .build();
-    for (group_kind, group_title) in [
-        (ShortcutGroup::MailNavigation, crate::i18n::gettext("Navigation & Search")),
-        (ShortcutGroup::MailMessage, crate::i18n::gettext("Message Actions")),
-        (ShortcutGroup::MailOrganize, crate::i18n::gettext("Organize & Flags")),
-        (ShortcutGroup::MailView, crate::i18n::gettext("View & Zoom")),
-    ] {
-        let group = gtk::ShortcutsGroup::builder().title(&group_title).build();
-        for spec in SHORTCUTS
-            .iter()
-            .filter(|s| s.section == ShortcutSection::Mail && s.group == group_kind)
-        {
-            let accel = format_accelerators_for_display(spec.action);
-            let shortcut = gtk::ShortcutsShortcut::builder()
-                .title(&crate::i18n::gettext(spec.title))
-                .accelerator(&accel)
-                .build();
-            group.append(&shortcut);
-        }
-        mail_section.append(&group);
-    }
-    window.add_section(&mail_section);
+    // 1. Mail section (3 balanced columns)
+    let mail_nav = build_spec_group(
+        ShortcutSection::Mail,
+        ShortcutGroup::MailNavigation,
+        &crate::i18n::gettext("Navigation & Search"),
+        &[],
+    );
+    let mail_view = build_spec_group(
+        ShortcutSection::Mail,
+        ShortcutGroup::MailView,
+        &crate::i18n::gettext("View & Zoom"),
+        &[],
+    );
+    let mail_msg = build_spec_group(
+        ShortcutSection::Mail,
+        ShortcutGroup::MailMessage,
+        &crate::i18n::gettext("Message Actions"),
+        &[],
+    );
+    let mail_org = build_spec_group(
+        ShortcutSection::Mail,
+        ShortcutGroup::MailOrganize,
+        &crate::i18n::gettext("Organize & Flags"),
+        &[],
+    );
+    add_section_with_columns(
+        &window,
+        "mail",
+        &crate::i18n::gettext("Mail"),
+        vec![vec![mail_nav, mail_view], vec![mail_msg], vec![mail_org]],
+    );
 
-    // 2. Composer section
-    let composer_section = gtk::ShortcutsSection::builder()
-        .section_name("composer")
-        .title(crate::i18n::gettext("Composer"))
-        .max_height(10)
-        .build();
+    // 2. Composer section (2 columns)
     let comp_send_group = gtk::ShortcutsGroup::builder()
         .title(&crate::i18n::gettext("Send & Save"))
         .build();
@@ -90,9 +152,8 @@ pub fn create_shortcuts_window<W: IsA<gtk::Window>>(
             .title(&title)
             .accelerator(accel)
             .build();
-        comp_send_group.append(&shortcut);
+        comp_send_group.add_shortcut(&shortcut);
     }
-    composer_section.append(&comp_send_group);
 
     let comp_format_group = gtk::ShortcutsGroup::builder()
         .title(&crate::i18n::gettext("Formatting & Options"))
@@ -107,85 +168,102 @@ pub fn create_shortcuts_window<W: IsA<gtk::Window>>(
             .title(&title)
             .accelerator(accel)
             .build();
-        comp_format_group.append(&shortcut);
+        comp_format_group.add_shortcut(&shortcut);
     }
-    composer_section.append(&comp_format_group);
-    window.add_section(&composer_section);
+    add_section_with_columns(
+        &window,
+        "composer",
+        &crate::i18n::gettext("Composer"),
+        vec![vec![comp_send_group], vec![comp_format_group]],
+    );
 
-    // 3. Calendar section
-    let cal_section = gtk::ShortcutsSection::builder()
-        .section_name("calendar")
-        .title(crate::i18n::gettext("Calendar"))
-        .max_height(10)
+    // 3. Calendar section (2 columns)
+    let cal_events_group = build_spec_group(
+        ShortcutSection::Calendar,
+        ShortcutGroup::CalendarEvents,
+        &crate::i18n::gettext("Events & Appointments"),
+        &[
+            ("New Event", "<Control>n"),
+            ("Focus Search", "<Control>f"),
+            ("Delete Selected Event", "Delete"),
+        ],
+    );
+    let cal_nav_group = gtk::ShortcutsGroup::builder()
+        .title(&crate::i18n::gettext("Navigation & Views"))
         .build();
-    let cal_group = gtk::ShortcutsGroup::builder()
-        .title(&crate::i18n::gettext("Events & Appointments"))
-        .build();
-    for spec in SHORTCUTS
-        .iter()
-        .filter(|s| s.section == ShortcutSection::Calendar)
-    {
-        let accel = format_accelerators_for_display(spec.action);
+    for (title, accel) in [
+        (crate::i18n::gettext("Go to Today"), "<Control>t"),
+        (crate::i18n::gettext("Day View"), "<Control>1"),
+        (crate::i18n::gettext("Work Week View"), "<Control>2"),
+        (crate::i18n::gettext("Week View"), "<Control>3"),
+        (crate::i18n::gettext("Month View"), "<Control>4"),
+    ] {
         let shortcut = gtk::ShortcutsShortcut::builder()
-            .title(&crate::i18n::gettext(spec.title))
-            .accelerator(&accel)
+            .title(&title)
+            .accelerator(accel)
             .build();
-        cal_group.append(&shortcut);
+        cal_nav_group.add_shortcut(&shortcut);
     }
-    cal_section.append(&cal_group);
-    window.add_section(&cal_section);
+    add_section_with_columns(
+        &window,
+        "calendar",
+        &crate::i18n::gettext("Calendar"),
+        vec![vec![cal_events_group], vec![cal_nav_group]],
+    );
 
-    // 4. Contacts & Tasks section
-    let ct_section = gtk::ShortcutsSection::builder()
-        .section_name("contacts_tasks")
-        .title(crate::i18n::gettext("Contacts & Tasks"))
-        .max_height(10)
-        .build();
-    for (group_kind, group_title) in [
-        (ShortcutGroup::Contacts, crate::i18n::gettext("Contacts")),
-        (ShortcutGroup::TasksMemos, crate::i18n::gettext("Tasks & Memos")),
-    ] {
-        let group = gtk::ShortcutsGroup::builder().title(&group_title).build();
-        for spec in SHORTCUTS.iter().filter(|s| {
-            s.section == ShortcutSection::ContactsTasks && s.group == group_kind
-        }) {
-            let accel = format_accelerators_for_display(spec.action);
-            let shortcut = gtk::ShortcutsShortcut::builder()
-                .title(&crate::i18n::gettext(spec.title))
-                .accelerator(&accel)
-                .build();
-            group.append(&shortcut);
-        }
-        ct_section.append(&group);
-    }
-    window.add_section(&ct_section);
+    // 4. Contacts & Tasks section (2 columns)
+    let contacts_group = build_spec_group(
+        ShortcutSection::ContactsTasks,
+        ShortcutGroup::Contacts,
+        &crate::i18n::gettext("Contacts"),
+        &[
+            ("New Contact", "<Control>n"),
+            ("Focus Search", "<Control>f"),
+            ("Delete Contact", "Delete"),
+        ],
+    );
+    let tasks_group = build_spec_group(
+        ShortcutSection::ContactsTasks,
+        ShortcutGroup::TasksMemos,
+        &crate::i18n::gettext("Tasks & Memos"),
+        &[
+            ("New Task / Memo", "<Control>n"),
+            ("Focus Search", "<Control>f"),
+            ("Delete Selected Item", "Delete"),
+        ],
+    );
+    add_section_with_columns(
+        &window,
+        "contacts_tasks",
+        &crate::i18n::gettext("Contacts & Tasks"),
+        vec![vec![contacts_group], vec![tasks_group]],
+    );
 
-    // 5. General section
-    let general_section = gtk::ShortcutsSection::builder()
-        .section_name("general")
-        .title(crate::i18n::gettext("General"))
-        .max_height(12)
-        .build();
-    for (group_kind, group_title) in [
-        (ShortcutGroup::GeneralModules, crate::i18n::gettext("Switch Modules")),
-        (ShortcutGroup::GeneralApp, crate::i18n::gettext("Application & Search")),
-        (ShortcutGroup::GeneralPanes, crate::i18n::gettext("Panes & Views")),
-    ] {
-        let group = gtk::ShortcutsGroup::builder().title(&group_title).build();
-        for spec in SHORTCUTS
-            .iter()
-            .filter(|s| s.section == ShortcutSection::General && s.group == group_kind)
-        {
-            let accel = format_accelerators_for_display(spec.action);
-            let shortcut = gtk::ShortcutsShortcut::builder()
-                .title(&crate::i18n::gettext(spec.title))
-                .accelerator(&accel)
-                .build();
-            group.append(&shortcut);
-        }
-        general_section.append(&group);
-    }
-    window.add_section(&general_section);
+    // 5. General section (2 columns)
+    let gen_modules = build_spec_group(
+        ShortcutSection::General,
+        ShortcutGroup::GeneralModules,
+        &crate::i18n::gettext("Switch Modules"),
+        &[],
+    );
+    let gen_panes = build_spec_group(
+        ShortcutSection::General,
+        ShortcutGroup::GeneralPanes,
+        &crate::i18n::gettext("Panes & Views"),
+        &[],
+    );
+    let gen_app = build_spec_group(
+        ShortcutSection::General,
+        ShortcutGroup::GeneralApp,
+        &crate::i18n::gettext("Application & Search"),
+        &[],
+    );
+    add_section_with_columns(
+        &window,
+        "general",
+        &crate::i18n::gettext("General"),
+        vec![vec![gen_modules, gen_panes], vec![gen_app]],
+    );
 
     // Context-aware initial section selection
     let target_section = match initial_section {
@@ -219,6 +297,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(deprecated)]
     fn test_shortcuts_window_construction_and_sections() {
         let Some(_context) = crate::window::gtk_test_main_context() else {
             return;
@@ -235,6 +314,18 @@ mod tests {
 
         let comp_window = create_shortcuts_window::<gtk::Window>(None, Some("composer"));
         assert_eq!(comp_window.section_name().as_deref(), Some("composer"));
+
+        mail_window.present();
+        for _ in 0..20 {
+            while _context.iteration(false) {}
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            mail_window.height() > 200 && mail_window.height() < 950,
+            "ShortcutsWindow height ({}) must fit on a 1080p display without vertical overflow",
+            mail_window.height()
+        );
+        mail_window.close();
     }
 
     #[test]

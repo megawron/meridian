@@ -378,24 +378,6 @@ impl PreferencesDialog {
                 }
             ));
 
-            let edit_btn = gtk::Button::builder()
-                .icon_name("document-edit-symbolic")
-                .tooltip_text("Edit custom account settings")
-                .css_classes(vec!["flat"])
-                .valign(gtk::Align::Center)
-                .build();
-            let profile_for_edit_btn = profile.clone();
-            edit_btn.connect_clicked(glib::clone!(
-                #[weak(rename_to = page)]
-                self,
-                move |_| {
-                    page.present_account_dialog(crate::dialogs::AccountSetupDialog::new_for_edit(
-                        &profile_for_edit_btn,
-                    ));
-                }
-            ));
-            row.add_suffix(&edit_btn);
-
             let move_up = gtk::Button::builder()
                 .icon_name("go-up-symbolic")
                 .tooltip_text("Move profile up")
@@ -422,7 +404,6 @@ impl PreferencesDialog {
                     }
                 }
             });
-            row.add_suffix(&move_up);
 
             let move_down = gtk::Button::builder()
                 .icon_name("go-down-symbolic")
@@ -450,7 +431,10 @@ impl PreferencesDialog {
                     }
                 }
             });
-            row.add_suffix(&move_down);
+            if profile_count > 1 {
+                row.add_suffix(&move_up);
+                row.add_suffix(&move_down);
+            }
 
             let enabled = gtk::Switch::builder()
                 .active(profile.enabled)
@@ -550,6 +534,10 @@ impl PreferencesDialog {
                 );
             });
 
+            let chevron = gtk::Image::from_icon_name("go-next-symbolic");
+            chevron.add_css_class("dim-label");
+            row.add_suffix(&chevron);
+
             group.add(&row);
             self.imp()
                 .local_profile_rows
@@ -636,15 +624,10 @@ impl PreferencesDialog {
                     b.to_uppercase()
                 }
             };
-            let origin = if is_goa {
-                crate::i18n::gettext("GNOME Online Account")
-            } else {
-                backend
-            };
             let subtitle = if source.enabled {
-                origin
+                backend
             } else {
-                format!("{origin} · {}", crate::i18n::gettext("Disabled"))
+                format!("{backend} · {}", crate::i18n::gettext("Disabled"))
             };
             let row = adw::ActionRow::builder()
                 .title(&source.display_name)
@@ -654,6 +637,16 @@ impl PreferencesDialog {
             let icon_name = Self::account_service_icon(&source.display_name, &source.backend_name);
             let icon_mail = gtk::Image::from_icon_name(icon_name);
             row.add_prefix(&icon_mail);
+
+            if is_goa {
+                let goa_badge = gtk::Label::builder()
+                    .label("GOA")
+                    .tooltip_text(&crate::i18n::gettext("GNOME Online Account"))
+                    .css_classes(vec!["caption", "dim-label", "heading"])
+                    .valign(gtk::Align::Center)
+                    .build();
+                row.add_suffix(&goa_badge);
+            }
 
             let source_display_name = source.display_name.clone();
             let source_uid = source.uid.clone();
@@ -849,9 +842,6 @@ impl PreferencesDialog {
         let row_add_account_or_shared = if has_exchange {
             let row = adw::ActionRow::builder()
                 .title(&crate::i18n::gettext("Add Account or Mailbox…"))
-                .subtitle(&crate::i18n::gettext(
-                    "Set up an email account or open a shared mailbox",
-                ))
                 .activatable(true)
                 .build();
             row.connect_activated(glib::clone!(
@@ -865,9 +855,6 @@ impl PreferencesDialog {
         } else {
             let row = adw::ActionRow::builder()
                 .title(&crate::i18n::gettext("Add Account…"))
-                .subtitle(&crate::i18n::gettext(
-                    "Set up IMAP, POP3, Exchange (EWS), or an online account",
-                ))
                 .activatable(true)
                 .build();
             row.connect_activated(glib::clone!(
@@ -894,9 +881,6 @@ impl PreferencesDialog {
         if detect_program_path("gnome-control-center").is_some() {
             let row_goa = adw::ActionRow::builder()
                 .title(&crate::i18n::gettext("Manage GNOME Online Accounts…"))
-                .subtitle(&crate::i18n::gettext(
-                    "Configure system-wide accounts in GNOME Settings",
-                ))
                 .activatable(true)
                 .build();
             let icon_goa = gtk::Image::from_icon_name("goa-panel-symbolic");
@@ -1602,7 +1586,6 @@ impl PreferencesDialog {
 
         let group_accounts = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Email Accounts"))
-            .description(&crate::i18n::gettext("Manage accounts and online services"))
             .build();
 
         self.imp()
@@ -1614,11 +1597,6 @@ impl PreferencesDialog {
 
         let group_profiles = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Configured Accounts"))
-            .description(
-                &crate::i18n::gettext(
-                    "Manage default account, email identities, and display order",
-                ),
-            )
             .build();
         self.imp()
             .local_profile_group
@@ -1626,18 +1604,13 @@ impl PreferencesDialog {
         self.refresh_local_profile_rows();
         page_accounts.add(&group_profiles);
 
-
         // Filter Rules & Automation Section
         let group_filters = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Rules and Automation"))
-            .description(&crate::i18n::gettext(
-                "Automatic replies, incoming mail filters, and message processing",
-            ))
             .build();
 
         let row_oof = adw::ActionRow::builder()
             .title(&crate::i18n::gettext("Out of Office (Auto-Responder)…"))
-            .subtitle(&crate::i18n::gettext("Set up out of office and automatic replies"))
             .activatable(true)
             .build();
         let icon_oof = gtk::Image::from_icon_name("mail-send-symbolic");
@@ -1658,7 +1631,6 @@ impl PreferencesDialog {
 
         let row_add_filter = adw::ActionRow::builder()
             .title(&crate::i18n::gettext("Create New Filter Rule…"))
-            .subtitle(&crate::i18n::gettext("Set conditions (subject, sender, destination folder)"))
             .activatable(true)
             .build();
         let icon_filter = gtk::Image::from_icon_name("view-sort-ascending-symbolic");
@@ -1677,9 +1649,14 @@ impl PreferencesDialog {
         ));
         group_filters.add(&row_add_filter);
 
+        let row_filter_diagnostics = adw::ExpanderRow::builder()
+            .title(&crate::i18n::gettext("Filter Testing & Logging"))
+            .use_markup(false)
+            .expanded(false)
+            .build();
+
         let row_test_all = adw::ActionRow::builder()
             .title("Dry run for all active filter rules…")
-            .subtitle("Simulation on local mail store without applying changes")
             .activatable(true)
             .build();
         let icon_test = gtk::Image::from_icon_name("system-search-symbolic");
@@ -1728,13 +1705,10 @@ impl PreferencesDialog {
                 }
             });
         });
-        group_filters.add(&row_test_all);
+        row_filter_diagnostics.add_row(&row_test_all);
 
         let row_log_actions = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Log filter actions"))
-            .subtitle(&crate::i18n::gettext(
-                "Writes executed filter actions and errors to the filter log file",
-            ))
             .build();
         if let Some(settings) = settings.clone() {
             row_log_actions.set_active(settings.filters_log_actions());
@@ -1743,7 +1717,7 @@ impl PreferencesDialog {
                 settings_for_log.set_filters_log_actions(switch.is_active());
             });
         }
-        group_filters.add(&row_log_actions);
+        row_filter_diagnostics.add_row(&row_log_actions);
 
         let row_log_file = adw::EntryRow::builder()
             .title("Filter Log File")
@@ -1756,7 +1730,7 @@ impl PreferencesDialog {
                 settings_for_file.set_filters_log_file(entry.text().as_str());
             });
         }
-        group_filters.add(&row_log_file);
+        row_filter_diagnostics.add_row(&row_log_file);
         for rule in MailFilterStore::default().load() {
             let condition_text = rule
                 .effective_conditions()
@@ -2033,11 +2007,11 @@ impl PreferencesDialog {
             });
             group_filters.add(&row);
         }
+        group_filters.add(&row_filter_diagnostics);
         page_accounts.add(&group_filters);
 
         let group_sync = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Mail Synchronization"))
-            .description(&crate::i18n::gettext("Inbox update schedule and outbox delivery"))
             .build();
 
         let sync_interval_model = gtk::StringList::new(&[]);
@@ -2055,10 +2029,8 @@ impl PreferencesDialog {
         }
         let row_sync_interval = adw::ComboRow::builder()
             .title(&crate::i18n::gettext("Check for new messages"))
-            .subtitle(&crate::i18n::gettext("Automatic email synchronization interval"))
             .model(&sync_interval_model)
             .build();
-        row_sync_interval.add_prefix(&gtk::Image::from_icon_name("mail-send-receive-symbolic"));
 
         if let Some(settings) = settings.clone() {
             let initial_secs = settings.mail_sync_interval_seconds();
@@ -2092,11 +2064,7 @@ impl PreferencesDialog {
 
         let row_flush_outbox = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Empty outbox when checking for mail"))
-            .subtitle(&crate::i18n::gettext(
-                "Automatically sends queued messages in outbox when checking for new mail",
-            ))
             .build();
-        row_flush_outbox.add_prefix(&gtk::Image::from_icon_name("mail-send-symbolic"));
         if let Some(settings) = settings.clone() {
             row_flush_outbox.set_active(settings.flush_outbox());
             let settings_for_flush = settings.clone();
@@ -2108,12 +2076,8 @@ impl PreferencesDialog {
 
         let row_sync_message_limit = adw::SpinRow::with_range(25.0, 1_000.0, 25.0);
         row_sync_message_limit.set_title(&crate::i18n::gettext("Messages to fetch per folder"));
-        row_sync_message_limit.set_subtitle(&crate::i18n::gettext(
-            "Messages per fetch page; additional messages can be loaded with \"Load More\"",
-        ));
         row_sync_message_limit.set_digits(0);
         row_sync_message_limit.set_snap_to_ticks(true);
-        row_sync_message_limit.add_prefix(&gtk::Image::from_icon_name("view-paged-symbolic"));
         if let Some(settings) = settings.clone() {
             row_sync_message_limit.set_value(settings.mail_sync_message_limit() as f64);
             row_sync_message_limit.connect_value_notify(move |row| {
@@ -2124,7 +2088,6 @@ impl PreferencesDialog {
 
         let group_network_options = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Network Connection"))
-            .description(&crate::i18n::gettext("Offline connection settings and local mail store"))
             .build();
 
         let row_offline_mode = adw::SwitchRow::builder()
@@ -2133,7 +2096,6 @@ impl PreferencesDialog {
                 "Uses local store exclusively and pauses account synchronization",
             ))
             .build();
-        row_offline_mode.add_prefix(&gtk::Image::from_icon_name("network-offline-symbolic"));
         if let Some(settings) = settings.clone() {
             row_offline_mode.set_active(settings.offline_mode());
             let dialog_for_offline = self.downgrade();
@@ -2167,9 +2129,6 @@ impl PreferencesDialog {
 
         let group_calendar_local = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Local calendar sources and import"))
-            .description(&crate::i18n::gettext(
-                "Local iCalendar storage folder and import of external calendar files",
-            ))
             .build();
         let row_local_calendar = directory_picker_row(
             self,
@@ -2186,9 +2145,6 @@ impl PreferencesDialog {
 
         let group_contacts_local = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Local contacts and import"))
-            .description(&crate::i18n::gettext(
-                "Local vCard storage folder and import of external address data",
-            ))
             .build();
         let row_local_contacts = directory_picker_row(
             self,
@@ -3226,11 +3182,9 @@ impl PreferencesDialog {
 
         let group_composer = adw::PreferencesGroup::builder()
             .title("Composer")
-            .description("Format, signature, and templates for new messages")
             .build();
         let row_composer_html = adw::SwitchRow::builder()
             .title("Use HTML when composing")
-            .subtitle("Disable to compose new messages as plain text by default")
             .active(true)
             .build();
         if let Some(settings) = settings.clone() {
@@ -3243,7 +3197,6 @@ impl PreferencesDialog {
 
         let row_composer_format_toolbar = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Formatierungsleiste immer anzeigen"))
-            .subtitle(&crate::i18n::gettext("Permanently display font, text style, and list tools above the editor"))
             .active(false)
             .build();
         if let Some(settings) = settings.clone() {
@@ -3270,9 +3223,6 @@ impl PreferencesDialog {
 
         let row_request_read_receipt = adw::SwitchRow::builder()
             .title("Request read receipt")
-            .subtitle(
-                "Adds RFC-compliant read receipt request to new messages",
-            )
             .active(false)
             .build();
         if let Some(settings) = settings.clone() {
@@ -3285,15 +3235,11 @@ impl PreferencesDialog {
 
         let row_composer_inline_spelling = adw::SwitchRow::builder()
             .title("Inline spell checking")
-            .subtitle("Enable spell checking while typing in composer")
             .active(true)
             .build();
 
         let row_spellcheck_languages = adw::ComboRow::builder()
             .title("Spell check languages")
-            .subtitle(
-                "Dictionary languages for new composers (system default, German, or English)",
-            )
             .model(&gtk::StringList::new(&[
                 "System Default",
                 "German",
@@ -3375,7 +3321,6 @@ impl PreferencesDialog {
 
         let row_composer_charset = adw::ComboRow::builder()
             .title("Default Character Set")
-            .subtitle("Default character encoding for newly composed emails")
             .model(&gtk::StringList::new(&[
                 "UTF-8 (Recommended)",
                 "ISO-8859-1 (Latin-1)",
@@ -3454,7 +3399,6 @@ impl PreferencesDialog {
 
         let row_append_signature = adw::SwitchRow::builder()
             .title("Automatically insert signature")
-            .subtitle("Inserted as plain text or HTML with images at end of new messages")
             .active(false)
             .build();
         if let Some(settings) = settings.clone() {
@@ -3466,7 +3410,6 @@ impl PreferencesDialog {
 
         let row_manage_signatures = adw::ActionRow::builder()
             .title(&gettext("Manage Signatures…"))
-            .subtitle(&gettext("Configure and design formatted signatures with logos and rich text"))
             .activatable(true)
             .build();
         row_manage_signatures.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
@@ -3474,7 +3417,6 @@ impl PreferencesDialog {
 
         let group_composer_headers = adw::PreferencesGroup::builder()
             .title("Headers Visible by Default")
-            .description("Choose which recipient and sender fields are visible by default in composer")
             .build();
         let row_show_from = adw::SwitchRow::builder()
             .title("Show sender field (From)")
@@ -3526,11 +3468,9 @@ impl PreferencesDialog {
 
         let group_composer_prompts = adw::PreferencesGroup::builder()
             .title("Send Confirmations")
-            .description("Security prompts before sending a message")
             .build();
         let row_prompt_empty_subject = adw::SwitchRow::builder()
             .title("Warn on empty subject")
-            .subtitle("Confirm before sending if subject is empty")
             .active(true)
             .build();
         if let Some(settings) = settings.clone() {
@@ -3543,7 +3483,6 @@ impl PreferencesDialog {
 
         let row_prompt_only_bcc = adw::SwitchRow::builder()
             .title("Warn when only Bcc recipients")
-            .subtitle("Confirm before sending if only hidden recipients are specified")
             .active(true)
             .build();
         if let Some(settings) = settings.clone() {
@@ -3556,7 +3495,6 @@ impl PreferencesDialog {
 
         let row_track_recent_recipients = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Kürzlich verwendete Empfänger merken"))
-            .subtitle(&crate::i18n::gettext("Schlägt zuvor kontaktierte E-Mail-Adressen bei der Eingabe vor"))
             .active(true)
             .build();
         if let Some(settings) = settings.clone() {
@@ -3578,7 +3516,6 @@ impl PreferencesDialog {
 
         let group_signature_options = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Signature Options"))
-            .description(&crate::i18n::gettext("Signature Placement and Formatting"))
             .build();
 
         let signature_store = SignatureStore::from_environment();
@@ -3587,10 +3524,8 @@ impl PreferencesDialog {
         let signature_model = gtk::StringList::new(&initial_sig_names);
         let signature_row = adw::ComboRow::builder()
             .title(&crate::i18n::gettext("Active Signature"))
-            .subtitle(&crate::i18n::gettext("Default signature for outgoing messages"))
             .model(&signature_model)
             .build();
-        signature_row.add_prefix(&gtk::Image::from_icon_name("document-edit-symbolic"));
         if let Some(active_id) = signature_store.active_id() {
             if let Some(index) = initial_signatures
                 .iter()
@@ -3604,7 +3539,6 @@ impl PreferencesDialog {
 
         let row_top_signature = adw::SwitchRow::builder()
             .title("Insert signature above quote")
-            .subtitle("Place signature above quoted text on replies and forwards (top posting)")
             .active(false)
             .build();
         if let Some(settings) = settings.clone() {
@@ -3617,7 +3551,6 @@ impl PreferencesDialog {
 
         let row_signature_outline = adw::SwitchRow::builder()
             .title("Insert signature separator (-- )")
-            .subtitle("Insert standard separator line before signature")
             .active(true)
             .build();
         if let Some(settings) = settings.clone() {
@@ -3646,26 +3579,19 @@ impl PreferencesDialog {
 
         let group_reply = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Replying and Forwarding"))
-            .description(&crate::i18n::gettext("Behavior for quoted original text and reply styles"))
             .build();
         let row_quote_original = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Quote original text"))
-            .subtitle(&crate::i18n::gettext(
-                "Inserts original message body into replies and forwards",
-            ))
             .active(true)
             .build();
-        row_quote_original.add_prefix(&gtk::Image::from_icon_name("mail-reply-sender-symbolic"));
 
         let row_quote_style = adw::ComboRow::builder()
             .title(&crate::i18n::gettext("Quotation style"))
-            .subtitle(&crate::i18n::gettext("Visual representation of quoted text in replies"))
             .model(&gtk::StringList::new(&[
                 &crate::i18n::gettext("Blockquote"),
                 &crate::i18n::gettext("Lines with > prefix"),
             ]))
             .build();
-        row_quote_style.add_prefix(&gtk::Image::from_icon_name("format-indent-more-symbolic"));
         if let Some(settings) = settings.clone() {
             row_quote_original.set_active(settings.quote_original());
             let settings_for_quote = settings.clone();
@@ -3699,7 +3625,6 @@ impl PreferencesDialog {
 
         let row_reply_style = adw::ComboRow::builder()
             .title("Default Reply Style")
-            .subtitle(&crate::i18n::gettext("Behavior when replying to received messages"))
             .model(&gtk::StringList::new(&[
                 &crate::i18n::gettext("Quoted (Default)"),
                 &crate::i18n::gettext("Inline"),
@@ -3707,7 +3632,6 @@ impl PreferencesDialog {
                 &crate::i18n::gettext("Do not quote"),
             ]))
             .build();
-        row_reply_style.add_prefix(&gtk::Image::from_icon_name("mail-reply-all-symbolic"));
         if let Some(settings) = settings.clone() {
             let updating = std::rc::Rc::new(std::cell::Cell::new(false));
             let updating_notify = updating.clone();
@@ -3752,14 +3676,12 @@ impl PreferencesDialog {
 
         let row_forward_style = adw::ComboRow::builder()
             .title("Default Forward Style")
-            .subtitle(&crate::i18n::gettext("Behavior when forwarding messages"))
             .model(&gtk::StringList::new(&[
                 &crate::i18n::gettext("Attached (Default)"),
                 &crate::i18n::gettext("Inline"),
                 &crate::i18n::gettext("Quoted"),
             ]))
             .build();
-        row_forward_style.add_prefix(&gtk::Image::from_icon_name("mail-forward-symbolic"));
         if let Some(settings) = settings.clone() {
             let updating = std::rc::Rc::new(std::cell::Cell::new(false));
             let updating_notify = updating.clone();
@@ -3807,21 +3729,14 @@ impl PreferencesDialog {
 
         let group_navigation = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Navigation and Module Buttons"))
-            .description(&crate::i18n::gettext(
-                "Placement of buttons for Mail, Calendar, Contacts, Tasks, and Memos",
-            ))
             .build();
         let row_switcher_location = adw::ComboRow::builder()
             .title(&crate::i18n::gettext("Module button placement"))
-            .subtitle(&crate::i18n::gettext(
-                "Choice between modern in window titlebar or classic at bottom of left sidebar",
-            ))
             .model(&gtk::StringList::new(&[
                 &crate::i18n::gettext("Top header bar (Libadwaita)"),
                 &crate::i18n::gettext("Bottom left in sidebar (Classic Evolution)"),
             ]))
             .build();
-        row_switcher_location.add_prefix(&gtk::Image::from_icon_name("view-paged-symbolic"));
         if let Some(settings) = settings.clone() {
             row_switcher_location.set_selected(if settings.switcher_location() == "bottom-left" {
                 1
@@ -3860,40 +3775,32 @@ impl PreferencesDialog {
 
         let group_mail_reading = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Message Display and Reading"))
-            .description(&crate::i18n::gettext("Options for opening, reading, and marking emails"))
             .build();
 
         let group_mail_comfort = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Reading Comfort and Keyboard"))
-            .description(&crate::i18n::gettext("Keyboard navigation and reader shortcuts"))
             .build();
 
         let group_mail_startup = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Startup and Default Folder"))
-            .description(&crate::i18n::gettext("Default folder and behavior when opening mail"))
             .build();
 
         let group_mail_html = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("HTML Messages and Privacy"))
-            .description(&crate::i18n::gettext("Security and display options for formatted emails"))
             .build();
 
         let group_app_layout = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Window and Controls"))
-            .description(&crate::i18n::gettext("Global confirmations, status bar, and developer options"))
             .build();
         let group_mail_window_layout = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Window and Layout"))
-            .description(&crate::i18n::gettext("Arrangement of mail views, sidebar, toolbar, and line density"))
             .build();
 
         // ── Mail Reading Group ──────────────────────────────────────────────
         let row_message_preview = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Show message preview pane"))
-            .subtitle(&crate::i18n::gettext("Shows selected message next to message list"))
             .active(true)
             .build();
-        row_message_preview.add_prefix(&gtk::Image::from_icon_name("sidebar-show-symbolic"));
         if let Some(settings) = settings.clone() {
             row_message_preview.set_active(settings.show_message_preview());
             let s_prev = settings.clone();
@@ -3905,10 +3812,8 @@ impl PreferencesDialog {
 
         let row_mark_read = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Mark messages as read when selected"))
-            .subtitle(&crate::i18n::gettext("Setting applies to local and synchronized mail folders"))
             .active(true)
             .build();
-        row_mark_read.add_prefix(&gtk::Image::from_icon_name("mail-read-symbolic"));
         if let Some(settings) = settings.clone() {
             row_mark_read.set_active(settings.mail_mark_seen());
             let s_mr = settings.clone();
@@ -3921,7 +3826,6 @@ impl PreferencesDialog {
 
         let row_mark_seen_timeout = adw::ComboRow::builder()
             .title(&crate::i18n::gettext("Mark as read delay"))
-            .subtitle(&crate::i18n::gettext("Delay after selecting a message before marking it as read"))
             .model(&gtk::StringList::new(&[
                 &crate::i18n::gettext("Immediately (0 s)"),
                 &crate::i18n::gettext("After 1 second"),
@@ -3931,7 +3835,6 @@ impl PreferencesDialog {
                 &crate::i18n::gettext("After 10 seconds"),
             ]))
             .build();
-        row_mark_seen_timeout.add_prefix(&gtk::Image::from_icon_name("alarm-symbolic"));
         if let Some(settings) = settings.clone() {
             let timeout_to_idx = |ms: u32| -> u32 {
                 match ms {
@@ -3977,10 +3880,8 @@ impl PreferencesDialog {
 
         let row_mail_show_mark_read_actions = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Show mark-read actions in toolbar"))
-            .subtitle(&crate::i18n::gettext("Show buttons for marking as read or unread in mail toolbar"))
             .active(false)
             .build();
-        row_mail_show_mark_read_actions.add_prefix(&gtk::Image::from_icon_name("mail-unread-symbolic"));
         if let Some(settings) = settings.clone() {
             row_mail_show_mark_read_actions.set_active(settings.mail_show_mark_read_actions());
             let settings_for_actions = settings.clone();
@@ -4000,10 +3901,8 @@ impl PreferencesDialog {
 
         let row_headers_collapsed = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Collapse headers by default"))
-            .subtitle(&crate::i18n::gettext("Shows reduced header view in standard reading view"))
             .active(false)
             .build();
-        row_headers_collapsed.add_prefix(&gtk::Image::from_icon_name("view-reveal-symbolic"));
         if let Some(settings) = settings.clone() {
             row_headers_collapsed.set_active(settings.mail_headers_collapsed());
             let s_hc = settings.clone();
@@ -4018,7 +3917,6 @@ impl PreferencesDialog {
             .subtitle(&crate::i18n::gettext("Always shows exact absolute date instead of relative names (such as \"Today\" or \"Yesterday\")"))
             .active(true)
             .build();
-        row_show_real_date.add_prefix(&gtk::Image::from_icon_name("x-office-calendar-symbolic"));
         if let Some(settings) = settings.clone() {
             row_show_real_date.set_active(settings.mail_show_real_date());
             let s_srd = settings.clone();
@@ -4030,12 +3928,8 @@ impl PreferencesDialog {
 
         let row_mail_security_details = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Show security status for normal emails"))
-            .subtitle(&crate::i18n::gettext(
-                "Shows S/MIME and PGP encryption details even for unencrypted messages",
-            ))
             .active(false)
             .build();
-        row_mail_security_details.add_prefix(&gtk::Image::from_icon_name("channel-secure-symbolic"));
         if let Some(settings) = settings.clone() {
             row_mail_security_details.set_active(settings.mail_show_security_details());
             let s_msd = settings.clone();
@@ -4047,10 +3941,8 @@ impl PreferencesDialog {
 
         let row_mail_show_deleted = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Show deleted messages"))
-            .subtitle(&crate::i18n::gettext("Show deleted messages struck through until expunged"))
             .active(false)
             .build();
-        row_mail_show_deleted.add_prefix(&gtk::Image::from_icon_name("user-trash-symbolic"));
         if let Some(settings) = settings.clone() {
             row_mail_show_deleted.set_active(settings.mail_show_deleted());
             let settings_for_deleted = settings.clone();
@@ -4071,35 +3963,27 @@ impl PreferencesDialog {
         // ── HTML Messages and Privacy Group ─────────────────────────────────
         let row_html_rendering = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Render HTML messages"))
-            .subtitle(&crate::i18n::gettext("Disable for plain text display only"))
             .active(true)
             .build();
-        row_html_rendering.add_prefix(&gtk::Image::from_icon_name("format-text-rich-symbolic"));
 
         let row_image_policy = adw::ComboRow::builder()
             .title(&crate::i18n::gettext("Load images in HTML messages"))
-            .subtitle(&crate::i18n::gettext("Controls automatic loading of external images and web resources"))
             .model(&gtk::StringList::new(&[
                 &crate::i18n::gettext("Never (Recommended for privacy)"),
                 &crate::i18n::gettext("Only from known contacts"),
                 &crate::i18n::gettext("Always"),
             ]))
             .build();
-        row_image_policy.add_prefix(&gtk::Image::from_icon_name("image-x-generic-symbolic"));
 
         let row_preserve_image_layout = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Preserve image layout"))
-            .subtitle(&crate::i18n::gettext("Reserve image space while remote content is blocked"))
             .active(true)
             .build();
-        row_preserve_image_layout.add_prefix(&gtk::Image::from_icon_name("insert-image-symbolic"));
 
         let row_dark_mail = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Adapt emails to dark style"))
-            .subtitle(&crate::i18n::gettext("Shows emails in dark mode when dark system theme is active"))
             .active(true)
             .build();
-        row_dark_mail.add_prefix(&gtk::Image::from_icon_name("night-light-symbolic"));
 
         if let Some(settings) = settings.clone() {
             row_html_rendering.set_active(settings.render_html());
@@ -4204,7 +4088,6 @@ impl PreferencesDialog {
 
         let row_mail_default_folder = adw::ComboRow::builder()
             .title("Startup Folder")
-            .subtitle("Folder selected first when opening mail view")
             .model(&gtk::StringList::new(&[
                 "Inbox",
                 "All Messages",
@@ -4242,9 +4125,6 @@ impl PreferencesDialog {
         // ── Window and Layout Group (Mail) ──────────────────────────────────
         let row_mail_layout = adw::ComboRow::builder()
             .title("Mail Layout")
-            .subtitle(
-                "Modern side-by-side or classic (list above preview)",
-            )
             .model(&gtk::StringList::new(&[
                 "Modern: list and preview side-by-side",
                 "Classic: List above preview",
@@ -4267,9 +4147,6 @@ impl PreferencesDialog {
 
         let row_mail_sidebar = adw::SwitchRow::builder()
             .title("Show folder sidebar")
-            .subtitle(
-                "Keep classic Evolution folder view visible to the left of message list and preview",
-            )
             .active(true)
             .build();
         if let Some(settings) = settings.clone() {
@@ -4282,9 +4159,6 @@ impl PreferencesDialog {
 
         let row_mail_toolbar = adw::SwitchRow::builder()
             .title("Show classic mail toolbar")
-            .subtitle(
-                "Shows familiar Evolution actions for new mail, reply, archive, and delete above the mail area",
-            )
             .active(true)
             .build();
         if let Some(settings) = settings.clone() {
@@ -4297,7 +4171,6 @@ impl PreferencesDialog {
 
         let row_mail_density = adw::ComboRow::builder()
             .title("Message list density")
-            .subtitle("Determines the vertical spacing of message rows")
             .model(&gtk::StringList::new(&[
                 "Compact",
                 "Comfortable (Default)",
@@ -4322,9 +4195,6 @@ impl PreferencesDialog {
 
         let row_mail_unified_inbox = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Gemeinsamer Posteingang (Unified Inbox)"))
-            .subtitle(&crate::i18n::gettext(
-                "Kombiniert alle Posteingänge in der Seitenleiste (wird bei mehreren Konten aktiv)",
-            ))
             .active(false)
             .build();
         if let Some(settings) = settings.clone() {
@@ -4347,9 +4217,6 @@ impl PreferencesDialog {
         // ── Window and Controls Group (App-wide) ────────────────────────────
         let row_task_layout = adw::ComboRow::builder()
             .title("Tasks Layout")
-            .subtitle(
-                "Three-column view or classic Evolution: task list above task preview (applied immediately)",
-            )
             .model(&gtk::StringList::new(&[
                 "Three-column view: preview to the right of the list",
                 "Classic: List above preview",
@@ -4372,9 +4239,6 @@ impl PreferencesDialog {
 
         let row_memo_layout = adw::ComboRow::builder()
             .title("Memos Layout")
-            .subtitle(
-                "Three-column view or classic Evolution: memo list above memo preview (applied immediately)",
-            )
             .model(&gtk::StringList::new(&[
                 "Three-column view: preview to the right of the list",
                 "Classic: List above preview",
@@ -4397,9 +4261,6 @@ impl PreferencesDialog {
 
         let row_mail_statusbar = adw::SwitchRow::builder()
             .title("Show status information at bottom")
-            .subtitle(
-                "Shows account, loading, and connection status exclusively at bottom of window",
-            )
             .active(true)
             .build();
         if let Some(settings) = settings.clone() {
@@ -4412,9 +4273,6 @@ impl PreferencesDialog {
 
         let row_debug_console = adw::SwitchRow::builder()
             .title("Enable developer log console")
-            .subtitle(
-                "Allows expanding a live log console via the status bar for error diagnosis",
-            )
             .active(false)
             .build();
         if let Some(settings) = settings.clone() {
@@ -4427,59 +4285,43 @@ impl PreferencesDialog {
 
         let group_mail_elements = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Message List Elements"))
-            .description(&crate::i18n::gettext(
-                "Visible indicators, avatars, and preview text in each message row",
-            ))
             .build();
 
         let row_mail_show_avatar = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Absender-Avatare anzeigen"))
-            .subtitle(&crate::i18n::gettext("Show sender avatars or initials in the message list"))
             .active(true)
             .build();
-        row_mail_show_avatar.add_prefix(&gtk::Image::from_icon_name("avatar-default-symbolic"));
 
         let row_mail_fetch_remote_logos = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Fetch Company Logos (BIMI and Gravatar)"))
             .subtitle(&crate::i18n::gettext("Download authenticated brand logos of known senders from the internet"))
             .active(false)
             .build();
-        row_mail_fetch_remote_logos.add_prefix(&gtk::Image::from_icon_name("web-browser-symbolic"));
 
         let row_mail_show_preview_text = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Vorschautext in Liste"))
-            .subtitle(&crate::i18n::gettext("Show snippet of message body below subject"))
             .active(true)
             .build();
-        row_mail_show_preview_text.add_prefix(&gtk::Image::from_icon_name("view-list-symbolic"));
 
         let row_mail_show_flagged = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Starred and Flagged Indicators"))
-            .subtitle(&crate::i18n::gettext("Show star and flag markers in the list"))
             .active(true)
             .build();
-        row_mail_show_flagged.add_prefix(&gtk::Image::from_icon_name("starred-symbolic"));
 
         let row_mail_show_attachment = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Show Attachment Indicator"))
-            .subtitle(&crate::i18n::gettext("Indicate messages with attachments using a paperclip"))
             .active(true)
             .build();
-        row_mail_show_attachment.add_prefix(&gtk::Image::from_icon_name("mail-attachment-symbolic"));
 
         let row_mail_show_size = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Show Message Size"))
-            .subtitle(&crate::i18n::gettext("Display message storage size in the list"))
             .active(false)
             .build();
-        row_mail_show_size.add_prefix(&gtk::Image::from_icon_name("drive-harddisk-symbolic"));
 
         let row_mail_show_labels = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Show Color Labels"))
-            .subtitle(&crate::i18n::gettext("Display color tags in the message list"))
             .active(true)
             .build();
-        row_mail_show_labels.add_prefix(&gtk::Image::from_icon_name("preferences-color-symbolic"));
 
         if let Some(settings) = settings.clone() {
             // Avatar
@@ -4603,13 +4445,9 @@ impl PreferencesDialog {
 
         let group_confirmations = adw::PreferencesGroup::builder()
             .title("Security Prompts and Confirmations")
-            .description("Behavior for potentially destructive or irreversible user actions")
             .build();
         let row_confirm_destructive = adw::SwitchRow::builder()
             .title("Confirm before destructive actions")
-            .subtitle(
-                "Prompts before deleting messages, events, tasks, contacts, and memos",
-            )
             .active(true)
             .build();
         if let Some(settings) = settings.clone() {
@@ -4634,19 +4472,12 @@ impl PreferencesDialog {
 
         let group_citations = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Citations and Highlighting"))
-            .description(&crate::i18n::gettext(
-                "Colors and formatting for nested citation levels in emails",
-            ))
             .build();
 
         let row_citation_highlighting = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Highlight quoted text"))
-            .subtitle(&crate::i18n::gettext(
-                "Shows colored left margins for respective citation levels",
-            ))
             .active(true)
             .build();
-        row_citation_highlighting.add_prefix(&gtk::Image::from_icon_name("format-indent-more-symbolic"));
         if let Some(settings) = settings.clone() {
             row_citation_highlighting.set_active(settings.mail_citation_highlighting());
             row_citation_highlighting.connect_active_notify(move |row| {
@@ -4657,16 +4488,11 @@ impl PreferencesDialog {
 
         let group_theme = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Color Scheme"))
-            .description(&crate::i18n::gettext("System setting or fixed light/dark style"))
             .build();
         let row_color_scheme = adw::ComboRow::builder()
             .title("Application Color Scheme")
-            .subtitle(&crate::i18n::gettext(
-                "Follow system setting or select light/dark appearance",
-            ))
             .model(&gtk::StringList::new(&["System", "Light", "Dark"]))
             .build();
-        row_color_scheme.add_prefix(&gtk::Image::from_icon_name("night-light-symbolic"));
         if let Some(settings) = settings.clone() {
             let updating = std::rc::Rc::new(std::cell::Cell::new(false));
             let updating_notify = updating.clone();
@@ -4710,7 +4536,6 @@ impl PreferencesDialog {
 
         let group_mail_list = adw::PreferencesGroup::builder()
             .title("Mail List")
-            .description("Sorting of messages and conversations")
             .build();
         let row_mail_sort = adw::ComboRow::builder()
             .title("Sort Field")
@@ -4775,7 +4600,6 @@ impl PreferencesDialog {
 
         let row_mail_threading = adw::SwitchRow::builder()
             .title("Group Conversations")
-            .subtitle("Show reply threads as collapsible trees")
             .active(true)
             .build();
         if let Some(settings) = settings.clone() {
@@ -4788,7 +4612,6 @@ impl PreferencesDialog {
 
         let row_mail_conversation_accordion = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Unterhaltungen automatisch aufklappen"))
-            .subtitle(&crate::i18n::gettext("Klappt ungelesene Nachrichten in Unterhaltungs-Threads automatisch auf"))
             .active(true)
             .build();
         if let Some(settings) = settings.clone() {
@@ -4815,7 +4638,6 @@ impl PreferencesDialog {
 
         let row_mail_date_format = adw::ComboRow::builder()
             .title("Date Format")
-            .subtitle("Display of received date in message list")
             .model(&gtk::StringList::new(&[
                 "Standard (d Month / Prior year: dd.mm.yy)",
                 "Smart (Today: Time, This year: d Month, Prior year: dd.mm.yy)",
@@ -4834,7 +4656,6 @@ impl PreferencesDialog {
 
         let row_mail_date_align = adw::ComboRow::builder()
             .title("Date Alignment")
-            .subtitle("Date column alignment")
             .model(&gtk::StringList::new(&[
                 "Right aligned (Default / Google style)",
                 "Left aligned (Classic Evolution)",
@@ -4888,11 +4709,9 @@ impl PreferencesDialog {
 
         let group_mail_headers_mode = adw::PreferencesGroup::builder()
             .title("Header Display")
-            .description("Toggle between standard headers and full RFC822 headers")
             .build();
         let row_show_all_headers = adw::SwitchRow::builder()
             .title("Show all headers")
-            .subtitle("Show full RFC822 header block in email preview")
             .active(false)
             .build();
         if let Some(settings) = settings.clone() {
@@ -4914,7 +4733,6 @@ impl PreferencesDialog {
 
         let row_header_style = adw::ComboRow::builder()
             .title("Header Style")
-            .subtitle("Header style in standard email reading view")
             .model(&gtk::StringList::new(&[
                 "Modern (Webmail style)",
                 "Classic (Tabular)",
@@ -4941,9 +4759,6 @@ impl PreferencesDialog {
 
         let group_mail_normal_headers = adw::PreferencesGroup::builder()
             .title("Standard Message Headers")
-            .description(
-                "Determines order and visibility of headers in standard reading view. Disabled fields remain available here.",
-            )
             .build();
         let normal_headers_editor = build_mail_normal_headers_editor(settings.clone());
         group_mail_normal_headers.add(&normal_headers_editor);
@@ -4968,11 +4783,9 @@ impl PreferencesDialog {
 
         let group_calendar_view = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Calendar View"))
-            .description(&crate::i18n::gettext("Selection is used the next time the calendar view opens"))
             .build();
         let row_calendar_view = adw::ComboRow::builder()
             .title(&crate::i18n::gettext("Default View"))
-            .subtitle(&crate::i18n::gettext("Initial calendar layout when opening the view"))
             .model(&gtk::StringList::new(&[
                 &crate::i18n::gettext("Day"),
                 &crate::i18n::gettext("Week"),
@@ -4983,7 +4796,6 @@ impl PreferencesDialog {
                 &crate::i18n::gettext("List"),
             ]))
             .build();
-        row_calendar_view.add_prefix(&gtk::Image::from_icon_name("x-office-calendar-symbolic"));
         if let Some(settings) = settings.clone() {
             row_calendar_view.set_selected(match settings.calendar_view().as_str() {
                 "day" => 0,
@@ -5011,7 +4823,6 @@ impl PreferencesDialog {
 
         let row_time_divisions = adw::ComboRow::builder()
             .title(&crate::i18n::gettext("Time Divisions"))
-            .subtitle(&crate::i18n::gettext("Timeline interval in day and work week views"))
             .model(&gtk::StringList::new(&[
                 &crate::i18n::gettext("60 Minutes"),
                 &crate::i18n::gettext("30 Minutes"),
@@ -5020,7 +4831,6 @@ impl PreferencesDialog {
                 &crate::i18n::gettext("5 Minutes"),
             ]))
             .build();
-        row_time_divisions.add_prefix(&gtk::Image::from_icon_name("preferences-system-time-symbolic"));
         if let Some(settings) = settings.clone() {
             row_time_divisions.set_selected(match settings.calendar_time_divisions() {
                 60 => 0,
@@ -5045,13 +4855,11 @@ impl PreferencesDialog {
 
         let row_calendar_click_action = adw::ComboRow::builder()
             .title(&crate::i18n::gettext("Click on time slot"))
-            .subtitle(&crate::i18n::gettext("Action when clicking a free area in the calendar grid"))
             .model(&gtk::StringList::new(&[
                 &crate::i18n::gettext("Mark time slot & show draft"),
                 &crate::i18n::gettext("Immediately open new event editor"),
             ]))
             .build();
-        row_calendar_click_action.add_prefix(&gtk::Image::from_icon_name("input-mouse-symbolic"));
         if let Some(settings) = settings.clone() {
             row_calendar_click_action.set_selected(if settings.calendar_click_action() == "create" {
                 1
@@ -5070,13 +4878,11 @@ impl PreferencesDialog {
 
         let row_week_start = adw::ComboRow::builder()
             .title(&crate::i18n::gettext("Week Start"))
-            .subtitle(&crate::i18n::gettext("First day of the week in calendar views"))
             .model(&gtk::StringList::new(&[
                 &crate::i18n::gettext("Monday"),
                 &crate::i18n::gettext("Sunday"),
             ]))
             .build();
-        row_week_start.add_prefix(&gtk::Image::from_icon_name("x-office-calendar-symbolic"));
         if let Some(settings) = settings.clone() {
             row_week_start.set_selected(if settings.calendar_week_start() == "sunday" {
                 1
@@ -5095,9 +4901,7 @@ impl PreferencesDialog {
 
         let row_week_numbers = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Show calendar weeks"))
-            .subtitle(&crate::i18n::gettext("Show ISO calendar weeks in month grid and week view"))
             .build();
-        row_week_numbers.add_prefix(&gtk::Image::from_icon_name("view-list-bullet-symbolic"));
         if let Some(settings) = settings.clone() {
             row_week_numbers.set_active(settings.calendar_show_week_numbers());
             row_week_numbers.connect_active_notify(move |row| {
@@ -5108,9 +4912,7 @@ impl PreferencesDialog {
 
         let row_compress_weekend = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Compress weekend in month view"))
-            .subtitle(&crate::i18n::gettext("Compress weekend into a single column"))
             .build();
-        row_compress_weekend.add_prefix(&gtk::Image::from_icon_name("view-dual-symbolic"));
         if let Some(settings) = settings.clone() {
             row_compress_weekend.set_active(settings.calendar_compress_weekend());
             row_compress_weekend.connect_active_notify(move |row| {
@@ -5121,9 +4923,7 @@ impl PreferencesDialog {
 
         let row_month_scroll_by_week = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Scroll Month View by Week"))
-            .subtitle(&crate::i18n::gettext("Scrolls by one week instead of an entire month"))
             .build();
-        row_month_scroll_by_week.add_prefix(&gtk::Image::from_icon_name("media-seek-forward-symbolic"));
         if let Some(settings) = settings.clone() {
             row_month_scroll_by_week.set_active(settings.calendar_month_scroll_by_week());
             row_month_scroll_by_week.connect_active_notify(move |row| {
@@ -5134,9 +4934,7 @@ impl PreferencesDialog {
 
         let row_month_scroll_anim = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Animate Month View Scrolling"))
-            .subtitle(&crate::i18n::gettext("Smoothly slides rows when scrolling weeks in month view"))
             .build();
-        row_month_scroll_anim.add_prefix(&gtk::Image::from_icon_name("view-continuous-symbolic"));
         if let Some(settings) = settings.clone() {
             row_month_scroll_anim.set_active(settings.calendar_month_scroll_animation());
             row_month_scroll_anim.connect_active_notify(move |row| {
@@ -5147,9 +4945,7 @@ impl PreferencesDialog {
 
         let row_dim_past_events = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Dim past events"))
-            .subtitle(&crate::i18n::gettext("Display past events semi-transparently"))
             .build();
-        row_dim_past_events.add_prefix(&gtk::Image::from_icon_name("weather-clear-night-symbolic"));
         if let Some(settings) = settings.clone() {
             row_dim_past_events.set_active(settings.calendar_dim_past_events());
             row_dim_past_events.connect_active_notify(move |row| {
@@ -5160,7 +4956,6 @@ impl PreferencesDialog {
 
         let row_date_format = adw::ComboRow::builder()
             .title(&crate::i18n::gettext("Date Format"))
-            .subtitle(&crate::i18n::gettext("Display in calendar overviews and agenda"))
             .model(&gtk::StringList::new(&[
                 &crate::i18n::gettext("System default (Locale)"),
                 &crate::i18n::gettext("German (e.g. 19.09.2026)"),
@@ -5168,7 +4963,6 @@ impl PreferencesDialog {
                 &crate::i18n::gettext("ISO (e.g. 2026-09-19)"),
             ]))
             .build();
-        row_date_format.add_prefix(&gtk::Image::from_icon_name("x-office-calendar-symbolic"));
         if let Some(settings) = settings.clone() {
             row_date_format.set_selected(match settings.date_format().as_str() {
                 "german" => 1,
@@ -5189,14 +4983,12 @@ impl PreferencesDialog {
 
         let row_time_format = adw::ComboRow::builder()
             .title(&crate::i18n::gettext("Time Format"))
-            .subtitle(&crate::i18n::gettext("Timeline and Event Times"))
             .model(&gtk::StringList::new(&[
                 &crate::i18n::gettext("System default (Locale)"),
                 &crate::i18n::gettext("24-hour format (e.g. 14:30)"),
                 &crate::i18n::gettext("12-hour format (e.g. 2:30 pm)"),
             ]))
             .build();
-        row_time_format.add_prefix(&gtk::Image::from_icon_name("preferences-system-time-symbolic"));
         if let Some(settings) = settings.clone() {
             row_time_format.set_selected(match settings.time_format().as_str() {
                 "24h" => 1,
@@ -5216,7 +5008,6 @@ impl PreferencesDialog {
         let row_calendar_time_zone = adw::EntryRow::builder()
             .title(&crate::i18n::gettext("Calendar time zone"))
             .build();
-        row_calendar_time_zone.add_prefix(&gtk::Image::from_icon_name("find-location-symbolic"));
         row_calendar_time_zone.set_tooltip_text(Some(&crate::i18n::gettext(
             "system for machine time zone, UTC, or an IANA zone such as Europe/Berlin",
         )));
@@ -5242,11 +5033,10 @@ impl PreferencesDialog {
 
         let group_default_ecal_sources = adw::PreferencesGroup::builder()
             .title("Default Sources")
-            .description("Sources for new events, tasks, and memos")
             .build();
         group_default_ecal_sources.add(&source_preference_row(
             "Default Calendar",
-            "New events are created here",
+            "",
             EdsSourceKind::Calendar,
             "local-calendar",
             "Local Calendar",
@@ -5256,7 +5046,7 @@ impl PreferencesDialog {
         ));
         group_default_ecal_sources.add(&source_preference_row(
             "Default Task List",
-            "New tasks are created here",
+            "",
             EdsSourceKind::Calendar,
             "local-calendar",
             "Local Task List",
@@ -5266,7 +5056,7 @@ impl PreferencesDialog {
         ));
         group_default_ecal_sources.add(&source_preference_row(
             "Default Memo List",
-            "New memos are created here",
+            "",
             EdsSourceKind::Calendar,
             "local-calendar",
             "Local Memo List",
@@ -5277,7 +5067,6 @@ impl PreferencesDialog {
 
         let group_calendar_days = adw::PreferencesGroup::builder()
             .title("Work Days")
-            .description("These weekdays are displayed in the work week view")
             .build();
         for (day, label) in [
             ("monday", "Monday"),
@@ -5311,18 +5100,13 @@ impl PreferencesDialog {
 
         let group_calendar_time = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Working Hours"))
-            .description(&crate::i18n::gettext(
-                "Daily working hours shown in day and workweek views",
-            ))
             .build();
 
         let workday_options = workday_time_options();
         let row_workday_start = adw::ComboRow::builder()
             .title("Work Day Starts")
-            .subtitle(&crate::i18n::gettext("Beginning of the working day"))
             .model(&workday_options)
             .build();
-        row_workday_start.add_prefix(&gtk::Image::from_icon_name("alarm-symbolic"));
 
         if let Some(settings) = settings.clone() {
             let start_mins = settings.calendar_workday_start_minutes();
@@ -5355,10 +5139,8 @@ impl PreferencesDialog {
 
         let row_workday_end = adw::ComboRow::builder()
             .title("Work Day Ends")
-            .subtitle(&crate::i18n::gettext("End of the working day"))
             .model(&workday_options)
             .build();
-        row_workday_end.add_prefix(&gtk::Image::from_icon_name("alarm-symbolic"));
 
         if let Some(settings) = settings.clone() {
             let end_mins = settings.calendar_workday_end_minutes();
@@ -5391,16 +5173,13 @@ impl PreferencesDialog {
 
         let group_calendar_reminders = adw::PreferencesGroup::builder()
             .title("Reminders and Events")
-            .description("Default reminders for events and notifications")
             .build();
 
         let row_use_default_reminder = adw::SwitchRow::builder()
             .title("Default reminder for events")
-            .subtitle("Automatically add reminder to new events")
             .build();
         let row_default_reminder_interval = adw::SpinRow::with_range(1.0, 10_080.0, 1.0);
         row_default_reminder_interval.set_title("Default reminder interval");
-        row_default_reminder_interval.set_subtitle("Before start of event");
         row_default_reminder_interval.set_digits(0);
         row_default_reminder_interval.set_snap_to_ticks(true);
 
@@ -5452,7 +5231,6 @@ impl PreferencesDialog {
 
         let row_use_ba_reminder = adw::SwitchRow::builder()
             .title("Birthday and anniversary reminders")
-            .subtitle("Reminders for contacts with birthday or anniversary")
             .build();
         let row_ba_reminder_interval = adw::SpinRow::with_range(1.0, 10_080.0, 1.0);
         row_ba_reminder_interval.set_title("Interval for birthdays and anniversaries");
@@ -5540,7 +5318,6 @@ impl PreferencesDialog {
 
         let row_hide_cancelled_events = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Hide cancelled events"))
-            .subtitle(&crate::i18n::gettext("Do not show events with CANCELLED status in views"))
             .build();
         if let Some(settings) = settings.clone() {
             row_hide_cancelled_events.set_active(settings.hide_cancelled_events());
@@ -5553,9 +5330,6 @@ impl PreferencesDialog {
 
         let row_reminder_sound = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Play sound for reminders"))
-            .subtitle(&crate::i18n::gettext(
-                "Play an audible alert when a calendar or task reminder is due",
-            ))
             .build();
         if let Some(settings) = settings.clone() {
             row_reminder_sound.set_active(settings.reminder_sound_enabled());
@@ -5575,9 +5349,6 @@ impl PreferencesDialog {
 
         let row_reminder_tray = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Show reminders in notification tray only"))
-            .subtitle(&crate::i18n::gettext(
-                "Display reminders as notifications without automatically opening the dialog window",
-            ))
             .build();
         if let Some(settings) = settings.clone() {
             row_reminder_tray.set_active(settings.reminder_notify_with_tray());
@@ -5597,9 +5368,6 @@ impl PreferencesDialog {
 
         let row_notifications = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Desktop Notifications"))
-            .subtitle(
-                &crate::i18n::gettext("Show local event and task reminders as GNOME notifications"),
-            )
             .active(true)
             .build();
         if let Some(settings) = settings.clone() {
@@ -5612,11 +5380,6 @@ impl PreferencesDialog {
 
         let group_categories = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Calendar Categories"))
-            .description(
-                &crate::i18n::gettext(
-                    "Category names are stored in iCalendar records; colors remain app presentation data",
-                ),
-            )
             .build();
         let category_rows = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -5644,7 +5407,6 @@ impl PreferencesDialog {
 
         let group_task_memo_lists = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Task and Memo Lists"))
-            .description(&crate::i18n::gettext("Filtering and sorting of task and memo views"))
             .build();
 
         let str_all_tasks = crate::i18n::gettext("All Tasks");
@@ -5667,7 +5429,6 @@ impl PreferencesDialog {
                 &str_completed,
             ]))
             .build();
-        row_task_filter.add_prefix(&gtk::Image::from_icon_name("view-list-symbolic"));
         if let Some(settings) = settings.clone() {
             row_task_filter.set_selected(match settings.task_filter().as_str() {
                 "today" => 1,
@@ -5700,7 +5461,6 @@ impl PreferencesDialog {
                 &crate::i18n::gettext("Priority"),
             ]))
             .build();
-        row_task_sort.add_prefix(&gtk::Image::from_icon_name("view-sort-ascending-symbolic"));
         if let Some(settings) = settings.clone() {
             row_task_sort.set_selected(match settings.task_sort_field().as_str() {
                 "title" => 1,
@@ -5719,12 +5479,8 @@ impl PreferencesDialog {
 
         let row_task_sort_direction = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Sort tasks descending"))
-            .subtitle(&crate::i18n::gettext(
-                "Later due dates, titles, or higher priorities first",
-            ))
             .active(true)
             .build();
-        row_task_sort_direction.add_prefix(&gtk::Image::from_icon_name("view-sort-descending-symbolic"));
         if let Some(settings) = settings.clone() {
             row_task_sort_direction.set_active(settings.task_sort_descending());
             row_task_sort_direction.connect_active_notify(move |row| {
@@ -5735,19 +5491,11 @@ impl PreferencesDialog {
 
         let row_hide_completed_tasks = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Hide completed tasks"))
-            .subtitle(&crate::i18n::gettext(
-                "Hide completed tasks after a specified delay",
-            ))
             .build();
-        row_hide_completed_tasks.add_prefix(&gtk::Image::from_icon_name("checkmark-symbolic"));
         let row_hide_completed_tasks_value = adw::SpinRow::with_range(0.0, 1000.0, 1.0);
         row_hide_completed_tasks_value.set_title(&crate::i18n::gettext("Delay for completed tasks"));
-        row_hide_completed_tasks_value.set_subtitle(&crate::i18n::gettext(
-            "0 = hide immediately upon completion",
-        ));
         row_hide_completed_tasks_value.set_digits(0);
         row_hide_completed_tasks_value.set_snap_to_ticks(true);
-        row_hide_completed_tasks_value.add_prefix(&gtk::Image::from_icon_name("alarm-symbolic"));
 
         let row_hide_completed_tasks_units = adw::ComboRow::builder()
             .title(&crate::i18n::gettext("Unit for completion delay"))
@@ -5803,11 +5551,7 @@ impl PreferencesDialog {
 
         let row_hide_cancelled_tasks = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Hide cancelled tasks"))
-            .subtitle(&crate::i18n::gettext(
-                "Do not show tasks with status CANCELLED in views",
-            ))
             .build();
-        row_hide_cancelled_tasks.add_prefix(&gtk::Image::from_icon_name("process-stop-symbolic"));
         if let Some(settings) = settings.clone() {
             row_hide_cancelled_tasks.set_active(settings.hide_cancelled_tasks());
             let settings_for_cancelled = settings.clone();
@@ -5825,7 +5569,6 @@ impl PreferencesDialog {
                 &crate::i18n::gettext("Source"),
             ]))
             .build();
-        row_memo_sort.add_prefix(&gtk::Image::from_icon_name("accessories-text-editor-symbolic"));
         if let Some(settings) = settings.clone() {
             row_memo_sort.set_selected(match settings.memo_sort_field().as_str() {
                 "title" => 1,
@@ -5844,12 +5587,8 @@ impl PreferencesDialog {
 
         let row_memo_sort_direction = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Sort memos descending"))
-            .subtitle(&crate::i18n::gettext(
-                "Newest modifications, titles, or sources first",
-            ))
             .active(true)
             .build();
-        row_memo_sort_direction.add_prefix(&gtk::Image::from_icon_name("view-sort-descending-symbolic"));
         if let Some(settings) = settings.clone() {
             row_memo_sort_direction.set_active(settings.memo_sort_descending());
             row_memo_sort_direction.connect_active_notify(move |row| {
@@ -5860,17 +5599,14 @@ impl PreferencesDialog {
 
         let group_crypto = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Encryption and Signatures"))
-            .description(&crate::i18n::gettext("OpenPGP and S/MIME Configuration"))
             .build();
 
         let crypto_protocol_model =
             gtk::StringList::new(&["OpenPGP (GnuPG)", "S/MIME (OpenSSL/CMS)"]);
         let row_crypto_protocol = adw::ComboRow::builder()
             .title(&crate::i18n::gettext("Default Protocol"))
-            .subtitle(&crate::i18n::gettext("Used for new messages and checking incoming messages"))
             .model(&crypto_protocol_model)
             .build();
-        row_crypto_protocol.add_prefix(&gtk::Image::from_icon_name("channel-secure-symbolic"));
         if let Some(settings) = settings.clone() {
             row_crypto_protocol.set_selected(u32::from(settings.crypto_protocol() == "smime"));
             row_crypto_protocol.connect_selected_notify(move |row| {
@@ -5885,10 +5621,8 @@ impl PreferencesDialog {
 
         let row_pgp_encrypt = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Sign new messages by default"))
-            .subtitle(&crate::i18n::gettext("Uses selected OpenPGP or S/MIME protocol"))
             .active(false)
             .build();
-        row_pgp_encrypt.add_prefix(&gtk::Image::from_icon_name("document-edit-symbolic"));
         group_crypto.add(&row_pgp_encrypt);
 
         let pgp_key_model =
@@ -5898,7 +5632,6 @@ impl PreferencesDialog {
             .title(&crate::i18n::gettext("Default PGP Key"))
             .model(&pgp_key_model)
             .build();
-        row_pgp_key.add_prefix(&gtk::Image::from_icon_name("dialog-password-symbolic"));
         if let Some(settings) = settings.clone() {
             row_pgp_key.set_selected(0);
             let pgp_keys_for_selection = Rc::clone(&pgp_keys);
@@ -5926,12 +5659,8 @@ impl PreferencesDialog {
             Rc::new(RefCell::new(Vec::new()));
         let row_smime_signer = adw::ComboRow::builder()
             .title(&crate::i18n::gettext("S/MIME Signature Certificate"))
-            .subtitle(&crate::i18n::gettext(
-                "PEM or DER certificate for outgoing signatures (from store or file)",
-            ))
             .model(&signer_model)
             .build();
-        row_smime_signer.add_prefix(&gtk::Image::from_icon_name("dialog-password-symbolic"));
 
         let btn_choose_signer = gtk::Button::builder()
             .icon_name("document-open-symbolic")
@@ -5944,7 +5673,7 @@ impl PreferencesDialog {
 
         let row_smime_private_key = smime_file_row(
             &crate::i18n::gettext("S/MIME Private Key"),
-            &crate::i18n::gettext("Path to private key file; the key itself is not copied"),
+            "",
             settings
                 .as_ref()
                 .map(|settings| settings.smime_private_key())
@@ -5956,7 +5685,7 @@ impl PreferencesDialog {
 
         let row_smime_recipients = smime_files_row(
             &crate::i18n::gettext("S/MIME Recipient Certificates"),
-            &crate::i18n::gettext("Certificates for encryption; multiple files can be selected"),
+            "",
             settings
                 .as_ref()
                 .map(|settings| settings.smime_recipient_certificates())
@@ -5971,10 +5700,8 @@ impl PreferencesDialog {
             Rc::new(RefCell::new(Vec::new()));
         let row_smime_ca = adw::ComboRow::builder()
             .title(&crate::i18n::gettext("S/MIME Trust Store (Optional)"))
-            .subtitle(&crate::i18n::gettext("CA bundle for trust verification; if omitted, system truststore is used"))
             .model(&ca_model)
             .build();
-        row_smime_ca.add_prefix(&gtk::Image::from_icon_name("security-high-symbolic"));
 
         let btn_choose_ca = gtk::Button::builder()
             .icon_name("document-open-symbolic")
