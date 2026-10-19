@@ -4490,20 +4490,20 @@ button.month-bar-chip.span-end {
 .todo-sidebar {
   background-color: @view_bg_color;
   color: @view_fg_color;
-  border-left: 1px solid @borders;
+  border-left: 1px solid alpha(@borders, 0.35);
   border-right: none;
 }
 
 .todo-sidebar:backdrop {
   background-color: @view_bg_color;
   color: @view_fg_color;
-  border-left: 1px solid @borders;
+  border-left: 1px solid alpha(@borders, 0.35);
   border-right: none;
 }
 
 .todo-sidebar:dir(rtl) {
   border-left: none;
-  border-right: 1px solid @borders;
+  border-right: 1px solid alpha(@borders, 0.35);
 }
 
 .agenda-sidebar-canvas {
