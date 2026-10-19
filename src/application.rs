@@ -152,6 +152,7 @@ mod imp {
     pub struct MeridianApplication {
         pub reminder_source: RefCell<Option<glib::SourceId>>,
         pub reminder_check_in_progress: Cell<bool>,
+        pub reminder_initial_check_done: Cell<bool>,
         pub reminder_actions_in_flight: RefCell<HashSet<String>>,
     }
 
@@ -982,30 +983,35 @@ impl MeridianApplication {
                     return;
                 }
             };
+            let is_initial_startup_check = !app.imp().reminder_initial_check_done.replace(true);
             let mut delivered = Vec::with_capacity(due.len());
             for delivery in due {
                 let Ok(_target) = delivery.action_target() else {
                     tracing::warn!(key = %delivery.candidate.key, "Skipping reminder with invalid action target");
                     continue;
                 };
-                let notification_title = gettext("Reminders");
-                let notification = gio::Notification::new(&notification_title);
-                let body = delivery.candidate.format_description();
-                notification.set_body(Some(&body));
-                let icon = gio::ThemedIcon::from_names(&[
-                    "appointment-soon",
-                    "appointment-soon-symbolic",
-                    "alarm-symbolic",
-                ]);
-                notification.set_icon(&icon);
-                notification.set_default_action("app.show-reminders");
-                notification.add_button(&notification_title, "app.show-reminders");
-                let notification_id = reminder_notification_id(&delivery.candidate.key);
-                app.send_notification(Some(&notification_id), &notification);
+                if !is_initial_startup_check {
+                    let notification_title = gettext("Reminders");
+                    let notification = gio::Notification::new(&notification_title);
+                    let body = delivery.candidate.format_description();
+                    notification.set_body(Some(&body));
+                    let icon = gio::ThemedIcon::from_names(&[
+                        "appointment-soon",
+                        "appointment-soon-symbolic",
+                        "alarm-symbolic",
+                    ]);
+                    notification.set_icon(&icon);
+                    notification.set_default_action("app.show-reminders");
+                    notification.add_button(&notification_title, "app.show-reminders");
+                    let notification_id = reminder_notification_id(&delivery.candidate.key);
+                    app.send_notification(Some(&notification_id), &notification);
+                }
                 delivered.push(delivery);
             }
             if !delivered.is_empty() {
-                if AppSettings::try_new().is_some_and(|s| s.reminder_sound_enabled()) {
+                if !is_initial_startup_check
+                    && AppSettings::try_new().is_some_and(|s| s.reminder_sound_enabled())
+                {
                     crate::services::mail_notification_service::MailNotificationService::play_alarm_sound();
                 }
                 let show_dialog = AppSettings::try_new()
