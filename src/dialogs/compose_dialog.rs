@@ -1245,13 +1245,14 @@ impl ComposeDialog {
             }
         });
 
-        let form_grid = gtk::Grid::builder()
-            .row_spacing(8)
-            .column_spacing(12)
+        let header_card = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(0)
             .margin_start(16)
             .margin_end(16)
             .margin_top(12)
-            .margin_bottom(8)
+            .margin_bottom(10)
+            .css_classes(vec!["card", "composer-header-card"])
             .build();
 
         let show_from = AppSettings::try_new()
@@ -1269,9 +1270,10 @@ impl ComposeDialog {
 
         // From & Signature
         let lbl_from = gtk::Label::builder()
-            .label("Von:")
-            .css_classes(vec!["dim-label"])
-            .halign(gtk::Align::End)
+            .label(crate::i18n::gettext("From"))
+            .css_classes(vec!["dim-label", "composer-header-label"])
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
             .visible(show_from)
             .build();
         let make_clean_dropdown_factory = || -> gtk::SignalListItemFactory {
@@ -1316,8 +1318,8 @@ impl ComposeDialog {
         combo_signature.set_list_factory(Some(&make_clean_dropdown_factory()));
 
         let lbl_signature = gtk::Label::builder()
-            .label("Signatur:")
-            .css_classes(vec!["dim-label"])
+            .label(crate::i18n::gettext("Signature"))
+            .css_classes(vec!["dim-label", "composer-header-label"])
             .valign(gtk::Align::Center)
             .build();
 
@@ -1331,11 +1333,22 @@ impl ComposeDialog {
         from_row_box.append(&lbl_signature);
         from_row_box.append(&combo_signature);
 
+        let row_from = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
+            .css_classes(vec!["composer-header-row", "composer-row-from"])
+            .visible(show_from)
+            .build();
+        row_from.append(&lbl_from);
+        row_from.append(&from_row_box);
+        lbl_from.bind_property("visible", &row_from, "visible").sync_create().build();
+
         // Reply-To
         let lbl_reply_to = gtk::Label::builder()
-            .label(crate::i18n::gettext("Reply-To:"))
-            .css_classes(vec!["dim-label"])
-            .halign(gtk::Align::End)
+            .label(crate::i18n::gettext("Reply-To"))
+            .css_classes(vec!["dim-label", "composer-header-label"])
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
             .visible(show_reply_to)
             .build();
         set_accessible_label(&lbl_reply_to, &crate::i18n::gettext("Reply-To"));
@@ -1343,21 +1356,34 @@ impl ComposeDialog {
             .input_purpose(gtk::InputPurpose::Email)
             .placeholder_text(crate::i18n::gettext("Reply-To address…"))
             .hexpand(true)
+            .css_classes(vec!["composer-field-entry"])
             .build();
         set_accessible_label(&entry_reply_to, &crate::i18n::gettext("Reply-To"));
         entry_reply_to.set_visible(show_reply_to);
 
+        let row_reply_to = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
+            .css_classes(vec!["composer-header-row", "composer-row-reply-to"])
+            .visible(show_reply_to)
+            .build();
+        row_reply_to.append(&lbl_reply_to);
+        row_reply_to.append(&entry_reply_to);
+        lbl_reply_to.bind_property("visible", &row_reply_to, "visible").sync_create().build();
+
         // To
         let lbl_to = gtk::Label::builder()
-            .label(crate::i18n::gettext("To:"))
-            .css_classes(vec!["dim-label"])
-            .halign(gtk::Align::End)
+            .label(crate::i18n::gettext("To"))
+            .css_classes(vec!["dim-label", "composer-header-label"])
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&lbl_to, &crate::i18n::gettext("Recipients"));
         let entry_to = gtk::Entry::builder()
             .input_purpose(gtk::InputPurpose::Email)
             .placeholder_text(crate::i18n::gettext("Enter recipients…"))
             .hexpand(true)
+            .css_classes(vec!["composer-field-entry"])
             .build();
         set_accessible_label(&entry_to, &crate::i18n::gettext("Recipients"));
 
@@ -1367,6 +1393,19 @@ impl ComposeDialog {
             .hexpand(true)
             .build();
         to_row_box.append(&entry_to);
+
+        let btn_contacts = gtk::Button::builder()
+            .icon_name("contact-new-symbolic")
+            .tooltip_text(crate::i18n::gettext("Select contacts…"))
+            .css_classes(vec!["flat", "composer-contact-picker-btn"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&btn_contacts, &crate::i18n::gettext("Select contacts"));
+        let entry_to_for_contacts = entry_to.clone();
+        btn_contacts.connect_clicked(move |_| {
+            entry_to_for_contacts.grab_focus();
+        });
+        to_row_box.append(&btn_contacts);
 
         let btn_toggle_cc_bcc = gtk::Button::builder()
             .label("Cc/Bcc")
@@ -1400,11 +1439,20 @@ impl ComposeDialog {
         });
         self.imp().btn_toggle_cc_bcc.replace(Some(btn_toggle_cc_bcc.clone()));
 
+        let row_to = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
+            .css_classes(vec!["composer-header-row", "composer-row-to"])
+            .build();
+        row_to.append(&lbl_to);
+        row_to.append(&to_row_box);
+
         // Cc/Bcc visibility defaults from AppSettings
         let lbl_cc = gtk::Label::builder()
-            .label(crate::i18n::gettext("Cc:"))
-            .css_classes(vec!["dim-label"])
-            .halign(gtk::Align::End)
+            .label(crate::i18n::gettext("Cc"))
+            .css_classes(vec!["dim-label", "composer-header-label"])
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
             .visible(show_cc)
             .build();
         set_accessible_label(&lbl_cc, &crate::i18n::gettext("Copy (Cc)"));
@@ -1413,13 +1461,25 @@ impl ComposeDialog {
             .placeholder_text(crate::i18n::gettext("Additional recipients (Cc)…"))
             .hexpand(true)
             .visible(show_cc)
+            .css_classes(vec!["composer-field-entry"])
             .build();
         set_accessible_label(&entry_cc, &crate::i18n::gettext("Copy (Cc)"));
 
+        let row_cc = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
+            .css_classes(vec!["composer-header-row", "composer-row-cc"])
+            .visible(show_cc)
+            .build();
+        row_cc.append(&lbl_cc);
+        row_cc.append(&entry_cc);
+        lbl_cc.bind_property("visible", &row_cc, "visible").sync_create().build();
+
         let lbl_bcc = gtk::Label::builder()
-            .label(crate::i18n::gettext("Bcc:"))
-            .css_classes(vec!["dim-label"])
-            .halign(gtk::Align::End)
+            .label(crate::i18n::gettext("Bcc"))
+            .css_classes(vec!["dim-label", "composer-header-label"])
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
             .visible(show_bcc)
             .build();
         set_accessible_label(&lbl_bcc, &crate::i18n::gettext("Blind Copy (Bcc)"));
@@ -1428,35 +1488,86 @@ impl ComposeDialog {
             .placeholder_text(crate::i18n::gettext("Undisclosed recipients (Bcc)…"))
             .hexpand(true)
             .visible(show_bcc)
+            .css_classes(vec!["composer-field-entry"])
             .build();
         set_accessible_label(&entry_bcc, &crate::i18n::gettext("Blind Copy (Bcc)"));
 
+        let row_bcc = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
+            .css_classes(vec!["composer-header-row", "composer-row-bcc"])
+            .visible(show_bcc)
+            .build();
+        row_bcc.append(&lbl_bcc);
+        row_bcc.append(&entry_bcc);
+        lbl_bcc.bind_property("visible", &row_bcc, "visible").sync_create().build();
+
         // Subject
         let lbl_subject = gtk::Label::builder()
-            .label(crate::i18n::gettext("Subject:"))
-            .css_classes(vec!["dim-label"])
-            .halign(gtk::Align::End)
+            .label(crate::i18n::gettext("Subject"))
+            .css_classes(vec!["dim-label", "composer-header-label"])
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
             .build();
         let entry_subject = gtk::Entry::builder()
             .placeholder_text(crate::i18n::gettext("Subject…"))
             .hexpand(true)
+            .css_classes(vec!["composer-field-entry", "composer-subject-entry"])
             .build();
         set_accessible_label(&entry_subject, &crate::i18n::gettext("Subject"));
 
-        form_grid.attach(&lbl_from, 0, 0, 1, 1);
-        form_grid.attach(&from_row_box, 1, 0, 1, 1);
-        form_grid.attach(&lbl_reply_to, 0, 1, 1, 1);
-        form_grid.attach(&entry_reply_to, 1, 1, 1, 1);
-        form_grid.attach(&lbl_to, 0, 2, 1, 1);
-        form_grid.attach(&to_row_box, 1, 2, 1, 1);
-        form_grid.attach(&lbl_cc, 0, 3, 1, 1);
-        form_grid.attach(&entry_cc, 1, 3, 1, 1);
-        form_grid.attach(&lbl_bcc, 0, 4, 1, 1);
-        form_grid.attach(&entry_bcc, 1, 4, 1, 1);
-        form_grid.attach(&lbl_subject, 0, 5, 1, 1);
-        form_grid.attach(&entry_subject, 1, 5, 1, 1);
+        let row_subject = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
+            .css_classes(vec!["composer-header-row", "composer-row-subject", "last-visible-row"])
+            .build();
+        row_subject.append(&lbl_subject);
+        row_subject.append(&entry_subject);
 
-        content_box.append(&form_grid);
+        let label_size_group = gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal);
+        label_size_group.add_widget(&lbl_from);
+        label_size_group.add_widget(&lbl_reply_to);
+        label_size_group.add_widget(&lbl_to);
+        label_size_group.add_widget(&lbl_cc);
+        label_size_group.add_widget(&lbl_bcc);
+        label_size_group.add_widget(&lbl_subject);
+
+        header_card.append(&row_from);
+        header_card.append(&row_reply_to);
+        header_card.append(&row_to);
+        header_card.append(&row_cc);
+        header_card.append(&row_bcc);
+        header_card.append(&row_subject);
+
+        let update_first_visible_row = {
+            let r_from = row_from.clone();
+            let r_reply = row_reply_to.clone();
+            let r_to = row_to.clone();
+            std::rc::Rc::new(move || {
+                r_from.remove_css_class("first-visible-row");
+                r_reply.remove_css_class("first-visible-row");
+                r_to.remove_css_class("first-visible-row");
+
+                if r_from.is_visible() {
+                    r_from.add_css_class("first-visible-row");
+                } else if r_reply.is_visible() {
+                    r_reply.add_css_class("first-visible-row");
+                } else {
+                    r_to.add_css_class("first-visible-row");
+                }
+            })
+        };
+        {
+            let u = update_first_visible_row.clone();
+            row_from.connect_notify_local(Some("visible"), move |_, _| u());
+        }
+        {
+            let u = update_first_visible_row.clone();
+            row_reply_to.connect_notify_local(Some("visible"), move |_, _| u());
+        }
+        update_first_visible_row();
+
+        content_box.append(&header_card);
 
         let options_badges_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -2319,7 +2430,6 @@ impl ComposeDialog {
             .build();
 
         content_box.append(&attachment_section_revealer);
-        content_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         content_box.append(&html_editor);
 
         let dialog_weak_for_editor_click = self.downgrade();
@@ -9347,6 +9457,7 @@ mod tests {
         let Some(settings) = AppSettings::try_new() else {
             return;
         };
+        settings.set_composer_show_format_toolbar(false);
 
         let dialog = ComposeDialog::new();
         assert!(dialog.html_editor().is_some());
@@ -10183,6 +10294,47 @@ mod tests {
             CloseRequestDecision::SaveAndClose
         );
         assert!(!dialog.imp().close_prompt_open.get());
+
+        dialog.close();
+        while context.iteration(false) {}
+    }
+
+    #[test]
+    fn test_composer_modern_flat_header_styling() {
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let dialog = ComposeDialog::new();
+        dialog.present_standalone();
+        while context.iteration(false) {}
+
+        let entry_to = dialog.imp().entry_to.borrow().as_ref().cloned().expect("entry_to exists");
+        assert!(entry_to.has_css_class("composer-field-entry"));
+
+        let entry_subject = dialog.imp().entry_subject.borrow().as_ref().cloned().expect("entry_subject exists");
+        assert!(entry_subject.has_css_class("composer-field-entry"));
+        assert!(entry_subject.has_css_class("composer-subject-entry"));
+
+        let entry_cc = dialog.imp().entry_cc.borrow().as_ref().cloned().expect("entry_cc exists");
+        assert!(entry_cc.has_css_class("composer-field-entry"));
+
+        let entry_bcc = dialog.imp().entry_bcc.borrow().as_ref().cloned().expect("entry_bcc exists");
+        assert!(entry_bcc.has_css_class("composer-field-entry"));
+
+        let entry_reply_to = dialog.imp().entry_reply_to.borrow().as_ref().cloned().expect("entry_reply_to exists");
+        assert!(entry_reply_to.has_css_class("composer-field-entry"));
+
+        let editor = dialog.html_editor().expect("html editor exists");
+        let toolbar = editor.imp().format_toolbar.borrow().as_ref().cloned().expect("format toolbar exists");
+        assert!(toolbar.has_css_class("composer-format-toolbar"));
+        assert_eq!(toolbar.margin_top(), 4);
+        assert_eq!(toolbar.margin_bottom(), 8);
+        assert_eq!(toolbar.margin_start(), 16);
+        assert_eq!(toolbar.margin_end(), 16);
 
         dialog.close();
         while context.iteration(false) {}

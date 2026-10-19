@@ -1398,12 +1398,12 @@ impl HtmlEditor {
         // WYSIWYG Toolbar
         let toolbar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(2)
-            .margin_start(4)
-            .margin_end(4)
+            .spacing(4)
+            .margin_start(16)
+            .margin_end(16)
             .margin_top(4)
-            .margin_bottom(4)
-            .css_classes(vec!["linked"])
+            .margin_bottom(8)
+            .css_classes(vec!["composer-format-toolbar"])
             .build();
 
         let btn_bold = gtk::Button::builder()
@@ -1599,7 +1599,6 @@ impl HtmlEditor {
 
         let toolbar_container = gtk::Box::new(gtk::Orientation::Vertical, 0);
         toolbar_container.append(&toolbar_scroll);
-        toolbar_container.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
         let toolbar_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideDown)
@@ -2578,6 +2577,7 @@ impl HtmlEditor {
             .child(&web_view)
             .hexpand(true)
             .vexpand(true)
+            .css_classes(vec!["composer-editor-scrolled"])
             .build();
 
         vbox.append(&web_view_scroll);

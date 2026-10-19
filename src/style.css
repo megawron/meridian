@@ -276,7 +276,8 @@ image.mail-column-header-icon {
 .message-list .heading,
 .message-list .title {
   font-size: 0.95rem;
-  font-weight: 400;
+  font-weight: 500;
+  color: @view_fg_color;
   padding-left: 6px;
   padding-right: 6px;
 }
@@ -284,7 +285,8 @@ image.mail-column-header-icon {
 .message-list .body,
 .message-list .subtitle {
   font-size: 0.95rem;
-  font-weight: 400;
+  font-weight: 500;
+  color: @view_fg_color;
   padding-left: 6px;
   padding-right: 6px;
 }
@@ -296,20 +298,27 @@ image.mail-column-header-icon {
 .message-list .mail-date-label {
   padding-left: 6px;
   padding-right: 6px;
-  opacity: 0.75;
+  font-weight: 500;
+  opacity: 0.85;
 }
 
 .message-list .unread .mail-date-label {
   opacity: 1.0;
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .message-list .unread-heading,
 .message-list .heading.unread-heading,
 .message-list .body.unread-heading,
 .message-list label.unread-heading {
-  font-weight: 600;
+  font-weight: 700;
   opacity: 1.0;
+}
+
+.mail-viewer-status-label {
+  font-size: 0.84rem;
+  font-weight: 400;
+  opacity: 0.65;
 }
 
 .message-list separator {
@@ -437,6 +446,10 @@ image.mail-column-header-icon {
   min-height: 18px;
   padding: 0 3px;
   margin: 0;
+}
+
+.mail-detail {
+  background-color: var(--window-bg-color, @window_bg_color);
 }
 
 .mail-detail-header {
@@ -632,20 +645,34 @@ searchbar dropdown > button.combo,
   font-family: Cantarell, "Adwaita Sans", system-ui, -apple-system, sans-serif;
 }
 
-/* ── Mail Preview Container & Card ─────────────────────────────────────── */
+/* ── Libadwaita Card & Mail Preview Container (Adwaita Demo & Hylki Parity) ──
+ * Native .card and list.boxed-list are styled directly by libadwaita-1:
+ *   background-color: var(--card-bg-color);
+ *   color: var(--card-fg-color);
+ *   border-radius: 12px;
+ *   box-shadow: 0 0 0 1px RGB(0 0 6 / 3%),
+ *               0 1px 3px 1px RGB(0 0 6 / 7%),
+ *               0 2px 6px 2px RGB(0 0 6 / 3%);
+ * Do NOT override .card or list.boxed-list with custom borders or flat shadows.
+ */
 .mail-preview-card {
-  background-color: @card_bg_color;
+  background-color: var(--card-bg-color);
+  color: var(--card-fg-color);
   border-radius: 12px;
   border: none;
-  box-shadow: none;
+  box-shadow: 0 0 0 1px RGB(0 0 6 / 3%),
+              0 1px 3px 1px RGB(0 0 6 / 7%),
+              0 2px 6px 2px RGB(0 0 6 / 3%);
   transition: border-bottom-left-radius 150ms ease, border-bottom-right-radius 150ms ease;
 }
 
 .mail-preview-card.scroll-continues {
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
-  border-bottom: none;
-  box-shadow: none;
+  border: none;
+  box-shadow: 0 0 0 1px RGB(0 0 6 / 3%),
+              0 1px 3px 1px RGB(0 0 6 / 7%),
+              0 2px 6px 2px RGB(0 0 6 / 3%);
 }
 
 .mail-preview-card banner.mail-status-banner,
@@ -1770,6 +1797,272 @@ window:drop(active) > .background {
 .composer-cc-toggle-btn.active {
   color: @accent_color;
   background-color: alpha(@accent_color, 0.12);
+}
+
+/* ── Mail Composer Header & Card Styling (GNOME HIG Modern Boxed Design) ── */
+window.meridian-compose-dialog,
+dialog.meridian-compose-dialog,
+window.composer-dialog,
+dialog.composer-dialog {
+  background-color: var(--window-bg-color, @window_bg_color);
+}
+
+.composer-header-card {
+  background-color: var(--card-bg-color);
+  color: var(--card-fg-color);
+  border: none;
+  border-radius: 12px;
+  box-shadow: 0 0 0 1px RGB(0 0 6 / 3%),
+              0 1px 3px 1px RGB(0 0 6 / 7%),
+              0 2px 6px 2px RGB(0 0 6 / 3%);
+}
+
+.composer-header-row {
+  min-height: 42px;
+  padding: 2px 14px;
+  border-bottom: 1px solid var(--card-shade-color);
+  transition: all 120ms ease-in-out;
+}
+
+.composer-header-row.first-visible-row {
+  border-top-left-radius: 12px;
+  border-top-right-radius: 12px;
+}
+
+.composer-header-row.last-visible-row,
+.composer-header-row:last-child {
+  border-bottom: none;
+  border-bottom-left-radius: 12px;
+  border-bottom-right-radius: 12px;
+}
+
+/* Row Focus: Blue accent outline (curved when top or bottom row) */
+.composer-header-row:focus-within {
+  outline: 2px solid color-mix(in srgb, var(--accent-color) 50%, transparent);
+  outline-offset: -1px;
+}
+
+/* Row labels: High-contrast, easily legible */
+.composer-header-card label.composer-header-label,
+.composer-header-card label.dim-label {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: alpha(@window_fg_color, 0.85);
+}
+
+/* Inputs: KEINE BORDER! Seamless and flat inside the card */
+.composer-header-card entry.composer-field-entry,
+.composer-header-card entry {
+  background: transparent;
+  background-color: transparent;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  border-radius: 0;
+  padding: 4px 2px;
+  min-height: 36px;
+  color: @window_fg_color;
+}
+
+.composer-header-card entry.composer-field-entry:hover,
+.composer-header-card entry:hover {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.composer-header-card entry.composer-field-entry:focus,
+.composer-header-card entry.composer-field-entry:focus-within,
+.composer-header-card entry:focus,
+.composer-header-card entry:focus-within {
+  background: transparent;
+  background-color: transparent;
+  border: none;
+  box-shadow: none;
+  outline: none;
+}
+
+.composer-header-card entry.composer-subject-entry {
+  font-size: 0.95rem;
+  font-weight: 500;
+}
+
+/* Dropdowns in From / Signature row */
+.composer-header-card dropdown.composer-dropdown > button,
+.composer-header-card dropdown.composer-dropdown > button.combo {
+  background: transparent;
+  background-color: transparent;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  min-height: 32px;
+  padding: 2px 8px;
+  color: @window_fg_color;
+  border-radius: 6px;
+  transition: background-color 120ms ease-in-out;
+}
+
+.composer-header-card dropdown.composer-dropdown > button:hover,
+.composer-header-card dropdown.composer-dropdown > button.combo:hover {
+  background-color: alpha(currentColor, 0.06);
+}
+
+.composer-header-card dropdown.composer-dropdown > button:focus,
+.composer-header-card dropdown.composer-dropdown > button:active,
+.composer-header-card dropdown.composer-dropdown > button.combo:focus,
+.composer-header-card dropdown.composer-dropdown > button.combo:active {
+  background-color: alpha(@accent_color, 0.12);
+  outline: none;
+  box-shadow: none;
+}
+
+/* Popover dropdown in composer (desaturated GNOME HIG standard) */
+dropdown.composer-dropdown popover {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+
+dropdown.composer-dropdown popover contents {
+  border-radius: 12px;
+  box-shadow: 0 4px 16px alpha(black, 0.12);
+  border: 1px solid alpha(@borders, 0.75);
+  padding: 4px;
+}
+
+dropdown.composer-dropdown popover listview > row,
+dropdown.composer-dropdown popover listbox > row,
+dropdown.composer-dropdown popover row {
+  padding: 6px 12px;
+  border-radius: 8px;
+  margin: 1px 2px;
+  color: @window_fg_color;
+  transition: background-color 100ms ease;
+}
+
+dropdown.composer-dropdown popover listview > row:hover,
+dropdown.composer-dropdown popover listbox > row:hover,
+dropdown.composer-dropdown popover row:hover {
+  background-color: alpha(currentColor, 0.07);
+}
+
+dropdown.composer-dropdown popover listview > row:focus:not(:selected),
+dropdown.composer-dropdown popover listbox > row:focus:not(:selected),
+dropdown.composer-dropdown popover row:focus:not(:selected) {
+  background-color: alpha(currentColor, 0.06);
+  color: @window_fg_color;
+}
+
+dropdown.composer-dropdown popover listview > row:selected,
+dropdown.composer-dropdown popover listbox > row:selected,
+dropdown.composer-dropdown popover row:selected {
+  background-color: alpha(@accent_color, 0.14);
+  color: @accent_color;
+  font-weight: 600;
+}
+
+dropdown.composer-dropdown popover listview > row:selected:hover,
+dropdown.composer-dropdown popover listbox > row:selected:hover,
+dropdown.composer-dropdown popover row:selected:hover {
+  background-color: alpha(@accent_color, 0.20);
+  color: @accent_color;
+}
+
+/* Contact Picker & Cc/Bcc Toggle Buttons */
+.composer-contact-picker-btn {
+  padding: 3px 6px;
+  min-height: 28px;
+  min-width: 28px;
+  border-radius: 6px;
+  color: alpha(currentColor, 0.75);
+  background-color: transparent;
+  border: none;
+  box-shadow: none;
+  transition: color 150ms ease, background-color 150ms ease;
+}
+
+.composer-contact-picker-btn:hover {
+  color: currentColor;
+  background-color: alpha(currentColor, 0.07);
+}
+
+/* Formatting toolbar: Flat, borderless, clean icons matching GNOME HIG */
+.composer-format-toolbar button {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  border-radius: 6px;
+  padding: 4px 6px;
+  min-height: 28px;
+  min-width: 28px;
+  color: @window_fg_color;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.composer-format-toolbar button:hover {
+  background-color: alpha(currentColor, 0.08);
+  color: @window_fg_color;
+}
+
+.composer-format-toolbar button:active,
+.composer-format-toolbar button.active {
+  background-color: alpha(@accent_color, 0.14);
+  color: @accent_color;
+}
+
+.composer-format-toolbar dropdown > button,
+.composer-format-toolbar dropdown > button.combo {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  border-radius: 6px;
+  padding: 3px 8px;
+  min-height: 28px;
+  color: @window_fg_color;
+  font-size: 0.84rem;
+  font-weight: 500;
+  transition: background-color 120ms ease;
+}
+
+.composer-format-toolbar dropdown > button:hover,
+.composer-format-toolbar dropdown > button.combo:hover {
+  background-color: alpha(currentColor, 0.08);
+}
+
+.composer-format-toolbar dropdown > button:focus,
+.composer-format-toolbar dropdown > button.combo:focus {
+  background-color: alpha(@accent_color, 0.12);
+  color: @accent_color;
+  box-shadow: none;
+}
+
+.composer-format-toolbar separator {
+  margin: 4px 6px;
+  min-width: 1px;
+  background-color: alpha(@borders, 0.40);
+}
+
+.format-toolbar-scrolled {
+  background: transparent;
+  margin: 0;
+}
+
+/* Editor Canvas: Flush to window edges on left, right, and bottom */
+window.meridian-compose-dialog .composer-editor-scrolled,
+dialog.meridian-compose-dialog .composer-editor-scrolled,
+window.composer-dialog .composer-editor-scrolled,
+dialog.composer-dialog .composer-editor-scrolled {
+  background-color: @view_bg_color;
+  border-top: 1px solid alpha(@borders, 0.50);
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+  border-radius: 0;
+  margin-start: 0;
+  margin-end: 0;
+  margin-bottom: 0;
+  box-shadow: none;
 }
 
 .attachment-bar-chip-container {
@@ -4078,14 +4371,54 @@ button.month-bar-chip.span-end {
 }
 
 /* Event Dialog — GNOME Evolution & Lookout Appointment Layout */
-.appointment-form-grid {
+.appointment-form-grid,
+.appointment-form-page {
   padding: 16px 18px;
+  background-color: var(--window-bg-color, @window_bg_color);
+}
+
+.appointment-form-page list.boxed-list,
+.appointment-form-page .card {
+  background-color: var(--card-bg-color);
+  color: var(--card-fg-color);
+  border: none;
+  border-radius: 12px;
+  box-shadow: 0 0 0 1px RGB(0 0 6 / 3%),
+              0 1px 3px 1px RGB(0 0 6 / 7%),
+              0 2px 6px 2px RGB(0 0 6 / 3%);
 }
 
 .appointment-field-label {
   font-weight: 500;
   color: alpha(@window_fg_color, 0.85);
   margin-right: 6px;
+}
+
+/* Date & Time and other entry fields inside appointment form cards */
+.appointment-form-page row entry,
+.appointment-form-page .action-row entry {
+  background-color: alpha(currentColor, 0.04);
+  border: 1px solid alpha(@borders, 0.7);
+  border-radius: 6px;
+  min-height: 28px;
+  padding: 2px 6px;
+  box-shadow: none;
+  transition: all 120ms ease-in-out;
+}
+
+.appointment-form-page row entry:hover,
+.appointment-form-page .action-row entry:hover {
+  background-color: alpha(currentColor, 0.07);
+  border-color: alpha(@borders, 1.0);
+}
+
+.appointment-form-page row entry:focus,
+.appointment-form-page row entry:focus-within,
+.appointment-form-page .action-row entry:focus,
+.appointment-form-page .action-row entry:focus-within {
+  background-color: @view_bg_color;
+  border-color: @accent_color;
+  box-shadow: 0 0 0 1px @accent_color;
 }
 
 .appointment-color-badge {
@@ -4107,11 +4440,14 @@ button.month-bar-chip.span-end {
 
 /* ── Calendar Year View (GNOME Evolution & HIG parity) ───────────────── */
 .calendar-year-month-card {
-  background-color: @card_bg_color;
+  background-color: var(--card-bg-color);
+  color: var(--card-fg-color);
   border-radius: 12px;
   padding: 12px 14px;
-  box-shadow: 0 1px 3px alpha(black, 0.06);
-  border: 1px solid alpha(@borders, 0.4);
+  border: none;
+  box-shadow: 0 0 0 1px RGB(0 0 6 / 3%),
+              0 1px 3px 1px RGB(0 0 6 / 7%),
+              0 2px 6px 2px RGB(0 0 6 / 3%);
 }
 
 .calendar-year-month-header {
@@ -4338,9 +4674,13 @@ button.month-bar-chip.span-end {
 
 /* ── Tasks Middle View (Libadwaita / GNOME HIG) ──────────────────────── */
 .task-boxed-list {
-  background-color: @card_bg_color;
+  background-color: var(--card-bg-color);
+  color: var(--card-fg-color);
   border-radius: 12px;
-  box-shadow: 0 1px 2px alpha(black, 0.05);
+  border: none;
+  box-shadow: 0 0 0 1px RGB(0 0 6 / 3%),
+              0 1px 3px 1px RGB(0 0 6 / 7%),
+              0 2px 6px 2px RGB(0 0 6 / 3%);
 }
 
 .task-boxed-list row.task-row {
@@ -4490,20 +4830,20 @@ button.month-bar-chip.span-end {
 .todo-sidebar {
   background-color: @view_bg_color;
   color: @view_fg_color;
-  border-left: 1px solid alpha(@borders, 0.35);
+  border-left: none;
   border-right: none;
 }
 
 .todo-sidebar:backdrop {
   background-color: @view_bg_color;
   color: @view_fg_color;
-  border-left: 1px solid alpha(@borders, 0.35);
+  border-left: none;
   border-right: none;
 }
 
 .todo-sidebar:dir(rtl) {
   border-left: none;
-  border-right: 1px solid alpha(@borders, 0.35);
+  border-right: none;
 }
 
 .agenda-sidebar-canvas {
@@ -4888,13 +5228,18 @@ button.mail-details-toggle:hover,
 banner.mail-status-banner,
 .mail-status-banner {
   min-height: 28px;
+  border: none;
+  border-bottom: none;
+  box-shadow: none;
 }
 
 banner.mail-status-banner > revealer > widget,
 .mail-status-banner > revealer > widget {
   padding: 2px 12px;
   min-height: 28px;
-  border-bottom: 1px solid alpha(currentColor, 0.12);
+  border: none;
+  border-bottom: none;
+  box-shadow: none;
 }
 
 banner.mail-status-banner label,
@@ -4915,65 +5260,78 @@ banner.mail-status-banner button,
 }
 
 .mail-conversation-bar {
-  background-color: alpha(@window_fg_color, 0.035);
-  border-radius: 8px;
-  padding: 3px 8px;
+  background-color: alpha(@window_fg_color, 0.05);
+  border: none;
+  box-shadow: none;
+  border-radius: 7px;
+  padding: 2px 6px;
 }
 
 .mail-conversation-inner {
-  padding: 2px 0;
+  padding: 1px 0;
 }
 
 .mail-thread-stepper {
-  background-color: alpha(currentColor, 0.04);
-  border-radius: 6px;
-  padding: 1px 4px;
+  background-color: alpha(@window_fg_color, 0.06);
+  border: none;
+  box-shadow: none;
+  border-radius: 5px;
+  padding: 0 3px;
 }
 
 .mail-thread-stepper button {
-  min-height: 22px;
-  min-width: 22px;
-  padding: 1px 4px;
+  min-height: 20px;
+  min-width: 20px;
+  padding: 0 3px;
   border-radius: 4px;
 }
 
-.mail-thread-strip {
-  min-height: 24px;
-  padding: 3px 8px;
+.mail-thread-accordion-list {
+  margin-top: 1px;
+  padding: 1px 0;
   border-radius: 6px;
   background-color: transparent;
   border: none;
   box-shadow: none;
-  margin-bottom: 1px;
+}
+
+.mail-thread-strip {
+  min-height: 20px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background-color: transparent;
+  border: none;
+  box-shadow: none;
+  margin-bottom: 0;
   transition: background-color 100ms ease;
 }
 
 .mail-thread-strip:hover {
-  background-color: alpha(currentColor, 0.05);
+  background-color: alpha(@window_fg_color, 0.06);
   border: none;
   box-shadow: none;
 }
 
 .mail-thread-strip-badge {
-  font-size: 0.72rem;
-  font-weight: 600;
-  padding: 1px 5px;
-  min-width: 18px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0 4px;
+  min-width: 16px;
   border-radius: 4px;
-  background-color: transparent;
-  color: alpha(@window_fg_color, 0.55);
+  background-color: alpha(@window_fg_color, 0.08);
+  color: alpha(@window_fg_color, 0.82);
 }
 
 .mail-thread-strip.active,
 .mail-thread-strip.current {
-  background-color: alpha(@accent_color, 0.12);
+  background-color: alpha(@accent_color, 0.14);
   border: none;
   box-shadow: none;
 }
 
 .mail-thread-strip.active:hover,
 .mail-thread-strip.current:hover {
-  background-color: alpha(@accent_color, 0.16);
+  background-color: alpha(@accent_color, 0.20);
   border: none;
   box-shadow: none;
 }
@@ -4986,9 +5344,23 @@ banner.mail-status-banner button,
 }
 
 .mail-thread-toggle-btn {
-  padding: 1px 6px;
-  border-radius: 4px;
+  padding: 1px 7px;
+  border-radius: 5px;
+  border: none;
+  box-shadow: none;
   font-size: 0.75rem;
+  font-weight: 600;
+  background-color: alpha(@window_fg_color, 0.07);
+  color: alpha(@window_fg_color, 0.90);
+}
+
+.mail-thread-toggle-btn:hover {
+  background-color: alpha(@window_fg_color, 0.12);
+}
+
+.mail-thread-toggle-btn:checked {
+  background-color: alpha(@accent_color, 0.16);
+  color: @accent_color;
 }
 
 .mail-thread-pill {

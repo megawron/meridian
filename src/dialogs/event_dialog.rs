@@ -278,6 +278,7 @@ fn create_date_picker_popover(entry: &gtk::Entry) -> (gtk::Button, gtk::Popover)
     let btn = gtk::Button::builder()
         .icon_name("x-office-calendar-symbolic")
         .tooltip_text("Datum im Kalender auswählen")
+        .css_classes(vec!["flat"])
         .build();
     let popover = gtk::Popover::builder().has_arrow(true).build();
     let cal = gtk::Calendar::new();
@@ -379,6 +380,7 @@ fn create_time_picker_popover(entry: &gtk::Entry) -> (gtk::Button, gtk::Popover)
     let btn = gtk::Button::builder()
         .icon_name("alarm-symbolic")
         .tooltip_text("Uhrzeit auswählen")
+        .css_classes(vec!["flat"])
         .build();
     let popover = gtk::Popover::builder().has_arrow(true).build();
     let scroll = gtk::ScrolledWindow::builder()
@@ -431,6 +433,7 @@ fn create_timezone_picker_popover(entry: &gtk::Entry) -> (gtk::Button, gtk::Popo
     let btn = gtk::Button::builder()
         .label("Auswählen…")
         .tooltip_text("Zeitzone auswählen")
+        .css_classes(vec!["flat"])
         .build();
     let popover = gtk::Popover::builder().has_arrow(true).build();
     let scroll = gtk::ScrolledWindow::builder()
@@ -497,6 +500,7 @@ fn create_categories_picker_popover(entry: &gtk::Entry) -> (gtk::Button, gtk::Po
     let btn = gtk::Button::builder()
         .label("Kategorien…")
         .tooltip_text("Kategorien auswählen")
+        .css_classes(vec!["flat"])
         .build();
     let popover = gtk::Popover::builder().has_arrow(true).build();
     let scroll = gtk::ScrolledWindow::builder()
@@ -570,6 +574,7 @@ fn create_room_picker_popover(
     let btn = gtk::Button::builder()
         .label("Räume…")
         .tooltip_text("Besprechungsraum auswählen")
+        .css_classes(vec!["flat"])
         .build();
     let popover = gtk::Popover::builder().has_arrow(true).build();
     let scroll = gtk::ScrolledWindow::builder()
