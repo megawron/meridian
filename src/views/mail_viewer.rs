@@ -76,6 +76,7 @@ mod imp {
         pub remote_images_allowed_for_current: Cell<bool>,
         pub remote_images_blocked_for_current: Cell<bool>,
         pub current_message_force_light: Cell<bool>,
+        pub suppressed_by_itip: Cell<bool>,
         pub source_generation: Cell<u64>,
         pub render_generation: Cell<u64>,
         pub render_worker_generation: Arc<AtomicU64>,
@@ -171,10 +172,39 @@ glib::wrapper! {
 /// its internal `GtkRevealer` with transition duration 0 and transition type None.
 /// This prevents layout shifting and content jumping when emails with blocked
 /// remote images or warnings are loaded and displayed.
-fn disable_banner_animation(banner: &adw::Banner) {
+fn disable_banner_animation(banner: &adw::Banner, icon_name: &str) {
     if let Some(revealer) = banner.first_child().and_then(|c| c.downcast::<gtk::Revealer>().ok()) {
         revealer.set_transition_duration(0);
         revealer.set_transition_type(gtk::RevealerTransitionType::None);
+        if let Some(gizmo) = revealer.child() {
+            let layout = gtk::BoxLayout::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(6)
+                .build();
+            gizmo.set_layout_manager(Some(layout));
+            let icon = gtk::Image::builder()
+                .icon_name(icon_name)
+                .pixel_size(14)
+                .valign(gtk::Align::Center)
+                .css_classes(vec!["mail-status-banner-icon"])
+                .build();
+            let first = gizmo.first_child();
+            icon.insert_before(&gizmo, first.as_ref());
+
+            let mut child = gizmo.first_child();
+            while let Some(c) = child {
+                if let Some(lbl) = c.downcast_ref::<gtk::Label>() {
+                    lbl.set_hexpand(true);
+                    lbl.set_halign(gtk::Align::Fill);
+                    lbl.set_valign(gtk::Align::Center);
+                    lbl.set_xalign(0.0);
+                } else if let Some(btn) = c.downcast_ref::<gtk::Button>() {
+                    btn.set_valign(gtk::Align::Center);
+                    btn.set_halign(gtk::Align::End);
+                }
+                child = c.next_sibling();
+            }
+        }
     }
     fn make_shrinkable(widget: &gtk::Widget) {
         if let Some(lbl) = widget.downcast_ref::<gtk::Label>() {
@@ -334,7 +364,7 @@ impl MailViewer {
             .visible(false)
             .css_classes(vec!["mail-status-banner"])
             .build();
-        disable_banner_animation(&banner);
+        disable_banner_animation(&banner, "image-x-generic-symbolic");
 
         banner.connect_button_clicked(glib::clone!(
             #[weak(rename_to = viewer)]
@@ -359,7 +389,7 @@ impl MailViewer {
             .visible(false)
             .css_classes(vec!["mail-status-banner"])
             .build();
-        disable_banner_animation(&trash_banner);
+        disable_banner_animation(&trash_banner, "user-trash-symbolic");
         box_container.append(&trash_banner);
 
         // ── 3. Junk Banner ─────────────────────────────────────────────────
@@ -370,7 +400,7 @@ impl MailViewer {
             .visible(false)
             .css_classes(vec!["mail-status-banner"])
             .build();
-        disable_banner_animation(&junk_banner);
+        disable_banner_animation(&junk_banner, "dialog-warning-symbolic");
         box_container.append(&junk_banner);
 
         let caret_mode = AppSettings::try_new()
@@ -572,14 +602,17 @@ impl MailViewer {
         );
         scroll_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
         let scroll_accum = std::rc::Rc::new(std::cell::Cell::new(0.0f64));
+        let compact_scroll_accum = std::rc::Rc::new(std::cell::Cell::new(0.0f64));
         let viewer_weak_scroll = self.downgrade();
         let accum_clone = scroll_accum.clone();
+        let compact_accum_clone = compact_scroll_accum.clone();
         scroll_ctrl.connect_scroll(move |controller, _dx, dy| {
             let state = controller.current_event_state();
             let is_ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
                 && !state.contains(gtk::gdk::ModifierType::ALT_MASK)
                 && !state.contains(gtk::gdk::ModifierType::SUPER_MASK);
             if is_ctrl {
+                compact_accum_clone.set(0.0);
                 if let Some(viewer) = viewer_weak_scroll.upgrade() {
                     let mut val = accum_clone.get() + dy;
                     if val <= -0.5 {
@@ -594,6 +627,26 @@ impl MailViewer {
                 }
             } else {
                 accum_clone.set(0.0);
+                if let Some(viewer) = viewer_weak_scroll.upgrade() {
+                    let prev = compact_accum_clone.get();
+                    let next = if (prev > 0.0 && dy < 0.0) || (prev < 0.0 && dy > 0.0) {
+                        dy
+                    } else {
+                        prev + dy
+                    };
+                    if next >= 0.5 {
+                        compact_accum_clone.set(0.0);
+                    } else if next <= -0.5 {
+                        compact_accum_clone.set(0.0);
+                        if viewer.imp().adapted_card_height.get().is_some()
+                            || !viewer.imp().raw_scroll_continues.get()
+                        {
+                            viewer.notify_scroll_offset(0.0);
+                        }
+                    } else {
+                        compact_accum_clone.set(next);
+                    }
+                }
             }
             glib::Propagation::Proceed
         });
@@ -681,9 +734,15 @@ impl MailViewer {
         );
     }
 
+    pub(crate) fn set_suppressed_by_itip(&self, suppressed: bool) {
+        self.imp().suppressed_by_itip.set(suppressed);
+        self.set_visible(!suppressed);
+    }
+
     /// Reset the viewer to the empty/placeholder state without flashing
     /// error fallbacks or unformatted plain text.
     pub fn clear(&self) {
+        self.imp().suppressed_by_itip.set(false);
         self.set_visible(true);
         self.invalidate_message_search_context();
         self.imp().remote_images_allowed_for_current.set(false);
@@ -741,7 +800,9 @@ impl MailViewer {
     /// stale content, preliminary snippets, or empty-state warnings do not flash
     /// before the actual email body arrives.
     pub(crate) fn prepare_for_loading(&self, message_id: Option<&str>) {
-        self.set_visible(true);
+        if !self.imp().suppressed_by_itip.get() {
+            self.set_visible(true);
+        }
         self.notify_scroll_offset(0.0);
         self.set_scroll_continues(false);
         self.invalidate_message_search_context();
@@ -860,7 +921,11 @@ impl MailViewer {
                 || imp.current_fallback_text.borrow().as_deref() != fallback_text
         };
         if message_changed {
-            self.set_visible(true);
+            if !self.imp().suppressed_by_itip.get() {
+                self.set_visible(true);
+            }
+            self.notify_scroll_offset(0.0);
+            self.imp().last_measured_content_height.set(None);
             self.imp().remote_images_allowed_for_current.set(false);
             self.imp().remote_images_blocked_for_current.set(false);
             self.imp().current_message_force_light.set(false);
@@ -1158,7 +1223,11 @@ impl MailViewer {
             && (render_plan.visible_text == crate::i18n::gettext("(The message has no displayable content.)")
                 || render_plan.visible_text == "(The message has no displayable content.)"
                 || render_plan.visible_text.trim().is_empty());
-        self.set_visible(!is_empty_fallback || has_active_banner);
+        if self.imp().suppressed_by_itip.get() {
+            self.set_visible(false);
+        } else {
+            self.set_visible(!is_empty_fallback || has_active_banner);
+        }
         self.imp()
             .displayed_plaintext
             .replace(Some(DisplayedPlaintext {
@@ -1471,7 +1540,7 @@ impl MailViewer {
     pub fn set_trash_banner_visible(&self, visible: bool) {
         self.imp().trash_banner.set_visible(visible);
         self.imp().trash_banner.set_revealed(visible);
-        if visible {
+        if visible && !self.imp().suppressed_by_itip.get() {
             self.set_visible(true);
         }
         if let Some(ch) = self.imp().last_measured_content_height.get() {
@@ -1482,7 +1551,7 @@ impl MailViewer {
     pub fn set_junk_banner_visible(&self, visible: bool) {
         self.imp().junk_banner.set_visible(visible);
         self.imp().junk_banner.set_revealed(visible);
-        if visible {
+        if visible && !self.imp().suppressed_by_itip.get() {
             self.set_visible(true);
         }
         if let Some(ch) = self.imp().last_measured_content_height.get() {
@@ -2135,7 +2204,8 @@ impl MailViewer {
         user_content_manager.add_style_sheet(&user_style_sheet);
         let scroll_script = webkit6::UserScript::new(
             "(() => {
-                let isCompact = false;
+                let lastReportedY = 0;
+                let resizeGuardUntil = 0;
                 let ticking = false;
                 let lastContinues = null;
                 let lastMeasuredHeight = 0;
@@ -2191,23 +2261,8 @@ impl MailViewer {
                     }
                 }
 
-                function checkScroll() {
+                function updateMetrics(fromScrollEvent) {
                     try {
-                        const y = window.scrollY || (document.documentElement ? document.documentElement.scrollTop : 0) || 0;
-                        if (!isCompact && y > 45) {
-                            isCompact = true;
-                            if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.meridianScroll) {
-                                window.webkit.messageHandlers.meridianScroll.postMessage(y);
-                            }
-                        } else if (isCompact && y < 15) {
-                            isCompact = false;
-                            if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.meridianScroll) {
-                                window.webkit.messageHandlers.meridianScroll.postMessage(y);
-                            }
-                        }
-
-                        measureBodyHeight();
-
                         const docEl = document.documentElement;
                         const body = document.body;
                         const scrollH = Math.max(
@@ -2217,7 +2272,24 @@ impl MailViewer {
                             docEl ? docEl.offsetHeight : 0
                         );
                         const clientH = window.innerHeight;
-                        const canScroll = (scrollH - clientH) > 15;
+                        const maxScroll = Math.max(0, scrollH - clientH);
+                        const y = window.scrollY || (docEl ? docEl.scrollTop : 0) || 0;
+                        if (fromScrollEvent && (Math.abs(y - lastReportedY) >= 2 || (y <= 1 && lastReportedY > 1))) {
+                            if (y < lastReportedY && performance.now() < resizeGuardUntil) {
+                                // Ignore synthetic scrollY clamp while viewport is expanding during header collapse
+                            } else if (y > 35 && lastReportedY <= 35 && maxScroll < 140) {
+                                // Do not collapse header if collapsing it would make the entire mail fit on screen without scrolling
+                            } else {
+                                lastReportedY = y;
+                                if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.meridianScroll) {
+                                    window.webkit.messageHandlers.meridianScroll.postMessage(y);
+                                }
+                            }
+                        }
+
+                        measureBodyHeight();
+
+                        const canScroll = maxScroll > 15;
                         const atBottom = !canScroll || (y + clientH >= scrollH - 15);
                         const continues = canScroll && !atBottom;
 
@@ -2233,34 +2305,45 @@ impl MailViewer {
                 window.addEventListener('scroll', () => {
                     if (!ticking) {
                         window.requestAnimationFrame(() => {
-                            checkScroll();
+                            updateMetrics(true);
                             ticking = false;
                         });
                         ticking = true;
                     }
                 }, { passive: true });
 
+                window.addEventListener('wheel', (e) => {
+                    const y = window.scrollY || (document.documentElement ? document.documentElement.scrollTop : 0) || 0;
+                    if (e.deltaY < 0 && y <= 2 && performance.now() >= resizeGuardUntil) {
+                        lastReportedY = 0;
+                        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.meridianScroll) {
+                            window.webkit.messageHandlers.meridianScroll.postMessage(0);
+                        }
+                    }
+                }, { passive: true });
+
                 window.addEventListener('resize', () => {
-                    checkScroll();
+                    resizeGuardUntil = performance.now() + 250;
+                    updateMetrics(false);
                 }, { passive: true });
 
                 if (window.ResizeObserver && document.body) {
                     const ro = new ResizeObserver(() => {
-                        checkScroll();
+                        updateMetrics(false);
                     });
                     ro.observe(document.body);
                 }
                 if (document.readyState === 'complete' || document.readyState === 'interactive') {
-                    checkScroll();
-                    setTimeout(checkScroll, 30);
+                    updateMetrics(false);
+                    setTimeout(() => updateMetrics(false), 30);
                 } else {
                     window.addEventListener('DOMContentLoaded', () => {
-                        checkScroll();
-                        setTimeout(checkScroll, 30);
+                        updateMetrics(false);
+                        setTimeout(() => updateMetrics(false), 30);
                     });
                 }
                 window.addEventListener('load', () => {
-                    checkScroll();
+                    updateMetrics(false);
                 });
             })();",
             webkit6::UserContentInjectedFrames::TopFrame,
@@ -2637,13 +2720,13 @@ impl MailViewer {
 
         let mut banner_extra = 0;
         if self.imp().banner.is_revealed() || self.imp().banner.is_visible() {
-            banner_extra += 48;
+            banner_extra += 28;
         }
         if self.imp().trash_banner.is_revealed() || self.imp().trash_banner.is_visible() {
-            banner_extra += 48;
+            banner_extra += 28;
         }
         if self.imp().junk_banner.is_revealed() || self.imp().junk_banner.is_visible() {
-            banner_extra += 48;
+            banner_extra += 28;
         }
 
         let zoom = self.zoom_level();

@@ -687,12 +687,16 @@ impl MailViewerWindow {
         let attachment_stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
             .transition_duration(150)
+            .hhomogeneous(false)
+            .vhomogeneous(false)
             .build();
 
         // Attachment bar (icons view)
         let attachment_bar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
+            .halign(gtk::Align::Start)
+            .hexpand(false)
             .margin_start(12)
             .margin_end(12)
             .margin_top(4)
@@ -701,7 +705,9 @@ impl MailViewerWindow {
         let attachment_scrolled = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_width(false)
             .propagate_natural_height(true)
+            .min_content_width(0)
             .child(&attachment_bar)
             .visible(true)
             .build();
@@ -1393,7 +1399,53 @@ impl MailViewerWindow {
             return;
         }
 
-        let attachments = message.user_attachments();
+        let has_itip_banner = self.imp().itip_banner.borrow().is_some() && {
+            let mut found = message.attachments().iter().any(|att| {
+                let is_cal = att
+                    .mime_type
+                    .split(';')
+                    .next()
+                    .is_some_and(|m: &str| {
+                        let m = m.trim();
+                        m.eq_ignore_ascii_case("text/calendar")
+                            || m.eq_ignore_ascii_case("application/ics")
+                    })
+                    || att.filename.to_ascii_lowercase().ends_with(".ics");
+                is_cal && parse_invitation(&String::from_utf8_lossy(&att.content)).is_some()
+            });
+            if !found {
+                if let Some(raw) = message.raw_mime().as_deref() {
+                    let text = String::from_utf8_lossy(raw);
+                    if text.contains("BEGIN:VCALENDAR") {
+                        found = parse_invitation(&text).is_some();
+                    }
+                }
+            }
+            found
+        };
+
+        let attachments: Vec<_> = message
+            .user_attachments()
+            .into_iter()
+            .filter(|att| {
+                if has_itip_banner {
+                    let is_cal = att
+                        .mime_type
+                        .split(';')
+                        .next()
+                        .is_some_and(|m: &str| {
+                            let m = m.trim();
+                            m.eq_ignore_ascii_case("text/calendar")
+                                || m.eq_ignore_ascii_case("application/ics")
+                        })
+                        || att.filename.to_ascii_lowercase().ends_with(".ics");
+                    if is_cal {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect();
         if attachments.is_empty() {
             section.set_visible(false);
             self.set_attachment_expanded(false);
@@ -1795,10 +1847,11 @@ impl MailViewerWindow {
         let card = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(10)
+            .halign(gtk::Align::Start)
+            .hexpand(false)
             .css_classes(vec!["attachment-drawer-card"])
             .margin_top(4)
             .margin_bottom(4)
-            .width_request(200)
             .focusable(true)
             .tooltip_text(&format!("{} ({})", att.filename, att.size_formatted))
             .build();
@@ -1824,7 +1877,7 @@ impl MailViewerWindow {
             .orientation(gtk::Orientation::Vertical)
             .spacing(2)
             .valign(gtk::Align::Center)
-            .hexpand(true)
+            .hexpand(false)
             .build();
 
         let lbl_name = gtk::Label::builder()
@@ -1839,6 +1892,7 @@ impl MailViewerWindow {
         let lbl_meta = gtk::Label::builder()
             .label(&format!("{} • {}", att.size_formatted, att.type_description()))
             .ellipsize(gtk::pango::EllipsizeMode::End)
+            .max_width_chars(28)
             .css_classes(vec!["dim-label", "caption", "attachment-card-meta"])
             .xalign(0.0)
             .build();
@@ -2244,7 +2298,7 @@ impl MailViewerWindow {
         banner.set_invitation(itip_invitation, &user_emails);
         banner.set_email_body(body_plain.as_deref());
         if let Some(viewer) = self.imp().mail_viewer.borrow().as_ref() {
-            viewer.set_visible(!has_itip);
+            viewer.set_suppressed_by_itip(has_itip);
         }
     }
 
@@ -2486,6 +2540,24 @@ impl MailViewerWindow {
 
     fn on_delete(&self) {
         let Some(message) = self.message() else { return; };
+        let moves_to_trash = crate::services::AppSettings::try_new()
+            .map(|s| s.mail_delete_moves_to_trash())
+            .unwrap_or(true);
+        let in_trash = crate::views::mail_page::message_is_trash(&message);
+        if moves_to_trash && !in_trash {
+            let mut deleted = false;
+            if let Some(page_weak) = self.imp().parent_page.borrow().as_ref() {
+                if let Some(page) = page_weak.upgrade() {
+                    deleted = page.delete_message(&message).unwrap_or(false);
+                }
+            }
+            if deleted {
+                self.close();
+            } else {
+                self.show_toast(&gettext("Delete failed"));
+            }
+            return;
+        }
         let win = self.clone();
 
         crate::dialogs::run_destructive_action(

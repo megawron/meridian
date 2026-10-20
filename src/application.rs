@@ -344,6 +344,10 @@ impl MeridianApplication {
                 include_str!("../data/icons/hicolor/scalable/actions/meridian-view-table-symbolic.svg"),
             ),
             (
+                "funnel-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/funnel-symbolic.svg"),
+            ),
+            (
                 "calendar-today-symbolic.svg",
                 include_str!("../data/icons/hicolor/scalable/actions/calendar-today-symbolic.svg"),
             ),

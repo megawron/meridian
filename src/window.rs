@@ -64,6 +64,7 @@ mod imp {
         pub mail_view_options_button: RefCell<Option<adw::SplitButton>>,
         pub contacts_view_options_button: RefCell<Option<adw::SplitButton>>,
         pub calendar_year_view_options_button: RefCell<Option<adw::SplitButton>>,
+        pub mail_filter_options_button: RefCell<Option<gtk::MenuButton>>,
         pub sidebar_visible: Cell<bool>,
         pub sidebar_animation: RefCell<Option<adw::TimedAnimation>>,
         pub search_button: RefCell<Option<gtk::ToggleButton>>,
@@ -387,6 +388,10 @@ impl MeridianWindow {
 
     pub fn search_button(&self) -> Option<gtk::ToggleButton> {
         self.imp().search_button.borrow().clone()
+    }
+
+    pub fn mail_filter_options_button(&self) -> Option<gtk::MenuButton> {
+        self.imp().mail_filter_options_button.borrow().clone()
     }
 
     pub(crate) fn present_reminders(&self, deliveries: Vec<ReminderDelivery>, show_dialog: bool) {
@@ -3954,6 +3959,21 @@ impl MeridianWindow {
                 }
             });
         }
+        if let Some(filter_btn) = mail_page.filter_options_button() {
+            let is_initially_mail = view_stack.visible_child_name().as_deref() == Some("mail");
+            filter_btn.set_visible(is_initially_mail);
+            header_bar.pack_end(&filter_btn);
+            self.imp()
+                .mail_filter_options_button
+                .replace(Some(filter_btn.clone()));
+            let btn_weak = filter_btn.downgrade();
+            view_stack.connect_visible_child_name_notify(move |stack| {
+                if let Some(btn) = btn_weak.upgrade() {
+                    let is_mail = stack.visible_child_name().as_deref() == Some("mail");
+                    btn.set_visible(is_mail);
+                }
+            });
+        }
 
         if let Some(contacts) = self.contacts_page() {
             self.attach_contacts_view_options_button(&contacts);
@@ -5276,6 +5296,23 @@ impl MeridianWindow {
                 if !mail_page.has_selected_message() {
                     let msg = gettext("No message selected");
                     win.add_toast(&adw::Toast::new(&msg));
+                    return;
+                }
+                let moves_to_trash = AppSettings::try_new()
+                    .map(|s| s.mail_delete_moves_to_trash())
+                    .unwrap_or(true);
+                let all_in_trash = mail_page.selected_messages_all_in_trash();
+                if moves_to_trash && !all_in_trash {
+                    let message = match mail_page.delete_selected() {
+                        Ok(true) => gettext("Message moved to trash"),
+                        Ok(false) => gettext("No message selected"),
+                        Err(error) => {
+                            tracing::warn!(%error, "Mail delete operation was not applied");
+                            gettext("Delete not possible: {error}")
+                                .replace("{error}", &error.to_string())
+                        }
+                    };
+                    win.add_toast(&adw::Toast::new(&message));
                     return;
                 }
                 let win_for_action = win.clone();

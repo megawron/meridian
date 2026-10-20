@@ -706,6 +706,11 @@
       <range min="25" max="1000"/>
       <summary>Maximum messages loaded per mail folder page</summary>
     </key>
+    <key name="mail-limit-memory-usage" type="b">
+      <default>false</default>
+      <summary>Limit in-memory mail cache to reduce RAM usage</summary>
+      <description>When false, all locally cached message headers (up to 25,000 per folder) are loaded into memory for instant full-mailbox search and filtering. When true, only mail-sync-message-limit messages per folder are kept in memory initially.</description>
+    </key>
     <key name="draft-autosave-interval" type="i">
       <default>30</default>
       <summary>Draft autosave interval in seconds (0 disables local autosave)</summary>
@@ -768,6 +773,11 @@
     <key name="mail-show-deleted" type="b">
       <default>false</default>
       <summary>Show locally deleted messages with a line through them</summary>
+    </key>
+    <key name="mail-delete-moves-to-trash" type="b">
+      <default>true</default>
+      <summary>Move deleted messages to Trash instead of deleting permanently</summary>
+      <description>When enabled, pressing Delete or clicking the delete action moves selected messages directly to the Trash folder without a confirmation dialog, unless they are already in Trash.</description>
     </key>
     <key name="task-filter" type="s">
       <default>'all'</default>

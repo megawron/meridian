@@ -3,6 +3,25 @@
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_longlong, CStr, CString};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static LIMIT_MEMORY_USAGE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_limit_memory_usage(limit: bool) {
+    LIMIT_MEMORY_USAGE.store(limit, Ordering::Relaxed);
+}
+
+pub fn limit_memory_usage() -> bool {
+    LIMIT_MEMORY_USAGE.load(Ordering::Relaxed)
+}
+
+pub fn effective_sqlite_folder_limit(page_limit: usize) -> usize {
+    if limit_memory_usage() {
+        page_limit.max(25)
+    } else {
+        page_limit.max(25_000)
+    }
+}
 
 use chrono::{DateTime, TimeZone, Utc};
 
@@ -62,7 +81,7 @@ pub type EvolutionAccountCache = MeridianAccountCache;
 /// Helper to extract `DisplayName` from an EDS `.source` file or AccountConfigStore.
 fn resolve_source_display_name(source_uid: &str, home: &Path) -> Option<String> {
     let clean = source_uid.strip_suffix("-mail").unwrap_or(source_uid);
-    let profiles = crate::services::account_config_service::AccountConfigStore::default().load();
+    let profiles = crate::services::account_config_service::AccountConfigStore::default().load_cached();
     if let Some(p) = profiles.iter().find(|p| {
         p.id == source_uid
             || p.id.strip_prefix("eds:") == Some(source_uid)
@@ -79,12 +98,23 @@ fn resolve_source_display_name(source_uid: &str, home: &Path) -> Option<String> 
         }
     }
 
-    let candidates = [
-        home.join(format!(".config/evolution/sources/{source_uid}.source")),
-        home.join(format!(".config/evolution/sources/{clean}.source")),
-        home.join(format!(".var/app/org.gnome.Evolution/config/evolution/sources/{source_uid}.source")),
-        home.join(format!(".var/app/org.gnome.Evolution/config/evolution/sources/{clean}.source")),
+    let native_sources_dir = home.join(".config/evolution/sources");
+    let has_native_sources = std::fs::read_dir(&native_sources_dir)
+        .ok()
+        .is_some_and(|entries| {
+            entries
+                .flatten()
+                .any(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("source"))
+        });
+
+    let mut candidates = vec![
+        native_sources_dir.join(format!("{source_uid}.source")),
+        native_sources_dir.join(format!("{clean}.source")),
     ];
+    if !has_native_sources {
+        candidates.push(home.join(format!(".var/app/org.gnome.Evolution/config/evolution/sources/{source_uid}.source")));
+        candidates.push(home.join(format!(".var/app/org.gnome.Evolution/config/evolution/sources/{clean}.source")));
+    }
 
     for path in &candidates {
         if path.is_file() {
@@ -127,6 +157,13 @@ pub fn discover_meridian_mail_caches() -> Vec<MeridianAccountCache> {
         if !root.is_dir() {
             continue;
         }
+        if root
+            .to_string_lossy()
+            .contains(".var/app/org.gnome.Evolution")
+            && !results.is_empty()
+        {
+            continue;
+        }
         let Ok(entries) = std::fs::read_dir(root) else {
             continue;
         };
@@ -148,7 +185,10 @@ pub fn discover_meridian_mail_caches() -> Vec<MeridianAccountCache> {
                     ) {
                         continue;
                     }
-                    if !results.iter().any(|r: &MeridianAccountCache| r.source_uid == source_uid) {
+                    if !results
+                        .iter()
+                        .any(|r: &MeridianAccountCache| r.source_uid.eq_ignore_ascii_case(&source_uid))
+                    {
                         let resolved_name = resolve_source_display_name(&source_uid, &home);
                         let display_name = match resolved_name {
                             Some(name) => name,
@@ -157,6 +197,12 @@ pub fn discover_meridian_mail_caches() -> Vec<MeridianAccountCache> {
                             }
                             None => continue,
                         };
+                        if results
+                            .iter()
+                            .any(|r: &MeridianAccountCache| r.display_name.eq_ignore_ascii_case(&display_name))
+                        {
+                            continue;
+                        }
                         results.push(MeridianAccountCache {
                             source_uid,
                             display_name,
@@ -511,7 +557,8 @@ pub fn load_folders_from_sqlite(
                     continue;
                 }
 
-                let folder_id = format!("{}:{}", mapped_source_uid, mapped_folder_name);
+                let folder_id =
+                    crate::services::camel_mail_service::normalized_camel_folder_id("", &mapped_folder_name);
                 let key = (mapped_source_uid.clone(), mapped_folder_name.clone());
                 if let Some(&existing_idx) = index_by_key.get(&key) {
                     let existing = &mut folders[existing_idx];
@@ -810,12 +857,27 @@ pub fn load_folder_messages_page_from_sqlite(
         String::new()
     };
 
-    let where_clause = match cursor {
-        Some(c) => format!(
+    let is_trash_folder = {
+        let lower = real_folder_name.to_ascii_lowercase();
+        lower.contains("trash")
+            || lower.contains("deleted")
+            || lower.contains("papierkorb")
+            || lower.contains("gelöschte")
+            || lower.contains("geloeschte")
+            || lower.contains("mülleimer")
+    };
+
+    let where_clause = match (cursor, is_trash_folder) {
+        (Some(c), true) => format!(
             " WHERE (dreceived < {}) OR (dreceived = {} AND dsent < {})",
             c.dreceived, c.dreceived, c.dsent
         ),
-        None => String::new(),
+        (Some(c), false) => format!(
+            " WHERE ((flags & 2) = 0) AND ((dreceived < {}) OR (dreceived = {} AND dsent < {}))",
+            c.dreceived, c.dreceived, c.dsent
+        ),
+        (None, true) => String::new(),
+        (None, false) => " WHERE (flags & 2) = 0".to_string(),
     };
 
     let sql_str = format!(
@@ -1317,6 +1379,17 @@ pub fn load_unified_accounts_from_sqlite(
     let mut all_messages = Vec::new();
     let mut seen_ids = std::collections::HashSet::new();
     let mut successful_sources = 0usize;
+    let inbox_limit = effective_sqlite_folder_limit(page_limit_per_folder);
+    let sent_limit = if limit_memory_usage() {
+        page_limit_per_folder.min(100)
+    } else {
+        inbox_limit.min(5_000)
+    };
+    let unread_limit = if limit_memory_usage() {
+        page_limit_per_folder.max(500)
+    } else {
+        inbox_limit
+    };
 
     for cache in &caches {
         let folders = load_folders_from_sqlite(&cache.folders_db, &cache.source_uid, &cache.display_name)
@@ -1337,7 +1410,7 @@ pub fn load_unified_accounts_from_sqlite(
                     &cache.folders_db,
                     &f.source_uid,
                     &f.folder_name,
-                    Some(page_limit_per_folder),
+                    Some(inbox_limit),
                 ) {
                     for m in msgs {
                         if seen_ids.insert(m.id.clone()) {
@@ -1350,7 +1423,7 @@ pub fn load_unified_accounts_from_sqlite(
                     &cache.folders_db,
                     &f.source_uid,
                     &f.folder_name,
-                    Some(page_limit_per_folder.min(100)),
+                    Some(sent_limit),
                 ) {
                     for m in msgs {
                         if seen_ids.insert(m.id.clone()) {
@@ -1358,16 +1431,17 @@ pub fn load_unified_accounts_from_sqlite(
                         }
                     }
                 }
-            } else if !norm_id.eq_ignore_ascii_case("trash")
+            }
+            if !norm_id.eq_ignore_ascii_case("trash")
                 && !norm_id.eq_ignore_ascii_case("junk")
                 && !norm_id.eq_ignore_ascii_case("spam")
-                && f.total_count > 0
+                && (f.total_count > 0 || f.unread_count > 0)
             {
                 if let Ok(msgs) = load_folder_unread_or_flagged_from_sqlite(
                     &cache.folders_db,
                     &f.source_uid,
                     &f.folder_name,
-                    page_limit_per_folder,
+                    unread_limit,
                 ) {
                     for m in msgs {
                         if seen_ids.insert(m.id.clone()) {
@@ -1383,7 +1457,7 @@ pub fn load_unified_accounts_from_sqlite(
                 &cache.folders_db,
                 &cache.source_uid,
                 "",
-                Some(page_limit_per_folder),
+                Some(inbox_limit),
             ) {
                 for m in msgs {
                     if seen_ids.insert(m.id.clone()) {
@@ -1395,6 +1469,16 @@ pub fn load_unified_accounts_from_sqlite(
 
         all_folders.extend(folders);
     }
+
+    all_messages.sort_by(|a, b| {
+        let ts_a = chrono::DateTime::parse_from_rfc2822(&a.date_str)
+            .map(|dt| dt.timestamp())
+            .unwrap_or(0);
+        let ts_b = chrono::DateTime::parse_from_rfc2822(&b.date_str)
+            .map(|dt| dt.timestamp())
+            .unwrap_or(0);
+        ts_b.cmp(&ts_a)
+    });
 
     (all_folders, all_messages, successful_sources.max(1))
 }

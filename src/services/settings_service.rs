@@ -2550,6 +2550,28 @@ impl AppSettings {
         );
     }
 
+    pub fn mail_limit_memory_usage(&self) -> bool {
+        if self
+            .settings
+            .settings_schema()
+            .is_some_and(|schema| schema.has_key("mail-limit-memory-usage"))
+        {
+            self.settings.boolean("mail-limit-memory-usage")
+        } else {
+            false
+        }
+    }
+
+    pub fn set_mail_limit_memory_usage(&self, value: bool) {
+        if self
+            .settings
+            .settings_schema()
+            .is_some_and(|schema| schema.has_key("mail-limit-memory-usage"))
+        {
+            self.set_boolean("mail-limit-memory-usage", value);
+        }
+    }
+
     pub fn draft_autosave_interval_seconds(&self) -> u32 {
         self.settings.int("draft-autosave-interval").clamp(0, 3_600) as u32
     }
@@ -2711,6 +2733,14 @@ impl AppSettings {
 
     pub fn set_mail_show_deleted(&self, value: bool) {
         self.set_boolean("mail-show-deleted", value);
+    }
+
+    pub fn mail_delete_moves_to_trash(&self) -> bool {
+        self.settings.boolean("mail-delete-moves-to-trash")
+    }
+
+    pub fn set_mail_delete_moves_to_trash(&self, value: bool) {
+        self.set_boolean("mail-delete-moves-to-trash", value);
     }
 
     pub fn mail_show_status(&self) -> bool {
@@ -4072,6 +4102,9 @@ impl AppSettings {
                 }
             }
             "mail-show-deleted" => self.set_mail_show_deleted(parse_migrated_bool(key, value)?),
+            "mail-delete-moves-to-trash" => {
+                self.set_mail_delete_moves_to_trash(parse_migrated_bool(key, value)?)
+            }
             "task-filter" => self.set_task_filter(value),
             "task-category-filter" => self.set_task_category_filter(value),
             "task-search-mode" => self.set_task_search_mode(value),
@@ -4502,6 +4535,7 @@ impl AppSettings {
             "mail-folder-sort-order",
             "mail-expanded-folders",
             "mail-show-deleted",
+            "mail-delete-moves-to-trash",
             "task-filter",
             "task-category-filter",
             "task-search-mode",

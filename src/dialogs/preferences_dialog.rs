@@ -2074,6 +2074,21 @@ impl PreferencesDialog {
         }
         group_sync.add(&row_flush_outbox);
 
+        let row_limit_memory_usage = adw::SwitchRow::builder()
+            .title(&crate::i18n::gettext("Limit RAM usage for message cache"))
+            .subtitle(&crate::i18n::gettext(
+                "Only keep the initial folder page in memory instead of loading all cached headers for instant full-mailbox search and filtering",
+            ))
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_limit_memory_usage.set_active(settings.mail_limit_memory_usage());
+            let settings_for_mem = settings.clone();
+            row_limit_memory_usage.connect_active_notify(move |switch| {
+                settings_for_mem.set_mail_limit_memory_usage(switch.is_active());
+            });
+        }
+        group_sync.add(&row_limit_memory_usage);
+
         let row_sync_message_limit = adw::SpinRow::with_range(25.0, 1_000.0, 25.0);
         row_sync_message_limit.set_title(&crate::i18n::gettext("Messages to fetch per folder"));
         row_sync_message_limit.set_digits(0);

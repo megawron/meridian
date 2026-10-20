@@ -376,7 +376,7 @@ impl FolderSelection {
             .unwrap_or_else(|| "inbox".to_string());
         if unified_enabled {
             match folder_id.as_str() {
-                "inbox" | "all" => return Self::from_folder_id("unified_inbox"),
+                "inbox" | "all" | "unified_unread" => return Self::from_folder_id("unified_inbox"),
                 "sent" => return Self::from_folder_id("unified_sent"),
                 _ => {}
             }
@@ -3605,20 +3605,27 @@ pub(crate) fn draw_mail_table_canvas(
             }
             if row.thread_size > 1 {
                 let count_str = format!("{} ›", row.thread_size);
-                let pill_w = 26.0;
-                let pill_h = 16.0;
+                cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+                cr.set_font_size(11.2);
+                let (text_w, text_h, x_bearing, y_bearing) = cr
+                    .text_extents(&count_str)
+                    .map(|e| (e.width(), e.height(), e.x_bearing(), e.y_bearing()))
+                    .unwrap_or((16.0, 8.5, 0.0, -8.5));
+                let pill_w = (text_w + 8.0).max(24.0);
+                let pill_h = 16.5;
+                let pill_y = y + 30.75;
                 line2_right_x -= pill_w + 4.0;
                 if is_dark {
                     cr.set_source_rgba(1.0, 1.0, 1.0, 0.18);
                 } else {
                     cr.set_source_rgba(0.0, 0.0, 0.0, 0.12);
                 }
-                draw_cairo_rounded_rect(cr, line2_right_x, y + 31.0, pill_w, pill_h, 4.0);
+                draw_cairo_rounded_rect(cr, line2_right_x, pill_y, pill_w, pill_h, 4.0);
                 let _ = cr.fill();
-                cr.set_source_rgba(r, g, b, 0.88);
-                cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
-                cr.set_font_size(9.5);
-                cr.move_to(line2_right_x + 4.5, y + 42.5);
+                cr.set_source_rgba(r, g, b, 0.94);
+                let tx = line2_right_x + (pill_w - text_w) * 0.5 - x_bearing;
+                let ty = pill_y + (pill_h - text_h) * 0.5 - y_bearing;
+                cr.move_to(tx, ty);
                 let _ = cr.show_text(&count_str);
             }
 
@@ -6320,11 +6327,13 @@ fn load_mail_backend(
             let page_limit = request
                 .max_messages_per_folder
                 .max(1) as usize;
+            let sqlite_limit =
+                crate::services::evolution_summary_cache::effective_sqlite_folder_limit(page_limit);
             let sqlite_msgs = crate::services::evolution_summary_cache::load_folder_messages_from_sqlite(
                 &cache.folders_db,
                 effective_source,
                 folder_to_load,
-                Some(page_limit),
+                Some(sqlite_limit),
             )
             .unwrap_or_default();
 
@@ -6635,6 +6644,7 @@ mod imp {
         pub last_export_folder: RefCell<Option<gio::File>>,
         pub message_selection: RefCell<Option<gtk::MultiSelection>>,
         pub message_store: RefCell<Option<gio::ListStore>>,
+        pub recently_deleted_ids: RefCell<HashSet<String>>,
         pub message_filter: RefCell<Option<gtk::CustomFilter>>,
         pub(super) message_filter_state: RefCell<Option<Rc<Cell<MessageFilter>>>>,
         pub thread_selection: RefCell<Option<gtk::MultiSelection>>,
@@ -6651,12 +6661,17 @@ mod imp {
         pub thread_bar_box: RefCell<Option<gtk::Box>>,
         pub thread_accordion_box: RefCell<Option<gtk::Box>>,
         pub thread_accordion_scroll: RefCell<Option<gtk::ScrolledWindow>>,
+        pub thread_accordion_revealer: RefCell<Option<gtk::Revealer>>,
+        pub thread_toggle_btn: RefCell<Option<gtk::Button>>,
         /// Context may only read membership after this thread-model generation
         /// has published its replacement maps.
         pub thread_context_members_generation: Cell<Option<u64>>,
         pub thread_selection_syncing: Cell<bool>,
         pub expanded_threads: RefCell<HashSet<String>>,
+        pub collapsed_threads: RefCell<HashSet<String>>,
         pub thread_strips_expanded: Cell<bool>,
+        pub thread_strips_manual_open_in_compact: Cell<bool>,
+        pub last_viewer_scroll_y: Cell<f64>,
         pub(super) folder_selection: RefCell<Option<Rc<RefCell<FolderSelection>>>>,
         pub(super) popup_folder_target: RefCell<Option<FolderSelection>>,
         pub(super) popup_folder_target_generation: Cell<u64>,
@@ -6731,6 +6746,7 @@ mod imp {
         pub load_remote_images_btn: RefCell<Option<adw::SplitButton>>,
         pub modern_load_remote_images_btn: RefCell<Option<gtk::Button>>,
         pub view_options_split_btn: RefCell<Option<adw::SplitButton>>,
+        pub filter_options_btn: RefCell<Option<gtk::MenuButton>>,
         pub header_separator: RefCell<Option<gtk::Separator>>,
         pub all_headers_generation: Cell<u64>,
         pub all_headers_cancellation: RefCell<Option<Arc<AtomicBool>>>,
@@ -6919,13 +6935,18 @@ mod imp {
             tracing::debug!("MailPage construction started");
             self.mail_commands
                 .replace(MailCommandStack::empty_persistent());
+            self.thread_strips_expanded.set(true);
             let preview_position = if let Some(settings) = AppSettings::try_new() {
                 self.dynamic_folder_expanded
                     .replace(settings.mail_expanded_folders().into_iter().collect());
-                self.mail_sort_field
-                    .set(MailSortField::from_setting(&settings.mail_sort_field()));
-                self.mail_sort_descending
-                    .set(settings.mail_sort_descending());
+                self.mail_sort_field.set(MailSortField::Date);
+                self.mail_sort_descending.set(true);
+                if settings.mail_sort_field() != "date" {
+                    settings.set_mail_sort_field("date");
+                }
+                if !settings.mail_sort_descending() {
+                    settings.set_mail_sort_descending(true);
+                }
                 self.mail_threading.set(settings.mail_threading());
                 self.mail_sender_width.set(settings.mail_sender_column_width());
                 self.mail_recipient_width.set(settings.mail_recipient_column_width());
@@ -8218,10 +8239,36 @@ impl MailPage {
 
     pub(crate) fn set_header_compact(&self, compact: bool) {
         let imp = self.imp();
+        imp.thread_strips_manual_open_in_compact.set(false);
         if imp.is_compact_header.get() == compact {
+            let show_accordion = AppSettings::try_new()
+                .map(|s| s.mail_conversation_accordion())
+                .unwrap_or(true);
+            let has_strips = imp
+                .thread_accordion_box
+                .borrow()
+                .as_ref()
+                .is_some_and(|b| b.first_child().is_some());
+            let should_reveal_strips =
+                !compact && show_accordion && imp.thread_strips_expanded.get() && has_strips;
+            if let Some(rev) = imp.thread_accordion_revealer.borrow().as_ref() {
+                if rev.reveals_child() != should_reveal_strips {
+                    rev.set_reveal_child(should_reveal_strips);
+                }
+            }
+            if let Some(btn) = imp.thread_toggle_btn.borrow().as_ref() {
+                btn.set_icon_name(if should_reveal_strips {
+                    "pan-down-symbolic"
+                } else {
+                    "pan-end-symbolic"
+                });
+            }
             return;
         }
         imp.is_compact_header.set(compact);
+        if !compact {
+            imp.last_viewer_scroll_y.set(0.0);
+        }
 
         if let Some(rev) = imp.mail_subject_revealer.borrow().as_ref() {
             rev.set_reveal_child(!compact);
@@ -8280,6 +8327,45 @@ impl MailPage {
         if let Some(banner) = imp.itip_banner.borrow().as_ref() {
             banner.set_compact(compact);
         }
+        if let Some(tc) = imp.thread_context.borrow().as_ref() {
+            if compact {
+                tc.add_css_class("is-compact");
+                tc.set_min_content_height(20);
+                tc.set_max_content_height(22);
+            } else {
+                tc.remove_css_class("is-compact");
+                tc.set_min_content_height(24);
+                tc.set_max_content_height(28);
+            }
+        }
+        let show_accordion = AppSettings::try_new()
+            .map(|s| s.mail_conversation_accordion())
+            .unwrap_or(true);
+        let has_strips = imp
+            .thread_accordion_box
+            .borrow()
+            .as_ref()
+            .is_some_and(|b| b.first_child().is_some());
+        let should_reveal_strips =
+            !compact && show_accordion && imp.thread_strips_expanded.get() && has_strips;
+        if let Some(rev) = imp.thread_accordion_revealer.borrow().as_ref() {
+            rev.set_reveal_child(should_reveal_strips);
+            if should_reveal_strips {
+                if let Some(scroll) = imp.thread_accordion_scroll.borrow().as_ref() {
+                    scroll.set_visible(true);
+                    if let Some(box_) = imp.thread_accordion_box.borrow().as_ref() {
+                        Self::scroll_thread_accordion_to_active(scroll, box_);
+                    }
+                }
+            }
+        }
+        if let Some(btn) = imp.thread_toggle_btn.borrow().as_ref() {
+            btn.set_icon_name(if should_reveal_strips {
+                "pan-down-symbolic"
+            } else {
+                "pan-end-symbolic"
+            });
+        }
     }
 
     pub(crate) fn reset_header_to_full(&self) {
@@ -8313,10 +8399,18 @@ impl MailPage {
             return;
         }
         let is_compact = self.imp().is_compact_header.get();
-        if !is_compact && offset_y > 45.0 {
+        let prev_y = self.imp().last_viewer_scroll_y.replace(offset_y);
+        if !is_compact && offset_y > 35.0 {
             self.set_header_compact(true);
-        } else if is_compact && offset_y < 15.0 {
-            self.set_header_compact(false);
+        } else if is_compact {
+            if offset_y < 15.0 {
+                self.set_header_compact(false);
+            } else if self.imp().thread_strips_manual_open_in_compact.get()
+                && offset_y > 35.0
+                && offset_y > prev_y + 18.0
+            {
+                self.set_header_compact(true);
+            }
         }
     }
 
@@ -8784,6 +8878,18 @@ impl MailPage {
                     page.refresh_mail();
                 }
             });
+            crate::services::evolution_summary_cache::set_limit_memory_usage(
+                settings.mail_limit_memory_usage(),
+            );
+            let page_weak_for_mem_limit = self.downgrade();
+            settings.connect_changed(Some("mail-limit-memory-usage"), move |s, _| {
+                crate::services::evolution_summary_cache::set_limit_memory_usage(
+                    s.boolean("mail-limit-memory-usage"),
+                );
+                if let Some(page) = page_weak_for_mem_limit.upgrade() {
+                    page.refresh_mail();
+                }
+            });
             let page_weak_for_flush_outbox = self.downgrade();
             settings.connect_changed(Some("flush-outbox"), move |settings, _| {
                 if let Some(page) = page_weak_for_flush_outbox.upgrade() {
@@ -9114,6 +9220,10 @@ impl MailPage {
 
     pub fn view_options_split_button(&self) -> Option<adw::SplitButton> {
         self.imp().view_options_split_btn.borrow().clone()
+    }
+
+    pub fn filter_options_button(&self) -> Option<gtk::MenuButton> {
+        self.imp().filter_options_btn.borrow().clone()
     }
 
     pub fn is_search_active(&self) -> bool {
@@ -12103,6 +12213,94 @@ impl MailPage {
         true
     }
 
+    pub fn selected_messages_all_in_trash(&self) -> bool {
+        let messages = self.selected_messages();
+        !messages.is_empty() && messages.iter().all(message_is_trash)
+    }
+
+    fn optimistically_remove_messages(&self, messages: &[MailMessageObject]) {
+        if messages.is_empty() {
+            return;
+        }
+        let show_deleted = AppSettings::try_new()
+            .map(|s| s.mail_show_deleted())
+            .unwrap_or(false);
+        let mut removed_ids = HashSet::new();
+        {
+            let mut recently_deleted = self.imp().recently_deleted_ids.borrow_mut();
+            for msg in messages {
+                if msg.backend_location().is_none() && show_deleted {
+                    msg.set_deleted(true);
+                } else {
+                    let id = msg.id();
+                    recently_deleted.insert(id.clone());
+                    removed_ids.insert(id);
+                }
+            }
+        }
+        if removed_ids.is_empty() {
+            self.queue_mail_table_draw();
+            return;
+        }
+
+        let prev_selected_pos = self
+            .imp()
+            .thread_selection
+            .borrow()
+            .as_ref()
+            .and_then(|sel| {
+                let s = sel.selection();
+                (!s.is_empty()).then(|| s.minimum())
+            })
+            .or_else(|| self.imp().last_selected_mail_index.get());
+
+        if let Some(store) = self.imp().message_store.borrow().as_ref() {
+            let mut i = store.n_items();
+            while i > 0 {
+                i -= 1;
+                if let Some(msg) = store.item(i).and_downcast::<MailMessageObject>() {
+                    if removed_ids.contains(&msg.id()) {
+                        store.remove(i);
+                    }
+                }
+            }
+        }
+
+        if let Some(root_store) = self.imp().thread_root_store.borrow().as_ref() {
+            let mut i = root_store.n_items();
+            while i > 0 {
+                i -= 1;
+                if let Some(msg) = root_store.item(i).and_downcast::<MailMessageObject>() {
+                    if removed_ids.contains(&msg.id()) {
+                        root_store.remove(i);
+                    }
+                }
+            }
+        }
+
+        if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
+            filter.changed(gtk::FilterChange::Different);
+        }
+        if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
+            filter.changed(gtk::FilterChange::Different);
+        }
+
+        if let Some(sel) = self.imp().thread_selection.borrow().as_ref() {
+            let n = sel.n_items();
+            if n > 0 {
+                let next_pos = prev_selected_pos.unwrap_or(0).min(n - 1);
+                self.imp().last_selected_mail_index.set(Some(next_pos));
+                self.imp().mail_selection_anchor.set(Some(next_pos));
+                sel.select_item(next_pos, true);
+            } else {
+                self.imp().last_selected_mail_index.set(None);
+                self.imp().mail_selection_anchor.set(None);
+                sel.unselect_all();
+            }
+        }
+        self.queue_mail_table_draw();
+    }
+
     pub fn delete_message(&self, message: &MailMessageObject) -> Result<bool, MailOperationError> {
         let result = match message.backend_location() {
             Some(location) => {
@@ -12110,6 +12308,9 @@ impl MailPage {
             }
             None => self.execute_mail_command(MailCommand::delete_local(message.id())),
         };
+        if result.is_ok() {
+            self.optimistically_remove_messages(std::slice::from_ref(message));
+        }
         result.map(|()| true)
     }
 
@@ -12121,13 +12322,21 @@ impl MailPage {
         if messages.is_empty() {
             return Ok(false);
         }
-        let mut any_deleted = false;
-        for message in messages {
-            if self.delete_message(&message)? {
-                any_deleted = true;
-            }
+        if messages.len() == 1 {
+            return self.delete_message(&messages[0]);
         }
-        Ok(any_deleted)
+        let commands = messages
+            .iter()
+            .map(|message| match message.backend_location() {
+                Some(location) => MailCommand::delete(message.id(), location),
+                None => MailCommand::delete_local(message.id()),
+            })
+            .collect::<Vec<_>>();
+        let count = self.execute_mail_batch(commands, &gettext("Delete messages"))?;
+        if count > 0 {
+            self.optimistically_remove_messages(&messages);
+        }
+        Ok(count > 0)
     }
 
     /// Increase zoom level in the message viewer.
@@ -14388,6 +14597,7 @@ impl MailPage {
                     }
                 }
                 Ok(Err(error)) => {
+                    page.imp().recently_deleted_ids.borrow_mut().clear();
                     if scope_is_current {
                         page.report_operation_error(&description, &error);
                         page.show_toast(&gettext("{description} not possible: {error}").replace("{description}", &description).replace("{error}", &error.to_string()));
@@ -14506,6 +14716,7 @@ impl MailPage {
                     }
                 }
                 Ok(Err(error)) => {
+                    page.imp().recently_deleted_ids.borrow_mut().clear();
                     if scope_is_current {
                         page.report_operation_error(&description, &error);
                         page.show_toast(&gettext("{description} not possible: {error}").replace("{description}", &description).replace("{error}", &error.to_string()));
@@ -14603,6 +14814,7 @@ impl MailPage {
 
             match result {
                 Ok(Ok((history, Some(command)))) => {
+                    page.imp().recently_deleted_ids.borrow_mut().clear();
                     page.imp().mail_commands.replace(history);
                     page.imp()
                         .mail_history_generation
@@ -14629,6 +14841,7 @@ impl MailPage {
                     }
                 }
                 Ok(Err(error)) => {
+                    page.imp().recently_deleted_ids.borrow_mut().clear();
                     if scope_is_current {
                         page.report_operation_error(description, &error);
                         page.show_toast(&gettext("{description} not possible: {error}").replace("{description}", &gettext(description)).replace("{error}", &error.to_string()));
@@ -14937,6 +15150,7 @@ impl MailPage {
             })
             .collect::<Vec<_>>();
         self.execute_mail_batch(commands, &gettext("Delete messages"))?;
+        self.optimistically_remove_messages(&messages);
         Ok(())
     }
 
@@ -16358,12 +16572,6 @@ impl MailPage {
             "",
         ));
         unified_folder_list.append(&Self::create_unified_folder_row(
-            "unified_unread",
-            "mail-unread-symbolic",
-            &gettext("All Unread"),
-            "",
-        ));
-        unified_folder_list.append(&Self::create_unified_folder_row(
             "unified_flagged",
             "starred-symbolic",
             &gettext("All Flagged"),
@@ -17447,7 +17655,7 @@ impl MailPage {
 
         // Ensure all configured account profiles are represented in source_roots,
         // so newly added or synchronizing accounts always appear in the sidebar
-        for profile in AccountConfigStore::default().load() {
+        for profile in AccountConfigStore::default().load_cached().iter() {
             if !profile.enabled {
                 continue;
             }
@@ -17744,12 +17952,16 @@ impl MailPage {
             return;
         }
 
-        // Deduplicate roots by canonical account UID
+        // Deduplicate roots by canonical account UID and case-insensitive display name
         let mut unique_roots = Vec::new();
         let mut seen_root_uids = HashSet::new();
+        let mut seen_root_names = HashSet::new();
         for root in roots {
             let canon = Self::canonical_account_uid(&root.source_uid().unwrap_or_default()).to_string();
-            if seen_root_uids.insert(canon) {
+            let name_key = root.name().trim().to_ascii_lowercase();
+            if seen_root_uids.insert(canon)
+                && (name_key.is_empty() || seen_root_names.insert(name_key))
+            {
                 unique_roots.push(root);
             }
         }
@@ -19318,13 +19530,14 @@ impl MailPage {
     }
 
     fn rebuild_mail_column_layout(&self) {
+        self.imp().mail_table_layout.replace(None);
         if let Some(header) = self.imp().mail_column_header.borrow().as_ref() {
             Self::reorder_mail_column_container(header);
         }
         self.refresh_mail_column_header();
         self.sync_mail_layout_visibility();
         self.sync_view_split_button();
-        self.imp().mail_table_layout.replace(None);
+        self.update_mail_table_canvas_layout();
         let list_view = self.imp().mail_list_view.borrow().as_ref().cloned();
         let factory = self.imp().mail_list_factory.borrow().as_ref().cloned();
         if let (Some(list_view), Some(factory)) = (list_view, factory) {
@@ -20087,11 +20300,18 @@ impl MailPage {
         let sender_w = self.imp().mail_sender_width.get() as f64;
         let recipient_w = self.imp().mail_recipient_width.get() as f64;
         let date_w = self.imp().mail_date_width.get() as f64;
-        let show_recipient_address = AppSettings::try_new()
+        let settings = AppSettings::try_new();
+        let show_recipient_address = settings
             .as_ref()
             .map(|s| s.mail_show_recipient_address())
             .unwrap_or(false);
-        (l.width - canvas_width).abs() < 2.0
+        let profile = settings
+            .as_ref()
+            .map(|s| s.mail_list_view_profile())
+            .unwrap_or_else(|| "messages".to_string());
+        let is_cards_mode = self.imp().is_mobile.get() || profile == "cards" || profile == "wide";
+        l.is_cards_mode == is_cards_mode
+            && (l.width - canvas_width).abs() < 2.0
             && l.rows.len() == n_items
             && (l.sender_width - sender_w).abs() < 0.5
             && (l.recipient_width - recipient_w).abs() < 0.5
@@ -20180,13 +20400,16 @@ impl MailPage {
     }
 
     pub(crate) fn mail_table_row_height(&self) -> f64 {
-        if let Some(layout) = self.imp().mail_table_layout.borrow().as_ref() {
-            return layout.row_height;
-        }
         let profile = AppSettings::try_new()
             .map(|s| s.mail_list_view_profile())
             .unwrap_or_else(|| "messages".to_string());
-        if self.imp().is_mobile.get() || profile == "cards" || profile == "wide" {
+        let is_cards_mode = self.imp().is_mobile.get() || profile == "cards" || profile == "wide";
+        if let Some(layout) = self.imp().mail_table_layout.borrow().as_ref() {
+            if layout.is_cards_mode == is_cards_mode {
+                return layout.row_height;
+            }
+        }
+        if is_cards_mode {
             return 76.0;
         }
         let settings = AppSettings::try_new();
@@ -20392,6 +20615,54 @@ impl MailPage {
 
             let Some(msg) = message else { continue; };
             let selected = false;
+            let is_collapsed_root = depth == 0 && is_expandable && !is_expanded;
+
+            let (sender_str, raw_date_for_row, snippet_for_row, is_unread, is_flagged) = if is_collapsed_root {
+                let members_guard = self.imp().thread_members.borrow();
+                if let Some(members_map) = members_guard.as_ref() {
+                    let map_ref = members_map.borrow();
+                    if let Some(members) = map_ref.get(&msg.thread_id()) {
+                        let participants = format_thread_participants(members, &msg.sender_name());
+                        let newest = members
+                            .iter()
+                            .max_by_key(|m| parse_message_timestamp(&m.date_str()))
+                            .unwrap_or(&msg);
+                        let has_unread = members.iter().any(|m| m.is_unread());
+                        let has_flagged = members.iter().any(|m| m.is_flagged());
+                        (
+                            participants,
+                            newest.date_str(),
+                            newest.preview_snippet(),
+                            msg.is_unread() || has_unread,
+                            msg.is_flagged() || has_flagged,
+                        )
+                    } else {
+                        (
+                            msg.sender_name(),
+                            msg.date_str(),
+                            msg.preview_snippet(),
+                            msg.is_unread(),
+                            msg.is_flagged(),
+                        )
+                    }
+                } else {
+                    (
+                        msg.sender_name(),
+                        msg.date_str(),
+                        msg.preview_snippet(),
+                        msg.is_unread(),
+                        msg.is_flagged(),
+                    )
+                }
+            } else {
+                (
+                    msg.sender_name(),
+                    msg.date_str(),
+                    msg.preview_snippet(),
+                    msg.is_unread(),
+                    msg.is_flagged(),
+                )
+            };
 
             let size = msg.message_size();
             let size_str = if size > 0 {
@@ -20400,19 +20671,28 @@ impl MailPage {
                 String::new()
             };
 
-            let date = msg.formatted_date_cached(&cache_key, |raw| {
+            let date = if is_collapsed_root {
                 format_mail_table_date_with_now(
-                    raw,
+                    &raw_date_for_row,
                     &date_format,
                     &date_custom_format,
                     &time_format,
                     now_date,
                 )
-            });
+            } else {
+                msg.formatted_date_cached(&cache_key, |raw| {
+                    format_mail_table_date_with_now(
+                        raw,
+                        &date_format,
+                        &date_custom_format,
+                        &time_format,
+                        now_date,
+                    )
+                })
+            };
 
             let subject = msg.subject();
-            let snippet = msg.preview_snippet();
-            let is_unread = msg.is_unread();
+            let snippet = snippet_for_row;
             let is_important = msg.is_important();
             let labels = msg.labels();
             let markup_dark = format_mail_table_subject_markup(&subject, &snippet, &labels, is_unread, show_preview_text, show_labels, true, is_important);
@@ -20426,14 +20706,14 @@ impl MailPage {
                 is_expandable,
                 is_expanded,
                 is_unread,
-                is_flagged: msg.is_flagged(),
+                is_flagged,
                 follow_up_state: msg.follow_up_state(),
                 is_important: msg.is_important(),
                 is_replied: msg.is_replied(),
                 is_forwarded: msg.is_forwarded(),
                 attachment_kind: msg.attachment_kind(),
                 has_attachments: msg.attachment_count() > 0,
-                sender: msg.sender_name(),
+                sender: sender_str,
                 sender_email: msg.sender_email(),
                 recipient: {
                     let to = msg.recipient_to();
@@ -20543,11 +20823,20 @@ impl MailPage {
     }
 
     pub(crate) fn update_mail_table_canvas_layout(&self) {
+        self.imp().mail_table_layout.replace(None);
         if let Some(canvas) = self.imp().mail_table_canvas.borrow().as_ref() {
             if let Some(thread_sel) = self.imp().thread_selection.borrow().as_ref() {
                 let w = canvas.width().max(120) as f64;
                 let layout = self.current_mail_table_layout(thread_sel, w);
-                canvas.set_content_height(layout.height as i32);
+                if let Some(adj) = self.imp().list_vadjustment.borrow().as_ref() {
+                    let page_h = adj.page_size().max(100.0);
+                    adj.set_step_increment(layout.row_height);
+                    adj.set_upper(layout.height.max(page_h));
+                    let max_val = (layout.height - page_h).max(0.0);
+                    if adj.value() > max_val {
+                        adj.set_value(max_val);
+                    }
+                }
                 self.imp().mail_table_layout.replace(Some(Rc::new(layout)));
             }
             canvas.queue_draw();
@@ -22244,10 +22533,13 @@ impl MailPage {
                     let next_state = !tree_row.is_expanded();
                     tree_row.set_expanded(next_state);
                     if let Some(page) = page_for_thread_expander.upgrade() {
+                        let th_id = msg.thread_id();
                         if next_state {
-                            page.imp().expanded_threads.borrow_mut().insert(msg.thread_id());
+                            page.imp().collapsed_threads.borrow_mut().remove(&th_id);
+                            page.imp().expanded_threads.borrow_mut().insert(th_id);
                         } else {
-                            page.imp().expanded_threads.borrow_mut().remove(&msg.thread_id());
+                            page.imp().expanded_threads.borrow_mut().remove(&th_id);
+                            page.imp().collapsed_threads.borrow_mut().insert(th_id);
                         }
                     }
                     set_button_icon_with_fallback(
@@ -23822,43 +24114,6 @@ impl MailPage {
                 }
             });
 
-            // --- Section: Sorting ---
-            let sec_sort_box = gtk::Box::builder()
-                .orientation(gtk::Orientation::Vertical)
-                .spacing(6)
-                .build();
-            sec_sort_box.append(&gtk::Label::builder()
-                .label(&gettext("Sort By"))
-                .halign(gtk::Align::Start)
-                .css_classes(vec!["dim-label", "caption"])
-                .build()
-            );
-            let sort_row = gtk::Box::builder()
-                .orientation(gtk::Orientation::Horizontal)
-                .spacing(6)
-                .valign(gtk::Align::Center)
-                .build();
-            sort_selector.set_hexpand(true);
-            sort_row.append(&sort_selector);
-            sort_row.append(&direction_button);
-
-            let btn_reset_sort = gtk::Button::builder()
-                .icon_name("edit-undo-symbolic")
-                .tooltip_text(&gettext("Reset to default sort order (Date, newest first)"))
-                .css_classes(vec!["flat", "circular"])
-                .valign(gtk::Align::Center)
-                .build();
-            set_accessible_label(&btn_reset_sort, &gettext("Reset sort order"));
-            let page_weak_reset = self.downgrade();
-            btn_reset_sort.connect_clicked(move |_| {
-                if let Some(page) = page_weak_reset.upgrade() {
-                    page.reset_mail_sort_to_default();
-                }
-            });
-            sort_row.append(&btn_reset_sort);
-            sec_sort_box.append(&sort_row);
-            columns_popover_box.append(&sec_sort_box);
-            
             // --- Separator between layout and feature switches ---
             columns_popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
@@ -24038,6 +24293,173 @@ impl MailPage {
         });
 
         self.sync_view_split_button();
+
+        // --- Headerbar Filter & Sort Popover Button ---
+        let filter_popover_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(10)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(12)
+            .margin_bottom(12)
+            .width_request(300)
+            .build();
+
+        let sec_filter_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .build();
+        sec_filter_box.append(
+            &gtk::Label::builder()
+                .label(&gettext("Show Messages"))
+                .halign(gtk::Align::Start)
+                .css_classes(vec!["dim-label", "caption"])
+                .build(),
+        );
+
+        let filter_top_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(0)
+            .homogeneous(true)
+            .css_classes(vec!["linked"])
+            .build();
+        let btn_flt_all = gtk::ToggleButton::builder()
+            .label(&gettext("All"))
+            .active(true)
+            .build();
+        let btn_flt_unread = gtk::ToggleButton::builder()
+            .label(&gettext("Unread"))
+            .group(&btn_flt_all)
+            .build();
+        let btn_flt_flagged = gtk::ToggleButton::builder()
+            .label(&gettext("Flagged"))
+            .group(&btn_flt_all)
+            .build();
+        filter_top_row.append(&btn_flt_all);
+        filter_top_row.append(&btn_flt_unread);
+        filter_top_row.append(&btn_flt_flagged);
+        sec_filter_box.append(&filter_top_row);
+
+        let filter_bottom_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .build();
+        let btn_flt_important = gtk::ToggleButton::builder()
+            .label(&gettext("Important"))
+            .group(&btn_flt_all)
+            .hexpand(true)
+            .css_classes(vec!["flat"])
+            .build();
+        let btn_flt_attachment = gtk::ToggleButton::builder()
+            .label(&gettext("With Attachment"))
+            .group(&btn_flt_all)
+            .hexpand(true)
+            .css_classes(vec!["flat"])
+            .build();
+        filter_bottom_row.append(&btn_flt_important);
+        filter_bottom_row.append(&btn_flt_attachment);
+        sec_filter_box.append(&filter_bottom_row);
+        filter_popover_box.append(&sec_filter_box);
+
+        filter_popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+        let sec_sort_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .build();
+        sec_sort_box.append(
+            &gtk::Label::builder()
+                .label(&gettext("Sort By"))
+                .halign(gtk::Align::Start)
+                .css_classes(vec!["dim-label", "caption"])
+                .build(),
+        );
+        let sort_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .valign(gtk::Align::Center)
+            .build();
+        sort_selector.set_hexpand(true);
+        sort_row.append(&sort_selector);
+        sort_row.append(&direction_button);
+
+        let btn_reset_sort = gtk::Button::builder()
+            .icon_name("edit-undo-symbolic")
+            .tooltip_text(&gettext("Reset to default sort order (Date, newest first)"))
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&btn_reset_sort, &gettext("Reset sort order"));
+        let page_weak_reset = self.downgrade();
+        btn_reset_sort.connect_clicked(move |_| {
+            if let Some(page) = page_weak_reset.upgrade() {
+                page.reset_mail_sort_to_default();
+            }
+        });
+        sort_row.append(&btn_reset_sort);
+        sec_sort_box.append(&sort_row);
+        filter_popover_box.append(&sec_sort_box);
+
+        let filter_popover = gtk::Popover::builder().child(&filter_popover_box).build();
+        filter_popover.add_css_class("view-options-popover");
+        let str_filter_opts = gettext("Filter and sort messages");
+        let filter_options_btn = gtk::MenuButton::builder()
+            .icon_name("funnel-symbolic")
+            .tooltip_text(&str_filter_opts)
+            .popover(&filter_popover)
+            .css_classes(vec!["flat", "mail-filter-button"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&filter_options_btn, &str_filter_opts);
+        self.imp()
+            .filter_options_btn
+            .replace(Some(filter_options_btn.clone()));
+
+        let filter_buttons = [
+            (btn_flt_all.clone(), 0u32),
+            (btn_flt_unread.clone(), 1u32),
+            (btn_flt_flagged.clone(), 2u32),
+            (btn_flt_important.clone(), 3u32),
+            (btn_flt_attachment.clone(), 4u32),
+        ];
+        for (btn, idx) in &filter_buttons {
+            let qf = quick_filter.clone();
+            let target_idx = *idx;
+            btn.connect_toggled(move |b| {
+                if b.is_active() && qf.selected() != target_idx {
+                    qf.set_selected(target_idx);
+                }
+            });
+        }
+        let filter_buttons_for_sync = filter_buttons.clone();
+        let filter_btn_weak_for_qf = filter_options_btn.downgrade();
+        let sort_sel_for_qf = sort_selector.clone();
+        quick_filter.connect_selected_notify(move |qf| {
+            let sel = qf.selected();
+            for (btn, idx) in &filter_buttons_for_sync {
+                if *idx == sel && !btn.is_active() {
+                    btn.set_active(true);
+                }
+            }
+            if let Some(fbtn) = filter_btn_weak_for_qf.upgrade() {
+                if sel != 0 || sort_sel_for_qf.selected() != 0 {
+                    fbtn.add_css_class("has-active-filters");
+                } else {
+                    fbtn.remove_css_class("has-active-filters");
+                }
+            }
+        });
+        let filter_btn_weak_for_sort = filter_options_btn.downgrade();
+        let qf_for_sort = quick_filter.clone();
+        sort_selector.connect_selected_notify(move |ss| {
+            if let Some(fbtn) = filter_btn_weak_for_sort.upgrade() {
+                if qf_for_sort.selected() != 0 || ss.selected() != 0 {
+                    fbtn.add_css_class("has-active-filters");
+                } else {
+                    fbtn.remove_css_class("has-active-filters");
+                }
+            }
+        });
 
         let search_options_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -24711,6 +25133,20 @@ impl MailPage {
         let page_for_batch_delete = self.downgrade();
         batch_delete_button.connect_clicked(move |_| {
             if let Some(page) = page_for_batch_delete.upgrade() {
+                let moves_to_trash = AppSettings::try_new()
+                    .map(|s| s.mail_delete_moves_to_trash())
+                    .unwrap_or(true);
+                let batch_msgs = page.selected_batch_messages();
+                let all_in_trash = !batch_msgs.is_empty() && batch_msgs.iter().all(message_is_trash);
+                if moves_to_trash && !all_in_trash {
+                    if let Err(error) = page.delete_batch() {
+                        page.report_operation_error(&gettext("Delete not possible"), &error);
+                        tracing::warn!(%error, "Batch delete operation was not applied");
+                    } else {
+                        page.show_toast(&gettext("Message moved to trash"));
+                    }
+                    return;
+                }
                 let page_for_action = page.clone();
                 let heading = gettext("Delete messages?");
                 let body = gettext("The selected messages will be permanently deleted or moved to trash.");
@@ -24740,6 +25176,7 @@ impl MailPage {
             .min_content_width(120)
             .child(&column_header)
             .propagate_natural_width(false)
+            .propagate_natural_height(true)
             .build();
         self.imp()
             .column_header_scroll
@@ -24871,9 +25308,11 @@ impl MailPage {
                             if let Some(msg) = tree_row.item().and_downcast::<MailMessageObject>() {
                                 let th_id = msg.thread_id();
                                 if next_expanded {
+                                    page.imp().collapsed_threads.borrow_mut().remove(&th_id);
                                     page.imp().expanded_threads.borrow_mut().insert(th_id);
                                 } else {
                                     page.imp().expanded_threads.borrow_mut().remove(&th_id);
+                                    page.imp().collapsed_threads.borrow_mut().insert(th_id);
                                 }
                             }
                             page.imp().mail_table_layout.replace(None);
@@ -25489,6 +25928,12 @@ impl MailPage {
                     if let Some(message) = page.selected_message() {
                         let _ = page.toggle_message_unread(&message);
                         canvas_for_key.queue_draw();
+                        return glib::Propagation::Stop;
+                    }
+                }
+                gtk::gdk::Key::Delete | gtk::gdk::Key::KP_Delete => {
+                    if page.has_selected_message() {
+                        let _ = gtk::prelude::WidgetExt::activate_action(&page, "win.delete", None);
                         return glib::Propagation::Stop;
                     }
                 }
@@ -26806,7 +27251,8 @@ impl MailPage {
         let thread_bar_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(6)
-            .valign(gtk::Align::Center)
+            .valign(gtk::Align::Fill)
+            .vexpand(true)
             .css_classes(vec!["mail-conversation-inner"])
             .build();
         self.imp().thread_bar_box.replace(Some(thread_bar_box.clone()));
@@ -26842,12 +27288,29 @@ impl MailPage {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_height(true)
-            .max_content_height(130)
+            .max_content_height(116)
             .vexpand(false)
             .child(&thread_accordion_box)
             .visible(false)
             .build();
         self.imp().thread_accordion_scroll.replace(Some(thread_accordion_scroll.clone()));
+        let thread_accordion_revealer = gtk::Revealer::builder()
+            .transition_type(gtk::RevealerTransitionType::SlideDown)
+            .transition_duration(180)
+            .reveal_child(false)
+            .child(&thread_accordion_scroll)
+            .build();
+        let scroll_weak_for_rev = thread_accordion_scroll.downgrade();
+        thread_accordion_revealer.connect_child_revealed_notify(move |rev| {
+            if !rev.reveals_child() && !rev.is_child_revealed() {
+                if let Some(scroll) = scroll_weak_for_rev.upgrade() {
+                    scroll.set_visible(false);
+                }
+            }
+        });
+        self.imp()
+            .thread_accordion_revealer
+            .replace(Some(thread_accordion_revealer.clone()));
 
         let mail_viewer = MailViewer::new();
         let modern_remote_btn = self.imp().modern_load_remote_images_btn.borrow().clone();
@@ -27198,6 +27661,8 @@ impl MailPage {
         let summary_label = gtk::Label::builder()
             .valign(gtk::Align::Center)
             .use_markup(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .width_chars(1)
             .css_classes(vec!["attachment-summary-label"])
             .build();
         summary_box.append(&summary_label);
@@ -27275,11 +27740,15 @@ impl MailPage {
         let attachment_stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
             .transition_duration(150)
+            .hhomogeneous(false)
+            .vhomogeneous(false)
             .build();
 
         let attachment_bar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
+            .halign(gtk::Align::Start)
+            .hexpand(false)
             .margin_start(12)
             .margin_end(12)
             .margin_top(4)
@@ -27290,7 +27759,9 @@ impl MailPage {
         let attachment_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_width(false)
             .propagate_natural_height(true)
+            .min_content_width(0)
             .min_content_height(48)
             .child(&attachment_bar)
             .build();
@@ -27308,7 +27779,7 @@ impl MailPage {
 
         let list_header_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(12)
+            .spacing(8)
             .margin_start(8)
             .margin_end(8)
             .css_classes(vec!["attachment-list-header"])
@@ -27321,6 +27792,8 @@ impl MailPage {
         let col_name = gtk::Label::builder()
             .label(&gettext("Name"))
             .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .width_chars(1)
             .xalign(0.0)
             .css_classes(vec!["attachment-col-header-label"])
             .build();
@@ -27328,7 +27801,9 @@ impl MailPage {
 
         let col_type = gtk::Label::builder()
             .label(&gettext("Type"))
-            .width_request(140)
+            .width_request(60)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .width_chars(1)
             .xalign(0.0)
             .css_classes(vec!["attachment-col-header-label", "attachment-col-type"])
             .build();
@@ -27336,13 +27811,15 @@ impl MailPage {
 
         let col_size = gtk::Label::builder()
             .label(&gettext("Size"))
-            .width_request(85)
+            .width_request(55)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .width_chars(1)
             .xalign(1.0)
             .css_classes(vec!["attachment-col-header-label"])
             .build();
         list_header_box.append(&col_size);
 
-        let actions_spacer = gtk::Box::builder().width_request(60).build();
+        let actions_spacer = gtk::Box::builder().width_request(28).build();
         list_header_box.append(&actions_spacer);
         list_container.append(&list_header_box);
 
@@ -27491,6 +27968,14 @@ impl MailPage {
             viewer_for_revealed.update_scroll_continues_layout();
         });
 
+        let viewer_for_thread_rev = mail_viewer.clone();
+        thread_accordion_revealer.connect_notify_local(Some("child-revealed"), move |_, _| {
+            if let Some(ch) = viewer_for_thread_rev.imp().last_measured_content_height.get() {
+                viewer_for_thread_rev.apply_adapted_height(ch);
+            }
+            viewer_for_thread_rev.update_scroll_continues_layout();
+        });
+
         let viewer_for_print = mail_viewer.clone();
         print_status_area.connect_notify_local(Some("visible"), move |_, _| {
             viewer_for_print.update_scroll_continues_layout();
@@ -27585,7 +28070,7 @@ impl MailPage {
         detail_view.append(&header_box);
         detail_view.append(&header_separator);
         detail_view.append(&thread_context);
-        detail_view.append(&thread_accordion_scroll);
+        detail_view.append(&thread_accordion_revealer);
         detail_view.append(&message_find_revealer);
         detail_view.append(itip_banner.widget());
         detail_view.append(&mail_viewer);
@@ -28027,6 +28512,7 @@ impl MailPage {
                         }
                         Self::set_attachment_bar_visibility(&attachment_bar, false);
                         itip_banner_clone.set_invitation(None, &[]);
+                        mail_viewer.set_suppressed_by_itip(false);
                         let sender = sender_header(&msg);
                         mail_viewer.set_current_sender(Some(&sender));
                         mail_viewer.prepare_for_loading(Some(&msg.id()));
@@ -28386,6 +28872,7 @@ impl MailPage {
             banner.set_email_body(body_plain.as_deref());
         }
 
+        mail_viewer.set_suppressed_by_itip(has_itip && itip_banner.is_some());
         mail_viewer.set_visible(!has_itip);
 
         let inline_images = attachments
@@ -28414,9 +28901,30 @@ impl MailPage {
         let is_junk = message_is_junk(message);
         mail_viewer.set_trash_banner_visible(is_trash);
         mail_viewer.set_junk_banner_visible(!is_trash && is_junk);
+        let suppress_calendar_attachments = has_itip && itip_banner.is_some();
         let user_attachments: Vec<_> = attachments
             .into_iter()
-            .filter(|att| att.is_user_attachment())
+            .filter(|att| {
+                if !att.is_user_attachment() {
+                    return false;
+                }
+                if suppress_calendar_attachments {
+                    let is_cal = att
+                        .mime_type
+                        .split(';')
+                        .next()
+                        .is_some_and(|mime| {
+                            let m = mime.trim();
+                            m.eq_ignore_ascii_case("text/calendar")
+                                || m.eq_ignore_ascii_case("application/ics")
+                        })
+                        || att.filename.to_ascii_lowercase().ends_with(".ics");
+                    if is_cal {
+                        return false;
+                    }
+                }
+                true
+            })
             .collect();
         let has_itip_invitation = itip_banner.is_none() && itip_invitation.is_some();
         let show_attachments = !user_attachments.is_empty() || has_itip_invitation;
@@ -28581,6 +29089,7 @@ impl MailPage {
                     let lbl_name = gtk::Label::builder()
                         .label(&attachment.filename)
                         .ellipsize(gtk::pango::EllipsizeMode::Middle)
+                        .width_chars(1)
                         .css_classes(vec!["attachment-list-label"])
                         .hexpand(true)
                         .xalign(0.0)
@@ -28592,8 +29101,9 @@ impl MailPage {
                     let lbl_type = gtk::Label::builder()
                         .label(&type_desc)
                         .ellipsize(gtk::pango::EllipsizeMode::End)
+                        .width_chars(1)
                         .css_classes(vec!["dim-label", "caption", "attachment-col-type"])
-                        .width_request(140)
+                        .width_request(60)
                         .xalign(0.0)
                         .valign(gtk::Align::Center)
                         .build();
@@ -28601,8 +29111,10 @@ impl MailPage {
 
                     let lbl_size = gtk::Label::builder()
                         .label(&attachment.size_formatted)
+                        .ellipsize(gtk::pango::EllipsizeMode::End)
+                        .width_chars(1)
                         .css_classes(vec!["dim-label", "caption", "attachment-col-size"])
-                        .width_request(85)
+                        .width_request(55)
                         .xalign(1.0)
                         .valign(gtk::Align::Center)
                         .build();
@@ -28735,6 +29247,8 @@ impl MailPage {
         save_icon.set_pixel_size(15);
         let save_label = gtk::Label::builder()
             .label(&gettext("Save all…"))
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .width_chars(1)
             .css_classes(vec!["attachment-save-all-label"])
             .build();
 
@@ -28863,10 +29377,11 @@ impl MailPage {
         let card = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(10)
+            .halign(gtk::Align::Start)
+            .hexpand(false)
             .css_classes(vec!["attachment-drawer-card"])
             .margin_top(4)
             .margin_bottom(4)
-            .width_request(200)
             .focusable(true)
             .tooltip_text(&format!("{} ({})", att.filename, att.size_formatted))
             .build();
@@ -28892,7 +29407,7 @@ impl MailPage {
             .orientation(gtk::Orientation::Vertical)
             .spacing(2)
             .valign(gtk::Align::Center)
-            .hexpand(true)
+            .hexpand(false)
             .build();
 
         let lbl_name = gtk::Label::builder()
@@ -28907,6 +29422,7 @@ impl MailPage {
         let lbl_meta = gtk::Label::builder()
             .label(&format!("{} • {}", att.size_formatted, att.type_description()))
             .ellipsize(gtk::pango::EllipsizeMode::End)
+            .max_width_chars(28)
             .css_classes(vec!["dim-label", "caption", "attachment-card-meta"])
             .xalign(0.0)
             .build();
@@ -29039,7 +29555,10 @@ fn create_attachment_bar_chip(
     let lbl = gtk::Label::builder()
         .label(&att.filename)
         .ellipsize(gtk::pango::EllipsizeMode::Middle)
+        .width_chars(1)
         .max_width_chars(max_chars)
+        .hexpand(true)
+        .xalign(0.0)
         .css_classes(vec!["attachment-chip-label"])
         .valign(gtk::Align::Center)
         .build();
@@ -29047,6 +29566,8 @@ fn create_attachment_bar_chip(
 
     let lbl_size = gtk::Label::builder()
         .label(&format!("· {}", att.size_formatted))
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .width_chars(1)
         .css_classes(vec!["dim-label", "caption", "attachment-chip-size"])
         .valign(gtk::Align::Center)
         .build();
@@ -29293,6 +29814,9 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
         let thread_id = selected.thread_id();
         if !self.thread_context_cache_is_current() || thread_id.is_empty() {
             thread_context.set_visible(false);
+            if let Some(rev) = self.imp().thread_accordion_revealer.borrow().as_ref() {
+                rev.set_reveal_child(false);
+            }
             if let Some(accordion_scroll) = self.imp().thread_accordion_scroll.borrow().as_ref() {
                 accordion_scroll.set_visible(false);
             }
@@ -29307,6 +29831,9 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
             .unwrap_or_default();
         if messages.len() <= 1 {
             thread_context.set_visible(false);
+            if let Some(rev) = self.imp().thread_accordion_revealer.borrow().as_ref() {
+                rev.set_reveal_child(false);
+            }
             if let Some(accordion_scroll) = self.imp().thread_accordion_scroll.borrow().as_ref() {
                 accordion_scroll.set_visible(false);
             }
@@ -29318,13 +29845,16 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
             .position(|m| m.id() == selected.id())
             .unwrap_or(0);
 
-        let is_expanded = self.imp().thread_strips_expanded.get();
+        let is_expanded = self.imp().thread_strips_expanded.get()
+            && (!self.imp().is_compact_header.get()
+                || self.imp().thread_strips_manual_open_in_compact.get());
 
-        // Header: Thread Icon + Count + Expand Toggle on left, Stepper on right
+        // Header: Thread Icon + Label + Expand Toggle on left, Stepper on right
         let title_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(6)
-            .valign(gtk::Align::Center)
+            .valign(gtk::Align::Fill)
+            .vexpand(true)
             .hexpand(true)
             .build();
         let icon_thread = gtk::Image::new();
@@ -29335,12 +29865,25 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
         );
         icon_thread.set_pixel_size(14);
         let title_lbl = gtk::Label::builder()
-            .label(&format!("{} ({})", gettext("Unterhaltung"), total_messages))
+            .label(&gettext("Unterhaltung"))
             .css_classes(vec!["caption", "heading"])
             .valign(gtk::Align::Center)
             .build();
         title_box.append(&icon_thread);
         title_box.append(&title_lbl);
+
+        let other_unread_count = messages
+            .iter()
+            .filter(|m| m.id() != selected.id() && m.is_unread())
+            .count();
+        if other_unread_count > 0 {
+            let unread_lbl = gtk::Label::builder()
+                .label(&format!("• {} {}", other_unread_count, gettext("ungelesen")))
+                .css_classes(vec!["caption", "heading", "accent"])
+                .valign(gtk::Align::Center)
+                .build();
+            title_box.append(&unread_lbl);
+        }
 
         // Expander button to reveal/hide strips
         let btn_toggle_strips = gtk::Button::builder()
@@ -29351,26 +29894,37 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
                 gettext("Alle Nachrichten im Verlauf anzeigen")
             })
             .css_classes(vec!["flat", "mail-thread-toggle-btn"])
-            .valign(gtk::Align::Center)
+            .valign(gtk::Align::Fill)
+            .vexpand(true)
             .build();
 
         let page_weak_toggle = self.downgrade();
         let selected_clone = selected.clone();
         btn_toggle_strips.connect_clicked(move |_| {
             if let Some(page) = page_weak_toggle.upgrade() {
-                let current = page.imp().thread_strips_expanded.get();
-                page.imp().thread_strips_expanded.set(!current);
+                let currently_shown = page.imp().thread_strips_expanded.get()
+                    && (!page.imp().is_compact_header.get()
+                        || page.imp().thread_strips_manual_open_in_compact.get());
+                let next_shown = !currently_shown;
+                page.imp().thread_strips_expanded.set(next_shown);
+                page.imp()
+                    .thread_strips_manual_open_in_compact
+                    .set(next_shown && page.imp().is_compact_header.get());
                 page.render_thread_context(&selected_clone);
             }
         });
+        self.imp()
+            .thread_toggle_btn
+            .replace(Some(btn_toggle_strips.clone()));
         title_box.append(&btn_toggle_strips);
         thread_bar_box.append(&title_box);
 
         // Compact stepper: ◀ X von N ▶
         let stepper_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(2)
-            .valign(gtk::Align::Center)
+            .spacing(0)
+            .valign(gtk::Align::Fill)
+            .vexpand(true)
             .halign(gtk::Align::End)
             .css_classes(vec!["mail-thread-stepper"])
             .build();
@@ -29379,7 +29933,8 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
             .icon_name("go-previous-symbolic")
             .tooltip_text(&gettext("Vorherige Nachricht im Verlauf"))
             .css_classes(vec!["flat"])
-            .valign(gtk::Align::Center)
+            .valign(gtk::Align::Fill)
+            .vexpand(true)
             .sensitive(current_index > 0)
             .build();
 
@@ -29395,7 +29950,8 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
             .icon_name("go-next-symbolic")
             .tooltip_text(&gettext("Nächste Nachricht im Verlauf"))
             .css_classes(vec!["flat"])
-            .valign(gtk::Align::Center)
+            .valign(gtk::Align::Fill)
+            .vexpand(true)
             .sensitive(current_index + 1 < total_messages)
             .build();
 
@@ -29438,7 +29994,7 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
                 accordion_box.remove(&child);
             }
 
-            if show_accordion && is_expanded && messages.len() > 1 {
+            if show_accordion && self.imp().thread_strips_expanded.get() && messages.len() > 1 {
                 for (idx, message) in messages.iter().enumerate() {
                     let is_current = message.id() == selected.id();
 
@@ -29607,11 +30163,99 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
 
                     accordion_box.append(&strip_btn);
                 }
-                accordion_scroll.set_visible(true);
+                if is_expanded {
+                    accordion_scroll.set_visible(true);
+                    if let Some(rev) = self.imp().thread_accordion_revealer.borrow().as_ref() {
+                        rev.set_reveal_child(true);
+                    }
+                    Self::scroll_thread_accordion_to_active(accordion_scroll, accordion_box);
+                } else {
+                    if let Some(rev) = self.imp().thread_accordion_revealer.borrow().as_ref() {
+                        rev.set_reveal_child(false);
+                    }
+                    accordion_scroll.set_visible(false);
+                }
             } else {
+                if let Some(rev) = self.imp().thread_accordion_revealer.borrow().as_ref() {
+                    rev.set_reveal_child(false);
+                }
                 accordion_scroll.set_visible(false);
             }
         }
+    }
+
+    fn scroll_thread_accordion_to_active(
+        accordion_scroll: &gtk::ScrolledWindow,
+        accordion_box: &gtk::Box,
+    ) {
+        fn apply_scroll(scroll: &gtk::ScrolledWindow, box_: &gtk::Box) -> bool {
+            let mut idx = 0usize;
+            let mut total = 0usize;
+            let mut active_idx = None;
+            let mut active_widget = None;
+            let mut child = box_.first_child();
+            while let Some(c) = child {
+                if c.has_css_class("current") || c.has_css_class("active") {
+                    active_idx = Some(idx);
+                    active_widget = Some(c.clone());
+                }
+                idx += 1;
+                total += 1;
+                child = c.next_sibling();
+            }
+            let Some(active_idx) = active_idx else {
+                return true;
+            };
+            let vadj = scroll.vadjustment();
+            let page_size = vadj.page_size();
+            let upper = vadj.upper();
+            if page_size > 0.0 && upper > page_size {
+                if let Some(ref w) = active_widget {
+                    if let Some(bounds) = w.compute_bounds(box_) {
+                        if bounds.height() > 0.0 {
+                            let row_center = (bounds.y() + bounds.height() * 0.5) as f64;
+                            let target =
+                                (row_center - page_size * 0.5).clamp(0.0, (upper - page_size).max(0.0));
+                            vadj.set_value(target);
+                            return true;
+                        }
+                    }
+                }
+                let row_h = upper / (total.max(1) as f64);
+                let row_center = (active_idx as f64 + 0.5) * row_h;
+                let target = (row_center - page_size * 0.5).clamp(0.0, (upper - page_size).max(0.0));
+                vadj.set_value(target);
+                return true;
+            }
+            false
+        }
+
+        let _ = apply_scroll(accordion_scroll, accordion_box);
+        let scroll_weak = accordion_scroll.downgrade();
+        let box_weak = accordion_box.downgrade();
+        glib::idle_add_local_once({
+            let scroll_weak = scroll_weak.clone();
+            let box_weak = box_weak.clone();
+            move || {
+                if let (Some(scroll), Some(box_)) = (scroll_weak.upgrade(), box_weak.upgrade()) {
+                    let _ = apply_scroll(&scroll, &box_);
+                }
+            }
+        });
+        let attempts = Rc::new(Cell::new(0u8));
+        glib::timeout_add_local(StdDuration::from_millis(25), move || {
+            let (Some(scroll), Some(box_)) = (scroll_weak.upgrade(), box_weak.upgrade()) else {
+                return glib::ControlFlow::Break;
+            };
+            let n = attempts.get().saturating_add(1);
+            attempts.set(n);
+            let _ = apply_scroll(&scroll, &box_);
+            if n >= 8 {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
     }
 
     // ── Private: Assemble the split layout ──────────────────────────────
@@ -33089,6 +33733,7 @@ impl MailPage {
     pub fn reload_mail_accounts(&self) {
         self.imp().cached_account_emails.replace(None);
         self.imp().mail_folder_summaries.borrow_mut().clear();
+        self.imp().recently_deleted_ids.borrow_mut().clear();
         crate::services::camel_mail_service::clear_mail_load_cache();
         if let Some(source_store) = self
             .imp()
@@ -33257,6 +33902,7 @@ impl MailPage {
         self.imp().is_same_folder_refresh.set(is_same_folder_refresh);
         if replace && !is_same_folder_refresh {
             self.imp().expanded_threads.borrow_mut().clear();
+            self.imp().collapsed_threads.borrow_mut().clear();
         }
 
         // A replacing request represents the user's current target before its
@@ -33293,6 +33939,7 @@ impl MailPage {
             .replace(Some(cancellation.clone()));
         let progress_sender_for_worker = progress_sender.clone();
         let worker_input = MailLoadWorkerInput::from_main_thread(request.clone());
+        let deleted_snapshot = self.imp().recently_deleted_ids.borrow().clone();
         std::thread::spawn(move || {
             let started = Instant::now();
             let mut sqlite_supplement: Vec<ParsedMail> = Vec::new();
@@ -33305,7 +33952,8 @@ impl MailPage {
                 .request
                 .max_messages_per_folder
                 .max(1) as usize;
-            let sqlite_folder_limit = page_limit.max(2_500);
+            let sqlite_folder_limit =
+                crate::services::evolution_summary_cache::effective_sqlite_folder_limit(page_limit);
 
             // SQLite-First Fast Path: Deliver local database summary immediately (<10ms)
             if !req_offline && req_offset == 0 {
@@ -33319,13 +33967,16 @@ impl MailPage {
                             &cache.display_name,
                         )
                         .unwrap_or_default();
-                        let sqlite_msgs = crate::services::evolution_summary_cache::load_folder_messages_from_sqlite(
+                        let mut sqlite_msgs = crate::services::evolution_summary_cache::load_folder_messages_from_sqlite(
                             &cache.folders_db,
                             effective_source,
                             folder_to_load,
                             Some(sqlite_folder_limit),
                         )
                         .unwrap_or_default();
+                        if !deleted_snapshot.is_empty() {
+                            sqlite_msgs.retain(|m| !deleted_snapshot.contains(&m.id));
+                        }
                         sqlite_supplement = sqlite_msgs.clone();
                         sqlite_folders_supplement = sqlite_folders.clone();
                         let should_send_fast_path = if !folder_to_load.is_empty() {
@@ -33353,8 +34004,11 @@ impl MailPage {
                         }
                     }
                 } else {
-                    let (sqlite_folders, sqlite_msgs, source_count) =
+                    let (sqlite_folders, mut sqlite_msgs, source_count) =
                         crate::services::evolution_summary_cache::load_unified_accounts_from_sqlite(page_limit);
+                    if !deleted_snapshot.is_empty() {
+                        sqlite_msgs.retain(|m| !deleted_snapshot.contains(&m.id));
+                    }
                     sqlite_supplement = sqlite_msgs.clone();
                     sqlite_folders_supplement = sqlite_folders.clone();
                     if !sqlite_msgs.is_empty() || !sqlite_folders.is_empty() {
@@ -33379,6 +34033,9 @@ impl MailPage {
                 }
             } else if load_startup_cache && !req_offline {
                 if let Some(mut cached) = camel_mail_service::load_mail_load_cache() {
+                    if !deleted_snapshot.is_empty() {
+                        cached.messages.retain(|m| !deleted_snapshot.contains(&m.id));
+                    }
                     if !cached.folders.is_empty() || !cached.messages.is_empty() {
                         cached.warning =
                             Some(format!("{} · {} …", gettext("Cached messages"), gettext("Updating")));
@@ -33399,12 +34056,15 @@ impl MailPage {
                 if let Some(hint) = req_source_uid.as_deref() {
                     if let Some(cache) = crate::services::evolution_summary_cache::find_evolution_account_cache(Some(hint)) {
                         let folder_to_load = req_folder_name.as_deref().unwrap_or("");
-                        if let Ok(fresh_msgs) = crate::services::evolution_summary_cache::load_folder_messages_from_sqlite(
+                        if let Ok(mut fresh_msgs) = crate::services::evolution_summary_cache::load_folder_messages_from_sqlite(
                             &cache.folders_db,
                             hint,
                             folder_to_load,
                             Some(sqlite_folder_limit),
                         ) {
+                            if !deleted_snapshot.is_empty() {
+                                fresh_msgs.retain(|m| !deleted_snapshot.contains(&m.id));
+                            }
                             if !fresh_msgs.is_empty() {
                                 sqlite_supplement = fresh_msgs;
                             }
@@ -33418,6 +34078,18 @@ impl MailPage {
                                 sqlite_folders_supplement = fresh_folders;
                             }
                         }
+                    }
+                } else {
+                    let (fresh_folders, mut fresh_msgs, _) =
+                        crate::services::evolution_summary_cache::load_unified_accounts_from_sqlite(page_limit);
+                    if !deleted_snapshot.is_empty() {
+                        fresh_msgs.retain(|m| !deleted_snapshot.contains(&m.id));
+                    }
+                    if !fresh_msgs.is_empty() {
+                        sqlite_supplement = fresh_msgs;
+                    }
+                    if !fresh_folders.is_empty() {
+                        sqlite_folders_supplement = fresh_folders;
                     }
                 }
             }
@@ -33437,20 +34109,34 @@ impl MailPage {
                         }
                         let mut existing_ids: HashSet<String> =
                             camel.messages.iter().map(|m| m.id.clone()).collect();
-                        let mut existing_uids: HashSet<String> = camel
+                        let mut existing_uids: HashSet<(String, String, String)> = camel
                             .messages
                             .iter()
-                            .filter_map(|m| m.backend_location.as_ref().map(|loc| loc.message_uid.clone()))
+                            .filter_map(|m| {
+                                m.backend_location.as_ref().map(|loc| {
+                                    (
+                                        Self::canonical_account_uid(&loc.source_uid).to_string(),
+                                        loc.folder_name.to_ascii_lowercase(),
+                                        loc.message_uid.clone(),
+                                    )
+                                })
+                            })
                             .collect();
                         for msg in sqlite_supplement {
-                            let uid_dup = msg
-                                .backend_location
+                            let uid_key = msg.backend_location.as_ref().map(|loc| {
+                                (
+                                    Self::canonical_account_uid(&loc.source_uid).to_string(),
+                                    loc.folder_name.to_ascii_lowercase(),
+                                    loc.message_uid.clone(),
+                                )
+                            });
+                            let uid_dup = uid_key
                                 .as_ref()
-                                .is_some_and(|loc| existing_uids.contains(&loc.message_uid));
+                                .is_some_and(|key| existing_uids.contains(key));
                             if !existing_ids.contains(&msg.id) && !uid_dup {
                                 existing_ids.insert(msg.id.clone());
-                                if let Some(ref loc) = msg.backend_location {
-                                    existing_uids.insert(loc.message_uid.clone());
+                                if let Some(key) = uid_key {
+                                    existing_uids.insert(key);
                                 }
                                 searchable_body_texts
                                     .entry(parsed_mail_identity(&msg))
@@ -35005,6 +35691,12 @@ impl MailPage {
                             sorted_members.push(m);
                         }
                         if let Some(root) = sorted_members.first().cloned() {
+                            let has_unread_child = sorted_members.iter().skip(1).any(|m| m.is_unread());
+                            let manually_collapsed = self.imp().collapsed_threads.borrow().contains(&thread_id);
+                            if !manually_collapsed || has_unread_child {
+                                self.imp().collapsed_threads.borrow_mut().remove(&thread_id);
+                                self.imp().expanded_threads.borrow_mut().insert(thread_id.clone());
+                            }
                             state.roots.push(root);
                             state.thread_members.insert(thread_id.clone(), sorted_members);
                             state.thread_children.insert(thread_id, children_store);
@@ -43421,9 +44113,13 @@ mod tests {
         assert_eq!(count, 2, "Expected title box and stepper box in conversation bar");
 
         let accordion_scroll = page.imp().thread_accordion_scroll.borrow().clone().expect("accordion scroll");
-        assert!(!accordion_scroll.is_visible(), "Conversation accordion must be collapsed by default to save vertical space");
+        assert!(accordion_scroll.is_visible(), "Conversation accordion must be expanded by default so new messages in a conversation are immediately visible");
 
-        // When expanded, accordion displays all messages with active message highlighted
+        // Can be collapsed and re-expanded
+        page.imp().thread_strips_expanded.set(false);
+        page.render_thread_context(&msg1);
+        assert!(!accordion_scroll.is_visible(), "Conversation accordion must hide when collapsed");
+
         page.imp().thread_strips_expanded.set(true);
         page.render_thread_context(&msg1);
         assert!(accordion_scroll.is_visible(), "Conversation accordion must be visible when expanded");
@@ -45847,7 +46543,7 @@ mod tests {
         let (
             _detail_view,
             mail_viewer,
-            _itip_banner,
+            itip_banner,
             _crypto_label,
             _lbl_crypto,
             _crypto_chip,
@@ -46047,6 +46743,22 @@ mod tests {
         assert!(!attachment_bar.is_visible());
         assert!(widgets.save_all_box.first_child().is_none());
         assert!(widgets.listbox.first_child().is_none());
+
+        // When an email is a calendar invitation rendered in ItipBanner, redundant invite.ics is suppressed from attachment bar
+        let msg_itip = scope_test_message("msg-itip-only", "acc", "inbox", false);
+        let sample_ics = b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:itip-1\r\nSUMMARY:Sync\r\nDTSTART:20261020T100000Z\r\nDTEND:20261020T110000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        *msg_itip.imp().attachments.borrow_mut() = vec![
+            crate::models::mail_message::AttachmentInfo {
+                filename: "invite.ics".to_string(),
+                size_formatted: "1 KB".to_string(),
+                mime_type: "text/calendar".to_string(),
+                content_id: None,
+                is_inline: false,
+                content: std::sync::Arc::from(&sample_ics[..]),
+            },
+        ];
+        MailPage::render_message_content(&msg_itip, &mail_viewer, &attachment_bar, Some(&itip_banner), &[]);
+        assert!(!attachment_bar.is_visible(), "Redundant .ics attachment should be hidden when rendered in ItipBanner");
     }
 }
 

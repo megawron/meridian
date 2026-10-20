@@ -1351,28 +1351,42 @@ load_folder (LoadContext *context,
                 uids = camel_folder_get_uids (folder);
                 #endif
                 if (uids && uids->len > 0) {
+                    gboolean is_trash_folder =
+                        ((current->flags & CAMEL_FOLDER_TYPE_MASK) == CAMEL_FOLDER_TYPE_TRASH) ||
+                        is_trash_alias (current->full_name);
                     MessageSortEntry *sort_entries = g_new0 (MessageSortEntry, uids->len);
+                    gsize valid_len = 0;
                     for (guint i = 0; i < uids->len; i++) {
                         const gchar *message_uid = g_ptr_array_index (uids, i);
-                        sort_entries[i].uid = message_uid;
-                        if (message_uid) {
-                            CamelMessageInfo *mi = camel_folder_get_message_info (folder, message_uid);
-                            if (mi) {
-                                gint64 date = camel_message_info_get_date_sent (mi);
-                                if (date <= 0)
-                                    date = camel_message_info_get_date_received (mi);
-                                sort_entries[i].date = date;
+                        if (!message_uid)
+                            continue;
+                        CamelMessageInfo *mi = camel_folder_get_message_info (folder, message_uid);
+                        if (mi) {
+                            guint32 mi_flags = camel_message_info_get_flags (mi);
+                            if (!is_trash_folder && (mi_flags & CAMEL_MESSAGE_DELETED) != 0) {
                                 g_object_unref (mi);
+                                continue;
                             }
+                            gint64 date = camel_message_info_get_date_sent (mi);
+                            if (date <= 0)
+                                date = camel_message_info_get_date_received (mi);
+                            sort_entries[valid_len].uid = message_uid;
+                            sort_entries[valid_len].date = date;
+                            valid_len++;
+                            g_object_unref (mi);
+                        } else {
+                            sort_entries[valid_len].uid = message_uid;
+                            sort_entries[valid_len].date = 0;
+                            valid_len++;
                         }
                     }
 
-                    qsort (sort_entries, uids->len, sizeof (MessageSortEntry), compare_message_sort_entries_desc);
+                    qsort (sort_entries, valid_len, sizeof (MessageSortEntry), compare_message_sort_entries_desc);
 
                     gsize index = (gsize) context->message_offset;
                     gsize loaded = 0;
 
-                    while (index < (gsize) uids->len &&
+                    while (index < valid_len &&
                            !load_cancelled (context) &&
                            (context->max_messages_per_folder <= 0 ||
                             loaded < (gsize) context->max_messages_per_folder)) {
@@ -4153,7 +4167,9 @@ folder_matches_type_by_name (CamelFolderInfo *info, CamelFolderInfoFlags type)
                g_str_has_suffix (full, "/Papierkorb") ||
                g_str_has_suffix (full, "/Gelöschte Elemente") ||
                g_ascii_strcasecmp (full, "Trash") == 0 ||
-               g_ascii_strcasecmp (full, "Deleted Items") == 0;
+               g_ascii_strcasecmp (full, "Deleted Items") == 0 ||
+               g_ascii_strcasecmp (full, "Papierkorb") == 0 ||
+               g_ascii_strcasecmp (full, "Gelöschte Elemente") == 0;
 
     case CAMEL_FOLDER_TYPE_JUNK:
         return g_ascii_strcasecmp (display, "Junk") == 0 ||
@@ -4182,16 +4198,28 @@ folder_matches_type_by_name (CamelFolderInfo *info, CamelFolderInfoFlags type)
 }
 
 static const gchar *
-find_folder_name_by_type_pass (CamelFolderInfo *folder_info,
-                               CamelFolderInfoFlags type,
-                               gboolean match_name_fallback)
+find_folder_name_by_type_scoped (CamelFolderInfo *folder_info,
+                                 CamelFolderInfoFlags type,
+                                 const gchar *foreign_prefix,
+                                 gboolean match_name_fallback)
 {
     CamelFolderInfo *current;
 
     for (current = folder_info; current != NULL; current = current->next) {
+        gboolean is_foreign = current->full_name &&
+            g_str_has_prefix (current->full_name, "Foreign Folders");
+
+        if (!foreign_prefix && is_foreign)
+            continue;
+
+        if (foreign_prefix && current->full_name &&
+            !g_str_has_prefix (current->full_name, "Foreign Folders"))
+            continue;
+
         if (is_mail_folder (current) &&
             (current->flags & CAMEL_FOLDER_NOSELECT) == 0 &&
-            current->full_name && *current->full_name) {
+            current->full_name && *current->full_name &&
+            (!foreign_prefix || g_str_has_prefix (current->full_name, foreign_prefix))) {
             if ((current->flags & CAMEL_FOLDER_TYPE_MASK) == type)
                 return current->full_name;
             if (match_name_fallback && folder_matches_type_by_name (current, type))
@@ -4199,14 +4227,107 @@ find_folder_name_by_type_pass (CamelFolderInfo *folder_info,
         }
 
         if (current->child) {
-            const gchar *child_name = find_folder_name_by_type_pass (
-                current->child, type, match_name_fallback);
+            const gchar *child_name = find_folder_name_by_type_scoped (
+                current->child, type, foreign_prefix, match_name_fallback);
             if (child_name)
                 return child_name;
         }
     }
 
     return NULL;
+}
+
+static const gchar *
+find_folder_name_by_type_pass (CamelFolderInfo *folder_info,
+                               CamelFolderInfoFlags type,
+                               gboolean match_name_fallback)
+{
+    return find_folder_name_by_type_scoped (
+        folder_info, type, NULL, match_name_fallback);
+}
+
+static const gchar *
+find_folder_name_by_type_for_source_folder (CamelFolderInfo *folder_info,
+                                            CamelFolderInfoFlags type,
+                                            const gchar *source_folder_name)
+{
+    const gchar *found = NULL;
+
+    if (source_folder_name && g_str_has_prefix (source_folder_name, "Foreign Folders/")) {
+        const gchar *first_slash = strchr (source_folder_name, '/');
+        const gchar *second_slash = first_slash ? strchr (first_slash + 1, '/') : NULL;
+        if (second_slash) {
+            gchar *prefix = g_strndup (
+                source_folder_name, (gsize) (second_slash - source_folder_name + 1));
+            found = find_folder_name_by_type_scoped (folder_info, type, prefix, FALSE);
+            if (!found)
+                found = find_folder_name_by_type_scoped (folder_info, type, prefix, TRUE);
+            g_free (prefix);
+            if (found)
+                return found;
+        }
+    }
+
+    found = find_folder_name_by_type_scoped (folder_info, type, NULL, FALSE);
+    if (!found)
+        found = find_folder_name_by_type_scoped (folder_info, type, NULL, TRUE);
+    return found;
+}
+
+static CamelFolder *
+open_real_trash_folder (CamelStore *store,
+                        const gchar *source_folder_name,
+                        GCancellable *cancellable,
+                        GError **error)
+{
+    CamelFolderInfo *folder_info = NULL;
+    const gchar *trash_name = NULL;
+    CamelFolder *trash = NULL;
+    GError *local_error = NULL;
+
+    folder_info = camel_store_get_folder_info_sync (
+        store, NULL,
+        CAMEL_STORE_FOLDER_INFO_RECURSIVE |
+        CAMEL_STORE_FOLDER_INFO_NO_VIRTUAL,
+        cancellable, &local_error);
+    if (!folder_info) {
+        g_clear_error (&local_error);
+        folder_info = camel_store_get_folder_info_sync (
+            store, NULL,
+            CAMEL_STORE_FOLDER_INFO_RECURSIVE |
+            CAMEL_STORE_FOLDER_INFO_NO_VIRTUAL |
+            CAMEL_STORE_FOLDER_INFO_REFRESH,
+            cancellable, &local_error);
+    }
+
+    if (folder_info) {
+        trash_name = find_folder_name_by_type_for_source_folder (
+            folder_info, CAMEL_FOLDER_TYPE_TRASH, source_folder_name);
+        if (trash_name && *trash_name) {
+            trash = camel_store_get_folder_sync (
+                store, trash_name, CAMEL_STORE_FOLDER_NONE,
+                cancellable, error);
+        }
+        camel_folder_info_free (folder_info);
+    } else {
+        g_clear_error (&local_error);
+    }
+
+    if (!trash && (!error || !*error)) {
+        CamelFolder *fallback = camel_store_get_trash_folder_sync (
+            store, cancellable, &local_error);
+        if (fallback) {
+            const gchar *fb_name = camel_folder_get_full_name (fallback);
+            if (fb_name && !g_str_has_prefix (fb_name, ".#")) {
+                trash = fallback;
+            } else {
+                g_object_unref (fallback);
+            }
+        }
+        g_clear_error (&local_error);
+    }
+
+    return trash;
 }
 
 static const gchar *
@@ -4264,12 +4385,22 @@ transfer_one_message (CamelFolder *source,
         source, uids, destination, delete_original,
         &transferred_uids, cancellable, error);
 
+    if (success && delete_original) {
+        camel_folder_set_message_flags (
+            source, message_uid,
+            CAMEL_MESSAGE_DELETED | CAMEL_MESSAGE_SEEN,
+            CAMEL_MESSAGE_DELETED | CAMEL_MESSAGE_SEEN);
+    }
+
     if (success)
         success = camel_folder_synchronize_sync (
-            source, FALSE, cancellable, error);
-    if (success && destination != source)
+            source, delete_original, cancellable, error);
+    if (success && destination != source) {
+        camel_folder_refresh_info_sync (
+            destination, cancellable, NULL);
         success = camel_folder_synchronize_sync (
             destination, FALSE, cancellable, error);
+    }
 
     g_clear_pointer (&transferred_uids, g_ptr_array_unref);
     g_ptr_array_unref (uids);
@@ -4594,13 +4725,22 @@ verify_message_moved (CamelFolder *source,
                       const gchar *message_uid,
                       GError **error)
 {
-    if (message_exists (source, message_uid)) {
-        set_conflict_error (
-            error, "Die Nachricht ist nach der Serveränderung noch im Quellordner");
-        return FALSE;
-    }
+    CamelMessageInfo *message_info;
+    guint32 flags;
 
-    return TRUE;
+    message_info = camel_folder_get_message_info (source, message_uid);
+    if (!message_info)
+        return TRUE;
+
+    flags = camel_message_info_get_flags (message_info);
+    g_object_unref (message_info);
+
+    if ((flags & CAMEL_MESSAGE_DELETED) != 0)
+        return TRUE;
+
+    set_conflict_error (
+        error, "Die Nachricht ist nach der Serveränderung noch im Quellordner");
+    return FALSE;
 }
 
 int
@@ -4794,13 +4934,14 @@ meridian_eds_camel_apply_operation (
                 folder, message_uid, &error);
         break;
     case MERIDIAN_EDS_CAMEL_DELETE_MESSAGE:
-        trash = camel_store_get_trash_folder_sync (
-            store, cancellable, &error);
+        trash = open_real_trash_folder (
+            store, camel_folder_get_full_name (folder), cancellable, &error);
         if (trash) {
             const gchar *folder_name = camel_folder_get_full_name (folder);
             const gchar *trash_name = camel_folder_get_full_name (trash);
 
-            if (g_strcmp0 (folder_name, trash_name) != 0) {
+            if (g_strcmp0 (folder_name, trash_name) != 0 &&
+                !is_trash_alias (folder_name)) {
                 success = transfer_one_message (
                     folder, trash, message_uid, TRUE,
                     cancellable, &error);
@@ -4831,10 +4972,16 @@ meridian_eds_camel_apply_operation (
         }
         break;
     case MERIDIAN_EDS_CAMEL_RESTORE_DELETED:
-        restore_source = camel_store_get_trash_folder_sync (
-            store, cancellable, &error);
-        if (!restore_source)
+        restore_source = open_real_trash_folder (
+            store, camel_folder_get_full_name (folder), cancellable, &error);
+        if (!restore_source) {
+            if (!error) {
+                g_set_error_literal (
+                    &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+                    "No Trash folder is configured for this EDS account");
+            }
             break;
+        }
         if (g_strcmp0 (
                 camel_folder_get_full_name (restore_source),
                 camel_folder_get_full_name (folder)) == 0) {

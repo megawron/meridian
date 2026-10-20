@@ -752,12 +752,23 @@ pub fn is_parent_service_enabled(parent_uid: &str, kind: EdsSourceKind) -> bool 
 /// Check whether a source UID (standalone, child, or collection) is enabled for a specific service.
 pub fn is_source_enabled_for_service(source_uid: &str, kind: EdsSourceKind) -> bool {
     let clean = source_uid.strip_suffix("-mail").unwrap_or(source_uid);
+    let native_dir = glib::user_config_dir().join("evolution/sources");
+    let has_native_sources = std::fs::read_dir(&native_dir)
+        .ok()
+        .is_some_and(|entries| {
+            entries
+                .flatten()
+                .any(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("source"))
+        });
     let dirs = [
-        glib::user_config_dir().join("evolution/sources"),
+        native_dir,
         glib::home_dir().join(".var/app/org.gnome.Evolution/config/evolution/sources"),
     ];
     let mut found = false;
-    for dir in &dirs {
+    for (idx, dir) in dirs.iter().enumerate() {
+        if idx > 0 && has_native_sources {
+            continue;
+        }
         for name in [source_uid, clean] {
             let path = dir.join(format!("{name}.source"));
             if path.is_file() {
@@ -788,7 +799,7 @@ pub fn is_source_enabled_for_service(source_uid: &str, kind: EdsSourceKind) -> b
             }
         }
     }
-    let profiles = crate::services::account_config_service::AccountConfigStore::default().load();
+    let profiles = crate::services::account_config_service::AccountConfigStore::default().load_cached();
     if let Some(profile) = profiles.iter().find(|p| {
         p.id == source_uid
             || p.id.strip_prefix("eds:") == Some(source_uid)
