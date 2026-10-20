@@ -1836,10 +1836,17 @@ dialog.composer-dialog {
   border-bottom-right-radius: 12px;
 }
 
-/* Row Focus: Blue accent outline (curved when top or bottom row) */
+/* Row Focus: Subtle surface tint instead of a heavy blue box border */
 .composer-header-row:focus-within {
-  outline: 2px solid color-mix(in srgb, var(--accent-color) 50%, transparent);
-  outline-offset: -1px;
+  background-color: alpha(@accent_color, 0.035);
+  outline: none;
+}
+
+@media (prefers-contrast: more) {
+  .composer-header-row:focus-within {
+    outline: 2px solid @accent_color;
+    outline-offset: -2px;
+  }
 }
 
 /* Row labels: High-contrast, easily legible */
@@ -1907,12 +1914,27 @@ dialog.composer-dialog {
   background-color: alpha(currentColor, 0.06);
 }
 
-.composer-header-card dropdown.composer-dropdown > button:focus,
 .composer-header-card dropdown.composer-dropdown > button:active,
-.composer-header-card dropdown.composer-dropdown > button.combo:focus,
-.composer-header-card dropdown.composer-dropdown > button.combo:active {
-  background-color: alpha(@accent_color, 0.12);
+.composer-header-card dropdown.composer-dropdown > button:checked,
+.composer-header-card dropdown.composer-dropdown > button.combo:active,
+.composer-header-card dropdown.composer-dropdown > button.combo:checked {
+  background-color: alpha(currentColor, 0.10);
   outline: none;
+  box-shadow: none;
+}
+
+.composer-header-card dropdown.composer-dropdown > button:focus,
+.composer-header-card dropdown.composer-dropdown > button.combo:focus {
+  background-color: transparent;
+  outline: none;
+  box-shadow: none;
+}
+
+.composer-header-card dropdown.composer-dropdown > button:focus-visible,
+.composer-header-card dropdown.composer-dropdown > button.combo:focus-visible {
+  background-color: alpha(currentColor, 0.05);
+  outline: 1.5px solid alpha(@accent_color, 0.45);
+  outline-offset: -1px;
   box-shadow: none;
 }
 

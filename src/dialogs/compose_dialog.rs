@@ -1250,8 +1250,8 @@ impl ComposeDialog {
             .spacing(0)
             .margin_start(16)
             .margin_end(16)
-            .margin_top(12)
-            .margin_bottom(10)
+            .margin_top(4)
+            .margin_bottom(12)
             .css_classes(vec!["card", "composer-header-card"])
             .build();
 
@@ -3795,6 +3795,7 @@ impl ComposeDialog {
 
         toolbar_view.set_content(Some(&content_box));
         self.set_child(Some(&toolbar_view));
+        adw::prelude::AdwDialogExt::set_focus(self, Some(&entry_to));
         self.install_file_drop_target();
 
         self.start_local_autosave();

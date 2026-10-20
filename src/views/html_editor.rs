@@ -1401,8 +1401,8 @@ impl HtmlEditor {
             .spacing(4)
             .margin_start(16)
             .margin_end(16)
-            .margin_top(4)
-            .margin_bottom(8)
+            .margin_top(0)
+            .margin_bottom(10)
             .css_classes(vec!["composer-format-toolbar"])
             .build();
 
