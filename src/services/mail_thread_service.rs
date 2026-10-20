@@ -132,6 +132,13 @@ pub fn normalized_subject(subject: &str) -> String {
 /// Inside each thread, members are sorted chronologically (oldest first) so
 /// the conversation originator is at position 0 (Root).
 pub fn group_messages(inputs: &[ThreadIdentity<'_>]) -> Vec<ThreadMembership> {
+    group_messages_with_options(inputs, true)
+}
+
+pub fn group_messages_with_options(
+    inputs: &[ThreadIdentity<'_>],
+    group_similar_messages: bool,
+) -> Vec<ThreadMembership> {
     let mut sets = DisjointSets::new(inputs.len());
     let mut identifier_owner = HashMap::<String, usize>::with_capacity(inputs.len());
     let mut identifiers = Vec::with_capacity(inputs.len());
@@ -166,9 +173,9 @@ pub fn group_messages(inputs: &[ThreadIdentity<'_>]) -> Vec<ThreadMembership> {
     //   all messages sharing that normalized subject belong to the same conversation
     //   across all time.
     // - If none have a reply/forward prefix (e.g. recurring automated alerts like
-    //   "Sicherheitswarnung" from Google), only messages from the same sender are
-    //   grouped together (across all time, preventing unrelated senders with generic
-    //   subjects like "Invoice" from colliding).
+    //   "Sicherheitswarnung" from Google) and `group_similar_messages` is enabled,
+    //   only messages from the same sender are grouped together (across all time,
+    //   preventing unrelated senders with generic subjects like "Invoice" from colliding).
     let mut subject_groups = HashMap::<String, Vec<usize>>::new();
     for (index, input) in inputs.iter().enumerate() {
         let (subj, _) = normalize_subject_with_reply(input.subject);
@@ -196,7 +203,7 @@ pub fn group_messages(inputs: &[ThreadIdentity<'_>]) -> Vec<ThreadMembership> {
             for &other_idx in &member_indices[1..] {
                 sets.union(first_idx, other_idx);
             }
-        } else {
+        } else if group_similar_messages {
             let mut sender_first_idx = HashMap::<String, usize>::new();
             for &idx in &member_indices {
                 let norm_sender = inputs[idx].sender.trim().to_ascii_lowercase();

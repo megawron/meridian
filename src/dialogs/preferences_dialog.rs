@@ -4625,6 +4625,37 @@ impl PreferencesDialog {
         }
         group_mail_list.add(&row_mail_threading);
 
+        let row_mail_group_similar = adw::SwitchRow::builder()
+            .title(&crate::i18n::gettext("Group Similar Messages"))
+            .subtitle(&crate::i18n::gettext(
+                "Also bundle recurring notifications with the same subject from the same sender",
+            ))
+            .active(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_mail_group_similar.set_active(settings.mail_group_similar_messages());
+            row_mail_group_similar.set_sensitive(settings.mail_threading());
+            let s_sim = settings.clone();
+            row_mail_group_similar.connect_active_notify(move |row| {
+                s_sim.set_mail_group_similar_messages(row.is_active());
+            });
+            let row_sim_weak = row_mail_group_similar.downgrade();
+            settings.connect_changed(Some("mail-group-similar-messages"), move |s, _| {
+                let Some(row) = row_sim_weak.upgrade() else {
+                    return;
+                };
+                let active = s.boolean("mail-group-similar-messages");
+                if row.is_active() != active {
+                    row.set_active(active);
+                }
+            });
+            let r_sim = row_mail_group_similar.clone();
+            row_mail_threading.connect_active_notify(move |row| {
+                r_sim.set_sensitive(row.is_active());
+            });
+        }
+        group_mail_list.add(&row_mail_group_similar);
+
         let row_mail_conversation_accordion = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Unterhaltungen automatisch aufklappen"))
             .active(true)

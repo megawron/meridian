@@ -34,7 +34,7 @@ use crate::services::mail_metadata_service::{
     MailFollowUpMetadata, MailFollowUpState, MailMessageState, MailMetadataStore,
 };
 use crate::services::mail_thread_service::{
-    ThreadIdentity, extract_message_ids, group_messages, normalize_message_id,
+    ThreadIdentity, extract_message_ids, group_messages_with_options, normalize_message_id,
 };
 
 /// Result of applying one saved rule to the app-owned local mailbox.
@@ -2688,7 +2688,10 @@ pub(crate) fn assign_thread_metadata(messages: &mut [ParsedMail]) {
                 .unwrap_or(0),
         })
         .collect::<Vec<_>>();
-    let memberships = group_messages(&inputs);
+    let group_similar = crate::services::AppSettings::try_new()
+        .map(|s| s.mail_group_similar_messages())
+        .unwrap_or(true);
+    let memberships = group_messages_with_options(&inputs, group_similar);
     for (message, membership) in messages.iter_mut().zip(memberships) {
         message.thread_id = membership.thread_id;
         message.thread_size = membership.size;

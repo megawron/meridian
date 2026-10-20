@@ -755,6 +755,11 @@
       <default>true</default>
       <summary>Group related messages into conversations</summary>
     </key>
+    <key name="mail-group-similar-messages" type="b">
+      <default>true</default>
+      <summary>Group similar standalone messages from the same sender with the same subject</summary>
+      <description>When enabled alongside conversation grouping, recurring notifications or standalone messages sharing the same subject and sender are grouped together even without reply headers.</description>
+    </key>
     <key name="mail-conversation-accordion" type="b">
       <default>true</default>
       <summary>Show conversation thread in viewer as an accordion</summary>

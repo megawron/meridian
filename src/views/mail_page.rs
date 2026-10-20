@@ -8886,6 +8886,12 @@ impl MailPage {
                     page.reload_sort_preferences();
                 }
             });
+            let page_weak_for_group_similar = self.downgrade();
+            settings.connect_changed(Some("mail-group-similar-messages"), move |_, _| {
+                if let Some(page) = page_weak_for_group_similar.upgrade() {
+                    page.refresh_mail();
+                }
+            });
             let page_weak_for_deleted = self.downgrade();
             settings.connect_changed(Some("mail-show-deleted"), move |_, _| {
                 if let Some(page) = page_weak_for_deleted.upgrade() {
@@ -28758,6 +28764,7 @@ impl MailPage {
                                         }
                                         page.refresh_normal_headers_for_message(Some(&current));
                                         page.refresh_all_headers_for_message(Some(&current));
+                                        page.render_thread_context(&current);
                                         let user_emails = page.user_account_emails();
                                         Self::render_message_content(
                                             &current,
@@ -30212,6 +30219,7 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
             }
 
             if show_accordion && self.imp().thread_strips_expanded.get() && messages.len() > 1 {
+                let mut pending_snippet_loads = Vec::new();
                 for (idx, message) in messages.iter().enumerate() {
                     let is_current = message.id() == selected.id();
 
@@ -30301,6 +30309,29 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
                         .build();
                     strip_content.append(&lbl_snippet);
 
+                    // Attachment icon (subtle indicator without filename clutter)
+                    let icon_att = gtk::Image::builder()
+                        .icon_name("mail-attachment-symbolic")
+                        .pixel_size(12)
+                        .css_classes(vec!["dim-label"])
+                        .valign(gtk::Align::Center)
+                        .visible(message.attachment_count() > 0)
+                        .build();
+                    strip_content.append(&icon_att);
+
+                    if message.preview_snippet().is_empty() && message.is_preview_only() {
+                        if let Some(location) = message.backend_location() {
+                            let distance = (idx as isize - current_index as isize).unsigned_abs();
+                            pending_snippet_loads.push((
+                                distance,
+                                message.clone(),
+                                location,
+                                lbl_snippet.downgrade(),
+                                icon_att.downgrade(),
+                            ));
+                        }
+                    }
+
                     // Date
                     let lbl_date = gtk::Label::builder()
                         .label(&format_message_date(&message.date_str()))
@@ -30379,6 +30410,67 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
                     strip_btn.add_controller(long_press);
 
                     accordion_box.append(&strip_btn);
+                }
+                if is_expanded && !pending_snippet_loads.is_empty() {
+                    pending_snippet_loads.sort_by_key(|item| item.0);
+                    pending_snippet_loads.truncate(30);
+                    let worker_items: Vec<_> = pending_snippet_loads
+                        .iter()
+                        .map(|(_, msg, loc, _, _)| {
+                            (
+                                msg.id(),
+                                msg.folder_id(),
+                                msg.is_unread(),
+                                loc.clone(),
+                            )
+                        })
+                        .collect();
+                    let ui_targets: HashMap<String, _> = pending_snippet_loads
+                        .into_iter()
+                        .map(|(_, msg, _, lbl_weak, icon_weak)| {
+                            (msg.id(), (msg, lbl_weak, icon_weak))
+                        })
+                        .collect();
+                    let (tx, rx) = async_channel::bounded(32);
+                    std::thread::spawn(move || {
+                        let cancel = Arc::new(AtomicBool::new(false));
+                        for (msg_id, folder_id, unread, loc) in worker_items {
+                            let raw_opt = camel_mail_service::try_load_cached_raw_message(&loc)
+                                .or_else(|| camel_mail_service::load_raw_message(&loc, &cancel).ok());
+                            if let Some(raw) = raw_opt
+                                && raw.len() <= 2 * 1024 * 1024
+                                && let Ok((parsed, searchable)) =
+                                    prepare_loaded_message_body(&msg_id, &folder_id, &raw, unread, &cancel)
+                            {
+                                if tx.send_blocking((msg_id, parsed, searchable)).is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    });
+                    glib::spawn_future_local(async move {
+                        while let Ok((msg_id, parsed, searchable)) = rx.recv().await {
+                            if let Some((msg, lbl_weak, icon_weak)) = ui_targets.get(&msg_id) {
+                                msg.set_raw_headers(parsed.raw_headers);
+                                msg.set_raw_mime(parsed.raw_mime);
+                                msg.replace_rendered_content(
+                                    parsed.html_body,
+                                    parsed.preview_snippet,
+                                    parsed.attachments,
+                                    Some(searchable),
+                                );
+                                let new_snippet = msg.preview_snippet();
+                                if !new_snippet.is_empty() {
+                                    if let Some(lbl) = lbl_weak.upgrade() {
+                                        lbl.set_label(&new_snippet);
+                                    }
+                                }
+                                if let Some(icon) = icon_weak.upgrade() {
+                                    icon.set_visible(msg.attachment_count() > 0);
+                                }
+                            }
+                        }
+                    });
                 }
                 if is_expanded {
                     accordion_scroll.set_visible(true);

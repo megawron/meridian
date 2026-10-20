@@ -2679,6 +2679,14 @@ impl AppSettings {
         self.set_boolean("mail-threading", value);
     }
 
+    pub fn mail_group_similar_messages(&self) -> bool {
+        self.settings.boolean("mail-group-similar-messages")
+    }
+
+    pub fn set_mail_group_similar_messages(&self, value: bool) {
+        self.set_boolean("mail-group-similar-messages", value);
+    }
+
     pub fn mail_conversation_accordion(&self) -> bool {
         self.settings.boolean("mail-conversation-accordion")
     }
@@ -4088,6 +4096,9 @@ impl AppSettings {
                 self.set_mail_sort_descending(parse_migrated_bool(key, value)?);
             }
             "mail-threading" => self.set_mail_threading(parse_migrated_bool(key, value)?),
+            "mail-group-similar-messages" => {
+                self.set_mail_group_similar_messages(parse_migrated_bool(key, value)?);
+            }
             "mail-conversation-accordion" => {
                 self.set_mail_conversation_accordion(parse_migrated_bool(key, value)?);
             }
