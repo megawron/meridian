@@ -1887,6 +1887,14 @@ pub(crate) fn themed_icon_name<W: IsA<gtk::Widget>>(
         "emoji-flags-symbolic".to_string()
     } else if theme.has_icon(fallback) {
         fallback.to_string()
+    } else if (preferred == "mail-thread-symbolic" || fallback == "chat-bubble-symbolic")
+        && theme.has_icon("user-available-symbolic")
+    {
+        "user-available-symbolic".to_string()
+    } else if (preferred == "mail-thread-symbolic" || fallback == "chat-bubble-symbolic")
+        && theme.has_icon("mail-reply-all-symbolic")
+    {
+        "mail-reply-all-symbolic".to_string()
     } else if theme.has_icon("emblem-important-symbolic") {
         "emblem-important-symbolic".to_string()
     } else if theme.has_icon("bookmark-symbolic") {
@@ -8277,9 +8285,9 @@ impl MailPage {
             }
             if let Some(btn) = imp.thread_toggle_btn.borrow().as_ref() {
                 btn.set_icon_name(if should_reveal_strips {
-                    "pan-down-symbolic"
+                    "pan-up-symbolic"
                 } else {
-                    "pan-end-symbolic"
+                    "pan-down-symbolic"
                 });
             }
             return;
@@ -8380,9 +8388,9 @@ impl MailPage {
         }
         if let Some(btn) = imp.thread_toggle_btn.borrow().as_ref() {
             btn.set_icon_name(if should_reveal_strips {
-                "pan-down-symbolic"
+                "pan-up-symbolic"
             } else {
-                "pan-end-symbolic"
+                "pan-down-symbolic"
             });
         }
     }
@@ -30012,7 +30020,7 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
             && (!self.imp().is_compact_header.get()
                 || self.imp().thread_strips_manual_open_in_compact.get());
 
-        // Header: Thread Icon + Label + Expand Toggle on left, Stepper on right
+        // Header: Thread Icon + Label + Stepper (+ Unread) on left, Expand Toggle on right
         let title_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(6)
@@ -30035,60 +30043,13 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
         title_box.append(&icon_thread);
         title_box.append(&title_lbl);
 
-        let other_unread_count = messages
-            .iter()
-            .filter(|m| m.id() != selected.id() && m.is_unread())
-            .count();
-        if other_unread_count > 0 {
-            let unread_lbl = gtk::Label::builder()
-                .label(&format!("• {} {}", other_unread_count, gettext("ungelesen")))
-                .css_classes(vec!["caption", "heading", "accent"])
-                .valign(gtk::Align::Center)
-                .build();
-            title_box.append(&unread_lbl);
-        }
-
-        // Expander button to reveal/hide strips
-        let btn_toggle_strips = gtk::Button::builder()
-            .icon_name(if is_expanded { "pan-down-symbolic" } else { "pan-end-symbolic" })
-            .tooltip_text(&if is_expanded {
-                gettext("Verlauf einklappen")
-            } else {
-                gettext("Alle Nachrichten im Verlauf anzeigen")
-            })
-            .css_classes(vec!["flat", "mail-thread-toggle-btn"])
-            .valign(gtk::Align::Fill)
-            .vexpand(true)
-            .build();
-
-        let page_weak_toggle = self.downgrade();
-        let selected_clone = selected.clone();
-        btn_toggle_strips.connect_clicked(move |_| {
-            if let Some(page) = page_weak_toggle.upgrade() {
-                let currently_shown = page.imp().thread_strips_expanded.get()
-                    && (!page.imp().is_compact_header.get()
-                        || page.imp().thread_strips_manual_open_in_compact.get());
-                let next_shown = !currently_shown;
-                page.imp().thread_strips_expanded.set(next_shown);
-                page.imp()
-                    .thread_strips_manual_open_in_compact
-                    .set(next_shown && page.imp().is_compact_header.get());
-                page.render_thread_context(&selected_clone);
-            }
-        });
-        self.imp()
-            .thread_toggle_btn
-            .replace(Some(btn_toggle_strips.clone()));
-        title_box.append(&btn_toggle_strips);
-        thread_bar_box.append(&title_box);
-
-        // Compact stepper: ◀ X von N ▶
+        // Compact stepper: ◀ X von N ▶ right next to "Unterhaltung"
         let stepper_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(0)
             .valign(gtk::Align::Fill)
             .vexpand(true)
-            .halign(gtk::Align::End)
+            .margin_start(2)
             .css_classes(vec!["mail-thread-stepper"])
             .build();
 
@@ -30141,7 +30102,57 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
         stepper_box.append(&btn_prev);
         stepper_box.append(&step_lbl);
         stepper_box.append(&btn_next);
-        thread_bar_box.append(&stepper_box);
+        title_box.append(&stepper_box);
+
+        let other_unread_count = messages
+            .iter()
+            .filter(|m| m.id() != selected.id() && m.is_unread())
+            .count();
+        if other_unread_count > 0 {
+            let unread_lbl = gtk::Label::builder()
+                .label(&format!("• {} {}", other_unread_count, gettext("ungelesen")))
+                .css_classes(vec!["caption", "heading", "accent"])
+                .valign(gtk::Align::Center)
+                .margin_start(2)
+                .build();
+            title_box.append(&unread_lbl);
+        }
+
+        thread_bar_box.append(&title_box);
+
+        // Expander button on the far right (flush with card edge) to reveal/hide strips
+        let btn_toggle_strips = gtk::Button::builder()
+            .icon_name(if is_expanded { "pan-up-symbolic" } else { "pan-down-symbolic" })
+            .tooltip_text(&if is_expanded {
+                gettext("Verlauf einklappen")
+            } else {
+                gettext("Alle Nachrichten im Verlauf anzeigen")
+            })
+            .css_classes(vec!["flat", "mail-thread-toggle-btn"])
+            .valign(gtk::Align::Fill)
+            .vexpand(true)
+            .halign(gtk::Align::End)
+            .build();
+
+        let page_weak_toggle = self.downgrade();
+        let selected_clone = selected.clone();
+        btn_toggle_strips.connect_clicked(move |_| {
+            if let Some(page) = page_weak_toggle.upgrade() {
+                let currently_shown = page.imp().thread_strips_expanded.get()
+                    && (!page.imp().is_compact_header.get()
+                        || page.imp().thread_strips_manual_open_in_compact.get());
+                let next_shown = !currently_shown;
+                page.imp().thread_strips_expanded.set(next_shown);
+                page.imp()
+                    .thread_strips_manual_open_in_compact
+                    .set(next_shown && page.imp().is_compact_header.get());
+                page.render_thread_context(&selected_clone);
+            }
+        });
+        self.imp()
+            .thread_toggle_btn
+            .replace(Some(btn_toggle_strips.clone()));
+        thread_bar_box.append(&btn_toggle_strips);
 
         thread_context.set_visible(true);
 
