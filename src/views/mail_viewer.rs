@@ -75,6 +75,7 @@ mod imp {
         pub(super) search_generation: Cell<u64>,
         pub remote_images_allowed_for_current: Cell<bool>,
         pub remote_images_blocked_for_current: Cell<bool>,
+        pub suppress_remote_images_banner: Cell<bool>,
         pub current_message_force_light: Cell<bool>,
         pub suppressed_by_itip: Cell<bool>,
         pub source_generation: Cell<u64>,
@@ -1214,8 +1215,9 @@ impl MailViewer {
         ));
         let remote_blocked = render_plan.has_remote_images && !key.remote_images_allowed;
         self.imp().remote_images_blocked_for_current.set(remote_blocked);
-        self.imp().banner.set_visible(remote_blocked);
-        self.imp().banner.set_revealed(remote_blocked);
+        let show_banner = remote_blocked && !self.imp().suppress_remote_images_banner.get();
+        self.imp().banner.set_visible(show_banner);
+        self.imp().banner.set_revealed(show_banner);
         self.notify_remote_images_blocked(remote_blocked);
         self.set_fallback_text(&render_plan.visible_text);
         let has_active_banner = self.has_visible_banner();
@@ -1560,10 +1562,19 @@ impl MailViewer {
     }
 
     pub fn set_remote_images_banner_visible(&self, visible: bool) {
-        self.imp().banner.set_visible(visible);
-        self.imp().banner.set_revealed(visible);
+        let show = visible && !self.imp().suppress_remote_images_banner.get();
+        self.imp().banner.set_visible(show);
+        self.imp().banner.set_revealed(show);
         if let Some(ch) = self.imp().last_measured_content_height.get() {
             self.apply_adapted_height(ch);
+        }
+    }
+
+    pub fn set_suppress_remote_images_banner(&self, suppress: bool) {
+        self.imp().suppress_remote_images_banner.set(suppress);
+        if suppress {
+            self.imp().banner.set_visible(false);
+            self.imp().banner.set_revealed(false);
         }
     }
 
@@ -1577,6 +1588,7 @@ impl MailViewer {
 
     pub fn has_visible_banner(&self) -> bool {
         self.imp().banner.is_revealed()
+            || self.imp().remote_images_blocked_for_current.get()
             || self.imp().trash_banner.is_revealed()
             || self.imp().junk_banner.is_revealed()
     }

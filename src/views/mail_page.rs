@@ -6745,6 +6745,7 @@ mod imp {
         pub preview_reply_labels: RefCell<Vec<gtk::Label>>,
         pub load_remote_images_btn: RefCell<Option<adw::SplitButton>>,
         pub modern_load_remote_images_btn: RefCell<Option<gtk::Button>>,
+        pub modern_load_remote_images_label: RefCell<Option<gtk::Label>>,
         pub view_options_split_btn: RefCell<Option<adw::SplitButton>>,
         pub filter_options_btn: RefCell<Option<gtk::MenuButton>>,
         pub header_separator: RefCell<Option<gtk::Separator>>,
@@ -7314,11 +7315,22 @@ impl MailPage {
             }
         };
 
+        let remote_btn_vis = imp
+            .modern_load_remote_images_btn
+            .borrow()
+            .as_ref()
+            .is_some_and(|b| b.is_visible());
+        let show_remote_label = preview_width >= 430 || preview_width <= 0;
         let show_extra_actions = preview_width >= 360 || preview_width <= 0;
         let show_junk = preview_width >= 340 || preview_width <= 0;
         let show_sep = preview_width >= 340 || preview_width <= 0;
         let show_triage = preview_width >= 280 || preview_width <= 0;
-        let show_date = preview_width >= 300 || preview_width <= 0;
+        let min_date_width = if remote_btn_vis { 330 } else { 300 };
+        let show_date = preview_width >= min_date_width || preview_width <= 0;
+
+        if let Some(lbl) = imp.modern_load_remote_images_label.borrow().as_ref() {
+            lbl.set_visible(show_remote_label);
+        }
 
         if let Some(btn) = imp.modern_reply_all_button.borrow().as_ref() {
             btn.set_visible(show_extra_actions);
@@ -7898,11 +7910,18 @@ impl MailPage {
             group.set_visible(show_classic_actions_row);
         }
 
+        let remote_blocked_now = message.is_some()
+            && self
+                .imp()
+                .mail_viewer
+                .borrow()
+                .as_ref()
+                .is_some_and(|v| v.is_remote_images_blocked());
         if let Some(btn) = self.imp().modern_load_remote_images_btn.borrow().as_ref() {
-            btn.set_visible(false);
+            btn.set_visible(remote_blocked_now && !is_mobile);
         }
         if let Some(btn) = self.imp().load_remote_images_btn.borrow().as_ref() {
-            btn.set_visible(false);
+            btn.set_visible(remote_blocked_now && is_mobile);
         }
         if let Some(row) = self.imp().preview_actions_row.borrow().as_ref() {
             row.set_visible(show_classic_actions_row);
@@ -8330,12 +8349,12 @@ impl MailPage {
         if let Some(tc) = imp.thread_context.borrow().as_ref() {
             if compact {
                 tc.add_css_class("is-compact");
-                tc.set_min_content_height(20);
-                tc.set_max_content_height(22);
+                tc.set_min_content_height(26);
+                tc.set_max_content_height(28);
             } else {
                 tc.remove_css_class("is-compact");
-                tc.set_min_content_height(24);
-                tc.set_max_content_height(28);
+                tc.set_min_content_height(30);
+                tc.set_max_content_height(32);
             }
         }
         let show_accordion = AppSettings::try_new()
@@ -26822,21 +26841,96 @@ impl MailPage {
         self.imp().modern_reply_group.replace(Some(modern_reply_group.clone()));
         self.imp().modern_triage_group.replace(Some(modern_triage_group.clone()));
 
-        let str_load_remote = gettext("Load images");
-        let modern_load_remote_images_btn = gtk::Button::builder()
-            .icon_name("image-x-generic-symbolic")
-            .label(&str_load_remote)
-            .tooltip_text(&str_load_remote)
-            .css_classes(vec!["flat", "mail-header-load-images-btn"])
+        let str_load_remote = gettext("Load Images");
+        let str_load_remote_tip = gettext("Remote images blocked – Click to load images (Right-click for sender options)");
+        let modern_load_remote_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(5)
             .valign(gtk::Align::Center)
+            .halign(gtk::Align::Center)
+            .build();
+        let modern_load_remote_icon = gtk::DrawingArea::builder()
+            .content_width(17)
+            .content_height(15)
+            .valign(gtk::Align::Center)
+            .build();
+        modern_load_remote_icon.set_draw_func(|area, cr, w, h| {
+            let color = area.color();
+            let r = color.red() as f64;
+            let g = color.green() as f64;
+            let b = color.blue() as f64;
+            let a = color.alpha() as f64;
+            cr.set_source_rgba(r, g, b, a);
+
+            // 1. Image frame on the left (x: 1..12, y: 1.5..12.5)
+            let fx = 1.0;
+            let fy = 1.5;
+            let fw = 11.0;
+            let fh = 11.0;
+            let rad = 2.0;
+            cr.new_sub_path();
+            cr.arc(fx + fw - rad, fy + rad, rad, -std::f64::consts::FRAC_PI_2, 0.0);
+            cr.line_to(fx + fw, fy + 6.0);
+            cr.move_to(fx + 7.5, fy + fh);
+            cr.line_to(fx + rad, fy + fh);
+            cr.arc(fx + rad, fy + fh - rad, rad, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
+            cr.arc(fx + rad, fy + rad, rad, std::f64::consts::PI, 3.0 * std::f64::consts::FRAC_PI_2);
+            cr.close_path();
+            cr.set_line_width(1.5);
+            let _ = cr.stroke();
+
+            // Sun dot inside frame
+            cr.arc(fx + 3.4, fy + 3.6, 1.1, 0.0, 2.0 * std::f64::consts::PI);
+            let _ = cr.fill();
+
+            // Mountain peak inside frame
+            cr.move_to(fx + 1.5, fy + 9.8);
+            cr.line_to(fx + 4.8, fy + 6.2);
+            cr.line_to(fx + 7.5, fy + 9.0);
+            cr.set_line_width(1.3);
+            let _ = cr.stroke();
+
+            // 2. Bold exclamation mark '!' on the right (x: 14.2)
+            let ex = (w as f64) - 2.6;
+            cr.set_line_cap(gtk::cairo::LineCap::Round);
+            cr.set_line_width(1.9);
+            cr.move_to(ex, 2.2);
+            cr.line_to(ex, (h as f64) - 5.2);
+            let _ = cr.stroke();
+
+            cr.arc(ex, (h as f64) - 2.1, 1.05, 0.0, 2.0 * std::f64::consts::PI);
+            let _ = cr.fill();
+        });
+        let modern_load_remote_lbl = gtk::Label::builder()
+            .label(&str_load_remote)
+            .single_line_mode(true)
+            .ellipsize(pango::EllipsizeMode::End)
+            .valign(gtk::Align::Center)
+            .build();
+        modern_load_remote_box.append(&modern_load_remote_icon);
+        modern_load_remote_box.append(&modern_load_remote_lbl);
+
+        let modern_load_remote_images_btn = gtk::Button::builder()
+            .child(&modern_load_remote_box)
+            .tooltip_text(&str_load_remote_tip)
+            .css_classes(vec![
+                "flat",
+                "action-pill",
+                "mail-action-pill",
+                "mail-header-load-images-btn",
+            ])
+            .valign(gtk::Align::Center)
+            .halign(gtk::Align::End)
             .visible(false)
             .build();
         set_accessible_label(&modern_load_remote_images_btn, &str_load_remote);
         self.imp()
             .modern_load_remote_images_btn
             .replace(Some(modern_load_remote_images_btn.clone()));
+        self.imp()
+            .modern_load_remote_images_label
+            .replace(Some(modern_load_remote_lbl));
 
-        modern_actions_group.append(&modern_load_remote_images_btn);
         self.imp().modern_actions_group.replace(Some(modern_actions_group.clone()));
 
         let modern_actions_bar = gtk::Box::builder()
@@ -26853,6 +26947,7 @@ impl MailPage {
             .build();
 
         modern_actions_bar.append(&modern_actions_group);
+        modern_actions_bar.append(&modern_load_remote_images_btn);
         modern_actions_bar.append(&modern_date_revealer);
         self.imp().modern_actions_bar.replace(Some(modern_actions_bar.clone()));
 
@@ -27261,8 +27356,8 @@ impl MailPage {
             .vscrollbar_policy(gtk::PolicyType::Never)
             .propagate_natural_width(false)
             .min_content_width(0)
-            .min_content_height(24)
-            .max_content_height(28)
+            .min_content_height(30)
+            .max_content_height(32)
             .vexpand(false)
             .valign(gtk::Align::Start)
             .child(&thread_bar_box)
@@ -27288,7 +27383,7 @@ impl MailPage {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_height(true)
-            .max_content_height(116)
+            .max_content_height(136)
             .vexpand(false)
             .child(&thread_accordion_box)
             .visible(false)
@@ -27313,6 +27408,7 @@ impl MailPage {
             .replace(Some(thread_accordion_revealer.clone()));
 
         let mail_viewer = MailViewer::new();
+        mail_viewer.set_suppress_remote_images_banner(true);
         let modern_remote_btn = self.imp().modern_load_remote_images_btn.borrow().clone();
 
         let viewer_for_remote = mail_viewer.clone();
@@ -27326,6 +27422,9 @@ impl MailPage {
             if let Some(m_btn) = modern_btn_for_remote.as_ref() {
                 m_btn.set_visible(false);
             }
+            if let Some(page) = page_for_remote.upgrade() {
+                page.sync_preview_actions_labels();
+            }
             let show_reply_group = if let Some(page) = page_for_remote.upgrade() {
                 !page.is_modern_header_style() || page.imp().is_mobile.get()
             } else {
@@ -27338,11 +27437,65 @@ impl MailPage {
             let viewer_for_m_btn = mail_viewer.clone();
             let m_btn_clicked = m_btn.clone();
             let btn_for_m_btn = load_remote_images_btn.clone();
+            let page_for_m_btn = self.downgrade();
             m_btn.connect_clicked(move |_| {
                 viewer_for_m_btn.allow_remote_images();
                 m_btn_clicked.set_visible(false);
                 btn_for_m_btn.set_visible(false);
+                if let Some(page) = page_for_m_btn.upgrade() {
+                    page.sync_preview_actions_labels();
+                }
             });
+
+            let rc_gesture = gtk::GestureClick::builder().button(3).build();
+            let viewer_for_rc = mail_viewer.clone();
+            let m_btn_for_rc = m_btn.clone();
+            let btn_for_rc = load_remote_images_btn.clone();
+            let page_for_rc = self.downgrade();
+            rc_gesture.connect_pressed(move |gesture, _, x, y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+                let (popover, menu_box) = crate::views::create_context_popover(Some(&rect));
+                let sender_lbl = if let Some(sender) = viewer_for_rc.current_sender() {
+                    let email = extract_email_address(&sender);
+                    if !email.is_empty() {
+                        format!("{} \"{}\"", gettext("Always load images from"), email)
+                    } else {
+                        gettext("Always load images from this sender")
+                    }
+                } else {
+                    gettext("Always load images from this sender")
+                };
+                let btn_always = crate::views::create_context_menu_button(
+                    Some("image-x-generic-symbolic"),
+                    &sender_lbl,
+                    false,
+                );
+                let pop_always = popover.clone();
+                let viewer_always = viewer_for_rc.clone();
+                let m_btn_always = m_btn_for_rc.clone();
+                let c_btn_always = btn_for_rc.clone();
+                let page_always = page_for_rc.clone();
+                btn_always.connect_clicked(move |_| {
+                    pop_always.popdown();
+                    viewer_always.allow_remote_images_for_sender();
+                    m_btn_always.set_visible(false);
+                    c_btn_always.set_visible(false);
+                    if let Some(page) = page_always.upgrade() {
+                        page.sync_preview_actions_labels();
+                    }
+                });
+                menu_box.append(&btn_always);
+                popover.set_parent(&m_btn_for_rc);
+                popover.connect_closed(|p| {
+                    let p = p.clone();
+                    glib::idle_add_local_once(move || {
+                        p.unparent();
+                    });
+                });
+                popover.popup();
+            });
+            m_btn.add_controller(rc_gesture);
         }
 
         let viewer_for_sender = mail_viewer.clone();
@@ -27357,6 +27510,9 @@ impl MailPage {
             btn_for_sender.set_visible(false);
             if let Some(m_btn) = modern_btn_for_sender.as_ref() {
                 m_btn.set_visible(false);
+            }
+            if let Some(page) = page_for_sender.upgrade() {
+                page.sync_preview_actions_labels();
             }
             let show_reply_group = if let Some(page) = page_for_sender.upgrade() {
                 !page.is_modern_header_style() || page.imp().is_mobile.get()
@@ -27375,16 +27531,23 @@ impl MailPage {
         let header_separator_for_blocked = header_separator.clone();
         mail_viewer.connect_remote_images_blocked(move |blocked| {
             header_separator_for_blocked.set_visible(false);
+            let is_mobile = page_for_blocked
+                .upgrade()
+                .map(|p| p.imp().is_mobile.get())
+                .unwrap_or(false);
             if let Some(m_btn) = modern_btn_for_blocked.as_ref() {
-                m_btn.set_visible(false);
+                m_btn.set_visible(blocked && !is_mobile);
             }
-            btn_for_blocked.set_visible(false);
+            btn_for_blocked.set_visible(blocked && is_mobile);
             let show_reply_group = if let Some(page) = page_for_blocked.upgrade() {
-                !page.is_modern_header_style() || page.imp().is_mobile.get()
+                page.imp().is_mobile.get()
             } else {
                 false
             };
             preview_actions_row_for_blocked.set_visible(show_reply_group);
+            if let Some(page) = page_for_blocked.upgrade() {
+                page.sync_preview_actions_labels();
+            }
             if blocked {
                 let label_text = if let Some(sender) = viewer_for_blocked.current_sender() {
                     let email = extract_email_address(&sender);
@@ -44589,11 +44752,11 @@ mod tests {
         let viewer = page.imp().mail_viewer.borrow().clone().expect("mail_viewer");
 
         // Simulate remote images blocked in modern header mode:
-        // Header buttons stay hidden because MailViewer's privacy status banner handles remote image loading.
+        // Header pill button next to the time becomes visible while MailViewer's internal banner stays hidden.
         viewer.notify_remote_images_blocked(true);
         assert!(!actions_row.is_visible(), "Actions row must stay hidden in modern mode on desktop");
-        assert!(!modern_btn.is_visible(), "Modern load images button in header must stay hidden (handled by viewer status banner)");
-        assert!(!classic_btn.is_visible(), "Classic button must stay hidden in header");
+        assert!(modern_btn.is_visible(), "Modern load images pill button next to time must be visible when remote images are blocked");
+        assert!(!classic_btn.is_visible(), "Classic button must stay hidden on desktop");
 
         // Simulate switching to classic header mode
         settings.set_mail_header_style("classic");
@@ -44602,8 +44765,8 @@ mod tests {
         let actions_bar = page.imp().modern_actions_bar.borrow().clone().expect("actions_bar");
         assert!(actions_bar.is_visible(), "Actions bar must be visible in classic mode on desktop");
         assert!(!actions_row.is_visible(), "Old actions row inside header must be hidden on desktop");
-        assert!(!classic_btn.is_visible(), "Classic button must stay hidden in header");
-        assert!(!modern_btn.is_visible(), "Modern button must be hidden in classic mode");
+        assert!(!classic_btn.is_visible(), "Classic button must stay hidden on desktop");
+        assert!(modern_btn.is_visible(), "Modern load images pill button in actions bar must be visible on desktop");
 
         // Reset
         settings.set_mail_header_style("modern");
