@@ -262,6 +262,11 @@ fn prepare_settings_schema(manifest_dir: &Path, out_dir: &Path) {
     let status = Command::new("glib-compile-schemas")
         .arg(&schema_dir)
         .status();
+    if let Some(parent_dir) = source.parent() {
+        let _ = Command::new("glib-compile-schemas")
+            .arg(parent_dir)
+            .status();
+    }
     if status.is_ok_and(|status| status.success()) {
         println!(
             "cargo:rustc-env=MERIDIAN_SCHEMA_DIR={}",

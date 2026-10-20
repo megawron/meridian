@@ -4644,9 +4644,13 @@ impl PreferencesDialog {
                 let Some(row) = row_sim_weak.upgrade() else {
                     return;
                 };
-                let active = s.boolean("mail-group-similar-messages");
-                if row.is_active() != active {
-                    row.set_active(active);
+                if s.settings_schema()
+                    .is_some_and(|schema| schema.has_key("mail-group-similar-messages"))
+                {
+                    let active = s.boolean("mail-group-similar-messages");
+                    if row.is_active() != active {
+                        row.set_active(active);
+                    }
                 }
             });
             let r_sim = row_mail_group_similar.clone();

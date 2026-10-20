@@ -546,29 +546,24 @@ impl AppSettings {
                 });
             }
             let installed_source = gio::SettingsSchemaSource::default();
-            let schema = installed_source
-                .as_ref()
-                .and_then(|source| source.lookup(crate::APP_ID, true))
-                .or_else(|| {
-                    let candidates = [
-                        std::env::var("GSETTINGS_SCHEMA_DIR").ok(),
-                        option_env!("MERIDIAN_SCHEMA_DIR").or(option_env!("EVOLUTION_GTK4_SCHEMA_DIR")).map(|s| s.to_string()),
-                        Some("data".to_string()),
-                        Some("../data".to_string()),
-                    ];
-                    for dir in candidates.into_iter().flatten() {
-                        if let Ok(source) = gio::SettingsSchemaSource::from_directory(
-                            &dir,
-                            installed_source.as_ref(),
-                            true,
-                        ) {
-                            if let Some(schema) = source.lookup(crate::APP_ID, true) {
-                                return Some(schema);
-                            }
-                        }
-                    }
-                    None
-                })?;
+            let candidates = [
+                std::env::var("GSETTINGS_SCHEMA_DIR").ok(),
+                option_env!("MERIDIAN_SCHEMA_DIR")
+                    .or(option_env!("EVOLUTION_GTK4_SCHEMA_DIR"))
+                    .map(|s| s.to_string()),
+                Some("data".to_string()),
+                Some("../data".to_string()),
+            ];
+            let local_schema = candidates.into_iter().flatten().find_map(|dir| {
+                gio::SettingsSchemaSource::from_directory(&dir, installed_source.as_ref(), true)
+                    .ok()
+                    .and_then(|source| source.lookup(crate::APP_ID, true))
+            });
+            let schema = local_schema.or_else(|| {
+                installed_source
+                    .as_ref()
+                    .and_then(|source| source.lookup(crate::APP_ID, true))
+            })?;
             let s = gio::Settings::new_full(&schema, None::<&gio::SettingsBackend>, None);
             *borrow = Some(s.clone());
             Some(Self { settings: s })
@@ -578,29 +573,24 @@ impl AppSettings {
     #[cfg(test)]
     pub(crate) fn try_new_with_backend(backend: &gio::SettingsBackend) -> Option<Self> {
         let installed_source = gio::SettingsSchemaSource::default();
-        let schema = installed_source
-            .as_ref()
-            .and_then(|source| source.lookup(crate::APP_ID, true))
-            .or_else(|| {
-                let candidates = [
-                    std::env::var("GSETTINGS_SCHEMA_DIR").ok(),
-                    option_env!("MERIDIAN_SCHEMA_DIR").or(option_env!("EVOLUTION_GTK4_SCHEMA_DIR")).map(|s| s.to_string()),
-                    Some("data".to_string()),
-                    Some("../data".to_string()),
-                ];
-                for dir in candidates.into_iter().flatten() {
-                    if let Ok(source) = gio::SettingsSchemaSource::from_directory(
-                        &dir,
-                        installed_source.as_ref(),
-                        true,
-                    ) {
-                        if let Some(schema) = source.lookup(crate::APP_ID, true) {
-                            return Some(schema);
-                        }
-                    }
-                }
-                None
-            })?;
+        let candidates = [
+            std::env::var("GSETTINGS_SCHEMA_DIR").ok(),
+            option_env!("MERIDIAN_SCHEMA_DIR")
+                .or(option_env!("EVOLUTION_GTK4_SCHEMA_DIR"))
+                .map(|s| s.to_string()),
+            Some("data".to_string()),
+            Some("../data".to_string()),
+        ];
+        let local_schema = candidates.into_iter().flatten().find_map(|dir| {
+            gio::SettingsSchemaSource::from_directory(&dir, installed_source.as_ref(), true)
+                .ok()
+                .and_then(|source| source.lookup(crate::APP_ID, true))
+        });
+        let schema = local_schema.or_else(|| {
+            installed_source
+                .as_ref()
+                .and_then(|source| source.lookup(crate::APP_ID, true))
+        })?;
         Some(Self {
             settings: gio::Settings::new_full(&schema, Some(backend), None),
         })
@@ -2680,11 +2670,25 @@ impl AppSettings {
     }
 
     pub fn mail_group_similar_messages(&self) -> bool {
-        self.settings.boolean("mail-group-similar-messages")
+        if self
+            .settings
+            .settings_schema()
+            .is_some_and(|s| s.has_key("mail-group-similar-messages"))
+        {
+            self.settings.boolean("mail-group-similar-messages")
+        } else {
+            true
+        }
     }
 
     pub fn set_mail_group_similar_messages(&self, value: bool) {
-        self.set_boolean("mail-group-similar-messages", value);
+        if self
+            .settings
+            .settings_schema()
+            .is_some_and(|s| s.has_key("mail-group-similar-messages"))
+        {
+            self.set_boolean("mail-group-similar-messages", value);
+        }
     }
 
     pub fn mail_conversation_accordion(&self) -> bool {
