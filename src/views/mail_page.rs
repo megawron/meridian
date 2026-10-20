@@ -30020,6 +30020,32 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
             && (!self.imp().is_compact_header.get()
                 || self.imp().thread_strips_manual_open_in_compact.get());
 
+        let first_sender = messages
+            .first()
+            .map(|m| {
+                let email = m.sender_email();
+                if !email.trim().is_empty() {
+                    email.trim().to_ascii_lowercase()
+                } else {
+                    m.sender_name().trim().to_ascii_lowercase()
+                }
+            })
+            .unwrap_or_default();
+        let is_reply_conversation = messages.iter().any(|m| {
+            !m.in_reply_to().is_empty()
+                || !m.references().is_empty()
+                || crate::services::mail_thread_service::normalize_subject_with_reply(&m.subject()).1
+                || (!first_sender.is_empty() && {
+                    let s = m.sender_email();
+                    let norm = if !s.trim().is_empty() {
+                        s.trim().to_ascii_lowercase()
+                    } else {
+                        m.sender_name().trim().to_ascii_lowercase()
+                    };
+                    norm != first_sender
+                })
+        });
+
         // Header: Thread Icon + Label + Stepper (+ Unread) on left, Expand Toggle on right
         let title_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -30029,21 +30055,33 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
             .hexpand(true)
             .build();
         let icon_thread = gtk::Image::new();
-        set_image_icon_with_fallback(
-            &icon_thread,
-            "mail-thread-symbolic",
-            "chat-bubble-symbolic",
-        );
+        if is_reply_conversation {
+            set_image_icon_with_fallback(
+                &icon_thread,
+                "mail-thread-symbolic",
+                "chat-bubble-symbolic",
+            );
+        } else {
+            set_image_icon_with_fallback(
+                &icon_thread,
+                "view-list-symbolic",
+                "folder-documents-symbolic",
+            );
+        }
         icon_thread.set_pixel_size(14);
         let title_lbl = gtk::Label::builder()
-            .label(&gettext("Unterhaltung"))
+            .label(&if is_reply_conversation {
+                gettext("Conversation")
+            } else {
+                gettext("Similar Messages")
+            })
             .css_classes(vec!["caption", "heading"])
             .valign(gtk::Align::Center)
             .build();
         title_box.append(&icon_thread);
         title_box.append(&title_lbl);
 
-        // Compact stepper: ◀ X von N ▶ right next to "Unterhaltung"
+        // Compact stepper: ◀ X of N ▶ right next to title
         let stepper_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(0)
@@ -30055,7 +30093,7 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
 
         let btn_prev = gtk::Button::builder()
             .icon_name("go-previous-symbolic")
-            .tooltip_text(&gettext("Vorherige Nachricht im Verlauf"))
+            .tooltip_text(&gettext("Previous message"))
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Fill)
             .vexpand(true)
@@ -30063,7 +30101,12 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
             .build();
 
         let step_lbl = gtk::Label::builder()
-            .label(&format!("{} von {}", current_index + 1, total_messages))
+            .label(&format!(
+                "{} {} {}",
+                current_index + 1,
+                gettext("of"),
+                total_messages
+            ))
             .css_classes(vec!["caption", "heading"])
             .valign(gtk::Align::Center)
             .margin_start(4)
@@ -30072,7 +30115,7 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
 
         let btn_next = gtk::Button::builder()
             .icon_name("go-next-symbolic")
-            .tooltip_text(&gettext("Nächste Nachricht im Verlauf"))
+            .tooltip_text(&gettext("Next message"))
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Fill)
             .vexpand(true)
@@ -30110,7 +30153,7 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
             .count();
         if other_unread_count > 0 {
             let unread_lbl = gtk::Label::builder()
-                .label(&format!("• {} {}", other_unread_count, gettext("ungelesen")))
+                .label(&format!("• {} {}", other_unread_count, gettext("unread")))
                 .css_classes(vec!["caption", "heading", "accent"])
                 .valign(gtk::Align::Center)
                 .margin_start(2)
@@ -30124,9 +30167,9 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
         let btn_toggle_strips = gtk::Button::builder()
             .icon_name(if is_expanded { "pan-up-symbolic" } else { "pan-down-symbolic" })
             .tooltip_text(&if is_expanded {
-                gettext("Verlauf einklappen")
+                gettext("Collapse messages")
             } else {
-                gettext("Alle Nachrichten im Verlauf anzeigen")
+                gettext("Show all messages")
             })
             .css_classes(vec!["flat", "mail-thread-toggle-btn"])
             .valign(gtk::Align::Fill)

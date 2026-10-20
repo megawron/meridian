@@ -2678,6 +2678,11 @@ pub(crate) fn assign_thread_metadata(messages: &mut [ParsedMail]) {
             in_reply_to: &message.in_reply_to,
             references: &message.references,
             subject: &message.subject,
+            sender: if !message.sender_email.trim().is_empty() {
+                &message.sender_email
+            } else {
+                &message.sender_name
+            },
             date_ts: crate::views::parse_flexible_datetime(&message.date_str)
                 .map(|dt| dt.timestamp())
                 .unwrap_or(0),

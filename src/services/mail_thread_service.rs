@@ -16,6 +16,7 @@ pub struct ThreadIdentity<'a> {
     pub in_reply_to: &'a [String],
     pub references: &'a [String],
     pub subject: &'a str,
+    pub sender: &'a str,
     pub date_ts: i64,
 }
 
@@ -161,8 +162,13 @@ pub fn group_messages(inputs: &[ThreadIdentity<'_>]) -> Vec<ThreadMembership> {
     }
 
     // Phase 2: Subject matching fallback.
-    // Connect messages sharing the same normalized subject if at least one
-    // has a reply/forward prefix or if they are within 90 days.
+    // - If at least one message has a reply/forward prefix (`Re:`, `Aw:`, `Fwd:`, `Wg:`),
+    //   all messages sharing that normalized subject belong to the same conversation
+    //   across all time.
+    // - If none have a reply/forward prefix (e.g. recurring automated alerts like
+    //   "Sicherheitswarnung" from Google), only messages from the same sender are
+    //   grouped together (across all time, preventing unrelated senders with generic
+    //   subjects like "Invoice" from colliding).
     let mut subject_groups = HashMap::<String, Vec<usize>>::new();
     for (index, input) in inputs.iter().enumerate() {
         let (subj, _) = normalize_subject_with_reply(input.subject);
@@ -182,16 +188,23 @@ pub fn group_messages(inputs: &[ThreadIdentity<'_>]) -> Vec<ThreadMembership> {
         if member_indices.len() <= 1 {
             continue;
         }
-        let any_has_prefix = member_indices.iter().any(|&idx| {
-            normalize_subject_with_reply(inputs[idx].subject).1
-        });
-        let first_idx = member_indices[0];
-        let first_ts = inputs[first_idx].date_ts;
-        for &other_idx in &member_indices[1..] {
-            let other_ts = inputs[other_idx].date_ts;
-            let within_window = first_ts == 0 || other_ts == 0 || (first_ts - other_ts).abs() < 90 * 86400;
-            if any_has_prefix || within_window {
+        let any_has_prefix = member_indices
+            .iter()
+            .any(|&idx| normalize_subject_with_reply(inputs[idx].subject).1);
+        if any_has_prefix {
+            let first_idx = member_indices[0];
+            for &other_idx in &member_indices[1..] {
                 sets.union(first_idx, other_idx);
+            }
+        } else {
+            let mut sender_first_idx = HashMap::<String, usize>::new();
+            for &idx in &member_indices {
+                let norm_sender = inputs[idx].sender.trim().to_ascii_lowercase();
+                if let Some(&first_idx) = sender_first_idx.get(&norm_sender) {
+                    sets.union(first_idx, idx);
+                } else {
+                    sender_first_idx.insert(norm_sender, idx);
+                }
             }
         }
     }
@@ -314,6 +327,7 @@ mod tests {
                 in_reply_to: &[],
                 references: &[],
                 subject: "Project",
+                sender: "alice@example.org",
                 date_ts: 100,
             },
             ThreadIdentity {
@@ -321,6 +335,7 @@ mod tests {
                 in_reply_to: &[],
                 references: &root_reference,
                 subject: "Re: Project",
+                sender: "bob@example.org",
                 date_ts: 200,
             },
             ThreadIdentity {
@@ -328,6 +343,7 @@ mod tests {
                 in_reply_to: &reply_reference,
                 references: &[],
                 subject: "Re: Project",
+                sender: "alice@example.org",
                 date_ts: 300,
             },
         ];
@@ -350,6 +366,7 @@ mod tests {
                 in_reply_to: &[],
                 references: &[],
                 subject: "Re: Status",
+                sender: "bob@example.org",
                 date_ts: 200,
             },
             ThreadIdentity {
@@ -357,6 +374,7 @@ mod tests {
                 in_reply_to: &[],
                 references: &[],
                 subject: "Status",
+                sender: "alice@example.org",
                 date_ts: 100,
             },
         ];
@@ -379,6 +397,7 @@ mod tests {
                 in_reply_to: &[],
                 references: &[],
                 subject: "Re: Homepage",
+                sender: "guenter@example.org",
                 date_ts: 2000,
             },
             // Kinga arrived at ts 1000 (older) with Homepage
@@ -387,6 +406,7 @@ mod tests {
                 in_reply_to: &[],
                 references: &[],
                 subject: "Homepage ",
+                sender: "kinga@example.org",
                 date_ts: 1000,
             },
         ];
@@ -398,5 +418,42 @@ mod tests {
         // Kinga (older) is root (position 0), Günter (newer) is reply (position 1)
         assert_eq!(memberships[1].position, 0);
         assert_eq!(memberships[0].position, 1);
+    }
+
+    #[test]
+    fn standalone_same_subject_groups_same_sender_across_all_time_but_separates_different_senders() {
+        let inputs = vec![
+            ThreadIdentity {
+                message_id: Some("<alert-1@google.com>"),
+                in_reply_to: &[],
+                references: &[],
+                subject: "Sicherheitswarnung",
+                sender: "no-reply@accounts.google.com",
+                date_ts: 1_000_000,
+            },
+            ThreadIdentity {
+                message_id: Some("<alert-2@google.com>"),
+                in_reply_to: &[],
+                references: &[],
+                subject: "Sicherheitswarnung",
+                sender: "no-reply@accounts.google.com",
+                // 400 days later (beyond old 90-day limit)
+                date_ts: 1_000_000 + 400 * 86_400,
+            },
+            ThreadIdentity {
+                message_id: Some("<alert-other@github.com>"),
+                in_reply_to: &[],
+                references: &[],
+                subject: "Sicherheitswarnung",
+                sender: "noreply@github.com",
+                date_ts: 1_000_500,
+            },
+        ];
+
+        let memberships = group_messages(&inputs);
+        assert_eq!(memberships[0].thread_id, memberships[1].thread_id);
+        assert_eq!(memberships[0].size, 2);
+        assert_ne!(memberships[0].thread_id, memberships[2].thread_id);
+        assert_eq!(memberships[2].size, 1);
     }
 }
