@@ -24,10 +24,13 @@ use crate::services::itip_service::{
 pub struct ItipBanner {
     revealer: gtk::Revealer,
     banner_box: gtk::Box,
+    header_row: gtk::Box,
     details_revealer: gtk::Revealer,
+    details_scrolled: gtk::ScrolledWindow,
     cal_select_box: gtk::Box,
     footer_box: gtk::Box,
     is_compact: Rc<Cell<bool>>,
+    full_header_prompt: Rc<RefCell<String>>,
     icon: gtk::Image,
     lbl_header_prompt: gtk::Label,
     lbl_title: gtk::Label,
@@ -41,9 +44,22 @@ pub struct ItipBanner {
     lbl_timeline_date: gtk::Label,
     lbl_timeline_badge: gtk::Label,
     timeline_all_day_box: gtk::Box,
+    timeline_hours_box: gtk::Box,
+    timeline_hour_rows: Rc<RefCell<Vec<(gtk::Box, gtk::Box)>>>,
+    timeline_hour_height: Rc<Cell<f64>>,
     timeline_fixed: gtk::Fixed,
     timeline_scrolled: gtk::ScrolledWindow,
     timeline_target_scroll_y: Rc<Cell<f64>>,
+    last_timeline_state: Rc<
+        RefCell<
+            Option<(
+                crate::services::calendar_store_service::CalendarEventRecord,
+                crate::services::calendar_store_service::CalendarSnapshot,
+                bool,
+                Vec<String>,
+            )>,
+        >,
+    >,
     lbl_location: gtk::Label,
     lbl_organizer: gtk::Label,
     lbl_attendees: gtk::Label,
@@ -65,6 +81,16 @@ pub struct ItipBanner {
     attendees_row: gtk::Box,
     calendar_dropdown: gtk::DropDown,
     calendar_sources: Rc<RefCell<Vec<(String, String)>>>,
+    calendar_source_colors: Rc<RefCell<std::collections::HashMap<String, String>>>,
+    secondary_bar_box: gtk::Box,
+    btn_target_calendar: gtk::MenuButton,
+    lbl_calendar_dot: gtk::Label,
+    lbl_calendar_chip_name: gtk::Label,
+    calendar_chip_popover: gtk::Popover,
+    calendar_chip_list_box: gtk::Box,
+    sep_footer_inner: gtk::Separator,
+    user_selected_calendar: Rc<Cell<bool>>,
+    last_user_emails: Rc<RefCell<Vec<String>>>,
     btn_accept: gtk::Button,
     btn_tentative: gtk::Button,
     btn_decline: gtk::Button,
@@ -85,6 +111,7 @@ pub struct ItipBanner {
     on_calendar_navigate: Rc<RefCell<Option<Box<dyn Fn(NaiveDate) + 'static>>>>,
     on_action_toast: Rc<RefCell<Option<Box<dyn Fn(String) + 'static>>>>,
     on_reply_draft_saved: Rc<RefCell<Option<Box<dyn Fn(&ItipInvitation, ItipReplyStatus, Option<String>, bool) + 'static>>>>,
+    on_scroll_offset: Rc<RefCell<Option<Box<dyn Fn(f64) + 'static>>>>,
 }
 
 impl std::fmt::Debug for ItipBanner {
@@ -98,7 +125,7 @@ impl std::fmt::Debug for ItipBanner {
 impl ItipBanner {
     pub fn new() -> Self {
         let revealer = gtk::Revealer::builder()
-            .transition_type(gtk::RevealerTransitionType::SlideDown)
+            .transition_type(gtk::RevealerTransitionType::None)
             .reveal_child(false)
             .visible(false)
             .hexpand(true)
@@ -109,6 +136,7 @@ impl ItipBanner {
             .spacing(0)
             .css_classes(vec!["itip-banner"])
             .hexpand(true)
+            .vexpand(true)
             .margin_start(0)
             .margin_end(0)
             .margin_top(0)
@@ -230,6 +258,8 @@ impl ItipBanner {
             .build();
         let conflict_icon = gtk::Image::builder()
             .icon_name("emblem-ok-symbolic")
+            .valign(gtk::Align::Start)
+            .margin_top(2)
             .css_classes(vec!["dim-label"])
             .build();
         let lbl_conflict = gtk::Label::builder()
@@ -244,8 +274,7 @@ impl ItipBanner {
             .build();
         conflict_row.append(&conflict_icon);
         conflict_row.append(&lbl_conflict);
-        // NOTE: conflict_row is kept for test compatibility but not added to details_vbox.
-        // The right timeline strip header is the single source of truth for scheduling conflicts.
+        details_info_box.append(&conflict_row);
 
         let recurrence_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -342,6 +371,8 @@ impl ItipBanner {
             .hexpand(true)
             .wrap(true)
             .wrap_mode(pango::WrapMode::WordChar)
+            .ellipsize(pango::EllipsizeMode::End)
+            .lines(2)
             .width_chars(1)
             .css_classes(vec!["caption", "dim-label"])
             .build();
@@ -380,7 +411,7 @@ impl ItipBanner {
             .wrap(true)
             .wrap_mode(pango::WrapMode::WordChar)
             .width_chars(1)
-            .selectable(true)
+            .can_focus(false)
             .css_classes(vec!["body", "itip-sender-message-text"])
             .build();
         sender_message_box.append(&lbl_sender_message);
@@ -454,18 +485,18 @@ impl ItipBanner {
             .width_chars(1)
             .build();
 
-        // 6. Comment Box (Progressive Disclosure - Revealed on demand)
+        // 6. Comment Box (Progressive Disclosure - Revealed on demand right above sticky footer)
         let comment_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(4)
             .hexpand(true)
             .margin_start(16)
             .margin_end(16)
-            .margin_top(4)
-            .margin_bottom(10)
+            .margin_top(8)
+            .margin_bottom(6)
             .build();
         let lbl_comment = gtk::Label::builder()
-            .label(&format!("{}:", gettext("Comment")))
+            .label(&gettext("Add a note to your response:"))
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .hexpand(true)
@@ -486,56 +517,145 @@ impl ItipBanner {
             .transition_duration(150)
             .child(&comment_box)
             .build();
-        details_vbox.append(&comment_revealer);
 
-        // Continuous full-width separator before actions
+        // Continuous full-width separator before sticky footer
         let sep_footer = gtk::Separator::new(gtk::Orientation::Horizontal);
         sep_footer.set_hexpand(true);
-        details_vbox.append(&sep_footer);
 
-        // 7. Action Buttons Row (GNOME HIG)
+        // 7. Two-Row Action Footer (Row 1: Target Calendar Chip + Secondary Tools; Row 2: Primary RSVP Actions)
         let footer_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(8)
+            .spacing(0)
             .hexpand(true)
-            .margin_start(16)
-            .margin_end(16)
-            .margin_top(10)
-            .margin_bottom(12)
+            .margin_start(0)
+            .margin_end(0)
+            .margin_top(0)
+            .margin_bottom(0)
             .build();
 
-        let open_calendar_label = gettext("Open in Calendar");
-        let btn_open_content = adw::ButtonContent::builder()
-            .icon_name("x-office-calendar-symbolic")
-            .label(&open_calendar_label)
-            .build();
-        let btn_open_calendar = gtk::Button::builder()
-            .child(&btn_open_content)
-            .css_classes(vec!["flat"])
-            .tooltip_text(&gettext("Switch to calendar and show date"))
-            .halign(gtk::Align::Start)
-            .valign(gtk::Align::Center)
-            .build();
-        footer_box.append(&btn_open_calendar);
-
-        let action_spacer = gtk::Box::builder().hexpand(true).visible(false).build();
-        footer_box.append(&action_spacer);
-
-        // Request actions
-        let action_box_request = gtk::Box::builder()
+        // ── Row 1: Target Calendar Chip (left) + Comment (right) ──
+        let secondary_bar_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
+            .hexpand(true)
+            .valign(gtk::Align::Center)
+            .margin_start(16)
+            .margin_end(16)
+            .margin_top(8)
+            .margin_bottom(8)
+            .build();
+
+        let calendar_chip_list_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .hexpand(true)
+            .build();
+        let calendar_chip_scrolled = gtk::ScrolledWindow::builder()
+            .max_content_height(300)
+            .propagate_natural_height(true)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&calendar_chip_list_box)
+            .build();
+        let chip_pop_outer = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(8)
+            .margin_bottom(8)
+            .width_request(240)
+            .build();
+        let chip_pop_title = gtk::Label::builder()
+            .label(&gettext("Target Calendar"))
+            .halign(gtk::Align::Start)
+            .margin_start(6)
+            .css_classes(vec!["caption", "heading", "dim-label"])
+            .build();
+        chip_pop_outer.append(&chip_pop_title);
+        chip_pop_outer.append(&calendar_chip_scrolled);
+        let calendar_chip_popover = gtk::Popover::builder()
+            .css_classes(vec!["calendar-picker-popover"])
+            .child(&chip_pop_outer)
+            .has_arrow(true)
+            .autohide(true)
+            .build();
+
+        let chip_inner_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .valign(gtk::Align::Center)
+            .build();
+        let lbl_calendar_dot = gtk::Label::builder()
+            .use_markup(true)
+            .label("<span foreground=\"#3584e4\">●</span>")
+            .valign(gtk::Align::Center)
+            .build();
+        let lbl_calendar_chip_name = gtk::Label::builder()
+            .label(&gettext("Personal Calendar"))
+            .ellipsize(pango::EllipsizeMode::End)
+            .max_width_chars(24)
+            .single_line_mode(true)
+            .valign(gtk::Align::Center)
+            .build();
+        let chip_chevron = gtk::Image::builder()
+            .icon_name("pan-down-symbolic")
+            .pixel_size(12)
+            .css_classes(vec!["dim-label"])
+            .valign(gtk::Align::Center)
+            .build();
+        chip_inner_box.append(&lbl_calendar_dot);
+        chip_inner_box.append(&lbl_calendar_chip_name);
+        chip_inner_box.append(&chip_chevron);
+
+        let btn_target_calendar = gtk::MenuButton::builder()
+            .child(&chip_inner_box)
+            .popover(&calendar_chip_popover)
+            .tooltip_text(&gettext("Target Calendar"))
+            .css_classes(vec!["flat", "itip-calendar-chip"])
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .build();
+        secondary_bar_box.append(&btn_target_calendar);
 
-        let comment_btn_label = gettext("Comment");
-        let btn_comment_content = adw::ButtonContent::builder()
-            .icon_name("user-available-symbolic")
-            .label(&comment_btn_label)
+        let action_spacer = gtk::Box::builder().hexpand(true).build();
+        secondary_bar_box.append(&action_spacer);
+
+        let secondary_tools_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .halign(gtk::Align::End)
+            .valign(gtk::Align::Center)
             .build();
+
+        let btn_open_calendar = gtk::Button::builder()
+            .label(&gettext("Open in Calendar"))
+            .css_classes(vec!["flat"])
+            .tooltip_text(&gettext("Switch to calendar and show date"))
+            .visible(false)
+            .build();
+
+        // GNOME HIG: show text-only label when enough horizontal room, switch to icon-only when narrow
+        let comment_btn_inner = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(0)
+            .valign(gtk::Align::Center)
+            .build();
+        let btn_comment_icon = gtk::Image::builder()
+            .icon_name("user-available-symbolic")
+            .visible(false)
+            .valign(gtk::Align::Center)
+            .build();
+        let btn_comment_lbl = gtk::Label::builder()
+            .label(&gettext("Comment"))
+            .single_line_mode(true)
+            .valign(gtk::Align::Center)
+            .build();
+        comment_btn_inner.append(&btn_comment_icon);
+        comment_btn_inner.append(&btn_comment_lbl);
+
         let btn_toggle_comment = gtk::ToggleButton::builder()
-            .child(&btn_comment_content)
+            .child(&comment_btn_inner)
             .css_classes(vec!["flat"])
             .tooltip_text(&gettext("Add a comment to your response"))
             .valign(gtk::Align::Center)
@@ -549,7 +669,36 @@ impl ItipBanner {
                 view_comment.grab_focus();
             }
         });
-        action_box_request.append(&btn_toggle_comment);
+        secondary_tools_box.append(&btn_toggle_comment);
+        secondary_bar_box.append(&secondary_tools_box);
+        footer_box.append(&secondary_bar_box);
+
+        let sep_footer_inner = gtk::Separator::new(gtk::Orientation::Horizontal);
+        sep_footer_inner.set_hexpand(true);
+        sep_footer_inner.add_css_class("itip-footer-inner-sep");
+        sep_footer_inner.set_visible(false);
+        footer_box.append(&sep_footer_inner);
+
+        // ── Row 2: Primary RSVP Decision Bar ──────────────────────────────────
+        let primary_actions_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .hexpand(true)
+            .valign(gtk::Align::Center)
+            .margin_start(16)
+            .margin_end(16)
+            .margin_top(10)
+            .margin_bottom(12)
+            .build();
+
+        // Request actions
+        let action_box_request = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .hexpand(true)
+            .halign(gtk::Align::Fill)
+            .valign(gtk::Align::Center)
+            .build();
 
         let make_action_btn = |text: &str, classes: Vec<&str>, tooltip: &str| -> gtk::Button {
             let lbl = gtk::Label::builder()
@@ -582,7 +731,10 @@ impl ItipBanner {
         action_box_request.append(&btn_tentative);
         action_box_request.append(&btn_accept);
 
-        // More options popover (Target Calendar, Reply toggle, Free/Busy, Import)
+        let req_spacer = gtk::Box::builder().hexpand(true).build();
+        action_box_request.append(&req_spacer);
+
+        // More options popover (Expert options: Reply toggle, Free/Busy, Import as Event)
         let more_popover = gtk::Popover::new();
         let pop_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -591,19 +743,8 @@ impl ItipBanner {
             .margin_end(12)
             .margin_top(12)
             .margin_bottom(12)
-            .width_request(260)
+            .width_request(250)
             .build();
-
-        let cal_lbl = gtk::Label::builder()
-            .label(&gettext("Target Calendar"))
-            .halign(gtk::Align::Start)
-            .css_classes(vec!["heading", "dim-label"])
-            .build();
-        pop_box.append(&cal_lbl);
-        pop_box.append(&cal_select_box);
-
-        let sep_pop1 = gtk::Separator::new(gtk::Orientation::Horizontal);
-        pop_box.append(&sep_pop1);
 
         let opts_lbl = gtk::Label::builder()
             .label(&gettext("Options"))
@@ -613,7 +754,6 @@ impl ItipBanner {
         pop_box.append(&opts_lbl);
         pop_box.append(&chk_send_reply);
         pop_box.append(&chk_show_free);
-        pop_box.append(&chk_preserve_reminder);
 
         let sep_pop2 = gtk::Separator::new(gtk::Orientation::Horizontal);
         pop_box.append(&sep_pop2);
@@ -636,7 +776,7 @@ impl ItipBanner {
             .valign(gtk::Align::Center)
             .build();
         action_box_request.append(&btn_more_options);
-        footer_box.append(&action_box_request);
+        primary_actions_row.append(&action_box_request);
 
         // Cancel actions
         let action_box_cancel = gtk::Box::builder()
@@ -651,7 +791,7 @@ impl ItipBanner {
             .tooltip_text(&gettext("Remove cancelled event from your calendar"))
             .build();
         action_box_cancel.append(&btn_remove);
-        footer_box.append(&action_box_cancel);
+        primary_actions_row.append(&action_box_cancel);
 
         // Reply actions
         let action_box_reply = gtk::Box::builder()
@@ -666,7 +806,7 @@ impl ItipBanner {
             .tooltip_text(&gettext("Update attendee status in existing calendar event"))
             .build();
         action_box_reply.append(&btn_update);
-        footer_box.append(&action_box_reply);
+        primary_actions_row.append(&action_box_reply);
 
         // Publish actions
         let action_box_publish = gtk::Box::builder()
@@ -681,9 +821,9 @@ impl ItipBanner {
             .tooltip_text(&gettext("Add published event to calendar"))
             .build();
         action_box_publish.append(&btn_import);
-        footer_box.append(&action_box_publish);
+        primary_actions_row.append(&action_box_publish);
 
-        details_vbox.append(&footer_box);
+        footer_box.append(&primary_actions_row);
 
         // ── Right Column: Day Schedule / Timeline Strip (Calendar Day View Parity) ──
         let timeline_side_box = gtk::Box::builder()
@@ -719,7 +859,7 @@ impl ItipBanner {
             .css_classes(vec!["appointment-timeline-conflict-badge"])
             .visible(false)
             .build();
-        timeline_top_bar.append(&lbl_timeline_badge);
+        // NOTE: lbl_timeline_badge is kept for test compatibility; conflicts are shown directly under the event time in details_info_box.
         timeline_side_box.append(&timeline_top_bar);
 
         let timeline_all_day_box = gtk::Box::builder()
@@ -740,12 +880,15 @@ impl ItipBanner {
             .build();
 
         let timeline_overlay = gtk::Overlay::new();
-        let hours_box = gtk::Box::builder()
+        let timeline_hours_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(0)
             .height_request((24.0 * HOUR_HEIGHT) as i32)
             .hexpand(true)
             .build();
+
+        let timeline_hour_rows: Rc<RefCell<Vec<(gtk::Box, gtk::Box)>>> =
+            Rc::new(RefCell::new(Vec::with_capacity(24)));
 
         for h in 0..24 {
             let row = gtk::Box::builder()
@@ -787,9 +930,10 @@ impl ItipBanner {
 
             row.append(&gutter_box);
             row.append(&slot_area);
-            hours_box.append(&row);
+            timeline_hours_box.append(&row);
+            timeline_hour_rows.borrow_mut().push((row, gutter_box));
         }
-        timeline_overlay.set_child(Some(&hours_box));
+        timeline_overlay.set_child(Some(&timeline_hours_box));
 
         let timeline_fixed = gtk::Fixed::builder()
             .height_request((24.0 * HOUR_HEIGHT) as i32)
@@ -823,7 +967,7 @@ impl ItipBanner {
             .hscrollbar_policy(gtk::PolicyType::External)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_width(false)
-            .propagate_natural_height(true)
+            .propagate_natural_height(false)
             .min_content_width(0)
             .hexpand(true)
             .vexpand(true)
@@ -834,25 +978,24 @@ impl ItipBanner {
             .reveal_child(true)
             .hexpand(true)
             .vexpand(true)
-            .transition_type(gtk::RevealerTransitionType::SlideDown)
-            .transition_duration(200)
+            .transition_type(gtk::RevealerTransitionType::None)
             .child(&details_scrolled)
             .build();
         banner_box.append(&details_revealer);
+
+        // Sticky Bottom Section: Separator + Progressive Comment Box + Action Footer
+        banner_box.append(&sep_footer);
+        banner_box.append(&comment_revealer);
+        banner_box.append(&footer_box);
         revealer.set_child(Some(&banner_box));
 
         // Responsive adaptation when the preview pane is narrowed
         {
             let cols = details_columns.clone();
             let tl_box = timeline_side_box.clone();
-            let f_box = footer_box.clone();
-            let spacer = action_spacer.clone();
-            let open_btn = btn_open_calendar.clone();
-            let req_box = action_box_request.clone();
-            let open_content = btn_open_content.clone();
-            let comment_content = btn_comment_content.clone();
-            let open_lbl_full = open_calendar_label;
-            let comment_lbl_full = comment_btn_label;
+            let comment_icon = btn_comment_icon.clone();
+            let comment_lbl = btn_comment_lbl.clone();
+            let chip_name_lbl = lbl_calendar_chip_name.clone();
             let last_width = Cell::new(0);
             let last_tl_vis = Cell::new(false);
             banner_box.add_tick_callback(move |widget, _| {
@@ -880,41 +1023,11 @@ impl ItipBanner {
                         tl_box.remove_css_class("is-stacked");
                     }
 
-                    let effective_col_w = if !stack_columns && tl_vis {
-                        (w - 260).max(0)
-                    } else {
-                        w
-                    };
-
-                    let compact_buttons = effective_col_w < 560;
-                    let stack_footer = effective_col_w < 480;
-
-                    open_content.set_label(if compact_buttons && !stack_footer {
-                        ""
-                    } else {
-                        &open_lbl_full
-                    });
-                    comment_content.set_label(if compact_buttons {
-                        ""
-                    } else {
-                        &comment_lbl_full
-                    });
-
-                    let target_footer_orient = if stack_footer {
-                        gtk::Orientation::Vertical
-                    } else {
-                        gtk::Orientation::Horizontal
-                    };
-                    if f_box.orientation() != target_footer_orient {
-                        f_box.set_orientation(target_footer_orient);
-                    }
-                    spacer.set_visible(!stack_footer);
-                    open_btn.set_halign(gtk::Align::Start);
-                    req_box.set_halign(if stack_footer {
-                        gtk::Align::Start
-                    } else {
-                        gtk::Align::End
-                    });
+                    // GNOME HIG: show text-only ("Comment") when room permits, switch to icon-only when narrow
+                    let icon_only_comment = w < 420;
+                    comment_lbl.set_visible(!icon_only_comment);
+                    comment_icon.set_visible(icon_only_comment);
+                    chip_name_lbl.set_max_width_chars(if w < 380 { 14 } else { 24 });
                 }
                 glib::ControlFlow::Continue
             });
@@ -923,10 +1036,13 @@ impl ItipBanner {
         let banner = Self {
             revealer,
             banner_box,
+            header_row,
             details_revealer,
+            details_scrolled: details_scrolled.clone(),
             cal_select_box,
             footer_box,
             is_compact: Rc::new(Cell::new(false)),
+            full_header_prompt: Rc::new(RefCell::new(gettext("Meeting Invitation"))),
             icon,
             lbl_header_prompt,
             lbl_title,
@@ -936,13 +1052,17 @@ impl ItipBanner {
             conflict_row,
             conflict_icon,
             lbl_conflict,
-            timeline_side_box,
+            timeline_side_box: timeline_side_box.clone(),
             lbl_timeline_date,
             lbl_timeline_badge,
             timeline_all_day_box,
+            timeline_hours_box,
+            timeline_hour_rows,
+            timeline_hour_height: Rc::new(Cell::new(HOUR_HEIGHT)),
             timeline_fixed,
             timeline_scrolled,
             timeline_target_scroll_y,
+            last_timeline_state: Rc::new(RefCell::new(None)),
             lbl_location,
             lbl_organizer,
             lbl_attendees,
@@ -964,6 +1084,16 @@ impl ItipBanner {
             attendees_row,
             calendar_dropdown,
             calendar_sources: Rc::new(RefCell::new(Vec::new())),
+            calendar_source_colors: Rc::new(RefCell::new(std::collections::HashMap::new())),
+            secondary_bar_box,
+            btn_target_calendar,
+            lbl_calendar_dot,
+            lbl_calendar_chip_name,
+            calendar_chip_popover,
+            calendar_chip_list_box,
+            sep_footer_inner,
+            user_selected_calendar: Rc::new(Cell::new(false)),
+            last_user_emails: Rc::new(RefCell::new(Vec::new())),
             btn_accept,
             btn_tentative,
             btn_decline,
@@ -984,7 +1114,64 @@ impl ItipBanner {
             on_calendar_navigate: Rc::new(RefCell::new(None)),
             on_action_toast: Rc::new(RefCell::new(None)),
             on_reply_draft_saved: Rc::new(RefCell::new(None)),
+            on_scroll_offset: Rc::new(RefCell::new(None)),
         };
+
+        // Connect scroll offset on details_scrolled to compact header (and notify MailPage)
+        {
+            let this = banner.clone();
+            details_scrolled.vadjustment().connect_value_changed(move |adj| {
+                let offset_y = adj.value();
+                if !this.is_compact.get() && offset_y > 35.0 {
+                    this.set_compact(true);
+                } else if this.is_compact.get() && offset_y < 15.0 {
+                    this.set_compact(false);
+                }
+                if let Some(cb) = this.on_scroll_offset.borrow().as_ref() {
+                    cb(offset_y);
+                }
+            });
+        }
+
+        // Connect Ctrl + Scroll zoom on timeline_side_box (analogous to Calendar View)
+        {
+            let zoom_ctrl = gtk::EventControllerScroll::new(
+                gtk::EventControllerScrollFlags::VERTICAL,
+            );
+            zoom_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+            let zoom_accum = Rc::new(Cell::new(0.0f64));
+            let last_zoom_time = Rc::new(Cell::new(std::time::Instant::now()));
+            let this = banner.clone();
+            zoom_ctrl.connect_scroll(move |controller, _dx, dy| {
+                let state = controller.current_event_state();
+                let is_ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+                    && !state.contains(gtk::gdk::ModifierType::ALT_MASK)
+                    && !state.contains(gtk::gdk::ModifierType::SUPER_MASK);
+                if is_ctrl {
+                    let now = std::time::Instant::now();
+                    if now.duration_since(last_zoom_time.get()) > std::time::Duration::from_millis(250) {
+                        zoom_accum.set(0.0);
+                    }
+                    last_zoom_time.set(now);
+
+                    let current = zoom_accum.get() + dy;
+                    const THRESHOLD: f64 = 0.5;
+                    let steps = (current / THRESHOLD).trunc() as i32;
+                    if steps != 0 {
+                        zoom_accum.set(current - (steps as f64 * THRESHOLD));
+                        let delta_steps = (-steps).clamp(-3, 3);
+                        this.adjust_timeline_zoom(delta_steps);
+                    } else {
+                        zoom_accum.set(current);
+                    }
+                    return glib::Propagation::Stop;
+                } else {
+                    zoom_accum.set(0.0);
+                }
+                glib::Propagation::Proceed
+            });
+            timeline_side_box.add_controller(zoom_ctrl);
+        }
 
         banner.setup_calendar_sources();
         banner.connect_signals();
@@ -1004,14 +1191,69 @@ impl ItipBanner {
         self.details_revealer.set_reveal_child(true);
         self.cal_select_box.set_visible(!compact);
         self.lbl_method.set_visible(!compact);
-        self.footer_box.set_margin_top(if compact { 0 } else { 4 });
+        self.footer_box.set_margin_top(0);
         if compact {
             self.banner_box.add_css_class("is-compact");
-            self.icon.set_pixel_size(22);
+            self.header_row.set_margin_top(4);
+            self.header_row.set_margin_bottom(4);
+            self.icon.set_pixel_size(18);
+            self.lbl_header_prompt.set_wrap(false);
+            self.lbl_header_prompt.set_single_line_mode(true);
+            self.lbl_header_prompt.set_ellipsize(pango::EllipsizeMode::End);
+            let title = self.lbl_title.text();
+            let prompt = self.full_header_prompt.borrow().clone();
+            if !title.is_empty() && title != gettext("Event") {
+                self.lbl_header_prompt.set_text(&format!("{title} — {prompt}"));
+            }
         } else {
             self.banner_box.remove_css_class("is-compact");
+            self.header_row.set_margin_top(10);
+            self.header_row.set_margin_bottom(10);
             self.icon.set_pixel_size(24);
+            self.lbl_header_prompt.set_single_line_mode(false);
+            self.lbl_header_prompt.set_wrap(true);
+            self.lbl_header_prompt.set_ellipsize(pango::EllipsizeMode::None);
+            let prompt = self.full_header_prompt.borrow().clone();
+            self.lbl_header_prompt.set_text(&prompt);
         }
+    }
+
+    pub fn connect_scroll_offset<F: Fn(f64) + 'static>(&self, f: F) {
+        *self.on_scroll_offset.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn adjust_timeline_zoom(&self, delta_steps: i32) {
+        if delta_steps == 0 {
+            return;
+        }
+        let old_h = self.timeline_hour_height.get();
+        let new_h = (old_h + (delta_steps as f64 * 8.0)).clamp(24.0, 120.0);
+        if (new_h - old_h).abs() < 0.5 {
+            return;
+        }
+        let vadj = self.timeline_scrolled.vadjustment();
+        let page_h = vadj.page_size().max(340.0);
+        let center_hour = (vadj.value() + page_h * 0.5) / old_h;
+
+        self.timeline_hour_height.set(new_h);
+        self.timeline_hours_box
+            .set_height_request((24.0 * new_h) as i32);
+        self.timeline_fixed
+            .set_height_request((24.0 * new_h) as i32);
+        for (row, gutter) in self.timeline_hour_rows.borrow().iter() {
+            row.set_height_request(new_h as i32);
+            gutter.set_height_request(new_h as i32);
+        }
+
+        let state_opt = self.last_timeline_state.borrow().clone();
+        if let Some((ev, snap, has_conflict, conflicts)) = state_opt {
+            self.render_day_timeline_internal(&ev, &snap, has_conflict, &conflicts, false);
+        }
+
+        let max_scroll = (24.0 * new_h - page_h).max(0.0);
+        let new_scroll = (center_hour * new_h - page_h * 0.5).clamp(0.0, max_scroll);
+        self.timeline_target_scroll_y.set(new_scroll);
+        vadj.set_value(new_scroll);
     }
 
     pub fn connect_calendar_navigate<F: Fn(NaiveDate) + 'static>(&self, f: F) {
@@ -1098,34 +1340,261 @@ impl ItipBanner {
         }
     }
 
-    fn setup_calendar_sources(&self) {
-        let sources = vec![("local-calendar".to_string(), gettext("Personal Calendar"))];
+    fn resolve_source_color(&self, uid: &str, name: &str) -> String {
+        if let Some(c) = self.calendar_source_colors.borrow().get(uid) {
+            if !c.trim().is_empty() {
+                return c.clone();
+            }
+        }
+        crate::views::calendar_page::calendar_source_color(uid, name)
+    }
+
+    fn sync_calendar_chip_ui(&self) {
+        let sources = self.calendar_sources.borrow().clone();
+        let selected_idx = (self.calendar_dropdown.selected() as usize)
+            .min(sources.len().saturating_sub(1));
+
+        if let Some((uid, name)) = sources.get(selected_idx) {
+            let color = self.resolve_source_color(uid, name);
+            self.lbl_calendar_dot
+                .set_markup(&format!("<span foreground=\"{color}\">●</span>"));
+            self.lbl_calendar_chip_name.set_text(name);
+            self.btn_target_calendar
+                .set_tooltip_text(Some(&format!("{}: {}", gettext("Target Calendar"), name)));
+        }
+
+        while let Some(child) = self.calendar_chip_list_box.first_child() {
+            self.calendar_chip_list_box.remove(&child);
+        }
+
+        let row_widgets: Rc<RefCell<Vec<(usize, gtk::Image, gtk::Button)>>> =
+            Rc::new(RefCell::new(Vec::new()));
+
+        for (idx, (uid, name)) in sources.iter().enumerate() {
+            let is_selected = idx == selected_idx;
+            let color = self.resolve_source_color(uid, name);
+
+            let row_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(8)
+                .hexpand(true)
+                .valign(gtk::Align::Center)
+                .build();
+
+            let dot = gtk::Label::builder()
+                .use_markup(true)
+                .label(&format!("<span foreground=\"{color}\">●</span>"))
+                .valign(gtk::Align::Center)
+                .build();
+
+            let lbl = gtk::Label::builder()
+                .label(name)
+                .halign(gtk::Align::Start)
+                .hexpand(true)
+                .ellipsize(pango::EllipsizeMode::End)
+                .max_width_chars(28)
+                .valign(gtk::Align::Center)
+                .build();
+
+            let check = gtk::Image::builder()
+                .icon_name("object-select-symbolic")
+                .pixel_size(14)
+                .opacity(if is_selected { 1.0 } else { 0.0 })
+                .css_classes(vec!["accent"])
+                .valign(gtk::Align::Center)
+                .build();
+
+            row_box.append(&dot);
+            row_box.append(&lbl);
+            row_box.append(&check);
+
+            let mut classes = vec!["flat", "itip-calendar-chip-row"];
+            if is_selected {
+                classes.push("is-selected");
+            }
+            let row_btn = gtk::Button::builder()
+                .child(&row_box)
+                .css_classes(classes)
+                .hexpand(true)
+                .build();
+
+            row_widgets
+                .borrow_mut()
+                .push((idx, check.clone(), row_btn.clone()));
+
+            let this = self.clone();
+            let pop = self.calendar_chip_popover.clone();
+            let rows_ref = Rc::clone(&row_widgets);
+            let item_color = color.clone();
+            let item_name = name.clone();
+            row_btn.connect_clicked(move |_| {
+                this.user_selected_calendar.set(true);
+                this.calendar_dropdown.set_selected(idx as u32);
+                this.lbl_calendar_dot
+                    .set_markup(&format!("<span foreground=\"{item_color}\">●</span>"));
+                this.lbl_calendar_chip_name.set_text(&item_name);
+                this.btn_target_calendar.set_tooltip_text(Some(&format!(
+                    "{}: {}",
+                    gettext("Target Calendar"),
+                    item_name
+                )));
+                for (r_idx, r_check, r_btn) in rows_ref.borrow().iter() {
+                    if *r_idx == idx {
+                        r_check.set_opacity(1.0);
+                        r_btn.add_css_class("is-selected");
+                    } else {
+                        r_check.set_opacity(0.0);
+                        r_btn.remove_css_class("is-selected");
+                    }
+                }
+                pop.popdown();
+            });
+
+            self.calendar_chip_list_box.append(&row_btn);
+        }
+    }
+
+    fn apply_smart_calendar_selection(
+        &self,
+        snapshot: &crate::services::calendar_store_service::CalendarSnapshot,
+    ) {
+        if self.user_selected_calendar.get() {
+            return;
+        }
+        let inv_opt = self.current_invitation.borrow().clone();
+        let Some(invitation) = inv_opt else {
+            self.sync_calendar_chip_ui();
+            return;
+        };
+        let sources = self.calendar_sources.borrow().clone();
+        let user_emails = self.last_user_emails.borrow().clone();
+        let user_email_refs: Vec<&str> = user_emails.iter().map(|s| s.as_str()).collect();
+
+        if let Some(best_idx) = find_best_calendar_source_index(
+            &sources,
+            &invitation,
+            &user_email_refs,
+            snapshot,
+        ) {
+            self.calendar_dropdown.set_selected(best_idx as u32);
+        }
+        self.sync_calendar_chip_ui();
+    }
+
+    fn apply_discovered_calendar_sources(
+        &self,
+        discovered: Vec<crate::services::eds_service::EdsSource>,
+    ) {
+        let mut raw_items: Vec<(String, String, Option<String>)> = Vec::new();
+        {
+            let mut color_map = self.calendar_source_colors.borrow_mut();
+            for source in discovered {
+                if let Some(ref c) = source.color {
+                    if !c.trim().is_empty() {
+                        color_map.insert(source.uid.clone(), c.trim().to_string());
+                    }
+                }
+                if source.enabled
+                    && source.writable
+                    && source.backend_name != "contacts"
+                    && source.uid != "birthdays"
+                {
+                    raw_items.push((source.uid, source.display_name, source.parent_name));
+                }
+            }
+        }
+
+        if raw_items.is_empty() {
+            for collection in crate::services::eds_service::load_configured_account_collections() {
+                if !collection.calendar_enabled {
+                    continue;
+                }
+                let account_name = collection.display_name.clone();
+                let cal_uid = format!("account-calendar-{}", collection.uid);
+                raw_items.push((
+                    cal_uid,
+                    gettext("Calendar"),
+                    (!account_name.is_empty()).then_some(account_name),
+                ));
+            }
+        }
+
+        // Ensure local fallback is present
+        if !raw_items
+            .iter()
+            .any(|(uid, _, _)| uid == "local-calendar" || uid == "system-calendar")
+        {
+            raw_items.insert(
+                0,
+                (
+                    "local-calendar".to_string(),
+                    gettext("Personal Calendar"),
+                    None,
+                ),
+            );
+        }
+
+        let mut name_counts = std::collections::HashMap::<String, usize>::new();
+        for (_, name, _) in &raw_items {
+            *name_counts.entry(name.to_lowercase()).or_insert(0) += 1;
+        }
+
+        let mut sources: Vec<(String, String)> = Vec::new();
+        for (uid, name, parent) in raw_items {
+            let label = if name_counts.get(&name.to_lowercase()).copied().unwrap_or(0) > 1
+                || name.eq_ignore_ascii_case("Kalender")
+                || name.eq_ignore_ascii_case("Calendar")
+            {
+                if let Some(p) = parent.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                    if !name.to_lowercase().contains(&p.to_lowercase()) {
+                        format!("{name} ({p})")
+                    } else {
+                        name
+                    }
+                } else {
+                    name
+                }
+            } else {
+                name
+            };
+            if !sources.iter().any(|(u, _)| u == &uid) {
+                sources.push((uid, label));
+            }
+        }
+
+        if sources.is_empty() {
+            sources.push(("local-calendar".to_string(), gettext("Personal Calendar")));
+        }
+
+        let prev_uid = self.selected_source_uid();
         let names: Vec<&str> = sources.iter().map(|(_, name)| name.as_str()).collect();
         let model = gtk::StringList::new(&names);
         self.calendar_dropdown.set_model(Some(&model));
-        self.calendar_dropdown.set_selected(0);
+        if let Some(pos) = sources.iter().position(|(u, _)| u == &prev_uid) {
+            self.calendar_dropdown.set_selected(pos as u32);
+        } else {
+            self.calendar_dropdown.set_selected(0);
+        }
         *self.calendar_sources.borrow_mut() = sources;
+        let snapshot = load_local_calendar_snapshot_safe();
+        self.apply_smart_calendar_selection(&snapshot);
+    }
 
-        let dropdown = self.calendar_dropdown.clone();
-        let sources_store = Rc::clone(&self.calendar_sources);
-        let (tx, rx) = async_channel::bounded(1);
-        std::thread::spawn(move || {
-            if let Ok(discovery) = ECalService::new().discover_source_capabilities(ECalComponentType::Event) {
-                let _ = tx.send_blocking(discovery);
-            }
-        });
+    fn setup_calendar_sources(&self) {
+        // 1. Immediately populate from local EDS source cache so all configured calendars are ready synchronously
+        let cached_sources = crate::services::eds_source_cache_service::EdsSourceCache::new()
+            .load(crate::services::eds_service::EdsSourceKind::Calendar);
+        self.apply_discovered_calendar_sources(cached_sources);
+
+        // 2. Refresh asynchronously from live EDS
+        let this = self.clone();
         glib::spawn_future_local(async move {
-            if let Ok(discovery) = rx.recv().await {
-                let mut sources = vec![("local-calendar".to_string(), gettext("Personal Calendar"))];
-                for source in discovery.sources {
-                    if source.writable && source.source_uid != "local-calendar" {
-                        sources.push((source.source_uid, source.display_name));
-                    }
-                }
-                let names: Vec<&str> = sources.iter().map(|(_, name)| name.as_str()).collect();
-                let model = gtk::StringList::new(&names);
-                dropdown.set_model(Some(&model));
-                *sources_store.borrow_mut() = sources;
+            let discovery = crate::services::eds_service::discover_sources(
+                crate::services::eds_service::EdsSourceKind::Calendar,
+            )
+            .await;
+            if !discovery.sources.is_empty() {
+                this.apply_discovered_calendar_sources(discovery.sources);
             }
         });
     }
@@ -1145,6 +1614,9 @@ impl ItipBanner {
         user_emails: &[&str],
     ) {
         *self.current_invitation.borrow_mut() = invitation.clone();
+        *self.last_user_emails.borrow_mut() =
+            user_emails.iter().map(|s| (*s).to_string()).collect();
+        self.user_selected_calendar.set(false);
 
         let Some(invitation) = invitation else {
             self.revealer.set_reveal_child(false);
@@ -1196,6 +1668,10 @@ impl ItipBanner {
                 self.action_box_cancel.set_visible(false);
                 self.action_box_reply.set_visible(false);
                 self.action_box_publish.set_visible(false);
+                self.secondary_bar_box.set_visible(true);
+                self.btn_target_calendar.set_visible(true);
+                self.btn_toggle_comment.set_visible(true);
+                self.sep_footer_inner.set_visible(false);
                 self.btn_toggle_comment.set_active(false);
                 self.comment_revealer.set_reveal_child(false);
                 self.comment_view.buffer().set_text("");
@@ -1221,6 +1697,10 @@ impl ItipBanner {
                 self.action_box_cancel.set_visible(true);
                 self.action_box_reply.set_visible(false);
                 self.action_box_publish.set_visible(false);
+                self.secondary_bar_box.set_visible(false);
+                self.btn_target_calendar.set_visible(false);
+                self.btn_toggle_comment.set_visible(false);
+                self.sep_footer_inner.set_visible(false);
                 self.btn_toggle_comment.set_active(false);
                 self.comment_revealer.set_reveal_child(false);
                 self.chk_send_reply.set_visible(false);
@@ -1239,6 +1719,10 @@ impl ItipBanner {
                 self.action_box_cancel.set_visible(false);
                 self.action_box_reply.set_visible(true);
                 self.action_box_publish.set_visible(false);
+                self.secondary_bar_box.set_visible(false);
+                self.btn_target_calendar.set_visible(false);
+                self.btn_toggle_comment.set_visible(false);
+                self.sep_footer_inner.set_visible(false);
                 self.chk_send_reply.set_visible(false);
                 self.comment_view.set_visible(false);
                 self.chk_show_free.set_visible(false);
@@ -1255,6 +1739,10 @@ impl ItipBanner {
                 self.action_box_cancel.set_visible(false);
                 self.action_box_reply.set_visible(false);
                 self.action_box_publish.set_visible(true);
+                self.secondary_bar_box.set_visible(true);
+                self.btn_target_calendar.set_visible(true);
+                self.btn_toggle_comment.set_visible(false);
+                self.sep_footer_inner.set_visible(false);
                 self.chk_send_reply.set_visible(false);
                 self.comment_view.set_visible(false);
                 self.chk_show_free.set_visible(false);
@@ -1271,6 +1759,10 @@ impl ItipBanner {
                 self.action_box_cancel.set_visible(false);
                 self.action_box_reply.set_visible(false);
                 self.action_box_publish.set_visible(false);
+                self.secondary_bar_box.set_visible(false);
+                self.btn_target_calendar.set_visible(false);
+                self.btn_toggle_comment.set_visible(false);
+                self.sep_footer_inner.set_visible(false);
                 self.chk_send_reply.set_visible(false);
                 self.comment_view.set_visible(false);
                 self.chk_show_free.set_visible(false);
@@ -1280,21 +1772,20 @@ impl ItipBanner {
             }
         }
 
+        *self.full_header_prompt.borrow_mut() = self.lbl_header_prompt.text().to_string();
+        self.details_scrolled.vadjustment().set_value(0.0);
+        self.set_compact(false);
+
         self.comment_view.buffer().set_text("");
 
-        // Time / Date range
-        let time_str = if event.all_day {
-            format!("{}: {}", gettext("All day"), event.start)
-        } else if !event.end.trim().is_empty() {
-            format!("{} – {}", event.start, event.end)
-        } else {
-            event.start.clone()
-        };
+        // Time / Date range formatted in user's locale
+        let time_str = format_itip_event_time_range(event);
         self.lbl_time.set_text(&time_str);
 
-        // Calendar conflict check and Day Timeline
+        // Calendar conflict check, Day Timeline, and Smart Target Calendar Selection
         let initial_snapshot = load_local_calendar_snapshot_safe();
         self.update_calendar_presence_status(event, &initial_snapshot);
+        self.apply_smart_calendar_selection(&initial_snapshot);
 
         if matches!(invitation.method, ItipMethod::Request | ItipMethod::Add) {
             self.update_conflicts_and_timeline(event, &initial_snapshot);
@@ -1319,6 +1810,8 @@ impl ItipBanner {
                         if cur.event.uid == target_uid && cur.event.start == target_start {
                             this.update_conflicts_and_timeline(&cur.event, &load_res.snapshot);
                             this.update_calendar_presence_status(&cur.event, &load_res.snapshot);
+                            drop(current);
+                            this.apply_smart_calendar_selection(&load_res.snapshot);
                         }
                     }
                 }
@@ -1392,24 +1885,18 @@ impl ItipBanner {
         let attendees = &invitation.attendee_persons;
         if !attendees.is_empty() {
             let count = attendees.len();
+            let names = attendees
+                .iter()
+                .map(|p| p.display_label())
+                .collect::<Vec<_>>()
+                .join(", ");
             let label_text = if count == 1 {
-                format!("{}: {}", gettext("Attendee"), attendees[0].display_label())
+                format!("{}: {names}", gettext("Attendee"))
             } else if count <= 3 {
-                let names = attendees
-                    .iter()
-                    .map(|p| p.display_label())
-                    .collect::<Vec<_>>()
-                    .join(", ");
                 format!("{}: {names}", gettext("Attendees"))
             } else {
-                let names_preview = attendees
-                    .iter()
-                    .take(2)
-                    .map(|p| p.display_label())
-                    .collect::<Vec<_>>()
-                    .join(", ");
                 let base = gettext("{} attendees").replace("{}", &count.to_string());
-                format!("{base} ({names_preview}, …)")
+                format!("{base} ({names})")
             };
 
             let tooltip_lines = attendees
@@ -1863,6 +2350,24 @@ impl ItipBanner {
         has_conflict: bool,
         conflicts: &[String],
     ) {
+        *self.last_timeline_state.borrow_mut() = Some((
+            target_event.clone(),
+            snapshot.clone(),
+            has_conflict,
+            conflicts.to_vec(),
+        ));
+        self.render_day_timeline_internal(target_event, snapshot, has_conflict, conflicts, true);
+    }
+
+    fn render_day_timeline_internal(
+        &self,
+        target_event: &crate::services::calendar_store_service::CalendarEventRecord,
+        snapshot: &crate::services::calendar_store_service::CalendarSnapshot,
+        has_conflict: bool,
+        conflicts: &[String],
+        reset_scroll: bool,
+    ) {
+        let hour_h = self.timeline_hour_height.get();
         while let Some(child) = self.timeline_all_day_box.first_child() {
             self.timeline_all_day_box.remove(&child);
         }
@@ -1880,9 +2385,9 @@ impl ItipBanner {
         if has_conflict {
             let conflict_count = conflicts.len();
             let badge_text = if conflict_count == 1 {
-                format!("⚠️ 1 {}", gettext("Conflict"))
+                format!("1 {}", gettext("Conflict"))
             } else {
-                format!("⚠️ {conflict_count} {}", gettext("Conflicts"))
+                format!("{conflict_count} {}", gettext("Conflicts"))
             };
             self.lbl_timeline_badge.set_label(&badge_text);
             self.lbl_timeline_badge.set_tooltip_text(Some(&conflicts.join("\n")));
@@ -1893,13 +2398,15 @@ impl ItipBanner {
         }
         self.timeline_side_box.set_visible(true);
 
-        let scroll_hour = target_start_min.map(|m| (m / 60) as f64).unwrap_or(8.0);
-        let target_scroll_y = ((scroll_hour - 1.0).max(0.0)) * HOUR_HEIGHT;
-        self.timeline_target_scroll_y.set(target_scroll_y);
-        let vadj = self.timeline_scrolled.vadjustment();
-        glib::idle_add_local_once(move || {
-            vadj.set_value(target_scroll_y);
-        });
+        if reset_scroll {
+            let scroll_hour = target_start_min.map(|m| (m / 60) as f64).unwrap_or(8.0);
+            let target_scroll_y = ((scroll_hour - 1.0).max(0.0)) * hour_h;
+            self.timeline_target_scroll_y.set(target_scroll_y);
+            let vadj = self.timeline_scrolled.vadjustment();
+            glib::idle_add_local_once(move || {
+                vadj.set_value(target_scroll_y);
+            });
+        }
 
         let is_dark = adw::StyleManager::default().is_dark();
 
@@ -2091,9 +2598,9 @@ impl ItipBanner {
 
             for (item, col_idx) in placed {
                 let x = TIMELINE_EVENTS_X + col_idx as f64 * (col_width + col_gap);
-                let y = (item.start_min as f64 / 60.0) * HOUR_HEIGHT;
+                let y = (item.start_min as f64 / 60.0) * hour_h;
                 let duration = item.end_min.saturating_sub(item.start_min);
-                let h = ((duration.max(20) as f64) / 60.0) * HOUR_HEIGHT - 2.0;
+                let h = ((duration.max(20) as f64) / 60.0) * hour_h - 2.0;
 
                 let is_conflict = item
                     .uid
@@ -2104,20 +2611,19 @@ impl ItipBanner {
 
                 let time_prefix = format!("{:02}:{:02}", item.start_min / 60, item.start_min % 60);
                 let time_end = format!("{:02}:{:02}", item.end_min / 60, item.end_min % 60);
-                let is_multiline = h >= 34.0;
-                let markup_text = if is_multiline {
+                let max_lines = if h >= 34.0 {
+                    (((h - 6.0) / 16.0).floor() as i32).max(1)
+                } else {
+                    1
+                };
+                let is_multiline = max_lines > 1;
+                let markup_text = if h < 26.0 {
                     format!(
-                        "<span size=\"x-small\" alpha=\"88%\">{} – {}</span>\n<b>{}</b>",
-                        glib::markup_escape_text(&time_prefix),
-                        glib::markup_escape_text(&time_end),
+                        "<span size=\"small\"><b>{}</b></span>",
                         glib::markup_escape_text(&item.title)
                     )
                 } else {
-                    format!(
-                        "<span size=\"small\">{}  <b>{}</b></span>",
-                        glib::markup_escape_text(&time_prefix),
-                        glib::markup_escape_text(&item.title)
-                    )
+                    format!("<b>{}</b>", glib::markup_escape_text(&item.title))
                 };
 
                 let mut tooltip = format!(
@@ -2157,9 +2663,11 @@ impl ItipBanner {
                 let widget = gtk::Label::builder()
                     .use_markup(true)
                     .label(&markup_text)
+                    .wrap(is_multiline)
+                    .wrap_mode(pango::WrapMode::WordChar)
                     .ellipsize(pango::EllipsizeMode::End)
                     .single_line_mode(!is_multiline)
-                    .lines(if is_multiline { 2 } else { 1 })
+                    .lines(max_lines)
                     .xalign(0.0)
                     .yalign(0.0)
                     .halign(gtk::Align::Fill)
@@ -2330,6 +2838,17 @@ fn parse_start_date(raw: &str) -> NaiveDate {
     chrono::Local::now().date_naive()
 }
 
+fn format_date_localized(date: NaiveDate) -> String {
+    let fmt = crate::services::AppSettings::try_new()
+        .map(|s| s.resolved_date_format())
+        .unwrap_or_else(|| "german".to_string());
+    match fmt.as_str() {
+        "us" => date.format("%m/%d/%Y").to_string(),
+        "iso" => date.format("%Y-%m-%d").to_string(),
+        _ => date.format("%d.%m.%Y").to_string(),
+    }
+}
+
 fn format_timeline_date(date: NaiveDate) -> String {
     let weekday = match date.weekday() {
         chrono::Weekday::Mon => gettext("Monday"),
@@ -2340,7 +2859,52 @@ fn format_timeline_date(date: NaiveDate) -> String {
         chrono::Weekday::Sat => gettext("Saturday"),
         chrono::Weekday::Sun => gettext("Sunday"),
     };
-    format!("{weekday}, {}", date.format("%d.%m.%Y"))
+    format!("{weekday}, {}", format_date_localized(date))
+}
+
+fn format_itip_event_time_range(
+    event: &crate::services::calendar_store_service::CalendarEventRecord,
+) -> String {
+    let (start_date, start_min) = extract_date_and_minutes(&event.start);
+    let has_end = !event.end.trim().is_empty();
+    let (end_date, end_min) = if has_end {
+        extract_date_and_minutes(&event.end)
+    } else {
+        (start_date, None)
+    };
+
+    if event.all_day {
+        if has_end && end_date > start_date {
+            format!(
+                "{} – {} ({})",
+                format_timeline_date(start_date),
+                format_timeline_date(end_date),
+                gettext("All day")
+            )
+        } else {
+            format!("{} ({})", format_timeline_date(start_date), gettext("All day"))
+        }
+    } else if let Some(s_min) = start_min {
+        let s_time = format!("{:02}:{:02}", s_min / 60, s_min % 60);
+        if let Some(e_min) = end_min {
+            let e_time = format!("{:02}:{:02}", e_min / 60, e_min % 60);
+            if !has_end || start_date == end_date {
+                format!("{}, {} – {}", format_timeline_date(start_date), s_time, e_time)
+            } else {
+                format!(
+                    "{}, {} – {}, {}",
+                    format_timeline_date(start_date),
+                    s_time,
+                    format_timeline_date(end_date),
+                    e_time
+                )
+            }
+        } else {
+            format!("{}, {}", format_timeline_date(start_date), s_time)
+        }
+    } else {
+        format_timeline_date(start_date)
+    }
 }
 
 fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is_dark: bool) -> String {
@@ -2383,6 +2947,146 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
     }
 
     class_name
+}
+
+/// Smart heuristic for selecting the best target calendar source index:
+/// 1. Existing Event UID match in `CalendarSnapshot`: select the calendar where the event already lives.
+/// 2. Invited User / Account Email match: match the invited email address (or user account email)
+///    against writable calendar sources by full email, provider keywords (`google`/`gmail`, `icloud`,
+///    `outlook`/`microsoft`/`exchange`), custom domain stem, or local-part.
+/// 3. Explicit `invitation.event.source_uid` match (when not `"local-calendar"`).
+/// 4. Fallback to `0` (`Personal Calendar`).
+fn find_best_calendar_source_index(
+    sources: &[(String, String)],
+    invitation: &ItipInvitation,
+    user_emails: &[&str],
+    snapshot: &crate::services::calendar_store_service::CalendarSnapshot,
+) -> Option<usize> {
+    if sources.is_empty() {
+        return None;
+    }
+
+    // 1. Existing Event UID in snapshot -> choose the calendar where it already lives
+    let ev_uid = invitation.event.uid.trim();
+    if !ev_uid.is_empty() {
+        if let Some(existing) = snapshot.events.iter().find(|e| e.uid.trim() == ev_uid) {
+            if let Some(idx) = sources.iter().position(|(uid, name)| {
+                (!existing.source_uid.is_empty() && uid == &existing.source_uid)
+                    || (!existing.source_display_name.is_empty()
+                        && name.eq_ignore_ascii_case(&existing.source_display_name))
+            }) {
+                return Some(idx);
+            }
+        }
+    }
+
+    // Collect candidate emails in priority order:
+    // a) user_emails that explicitly appear in the invitation's attendee list
+    // b) invitation attendees
+    // c) all configured user_emails
+    let mut candidate_emails: Vec<String> = Vec::new();
+    let attendee_emails_lower: Vec<String> = invitation
+        .attendee_persons
+        .iter()
+        .map(|p| p.email.trim().to_ascii_lowercase())
+        .chain(invitation.attendees.iter().map(|a| {
+            crate::services::itip_service::strip_mailto_prefix(a.trim()).to_ascii_lowercase()
+        }))
+        .filter(|e| !e.is_empty())
+        .collect();
+
+    for ue in user_emails {
+        let clean = crate::services::itip_service::strip_mailto_prefix(ue.trim()).to_ascii_lowercase();
+        if !clean.is_empty() && attendee_emails_lower.iter().any(|ae| ae == &clean) {
+            if !candidate_emails.contains(&clean) {
+                candidate_emails.push(clean);
+            }
+        }
+    }
+    for ae in &attendee_emails_lower {
+        if !candidate_emails.contains(ae) {
+            candidate_emails.push(ae.clone());
+        }
+    }
+    for ue in user_emails {
+        let clean = crate::services::itip_service::strip_mailto_prefix(ue.trim()).to_ascii_lowercase();
+        if !clean.is_empty() && !candidate_emails.contains(&clean) {
+            candidate_emails.push(clean);
+        }
+    }
+
+    // 2. Match candidate emails against calendar sources
+    for email in &candidate_emails {
+        // 2a. Exact/substring match of full email in source_uid or display_name
+        if let Some(idx) = sources.iter().position(|(uid, name)| {
+            uid.to_ascii_lowercase().contains(email) || name.to_ascii_lowercase().contains(email)
+        }) {
+            return Some(idx);
+        }
+
+        if let Some((local_part, domain)) = email.split_once('@') {
+            let domain_stem = domain.split('.').next().unwrap_or(domain);
+
+            // 2b. Well-known provider keyword matching
+            let is_google = domain == "gmail.com" || domain == "googlemail.com";
+            let is_icloud = domain == "icloud.com" || domain == "me.com" || domain == "mac.com";
+            let is_microsoft = domain == "outlook.com"
+                || domain == "hotmail.com"
+                || domain == "live.com"
+                || domain.ends_with(".onmicrosoft.com");
+
+            if let Some(idx) = sources.iter().position(|(uid, name)| {
+                let hay = format!("{} {}", uid.to_ascii_lowercase(), name.to_ascii_lowercase());
+                (is_google && (hay.contains("google") || hay.contains("gmail")))
+                    || (is_icloud && hay.contains("icloud"))
+                    || (is_microsoft
+                        && (hay.contains("outlook")
+                            || hay.contains("microsoft")
+                            || hay.contains("exchange")
+                            || hay.contains("office365")))
+            }) {
+                return Some(idx);
+            }
+
+            // 2c. Custom / work domain stem match (e.g. "corpdom" or "acme" matching "ACME Work Calendar")
+            if domain_stem.len() >= 3
+                && !is_google
+                && !is_icloud
+                && !is_microsoft
+            {
+                if let Some(idx) = sources.iter().position(|(uid, name)| {
+                    uid.to_ascii_lowercase().contains(domain)
+                        || name.to_ascii_lowercase().contains(domain)
+                        || uid.to_ascii_lowercase().contains(domain_stem)
+                        || name.to_ascii_lowercase().contains(domain_stem)
+                }) {
+                    return Some(idx);
+                }
+            }
+
+            // 2d. Local-part match (if specific enough, >= 4 chars)
+            if local_part.len() >= 4 {
+                if let Some(idx) = sources.iter().position(|(uid, name)| {
+                    uid != "local-calendar"
+                        && (uid.to_ascii_lowercase().contains(local_part)
+                            || name.to_ascii_lowercase().contains(local_part))
+                }) {
+                    return Some(idx);
+                }
+            }
+        }
+    }
+
+    // 3. Explicit source_uid on invitation event (if not default "local-calendar")
+    let inv_source = invitation.event.source_uid.trim();
+    if !inv_source.is_empty() && inv_source != "local-calendar" {
+        if let Some(idx) = sources.iter().position(|(uid, _)| uid == inv_source) {
+            return Some(idx);
+        }
+    }
+
+    // 4. Default to first calendar (Personal Calendar)
+    Some(0)
 }
 
 #[cfg(test)]
@@ -2799,5 +3503,89 @@ mod tests {
             "Existing timed event on day timeline must display its summary title ('Daily Standup')"
         );
     }
+
+    #[test]
+    fn test_smart_calendar_heuristic_and_target_chip() {
+        let sources = vec![
+            ("local-calendar".to_string(), "Personal Calendar".to_string()),
+            ("eds-work-1".to_string(), "Work (martin@acme.corp)".to_string()),
+            ("eds-google-1".to_string(), "Google Calendar".to_string()),
+        ];
+
+        let base_inv = ItipInvitation {
+            method: ItipMethod::Request,
+            event: CalendarEventRecord {
+                uid: "inv-uid-42".to_string(),
+                source_uid: "local-calendar".to_string(),
+                source_display_name: "Calendar".to_string(),
+                component: "".to_string(),
+                summary: "Architecture Review".to_string(),
+                start: "2026-10-20 10:00".to_string(),
+                end: "2026-10-20 11:00".to_string(),
+                location: "".to_string(),
+                description: "".to_string(),
+                all_day: false,
+            },
+            organizer: "cto@acme.corp".to_string(),
+            attendees: vec!["mailto:martin@acme.corp".to_string()],
+            organizer_person: None,
+            attendee_persons: vec![],
+            sequence: Some(0),
+            recurrence: None,
+            raw_component: "".to_string(),
+        };
+
+        let empty_snap = CalendarSnapshot {
+            events: vec![],
+            tasks: vec![],
+            memos: vec![],
+        };
+
+        // 1. Matches work calendar by invited email / domain
+        let idx_work = find_best_calendar_source_index(
+            &sources,
+            &base_inv,
+            &["martin@acme.corp", "m.jensen@gmail.com"],
+            &empty_snap,
+        );
+        assert_eq!(idx_work, Some(1));
+
+        // 2. Matches Google calendar by Gmail address
+        let mut gmail_inv = base_inv.clone();
+        gmail_inv.attendees = vec!["mailto:m.jensen@gmail.com".to_string()];
+        let idx_google = find_best_calendar_source_index(
+            &sources,
+            &gmail_inv,
+            &["m.jensen@gmail.com"],
+            &empty_snap,
+        );
+        assert_eq!(idx_google, Some(2));
+
+        // 3. Existing event UID in snapshot takes highest priority
+        let snap_with_existing = CalendarSnapshot {
+            events: vec![CalendarEventRecord {
+                uid: "inv-uid-42".to_string(),
+                source_uid: "eds-google-1".to_string(),
+                source_display_name: "Google Calendar".to_string(),
+                component: "".to_string(),
+                summary: "Architecture Review".to_string(),
+                start: "2026-10-20 10:00".to_string(),
+                end: "2026-10-20 11:00".to_string(),
+                location: "".to_string(),
+                description: "".to_string(),
+                all_day: false,
+            }],
+            tasks: vec![],
+            memos: vec![],
+        };
+        let idx_existing = find_best_calendar_source_index(
+            &sources,
+            &base_inv,
+            &["martin@acme.corp"],
+            &snap_with_existing,
+        );
+        assert_eq!(idx_existing, Some(2));
+    }
 }
+
 

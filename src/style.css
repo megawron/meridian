@@ -3610,9 +3610,9 @@ button.calendar-popover-day-btn.non-workday:not(.today):not(.other-month):not(.s
 }
 
 .itip-sender-message-text {
-  font-size: 0.93rem;
-  line-height: 1.48;
   color: var(--card-fg-color);
+  padding-top: 2px;
+  padding-bottom: 2px;
 }
 
 .itip-comment-view {
@@ -3653,6 +3653,52 @@ button.calendar-popover-day-btn.non-workday:not(.today):not(.other-month):not(.s
 .itip-status-badge.pending {
   background-color: alpha(@window_fg_color, 0.08);
   color: alpha(@window_fg_color, 0.7);
+}
+
+menubutton.itip-calendar-chip {
+  background: none;
+  padding: 0;
+  margin: 0;
+  border: none;
+  box-shadow: none;
+}
+
+menubutton.itip-calendar-chip > button,
+button.itip-calendar-chip {
+  min-height: 28px;
+  padding: 2px 10px;
+  border-radius: 7px;
+  background-color: alpha(@window_fg_color, 0.06);
+  color: @window_fg_color;
+  border: none;
+  box-shadow: none;
+  font-size: 0.86rem;
+  font-weight: 500;
+  transition: background-color 120ms ease;
+}
+
+menubutton.itip-calendar-chip > button:hover,
+button.itip-calendar-chip:hover {
+  background-color: alpha(@window_fg_color, 0.11);
+}
+
+menubutton.itip-calendar-chip > button:active,
+menubutton.itip-calendar-chip > button:checked,
+button.itip-calendar-chip:active,
+button.itip-calendar-chip:checked {
+  background-color: alpha(@window_fg_color, 0.16);
+}
+
+button.itip-calendar-chip-row {
+  min-height: 30px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 0.90rem;
+  font-weight: 500;
+}
+
+.itip-footer-inner-sep {
+  opacity: 0.55;
 }
 
 /* ── Calendar Continuous Grid ──────────────────────────────────────────── */

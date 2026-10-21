@@ -7023,6 +7023,12 @@ mod imp {
                 .replace(Some(all_headers_revealer));
             self.all_headers_grid.replace(Some(all_headers_grid));
             self.mail_viewer.replace(Some(mail_viewer.clone()));
+            let page_for_itip_scroll = obj.downgrade();
+            itip_banner.connect_scroll_offset(move |offset_y| {
+                if let Some(page) = page_for_itip_scroll.upgrade() {
+                    page.handle_viewer_scroll_offset(offset_y);
+                }
+            });
             self.itip_banner.replace(Some(itip_banner.clone()));
             self.message_find_revealer
                 .replace(Some(message_find_revealer));
@@ -28331,6 +28337,7 @@ impl MailPage {
         detail_scroll_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
         let detail_scroll_accum = std::rc::Rc::new(std::cell::Cell::new(0.0f64));
         let viewer_for_scroll = mail_viewer.clone();
+        let itip_for_scroll = itip_banner.clone();
         let accum_detail = detail_scroll_accum.clone();
         detail_scroll_ctrl.connect_scroll(move |controller, _dx, dy| {
             let state = controller.current_event_state();
@@ -28340,10 +28347,18 @@ impl MailPage {
             if is_ctrl {
                 let mut val = accum_detail.get() + dy;
                 if val <= -0.5 {
-                    viewer_for_scroll.zoom_in();
+                    if itip_for_scroll.widget().is_visible() {
+                        itip_for_scroll.adjust_timeline_zoom(1);
+                    } else {
+                        viewer_for_scroll.zoom_in();
+                    }
                     val = 0.0;
                 } else if val >= 0.5 {
-                    viewer_for_scroll.zoom_out();
+                    if itip_for_scroll.widget().is_visible() {
+                        itip_for_scroll.adjust_timeline_zoom(-1);
+                    } else {
+                        viewer_for_scroll.zoom_out();
+                    }
                     val = 0.0;
                 }
                 accum_detail.set(val);
