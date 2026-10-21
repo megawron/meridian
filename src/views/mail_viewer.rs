@@ -2218,6 +2218,7 @@ impl MailViewer {
             "(() => {
                 let lastReportedY = 0;
                 let resizeGuardUntil = 0;
+                let collapseGuardUntil = 0;
                 let ticking = false;
                 let lastContinues = null;
                 let lastMeasuredHeight = 0;
@@ -2287,11 +2288,13 @@ impl MailViewer {
                         const maxScroll = Math.max(0, scrollH - clientH);
                         const y = window.scrollY || (docEl ? docEl.scrollTop : 0) || 0;
                         if (fromScrollEvent && (Math.abs(y - lastReportedY) >= 2 || (y <= 1 && lastReportedY > 1))) {
-                            if (y < lastReportedY && performance.now() < resizeGuardUntil) {
-                                // Ignore synthetic scrollY clamp while viewport is expanding during header collapse
-                            } else if (y > 35 && lastReportedY <= 35 && maxScroll < 140) {
-                                // Do not collapse header if collapsing it would make the entire mail fit on screen without scrolling
+                            const now = performance.now();
+                            if (y < lastReportedY && (now < resizeGuardUntil || now < collapseGuardUntil || maxScroll <= 20)) {
+                                // Keep header compacted when viewport expands during collapse or when content now fits completely on screen
                             } else {
+                                if (y > 35 && lastReportedY <= 35) {
+                                    collapseGuardUntil = now + 450;
+                                }
                                 lastReportedY = y;
                                 if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.meridianScroll) {
                                     window.webkit.messageHandlers.meridianScroll.postMessage(y);
@@ -2326,7 +2329,14 @@ impl MailViewer {
 
                 window.addEventListener('wheel', (e) => {
                     const y = window.scrollY || (document.documentElement ? document.documentElement.scrollTop : 0) || 0;
-                    if (e.deltaY < 0 && y <= 2 && performance.now() >= resizeGuardUntil) {
+                    const now = performance.now();
+                    if (e.deltaY > 0 && y > 5 && lastReportedY <= 35) {
+                        collapseGuardUntil = now + 450;
+                        lastReportedY = Math.max(y, 40);
+                        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.meridianScroll) {
+                            window.webkit.messageHandlers.meridianScroll.postMessage(lastReportedY);
+                        }
+                    } else if (e.deltaY < 0 && y <= 2 && now >= resizeGuardUntil && now >= collapseGuardUntil) {
                         lastReportedY = 0;
                         if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.meridianScroll) {
                             window.webkit.messageHandlers.meridianScroll.postMessage(0);
@@ -2335,7 +2345,7 @@ impl MailViewer {
                 }, { passive: true });
 
                 window.addEventListener('resize', () => {
-                    resizeGuardUntil = performance.now() + 250;
+                    resizeGuardUntil = performance.now() + 300;
                     updateMetrics(false);
                 }, { passive: true });
 

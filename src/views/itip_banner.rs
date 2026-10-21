@@ -21,6 +21,14 @@ use crate::services::itip_service::{
 };
 
 #[derive(Clone)]
+struct PlacedTimelineWidget {
+    widget: gtk::Label,
+    x: f64,
+    start_min: u32,
+    end_min: u32,
+}
+
+#[derive(Clone)]
 pub struct ItipBanner {
     revealer: gtk::Revealer,
     banner_box: gtk::Box,
@@ -30,6 +38,7 @@ pub struct ItipBanner {
     cal_select_box: gtk::Box,
     footer_box: gtk::Box,
     is_compact: Rc<Cell<bool>>,
+    collapse_guard_until: Rc<Cell<i64>>,
     full_header_prompt: Rc<RefCell<String>>,
     icon: gtk::Image,
     lbl_header_prompt: gtk::Label,
@@ -47,6 +56,9 @@ pub struct ItipBanner {
     timeline_hours_box: gtk::Box,
     timeline_hour_rows: Rc<RefCell<Vec<(gtk::Box, gtk::Box)>>>,
     timeline_hour_height: Rc<Cell<f64>>,
+    timeline_placed_widgets: Rc<RefCell<Vec<PlacedTimelineWidget>>>,
+    zoom_anchor_hour: Rc<Cell<Option<f64>>>,
+    zoom_anchor_cleanup: Rc<RefCell<Option<glib::SourceId>>>,
     timeline_fixed: gtk::Fixed,
     timeline_scrolled: gtk::ScrolledWindow,
     timeline_target_scroll_y: Rc<Cell<f64>>,
@@ -191,7 +203,6 @@ impl ItipBanner {
 
         let sep_top = gtk::Separator::new(gtk::Orientation::Horizontal);
         sep_top.set_hexpand(true);
-        banner_box.append(&sep_top);
 
         // ── Main 2-Column Content ─────────────────────────────────────────────
         let details_vbox = gtk::Box::builder()
@@ -518,31 +529,23 @@ impl ItipBanner {
             .child(&comment_box)
             .build();
 
-        // Continuous full-width separator before sticky footer
-        let sep_footer = gtk::Separator::new(gtk::Orientation::Horizontal);
-        sep_footer.set_hexpand(true);
-
-        // 7. Two-Row Action Footer (Row 1: Target Calendar Chip + Secondary Tools; Row 2: Primary RSVP Actions)
+        // 7. Top Action Bar (Left: Target Calendar Chip; Right: Comment + Primary RSVP Actions)
         let footer_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(0)
-            .hexpand(true)
-            .margin_start(0)
-            .margin_end(0)
-            .margin_top(0)
-            .margin_bottom(0)
-            .build();
-
-        // ── Row 1: Target Calendar Chip (left) + Comment (right) ──
-        let secondary_bar_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
             .hexpand(true)
             .valign(gtk::Align::Center)
             .margin_start(16)
             .margin_end(16)
-            .margin_top(8)
-            .margin_bottom(8)
+            .margin_top(0)
+            .margin_bottom(10)
+            .build();
+
+        let secondary_bar_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .hexpand(true)
+            .valign(gtk::Align::Center)
             .build();
 
         let calendar_chip_list_box = gtk::Box::builder()
@@ -679,24 +682,19 @@ impl ItipBanner {
         sep_footer_inner.set_visible(false);
         footer_box.append(&sep_footer_inner);
 
-        // ── Row 2: Primary RSVP Decision Bar ──────────────────────────────────
+        // ── Primary RSVP Decision Buttons ─────────────────────────────────────
         let primary_actions_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
-            .hexpand(true)
+            .halign(gtk::Align::End)
             .valign(gtk::Align::Center)
-            .margin_start(16)
-            .margin_end(16)
-            .margin_top(10)
-            .margin_bottom(12)
             .build();
 
         // Request actions
         let action_box_request = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
-            .hexpand(true)
-            .halign(gtk::Align::Fill)
+            .halign(gtk::Align::End)
             .valign(gtk::Align::Center)
             .build();
 
@@ -730,9 +728,6 @@ impl ItipBanner {
         action_box_request.append(&btn_decline);
         action_box_request.append(&btn_tentative);
         action_box_request.append(&btn_accept);
-
-        let req_spacer = gtk::Box::builder().hexpand(true).build();
-        action_box_request.append(&req_spacer);
 
         // More options popover (Expert options: Reply toggle, Free/Busy, Import as Event)
         let more_popover = gtk::Popover::new();
@@ -981,18 +976,19 @@ impl ItipBanner {
             .transition_type(gtk::RevealerTransitionType::None)
             .child(&details_scrolled)
             .build();
-        banner_box.append(&details_revealer);
 
-        // Sticky Bottom Section: Separator + Progressive Comment Box + Action Footer
-        banner_box.append(&sep_footer);
-        banner_box.append(&comment_revealer);
+        // Top Header Section: Header Row + Top Action Toolbar + Progressive Comment Box + Separator
         banner_box.append(&footer_box);
+        banner_box.append(&comment_revealer);
+        banner_box.append(&sep_top);
+        banner_box.append(&details_revealer);
         revealer.set_child(Some(&banner_box));
 
         // Responsive adaptation when the preview pane is narrowed
         {
             let cols = details_columns.clone();
             let tl_box = timeline_side_box.clone();
+            let act_bar = footer_box.clone();
             let comment_icon = btn_comment_icon.clone();
             let comment_lbl = btn_comment_lbl.clone();
             let chip_name_lbl = lbl_calendar_chip_name.clone();
@@ -1023,6 +1019,17 @@ impl ItipBanner {
                         tl_box.remove_css_class("is-stacked");
                     }
 
+                    let stack_actions = w < 540;
+                    if stack_actions {
+                        if act_bar.orientation() != gtk::Orientation::Vertical {
+                            act_bar.set_orientation(gtk::Orientation::Vertical);
+                            act_bar.set_spacing(6);
+                        }
+                    } else if act_bar.orientation() != gtk::Orientation::Horizontal {
+                        act_bar.set_orientation(gtk::Orientation::Horizontal);
+                        act_bar.set_spacing(8);
+                    }
+
                     // GNOME HIG: show text-only ("Comment") when room permits, switch to icon-only when narrow
                     let icon_only_comment = w < 420;
                     comment_lbl.set_visible(!icon_only_comment);
@@ -1042,6 +1049,7 @@ impl ItipBanner {
             cal_select_box,
             footer_box,
             is_compact: Rc::new(Cell::new(false)),
+            collapse_guard_until: Rc::new(Cell::new(0)),
             full_header_prompt: Rc::new(RefCell::new(gettext("Meeting Invitation"))),
             icon,
             lbl_header_prompt,
@@ -1059,6 +1067,9 @@ impl ItipBanner {
             timeline_hours_box,
             timeline_hour_rows,
             timeline_hour_height: Rc::new(Cell::new(HOUR_HEIGHT)),
+            timeline_placed_widgets: Rc::new(RefCell::new(Vec::new())),
+            zoom_anchor_hour: Rc::new(Cell::new(None)),
+            zoom_anchor_cleanup: Rc::new(RefCell::new(None)),
             timeline_fixed,
             timeline_scrolled,
             timeline_target_scroll_y,
@@ -1118,29 +1129,77 @@ impl ItipBanner {
         };
 
         // Connect scroll offset on details_scrolled to compact header (and notify MailPage)
+        // without oscillating when header compaction causes the content to fit on screen
         {
             let this = banner.clone();
             details_scrolled.vadjustment().connect_value_changed(move |adj| {
                 let offset_y = adj.value();
-                if !this.is_compact.get() && offset_y > 35.0 {
+                let now = glib::monotonic_time();
+                let max_scroll = (adj.upper() - adj.page_size()).max(0.0);
+
+                if !this.is_compact.get() && offset_y > 24.0 {
+                    this.collapse_guard_until.set(now + 450_000);
                     this.set_compact(true);
-                } else if this.is_compact.get() && offset_y < 15.0 {
-                    this.set_compact(false);
-                }
-                if let Some(cb) = this.on_scroll_offset.borrow().as_ref() {
-                    cb(offset_y);
+                    if let Some(cb) = this.on_scroll_offset.borrow().as_ref() {
+                        cb(offset_y.max(40.0));
+                    }
+                } else if this.is_compact.get() {
+                    // Do not auto-expand while viewport is expanding during header collapse,
+                    // or when the entire content now fits on screen without needing a scrollbar
+                    if now >= this.collapse_guard_until.get() && max_scroll > 20.0 && offset_y < 10.0 {
+                        this.set_compact(false);
+                        if let Some(cb) = this.on_scroll_offset.borrow().as_ref() {
+                            cb(offset_y);
+                        }
+                    } else if offset_y >= 15.0 {
+                        if let Some(cb) = this.on_scroll_offset.borrow().as_ref() {
+                            cb(offset_y);
+                        }
+                    }
                 }
             });
+
+            let wheel_ctrl = gtk::EventControllerScroll::new(
+                gtk::EventControllerScrollFlags::VERTICAL,
+            );
+            wheel_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+            let this_wheel = banner.clone();
+            let adj_wheel = details_scrolled.vadjustment();
+            wheel_ctrl.connect_scroll(move |controller, _dx, dy| {
+                let state = controller.current_event_state();
+                if state.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
+                    return glib::Propagation::Proceed;
+                }
+                let now = glib::monotonic_time();
+                let y = adj_wheel.value();
+                let max_scroll = (adj_wheel.upper() - adj_wheel.page_size()).max(0.0);
+                if dy > 0.0 && !this_wheel.is_compact.get() && (y > 5.0 || max_scroll > 5.0) {
+                    this_wheel.collapse_guard_until.set(now + 450_000);
+                    this_wheel.set_compact(true);
+                    if let Some(cb) = this_wheel.on_scroll_offset.borrow().as_ref() {
+                        cb(y.max(40.0));
+                    }
+                } else if dy < -0.1
+                    && this_wheel.is_compact.get()
+                    && y <= 2.0
+                    && now >= this_wheel.collapse_guard_until.get()
+                {
+                    this_wheel.set_compact(false);
+                    if let Some(cb) = this_wheel.on_scroll_offset.borrow().as_ref() {
+                        cb(0.0);
+                    }
+                }
+                glib::Propagation::Proceed
+            });
+            details_scrolled.add_controller(wheel_ctrl);
         }
 
-        // Connect Ctrl + Scroll zoom on timeline_side_box (analogous to Calendar View)
+        // Connect Ctrl + Scroll zoom on timeline_side_box (for standalone usage / tests)
         {
             let zoom_ctrl = gtk::EventControllerScroll::new(
                 gtk::EventControllerScrollFlags::VERTICAL,
             );
             zoom_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
-            let zoom_accum = Rc::new(Cell::new(0.0f64));
-            let last_zoom_time = Rc::new(Cell::new(std::time::Instant::now()));
             let this = banner.clone();
             zoom_ctrl.connect_scroll(move |controller, _dx, dy| {
                 let state = controller.current_event_state();
@@ -1148,25 +1207,8 @@ impl ItipBanner {
                     && !state.contains(gtk::gdk::ModifierType::ALT_MASK)
                     && !state.contains(gtk::gdk::ModifierType::SUPER_MASK);
                 if is_ctrl {
-                    let now = std::time::Instant::now();
-                    if now.duration_since(last_zoom_time.get()) > std::time::Duration::from_millis(250) {
-                        zoom_accum.set(0.0);
-                    }
-                    last_zoom_time.set(now);
-
-                    let current = zoom_accum.get() + dy;
-                    const THRESHOLD: f64 = 0.5;
-                    let steps = (current / THRESHOLD).trunc() as i32;
-                    if steps != 0 {
-                        zoom_accum.set(current - (steps as f64 * THRESHOLD));
-                        let delta_steps = (-steps).clamp(-3, 3);
-                        this.adjust_timeline_zoom(delta_steps);
-                    } else {
-                        zoom_accum.set(current);
-                    }
+                    this.adjust_timeline_zoom_delta(dy);
                     return glib::Propagation::Stop;
-                } else {
-                    zoom_accum.set(0.0);
                 }
                 glib::Propagation::Proceed
             });
@@ -1195,7 +1237,8 @@ impl ItipBanner {
         if compact {
             self.banner_box.add_css_class("is-compact");
             self.header_row.set_margin_top(4);
-            self.header_row.set_margin_bottom(4);
+            self.header_row.set_margin_bottom(2);
+            self.footer_box.set_margin_bottom(6);
             self.icon.set_pixel_size(18);
             self.lbl_header_prompt.set_wrap(false);
             self.lbl_header_prompt.set_single_line_mode(true);
@@ -1208,7 +1251,8 @@ impl ItipBanner {
         } else {
             self.banner_box.remove_css_class("is-compact");
             self.header_row.set_margin_top(10);
-            self.header_row.set_margin_bottom(10);
+            self.header_row.set_margin_bottom(6);
+            self.footer_box.set_margin_bottom(10);
             self.icon.set_pixel_size(24);
             self.lbl_header_prompt.set_single_line_mode(false);
             self.lbl_header_prompt.set_wrap(true);
@@ -1226,31 +1270,77 @@ impl ItipBanner {
         if delta_steps == 0 {
             return;
         }
-        let old_h = self.timeline_hour_height.get();
-        let new_h = (old_h + (delta_steps as f64 * 8.0)).clamp(24.0, 120.0);
-        if (new_h - old_h).abs() < 0.5 {
+        self.adjust_timeline_zoom_delta(-(delta_steps as f64));
+    }
+
+    pub fn adjust_timeline_zoom_delta(&self, dy: f64) {
+        if dy.abs() < 0.001 {
             return;
         }
+        let old_h = self.timeline_hour_height.get();
+        let delta_h = (-dy * 10.0).clamp(-24.0, 24.0);
+        let new_h = (old_h + delta_h).clamp(24.0, 120.0);
+        if (new_h - old_h).abs() < 0.25 {
+            return;
+        }
+
         let vadj = self.timeline_scrolled.vadjustment();
-        let page_h = vadj.page_size().max(340.0);
-        let center_hour = (vadj.value() + page_h * 0.5) / old_h;
+        let page_h = vadj.page_size().max(320.0);
+
+        // Anchor center hour at the start of a continuous zoom gesture so scroll never drifts
+        let center_hour = if let Some(anchor) = self.zoom_anchor_hour.get() {
+            anchor
+        } else {
+            let h = ((vadj.value() + page_h * 0.5) / old_h).clamp(0.0, 24.0);
+            self.zoom_anchor_hour.set(Some(h));
+            h
+        };
+
+        if let Some(source) = self.zoom_anchor_cleanup.borrow_mut().take() {
+            let _ = unsafe { glib::ffi::g_source_remove(source.as_raw()) };
+        }
+        let anchor_cell = self.zoom_anchor_hour.clone();
+        let cleanup_cell = self.zoom_anchor_cleanup.clone();
+        let source = glib::timeout_add_local_once(
+            std::time::Duration::from_millis(350),
+            move || {
+                cleanup_cell.replace(None);
+                anchor_cell.set(None);
+            },
+        );
+        *self.zoom_anchor_cleanup.borrow_mut() = Some(source);
 
         self.timeline_hour_height.set(new_h);
-        self.timeline_hours_box
-            .set_height_request((24.0 * new_h) as i32);
-        self.timeline_fixed
-            .set_height_request((24.0 * new_h) as i32);
+        let total_h = (24.0 * new_h).round() as i32;
+        let row_h = new_h.round() as i32;
+        self.timeline_hours_box.set_height_request(total_h);
+        self.timeline_fixed.set_height_request(total_h);
         for (row, gutter) in self.timeline_hour_rows.borrow().iter() {
-            row.set_height_request(new_h as i32);
-            gutter.set_height_request(new_h as i32);
+            row.set_height_request(row_h);
+            gutter.set_height_request(row_h);
         }
 
-        let state_opt = self.last_timeline_state.borrow().clone();
-        if let Some((ev, snap, has_conflict, conflicts)) = state_opt {
-            self.render_day_timeline_internal(&ev, &snap, has_conflict, &conflicts, false);
+        // Update existing event widgets in-place without destroying/recreating widgets
+        for item in self.timeline_placed_widgets.borrow().iter() {
+            let y = (item.start_min as f64 / 60.0) * new_h;
+            let duration = item.end_min.saturating_sub(item.start_min);
+            let h = ((duration.max(20) as f64) / 60.0) * new_h - 2.0;
+            let max_lines = if h >= 34.0 {
+                (((h - 6.0) / 16.0).floor() as i32).max(1)
+            } else {
+                1
+            };
+            let is_multiline = max_lines > 1;
+            item.widget.set_wrap(is_multiline);
+            item.widget.set_single_line_mode(!is_multiline);
+            item.widget.set_lines(max_lines);
+            item.widget.set_height_request(h.max(20.0).round() as i32);
+            self.timeline_fixed.move_(&item.widget, item.x, y);
         }
 
-        let max_scroll = (24.0 * new_h - page_h).max(0.0);
+        let new_upper = 24.0 * new_h;
+        vadj.set_upper(new_upper);
+        let max_scroll = (new_upper - page_h).max(0.0);
         let new_scroll = (center_hour * new_h - page_h * 0.5).clamp(0.0, max_scroll);
         self.timeline_target_scroll_y.set(new_scroll);
         vadj.set_value(new_scroll);
@@ -2368,6 +2458,7 @@ impl ItipBanner {
         reset_scroll: bool,
     ) {
         let hour_h = self.timeline_hour_height.get();
+        self.timeline_placed_widgets.borrow_mut().clear();
         while let Some(child) = self.timeline_all_day_box.first_child() {
             self.timeline_all_day_box.remove(&child);
         }
@@ -2679,6 +2770,14 @@ impl ItipBanner {
                     .build();
 
                 self.timeline_fixed.put(&widget, x, y);
+                self.timeline_placed_widgets
+                    .borrow_mut()
+                    .push(PlacedTimelineWidget {
+                        widget,
+                        x,
+                        start_min: item.start_min,
+                        end_min: item.end_min,
+                    });
             }
         }
     }

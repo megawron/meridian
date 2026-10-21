@@ -28345,20 +28345,17 @@ impl MailPage {
                 && !state.contains(gtk::gdk::ModifierType::ALT_MASK)
                 && !state.contains(gtk::gdk::ModifierType::SUPER_MASK);
             if is_ctrl {
+                if itip_for_scroll.widget().is_visible() {
+                    itip_for_scroll.adjust_timeline_zoom_delta(dy);
+                    accum_detail.set(0.0);
+                    return glib::Propagation::Stop;
+                }
                 let mut val = accum_detail.get() + dy;
                 if val <= -0.5 {
-                    if itip_for_scroll.widget().is_visible() {
-                        itip_for_scroll.adjust_timeline_zoom(1);
-                    } else {
-                        viewer_for_scroll.zoom_in();
-                    }
+                    viewer_for_scroll.zoom_in();
                     val = 0.0;
                 } else if val >= 0.5 {
-                    if itip_for_scroll.widget().is_visible() {
-                        itip_for_scroll.adjust_timeline_zoom(-1);
-                    } else {
-                        viewer_for_scroll.zoom_out();
-                    }
+                    viewer_for_scroll.zoom_out();
                     val = 0.0;
                 }
                 accum_detail.set(val);
