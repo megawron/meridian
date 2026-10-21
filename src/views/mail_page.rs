@@ -28346,7 +28346,7 @@ impl MailPage {
                 && !state.contains(gtk::gdk::ModifierType::SUPER_MASK);
             if is_ctrl {
                 if itip_for_scroll.widget().is_visible() {
-                    itip_for_scroll.adjust_timeline_zoom_delta(dy);
+                    itip_for_scroll.handle_ctrl_scroll_delta(dy);
                     accum_detail.set(0.0);
                     return glib::Propagation::Stop;
                 }

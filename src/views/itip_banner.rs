@@ -28,6 +28,9 @@ struct PlacedTimelineWidget {
     end_min: u32,
 }
 
+static NEXT_BANNER_ZOOM_ID: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(1);
+
 #[derive(Clone)]
 pub struct ItipBanner {
     revealer: gtk::Revealer,
@@ -35,6 +38,10 @@ pub struct ItipBanner {
     header_row: gtk::Box,
     details_revealer: gtk::Revealer,
     details_scrolled: gtk::ScrolledWindow,
+    details_zoom: Rc<Cell<f64>>,
+    details_zoom_class: String,
+    details_zoom_provider: gtk::CssProvider,
+    pointer_in_timeline: Rc<Cell<bool>>,
     cal_select_box: gtk::Box,
     footer_box: gtk::Box,
     is_compact: Rc<Cell<bool>>,
@@ -42,6 +49,7 @@ pub struct ItipBanner {
     full_header_prompt: Rc<RefCell<String>>,
     icon: gtk::Image,
     lbl_header_prompt: gtk::Label,
+    lbl_cancel_inline: gtk::Label,
     lbl_title: gtk::Label,
     lbl_method: gtk::Label,
     lbl_status_badge: gtk::Label,
@@ -205,11 +213,23 @@ impl ItipBanner {
         sep_top.set_hexpand(true);
 
         // ── Main 2-Column Content ─────────────────────────────────────────────
+        let zoom_id = NEXT_BANNER_ZOOM_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let details_zoom_class = format!("itip-details-zoom-{zoom_id}");
+        let details_zoom_provider = gtk::CssProvider::new();
+        if let Some(display) = gtk::gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &details_zoom_provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
+            );
+        }
+
         let details_vbox = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(0)
             .hexpand(true)
             .valign(gtk::Align::Fill)
+            .css_classes(vec![details_zoom_class.as_str()])
             .build();
 
         let details_info_box = gtk::Box::builder()
@@ -218,11 +238,11 @@ impl ItipBanner {
             .hexpand(true)
             .margin_start(16)
             .margin_end(16)
-            .margin_top(14)
+            .margin_top(12)
             .margin_bottom(12)
             .build();
 
-        // 1. Event Title
+        // 1. Event Title (hidden in UI because the Mail Header directly above already shows the subject prominently; kept for state/test compatibility)
         let lbl_title = gtk::Label::builder()
             .label(&gettext("Event"))
             .css_classes(vec!["title-3"])
@@ -232,10 +252,11 @@ impl ItipBanner {
             .wrap(true)
             .wrap_mode(pango::WrapMode::WordChar)
             .width_chars(1)
+            .visible(false)
             .build();
         details_info_box.append(&lbl_title);
 
-        // 2. Metadata Rows
+        // 2. Metadata Rows (Date & Time is the primary entry in the left column)
         let time_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
@@ -255,7 +276,7 @@ impl ItipBanner {
             .wrap(true)
             .wrap_mode(pango::WrapMode::WordChar)
             .width_chars(1)
-            .css_classes(vec!["body"])
+            .css_classes(vec!["heading"])
             .build();
         time_row.append(&time_icon);
         time_row.append(&lbl_time);
@@ -537,8 +558,8 @@ impl ItipBanner {
             .valign(gtk::Align::Center)
             .margin_start(16)
             .margin_end(16)
-            .margin_top(0)
-            .margin_bottom(10)
+            .margin_top(8)
+            .margin_bottom(8)
             .build();
 
         let secondary_bar_box = gtk::Box::builder()
@@ -677,42 +698,66 @@ impl ItipBanner {
         // ── Primary RSVP Decision Buttons (Left-Aligned) ──────────────────────
         let primary_actions_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .halign(gtk::Align::Start)
+            .spacing(6)
+            .halign(gtk::Align::Fill)
+            .hexpand(true)
             .valign(gtk::Align::Center)
             .build();
 
         // Request actions
         let action_box_request = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
+            .spacing(6)
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .build();
 
-        let make_action_btn = |text: &str, classes: Vec<&str>, tooltip: &str| -> gtk::Button {
+        let make_action_btn = |icon_name: &str,
+                               text: &str,
+                               classes: Vec<&str>,
+                               tooltip: &str|
+         -> (gtk::Button, gtk::Image, gtk::Label) {
+            let inner = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(4)
+                .halign(gtk::Align::Center)
+                .valign(gtk::Align::Center)
+                .build();
+            let icon = gtk::Image::builder()
+                .icon_name(icon_name)
+                .pixel_size(14)
+                .visible(false)
+                .valign(gtk::Align::Center)
+                .build();
             let lbl = gtk::Label::builder()
                 .label(text)
                 .single_line_mode(true)
+                .valign(gtk::Align::Center)
                 .build();
-            gtk::Button::builder()
-                .child(&lbl)
+            inner.append(&icon);
+            inner.append(&lbl);
+            let btn = gtk::Button::builder()
+                .child(&inner)
                 .css_classes(classes)
                 .tooltip_text(tooltip)
-                .build()
+                .build();
+            (btn, icon, lbl)
         };
 
-        let btn_accept = make_action_btn(
+        let (btn_accept, btn_accept_icon, btn_accept_lbl) = make_action_btn(
+            "object-select-symbolic",
             &gettext("Accept"),
             vec!["suggested-action"],
             &gettext("Accept event, add to calendar and send response"),
         );
-        let btn_tentative = make_action_btn(
+        let (btn_tentative, btn_tentative_icon, btn_tentative_lbl) = make_action_btn(
+            "dialog-question-symbolic",
             &gettext("Tentative"),
             vec![],
             &gettext("Tentatively accept and add to calendar"),
         );
-        let btn_decline = make_action_btn(
+        let (btn_decline, btn_decline_icon, btn_decline_lbl) = make_action_btn(
+            "window-close-symbolic",
             &gettext("Decline"),
             vec!["destructive-action"],
             &gettext("Decline invitation and send response"),
@@ -766,34 +811,90 @@ impl ItipBanner {
         action_box_request.append(&btn_more_options);
         primary_actions_row.append(&action_box_request);
 
-        // Cancel actions
+        // Cancel actions (Single-row layout: Remove button on left + inline cancellation notice on right)
         let action_box_cancel = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
+            .spacing(10)
+            .hexpand(true)
             .valign(gtk::Align::Center)
             .visible(false)
             .build();
         let btn_remove = gtk::Button::builder()
             .label(&gettext("Remove from Calendar"))
             .css_classes(vec!["destructive-action"])
+            .valign(gtk::Align::Center)
             .tooltip_text(&gettext("Remove cancelled event from your calendar"))
             .build();
+        let cancel_inline_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .hexpand(true)
+            .valign(gtk::Align::Center)
+            .build();
+        let cancel_inline_icon = gtk::Image::builder()
+            .icon_name("process-stop-symbolic")
+            .pixel_size(16)
+            .css_classes(vec!["error"])
+            .valign(gtk::Align::Center)
+            .build();
+        let lbl_cancel_inline = gtk::Label::builder()
+            .label(&gettext("Meeting has been cancelled"))
+            .css_classes(vec!["caption", "heading", "dim-label"])
+            .halign(gtk::Align::Fill)
+            .xalign(0.0)
+            .hexpand(true)
+            .wrap(true)
+            .wrap_mode(pango::WrapMode::WordChar)
+            .width_chars(1)
+            .valign(gtk::Align::Center)
+            .build();
+        cancel_inline_box.append(&cancel_inline_icon);
+        cancel_inline_box.append(&lbl_cancel_inline);
         action_box_cancel.append(&btn_remove);
+        action_box_cancel.append(&cancel_inline_box);
         primary_actions_row.append(&action_box_cancel);
 
-        // Reply actions
+        // Reply actions (Single-row layout: Update button on left + inline reply notice on right)
         let action_box_reply = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
+            .spacing(10)
+            .hexpand(true)
             .valign(gtk::Align::Center)
             .visible(false)
             .build();
         let btn_update = gtk::Button::builder()
             .label(&gettext("Update Calendar"))
             .css_classes(vec!["suggested-action"])
+            .valign(gtk::Align::Center)
             .tooltip_text(&gettext("Update attendee status in existing calendar event"))
             .build();
+        let reply_inline_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .hexpand(true)
+            .valign(gtk::Align::Center)
+            .build();
+        let reply_inline_icon = gtk::Image::builder()
+            .icon_name("mail-reply-sender-symbolic")
+            .pixel_size(16)
+            .css_classes(vec!["accent"])
+            .valign(gtk::Align::Center)
+            .build();
+        let lbl_reply_inline = gtk::Label::builder()
+            .label(&gettext("Response to Meeting Invitation"))
+            .css_classes(vec!["caption", "heading", "dim-label"])
+            .halign(gtk::Align::Fill)
+            .xalign(0.0)
+            .hexpand(true)
+            .wrap(true)
+            .wrap_mode(pango::WrapMode::WordChar)
+            .width_chars(1)
+            .valign(gtk::Align::Center)
+            .build();
+        reply_inline_box.append(&reply_inline_icon);
+        reply_inline_box.append(&lbl_reply_inline);
         action_box_reply.append(&btn_update);
+        action_box_reply.append(&reply_inline_box);
         primary_actions_row.append(&action_box_reply);
 
         // Publish actions
@@ -825,12 +926,14 @@ impl ItipBanner {
             .visible(false)
             .build();
 
+        // Hidden in UI because the full date + time is already the primary heading on the left column at the exact same height
         let timeline_top_bar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
             .hexpand(true)
             .valign(gtk::Align::Center)
             .css_classes(vec!["calendar-header-grid", "itip-timeline-header"])
+            .visible(false)
             .build();
 
         let lbl_timeline_date = gtk::Label::builder()
@@ -979,14 +1082,21 @@ impl ItipBanner {
         banner_box.append(&details_revealer);
         revealer.set_child(Some(&banner_box));
 
-        // Responsive adaptation when the preview pane is narrowed
+        // Responsive adaptation when the preview pane is narrowed (all the way down to mobile widths)
         {
             let cols = details_columns.clone();
             let tl_box = timeline_side_box.clone();
             let act_bar = footer_box.clone();
+            let req_box = action_box_request.clone();
             let sec_bar = secondary_bar_box.clone();
             let comment_icon = btn_comment_icon.clone();
             let comment_lbl = btn_comment_lbl.clone();
+            let acc_icon = btn_accept_icon.clone();
+            let acc_lbl = btn_accept_lbl.clone();
+            let tent_icon = btn_tentative_icon.clone();
+            let tent_lbl = btn_tentative_lbl.clone();
+            let dec_icon = btn_decline_icon.clone();
+            let dec_lbl = btn_decline_lbl.clone();
             let last_width = Cell::new(0);
             let last_tl_vis = Cell::new(false);
             banner_box.add_tick_callback(move |widget, _| {
@@ -1029,14 +1139,53 @@ impl ItipBanner {
                         sec_bar.set_halign(gtk::Align::End);
                     }
 
-                    // GNOME HIG: switch "Comment" to icon-only on medium single-row widths (520..640)
-                    // so the calendar chip has full room, or on very narrow stacked widths (< 390)
-                    let icon_only_comment = (w >= 520 && w < 640) || w < 390;
+                    // Progressive mobile compaction so the action bar shrinks down to < 200px:
+                    // 1. < 640px: "Comment" collapses to icon-only
+                    let icon_only_comment = w < 640;
                     comment_lbl.set_visible(!icon_only_comment);
                     comment_icon.set_visible(icon_only_comment);
+
+                    // 2. < 440px: tighter button margins & spacing for mobile screens
+                    if w < 440 {
+                        act_bar.add_css_class("is-mobile-compact");
+                        act_bar.set_margin_start(10);
+                        act_bar.set_margin_end(10);
+                        req_box.set_spacing(4);
+                    } else {
+                        act_bar.remove_css_class("is-mobile-compact");
+                        act_bar.set_margin_start(16);
+                        act_bar.set_margin_end(16);
+                        req_box.set_spacing(6);
+                    }
+
+                    // 3. < 390px: Tentative & Decline collapse to compact icon pills ([Accept] [?] [✕] [💬] [⋮])
+                    let icon_only_secondary_rsvp = w < 390;
+                    tent_lbl.set_visible(!icon_only_secondary_rsvp);
+                    tent_icon.set_visible(icon_only_secondary_rsvp);
+                    dec_lbl.set_visible(!icon_only_secondary_rsvp);
+                    dec_icon.set_visible(icon_only_secondary_rsvp);
+
+                    // 4. < 300px: Accept also collapses to icon-only ([✓] [?] [✕] [💬] [⋮])
+                    let icon_only_accept = w < 300;
+                    acc_lbl.set_visible(!icon_only_accept);
+                    acc_icon.set_visible(icon_only_accept);
                 }
                 glib::ControlFlow::Continue
             });
+        }
+
+        let pointer_in_timeline = Rc::new(Cell::new(false));
+        {
+            let motion = gtk::EventControllerMotion::new();
+            let ptr_enter = pointer_in_timeline.clone();
+            motion.connect_enter(move |_, _, _| {
+                ptr_enter.set(true);
+            });
+            let ptr_leave = pointer_in_timeline.clone();
+            motion.connect_leave(move |_| {
+                ptr_leave.set(false);
+            });
+            timeline_side_box.add_controller(motion);
         }
 
         let banner = Self {
@@ -1045,6 +1194,10 @@ impl ItipBanner {
             header_row,
             details_revealer,
             details_scrolled: details_scrolled.clone(),
+            details_zoom: Rc::new(Cell::new(1.0)),
+            details_zoom_class,
+            details_zoom_provider,
+            pointer_in_timeline,
             cal_select_box,
             footer_box,
             is_compact: Rc::new(Cell::new(false)),
@@ -1052,6 +1205,7 @@ impl ItipBanner {
             full_header_prompt: Rc::new(RefCell::new(gettext("Meeting Invitation"))),
             icon,
             lbl_header_prompt,
+            lbl_cancel_inline,
             lbl_title,
             lbl_method,
             lbl_status_badge,
@@ -1193,8 +1347,26 @@ impl ItipBanner {
             details_scrolled.add_controller(wheel_ctrl);
         }
 
-        // Connect Ctrl + Scroll zoom on timeline_side_box (for standalone usage / tests)
+        // Connect Ctrl + Scroll zoom on details_vbox (left column) and timeline_side_box (right column)
         {
+            let left_zoom_ctrl = gtk::EventControllerScroll::new(
+                gtk::EventControllerScrollFlags::VERTICAL,
+            );
+            left_zoom_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+            let this_left = banner.clone();
+            left_zoom_ctrl.connect_scroll(move |controller, _dx, dy| {
+                let state = controller.current_event_state();
+                let is_ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+                    && !state.contains(gtk::gdk::ModifierType::ALT_MASK)
+                    && !state.contains(gtk::gdk::ModifierType::SUPER_MASK);
+                if is_ctrl {
+                    this_left.adjust_details_zoom_delta(dy);
+                    return glib::Propagation::Stop;
+                }
+                glib::Propagation::Proceed
+            });
+            details_vbox.add_controller(left_zoom_ctrl);
+
             let zoom_ctrl = gtk::EventControllerScroll::new(
                 gtk::EventControllerScrollFlags::VERTICAL,
             );
@@ -1259,11 +1431,17 @@ impl ItipBanner {
             }
         } else {
             self.banner_box.remove_css_class("is-compact");
-            self.header_row.set_visible(true);
-            self.header_row.set_margin_top(10);
-            self.header_row.set_margin_bottom(6);
-            self.footer_box.set_margin_top(0);
-            self.footer_box.set_margin_bottom(10);
+            if has_actions {
+                self.header_row.set_visible(false);
+                self.footer_box.set_margin_top(8);
+                self.footer_box.set_margin_bottom(8);
+            } else {
+                self.header_row.set_visible(true);
+                self.header_row.set_margin_top(10);
+                self.header_row.set_margin_bottom(6);
+                self.footer_box.set_margin_top(0);
+                self.footer_box.set_margin_bottom(10);
+            }
             self.icon.set_pixel_size(24);
             self.lbl_header_prompt.set_single_line_mode(false);
             self.lbl_header_prompt.set_wrap(true);
@@ -1275,6 +1453,46 @@ impl ItipBanner {
 
     pub fn connect_scroll_offset<F: Fn(f64) + 'static>(&self, f: F) {
         *self.on_scroll_offset.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn handle_ctrl_scroll_delta(&self, dy: f64) {
+        if self.timeline_side_box.is_visible() && self.pointer_in_timeline.get() {
+            self.adjust_timeline_zoom_delta(dy);
+        } else {
+            self.adjust_details_zoom_delta(dy);
+        }
+    }
+
+    pub fn adjust_details_zoom_delta(&self, dy: f64) {
+        if dy.abs() < 0.001 {
+            return;
+        }
+        let old_z = self.details_zoom.get();
+        let delta_z = (-dy * 0.08).clamp(-0.20, 0.20);
+        let new_z = (old_z + delta_z).clamp(0.75, 2.20);
+        if (new_z - old_z).abs() < 0.01 {
+            return;
+        }
+        self.apply_details_zoom(new_z);
+    }
+
+    pub fn apply_details_zoom(&self, zoom: f64) {
+        let z = zoom.clamp(0.75, 2.20);
+        self.details_zoom.set(z);
+        if (z - 1.0).abs() < 0.01 {
+            self.details_zoom_provider.load_from_string("");
+        } else {
+            let cls = &self.details_zoom_class;
+            let heading_rem = 1.08 * z;
+            let body_rem = 0.98 * z;
+            let caption_rem = 0.84 * z;
+            let css = format!(
+                ".{cls} label.heading {{ font-size: {heading_rem:.3}rem; }}\n\
+                 .{cls} label.body, .{cls} label.itip-sender-message-text {{ font-size: {body_rem:.3}rem; }}\n\
+                 .{cls} label.caption {{ font-size: {caption_rem:.3}rem; }}\n"
+            );
+            self.details_zoom_provider.load_from_string(&css);
+        }
     }
 
     pub fn adjust_timeline_zoom(&self, delta_steps: i32) {
@@ -1788,11 +2006,13 @@ impl ItipBanner {
                 self.icon.set_icon_name(Some("process-stop-symbolic"));
                 self.icon.add_css_class("error");
                 self.lbl_method.set_text(&gettext("Meeting has been cancelled"));
-                if !org_name.is_empty() {
-                    self.lbl_header_prompt.set_text(&gettext("{} has cancelled the following meeting:").replace("{}", &org_name));
+                let cancel_text = if !org_name.is_empty() {
+                    gettext("{} has cancelled this meeting").replace("{}", &org_name)
                 } else {
-                    self.lbl_header_prompt.set_text(&gettext("Meeting has been cancelled"));
-                }
+                    gettext("Meeting has been cancelled")
+                };
+                self.lbl_header_prompt.set_text(&cancel_text);
+                self.lbl_cancel_inline.set_text(&cancel_text);
                 self.banner_box.add_css_class("itip-cancelled");
                 self.action_box_request.set_visible(false);
                 self.action_box_cancel.set_visible(true);
@@ -1875,6 +2095,17 @@ impl ItipBanner {
 
         *self.full_header_prompt.borrow_mut() = self.lbl_header_prompt.text().to_string();
         self.details_scrolled.vadjustment().set_value(0.0);
+        if !matches!(invitation.method, ItipMethod::Unknown) {
+            self.header_row.set_visible(false);
+            self.footer_box.set_margin_top(8);
+            self.footer_box.set_margin_bottom(8);
+        } else {
+            self.header_row.set_visible(true);
+            self.header_row.set_margin_top(10);
+            self.header_row.set_margin_bottom(6);
+            self.footer_box.set_margin_top(0);
+            self.footer_box.set_margin_bottom(10);
+        }
         self.set_compact(false);
 
         self.comment_view.buffer().set_text("");
@@ -1960,7 +2191,7 @@ impl ItipBanner {
         }
         self.exp_description.set_visible(false);
 
-        // Organizer
+        // Organizer & Attendees (populated on labels for state/tooltips, hidden in UI because the Mail Header directly above already displays sender & recipients)
         if let Some(person) = &invitation.organizer_person {
             let display_name = person.display_label();
             if !display_name.is_empty() {
@@ -1968,21 +2199,15 @@ impl ItipBanner {
                 let tooltip = person.full_display();
                 self.lbl_organizer.set_tooltip_text(Some(&tooltip));
                 self.organizer_row.set_tooltip_text(Some(&tooltip));
-                self.organizer_row.set_visible(true);
-            } else {
-                self.organizer_row.set_visible(false);
             }
         } else if !invitation.organizer.trim().is_empty() {
             let org = crate::services::itip_service::strip_mailto_prefix(invitation.organizer.trim());
             self.lbl_organizer.set_text(&format!("{}: {org}", gettext("Organizer")));
             self.lbl_organizer.set_tooltip_text(Some(org));
             self.organizer_row.set_tooltip_text(Some(org));
-            self.organizer_row.set_visible(true);
-        } else {
-            self.organizer_row.set_visible(false);
         }
+        self.organizer_row.set_visible(false);
 
-        // Attendees
         let attendees = &invitation.attendee_persons;
         if !attendees.is_empty() {
             let count = attendees.len();
@@ -2009,7 +2234,6 @@ impl ItipBanner {
             self.lbl_attendees.set_text(&label_text);
             self.lbl_attendees.set_tooltip_text(Some(&tooltip_lines));
             self.attendees_row.set_tooltip_text(Some(&tooltip_lines));
-            self.attendees_row.set_visible(true);
         } else if !invitation.attendees.is_empty() {
             let count = invitation.attendees.len();
             let text = if count == 1 {
@@ -2026,10 +2250,8 @@ impl ItipBanner {
             self.lbl_attendees.set_text(&text);
             self.lbl_attendees.set_tooltip_text(Some(&tooltip_lines));
             self.attendees_row.set_tooltip_text(Some(&tooltip_lines));
-            self.attendees_row.set_visible(true);
-        } else {
-            self.attendees_row.set_visible(false);
         }
+        self.attendees_row.set_visible(false);
 
         // Current user status
         if matches!(invitation.method, ItipMethod::Request | ItipMethod::Add) {

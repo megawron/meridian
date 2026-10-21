@@ -241,15 +241,27 @@ pub fn parse_invitation(raw: &str) -> Option<ItipInvitation> {
     let mut snapshot = CalendarSnapshot::default();
     crate::services::calendar_store_service::parse_ical_component(raw, "", "", &mut snapshot);
     let event = snapshot.events.into_iter().next()?;
-    let organizer_line = ical_property_line(raw, "ORGANIZER");
-    let organizer_person = organizer_line.as_deref().map(parse_ical_person);
-    let organizer = ical_property(raw, "ORGANIZER").unwrap_or_default();
+    let organizer_prop = top_level_property(raw, "ORGANIZER");
+    let organizer_person = organizer_prop
+        .as_ref()
+        .map(|(prop, val)| parse_ical_person(&format!("{prop}:{val}")));
+    let organizer = organizer_prop
+        .map(|(_, val)| unescape_ical_text(&val))
+        .unwrap_or_default();
 
-    let attendee_lines = ical_property_lines(raw, "ATTENDEE");
-    let attendee_persons: Vec<ItipPerson> = attendee_lines.iter().map(|l| parse_ical_person(l)).collect();
-    let attendees = ical_properties(raw, "ATTENDEE");
-    let sequence = ical_property(raw, "SEQUENCE").and_then(|value| value.parse::<u32>().ok());
-    let recurrence = ical_property(raw, "RRULE");
+    let attendee_props = top_level_properties(raw, "ATTENDEE");
+    let attendee_persons: Vec<ItipPerson> = attendee_props
+        .iter()
+        .map(|(prop, val)| parse_ical_person(&format!("{prop}:{val}")))
+        .collect();
+    let attendees: Vec<String> = attendee_props
+        .into_iter()
+        .map(|(_, val)| unescape_ical_text(&val))
+        .collect();
+    let sequence = top_level_property(raw, "SEQUENCE")
+        .and_then(|(_, value)| unescape_ical_text(&value).parse::<u32>().ok());
+    let recurrence =
+        top_level_property(raw, "RRULE").map(|(_, value)| unescape_ical_text(&value));
     Some(ItipInvitation {
         method,
         event,
@@ -825,6 +837,42 @@ mod tests {
         assert_eq!(invitation.attendee_persons.len(), 2);
         assert_eq!(invitation.attendee_persons[0].display_label(), "Max Jensen");
         assert_eq!(invitation.attendee_persons[1].display_label(), "Max Mustermann");
+    }
+
+    #[test]
+    fn test_vtimezone_rrule_does_not_leak_into_vevent_recurrence() {
+        let raw = concat!(
+            "BEGIN:VCALENDAR\r\n",
+            "METHOD:REQUEST\r\n",
+            "VERSION:2.0\r\n",
+            "BEGIN:VTIMEZONE\r\n",
+            "TZID:W. Europe Standard Time\r\n",
+            "BEGIN:STANDARD\r\n",
+            "DTSTART:16010101T030000\r\n",
+            "TZOFFSETFROM:+0200\r\n",
+            "TZOFFSETTO:+0100\r\n",
+            "RRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=-1SU;BYMONTH=10\r\n",
+            "END:STANDARD\r\n",
+            "BEGIN:DAYLIGHT\r\n",
+            "DTSTART:16010101T020000\r\n",
+            "TZOFFSETFROM:+0100\r\n",
+            "TZOFFSETTO:+0200\r\n",
+            "RRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=-1SU;BYMONTH=3\r\n",
+            "END:DAYLIGHT\r\n",
+            "END:VTIMEZONE\r\n",
+            "BEGIN:VEVENT\r\n",
+            "UID:single-teams-meeting\r\n",
+            "SUMMARY:Teams Meeting\r\n",
+            "DTSTART;TZID=\"W. Europe Standard Time\":20261005T153000\r\n",
+            "DTEND;TZID=\"W. Europe Standard Time\":20261005T160000\r\n",
+            "END:VEVENT\r\n",
+            "END:VCALENDAR\r\n"
+        );
+        let invitation = parse_invitation(raw).expect("should parse invitation with VTIMEZONE");
+        assert_eq!(
+            invitation.recurrence, None,
+            "VTIMEZONE DST RRULE must not leak into VEVENT recurrence"
+        );
     }
 }
 
