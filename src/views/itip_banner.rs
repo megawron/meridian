@@ -24,6 +24,8 @@ use crate::services::itip_service::{
 struct PlacedTimelineWidget {
     widget: gtk::Label,
     x: f64,
+    col_idx: usize,
+    total_cols: usize,
     start_min: u32,
     end_min: u32,
 }
@@ -169,8 +171,8 @@ impl ItipBanner {
             .spacing(10)
             .hexpand(true)
             .valign(gtk::Align::Center)
-            .margin_start(16)
-            .margin_end(16)
+            .margin_start(8)
+            .margin_end(8)
             .margin_top(10)
             .margin_bottom(10)
             .build();
@@ -236,10 +238,10 @@ impl ItipBanner {
             .orientation(gtk::Orientation::Vertical)
             .spacing(8)
             .hexpand(true)
-            .margin_start(16)
-            .margin_end(16)
+            .margin_start(8)
+            .margin_end(8)
             .margin_top(12)
-            .margin_bottom(12)
+            .margin_bottom(10)
             .build();
 
         // 1. Event Title (hidden in UI because the Mail Header directly above already shows the subject prominently; kept for state/test compatibility)
@@ -419,10 +421,10 @@ impl ItipBanner {
             .orientation(gtk::Orientation::Vertical)
             .spacing(6)
             .hexpand(true)
-            .margin_start(16)
-            .margin_end(16)
+            .margin_start(8)
+            .margin_end(8)
             .margin_top(2)
-            .margin_bottom(12)
+            .margin_bottom(8)
             .css_classes(vec!["card", "mail-preview-card", "itip-sender-message-box"])
             .visible(false)
             .build();
@@ -522,8 +524,8 @@ impl ItipBanner {
             .orientation(gtk::Orientation::Vertical)
             .spacing(4)
             .hexpand(true)
-            .margin_start(16)
-            .margin_end(16)
+            .margin_start(8)
+            .margin_end(8)
             .margin_top(8)
             .margin_bottom(6)
             .build();
@@ -556,9 +558,9 @@ impl ItipBanner {
             .spacing(8)
             .hexpand(true)
             .valign(gtk::Align::Center)
-            .margin_start(16)
-            .margin_end(16)
-            .margin_top(8)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(6)
             .margin_bottom(8)
             .build();
 
@@ -839,12 +841,13 @@ impl ItipBanner {
             .build();
         let lbl_cancel_inline = gtk::Label::builder()
             .label(&gettext("Meeting has been cancelled"))
+            .tooltip_text(&gettext("Meeting has been cancelled"))
             .css_classes(vec!["caption", "heading", "dim-label"])
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .hexpand(true)
-            .wrap(true)
-            .wrap_mode(pango::WrapMode::WordChar)
+            .single_line_mode(true)
+            .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
             .valign(gtk::Align::Center)
             .build();
@@ -882,12 +885,13 @@ impl ItipBanner {
             .build();
         let lbl_reply_inline = gtk::Label::builder()
             .label(&gettext("Response to Meeting Invitation"))
+            .tooltip_text(&gettext("Response to Meeting Invitation"))
             .css_classes(vec!["caption", "heading", "dim-label"])
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .hexpand(true)
-            .wrap(true)
-            .wrap_mode(pango::WrapMode::WordChar)
+            .single_line_mode(true)
+            .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
             .valign(gtk::Align::Center)
             .build();
@@ -1082,10 +1086,17 @@ impl ItipBanner {
         banner_box.append(&details_revealer);
         revealer.set_child(Some(&banner_box));
 
+        let timeline_hour_height = Rc::new(Cell::new(HOUR_HEIGHT));
+        let timeline_placed_widgets: Rc<RefCell<Vec<PlacedTimelineWidget>>> =
+            Rc::new(RefCell::new(Vec::new()));
+
         // Responsive adaptation when the preview pane is narrowed (all the way down to mobile widths)
         {
             let cols = details_columns.clone();
             let tl_box = timeline_side_box.clone();
+            let tl_fixed = timeline_fixed.clone();
+            let placed_for_resize = timeline_placed_widgets.clone();
+            let hour_h_for_resize = timeline_hour_height.clone();
             let act_bar = footer_box.clone();
             let req_box = action_box_request.clone();
             let sec_bar = secondary_bar_box.clone();
@@ -1098,10 +1109,12 @@ impl ItipBanner {
             let dec_icon = btn_decline_icon.clone();
             let dec_lbl = btn_decline_lbl.clone();
             let last_width = Cell::new(0);
+            let last_tl_width = Cell::new(0);
             let last_tl_vis = Cell::new(false);
             banner_box.add_tick_callback(move |widget, _| {
                 let w = widget.width();
                 let tl_vis = tl_box.is_visible();
+                let tl_w = tl_box.width();
                 if w > 0 && (w != last_width.get() || tl_vis != last_tl_vis.get()) {
                     last_width.set(w);
                     last_tl_vis.set(tl_vis);
@@ -1148,13 +1161,13 @@ impl ItipBanner {
                     // 2. < 440px: tighter button margins & spacing for mobile screens
                     if w < 440 {
                         act_bar.add_css_class("is-mobile-compact");
-                        act_bar.set_margin_start(10);
-                        act_bar.set_margin_end(10);
+                        act_bar.set_margin_start(8);
+                        act_bar.set_margin_end(8);
                         req_box.set_spacing(4);
                     } else {
                         act_bar.remove_css_class("is-mobile-compact");
-                        act_bar.set_margin_start(16);
-                        act_bar.set_margin_end(16);
+                        act_bar.set_margin_start(8);
+                        act_bar.set_margin_end(8);
                         req_box.set_spacing(6);
                     }
 
@@ -1169,6 +1182,28 @@ impl ItipBanner {
                     let icon_only_accept = w < 300;
                     acc_lbl.set_visible(!icon_only_accept);
                     acc_icon.set_visible(icon_only_accept);
+                }
+
+                // Dynamically stretch timeline event blocks across the full available width when stacked or resized
+                if tl_vis && tl_w > 60 && tl_w != last_tl_width.get() {
+                    last_tl_width.set(tl_w);
+                    let avail_w = (tl_w as f64 - 47.0 - 15.0).max(120.0);
+                    let cur_h = hour_h_for_resize.get();
+                    for item in placed_for_resize.borrow_mut().iter_mut() {
+                        let total_cols = item.total_cols.max(1);
+                        let col_gap = 2.0;
+                        let col_width = if total_cols > 1 {
+                            ((avail_w - (total_cols as f64 - 1.0) * col_gap) / total_cols as f64)
+                                .max(32.0)
+                        } else {
+                            avail_w
+                        };
+                        let x = 47.0 + item.col_idx as f64 * (col_width + col_gap);
+                        item.x = x;
+                        item.widget.set_width_request(col_width.round() as i32);
+                        let y = (item.start_min as f64 / 60.0) * cur_h;
+                        tl_fixed.move_(&item.widget, x, y);
+                    }
                 }
                 glib::ControlFlow::Continue
             });
@@ -1219,8 +1254,8 @@ impl ItipBanner {
             timeline_all_day_box,
             timeline_hours_box,
             timeline_hour_rows,
-            timeline_hour_height: Rc::new(Cell::new(HOUR_HEIGHT)),
-            timeline_placed_widgets: Rc::new(RefCell::new(Vec::new())),
+            timeline_hour_height,
+            timeline_placed_widgets,
             zoom_anchor_hour: Rc::new(Cell::new(None)),
             zoom_anchor_cleanup: Rc::new(RefCell::new(None)),
             timeline_fixed,
@@ -2013,6 +2048,7 @@ impl ItipBanner {
                 };
                 self.lbl_header_prompt.set_text(&cancel_text);
                 self.lbl_cancel_inline.set_text(&cancel_text);
+                self.lbl_cancel_inline.set_tooltip_text(Some(&cancel_text));
                 self.banner_box.add_css_class("itip-cancelled");
                 self.action_box_request.set_visible(false);
                 self.action_box_cancel.set_visible(true);
@@ -2889,7 +2925,12 @@ impl ItipBanner {
         }
 
         const TIMELINE_EVENTS_X: f64 = 47.0;
-        let total_width: f64 = 198.0;
+        let tl_w = self.timeline_side_box.width();
+        let total_width: f64 = if tl_w > 60 {
+            (tl_w as f64 - TIMELINE_EVENTS_X - 15.0).max(120.0)
+        } else {
+            198.0
+        };
 
         for cluster in clusters {
             let mut col_ends: Vec<u32> = Vec::new();
@@ -2915,7 +2956,7 @@ impl ItipBanner {
             let total_cols = col_ends.len().max(1);
             let col_gap = 2.0;
             let col_width = if total_cols > 1 {
-                ((total_width - (total_cols as f64 - 1.0) * col_gap) / total_cols as f64).max(40.0)
+                ((total_width - (total_cols as f64 - 1.0) * col_gap) / total_cols as f64).max(32.0)
             } else {
                 total_width
             };
@@ -3008,6 +3049,8 @@ impl ItipBanner {
                     .push(PlacedTimelineWidget {
                         widget,
                         x,
+                        col_idx,
+                        total_cols,
                         start_min: item.start_min,
                         end_min: item.end_min,
                     });
