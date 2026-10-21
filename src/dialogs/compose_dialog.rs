@@ -1374,10 +1374,16 @@ impl ComposeDialog {
         // To
         let lbl_to = gtk::Label::builder()
             .label(crate::i18n::gettext("To"))
-            .css_classes(vec!["dim-label", "composer-header-label"])
+            .tooltip_text(crate::i18n::gettext("Select contacts…"))
+            .css_classes(vec![
+                "dim-label",
+                "composer-header-label",
+                "composer-header-label-interactive",
+            ])
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .build();
+        lbl_to.set_cursor_from_name(Some("pointer"));
         set_accessible_label(&lbl_to, &crate::i18n::gettext("Recipients"));
         let entry_to = gtk::Entry::builder()
             .input_purpose(gtk::InputPurpose::Email)
@@ -1393,19 +1399,6 @@ impl ComposeDialog {
             .hexpand(true)
             .build();
         to_row_box.append(&entry_to);
-
-        let btn_contacts = gtk::Button::builder()
-            .icon_name("contact-new-symbolic")
-            .tooltip_text(crate::i18n::gettext("Select contacts…"))
-            .css_classes(vec!["flat", "composer-contact-picker-btn"])
-            .valign(gtk::Align::Center)
-            .build();
-        set_accessible_label(&btn_contacts, &crate::i18n::gettext("Select contacts"));
-        let entry_to_for_contacts = entry_to.clone();
-        btn_contacts.connect_clicked(move |_| {
-            entry_to_for_contacts.grab_focus();
-        });
-        to_row_box.append(&btn_contacts);
 
         let btn_toggle_cc_bcc = gtk::Button::builder()
             .label("Cc/Bcc")
@@ -1450,11 +1443,17 @@ impl ComposeDialog {
         // Cc/Bcc visibility defaults from AppSettings
         let lbl_cc = gtk::Label::builder()
             .label(crate::i18n::gettext("Cc"))
-            .css_classes(vec!["dim-label", "composer-header-label"])
+            .tooltip_text(crate::i18n::gettext("Select contacts…"))
+            .css_classes(vec![
+                "dim-label",
+                "composer-header-label",
+                "composer-header-label-interactive",
+            ])
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .visible(show_cc)
             .build();
+        lbl_cc.set_cursor_from_name(Some("pointer"));
         set_accessible_label(&lbl_cc, &crate::i18n::gettext("Copy (Cc)"));
         let entry_cc = gtk::Entry::builder()
             .input_purpose(gtk::InputPurpose::Email)
@@ -1477,11 +1476,17 @@ impl ComposeDialog {
 
         let lbl_bcc = gtk::Label::builder()
             .label(crate::i18n::gettext("Bcc"))
-            .css_classes(vec!["dim-label", "composer-header-label"])
+            .tooltip_text(crate::i18n::gettext("Select contacts…"))
+            .css_classes(vec![
+                "dim-label",
+                "composer-header-label",
+                "composer-header-label-interactive",
+            ])
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .visible(show_bcc)
             .build();
+        lbl_bcc.set_cursor_from_name(Some("pointer"));
         set_accessible_label(&lbl_bcc, &crate::i18n::gettext("Blind Copy (Bcc)"));
         let entry_bcc = gtk::Entry::builder()
             .input_purpose(gtk::InputPurpose::Email)
@@ -2692,6 +2697,24 @@ impl ComposeDialog {
             self.downgrade(),
         );
         setup_recipient_autocompletion(
+            &entry_bcc,
+            &combo_from,
+            self.downgrade(),
+        );
+        setup_recipient_label_contact_picker(
+            &lbl_to,
+            &entry_to,
+            &combo_from,
+            self.downgrade(),
+        );
+        setup_recipient_label_contact_picker(
+            &lbl_cc,
+            &entry_cc,
+            &combo_from,
+            self.downgrade(),
+        );
+        setup_recipient_label_contact_picker(
+            &lbl_bcc,
             &entry_bcc,
             &combo_from,
             self.downgrade(),
@@ -7823,6 +7846,71 @@ fn safe_popup_popover(popover: &gtk::Popover, entry: &gtk::Entry) {
     popover.popup();
 }
 
+fn configure_recipient_scroll_sizing(
+    scroll: &gtk::ScrolledWindow,
+    list: &gtk::ListBox,
+    popover: &gtk::Popover,
+    item_count: usize,
+    max_height: i32,
+) {
+    if item_count <= 10 {
+        scroll.set_vscrollbar_policy(gtk::PolicyType::Never);
+        scroll.set_min_content_height(0);
+        scroll.set_max_content_height(-1);
+        scroll.vadjustment().set_value(0.0);
+    } else {
+        scroll.set_vscrollbar_policy(gtk::PolicyType::Automatic);
+        scroll.set_min_content_height(0);
+        scroll.set_max_content_height(max_height);
+    }
+    list.queue_resize();
+    scroll.queue_resize();
+    popover.queue_resize();
+}
+
+fn place_entry_cursor_at_end_unselected(entry: &gtk::Entry) {
+    if !entry.has_focus() {
+        entry.grab_focus_without_selecting();
+    }
+    let end_pos = entry.text().chars().count() as i32;
+    entry.select_region(end_pos, end_pos);
+    entry.set_position(-1);
+
+    let mut child = entry.first_child();
+    while let Some(widget) = child {
+        if let Ok(text_widget) = widget.clone().downcast::<gtk::Text>() {
+            if !text_widget.has_focus() {
+                text_widget.grab_focus_without_selecting();
+            }
+            text_widget.select_region(end_pos, end_pos);
+            text_widget.set_position(-1);
+            break;
+        }
+        child = widget.next_sibling();
+    }
+
+    let entry_weak = entry.downgrade();
+    glib::idle_add_local_once(move || {
+        if let Some(entry) = entry_weak.upgrade() {
+            if !entry.has_focus() {
+                entry.grab_focus_without_selecting();
+            }
+            let end_pos = entry.text().chars().count() as i32;
+            entry.select_region(end_pos, end_pos);
+            entry.set_position(-1);
+            let mut child = entry.first_child();
+            while let Some(widget) = child {
+                if let Ok(text_widget) = widget.clone().downcast::<gtk::Text>() {
+                    text_widget.select_region(end_pos, end_pos);
+                    text_widget.set_position(-1);
+                    break;
+                }
+                child = widget.next_sibling();
+            }
+        }
+    });
+}
+
 fn setup_recipient_autocompletion(
     entry: &gtk::Entry,
     combo_from: &gtk::DropDown,
@@ -7833,7 +7921,6 @@ fn setup_recipient_autocompletion(
     popover.set_position(gtk::PositionType::Bottom);
     popover.set_has_arrow(false);
     popover.set_halign(gtk::Align::Start);
-    popover.add_css_class("menu");
     popover.add_css_class("recipient-completion-popover");
     popover.set_parent(entry);
 
@@ -7844,13 +7931,13 @@ fn setup_recipient_autocompletion(
 
     let scroll = gtk::ScrolledWindow::builder()
         .child(&list)
-        .width_request(500)
+        .width_request(440)
         .min_content_height(0)
-        .max_content_height(280)
+        .max_content_height(380)
         .propagate_natural_height(true)
         .propagate_natural_width(false)
         .hscrollbar_policy(gtk::PolicyType::Never)
-        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .vscrollbar_policy(gtk::PolicyType::Never)
         .valign(gtk::Align::Start)
         .build();
 
@@ -7859,24 +7946,42 @@ fn setup_recipient_autocompletion(
     let visible_suggestions = Rc::new(RefCell::new(Vec::<RecipientSuggestion>::new()));
     let generation = Rc::new(Cell::new(0u64));
     let debounce_source = Rc::new(RefCell::new(Option::<glib::SourceId>::None));
+    let suppress_autocompletion = Rc::new(Cell::new(false));
 
     let entry_for_activate = entry.downgrade();
     let popover_for_activate = popover.clone();
     let visible_for_activate = Rc::clone(&visible_suggestions);
     let dialog_weak_for_activate = dialog_weak.clone();
+    let suppress_for_activate = Rc::clone(&suppress_autocompletion);
+    let debounce_for_activate = Rc::clone(&debounce_source);
+    let generation_for_activate = Rc::clone(&generation);
     let accept_selection = move |selected_index: usize| {
         let Some(entry) = entry_for_activate.upgrade() else {
             return;
         };
-        let suggestions = visible_for_activate.borrow();
-        let Some(suggestion) = suggestions.get(selected_index) else {
+        let selected_item = {
+            let suggestions = visible_for_activate.borrow();
+            suggestions.get(selected_index).cloned()
+        };
+        let Some(suggestion) = selected_item else {
             return;
         };
-        let formatted = recipient_suggestion_label(suggestion);
-        entry.set_text(&replace_current_recipient(&entry.text(), &formatted));
-        entry.set_position(-1);
-        entry.grab_focus();
+        if let Some(source_id) = debounce_for_activate.borrow_mut().take() {
+            let _ = unsafe { glib::ffi::g_source_remove(source_id.as_raw()) };
+        }
+        generation_for_activate.set(generation_for_activate.get().wrapping_add(1));
+        visible_for_activate.borrow_mut().clear();
+
+        let formatted = recipient_suggestion_label(&suggestion);
+        let new_text = replace_current_recipient(&entry.text(), &formatted);
+
+        suppress_for_activate.set(true);
         popover_for_activate.popdown();
+        entry.set_text(&new_text);
+        suppress_for_activate.set(false);
+
+        place_entry_cursor_at_end_unselected(&entry);
+
         if let Some(dialog) = dialog_weak_for_activate.upgrade() {
             dialog.mark_changed();
         }
@@ -7892,6 +7997,7 @@ fn setup_recipient_autocompletion(
     });
 
     let key_controller = gtk::EventControllerKey::new();
+    key_controller.set_propagation_phase(gtk::PropagationPhase::Capture);
     let popover_for_key = popover.clone();
     let list_for_key = list.clone();
     let scroll_for_key = scroll.clone();
@@ -7945,12 +8051,13 @@ fn setup_recipient_autocompletion(
             }
             gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter | gtk::gdk::Key::Tab => {
                 let current = list_for_key.selected_row().map(|r| r.index()).unwrap_or(0);
-                if current >= 0 && (current as usize) < count {
-                    accept_for_key(current as usize);
-                    glib::Propagation::Stop
+                let target_idx = if current >= 0 && (current as usize) < count {
+                    current as usize
                 } else {
-                    glib::Propagation::Proceed
-                }
+                    0
+                };
+                accept_for_key(target_idx);
+                glib::Propagation::Stop
             }
             gtk::gdk::Key::Escape => {
                 popover_for_key.popdown();
@@ -7991,9 +8098,14 @@ fn setup_recipient_autocompletion(
     let entry_weak = entry.downgrade();
     let popover_for_changed = popover.clone();
     let list_for_changed = list.clone();
+    let scroll_for_changed = scroll.clone();
     let combo_from_clone = combo_from.clone();
     let dialog_weak_for_changed = dialog_weak.clone();
+    let suppress_for_changed = Rc::clone(&suppress_autocompletion);
     entry.connect_changed(move |e| {
+        if suppress_for_changed.get() {
+            return;
+        }
         let text = e.text().to_string();
         let fragment = current_recipient_fragment(&text).to_string();
 
@@ -8008,80 +8120,81 @@ fn setup_recipient_autocompletion(
 
         let effective_min_len = if min_len <= 3 { 1 } else { min_len };
 
-        if fragment.trim().is_empty() || fragment.chars().count() < effective_min_len {
-            if let Some(source_id) = debounce_source.borrow_mut().take() {
-                let _ = unsafe { glib::ffi::g_source_remove(source_id.as_raw()) };
-            }
-            popover_for_changed.popdown();
-            return;
-        }
-
         if let Some(source_id) = debounce_source.borrow_mut().take() {
             let _ = unsafe { glib::ffi::g_source_remove(source_id.as_raw()) };
         }
 
-        let generation_id = generation.get() + 1;
+        let generation_id = generation.get().wrapping_add(1);
         generation.set(generation_id);
 
-        let entry_weak_clone = entry_weak.clone();
-        let popover_clone = popover_for_changed.clone();
-        let list_clone = list_for_changed.clone();
-        let visible_clone = Rc::clone(&visible_suggestions);
-        let generation_clone = Rc::clone(&generation);
-        let combo_from_source = combo_from_clone.clone();
-        let dialog_weak_source = dialog_weak_for_changed.clone();
-        let debounce_source_timer = Rc::clone(&debounce_source);
+        if fragment.trim().is_empty() || fragment.chars().count() < effective_min_len {
+            visible_suggestions.replace(Vec::new());
+            popover_for_changed.popdown();
+            return;
+        }
 
-        let source_id = glib::timeout_add_local(
-            std::time::Duration::from_millis(50),
-            move || {
-                debounce_source_timer.borrow_mut().take();
+        // 1. Instant synchronous local search from in-memory pool (< 0.1 ms)
+        let mut suggestions = search_recipient_suggestions(&fragment, show_address);
+        suggestions.truncate(16);
 
-                if generation_clone.get() != generation_id {
-                    return glib::ControlFlow::Break;
-                }
-                let Some(entry) = entry_weak_clone.upgrade() else {
-                    return glib::ControlFlow::Break;
-                };
-                let cur_fragment = current_recipient_fragment(&entry.text()).to_string();
-                if cur_fragment.chars().count() < effective_min_len {
-                    popover_clone.popdown();
-                    return glib::ControlFlow::Break;
-                }
+        if suggestions.is_empty() {
+            popover_for_changed.popdown();
+            visible_suggestions.replace(Vec::new());
+            while let Some(row) = list_for_changed.first_child() {
+                list_for_changed.remove(&row);
+            }
+        } else {
+            render_recipient_suggestions_to_list(&list_for_changed, &suggestions);
+            configure_recipient_scroll_sizing(
+                &scroll_for_changed,
+                &list_for_changed,
+                &popover_for_changed,
+                suggestions.len(),
+                380,
+            );
+            visible_suggestions.replace(suggestions);
+            if let Some(first_row) = list_for_changed.row_at_index(0) {
+                list_for_changed.select_row(Some(&first_row));
+            }
+            safe_popup_popover(&popover_for_changed, e);
+        }
 
-                // 1. Instant local search from in-memory pool (< 0.1 ms)
-                let mut suggestions = search_recipient_suggestions(&cur_fragment, show_address);
-                suggestions.truncate(10);
+        // 2. Non-blocking debounced asynchronous GAL search in background thread
+        if fragment.chars().count() >= 3 {
+            let entry_weak_clone = entry_weak.clone();
+            let popover_clone = popover_for_changed.clone();
+            let list_clone = list_for_changed.clone();
+            let scroll_clone = scroll_for_changed.clone();
+            let visible_clone = Rc::clone(&visible_suggestions);
+            let generation_clone = Rc::clone(&generation);
+            let combo_from_source = combo_from_clone.clone();
+            let dialog_weak_source = dialog_weak_for_changed.clone();
+            let debounce_source_timer = Rc::clone(&debounce_source);
+            let fragment_for_timer = fragment.clone();
 
-                if suggestions.is_empty() {
-                    popover_clone.popdown();
-                    visible_clone.replace(Vec::new());
-                    while let Some(row) = list_clone.first_child() {
-                        list_clone.remove(&row);
+            let source_id = glib::timeout_add_local(
+                std::time::Duration::from_millis(80),
+                move || {
+                    debounce_source_timer.borrow_mut().take();
+                    if generation_clone.get() != generation_id {
+                        return glib::ControlFlow::Break;
                     }
-                } else {
-                    render_recipient_suggestions_to_list(&list_clone, &suggestions);
-                    visible_clone.replace(suggestions.clone());
-                    if let Some(first_row) = list_clone.row_at_index(0) {
-                        list_clone.select_row(Some(&first_row));
+                    let source_uid = dialog_weak_source
+                        .upgrade()
+                        .map(|d| d.selected_identity(combo_from_source.selected()).source_uid)
+                        .unwrap_or_default();
+                    if source_uid.trim().is_empty() {
+                        return glib::ControlFlow::Break;
                     }
-                    safe_popup_popover(&popover_clone, &entry);
-                }
 
-                // 2. Non-blocking asynchronous GAL search in background thread
-                let source_uid = dialog_weak_source
-                    .upgrade()
-                    .map(|d| d.selected_identity(combo_from_source.selected()).source_uid)
-                    .unwrap_or_default();
-
-                if !source_uid.trim().is_empty() && cur_fragment.chars().count() >= 3 {
                     let generation_for_gal = generation_id;
                     let gen_tracker = Rc::clone(&generation_clone);
                     let list_for_gal = list_clone.clone();
+                    let scroll_for_gal = scroll_clone.clone();
                     let visible_for_gal = Rc::clone(&visible_clone);
                     let popover_for_gal = popover_clone.clone();
                     let entry_weak_for_gal = entry_weak_clone.clone();
-                    let fragment_for_gal = cur_fragment.clone();
+                    let fragment_for_gal = fragment_for_timer.clone();
                     let (sender, receiver) = async_channel::bounded(1);
 
                     std::thread::spawn(move || {
@@ -8104,15 +8217,24 @@ fn setup_recipient_autocompletion(
                                 let sugg = gal_contact_to_recipient_suggestion(gc);
                                 if !sugg.address.is_empty()
                                     && !is_internal_microsoft_routing_address(&sugg.address)
-                                    && !current.iter().any(|s| s.address.eq_ignore_ascii_case(&sugg.address))
+                                    && !current
+                                        .iter()
+                                        .any(|s| s.address.eq_ignore_ascii_case(&sugg.address))
                                 {
                                     current.push(sugg);
                                     added = true;
                                 }
                             }
                             if added {
-                                current.truncate(10);
+                                current.truncate(16);
                                 render_recipient_suggestions_to_list(&list_for_gal, &current);
+                                configure_recipient_scroll_sizing(
+                                    &scroll_for_gal,
+                                    &list_for_gal,
+                                    &popover_for_gal,
+                                    current.len(),
+                                    380,
+                                );
                                 visible_for_gal.replace(current);
                                 if let Some(first_row) = list_for_gal.row_at_index(0) {
                                     if list_for_gal.selected_row().is_none() {
@@ -8125,12 +8247,337 @@ fn setup_recipient_autocompletion(
                             }
                         }
                     });
-                }
 
-                glib::ControlFlow::Break
-            },
-        );
-        debounce_source.borrow_mut().replace(source_id);
+                    glib::ControlFlow::Break
+                },
+            );
+            debounce_source.borrow_mut().replace(source_id);
+        }
+    });
+}
+
+fn append_recipient_to_entry(entry: &gtk::Entry, formatted_recipient: &str) {
+    let formatted_recipient = formatted_recipient.trim();
+    if formatted_recipient.is_empty() {
+        return;
+    }
+    let current = entry.text().to_string();
+    let new_key = recipient_key(formatted_recipient);
+    let existing = split_recipient_list(&current);
+    if existing.iter().any(|item| recipient_key(item) == new_key) {
+        if !current.trim().is_empty() && !current.trim_end().ends_with(',') {
+            entry.set_text(&format!("{}, ", existing.join(", ")));
+        }
+        place_entry_cursor_at_end_unselected(entry);
+        return;
+    }
+    let mut updated: Vec<String> = existing;
+    updated.push(formatted_recipient.to_string());
+    entry.set_text(&format!("{}, ", updated.join(", ")));
+    place_entry_cursor_at_end_unselected(entry);
+}
+
+fn setup_recipient_label_contact_picker(
+    label: &gtk::Label,
+    entry: &gtk::Entry,
+    combo_from: &gtk::DropDown,
+    dialog_weak: glib::WeakRef<ComposeDialog>,
+) {
+    let popover = gtk::Popover::builder()
+        .autohide(true)
+        .position(gtk::PositionType::Bottom)
+        .has_arrow(false)
+        .halign(gtk::Align::Start)
+        .css_classes(vec![
+            "recipient-completion-popover",
+            "composer-contact-picker-popover",
+        ])
+        .build();
+    popover.set_parent(label);
+
+    let outer_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(4)
+        .width_request(480)
+        .build();
+
+    let search_entry = gtk::SearchEntry::builder()
+        .placeholder_text(crate::i18n::gettext("Search contacts…"))
+        .hexpand(true)
+        .css_classes(vec!["composer-contact-picker-search"])
+        .build();
+
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::Single)
+        .valign(gtk::Align::Start)
+        .build();
+
+    let scroll = gtk::ScrolledWindow::builder()
+        .child(&list)
+        .width_request(480)
+        .min_content_height(0)
+        .max_content_height(480)
+        .propagate_natural_height(true)
+        .propagate_natural_width(false)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .valign(gtk::Align::Start)
+        .build();
+
+    outer_box.append(&search_entry);
+    outer_box.append(&scroll);
+    popover.set_child(Some(&outer_box));
+
+    let visible_suggestions = Rc::new(RefCell::new(Vec::<RecipientSuggestion>::new()));
+    let generation = Rc::new(Cell::new(0u64));
+
+    let populate_for_query = {
+        let list_c = list.clone();
+        let scroll_c = scroll.clone();
+        let popover_c = popover.clone();
+        let visible_c = Rc::clone(&visible_suggestions);
+        let gen_c = Rc::clone(&generation);
+        let combo_c = combo_from.clone();
+        let dialog_w = dialog_weak.clone();
+        Rc::new(move |query: &str| {
+            let gen_id = gen_c.get().wrapping_add(1);
+            gen_c.set(gen_id);
+            let q = query.trim();
+            let items = if q.is_empty() {
+                let pool = get_or_load_recipient_pool();
+                let mut all: Vec<RecipientSuggestion> = pool
+                    .iter()
+                    .filter(|s| !is_synthetic_test_recipient_address(&s.address))
+                    .cloned()
+                    .collect();
+                all.sort_by(|a, b| {
+                    let a_has_name = !a.display.trim().is_empty();
+                    let b_has_name = !b.display.trim().is_empty();
+                    match b_has_name.cmp(&a_has_name) {
+                        std::cmp::Ordering::Equal => {
+                            let a_key = if a_has_name {
+                                a.display.trim().to_lowercase()
+                            } else {
+                                a.address.trim().to_lowercase()
+                            };
+                            let b_key = if b_has_name {
+                                b.display.trim().to_lowercase()
+                            } else {
+                                b.address.trim().to_lowercase()
+                            };
+                            a_key
+                                .cmp(&b_key)
+                                .then_with(|| a.address.to_lowercase().cmp(&b.address.to_lowercase()))
+                        }
+                        other => other,
+                    }
+                });
+                all
+            } else {
+                search_recipient_suggestions(q, true)
+                    .into_iter()
+                    .filter(|s| !is_synthetic_test_recipient_address(&s.address))
+                    .collect()
+            };
+            render_recipient_suggestions_to_list(&list_c, &items);
+            configure_recipient_scroll_sizing(
+                &scroll_c,
+                &list_c,
+                &popover_c,
+                items.len(),
+                480,
+            );
+            visible_c.replace(items);
+            if let Some(first_row) = list_c.row_at_index(0) {
+                list_c.select_row(Some(&first_row));
+            }
+
+            if q.chars().count() >= 3 {
+                let source_uid = dialog_w
+                    .upgrade()
+                    .map(|d| d.selected_identity(combo_c.selected()).source_uid)
+                    .unwrap_or_default();
+                if !source_uid.trim().is_empty() {
+                    let gen_tracker = Rc::clone(&gen_c);
+                    let list_gal = list_c.clone();
+                    let scroll_gal = scroll_c.clone();
+                    let popover_gal = popover_c.clone();
+                    let vis_gal = Rc::clone(&visible_c);
+                    let q_owned = q.to_string();
+                    let (sender, receiver) = async_channel::bounded(1);
+                    std::thread::spawn(move || {
+                        let contacts = graph_service_for_source(&source_uid)
+                            .and_then(|graph| graph.search_gal_sync(&q_owned).ok());
+                        let _ = sender.send_blocking(contacts);
+                    });
+                    glib::spawn_future_local(async move {
+                        if let Ok(Some(gal_contacts)) = receiver.recv().await {
+                            if gen_tracker.get() != gen_id {
+                                return;
+                            }
+                            let mut current = vis_gal.borrow().clone();
+                            let mut added = false;
+                            for gc in gal_contacts {
+                                if is_internal_microsoft_routing_address(&gc.email_address) {
+                                    continue;
+                                }
+                                let sugg = gal_contact_to_recipient_suggestion(gc);
+                                if !sugg.address.is_empty()
+                                    && !is_internal_microsoft_routing_address(&sugg.address)
+                                    && !current
+                                        .iter()
+                                        .any(|s| s.address.eq_ignore_ascii_case(&sugg.address))
+                                {
+                                    current.push(sugg);
+                                    added = true;
+                                }
+                            }
+                            if added {
+                                render_recipient_suggestions_to_list(&list_gal, &current);
+                                configure_recipient_scroll_sizing(
+                                    &scroll_gal,
+                                    &list_gal,
+                                    &popover_gal,
+                                    current.len(),
+                                    480,
+                                );
+                                vis_gal.replace(current);
+                            }
+                        }
+                    });
+                }
+            }
+        })
+    };
+
+    let entry_weak = entry.downgrade();
+    let popover_for_activate = popover.clone();
+    let visible_for_activate = Rc::clone(&visible_suggestions);
+    let dialog_weak_for_activate = dialog_weak.clone();
+    let accept_idx: Rc<dyn Fn(usize)> = Rc::new(move |selected_index: usize| {
+        let Some(entry) = entry_weak.upgrade() else {
+            return;
+        };
+        let selected_item = {
+            let suggestions = visible_for_activate.borrow();
+            suggestions.get(selected_index).cloned()
+        };
+        let Some(suggestion) = selected_item else {
+            return;
+        };
+        let formatted = recipient_suggestion_label(&suggestion);
+        popover_for_activate.popdown();
+        append_recipient_to_entry(&entry, &formatted);
+        if let Some(dialog) = dialog_weak_for_activate.upgrade() {
+            dialog.mark_changed();
+        }
+    });
+
+    let accept_for_row = Rc::clone(&accept_idx);
+    list.connect_row_activated(move |_, row| {
+        let idx = row.index();
+        if idx >= 0 {
+            accept_for_row(idx as usize);
+        }
+    });
+
+    let pop_query = Rc::clone(&populate_for_query);
+    search_entry.connect_search_changed(move |se| {
+        pop_query(&se.text());
+    });
+
+    let key_ctrl = gtk::EventControllerKey::new();
+    key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let list_for_key = list.clone();
+    let scroll_for_key = scroll.clone();
+    let vis_for_key = Rc::clone(&visible_suggestions);
+    let accept_for_key = Rc::clone(&accept_idx);
+    let pop_for_key = popover.clone();
+    key_ctrl.connect_key_pressed(move |_, key, _, _| {
+        let count = vis_for_key.borrow().len();
+        match key {
+            gtk::gdk::Key::Down if count > 0 => {
+                let current = list_for_key.selected_row().map(|r| r.index()).unwrap_or(-1);
+                let next = (current + 1).min((count - 1) as i32);
+                if let Some(row) = list_for_key.row_at_index(next) {
+                    list_for_key.select_row(Some(&row));
+                    let vadj = scroll_for_key.vadjustment();
+                    if let Some(bounds) = row.compute_bounds(&list_for_key) {
+                        let y = bounds.y() as f64;
+                        let h = bounds.height() as f64;
+                        if y + h > vadj.value() + vadj.page_size() {
+                            vadj.set_value(y + h - vadj.page_size());
+                        }
+                    }
+                }
+                glib::Propagation::Stop
+            }
+            gtk::gdk::Key::Up if count > 0 => {
+                let current = list_for_key.selected_row().map(|r| r.index()).unwrap_or(0);
+                let prev = (current - 1).max(0);
+                if let Some(row) = list_for_key.row_at_index(prev) {
+                    list_for_key.select_row(Some(&row));
+                    let vadj = scroll_for_key.vadjustment();
+                    if let Some(bounds) = row.compute_bounds(&list_for_key) {
+                        let y = bounds.y() as f64;
+                        if y < vadj.value() {
+                            vadj.set_value(y);
+                        }
+                    }
+                }
+                glib::Propagation::Stop
+            }
+            gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter if count > 0 => {
+                let current = list_for_key.selected_row().map(|r| r.index()).unwrap_or(0);
+                let target_idx = if current >= 0 && (current as usize) < count {
+                    current as usize
+                } else {
+                    0
+                };
+                accept_for_key(target_idx);
+                glib::Propagation::Stop
+            }
+            gtk::gdk::Key::Escape => {
+                pop_for_key.popdown();
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
+        }
+    });
+    search_entry.add_controller(key_ctrl);
+
+    let click_gesture = gtk::GestureClick::new();
+    let pop_for_click = popover.clone();
+    let se_for_click = search_entry.clone();
+    let scroll_for_click = scroll.clone();
+    let populate_on_open = Rc::clone(&populate_for_query);
+    click_gesture.connect_released(move |gesture, _, _, _| {
+        let Some(widget) = gesture.widget() else {
+            return;
+        };
+        if !widget.is_realized() || widget.root().is_none() {
+            return;
+        }
+        se_for_click.set_text("");
+        populate_on_open("");
+        scroll_for_click.vadjustment().set_value(0.0);
+        pop_for_click.popup();
+        se_for_click.grab_focus();
+    });
+    label.add_controller(click_gesture);
+
+    let popover_unrealize = popover.clone();
+    label.connect_unrealize(move |_| {
+        popover_unrealize.popdown();
+        if popover_unrealize.parent().is_some() {
+            popover_unrealize.unparent();
+        }
+    });
+    let popover_realize = popover.clone();
+    label.connect_realize(move |lbl| {
+        if popover_realize.parent().is_none() {
+            popover_realize.set_parent(lbl);
+        }
     });
 }
 
@@ -8155,10 +8602,11 @@ fn render_recipient_suggestions_to_list(
         let row_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
-            .margin_start(4)
-            .margin_end(4)
-            .margin_top(3)
-            .margin_bottom(3)
+            .margin_start(2)
+            .margin_end(2)
+            .margin_top(1)
+            .margin_bottom(1)
+            .valign(gtk::Align::Fill)
             .build();
 
         let display = if sugg.display.is_empty() {
@@ -8169,9 +8617,10 @@ fn render_recipient_suggestions_to_list(
 
         if show_avatars {
             let avatar = adw::Avatar::builder()
-                .size(24)
+                .size(20)
                 .text(display)
                 .show_initials(true)
+                .valign(gtk::Align::Center)
                 .build();
 
             if fetch_logos {
@@ -8192,10 +8641,12 @@ fn render_recipient_suggestions_to_list(
         let lbl_name = gtk::Label::builder()
             .label(display)
             .xalign(0.0)
-            .valign(gtk::Align::Center)
+            .yalign(0.5)
+            .valign(gtk::Align::Fill)
             .hexpand(!has_separate_email)
-            .max_width_chars(32)
+            .max_width_chars(30)
             .ellipsize(gtk::pango::EllipsizeMode::End)
+            .css_classes(vec!["recipient-suggestion-name"])
             .build();
         row_box.append(&lbl_name);
 
@@ -8204,9 +8655,10 @@ fn render_recipient_suggestions_to_list(
             let lbl_email = gtk::Label::builder()
                 .label(&email_str)
                 .xalign(0.0)
-                .valign(gtk::Align::Center)
+                .yalign(0.5)
+                .valign(gtk::Align::Fill)
                 .hexpand(true)
-                .css_classes(vec!["dim-label"])
+                .css_classes(vec!["dim-label", "recipient-suggestion-email"])
                 .ellipsize(gtk::pango::EllipsizeMode::End)
                 .build();
             row_box.append(&lbl_email);
@@ -8225,6 +8677,30 @@ pub fn is_internal_microsoft_routing_address(email: &str) -> bool {
     domain == "onmicrosoft.com"
         || domain.ends_with(".onmicrosoft.com")
         || domain.contains(".mail.onmicrosoft.com")
+}
+
+pub fn is_synthetic_test_recipient_address(email: &str) -> bool {
+    let lower = email.trim().to_ascii_lowercase();
+    let Some(domain) = lower.split('@').nth(1) else {
+        return false;
+    };
+    matches!(
+        domain,
+        "example.com"
+            | "example.org"
+            | "example.net"
+            | "example.edu"
+            | "example.test"
+            | "notest.com"
+            | "prefix.com"
+            | "local"
+            | "invalid"
+            | "test"
+    ) || domain.ends_with(".example.com")
+        || domain.ends_with(".example.org")
+        || domain.ends_with(".example.net")
+        || domain.ends_with(".invalid")
+        || domain.ends_with(".test")
 }
 
 static LOCAL_RECIPIENT_POOL_CACHE: Lazy<RwLock<Option<(std::time::Instant, Arc<Vec<RecipientSuggestion>>)>>> =
@@ -8289,6 +8765,7 @@ fn trigger_background_eds_pool_update() {
                     if clean_email.is_empty()
                         || !clean_email.contains('@')
                         || is_internal_microsoft_routing_address(clean_email)
+                        || (!cfg!(test) && is_synthetic_test_recipient_address(clean_email))
                     {
                         continue;
                     }
@@ -8324,7 +8801,11 @@ fn load_fast_local_recipients_pool() -> Vec<RecipientSuggestion> {
 
     let mut add_or_update = |display_name: &str, email: &str| {
         let clean_email = email.trim();
-        if clean_email.is_empty() || !clean_email.contains('@') || is_internal_microsoft_routing_address(clean_email) {
+        if clean_email.is_empty()
+            || !clean_email.contains('@')
+            || is_internal_microsoft_routing_address(clean_email)
+            || (!cfg!(test) && is_synthetic_test_recipient_address(clean_email))
+        {
             return;
         }
         let key = clean_email.to_ascii_lowercase();
@@ -9023,6 +9504,9 @@ mod tests {
         assert!(search_recipient_suggestions("   ", false).is_empty());
 
         let recent_srv = RecentRecipientsService::new();
+        let storage_path = recent_srv.storage_path().to_path_buf();
+        let original_bytes = std::fs::read(&storage_path).ok();
+
         recent_srv.record_recipient("Alexander Test", "alexander.test@example.com");
         invalidate_recipient_cache();
 
@@ -9039,6 +9523,17 @@ mod tests {
         let test_results = search_recipient_suggestions("test", false);
         let prefix_idx = test_results.iter().position(|s| s.address == "test@prefix.com");
         let sub_idx = test_results.iter().position(|s| s.address == "someone@notest.com");
+
+        match original_bytes {
+            Some(bytes) => {
+                let _ = std::fs::write(&storage_path, bytes);
+            }
+            None => {
+                let _ = std::fs::remove_file(&storage_path);
+            }
+        }
+        invalidate_recipient_cache();
+
         if let (Some(p_idx), Some(s_idx)) = (prefix_idx, sub_idx) {
             assert!(p_idx < s_idx, "Prefix matches must be ranked before non-prefix matches");
         }

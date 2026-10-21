@@ -1857,6 +1857,25 @@ dialog.composer-dialog {
   color: alpha(@window_fg_color, 0.85);
 }
 
+.composer-header-card label.composer-header-label-interactive {
+  padding: 5px 10px;
+  margin-left: -10px;
+  margin-top: -3px;
+  margin-bottom: -3px;
+  border-radius: 7px;
+  transition: background-color 120ms ease-in-out, color 120ms ease-in-out;
+}
+
+.composer-header-card label.composer-header-label-interactive:hover {
+  background-color: alpha(currentColor, 0.08);
+  color: @accent_color;
+}
+
+.composer-header-card label.composer-header-label-interactive:active {
+  background-color: alpha(currentColor, 0.14);
+  color: @accent_color;
+}
+
 /* Inputs: KEINE BORDER! Seamless and flat inside the card */
 .composer-header-card entry.composer-field-entry,
 .composer-header-card entry {
@@ -6063,13 +6082,11 @@ popover.compact-chip-preview-popover > contents {
 }
 
 /* ── GNOME HIG Recipient Completion Dropdown ────────────────────────────── */
-popover.recipient-completion-popover {
-  padding: 6px;
-}
-
-popover.recipient-completion-popover contents {
-  padding: 0;
+popover.recipient-completion-popover > contents {
+  padding: 4px;
   border-radius: 12px;
+  box-shadow: 0 4px 16px alpha(black, 0.12);
+  border: 1px solid alpha(@borders, 0.75);
 }
 
 popover.recipient-completion-popover scrolledwindow {
@@ -6081,12 +6098,21 @@ popover.recipient-completion-popover list {
   border: none;
   box-shadow: none;
   outline: none;
+  padding: 0;
+}
+
+.composer-contact-picker-search {
+  min-height: 28px;
+  margin: 2px;
+  border-radius: 8px;
+  font-size: 13px;
 }
 
 row.recipient-suggestion-row {
-  padding: 6px 10px;
+  padding: 3px 8px;
   border-radius: 8px;
-  margin: 1px 2px;
+  margin: 1px 0;
+  min-height: 26px;
   border: none;
   background: transparent;
   outline: none;
@@ -6108,6 +6134,17 @@ row.recipient-suggestion-row:selected:hover {
 
 row.recipient-suggestion-row:focus {
   outline: none;
+}
+
+.recipient-suggestion-name {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.30;
+}
+
+.recipient-suggestion-email {
+  font-size: 13px;
+  line-height: 1.30;
 }
 
 /* Inline Image Context Popover */
