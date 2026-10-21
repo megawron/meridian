@@ -24,6 +24,14 @@ use crate::services::itip_service::{
 };
 use crate::services::settings_service::AppSettings;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CalendarPickerItem {
+    pub uid: String,
+    pub group_name: String,
+    pub clean_name: String,
+    pub picker_label: String,
+}
+
 #[derive(Clone)]
 struct PlacedTimelineWidget {
     widget: gtk::Label,
@@ -112,10 +120,11 @@ pub struct ItipBanner {
     attendees_row: gtk::Box,
     calendar_dropdown: gtk::DropDown,
     calendar_sources: Rc<RefCell<Vec<(String, String)>>>,
+    calendar_picker_items: Rc<RefCell<Vec<CalendarPickerItem>>>,
     calendar_source_colors: Rc<RefCell<std::collections::HashMap<String, String>>>,
     secondary_bar_box: gtk::Box,
     btn_target_calendar: gtk::MenuButton,
-    lbl_calendar_dot: gtk::Label,
+    lbl_calendar_dot: gtk::Box,
     lbl_calendar_chip_name: gtk::Label,
     calendar_chip_popover: gtk::Popover,
     calendar_chip_list_box: gtk::Box,
@@ -247,8 +256,8 @@ impl ItipBanner {
             .orientation(gtk::Orientation::Vertical)
             .spacing(8)
             .hexpand(true)
-            .margin_start(8)
-            .margin_end(8)
+            .margin_start(20)
+            .margin_end(16)
             .margin_top(12)
             .margin_bottom(10)
             .build();
@@ -847,11 +856,13 @@ impl ItipBanner {
 
         let calendar_chip_list_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(2)
+            .spacing(0)
+            .margin_top(1)
+            .margin_bottom(1)
             .hexpand(true)
             .build();
         let calendar_chip_scrolled = gtk::ScrolledWindow::builder()
-            .max_content_height(300)
+            .max_content_height(800)
             .propagate_natural_height(true)
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
@@ -859,47 +870,54 @@ impl ItipBanner {
             .build();
         let chip_pop_outer = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(6)
-            .margin_start(8)
-            .margin_end(8)
-            .margin_top(8)
-            .margin_bottom(8)
-            .width_request(240)
+            .spacing(0)
+            .margin_start(2)
+            .margin_end(2)
+            .margin_top(2)
+            .margin_bottom(2)
+            .width_request(256)
             .build();
-        let chip_pop_title = gtk::Label::builder()
-            .label(&gettext("Target Calendar"))
-            .halign(gtk::Align::Start)
-            .margin_start(6)
-            .css_classes(vec!["caption", "heading", "dim-label"])
-            .build();
-        chip_pop_outer.append(&chip_pop_title);
         chip_pop_outer.append(&calendar_chip_scrolled);
         let calendar_chip_popover = gtk::Popover::builder()
-            .css_classes(vec!["calendar-picker-popover"])
+            .css_classes(vec!["calendar-picker-popover", "composer-dropdown"])
             .child(&chip_pop_outer)
-            .has_arrow(true)
+            .has_arrow(false)
             .autohide(true)
             .build();
+        {
+            let scrolled_for_pop = calendar_chip_scrolled.clone();
+            calendar_chip_popover.connect_show(move |_| {
+                let vadj = scrolled_for_pop.vadjustment();
+                vadj.set_value(0.0);
+                glib::idle_add_local_once(move || {
+                    vadj.set_value(0.0);
+                });
+            });
+        }
 
         let chip_inner_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(6)
+            .spacing(7)
             .hexpand(true)
-            .valign(gtk::Align::Center)
+            .valign(gtk::Align::Fill)
             .build();
-        let lbl_calendar_dot = gtk::Label::builder()
-            .use_markup(true)
-            .label("<span foreground=\"#3584e4\">●</span>")
+        let lbl_calendar_dot = gtk::Box::builder()
+            .width_request(5)
+            .height_request(16)
+            .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
+            .css_classes(vec!["itip-calendar-color-dot"])
             .build();
+        apply_calendar_dot_style(&lbl_calendar_dot, "#3584e4");
         let lbl_calendar_chip_name = gtk::Label::builder()
             .label(&gettext("Personal Calendar"))
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
             .hexpand(true)
             .xalign(0.0)
+            .yalign(0.5)
             .single_line_mode(true)
-            .valign(gtk::Align::Center)
+            .valign(gtk::Align::Fill)
             .build();
         let chip_chevron = gtk::Image::builder()
             .icon_name("pan-down-symbolic")
@@ -1584,6 +1602,7 @@ impl ItipBanner {
             attendees_row,
             calendar_dropdown,
             calendar_sources: Rc::new(RefCell::new(Vec::new())),
+            calendar_picker_items: Rc::new(RefCell::new(Vec::new())),
             calendar_source_colors: Rc::new(RefCell::new(std::collections::HashMap::new())),
             secondary_bar_box,
             btn_target_calendar,
@@ -2006,13 +2025,13 @@ impl ItipBanner {
 
     fn sync_calendar_chip_ui(&self) {
         let sources = self.calendar_sources.borrow().clone();
+        let picker_items = self.calendar_picker_items.borrow().clone();
         let selected_idx = (self.calendar_dropdown.selected() as usize)
             .min(sources.len().saturating_sub(1));
 
         if let Some((uid, name)) = sources.get(selected_idx) {
             let color = self.resolve_source_color(uid, name);
-            self.lbl_calendar_dot
-                .set_markup(&format!("<span foreground=\"{color}\">●</span>"));
+            apply_calendar_dot_style(&self.lbl_calendar_dot, &color);
             self.lbl_calendar_chip_name.set_text(name);
             self.btn_target_calendar
                 .set_tooltip_text(Some(&format!("{}: {}", gettext("Target Calendar"), name)));
@@ -2025,30 +2044,110 @@ impl ItipBanner {
         let row_widgets: Rc<RefCell<Vec<(usize, gtk::Image, gtk::Button)>>> =
             Rc::new(RefCell::new(Vec::new()));
 
-        for (idx, (uid, name)) in sources.iter().enumerate() {
+        let is_dark = adw::StyleManager::default().is_dark();
+        let text_contrast_class = if is_dark {
+            "itip-calendar-row-label-dark"
+        } else {
+            "itip-calendar-row-label-light"
+        };
+
+        // Collect all rows with their resolved group and clean name, then place the currently selected
+        // calendar's account group at the top of the dropdown so it is immediately visible on open.
+        let mut resolved_rows: Vec<(usize, String, String, String, String)> = Vec::new();
+        let mut group_order: Vec<String> = Vec::new();
+        let mut selected_group: Option<String> = None;
+
+        for (idx, (uid, picker_label)) in sources.iter().enumerate() {
+            let (group_name, row_label) = picker_items
+                .get(idx)
+                .filter(|item| &item.uid == uid)
+                .map(|item| (item.group_name.clone(), item.clean_name.clone()))
+                .unwrap_or_else(|| {
+                    let g = gettext("On This Computer");
+                    let c = crate::dialogs::event_dialog::clean_calendar_display_name(
+                        picker_label,
+                        &g,
+                    );
+                    (g, c)
+                });
+            if idx == selected_idx {
+                selected_group = Some(group_name.clone());
+            }
+            if !group_order.contains(&group_name) {
+                group_order.push(group_name.clone());
+            }
+            resolved_rows.push((
+                idx,
+                uid.clone(),
+                picker_label.clone(),
+                group_name,
+                row_label,
+            ));
+        }
+
+        if let Some(ref sel_grp) = selected_group {
+            group_order.sort_by_key(|g| if g == sel_grp { 0usize } else { 1usize });
+        }
+
+        let mut ordered_rows: Vec<(usize, String, String, String, String)> = Vec::new();
+        for grp in &group_order {
+            for item in &resolved_rows {
+                if &item.3 == grp {
+                    ordered_rows.push(item.clone());
+                }
+            }
+        }
+
+        let mut last_group: Option<String> = None;
+
+        for (idx, uid, picker_label, group_name, row_label) in ordered_rows {
             let is_selected = idx == selected_idx;
-            let color = self.resolve_source_color(uid, name);
+            let color = self.resolve_source_color(&uid, &picker_label);
+
+            if last_group.as_deref() != Some(group_name.as_str()) {
+                if last_group.is_some() {
+                    let sep = gtk::Separator::builder()
+                        .orientation(gtk::Orientation::Horizontal)
+                        .css_classes(vec!["itip-calendar-group-sep"])
+                        .build();
+                    self.calendar_chip_list_box.append(&sep);
+                }
+                let hdr = gtk::Label::builder()
+                    .label(&group_name)
+                    .halign(gtk::Align::Start)
+                    .xalign(0.0)
+                    .css_classes(vec!["itip-calendar-group-header"])
+                    .build();
+                self.calendar_chip_list_box.append(&hdr);
+                last_group = Some(group_name.clone());
+            }
 
             let row_box = gtk::Box::builder()
                 .orientation(gtk::Orientation::Horizontal)
-                .spacing(8)
+                .spacing(9)
                 .hexpand(true)
-                .valign(gtk::Align::Center)
+                .valign(gtk::Align::Fill)
                 .build();
 
-            let dot = gtk::Label::builder()
-                .use_markup(true)
-                .label(&format!("<span foreground=\"{color}\">●</span>"))
+            let dot = gtk::Box::builder()
+                .width_request(5)
+                .height_request(16)
+                .halign(gtk::Align::Center)
                 .valign(gtk::Align::Center)
+                .css_classes(vec!["itip-calendar-color-dot"])
                 .build();
+            apply_calendar_dot_style(&dot, &color);
 
             let lbl = gtk::Label::builder()
-                .label(name)
+                .label(&row_label)
                 .halign(gtk::Align::Start)
+                .xalign(0.0)
+                .yalign(0.5)
+                .margin_top(2)
+                .margin_bottom(2)
                 .hexpand(true)
-                .ellipsize(pango::EllipsizeMode::End)
-                .max_width_chars(28)
-                .valign(gtk::Align::Center)
+                .valign(gtk::Align::Fill)
+                .css_classes(vec!["itip-calendar-row-label", text_contrast_class])
                 .build();
 
             let check = gtk::Image::builder()
@@ -2071,6 +2170,9 @@ impl ItipBanner {
                 .child(&row_box)
                 .css_classes(classes)
                 .hexpand(true)
+                .can_focus(false)
+                .focus_on_click(false)
+                .tooltip_text(&picker_label)
                 .build();
 
             row_widgets
@@ -2081,12 +2183,11 @@ impl ItipBanner {
             let pop = self.calendar_chip_popover.clone();
             let rows_ref = Rc::clone(&row_widgets);
             let item_color = color.clone();
-            let item_name = name.clone();
+            let item_name = picker_label.clone();
             row_btn.connect_clicked(move |_| {
                 this.user_selected_calendar.set(true);
                 this.calendar_dropdown.set_selected(idx as u32);
-                this.lbl_calendar_dot
-                    .set_markup(&format!("<span foreground=\"{item_color}\">●</span>"));
+                apply_calendar_dot_style(&this.lbl_calendar_dot, &item_color);
                 this.lbl_calendar_chip_name.set_text(&item_name);
                 this.btn_target_calendar.set_tooltip_text(Some(&format!(
                     "{}: {}",
@@ -2174,52 +2275,11 @@ impl ItipBanner {
             }
         }
 
-        // Ensure local fallback is present
-        if !raw_items
+        let picker_items = group_and_sort_calendar_sources(raw_items);
+        let sources: Vec<(String, String)> = picker_items
             .iter()
-            .any(|(uid, _, _)| uid == "local-calendar" || uid == "system-calendar")
-        {
-            raw_items.insert(
-                0,
-                (
-                    "local-calendar".to_string(),
-                    gettext("Personal Calendar"),
-                    None,
-                ),
-            );
-        }
-
-        let mut name_counts = std::collections::HashMap::<String, usize>::new();
-        for (_, name, _) in &raw_items {
-            *name_counts.entry(name.to_lowercase()).or_insert(0) += 1;
-        }
-
-        let mut sources: Vec<(String, String)> = Vec::new();
-        for (uid, name, parent) in raw_items {
-            let label = if name_counts.get(&name.to_lowercase()).copied().unwrap_or(0) > 1
-                || name.eq_ignore_ascii_case("Kalender")
-                || name.eq_ignore_ascii_case("Calendar")
-            {
-                if let Some(p) = parent.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                    if !name.to_lowercase().contains(&p.to_lowercase()) {
-                        format!("{name} ({p})")
-                    } else {
-                        name
-                    }
-                } else {
-                    name
-                }
-            } else {
-                name
-            };
-            if !sources.iter().any(|(u, _)| u == &uid) {
-                sources.push((uid, label));
-            }
-        }
-
-        if sources.is_empty() {
-            sources.push(("local-calendar".to_string(), gettext("Personal Calendar")));
-        }
+            .map(|item| (item.uid.clone(), item.picker_label.clone()))
+            .collect();
 
         let prev_uid = self.selected_source_uid();
         let names: Vec<&str> = sources.iter().map(|(_, name)| name.as_str()).collect();
@@ -2230,6 +2290,7 @@ impl ItipBanner {
         } else {
             self.calendar_dropdown.set_selected(0);
         }
+        *self.calendar_picker_items.borrow_mut() = picker_items;
         *self.calendar_sources.borrow_mut() = sources;
         let snapshot = load_local_calendar_snapshot_safe();
         self.apply_smart_calendar_selection(&snapshot);
@@ -3691,15 +3752,259 @@ fn ensure_itip_base_css() {
              box.itip-location-row.itip-location-interactive:hover label.itip-location-label { text-decoration: underline; }\n\
              popover.itip-location-map-popover > contents { padding: 6px; border-radius: 12px; }\n\
              frame.itip-location-map-frame { border-radius: 8px; }\n\
-             button.itip-map-action-btn { min-height: 24px; min-width: 24px; padding: 2px; }",
+             button.itip-map-action-btn { min-height: 24px; min-width: 24px; padding: 2px; }\n\
+             popover.calendar-picker-popover > contents { padding: 3px; border-radius: 12px; box-shadow: 0 4px 16px alpha(black, 0.12); border: 1px solid alpha(@borders, 0.75); }\n\
+             menubutton.itip-calendar-chip label { line-height: 1.35; min-height: 20px; padding-top: 1px; padding-bottom: 1px; }\n\
+             label.itip-calendar-group-header { font-size: 0.84rem; font-weight: 400; line-height: 1.30; min-height: 18px; color: alpha(@window_fg_color, 0.84); padding: 4px 8px 1px 8px; }\n\
+             separator.itip-calendar-group-sep { margin: 2px 8px 1px 8px; opacity: 0.45; }\n\
+             button.itip-calendar-chip-row { padding: 1px 8px; border-radius: 7px; margin: 0 2px; min-height: 22px; font-size: 14px; font-weight: 500; color: @window_fg_color; background: transparent; border: none; box-shadow: none; transition: background-color 120ms ease, color 120ms ease; }\n\
+             button.itip-calendar-chip-row:hover { background-color: alpha(currentColor, 0.07); }\n\
+             button.itip-calendar-chip-row:active { background-color: alpha(currentColor, 0.12); }\n\
+             label.itip-calendar-row-label { font-size: 14px; line-height: 1.30; min-height: 20px; }\n\
+             label.itip-calendar-row-label-light { color: #000000; font-weight: 500; opacity: 1.0; }\n\
+             label.itip-calendar-row-label-dark { color: #ffffff; font-weight: 500; opacity: 1.0; }\n\
+             button.itip-calendar-chip-row.is-selected { background-color: alpha(@accent_color, 0.14); color: @accent_color; font-weight: 600; }\n\
+             button.itip-calendar-chip-row.is-selected label.itip-calendar-row-label { color: @accent_color; font-weight: 600; }\n\
+             box.itip-calendar-color-dot { min-width: 5px; min-height: 16px; border-radius: 2.5px; border: none; padding: 0; margin: 0; }",
         );
         gtk::style_context_add_provider_for_display(
             &display,
             &p,
-            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 20,
         );
         BASE_CSS_LOADED.with(|c| c.set(true));
     }
+}
+
+fn parse_rgb_hex(hex: &str) -> (u8, u8, u8) {
+    let clean = hex.trim().trim_start_matches('#');
+    if clean.len() == 6 {
+        if let (Ok(r), Ok(g), Ok(b)) = (
+            u8::from_str_radix(&clean[0..2], 16),
+            u8::from_str_radix(&clean[2..4], 16),
+            u8::from_str_radix(&clean[4..6], 16),
+        ) {
+            return (r, g, b);
+        }
+    } else if clean.len() == 3 {
+        let chars: Vec<char> = clean.chars().collect();
+        let r_s = format!("{0}{0}", chars[0]);
+        let g_s = format!("{0}{0}", chars[1]);
+        let b_s = format!("{0}{0}", chars[2]);
+        if let (Ok(r), Ok(g), Ok(b)) = (
+            u8::from_str_radix(&r_s, 16),
+            u8::from_str_radix(&g_s, 16),
+            u8::from_str_radix(&b_s, 16),
+        ) {
+            return (r, g, b);
+        }
+    }
+    (0x35, 0x84, 0xe4)
+}
+
+/// Computes `(fill_hex, border_hex)` for a calendar color stripe so even very pale colors
+/// (such as `#e0e0e0`, `#fbe887`, or `#ffff66`) have a rich, legible fill without needing a border.
+pub(crate) fn calendar_dot_colors_for_hex(hex: &str, is_dark: bool) -> (String, String) {
+    let (r, g, b) = parse_rgb_hex(hex);
+    let rf = r as f64;
+    let gf = g as f64;
+    let bf = b as f64;
+    let lum = (0.299 * rf + 0.587 * gf + 0.114 * bf) / 255.0;
+
+    let scale_rgb = |s: f64| -> (u8, u8, u8) {
+        (
+            (rf * s).round().clamp(0.0, 255.0) as u8,
+            (gf * s).round().clamp(0.0, 255.0) as u8,
+            (bf * s).round().clamp(0.0, 255.0) as u8,
+        )
+    };
+    let mix_white = |t: f64| -> (u8, u8, u8) {
+        (
+            (rf + (255.0 - rf) * t).round().clamp(0.0, 255.0) as u8,
+            (gf + (255.0 - gf) * t).round().clamp(0.0, 255.0) as u8,
+            (bf + (255.0 - bf) * t).round().clamp(0.0, 255.0) as u8,
+        )
+    };
+
+    let (fill, border) = if !is_dark {
+        if lum > 0.72 {
+            (scale_rgb(0.82), scale_rgb(0.52))
+        } else {
+            ((r, g, b), scale_rgb(0.72))
+        }
+    } else if lum < 0.25 {
+        (mix_white(0.28), mix_white(0.55))
+    } else if lum > 0.80 {
+        ((r, g, b), scale_rgb(0.68))
+    } else {
+        ((r, g, b), mix_white(0.22))
+    };
+
+    (
+        format!("#{:02x}{:02x}{:02x}", fill.0, fill.1, fill.2),
+        format!("#{:02x}{:02x}{:02x}", border.0, border.1, border.2),
+    )
+}
+
+fn ensure_calendar_dot_css(color: &str, is_dark: bool) -> String {
+    let (fill, _border) = calendar_dot_colors_for_hex(color, is_dark);
+    let clean = fill.trim_start_matches('#').to_lowercase();
+    let mode = if is_dark { "dark" } else { "light" };
+    let class_name = format!("itip-cal-dot-{clean}-{mode}");
+
+    thread_local! {
+        static DOT_REGISTERED: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
+    }
+
+    let already = DOT_REGISTERED.with(|r| r.borrow().contains(&class_name));
+    if !already {
+        if let Some(display) = gtk::gdk::Display::default() {
+            let css = format!(
+                "box.{class_name} {{ background-color: {fill}; border: none; }}"
+            );
+            let p = gtk::CssProvider::new();
+            p.load_from_string(&css);
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &p,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+            DOT_REGISTERED.with(|r| r.borrow_mut().insert(class_name.clone()));
+        }
+    }
+
+    class_name
+}
+
+fn apply_calendar_dot_style(widget: &impl IsA<gtk::Widget>, color: &str) {
+    let is_dark = adw::StyleManager::default().is_dark();
+    let new_cls = ensure_calendar_dot_css(color, is_dark);
+    let existing: Vec<String> = widget
+        .css_classes()
+        .into_iter()
+        .map(|s| s.to_string())
+        .filter(|s| s.starts_with("itip-cal-dot-"))
+        .collect();
+    for old in existing {
+        if old != new_cls {
+            widget.remove_css_class(&old);
+        }
+    }
+    if !widget.has_css_class(&new_cls) {
+        widget.add_css_class(&new_cls);
+    }
+}
+
+fn is_primary_calendar_name(name: &str) -> bool {
+    let lower = name.trim().to_lowercase();
+    matches!(
+        lower.as_str(),
+        "kalender" | "calendar" | "personal" | "persönlich" | "personal calendar" | "persönlicher kalender"
+    )
+}
+
+pub(crate) fn group_and_sort_calendar_sources(
+    mut raw_items: Vec<(String, String, Option<String>)>,
+) -> Vec<CalendarPickerItem> {
+    let local_group = gettext("On This Computer");
+
+    if !raw_items
+        .iter()
+        .any(|(uid, _, _)| uid == "local-calendar" || uid == "system-calendar")
+    {
+        raw_items.push((
+            "local-calendar".to_string(),
+            gettext("Personal Calendar"),
+            None,
+        ));
+    }
+
+    let mut deduped: Vec<(String, String, String)> = Vec::new();
+    for (uid, raw_name, parent_opt) in raw_items {
+        if deduped.iter().any(|(u, _, _)| u == &uid) {
+            continue;
+        }
+        let group_name = if let Some(p) = parent_opt.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            p.to_string()
+        } else if let Some(open_idx) = raw_name.rfind(" (") {
+            if raw_name.ends_with(')') && open_idx + 2 < raw_name.len() - 1 {
+                let candidate = raw_name[open_idx + 2..raw_name.len() - 1].trim();
+                if !candidate.is_empty() {
+                    candidate.to_string()
+                } else {
+                    local_group.clone()
+                }
+            } else {
+                local_group.clone()
+            }
+        } else {
+            local_group.clone()
+        };
+
+        let clean_name =
+            crate::dialogs::event_dialog::clean_calendar_display_name(&raw_name, &group_name);
+        deduped.push((uid, group_name, clean_name));
+    }
+
+    let mut name_counts = std::collections::HashMap::<String, usize>::new();
+    let mut group_order: Vec<String> = Vec::new();
+    for (_, group_name, clean_name) in &deduped {
+        *name_counts.entry(clean_name.to_lowercase()).or_insert(0) += 1;
+        if !group_order.contains(group_name) {
+            group_order.push(group_name.clone());
+        }
+    }
+
+    // Place real account groups first and "On This Computer" at the bottom when other groups exist
+    if group_order.len() > 1 {
+        group_order.sort_by_key(|g| if g == &local_group { 1usize } else { 0usize });
+    }
+
+    let mut result: Vec<CalendarPickerItem> = Vec::new();
+    for grp in &group_order {
+        let mut grp_items: Vec<CalendarPickerItem> = deduped
+            .iter()
+            .filter(|(_, g, _)| g == grp)
+            .map(|(uid, group_name, clean_name)| {
+                let count = name_counts
+                    .get(&clean_name.to_lowercase())
+                    .copied()
+                    .unwrap_or(0);
+                let picker_label = if group_name != &local_group
+                    && (count > 1 || is_primary_calendar_name(clean_name))
+                {
+                    if !clean_name
+                        .to_lowercase()
+                        .contains(&group_name.to_lowercase())
+                    {
+                        format!("{clean_name} ({group_name})")
+                    } else {
+                        clean_name.clone()
+                    }
+                } else {
+                    clean_name.clone()
+                };
+                CalendarPickerItem {
+                    uid: uid.clone(),
+                    group_name: group_name.clone(),
+                    clean_name: clean_name.clone(),
+                    picker_label,
+                }
+            })
+            .collect();
+
+        grp_items.sort_by(|a, b| {
+            let a_prim = is_primary_calendar_name(&a.clean_name);
+            let b_prim = is_primary_calendar_name(&b.clean_name);
+            b_prim
+                .cmp(&a_prim)
+                .then_with(|| a.clean_name.to_lowercase().cmp(&b.clean_name.to_lowercase()))
+        });
+
+        result.extend(grp_items);
+    }
+
+    result
 }
 
 /// Extracts `GEO:lat;lon` (or `GEO:lat,lon`) from the top-level `VEVENT` in an iCalendar component.
@@ -4590,6 +4895,55 @@ mod tests {
         assert!((geo.0 - 50.0826).abs() < 1e-4);
         assert!((geo.1 - 8.2400).abs() < 1e-4);
     }
+
+    #[test]
+    fn test_calendar_picker_account_grouping_and_high_contrast_dots() {
+        let raw = vec![
+            (
+                "cal-arbeit".to_string(),
+                "Arbeit".to_string(),
+                Some("mjensen@acme-corp.example".to_string()),
+            ),
+            (
+                "cal-familie".to_string(),
+                "Familie".to_string(),
+                Some("mjensen@acme-corp.example".to_string()),
+            ),
+            (
+                "cal-main".to_string(),
+                "Kalender (mjensen@acme-corp.example)".to_string(),
+                Some("mjensen@acme-corp.example".to_string()),
+            ),
+            (
+                "cal-business".to_string(),
+                "Business".to_string(),
+                Some("mjensen@acme-corp.example".to_string()),
+            ),
+        ];
+
+        let items = group_and_sort_calendar_sources(raw);
+        // Primary calendar ("Kalender") of the account must be placed first in its account group
+        assert_eq!(items[0].uid, "cal-main");
+        assert_eq!(items[0].group_name, "mjensen@acme-corp.example");
+        assert_eq!(items[0].clean_name, "Kalender");
+        assert_eq!(items[0].picker_label, "Kalender (mjensen@acme-corp.example)");
+
+        // Followed alphabetically by Arbeit, Business, Familie under the same account
+        assert_eq!(items[1].clean_name, "Arbeit");
+        assert_eq!(items[2].clean_name, "Business");
+        assert_eq!(items[3].clean_name, "Familie");
+
+        // Local fallback placed last under "On This Computer"
+        assert_eq!(items[4].uid, "local-calendar");
+
+        // High-contrast dot colors for very pale colors in light mode
+        let (fill_pale, border_pale) = calendar_dot_colors_for_hex("#e0e0e0", false);
+        assert_ne!(fill_pale, "#e0e0e0");
+        assert_ne!(border_pale, "#e0e0e0");
+        let (_, border_yellow) = calendar_dot_colors_for_hex("#ffff66", false);
+        assert_ne!(border_yellow, "#ffff66");
+    }
 }
+
 
 

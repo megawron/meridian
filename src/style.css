@@ -3690,10 +3690,10 @@ button.itip-calendar-chip:checked {
 }
 
 button.itip-calendar-chip-row {
-  min-height: 30px;
-  padding: 4px 8px;
-  border-radius: 6px;
-  font-size: 0.90rem;
+  min-height: 22px;
+  padding: 1px 8px;
+  border-radius: 7px;
+  font-size: 14px;
   font-weight: 500;
 }
 
