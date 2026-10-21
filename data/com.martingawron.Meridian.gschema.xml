@@ -275,6 +275,14 @@
       <default>380</default>
       <summary>Width/position of the Agenda appointment details preview pane</summary>
     </key>
+    <key name="calendar-location-map-hover" type="b">
+      <default>true</default>
+      <summary>Show minimalist map preview when hovering over event locations</summary>
+    </key>
+    <key name="calendar-location-open-map" type="b">
+      <default>true</default>
+      <summary>Open event locations in the configured map service on click</summary>
+    </key>
     <key name="auto-load-remote-images" type="b">
       <default>false</default>
       <summary>Automatically load remote images in HTML emails</summary>

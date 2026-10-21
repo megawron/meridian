@@ -5081,6 +5081,34 @@ impl PreferencesDialog {
         }
         group_calendar_view.add(&row_second_zone);
 
+        let row_location_map_hover = adw::SwitchRow::builder()
+            .title(&crate::i18n::gettext("Show map preview on location hover"))
+            .subtitle(&crate::i18n::gettext(
+                "Display a minimalist map popover when hovering over meeting locations",
+            ))
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_location_map_hover.set_active(settings.calendar_location_map_hover());
+            row_location_map_hover.connect_active_notify(move |row| {
+                settings.set_calendar_location_map_hover(row.is_active());
+            });
+        }
+        group_calendar_view.add(&row_location_map_hover);
+
+        let row_location_open_map = adw::SwitchRow::builder()
+            .title(&crate::i18n::gettext("Open locations in map on click"))
+            .subtitle(&crate::i18n::gettext(
+                "Allow opening meeting locations in the configured map service",
+            ))
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_location_open_map.set_active(settings.calendar_location_open_map());
+            row_location_open_map.connect_active_notify(move |row| {
+                settings.set_calendar_location_open_map(row.is_active());
+            });
+        }
+        group_calendar_view.add(&row_location_open_map);
+
         let group_default_ecal_sources = adw::PreferencesGroup::builder()
             .title("Default Sources")
             .build();

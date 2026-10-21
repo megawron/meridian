@@ -10,15 +10,19 @@ use crate::i18n::gettext;
 
 use adw::prelude::*;
 use chrono::{Datelike, NaiveDate};
+use gtk::gio;
 use gtk::glib;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+#[cfg(target_os = "linux")]
+use webkit6::prelude::*;
 
 use crate::services::ecal_service::{ECalComponentType, ECalService};
 use crate::services::itip_service::{
     find_user_status, format_recurrence_summary, update_attendee_partstat,
     ItipInvitation, ItipMethod, ItipReplyStatus,
 };
+use crate::services::settings_service::AppSettings;
 
 #[derive(Clone)]
 struct PlacedTimelineWidget {
@@ -83,6 +87,11 @@ pub struct ItipBanner {
         >,
     >,
     lbl_location: gtk::Label,
+    location_map_popover: gtk::Popover,
+    location_map_lbl: gtk::Label,
+    location_map_open_btn: gtk::Button,
+    current_location_text: Rc<RefCell<String>>,
+    current_location_geo: Rc<Cell<Option<(f64, f64)>>>,
     lbl_organizer: gtk::Label,
     lbl_attendees: gtk::Label,
     lbl_recurrence: gtk::Label,
@@ -336,30 +345,294 @@ impl ItipBanner {
         recurrence_row.append(&lbl_recurrence);
         details_info_box.append(&recurrence_row);
 
+        ensure_itip_base_css();
+
         let location_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
-            .hexpand(true)
+            .halign(gtk::Align::Start)
+            .hexpand(false)
             .visible(false)
+            .css_classes(vec!["itip-location-row", "itip-location-interactive"])
             .build();
         let loc_icon = gtk::Image::builder()
             .icon_name("find-location-symbolic")
             .valign(gtk::Align::Start)
             .margin_top(2)
-            .css_classes(vec!["dim-label"])
+            .css_classes(vec!["dim-label", "itip-location-icon"])
             .build();
         let lbl_location = gtk::Label::builder()
             .label("")
-            .halign(gtk::Align::Fill)
+            .halign(gtk::Align::Start)
             .xalign(0.0)
-            .hexpand(true)
+            .hexpand(false)
             .ellipsize(pango::EllipsizeMode::End)
-            .width_chars(1)
-            .css_classes(vec!["body"])
+            .css_classes(vec!["body", "itip-location-label"])
             .build();
         location_row.append(&loc_icon);
         location_row.append(&lbl_location);
         details_info_box.append(&location_row);
+
+        let current_location_text = Rc::new(RefCell::new(String::new()));
+        let current_location_geo: Rc<Cell<Option<(f64, f64)>>> = Rc::new(Cell::new(None));
+
+        // Minimalist Location Hover Map Popover
+        let loc_pop_vbox = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .width_request(268)
+            .build();
+        let location_map_frame = gtk::Frame::builder()
+            .height_request(152)
+            .hexpand(true)
+            .css_classes(vec!["itip-location-map-frame"])
+            .build();
+        location_map_frame.set_overflow(gtk::Overflow::Hidden);
+        loc_pop_vbox.append(&location_map_frame);
+
+        let loc_pop_footer = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .hexpand(true)
+            .valign(gtk::Align::Center)
+            .margin_start(2)
+            .margin_end(2)
+            .build();
+        let location_map_lbl = gtk::Label::builder()
+            .label("")
+            .halign(gtk::Align::Start)
+            .xalign(0.0)
+            .hexpand(true)
+            .single_line_mode(true)
+            .ellipsize(pango::EllipsizeMode::End)
+            .width_chars(1)
+            .css_classes(vec!["caption", "dim-label"])
+            .build();
+        let location_map_copy_btn = gtk::Button::builder()
+            .icon_name("edit-copy-symbolic")
+            .tooltip_text(&gettext("Copy location"))
+            .css_classes(vec!["flat", "circular", "itip-map-action-btn"])
+            .valign(gtk::Align::Center)
+            .build();
+        let location_map_open_btn = gtk::Button::builder()
+            .icon_name("web-browser-symbolic")
+            .tooltip_text(&gettext("Open in Map"))
+            .css_classes(vec!["flat", "circular", "itip-map-action-btn"])
+            .valign(gtk::Align::Center)
+            .build();
+        loc_pop_footer.append(&location_map_lbl);
+        loc_pop_footer.append(&location_map_copy_btn);
+        loc_pop_footer.append(&location_map_open_btn);
+        loc_pop_vbox.append(&loc_pop_footer);
+
+        let location_map_popover = gtk::Popover::builder()
+            .child(&loc_pop_vbox)
+            .position(gtk::PositionType::Bottom)
+            .has_arrow(false)
+            .autohide(false)
+            .css_classes(vec!["itip-location-map-popover"])
+            .build();
+        location_map_popover.set_parent(&location_row);
+        {
+            let pop_cleanup = location_map_popover.clone();
+            location_row.connect_destroy(move |_| {
+                pop_cleanup.unparent();
+            });
+        }
+
+        // Hover & click controllers for minimalist location map preview
+        {
+            #[cfg(target_os = "linux")]
+            let map_webview: Rc<RefCell<Option<webkit6::WebView>>> = Rc::new(RefCell::new(None));
+            let last_loaded_loc = Rc::new(RefCell::new(String::new()));
+            let ptr_in_row = Rc::new(Cell::new(false));
+            let ptr_in_pop = Rc::new(Cell::new(false));
+            let open_timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+            let close_timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+
+            let schedule_close = {
+                let ptr_in_row = ptr_in_row.clone();
+                let ptr_in_pop = ptr_in_pop.clone();
+                let close_timer = close_timer.clone();
+                let pop = location_map_popover.clone();
+                Rc::new(move || {
+                    if let Some(id) = close_timer.borrow_mut().take() {
+                        id.remove();
+                    }
+                    let r_in = ptr_in_row.clone();
+                    let p_in = ptr_in_pop.clone();
+                    let pop_c = pop.clone();
+                    let timer_slot = close_timer.clone();
+                    let id = glib::timeout_add_local_once(
+                        std::time::Duration::from_millis(220),
+                        move || {
+                            *timer_slot.borrow_mut() = None;
+                            if !r_in.get() && !p_in.get() {
+                                pop_c.popdown();
+                            }
+                        },
+                    );
+                    *close_timer.borrow_mut() = Some(id);
+                })
+            };
+
+            let row_motion = gtk::EventControllerMotion::new();
+            let ptr_in_row_enter = ptr_in_row.clone();
+            let close_timer_enter = close_timer.clone();
+            let open_timer_enter = open_timer.clone();
+            let loc_text_enter = current_location_text.clone();
+            let loc_geo_enter = current_location_geo.clone();
+            let pop_enter = location_map_popover.clone();
+            let open_btn_enter = location_map_open_btn.clone();
+            #[cfg(target_os = "linux")]
+            let frame_enter = location_map_frame.clone();
+            #[cfg(target_os = "linux")]
+            let wv_enter = map_webview.clone();
+            let last_loaded_enter = last_loaded_loc.clone();
+
+            row_motion.connect_enter(move |_, _, _| {
+                ptr_in_row_enter.set(true);
+                if let Some(id) = close_timer_enter.borrow_mut().take() {
+                    id.remove();
+                }
+                let hover_enabled = AppSettings::try_new()
+                    .map(|s| s.calendar_location_map_hover())
+                    .unwrap_or(true);
+                if !hover_enabled {
+                    return;
+                }
+                let loc = loc_text_enter.borrow().clone();
+                if loc.is_empty() || loc.starts_with("http://") || loc.starts_with("https://") {
+                    return;
+                }
+                if let Some(id) = open_timer_enter.borrow_mut().take() {
+                    id.remove();
+                }
+                let r_in = ptr_in_row_enter.clone();
+                let pop_c = pop_enter.clone();
+                let open_btn_c = open_btn_enter.clone();
+                let loc_c = loc.clone();
+                let geo_c = loc_geo_enter.get();
+                let last_loaded_c = last_loaded_enter.clone();
+                #[cfg(target_os = "linux")]
+                let frame_c = frame_enter.clone();
+                #[cfg(target_os = "linux")]
+                let wv_c = wv_enter.clone();
+                let timer_slot = open_timer_enter.clone();
+
+                let id = glib::timeout_add_local_once(
+                    std::time::Duration::from_millis(220),
+                    move || {
+                        *timer_slot.borrow_mut() = None;
+                        if !r_in.get() {
+                            return;
+                        }
+                        let can_open = AppSettings::try_new()
+                            .map(|s| s.calendar_location_open_map())
+                            .unwrap_or(true);
+                        open_btn_c.set_visible(can_open);
+
+                        #[cfg(target_os = "linux")]
+                        {
+                            if wv_c.borrow().is_none() {
+                                let view = webkit6::WebView::builder()
+                                    .hexpand(true)
+                                    .vexpand(true)
+                                    .width_request(268)
+                                    .height_request(152)
+                                    .css_classes(vec!["itip-location-map-webview"])
+                                    .build();
+                                frame_c.set_child(Some(&view));
+                                *wv_c.borrow_mut() = Some(view);
+                            }
+                            let is_dark = adw::StyleManager::default().is_dark();
+                            let cache_key = format!("{loc_c}|{geo_c:?}|{is_dark}");
+                            if *last_loaded_c.borrow() != cache_key {
+                                *last_loaded_c.borrow_mut() = cache_key;
+                                if let Some(view) = wv_c.borrow().as_ref() {
+                                    let html = build_minimal_map_hover_html(&loc_c, geo_c, is_dark);
+                                    view.load_html(
+                                        &html,
+                                        Some("https://nominatim.openstreetmap.org/"),
+                                    );
+                                }
+                            }
+                        }
+                        let _ = (&last_loaded_c, geo_c);
+                        pop_c.popup();
+                    },
+                );
+                *open_timer_enter.borrow_mut() = Some(id);
+            });
+
+            let ptr_in_row_leave = ptr_in_row.clone();
+            let open_timer_leave = open_timer.clone();
+            let sched_close_row = schedule_close.clone();
+            row_motion.connect_leave(move |_| {
+                ptr_in_row_leave.set(false);
+                if let Some(id) = open_timer_leave.borrow_mut().take() {
+                    id.remove();
+                }
+                sched_close_row();
+            });
+            location_row.add_controller(row_motion);
+
+            let pop_motion = gtk::EventControllerMotion::new();
+            let ptr_in_pop_enter = ptr_in_pop.clone();
+            let close_timer_pop = close_timer.clone();
+            pop_motion.connect_enter(move |_, _, _| {
+                ptr_in_pop_enter.set(true);
+                if let Some(id) = close_timer_pop.borrow_mut().take() {
+                    id.remove();
+                }
+            });
+            let ptr_in_pop_leave = ptr_in_pop.clone();
+            let sched_close_pop = schedule_close;
+            pop_motion.connect_leave(move |_| {
+                ptr_in_pop_leave.set(false);
+                sched_close_pop();
+            });
+            location_map_popover.add_controller(pop_motion);
+
+            // Click on location row to open in map (if enabled in settings)
+            let click_gesture = gtk::GestureClick::new();
+            let loc_for_click = current_location_text.clone();
+            let geo_for_click = current_location_geo.clone();
+            click_gesture.connect_released(move |_, _, _, _| {
+                let open_enabled = AppSettings::try_new()
+                    .map(|s| s.calendar_location_open_map())
+                    .unwrap_or(true);
+                if !open_enabled {
+                    return;
+                }
+                let loc = loc_for_click.borrow().clone();
+                if !loc.is_empty() && !loc.starts_with("http://") && !loc.starts_with("https://") {
+                    open_calendar_location_in_map(&loc, geo_for_click.get());
+                }
+            });
+            location_row.add_controller(click_gesture);
+
+            let loc_for_open_btn = current_location_text.clone();
+            let geo_for_open_btn = current_location_geo.clone();
+            let pop_for_open_btn = location_map_popover.clone();
+            location_map_open_btn.connect_clicked(move |_| {
+                let loc = loc_for_open_btn.borrow().clone();
+                if !loc.is_empty() {
+                    open_calendar_location_in_map(&loc, geo_for_open_btn.get());
+                }
+                pop_for_open_btn.popdown();
+            });
+
+            let loc_for_copy_btn = current_location_text.clone();
+            let pop_for_copy_btn = location_map_popover.clone();
+            location_map_copy_btn.connect_clicked(move |btn| {
+                let loc = loc_for_copy_btn.borrow().clone();
+                if !loc.is_empty() {
+                    btn.display().clipboard().set_text(&loc);
+                }
+                pop_for_copy_btn.popdown();
+            });
+        }
 
         let organizer_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -924,7 +1197,7 @@ impl ItipBanner {
         let timeline_side_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(0)
-            .width_request(260)
+            .width_request(280)
             .valign(gtk::Align::Fill)
             .css_classes(vec!["itip-day-timeline-container", "calendar-time-grid"])
             .visible(false)
@@ -1090,13 +1363,14 @@ impl ItipBanner {
         let timeline_placed_widgets: Rc<RefCell<Vec<PlacedTimelineWidget>>> =
             Rc::new(RefCell::new(Vec::new()));
 
-        // Responsive adaptation when the preview pane is narrowed (all the way down to mobile widths)
+        // Responsive adaptation when the preview pane is narrowed or widened
         {
             let cols = details_columns.clone();
             let tl_box = timeline_side_box.clone();
             let tl_fixed = timeline_fixed.clone();
             let placed_for_resize = timeline_placed_widgets.clone();
             let hour_h_for_resize = timeline_hour_height.clone();
+            let sender_msg_for_resize = sender_message_box.clone();
             let act_bar = footer_box.clone();
             let req_box = action_box_request.clone();
             let sec_bar = secondary_bar_box.clone();
@@ -1111,13 +1385,29 @@ impl ItipBanner {
             let last_width = Cell::new(0);
             let last_tl_width = Cell::new(0);
             let last_tl_vis = Cell::new(false);
+            let last_msg_vis = Cell::new(false);
+            let last_max_cols = Cell::new(1usize);
             banner_box.add_tick_callback(move |widget, _| {
                 let w = widget.width();
                 let tl_vis = tl_box.is_visible();
                 let tl_w = tl_box.width();
-                if w > 0 && (w != last_width.get() || tl_vis != last_tl_vis.get()) {
+                let msg_vis = sender_msg_for_resize.is_visible();
+                let max_cols = placed_for_resize
+                    .borrow()
+                    .iter()
+                    .map(|p| p.total_cols)
+                    .max()
+                    .unwrap_or(1);
+                if w > 0
+                    && (w != last_width.get()
+                        || tl_vis != last_tl_vis.get()
+                        || msg_vis != last_msg_vis.get()
+                        || max_cols != last_max_cols.get())
+                {
                     last_width.set(w);
                     last_tl_vis.set(tl_vis);
+                    last_msg_vis.set(msg_vis);
+                    last_max_cols.set(max_cols);
                     let stack_columns = w < 620;
                     if stack_columns {
                         if cols.orientation() != gtk::Orientation::Vertical {
@@ -1132,7 +1422,13 @@ impl ItipBanner {
                             cols.set_orientation(gtk::Orientation::Horizontal);
                             cols.set_spacing(0);
                         }
-                        tl_box.set_width_request(260);
+                        // Minimum width is 280px; scale up with preview pane width (especially when
+                        // metadata on the left is compact or when overlapping columns exist)
+                        let target_tl_w =
+                            compute_dynamic_timeline_width(w, !msg_vis, max_cols);
+                        if tl_box.width_request() != target_tl_w {
+                            tl_box.set_width_request(target_tl_w);
+                        }
                         tl_box.set_hexpand(false);
                         tl_box.remove_css_class("is-stacked");
                     }
@@ -1263,6 +1559,11 @@ impl ItipBanner {
             timeline_target_scroll_y,
             last_timeline_state: Rc::new(RefCell::new(None)),
             lbl_location,
+            location_map_popover,
+            location_map_lbl,
+            location_map_open_btn,
+            current_location_text,
+            current_location_geo,
             lbl_organizer,
             lbl_attendees,
             lbl_recurrence,
@@ -2198,19 +2499,45 @@ impl ItipBanner {
         }
 
         // Location
+        self.location_map_popover.popdown();
         let loc = event.location.trim();
+        let geo = extract_ical_geo(&event.component);
+        self.current_location_geo.set(geo);
         if !loc.is_empty() {
+            *self.current_location_text.borrow_mut() = loc.to_string();
+            self.location_map_lbl.set_text(loc);
             if loc.starts_with("http://") || loc.starts_with("https://") {
                 self.lbl_location.set_markup(&format!(
                     "<a href=\"{}\">{}</a>",
                     glib::markup_escape_text(loc),
                     glib::markup_escape_text(loc)
                 ));
+                self.location_row.remove_css_class("itip-location-interactive");
+                self.location_row.set_cursor_from_name(None);
             } else {
                 self.lbl_location.set_text(loc);
+                let map_interactive = AppSettings::try_new()
+                    .map(|s| s.calendar_location_map_hover() || s.calendar_location_open_map())
+                    .unwrap_or(true);
+                if map_interactive {
+                    self.location_row.add_css_class("itip-location-interactive");
+                } else {
+                    self.location_row.remove_css_class("itip-location-interactive");
+                }
+                let open_enabled = AppSettings::try_new()
+                    .map(|s| s.calendar_location_open_map())
+                    .unwrap_or(true);
+                self.location_map_open_btn.set_visible(open_enabled);
+                self.location_row.set_cursor_from_name(if open_enabled {
+                    Some("pointer")
+                } else {
+                    None
+                });
             }
             self.location_row.set_visible(true);
         } else {
+            self.current_location_text.borrow_mut().clear();
+            self.location_map_lbl.set_text("");
             self.location_row.set_visible(false);
         }
 
@@ -3308,7 +3635,8 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
                 ("6px", "3px 6px")
             };
             let css = format!(
-                "label.{class_name} {{ background-color: {bg}; color: {fg}; {border_rule} border-radius: {radius}; padding: {padding}; }}"
+                "label.{class_name} {{ background-color: {bg}; color: {fg}; {border_rule} border-radius: {radius}; padding: {padding}; transition: filter 120ms ease, box-shadow 120ms ease; }}\n\
+                 label.{class_name}:hover {{ filter: brightness(0.96); box-shadow: 0 2px 6px alpha(black, 0.14); }}"
             );
             let p = gtk::CssProvider::new();
             p.load_from_string(&css);
@@ -3322,6 +3650,282 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
     }
 
     class_name
+}
+
+const MIN_TIMELINE_SIDE_WIDTH: i32 = 280;
+
+/// Computes the target width for the right-hand mini-calendar (`timeline_side_box`) in side-by-side mode:
+/// - Always at least `280px` (`MIN_TIMELINE_SIDE_WIDTH`).
+/// - Scales smoothly with the preview pane width (`pane_w`), expanding further when the left column
+///   only has compact metadata (`compact_metadata == true`) or when overlapping events exist (`max_cols > 1`).
+fn compute_dynamic_timeline_width(pane_w: i32, compact_metadata: bool, max_cols: usize) -> i32 {
+    if pane_w <= 620 {
+        return MIN_TIMELINE_SIDE_WIDTH;
+    }
+    let ratio = if compact_metadata { 0.44 } else { 0.35 };
+    let col_bonus = if max_cols > 1 {
+        ((max_cols as i32 - 1) * 28).min(64)
+    } else {
+        0
+    };
+    let max_allowed = if compact_metadata {
+        (pane_w - 310).clamp(MIN_TIMELINE_SIDE_WIDTH, 480)
+    } else {
+        (pane_w - 370).clamp(MIN_TIMELINE_SIDE_WIDTH, 420)
+    };
+    ((pane_w as f64 * ratio).round() as i32 + col_bonus).clamp(MIN_TIMELINE_SIDE_WIDTH, max_allowed)
+}
+
+fn ensure_itip_base_css() {
+    thread_local! {
+        static BASE_CSS_LOADED: Cell<bool> = const { Cell::new(false) };
+    }
+    if BASE_CSS_LOADED.with(|c| c.get()) {
+        return;
+    }
+    if let Some(display) = gtk::gdk::Display::default() {
+        let p = gtk::CssProvider::new();
+        p.load_from_string(
+            "box.itip-location-row { border-radius: 6px; padding: 2px 6px; margin-left: -6px; transition: background-color 120ms ease; }\n\
+             box.itip-location-row.itip-location-interactive:hover { background-color: alpha(currentColor, 0.06); }\n\
+             box.itip-location-row.itip-location-interactive:hover label.itip-location-label { text-decoration: underline; }\n\
+             popover.itip-location-map-popover > contents { padding: 6px; border-radius: 12px; }\n\
+             frame.itip-location-map-frame { border-radius: 8px; }\n\
+             button.itip-map-action-btn { min-height: 24px; min-width: 24px; padding: 2px; }",
+        );
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &p,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+        BASE_CSS_LOADED.with(|c| c.set(true));
+    }
+}
+
+/// Extracts `GEO:lat;lon` (or `GEO:lat,lon`) from the top-level `VEVENT` in an iCalendar component.
+pub(crate) fn extract_ical_geo(component: &str) -> Option<(f64, f64)> {
+    let mut in_vevent = false;
+    let mut nested_depth: usize = 0;
+    for line in crate::services::itip_service::unfold_lines(component) {
+        let trimmed = line.trim();
+        if trimmed.eq_ignore_ascii_case("BEGIN:VEVENT") {
+            in_vevent = true;
+            nested_depth = 0;
+            continue;
+        }
+        if !in_vevent {
+            continue;
+        }
+        if trimmed.eq_ignore_ascii_case("END:VEVENT") {
+            break;
+        }
+        if trimmed.len() >= 6 && trimmed[..6].eq_ignore_ascii_case("BEGIN:") {
+            nested_depth += 1;
+            continue;
+        }
+        if trimmed.len() >= 4 && trimmed[..4].eq_ignore_ascii_case("END:") {
+            nested_depth = nested_depth.saturating_sub(1);
+            continue;
+        }
+        if nested_depth > 0 {
+            continue;
+        }
+        let prop = trimmed.split(&[':', ';'][..]).next().unwrap_or("").trim();
+        if prop.eq_ignore_ascii_case("GEO") {
+            if let Some((_, val)) = trimmed.split_once(':') {
+                let parts: Vec<&str> = val.trim().split(&[';', ','][..]).collect();
+                if parts.len() == 2 {
+                    if let (Ok(lat), Ok(lon)) = (
+                        parts[0].trim().parse::<f64>(),
+                        parts[1].trim().parse::<f64>(),
+                    ) {
+                        if (-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon) {
+                            return Some((lat, lon));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Generates progressive search queries for a calendar location string so internal room names
+/// (e.g. `"Konferenzraum Wiesbaden P&I"`) gracefully fall back to the city/place (`"Wiesbaden"`).
+pub(crate) fn smart_location_queries(location: &str) -> Vec<String> {
+    let raw = location.trim();
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![raw.to_string()];
+
+    const ROOM_PREFIXES: &[&str] = &[
+        "konferenzraum",
+        "besprechungsraum",
+        "meetingraum",
+        "meeting room",
+        "conference room",
+        "sitzungszimmer",
+        "schulungsraum",
+        "raum",
+        "room",
+        "gebäude",
+        "building",
+        "standort",
+        "büro",
+        "office",
+    ];
+
+    let lower = raw.to_lowercase();
+    let mut stripped = raw;
+    for prefix in ROOM_PREFIXES {
+        if lower.starts_with(prefix) {
+            let rest = &raw[prefix.len()..];
+            if rest.is_empty()
+                || rest.starts_with(char::is_whitespace)
+                || rest.starts_with(':')
+                || rest.starts_with('-')
+            {
+                stripped = rest.trim_start_matches(|c: char| {
+                    c.is_whitespace() || c == ':' || c == '-' || c == ','
+                });
+                break;
+            }
+        }
+    }
+
+    if !stripped.is_empty() && stripped != raw {
+        out.push(stripped.to_string());
+    }
+
+    // If stripped still has multiple words or separators (e.g. "Wiesbaden P&I" or "Wiesbaden - 3. OG"),
+    // add the primary place token as a fallback query.
+    let base = if !stripped.is_empty() { stripped } else { raw };
+    if let Some(first_seg) = base
+        .split(&['-', '/', '(', ',', '|'][..])
+        .next()
+        .map(str::trim)
+    {
+        if !first_seg.is_empty() && !out.iter().any(|q| q.eq_ignore_ascii_case(first_seg)) {
+            out.push(first_seg.to_string());
+        }
+        if let Some(first_word) = first_seg.split_whitespace().next() {
+            let clean_word = first_word.trim_matches(|c: char| !c.is_alphanumeric());
+            if clean_word.chars().count() >= 3
+                && clean_word.chars().any(char::is_alphabetic)
+                && !out.iter().any(|q| q.eq_ignore_ascii_case(clean_word))
+            {
+                out.push(clean_word.to_string());
+            }
+        }
+    }
+
+    out
+}
+
+fn build_minimal_map_hover_html(location: &str, geo: Option<(f64, f64)>, is_dark: bool) -> String {
+    let bg = if is_dark { "#242424" } else { "#f6f5f4" };
+    let fg = if is_dark { "#deddda" } else { "#3d3846" };
+    let sub = if is_dark { "#9a9996" } else { "#77767b" };
+    let map_filter = if is_dark {
+        "filter: invert(0.88) hue-rotate(180deg) brightness(0.95) contrast(0.92);"
+    } else {
+        ""
+    };
+    let escaped_loc = glib::markup_escape_text(location);
+
+    if let Some((lat, lon)) = geo {
+        let min_lon = lon - 0.009;
+        let max_lon = lon + 0.009;
+        let min_lat = lat - 0.005;
+        let max_lat = lat + 0.005;
+        return format!(
+            "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>\
+            html,body{{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:{bg};font-family:sans-serif;}}\
+            iframe{{width:100%;height:100%;border:0;{map_filter}}}\
+            </style></head><body>\
+            <iframe src=\"https://www.openstreetmap.org/export/embed.html?bbox={min_lon},{min_lat},{max_lon},{max_lat}&amp;layer=mapnik&amp;marker={lat},{lon}\"></iframe>\
+            </body></html>"
+        );
+    }
+
+    let queries = smart_location_queries(location);
+    let queries_json = serde_json::to_string(&queries).unwrap_or_else(|_| "[]".to_string());
+
+    format!(
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>\
+        html,body{{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:{bg};color:{fg};font-family:system-ui,sans-serif;}}\
+        #fallback{{display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%;height:100%;box-sizing:border-box;padding:12px;text-align:center;gap:4px;}}\
+        .pin{{font-size:20px;opacity:0.75;}}\
+        .title{{font-size:12px;font-weight:600;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}}\
+        .hint{{font-size:11px;color:{sub};}}\
+        iframe{{width:100%;height:100%;border:0;display:none;{map_filter}}}\
+        </style></head><body>\
+        <div id=\"fallback\"><div class=\"pin\">⌖</div><div class=\"title\">{escaped_loc}</div><div class=\"hint\" id=\"status\">Locating…</div></div>\
+        <iframe id=\"mapframe\"></iframe>\
+        <script>\
+        (async function(){{\
+          const queries = {queries_json};\
+          for (const q of queries) {{\
+            try {{\
+              const r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(q), {{headers:{{'Accept-Language':navigator.language||'de,en'}}}});\
+              if (!r.ok) continue;\
+              const data = await r.json();\
+              if (data && data.length > 0) {{\
+                const lat = parseFloat(data[0].lat);\
+                const lon = parseFloat(data[0].lon);\
+                if (!isNaN(lat) && !isNaN(lon)) {{\
+                  const dLon = 0.012, dLat = 0.007;\
+                  const bbox = [lon - dLon, lat - dLat, lon + dLon, lat + dLat].join(',');\
+                  const f = document.getElementById('mapframe');\
+                  f.src = 'https://www.openstreetmap.org/export/embed.html?bbox=' + encodeURIComponent(bbox) + '&layer=mapnik&marker=' + encodeURIComponent(lat + ',' + lon);\
+                  f.onload = function(){{ document.getElementById('fallback').style.display='none'; f.style.display='block'; }};\
+                  return;\
+                }}\
+              }}\
+            }} catch (_) {{}}\
+          }}\
+          const st = document.getElementById('status');\
+          if (st) st.textContent = '';\
+        }})();\
+        </script></body></html>"
+    )
+}
+
+fn open_calendar_location_in_map(location: &str, geo: Option<(f64, f64)>) {
+    let target = AppSettings::try_new()
+        .map(|s| s.contact_open_map_target())
+        .unwrap_or_else(|| "openstreetmap".to_string());
+    let prefer_local = AppSettings::try_new()
+        .map(|s| s.contact_open_map_prefer_local())
+        .unwrap_or(true);
+
+    let (primary, fallback) = if let Some((lat, lon)) = geo {
+        let web_url = if target.trim().eq_ignore_ascii_case("google") {
+            format!("https://www.google.com/maps/search/?api=1&query={lat},{lon}")
+        } else {
+            format!("https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=16/{lat}/{lon}")
+        };
+        if prefer_local {
+            (format!("geo:{lat},{lon}"), Some(web_url))
+        } else {
+            (web_url, None)
+        }
+    } else {
+        let queries = smart_location_queries(location);
+        let best_query = queries
+            .get(1)
+            .or_else(|| queries.first())
+            .map(String::as_str)
+            .unwrap_or(location);
+        crate::services::settings_service::build_contact_map_uri(best_query, &target, prefer_local)
+    };
+
+    if gio::AppInfo::launch_default_for_uri(&primary, None::<&gio::AppLaunchContext>).is_err() {
+        if let Some(fb) = fallback {
+            let _ = gio::AppInfo::launch_default_for_uri(&fb, None::<&gio::AppLaunchContext>);
+        }
+    }
 }
 
 /// Smart heuristic for selecting the best target calendar source index:
@@ -3960,6 +4564,31 @@ mod tests {
             &snap_with_existing,
         );
         assert_eq!(idx_existing, Some(2));
+    }
+
+    #[test]
+    fn test_dynamic_timeline_width_and_smart_location_queries() {
+        // Minimum width is strictly 280px
+        assert_eq!(compute_dynamic_timeline_width(620, true, 1), 280);
+        assert_eq!(compute_dynamic_timeline_width(640, false, 1), 280);
+
+        // On wide preview panes with compact metadata and parallel columns, calendar expands smoothly
+        let w_compact_wide = compute_dynamic_timeline_width(920, true, 3);
+        let w_full_msg_wide = compute_dynamic_timeline_width(920, false, 1);
+        assert!(w_compact_wide >= 380);
+        assert!(w_compact_wide > w_full_msg_wide);
+
+        // Smart location queries strip room prefixes and fall back to city name
+        let queries = smart_location_queries("Konferenzraum Wiesbaden P&I");
+        assert_eq!(queries[0], "Konferenzraum Wiesbaden P&I");
+        assert!(queries.contains(&"Wiesbaden P&I".to_string()));
+        assert!(queries.contains(&"Wiesbaden".to_string()));
+
+        // Extract GEO coordinates from VEVENT
+        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:1\r\nGEO:50.0826;8.2400\r\nEND:VEVENT\r\nEND:VCALENDAR";
+        let geo = extract_ical_geo(ics).expect("should parse GEO");
+        assert!((geo.0 - 50.0826).abs() < 1e-4);
+        assert!((geo.1 - 8.2400).abs() < 1e-4);
     }
 }
 

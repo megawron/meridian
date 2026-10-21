@@ -1232,6 +1232,54 @@ impl AppSettings {
         }
     }
 
+    pub fn calendar_location_map_hover(&self) -> bool {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("calendar-location-map-hover"))
+            .unwrap_or(false);
+        if has_key {
+            self.settings.boolean("calendar-location-map-hover")
+        } else {
+            true
+        }
+    }
+
+    pub fn set_calendar_location_map_hover(&self, value: bool) {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("calendar-location-map-hover"))
+            .unwrap_or(false);
+        if has_key {
+            self.set_boolean("calendar-location-map-hover", value);
+        }
+    }
+
+    pub fn calendar_location_open_map(&self) -> bool {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("calendar-location-open-map"))
+            .unwrap_or(false);
+        if has_key {
+            self.settings.boolean("calendar-location-open-map")
+        } else {
+            true
+        }
+    }
+
+    pub fn set_calendar_location_open_map(&self, value: bool) {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("calendar-location-open-map"))
+            .unwrap_or(false);
+        if has_key {
+            self.set_boolean("calendar-location-open-map", value);
+        }
+    }
+
     pub fn calendar_hidden_sources(&self) -> Vec<String> {
         self.settings
             .string("calendar-hidden-sources")
