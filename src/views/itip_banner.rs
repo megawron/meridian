@@ -529,7 +529,7 @@ impl ItipBanner {
             .child(&comment_box)
             .build();
 
-        // 7. Top Action Bar (Left: Target Calendar Chip; Right: Comment + Primary RSVP Actions)
+        // 7. Top Action Bar (Left: Primary RSVP Actions + Comment; Right: Target Calendar Chip above mini-calendar)
         let footer_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
@@ -545,6 +545,7 @@ impl ItipBanner {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
             .hexpand(true)
+            .halign(gtk::Align::End)
             .valign(gtk::Align::Center)
             .build();
 
@@ -587,6 +588,7 @@ impl ItipBanner {
         let chip_inner_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(6)
+            .hexpand(true)
             .valign(gtk::Align::Center)
             .build();
         let lbl_calendar_dot = gtk::Label::builder()
@@ -597,7 +599,9 @@ impl ItipBanner {
         let lbl_calendar_chip_name = gtk::Label::builder()
             .label(&gettext("Personal Calendar"))
             .ellipsize(pango::EllipsizeMode::End)
-            .max_width_chars(24)
+            .width_chars(1)
+            .hexpand(true)
+            .xalign(0.0)
             .single_line_mode(true)
             .valign(gtk::Align::Center)
             .build();
@@ -616,20 +620,12 @@ impl ItipBanner {
             .popover(&calendar_chip_popover)
             .tooltip_text(&gettext("Target Calendar"))
             .css_classes(vec!["flat", "itip-calendar-chip"])
-            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .halign(gtk::Align::Fill)
             .valign(gtk::Align::Center)
             .build();
+
         secondary_bar_box.append(&btn_target_calendar);
-
-        let action_spacer = gtk::Box::builder().hexpand(true).build();
-        secondary_bar_box.append(&action_spacer);
-
-        let secondary_tools_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(4)
-            .halign(gtk::Align::End)
-            .valign(gtk::Align::Center)
-            .build();
 
         let btn_open_calendar = gtk::Button::builder()
             .label(&gettext("Open in Calendar"))
@@ -672,21 +668,17 @@ impl ItipBanner {
                 view_comment.grab_focus();
             }
         });
-        secondary_tools_box.append(&btn_toggle_comment);
-        secondary_bar_box.append(&secondary_tools_box);
-        footer_box.append(&secondary_bar_box);
 
         let sep_footer_inner = gtk::Separator::new(gtk::Orientation::Horizontal);
         sep_footer_inner.set_hexpand(true);
         sep_footer_inner.add_css_class("itip-footer-inner-sep");
         sep_footer_inner.set_visible(false);
-        footer_box.append(&sep_footer_inner);
 
-        // ── Primary RSVP Decision Buttons ─────────────────────────────────────
+        // ── Primary RSVP Decision Buttons (Left-Aligned) ──────────────────────
         let primary_actions_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
-            .halign(gtk::Align::End)
+            .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .build();
 
@@ -694,7 +686,7 @@ impl ItipBanner {
         let action_box_request = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
-            .halign(gtk::Align::End)
+            .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .build();
 
@@ -710,24 +702,25 @@ impl ItipBanner {
                 .build()
         };
 
-        let btn_decline = make_action_btn(
-            &gettext("Decline"),
-            vec!["destructive-action"],
-            &gettext("Decline invitation and send response"),
+        let btn_accept = make_action_btn(
+            &gettext("Accept"),
+            vec!["suggested-action"],
+            &gettext("Accept event, add to calendar and send response"),
         );
         let btn_tentative = make_action_btn(
             &gettext("Tentative"),
             vec![],
             &gettext("Tentatively accept and add to calendar"),
         );
-        let btn_accept = make_action_btn(
-            &gettext("Accept"),
-            vec!["suggested-action"],
-            &gettext("Accept event, add to calendar and send response"),
+        let btn_decline = make_action_btn(
+            &gettext("Decline"),
+            vec!["destructive-action"],
+            &gettext("Decline invitation and send response"),
         );
-        action_box_request.append(&btn_decline);
-        action_box_request.append(&btn_tentative);
         action_box_request.append(&btn_accept);
+        action_box_request.append(&btn_tentative);
+        action_box_request.append(&btn_decline);
+        action_box_request.append(&btn_toggle_comment);
 
         // More options popover (Expert options: Reply toggle, Free/Busy, Import as Event)
         let more_popover = gtk::Popover::new();
@@ -819,6 +812,8 @@ impl ItipBanner {
         primary_actions_row.append(&action_box_publish);
 
         footer_box.append(&primary_actions_row);
+        footer_box.append(&sep_footer_inner);
+        footer_box.append(&secondary_bar_box);
 
         // ── Right Column: Day Schedule / Timeline Strip (Calendar Day View Parity) ──
         let timeline_side_box = gtk::Box::builder()
@@ -989,9 +984,9 @@ impl ItipBanner {
             let cols = details_columns.clone();
             let tl_box = timeline_side_box.clone();
             let act_bar = footer_box.clone();
+            let sec_bar = secondary_bar_box.clone();
             let comment_icon = btn_comment_icon.clone();
             let comment_lbl = btn_comment_lbl.clone();
-            let chip_name_lbl = lbl_calendar_chip_name.clone();
             let last_width = Cell::new(0);
             let last_tl_vis = Cell::new(false);
             banner_box.add_tick_callback(move |widget, _| {
@@ -1019,22 +1014,26 @@ impl ItipBanner {
                         tl_box.remove_css_class("is-stacked");
                     }
 
-                    let stack_actions = w < 540;
+                    let stack_actions = w < 520;
                     if stack_actions {
                         if act_bar.orientation() != gtk::Orientation::Vertical {
                             act_bar.set_orientation(gtk::Orientation::Vertical);
                             act_bar.set_spacing(6);
                         }
-                    } else if act_bar.orientation() != gtk::Orientation::Horizontal {
-                        act_bar.set_orientation(gtk::Orientation::Horizontal);
-                        act_bar.set_spacing(8);
+                        sec_bar.set_halign(gtk::Align::Start);
+                    } else {
+                        if act_bar.orientation() != gtk::Orientation::Horizontal {
+                            act_bar.set_orientation(gtk::Orientation::Horizontal);
+                            act_bar.set_spacing(8);
+                        }
+                        sec_bar.set_halign(gtk::Align::End);
                     }
 
-                    // GNOME HIG: show text-only ("Comment") when room permits, switch to icon-only when narrow
-                    let icon_only_comment = w < 420;
+                    // GNOME HIG: switch "Comment" to icon-only on medium single-row widths (520..640)
+                    // so the calendar chip has full room, or on very narrow stacked widths (< 390)
+                    let icon_only_comment = (w >= 520 && w < 640) || w < 390;
                     comment_lbl.set_visible(!icon_only_comment);
                     comment_icon.set_visible(icon_only_comment);
-                    chip_name_lbl.set_max_width_chars(if w < 380 { 14 } else { 24 });
                 }
                 glib::ControlFlow::Continue
             });
@@ -1233,25 +1232,37 @@ impl ItipBanner {
         self.details_revealer.set_reveal_child(true);
         self.cal_select_box.set_visible(!compact);
         self.lbl_method.set_visible(!compact);
-        self.footer_box.set_margin_top(0);
+        let has_actions = self.footer_box.is_visible()
+            && (self.action_box_request.is_visible()
+                || self.action_box_cancel.is_visible()
+                || self.action_box_reply.is_visible()
+                || self.action_box_publish.is_visible());
         if compact {
             self.banner_box.add_css_class("is-compact");
-            self.header_row.set_margin_top(4);
-            self.header_row.set_margin_bottom(2);
-            self.footer_box.set_margin_bottom(6);
-            self.icon.set_pixel_size(18);
-            self.lbl_header_prompt.set_wrap(false);
-            self.lbl_header_prompt.set_single_line_mode(true);
-            self.lbl_header_prompt.set_ellipsize(pango::EllipsizeMode::End);
-            let title = self.lbl_title.text();
-            let prompt = self.full_header_prompt.borrow().clone();
-            if !title.is_empty() && title != gettext("Event") {
-                self.lbl_header_prompt.set_text(&format!("{title} — {prompt}"));
+            if has_actions {
+                self.header_row.set_visible(false);
+                self.footer_box.set_margin_top(6);
+                self.footer_box.set_margin_bottom(6);
+            } else {
+                self.header_row.set_visible(true);
+                self.header_row.set_margin_top(4);
+                self.header_row.set_margin_bottom(4);
+                self.icon.set_pixel_size(18);
+                self.lbl_header_prompt.set_wrap(false);
+                self.lbl_header_prompt.set_single_line_mode(true);
+                self.lbl_header_prompt.set_ellipsize(pango::EllipsizeMode::End);
+                let title = self.lbl_title.text();
+                let prompt = self.full_header_prompt.borrow().clone();
+                if !title.is_empty() && title != gettext("Event") {
+                    self.lbl_header_prompt.set_text(&format!("{title} — {prompt}"));
+                }
             }
         } else {
             self.banner_box.remove_css_class("is-compact");
+            self.header_row.set_visible(true);
             self.header_row.set_margin_top(10);
             self.header_row.set_margin_bottom(6);
+            self.footer_box.set_margin_top(0);
             self.footer_box.set_margin_bottom(10);
             self.icon.set_pixel_size(24);
             self.lbl_header_prompt.set_single_line_mode(false);
