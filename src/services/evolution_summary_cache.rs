@@ -1480,6 +1480,8 @@ pub fn load_unified_accounts_from_sqlite(
         ts_b.cmp(&ts_a)
     });
 
+    crate::services::mail_store_service::assign_thread_metadata(&mut all_messages);
+
     (all_folders, all_messages, successful_sources.max(1))
 }
 

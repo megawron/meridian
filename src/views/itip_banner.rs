@@ -106,13 +106,13 @@ impl ItipBanner {
 
         let banner_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(10)
+            .spacing(0)
             .css_classes(vec!["itip-banner"])
             .hexpand(true)
-            .margin_start(12)
-            .margin_end(12)
-            .margin_top(4)
-            .margin_bottom(12)
+            .margin_start(0)
+            .margin_end(0)
+            .margin_top(0)
+            .margin_bottom(0)
             .build();
 
         // ── Top Header Prompt ─────────────────────────────────────────────────
@@ -121,6 +121,10 @@ impl ItipBanner {
             .spacing(10)
             .hexpand(true)
             .valign(gtk::Align::Center)
+            .margin_start(16)
+            .margin_end(16)
+            .margin_top(10)
+            .margin_bottom(10)
             .build();
 
         let icon = gtk::Image::builder()
@@ -152,21 +156,31 @@ impl ItipBanner {
             .label(&gettext("Response Pending"))
             .css_classes(vec!["itip-status-badge", "pending"])
             .valign(gtk::Align::Center)
-            .ellipsize(pango::EllipsizeMode::End)
-            .width_chars(1)
+            .single_line_mode(true)
             .build();
         header_row.append(&lbl_status_badge);
         banner_box.append(&header_row);
 
         let sep_top = gtk::Separator::new(gtk::Orientation::Horizontal);
+        sep_top.set_hexpand(true);
         banner_box.append(&sep_top);
 
         // ── Main 2-Column Content ─────────────────────────────────────────────
         let details_vbox = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(8)
+            .spacing(0)
             .hexpand(true)
             .valign(gtk::Align::Fill)
+            .build();
+
+        let details_info_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .hexpand(true)
+            .margin_start(16)
+            .margin_end(16)
+            .margin_top(14)
+            .margin_bottom(12)
             .build();
 
         // 1. Event Title
@@ -180,7 +194,7 @@ impl ItipBanner {
             .wrap_mode(pango::WrapMode::WordChar)
             .width_chars(1)
             .build();
-        details_vbox.append(&lbl_title);
+        details_info_box.append(&lbl_title);
 
         // 2. Metadata Rows
         let time_row = gtk::Box::builder()
@@ -206,7 +220,7 @@ impl ItipBanner {
             .build();
         time_row.append(&time_icon);
         time_row.append(&lbl_time);
-        details_vbox.append(&time_row);
+        details_info_box.append(&time_row);
 
         let conflict_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -257,7 +271,7 @@ impl ItipBanner {
             .build();
         recurrence_row.append(&rec_icon);
         recurrence_row.append(&lbl_recurrence);
-        details_vbox.append(&recurrence_row);
+        details_info_box.append(&recurrence_row);
 
         let location_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -282,7 +296,7 @@ impl ItipBanner {
             .build();
         location_row.append(&loc_icon);
         location_row.append(&lbl_location);
-        details_vbox.append(&location_row);
+        details_info_box.append(&location_row);
 
         let organizer_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -307,7 +321,7 @@ impl ItipBanner {
             .build();
         organizer_row.append(&org_icon);
         organizer_row.append(&lbl_organizer);
-        details_vbox.append(&organizer_row);
+        details_info_box.append(&organizer_row);
 
         let attendees_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -333,16 +347,20 @@ impl ItipBanner {
             .build();
         attendees_row.append(&att_icon);
         attendees_row.append(&lbl_attendees);
-        details_vbox.append(&attendees_row);
+        details_info_box.append(&attendees_row);
 
-        // 3. Sender Message / Description (DIRECTLY VISIBLE, NOT HIDDEN BEHIND EXPANDER!)
+        details_vbox.append(&details_info_box);
+
+        // 3. Sender Message / Description rendered inside a proper Card (like mail content)
         let sender_message_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(4)
+            .spacing(6)
             .hexpand(true)
-            .margin_top(4)
-            .margin_bottom(4)
-            .css_classes(vec!["itip-sender-message-box"])
+            .margin_start(16)
+            .margin_end(16)
+            .margin_top(2)
+            .margin_bottom(12)
+            .css_classes(vec!["card", "mail-preview-card", "itip-sender-message-box"])
             .visible(false)
             .build();
         let lbl_sender_message_title = gtk::Label::builder()
@@ -363,7 +381,7 @@ impl ItipBanner {
             .wrap_mode(pango::WrapMode::WordChar)
             .width_chars(1)
             .selectable(true)
-            .css_classes(vec!["body"])
+            .css_classes(vec!["body", "itip-sender-message-text"])
             .build();
         sender_message_box.append(&lbl_sender_message);
         details_vbox.append(&sender_message_box);
@@ -441,8 +459,10 @@ impl ItipBanner {
             .orientation(gtk::Orientation::Vertical)
             .spacing(4)
             .hexpand(true)
+            .margin_start(16)
+            .margin_end(16)
             .margin_top(4)
-            .margin_bottom(6)
+            .margin_bottom(10)
             .build();
         let lbl_comment = gtk::Label::builder()
             .label(&format!("{}:", gettext("Comment")))
@@ -468,19 +488,20 @@ impl ItipBanner {
             .build();
         details_vbox.append(&comment_revealer);
 
-        // Separator before actions
+        // Continuous full-width separator before actions
         let sep_footer = gtk::Separator::new(gtk::Orientation::Horizontal);
-        sep_footer.set_margin_top(6);
-        sep_footer.set_margin_bottom(2);
+        sep_footer.set_hexpand(true);
         details_vbox.append(&sep_footer);
 
         // 7. Action Buttons Row (GNOME HIG)
         let footer_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
+            .orientation(gtk::Orientation::Vertical)
             .spacing(8)
             .hexpand(true)
-            .margin_top(2)
-            .margin_bottom(2)
+            .margin_start(16)
+            .margin_end(16)
+            .margin_top(10)
+            .margin_bottom(12)
             .build();
 
         let open_calendar_label = gettext("Open in Calendar");
@@ -492,23 +513,25 @@ impl ItipBanner {
             .child(&btn_open_content)
             .css_classes(vec!["flat"])
             .tooltip_text(&gettext("Switch to calendar and show date"))
+            .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .build();
         footer_box.append(&btn_open_calendar);
 
-        let action_spacer = gtk::Box::builder().hexpand(true).build();
+        let action_spacer = gtk::Box::builder().hexpand(true).visible(false).build();
         footer_box.append(&action_spacer);
 
         // Request actions
         let action_box_request = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
+            .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .build();
 
         let comment_btn_label = gettext("Comment");
         let btn_comment_content = adw::ButtonContent::builder()
-            .icon_name("chat-bubbles-symbolic")
+            .icon_name("user-available-symbolic")
             .label(&comment_btn_label)
             .build();
         let btn_toggle_comment = gtk::ToggleButton::builder()
@@ -528,11 +551,10 @@ impl ItipBanner {
         });
         action_box_request.append(&btn_toggle_comment);
 
-        let make_shrinkable_btn = |text: &str, classes: Vec<&str>, tooltip: &str| -> gtk::Button {
+        let make_action_btn = |text: &str, classes: Vec<&str>, tooltip: &str| -> gtk::Button {
             let lbl = gtk::Label::builder()
                 .label(text)
-                .ellipsize(pango::EllipsizeMode::End)
-                .width_chars(1)
+                .single_line_mode(true)
                 .build();
             gtk::Button::builder()
                 .child(&lbl)
@@ -541,17 +563,17 @@ impl ItipBanner {
                 .build()
         };
 
-        let btn_decline = make_shrinkable_btn(
+        let btn_decline = make_action_btn(
             &gettext("Decline"),
             vec!["destructive-action"],
             &gettext("Decline invitation and send response"),
         );
-        let btn_tentative = make_shrinkable_btn(
+        let btn_tentative = make_action_btn(
             &gettext("Tentative"),
             vec![],
             &gettext("Tentatively accept and add to calendar"),
         );
-        let btn_accept = make_shrinkable_btn(
+        let btn_accept = make_action_btn(
             &gettext("Accept"),
             vec!["suggested-action"],
             &gettext("Accept event, add to calendar and send response"),
@@ -663,13 +685,13 @@ impl ItipBanner {
 
         details_vbox.append(&footer_box);
 
-        // ── Right Column: Day Schedule / Timeline Strip (Evolution Parity) ──
+        // ── Right Column: Day Schedule / Timeline Strip (Calendar Day View Parity) ──
         let timeline_side_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(6)
-            .width_request(220)
+            .spacing(0)
+            .width_request(260)
             .valign(gtk::Align::Fill)
-            .css_classes(vec!["itip-day-timeline-container"])
+            .css_classes(vec!["itip-day-timeline-container", "calendar-time-grid"])
             .visible(false)
             .build();
 
@@ -678,9 +700,7 @@ impl ItipBanner {
             .spacing(8)
             .hexpand(true)
             .valign(gtk::Align::Center)
-            .margin_start(4)
-            .margin_end(4)
-            .margin_top(2)
+            .css_classes(vec!["calendar-header-grid", "itip-timeline-header"])
             .build();
 
         let lbl_timeline_date = gtk::Label::builder()
@@ -690,7 +710,7 @@ impl ItipBanner {
             .hexpand(true)
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
-            .css_classes(vec!["heading", "dim-label"])
+            .css_classes(vec!["heading"])
             .build();
         timeline_top_bar.append(&lbl_timeline_date);
 
@@ -704,11 +724,8 @@ impl ItipBanner {
 
         let timeline_all_day_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(4)
-            .margin_start(4)
-            .margin_end(4)
-            .margin_top(2)
-            .margin_bottom(4)
+            .spacing(3)
+            .css_classes(vec!["calendar-allday-row", "itip-timeline-allday-row"])
             .visible(false)
             .build();
         timeline_side_box.append(&timeline_all_day_box);
@@ -717,7 +734,7 @@ impl ItipBanner {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_height(false)
-            .height_request(280)
+            .height_request(340)
             .vexpand(true)
             .css_classes(vec!["itip-timeline-scrolled"])
             .build();
@@ -726,34 +743,57 @@ impl ItipBanner {
         let hours_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(0)
+            .height_request((24.0 * HOUR_HEIGHT) as i32)
+            .hexpand(true)
             .build();
 
         for h in 0..24 {
             let row = gtk::Box::builder()
                 .orientation(gtk::Orientation::Horizontal)
-                .spacing(6)
+                .spacing(0)
                 .height_request(HOUR_HEIGHT as i32)
-                .css_classes(vec!["appointment-timeline-hour-row"])
+                .hexpand(true)
+                .css_classes(vec!["appointment-timeline-hour-row", "itip-timeline-hour-row"])
+                .build();
+            let gutter_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .width_request(44)
+                .height_request(HOUR_HEIGHT as i32)
+                .valign(gtk::Align::Fill)
+                .css_classes(vec!["calendar-time-gutter", "itip-time-gutter"])
                 .build();
             let lbl = gtk::Label::builder()
-                .label(&format!("{h:02}:00"))
-                .width_request(40)
-                .xalign(1.0)
-                .css_classes(vec!["appointment-timeline-hour-label"])
+                .use_markup(true)
+                .label(&crate::views::calendar_page::format_hour_markup_scaled((h * 60) as u32, false, 0.68))
+                .halign(gtk::Align::End)
+                .valign(gtk::Align::Start)
+                .margin_top(2)
+                .css_classes(vec!["calendar-time-gutter-label", "itip-time-gutter-label"])
+                .build();
+            gutter_box.append(&lbl);
+
+            let slot_area = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .hexpand(true)
+                .valign(gtk::Align::Fill)
+                .css_classes(vec!["itip-timeline-hour-slot"])
                 .build();
             let sep_hour = gtk::Separator::builder()
                 .orientation(gtk::Orientation::Horizontal)
                 .hexpand(true)
                 .valign(gtk::Align::Start)
                 .build();
-            row.append(&lbl);
-            row.append(&sep_hour);
+            slot_area.append(&sep_hour);
+
+            row.append(&gutter_box);
+            row.append(&slot_area);
             hours_box.append(&row);
         }
         timeline_overlay.set_child(Some(&hours_box));
 
         let timeline_fixed = gtk::Fixed::builder()
             .height_request((24.0 * HOUR_HEIGHT) as i32)
+            .hexpand(true)
             .build();
         timeline_overlay.add_overlay(&timeline_fixed);
         timeline_scrolled.set_child(Some(&timeline_overlay));
@@ -772,7 +812,7 @@ impl ItipBanner {
 
         let details_columns = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(20)
+            .spacing(0)
             .hexpand(true)
             .valign(gtk::Align::Fill)
             .build();
@@ -825,7 +865,7 @@ impl ItipBanner {
                     if stack_columns {
                         if cols.orientation() != gtk::Orientation::Vertical {
                             cols.set_orientation(gtk::Orientation::Vertical);
-                            cols.set_spacing(12);
+                            cols.set_spacing(0);
                         }
                         tl_box.set_width_request(-1);
                         tl_box.set_hexpand(true);
@@ -833,21 +873,21 @@ impl ItipBanner {
                     } else {
                         if cols.orientation() != gtk::Orientation::Horizontal {
                             cols.set_orientation(gtk::Orientation::Horizontal);
-                            cols.set_spacing(20);
+                            cols.set_spacing(0);
                         }
-                        tl_box.set_width_request(220);
+                        tl_box.set_width_request(260);
                         tl_box.set_hexpand(false);
                         tl_box.remove_css_class("is-stacked");
                     }
 
                     let effective_col_w = if !stack_columns && tl_vis {
-                        (w - 240).max(0)
+                        (w - 260).max(0)
                     } else {
                         w
                     };
 
-                    let compact_buttons = effective_col_w < 540;
-                    let stack_footer = effective_col_w < 400;
+                    let compact_buttons = effective_col_w < 560;
+                    let stack_footer = effective_col_w < 480;
 
                     open_content.set_label(if compact_buttons && !stack_footer {
                         ""
@@ -869,11 +909,7 @@ impl ItipBanner {
                         f_box.set_orientation(target_footer_orient);
                     }
                     spacer.set_visible(!stack_footer);
-                    open_btn.set_halign(if stack_footer {
-                        gtk::Align::Start
-                    } else {
-                        gtk::Align::Fill
-                    });
+                    open_btn.set_halign(gtk::Align::Start);
                     req_box.set_halign(if stack_footer {
                         gtk::Align::Start
                     } else {
@@ -1874,13 +1910,20 @@ impl ItipBanner {
             let title = if target_event.summary.trim().is_empty() {
                 gettext("(Untitled)")
             } else {
-                target_event.summary.clone()
+                target_event.summary.trim().to_string()
             };
+            let color_class = ensure_timeline_event_css("#3584e4", true, true, is_dark);
             let chip = gtk::Label::builder()
-                .label(&format!("⭐ {}: {title}", gettext("Invitation")))
+                .label(&title)
+                .xalign(0.0)
                 .halign(gtk::Align::Fill)
                 .ellipsize(pango::EllipsizeMode::End)
-                .css_classes(vec!["appointment-timeline-event", "appointment-timeline-preview", "itip-timeline-target-all-day"])
+                .css_classes(vec![
+                    "appointment-timeline-event",
+                    "appointment-timeline-preview",
+                    "itip-timeline-target-all-day",
+                    &color_class,
+                ])
                 .tooltip_text(&format!("{title}\n{}", gettext("All Day (Proposed Event)")))
                 .build();
             self.timeline_all_day_box.append(&chip);
@@ -1897,10 +1940,11 @@ impl ItipBanner {
                 let title = if ev.summary.trim().is_empty() {
                     gettext("(Untitled)")
                 } else {
-                    ev.summary.clone()
+                    ev.summary.trim().to_string()
                 };
                 let chip = gtk::Label::builder()
-                    .label(&format!("{}: {title}", gettext("All Day")))
+                    .label(&title)
+                    .xalign(0.0)
                     .halign(gtk::Align::Fill)
                     .ellipsize(pango::EllipsizeMode::End)
                     .css_classes(vec!["appointment-timeline-event", &color_class])
@@ -1933,8 +1977,13 @@ impl ItipBanner {
                 continue;
             }
             if crate::views::calendar_page::event_occurs_on(ev, target_date) {
-                let (ev_start, ev_end, ev_title) =
+                let (ev_start, ev_end, _time_text) =
                     crate::views::calendar_page::event_occurrence_times_for_date(ev, target_date, 30);
+                let ev_title = if ev.summary.trim().is_empty() {
+                    gettext("(Untitled)")
+                } else {
+                    ev.summary.trim().to_string()
+                };
                 let color = crate::views::calendar_page::event_color_for_record(ev);
                 timed_items.push(TimedItem {
                     is_target: false,
@@ -1955,7 +2004,7 @@ impl ItipBanner {
                 let title = if target_event.summary.trim().is_empty() {
                     gettext("Meeting Invitation")
                 } else {
-                    target_event.summary.clone()
+                    target_event.summary.trim().to_string()
                 };
                 timed_items.push(TimedItem {
                     is_target: true,
@@ -2008,8 +2057,8 @@ impl ItipBanner {
             clusters.push(current_cluster);
         }
 
-        const TIMELINE_EVENTS_X: f64 = 44.0;
-        let total_width: f64 = 200.0;
+        const TIMELINE_EVENTS_X: f64 = 47.0;
+        let total_width: f64 = 198.0;
 
         for cluster in clusters {
             let mut col_ends: Vec<u32> = Vec::new();
@@ -2055,7 +2104,21 @@ impl ItipBanner {
 
                 let time_prefix = format!("{:02}:{:02}", item.start_min / 60, item.start_min % 60);
                 let time_end = format!("{:02}:{:02}", item.end_min / 60, item.end_min % 60);
-                let label_text = format!("{} {}", time_prefix, item.title);
+                let is_multiline = h >= 34.0;
+                let markup_text = if is_multiline {
+                    format!(
+                        "<span size=\"x-small\" alpha=\"88%\">{} – {}</span>\n<b>{}</b>",
+                        glib::markup_escape_text(&time_prefix),
+                        glib::markup_escape_text(&time_end),
+                        glib::markup_escape_text(&item.title)
+                    )
+                } else {
+                    format!(
+                        "<span size=\"small\">{}  <b>{}</b></span>",
+                        glib::markup_escape_text(&time_prefix),
+                        glib::markup_escape_text(&item.title)
+                    )
+                };
 
                 let mut tooltip = format!(
                     "{}\n{} – {} Uhr{}",
@@ -2078,7 +2141,7 @@ impl ItipBanner {
                     tooltip.push_str(&format!("\n\n📝 Notizen:\n{short_desc}"));
                 }
 
-                let mut css_classes = vec!["appointment-timeline-event"];
+                let mut css_classes = vec!["appointment-timeline-event", "calendar-grid-event"];
                 if item.is_target {
                     css_classes.push("appointment-timeline-preview");
                     css_classes.push("itip-timeline-target-event");
@@ -2092,9 +2155,13 @@ impl ItipBanner {
                 css_classes.push(&color_class);
 
                 let widget = gtk::Label::builder()
-                    .label(&label_text)
+                    .use_markup(true)
+                    .label(&markup_text)
                     .ellipsize(pango::EllipsizeMode::End)
+                    .single_line_mode(!is_multiline)
+                    .lines(if is_multiline { 2 } else { 1 })
                     .xalign(0.0)
+                    .yalign(0.0)
                     .halign(gtk::Align::Fill)
                     .valign(gtk::Align::Fill)
                     .width_request(col_width as i32)
@@ -2109,7 +2176,7 @@ impl ItipBanner {
     }
 }
 
-const HOUR_HEIGHT: f64 = 30.0;
+const HOUR_HEIGHT: f64 = 40.0;
 
 pub(crate) fn load_local_calendar_snapshot_safe(
 ) -> crate::services::calendar_store_service::CalendarSnapshot {
@@ -2292,14 +2359,14 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
         if let Some(display) = gtk::gdk::Display::default() {
             let (bg, _, _, fg) = crate::views::calendar_page::pastel_colors_for_hex(color, is_dark);
             let border_rule = if is_preview {
-                format!("box-shadow: 0 0 0 2px {color}; font-weight: 600;")
+                format!("border: none; border-left: 6px solid {color}; box-shadow: inset 0 0 0 1.5px {color}; font-weight: 600;")
             } else {
-                "border: none; font-weight: 500;".to_string()
+                format!("border: none; border-left: 6px solid {color}; box-shadow: none; font-weight: 500;")
             };
             let (radius, padding) = if is_all_day {
-                ("4px", "3px 8px")
+                ("6px", "3px 8px")
             } else {
-                ("4px", "2px 6px")
+                ("6px", "3px 6px")
             };
             let css = format!(
                 "label.{class_name} {{ background-color: {bg}; color: {fg}; {border_rule} border-radius: {radius}; padding: {padding}; }}"
@@ -2680,6 +2747,57 @@ mod tests {
 
         let transparent = set_component_transparency(sample_cal, true);
         assert!(transparent.contains("TRANSP:TRANSPARENT"));
+
+        // 6. Sender message card & Day View timeline parity
+        assert!(banner.sender_message_box.has_css_class("card"));
+        assert!(banner.sender_message_box.has_css_class("mail-preview-card"));
+        assert!(banner.timeline_side_box.has_css_class("calendar-time-grid"));
+
+        let target_ev = CalendarEventRecord {
+            uid: "target-lunch".to_string(),
+            source_uid: "local-calendar".to_string(),
+            source_display_name: "Calendar".to_string(),
+            component: "".to_string(),
+            summary: "Lunch".to_string(),
+            start: "2026-08-12 13:20".to_string(),
+            end: "2026-08-12 13:50".to_string(),
+            location: "Kochschule".to_string(),
+            description: "".to_string(),
+            all_day: false,
+        };
+        let existing_ev = CalendarEventRecord {
+            uid: "existing-standup".to_string(),
+            source_uid: "local-calendar".to_string(),
+            source_display_name: "Calendar".to_string(),
+            component: "".to_string(),
+            summary: "Daily Standup".to_string(),
+            start: "2026-08-12 17:15".to_string(),
+            end: "2026-08-12 18:15".to_string(),
+            location: "".to_string(),
+            description: "".to_string(),
+            all_day: false,
+        };
+        let snapshot = CalendarSnapshot {
+            events: vec![existing_ev],
+            tasks: Vec::new(),
+            memos: Vec::new(),
+        };
+        banner.update_conflicts_and_timeline(&target_ev, &snapshot);
+
+        let mut found_existing_title = false;
+        let mut child = banner.timeline_fixed.first_child();
+        while let Some(w) = child {
+            if let Some(lbl) = w.downcast_ref::<gtk::Label>() {
+                if lbl.label().contains("Daily Standup") {
+                    found_existing_title = true;
+                }
+            }
+            child = w.next_sibling();
+        }
+        assert!(
+            found_existing_title,
+            "Existing timed event on day timeline must display its summary title ('Daily Standup')"
+        );
     }
 }
 

@@ -7998,6 +7998,10 @@ impl MailPage {
                 let smart_date = format_preview_header_date(&date_str);
                 date_lbl.set_text(&smart_date);
                 date_lbl.set_tooltip_text(Some(&full_date));
+                date_lbl.queue_draw();
+            }
+            if let Some(bar) = self.imp().modern_actions_bar.borrow().as_ref() {
+                bar.queue_draw();
             }
             if let Some(star_btn) = self.imp().modern_star_button.borrow().as_ref() {
                 star_btn.set_icon_name(if is_flagged {
@@ -8538,6 +8542,10 @@ impl MailPage {
             let smart_date = format_preview_header_date(&date_str);
             date_lbl.set_text(&smart_date);
             date_lbl.set_tooltip_text(Some(&full_date));
+            date_lbl.queue_draw();
+        }
+        if let Some(bar) = imp.modern_actions_bar.borrow().as_ref() {
+            bar.queue_draw();
         }
 
         // 6. Star Button
@@ -9460,23 +9468,36 @@ impl MailPage {
 
                 if found_index.is_none() {
                     if let Some(ref th_id) = target_thread_id {
+                        let is_reply_conv = self
+                            .imp()
+                            .thread_members
+                            .borrow()
+                            .as_ref()
+                            .and_then(|m| m.borrow().get(th_id).map(|msgs| Self::thread_is_reply_conversation(msgs)))
+                            .unwrap_or(true);
                         for i in 0..thread_selection.n_items() {
                             if let Some(row) = thread_selection.item(i).and_downcast::<gtk::TreeListRow>() {
                                 if let Some(msg) = row.item().and_downcast::<MailMessageObject>() {
                                     if msg.thread_id() == *th_id && row.is_expandable() {
-                                        row.set_expanded(true);
-                                        self.imp().expanded_threads.borrow_mut().insert(th_id.clone());
+                                        if is_reply_conv {
+                                            row.set_expanded(true);
+                                            self.imp().expanded_threads.borrow_mut().insert(th_id.clone());
+                                        } else {
+                                            found_index = Some(i);
+                                        }
                                         break;
                                     }
                                 }
                             }
                         }
-                        for i in 0..thread_selection.n_items() {
-                            if let Some(row) = thread_selection.item(i).and_downcast::<gtk::TreeListRow>() {
-                                if let Some(msg) = row.item().and_downcast::<MailMessageObject>() {
-                                    if msg.id() == target_id {
-                                        found_index = Some(i);
-                                        break;
+                        if found_index.is_none() {
+                            for i in 0..thread_selection.n_items() {
+                                if let Some(row) = thread_selection.item(i).and_downcast::<gtk::TreeListRow>() {
+                                    if let Some(msg) = row.item().and_downcast::<MailMessageObject>() {
+                                        if msg.id() == target_id {
+                                            found_index = Some(i);
+                                            break;
+                                        }
                                     }
                                 }
                             }
@@ -9499,9 +9520,61 @@ impl MailPage {
             for i in 0..flat_sel.n_items() {
                 if let Some(msg) = flat_sel.item(i).and_downcast::<MailMessageObject>() {
                     if msg.id() == target_id {
+                        let mark_read_on_selection = AppSettings::try_new()
+                            .map(|s| s.mail_mark_seen())
+                            .unwrap_or(true);
+                        let was_unread = msg.is_unread();
+                        if was_unread && mark_read_on_selection {
+                            if let Some(source) = self.imp().mark_read_timeout_source.borrow_mut().take() {
+                                source.remove();
+                            }
+                            let msg_id = msg.id().to_string();
+                            let backend_location = msg.backend_location();
+                            let is_flagged = msg.is_flagged();
+                            msg.set_unread(false);
+                            self.imp().known_unread_message_ids.borrow_mut().remove(&msg_id);
+                            if let Some(ref loc) = backend_location {
+                                self.apply_camel_folder_counter_delta(&loc.source_uid, &loc.folder_name, -1, 0);
+                            }
+                            self.refresh_unread_counters();
+                            self.queue_mail_table_draw();
+
+                            let command = MailCommand::set_message_state(
+                                &msg_id,
+                                backend_location.clone(),
+                                true,
+                                is_flagged,
+                                false,
+                                is_flagged,
+                            );
+                            if let Err(error) = self.execute_mail_command(command) {
+                                tracing::warn!(%error, "Thread member read-state mutation busy/failed, scheduling retry");
+                                let page_retry = self.downgrade();
+                                let msg_id_retry = msg_id.clone();
+                                let loc_retry = backend_location;
+                                glib::timeout_add_local_once(
+                                    std::time::Duration::from_millis(600),
+                                    move || {
+                                        if let Some(page) = page_retry.upgrade() {
+                                            let retry_cmd = MailCommand::set_message_state(
+                                                &msg_id_retry,
+                                                loc_retry,
+                                                true,
+                                                is_flagged,
+                                                false,
+                                                is_flagged,
+                                            );
+                                            let _ = page.execute_mail_command(retry_cmd);
+                                        }
+                                    },
+                                );
+                            }
+                        }
+
                         flat_sel.unselect_all();
                         self.imp().last_selected_mail_index.set(Some(i));
                         flat_sel.select_item(i, true);
+                        self.render_thread_context(&msg);
                         return true;
                     }
                 }
@@ -26661,14 +26734,13 @@ impl MailPage {
             .label("")
             .halign(gtk::Align::End)
             .valign(gtk::Align::Center)
+            .single_line_mode(true)
             .css_classes(vec!["mail-preview-date-label"])
-            .ellipsize(pango::EllipsizeMode::End)
-            .width_chars(1)
             .build();
 
         let modern_date_revealer = gtk::Revealer::builder()
-            .transition_type(gtk::RevealerTransitionType::SlideLeft)
-            .transition_duration(150)
+            .transition_type(gtk::RevealerTransitionType::None)
+            .transition_duration(0)
             .reveal_child(true)
             .halign(gtk::Align::End)
             .valign(gtk::Align::Center)
@@ -26864,56 +26936,49 @@ impl MailPage {
             .halign(gtk::Align::Center)
             .build();
         let modern_load_remote_icon = gtk::DrawingArea::builder()
-            .content_width(17)
+            .content_width(18)
             .content_height(15)
             .valign(gtk::Align::Center)
             .build();
-        modern_load_remote_icon.set_draw_func(|area, cr, w, h| {
+        modern_load_remote_icon.set_draw_func(|area, cr, _w, _h| {
             let color = area.color();
             let r = color.red() as f64;
             let g = color.green() as f64;
             let b = color.blue() as f64;
             let a = color.alpha() as f64;
             cr.set_source_rgba(r, g, b, a);
+            cr.set_line_join(gtk::cairo::LineJoin::Round);
+            cr.set_line_cap(gtk::cairo::LineCap::Round);
 
-            // 1. Image frame on the left (x: 1..12, y: 1.5..12.5)
-            let fx = 1.0;
-            let fy = 1.5;
-            let fw = 11.0;
-            let fh = 11.0;
-            let rad = 2.0;
+            // Clean wide landscape picture frame (x: 1.5..16.5, y: 1.8..13.2, rx: 2.2)
+            let fx = 1.5;
+            let fy = 1.8;
+            let fw = 15.0;
+            let fh = 11.4;
+            let rad = 2.2;
             cr.new_sub_path();
             cr.arc(fx + fw - rad, fy + rad, rad, -std::f64::consts::FRAC_PI_2, 0.0);
-            cr.line_to(fx + fw, fy + 6.0);
-            cr.move_to(fx + 7.5, fy + fh);
-            cr.line_to(fx + rad, fy + fh);
+            cr.arc(fx + fw - rad, fy + fh - rad, rad, 0.0, std::f64::consts::FRAC_PI_2);
             cr.arc(fx + rad, fy + fh - rad, rad, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
             cr.arc(fx + rad, fy + rad, rad, std::f64::consts::PI, 3.0 * std::f64::consts::FRAC_PI_2);
             cr.close_path();
-            cr.set_line_width(1.5);
+            cr.set_line_width(1.4);
             let _ = cr.stroke();
 
             // Sun dot inside frame
-            cr.arc(fx + 3.4, fy + 3.6, 1.1, 0.0, 2.0 * std::f64::consts::PI);
+            cr.new_sub_path();
+            cr.arc(5.2, 5.2, 1.25, 0.0, 2.0 * std::f64::consts::PI);
             let _ = cr.fill();
 
-            // Mountain peak inside frame
-            cr.move_to(fx + 1.5, fy + 9.8);
-            cr.line_to(fx + 4.8, fy + 6.2);
-            cr.line_to(fx + 7.5, fy + 9.0);
-            cr.set_line_width(1.3);
+            // Mountain peaks inside frame
+            cr.new_sub_path();
+            cr.move_to(2.6, 11.4);
+            cr.line_to(6.8, 6.8);
+            cr.line_to(10.0, 9.9);
+            cr.line_to(12.4, 7.6);
+            cr.line_to(15.4, 11.4);
+            cr.set_line_width(1.35);
             let _ = cr.stroke();
-
-            // 2. Bold exclamation mark '!' on the right (x: 14.2)
-            let ex = (w as f64) - 2.6;
-            cr.set_line_cap(gtk::cairo::LineCap::Round);
-            cr.set_line_width(1.9);
-            cr.move_to(ex, 2.2);
-            cr.line_to(ex, (h as f64) - 5.2);
-            let _ = cr.stroke();
-
-            cr.arc(ex, (h as f64) - 2.1, 1.05, 0.0, 2.0 * std::f64::consts::PI);
-            let _ = cr.fill();
         });
         let modern_load_remote_lbl = gtk::Label::builder()
             .label(&str_load_remote)
@@ -27561,6 +27626,12 @@ impl MailPage {
             preview_actions_row_for_blocked.set_visible(show_reply_group);
             if let Some(page) = page_for_blocked.upgrade() {
                 page.sync_preview_actions_labels();
+                if let Some(lbl) = page.imp().modern_date_label.borrow().as_ref() {
+                    lbl.queue_draw();
+                }
+                if let Some(bar) = page.imp().modern_actions_bar.borrow().as_ref() {
+                    bar.queue_draw();
+                }
             }
             if blocked {
                 let label_text = if let Some(sender) = viewer_for_blocked.current_sender() {
@@ -28433,52 +28504,62 @@ impl MailPage {
                             }
                         } else if let Some(page) = page_for_read.upgrade() {
                             let page_weak = page.downgrade();
+                            let msg_for_timer = msg.clone();
+                            let viewer_for_timer = mail_viewer.clone();
                             let timeout_source = glib::timeout_add_local_once(
                                 std::time::Duration::from_millis(timeout_ms as u64),
                                 move || {
                                     if let Some(page) = page_weak.upgrade() {
                                         page.imp().mark_read_timeout_source.replace(None);
-                                        if let Some(current_msg) = page.selected_message() {
-                                            if current_msg.id() == msg_id && current_msg.is_unread() {
-                                                current_msg.set_unread(false);
-                                                page.imp().known_unread_message_ids.borrow_mut().remove(&msg_id);
-                                                if let Some(ref loc) = backend_location {
-                                                    page.apply_camel_folder_counter_delta(&loc.source_uid, &loc.folder_name, -1, 0);
-                                                }
-                                                page.refresh_unread_counters();
-                                                page.render_thread_context(&current_msg);
-                                                page.queue_mail_table_draw();
+                                        let is_still_active = viewer_for_timer
+                                            .imp()
+                                            .current_message_id
+                                            .borrow()
+                                            .as_deref()
+                                            == Some(msg_id.as_str())
+                                            || page
+                                                .selected_message()
+                                                .map(|m| m.id() == msg_id)
+                                                .unwrap_or(false);
+                                        if is_still_active && msg_for_timer.is_unread() {
+                                            msg_for_timer.set_unread(false);
+                                            page.imp().known_unread_message_ids.borrow_mut().remove(&msg_id);
+                                            if let Some(ref loc) = backend_location {
+                                                page.apply_camel_folder_counter_delta(&loc.source_uid, &loc.folder_name, -1, 0);
+                                            }
+                                            page.refresh_unread_counters();
+                                            page.render_thread_context(&msg_for_timer);
+                                            page.queue_mail_table_draw();
 
-                                                let command = MailCommand::set_message_state(
-                                                    &msg_id,
-                                                    backend_location.clone(),
-                                                    true,
-                                                    is_flagged,
-                                                    false,
-                                                    is_flagged,
+                                            let command = MailCommand::set_message_state(
+                                                &msg_id,
+                                                backend_location.clone(),
+                                                true,
+                                                is_flagged,
+                                                false,
+                                                is_flagged,
+                                            );
+                                            if let Err(error) = page.execute_mail_command(command) {
+                                                tracing::warn!(%error, "Delayed read-state mutation busy/failed, scheduling retry");
+                                                let page_retry = page.downgrade();
+                                                let msg_id_retry = msg_id.clone();
+                                                let loc_retry = backend_location.clone();
+                                                glib::timeout_add_local_once(
+                                                    std::time::Duration::from_millis(600),
+                                                    move || {
+                                                        if let Some(page) = page_retry.upgrade() {
+                                                            let retry_cmd = MailCommand::set_message_state(
+                                                                &msg_id_retry,
+                                                                loc_retry,
+                                                                true,
+                                                                is_flagged,
+                                                                false,
+                                                                is_flagged,
+                                                            );
+                                                            let _ = page.execute_mail_command(retry_cmd);
+                                                        }
+                                                    },
                                                 );
-                                                if let Err(error) = page.execute_mail_command(command) {
-                                                    tracing::warn!(%error, "Delayed read-state mutation busy/failed, scheduling retry");
-                                                    let page_retry = page.downgrade();
-                                                    let msg_id_retry = msg_id.clone();
-                                                    let loc_retry = backend_location.clone();
-                                                    glib::timeout_add_local_once(
-                                                        std::time::Duration::from_millis(600),
-                                                        move || {
-                                                            if let Some(page) = page_retry.upgrade() {
-                                                                let retry_cmd = MailCommand::set_message_state(
-                                                                    &msg_id_retry,
-                                                                    loc_retry,
-                                                                    true,
-                                                                    is_flagged,
-                                                                    false,
-                                                                    is_flagged,
-                                                                );
-                                                                let _ = page.execute_mail_command(retry_cmd);
-                                                            }
-                                                        },
-                                                    );
-                                                }
                                             }
                                         }
                                     }
@@ -29975,6 +30056,34 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
         )
     }
 
+    fn thread_is_reply_conversation(messages: &[MailMessageObject]) -> bool {
+        let first_sender = messages
+            .first()
+            .map(|m| {
+                let name = m.sender_name();
+                if !name.trim().is_empty() {
+                    name.trim().to_ascii_lowercase()
+                } else {
+                    m.sender_email().trim().to_ascii_lowercase()
+                }
+            })
+            .unwrap_or_default();
+        messages.iter().any(|m| {
+            !m.in_reply_to().is_empty()
+                || !m.references().is_empty()
+                || crate::services::mail_thread_service::normalize_subject_with_reply(&m.subject()).1
+                || (!first_sender.is_empty() && {
+                    let name = m.sender_name();
+                    let norm = if !name.trim().is_empty() {
+                        name.trim().to_ascii_lowercase()
+                    } else {
+                        m.sender_email().trim().to_ascii_lowercase()
+                    };
+                    norm != first_sender
+                })
+        })
+    }
+
     /// Render from the thread model's committed ordered membership.  The
     /// selection path must not scan or sort the full flat message model.
     fn render_thread_context(&self, selected: &MailMessageObject) {
@@ -30027,31 +30136,7 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
             && (!self.imp().is_compact_header.get()
                 || self.imp().thread_strips_manual_open_in_compact.get());
 
-        let first_sender = messages
-            .first()
-            .map(|m| {
-                let email = m.sender_email();
-                if !email.trim().is_empty() {
-                    email.trim().to_ascii_lowercase()
-                } else {
-                    m.sender_name().trim().to_ascii_lowercase()
-                }
-            })
-            .unwrap_or_default();
-        let is_reply_conversation = messages.iter().any(|m| {
-            !m.in_reply_to().is_empty()
-                || !m.references().is_empty()
-                || crate::services::mail_thread_service::normalize_subject_with_reply(&m.subject()).1
-                || (!first_sender.is_empty() && {
-                    let s = m.sender_email();
-                    let norm = if !s.trim().is_empty() {
-                        s.trim().to_ascii_lowercase()
-                    } else {
-                        m.sender_name().trim().to_ascii_lowercase()
-                    };
-                    norm != first_sender
-                })
-        });
+        let is_reply_conversation = Self::thread_is_reply_conversation(&messages);
 
         // Header: Thread Icon + Label + Stepper (+ Unread) on left, Expand Toggle on right
         let title_box = gtk::Box::builder()
@@ -34453,6 +34538,7 @@ impl MailPage {
                                 camel.messages.push(msg);
                             }
                         }
+                        crate::services::mail_store_service::assign_thread_metadata(&mut camel.messages);
                     }
                     MailPageLoadResult::Local {
                         messages: local_messages,
@@ -35988,7 +36074,15 @@ impl MailPage {
                                 (index, rec, m)
                             })
                             .collect();
-                        indexed_members.sort_by(|a, b| a.1.position.cmp(&b.1.position).then_with(|| a.1.id.cmp(&b.1.id)));
+                        indexed_members.sort_by(|a, b| {
+                            let ts_a = parse_message_timestamp(&a.2.date_str());
+                            let ts_b = parse_message_timestamp(&b.2.date_str());
+                            if ts_a != 0 && ts_b != 0 && ts_a != ts_b {
+                                ts_b.cmp(&ts_a)
+                            } else {
+                                a.1.position.cmp(&b.1.position).then_with(|| a.1.id.cmp(&b.1.id))
+                            }
+                        });
 
                         let children_store = gio::ListStore::new::<MailMessageObject>();
                         let mut sorted_members = Vec::with_capacity(member_count);
@@ -36001,8 +36095,9 @@ impl MailPage {
                         }
                         if let Some(root) = sorted_members.first().cloned() {
                             let has_unread_child = sorted_members.iter().skip(1).any(|m| m.is_unread());
+                            let is_reply_conv = Self::thread_is_reply_conversation(&sorted_members);
                             let manually_collapsed = self.imp().collapsed_threads.borrow().contains(&thread_id);
-                            if !manually_collapsed || has_unread_child {
+                            if is_reply_conv && (!manually_collapsed || has_unread_child) {
                                 self.imp().collapsed_threads.borrow_mut().remove(&thread_id);
                                 self.imp().expanded_threads.borrow_mut().insert(thread_id.clone());
                             }
