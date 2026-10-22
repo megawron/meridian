@@ -1999,7 +1999,16 @@ fn load_messages_native(
         let folders_slice = unsafe { slice::from_raw_parts(folders, folder_count) };
         for folder in folders_slice {
             let raw_folder_name = c_string(folder.folder_name);
-            let mut mapped_source_uid = c_string(folder.source_uid);
+            let raw_source_uid = c_string(folder.source_uid);
+            if !raw_source_uid.is_empty()
+                && !crate::services::eds_service::is_source_enabled_for_service(
+                    &raw_source_uid,
+                    crate::services::eds_service::EdsSourceKind::Mail,
+                )
+            {
+                continue;
+            }
+            let mut mapped_source_uid = raw_source_uid;
             let mut mapped_source_display_name = c_string(folder.source_display_name);
             let mut mapped_folder_name = raw_folder_name.clone();
             let mut mapped_display_name = c_string(folder.display_name);
@@ -2035,6 +2044,15 @@ fn load_messages_native(
             }
 
             if skip_folder {
+                continue;
+            }
+
+            if !mapped_source_uid.is_empty()
+                && !crate::services::eds_service::is_source_enabled_for_service(
+                    &mapped_source_uid,
+                    crate::services::eds_service::EdsSourceKind::Mail,
+                )
+            {
                 continue;
             }
 
@@ -2118,6 +2136,16 @@ fn load_messages_native(
             }
         }
     }
+
+    messages.retain(|msg| {
+        msg.backend_location.as_ref().map_or(true, |loc| {
+            loc.source_uid.is_empty()
+                || crate::services::eds_service::is_source_enabled_for_service(
+                    &loc.source_uid,
+                    crate::services::eds_service::EdsSourceKind::Mail,
+                )
+        })
+    });
 
     Ok(CamelMailLoad {
         messages,

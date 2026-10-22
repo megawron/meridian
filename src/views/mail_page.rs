@@ -17589,8 +17589,10 @@ impl MailPage {
         };
 
         let has_children = !children.borrow().is_empty();
-        let has_all_folders = !folders.is_empty()
-            && folders.iter().filter(|f| {
+        let valid_folders: Vec<&camel_mail_service::CamelFolderSummary> = folders
+            .iter()
+            .filter(|f| {
+                let canonical_src = f.source_uid.strip_prefix("eds:").unwrap_or(&f.source_uid);
                 f.source_uid != "local"
                     && !f.source_display_name.to_ascii_lowercase().contains("computer")
                     && f.source_display_name.to_ascii_lowercase() != "local"
@@ -17599,7 +17601,21 @@ impl MailPage {
                     && !f.display_name.starts_with('.')
                     && f.folder_name != "[Gmail]"
                     && !f.folder_name.eq_ignore_ascii_case("[Google Mail]")
-            }).all(|f| {
+                    && eds_service::is_source_enabled_for_service(canonical_src, EdsSourceKind::Mail)
+            })
+            .collect();
+        let all_roots_enabled = (0..root_store.n_items()).all(|i| {
+            root_store
+                .item(i)
+                .and_downcast::<FolderObject>()
+                .and_then(|r| r.source_uid())
+                .map_or(true, |uid| {
+                    eds_service::is_source_enabled_for_service(&uid, EdsSourceKind::Mail)
+                })
+        });
+        let has_all_folders = !valid_folders.is_empty()
+            && all_roots_enabled
+            && valid_folders.iter().all(|f| {
                 let canonical_src = Self::canonical_account_uid(&f.source_uid);
                 let key = Self::dynamic_folder_key(canonical_src, &f.folder_name);
                 index.borrow().contains_key(&key)
@@ -17648,6 +17664,9 @@ impl MailPage {
                 continue;
             }
             let canonical_src = folder.source_uid.strip_prefix("eds:").unwrap_or(&folder.source_uid);
+            if !eds_service::is_source_enabled_for_service(canonical_src, EdsSourceKind::Mail) {
+                continue;
+            }
             let key = Self::dynamic_folder_key(canonical_src, &folder.folder_name);
             if !seen_nodes.insert(key) {
                 continue;
@@ -17738,6 +17757,9 @@ impl MailPage {
                 continue;
             }
             let canonical_src = Self::canonical_account_uid(&folder.source_uid);
+            if !eds_service::is_source_enabled_for_service(canonical_src, EdsSourceKind::Mail) {
+                continue;
+            }
             let source_root_id = Self::dynamic_folder_key(canonical_src, "");
             source_roots
                 .entry(canonical_src.to_string())
@@ -17775,6 +17797,12 @@ impl MailPage {
                 crate::services::account_config_service::eds_source_uid_for_email(&profile.email);
             let profile_canonical = Self::canonical_account_uid(&profile.id).to_string();
             let eds_canonical = Self::canonical_account_uid(&eds_uid).to_string();
+            if !eds_service::is_source_enabled_for_service(&profile_canonical, EdsSourceKind::Mail)
+                || (!eds_uid.is_empty()
+                    && !eds_service::is_source_enabled_for_service(&eds_uid, EdsSourceKind::Mail))
+            {
+                continue;
+            }
             let is_present = source_roots.contains_key(&profile_canonical)
                 || source_roots.contains_key(&eds_canonical)
                 || source_roots.contains_key(&profile.id)
@@ -17890,7 +17918,9 @@ impl MailPage {
             .load_with_status(crate::services::eds_service::EdsSourceKind::Mail)
             .sources
         {
-            if !eds_source.enabled {
+            if !eds_source.enabled
+                || !eds_service::is_source_enabled_for_service(&eds_source.uid, EdsSourceKind::Mail)
+            {
                 continue;
             }
             if eds_source.uid == "vfolder"
@@ -17947,6 +17977,9 @@ impl MailPage {
                         continue;
                     }
                     let s_uid = source_obj.uid();
+                    if !eds_service::is_source_enabled_for_service(&s_uid, EdsSourceKind::Mail) {
+                        continue;
+                    }
                     let d_name = source_obj.display_name();
                     if s_uid == "vfolder"
                         || s_uid == "rss"
@@ -27852,6 +27885,7 @@ impl MailPage {
         let attachment_section = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(0)
+            .valign(gtk::Align::End)
             .css_classes(vec!["attachment-section-container"])
             .visible(false)
             .build();
@@ -27863,7 +27897,8 @@ impl MailPage {
             .margin_top(2)
             .margin_bottom(1)
             .css_classes(vec!["attachment-handle-container"])
-            .focusable(true)
+            .focusable(false)
+            .visible(false)
             .build();
         handle_box.set_cursor_from_name(Some("pointer"));
 
@@ -27878,10 +27913,10 @@ impl MailPage {
         let attachment_header = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
-            .margin_start(12)
-            .margin_end(12)
-            .margin_top(1)
-            .margin_bottom(2)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(5)
+            .margin_bottom(5)
             .css_classes(vec!["attachment-header-bar"])
             .build();
 
@@ -27899,6 +27934,9 @@ impl MailPage {
         let clip_icon = gtk::Image::from_icon_name("mail-attachment-symbolic");
         clip_icon.set_pixel_size(16);
         clip_icon.set_opacity(0.85);
+        clip_icon.set_halign(gtk::Align::Center);
+        clip_icon.set_valign(gtk::Align::Center);
+        clip_icon.set_hexpand(true);
         title_box.append(&clip_icon);
         attachment_header.append(&title_box);
 
@@ -27971,13 +28009,13 @@ impl MailPage {
         attachment_header.append(&view_toggle_box);
 
         let chevron_icon = gtk::Image::from_icon_name("pan-down-symbolic");
-        chevron_icon.set_pixel_size(12);
-        chevron_icon.set_opacity(0.75);
+        chevron_icon.set_pixel_size(16);
+        chevron_icon.set_opacity(1.0);
         chevron_icon.add_css_class("attachment-chevron");
         let btn_collapse = gtk::Button::builder()
             .child(&chevron_icon)
             .tooltip_text(&gettext("Expand attachments"))
-            .css_classes(vec!["flat", "circular", "attachment-collapse-btn"])
+            .css_classes(vec!["flat", "attachment-collapse-btn"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&btn_collapse, &gettext("Expand attachments"));
@@ -28003,9 +28041,9 @@ impl MailPage {
             .spacing(8)
             .halign(gtk::Align::Start)
             .hexpand(false)
-            .margin_start(12)
-            .margin_end(12)
-            .margin_top(4)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(2)
             .margin_bottom(6)
             .visible(false)
             .build();
@@ -28025,8 +28063,8 @@ impl MailPage {
         let list_container = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(0)
-            .margin_start(12)
-            .margin_end(12)
+            .margin_start(8)
+            .margin_end(8)
             .margin_top(2)
             .margin_bottom(6)
             .build();
@@ -28214,7 +28252,15 @@ impl MailPage {
         attachment_bar.connect_notify_local(Some("visible"), move |bar, _| {
             let vis = bar.property::<bool>("visible");
             section_for_attach.set_visible(vis);
+            section_for_attach.set_vexpand(vis && !viewer_for_attach.vexpands());
             viewer_for_attach.update_scroll_continues_layout();
+        });
+
+        let section_for_vexpand = attachment_section.clone();
+        mail_viewer.connect_notify_local(Some("vexpand"), move |viewer, _| {
+            if section_for_vexpand.is_visible() {
+                section_for_vexpand.set_vexpand(!viewer.vexpands());
+            }
         });
 
         let viewer_for_revealed = mail_viewer.clone();
@@ -28765,17 +28811,6 @@ impl MailPage {
                             Some(&itip_banner_clone),
                             &user_emails,
                         );
-                    } else if !msg.user_attachments().is_empty() {
-                        Self::render_message_content(
-                            &msg,
-                            &mail_viewer,
-                            &attachment_bar,
-                            Some(&itip_banner_clone),
-                            &user_emails,
-                        );
-                        let sender = sender_header(&msg);
-                        mail_viewer.set_current_sender(Some(&sender));
-                        mail_viewer.prepare_for_loading(Some(&msg.id()));
                     } else {
                         while let Some(child) = attachment_bar.first_child() {
                             attachment_bar.remove(&child);
@@ -29276,9 +29311,9 @@ impl MailPage {
                         widgets.summary_box.set_tooltip_text(Some(&tip));
                     }
 
-                    // For short emails, expand drawer by default since vertical whitespace is plentiful.
-                    // For longer emails, default to collapsed state so reading viewport is prioritized.
-                    let initial_expanded = is_short_mail;
+                    // Always default to collapsed state so the attachment bar stays compact and unobtrusive.
+                    let _ = is_short_mail;
+                    let initial_expanded = false;
                     widgets.revealer.set_reveal_child(initial_expanded);
                     if initial_expanded {
                         widgets.chevron.set_icon_name(Some("pan-up-symbolic"));
@@ -34137,10 +34172,71 @@ impl MailPage {
     }
 
     pub fn reload_mail_accounts(&self) {
+        eds_service::invalidate_account_collections_cache();
         self.imp().cached_account_emails.replace(None);
-        self.imp().mail_folder_summaries.borrow_mut().clear();
+        {
+            let mut summaries = self.imp().mail_folder_summaries.borrow_mut();
+            summaries.retain(|f| {
+                let canon = Self::canonical_account_uid(&f.source_uid);
+                eds_service::is_source_enabled_for_service(canon, EdsSourceKind::Mail)
+            });
+        }
         self.imp().recently_deleted_ids.borrow_mut().clear();
         crate::services::camel_mail_service::clear_mail_load_cache();
+
+        if let Some(store) = self.imp().message_store.borrow().as_ref() {
+            let mut removed_ids = HashSet::new();
+            for index in 0..store.n_items() {
+                if let Some(message) = store.item(index).and_downcast::<MailMessageObject>() {
+                    if message.backend_location().is_some_and(|loc| {
+                        !loc.source_uid.is_empty()
+                            && !eds_service::is_source_enabled_for_service(
+                                &loc.source_uid,
+                                EdsSourceKind::Mail,
+                            )
+                    }) {
+                        removed_ids.insert(message.id());
+                    }
+                }
+            }
+            if !removed_ids.is_empty() {
+                Self::remove_message_ids(store, &removed_ids);
+            }
+        }
+
+        let active_source_disabled = self
+            .imp()
+            .active_request
+            .borrow()
+            .as_ref()
+            .and_then(|req| req.source_uid.as_deref())
+            .is_some_and(|uid| {
+                let canon = Self::canonical_account_uid(uid);
+                !eds_service::is_source_enabled_for_service(canon, EdsSourceKind::Mail)
+            })
+            || self
+                .imp()
+                .folder_selection
+                .borrow()
+                .as_ref()
+                .and_then(|sel| sel.borrow().source_uid.clone())
+                .is_some_and(|uid| {
+                    let canon = Self::canonical_account_uid(&uid);
+                    !eds_service::is_source_enabled_for_service(canon, EdsSourceKind::Mail)
+                });
+        if active_source_disabled {
+            let fallback = FolderSelection {
+                folder_id: "inbox".to_string(),
+                source_uid: None,
+                folder_name: None,
+            };
+            if let Some(sel) = self.imp().folder_selection.borrow().as_ref() {
+                sel.replace(fallback.clone());
+            }
+            self.imp().active_request.replace(Some(MailLoadRequest::initial()));
+            self.select_folder_row(&fallback);
+        }
+
         if let Some(source_store) = self
             .imp()
             .source_selection
@@ -34152,7 +34248,14 @@ impl MailPage {
             source_store.remove_all();
             let configured_accounts = AccountConfigStore::default().load();
             for profile in &configured_accounts {
-                if profile.enabled {
+                let eds_uid =
+                    crate::services::account_config_service::eds_source_uid_for_email(&profile.email);
+                let canon = Self::canonical_account_uid(&profile.id);
+                if profile.enabled
+                    && eds_service::is_source_enabled_for_service(canon, EdsSourceKind::Mail)
+                    && (eds_uid.is_empty()
+                        || eds_service::is_source_enabled_for_service(&eds_uid, EdsSourceKind::Mail))
+                {
                     source_store.append(&EdsSourceObject::from_account_profile(profile));
                 }
             }
@@ -34162,6 +34265,7 @@ impl MailPage {
                 let _ = tx.send_blocking(discovery);
             });
             let source_store_copy = source_store.clone();
+            let page_weak = self.downgrade();
             glib::spawn_future_local(async move {
                 if let Ok(discovery) = rx.recv().await {
                     let source_origin = match discovery.origin {
@@ -34170,16 +34274,33 @@ impl MailPage {
                         EdsSourceOrigin::Empty => gettext("No accounts available"),
                     };
                     for source in &discovery.sources {
-                        if source.enabled {
+                        if source.enabled
+                            && eds_service::is_source_enabled_for_service(
+                                &source.uid,
+                                EdsSourceKind::Mail,
+                            )
+                        {
                             source_store_copy.append(&EdsSourceObject::from_source_with_origin(
                                 source,
                                 &source_origin,
                             ));
                         }
                     }
+                    if let Some(page) = page_weak.upgrade() {
+                        if let Some(folder_list) = page.imp().folder_list.borrow().as_ref() {
+                            let folders = page.imp().mail_folder_summaries.borrow().clone();
+                            page.rebuild_camel_folder_rows_with_force(folder_list, &folders, true);
+                        }
+                    }
                 }
             });
         }
+
+        if let Some(folder_list) = self.imp().folder_list.borrow().as_ref() {
+            let folders = self.imp().mail_folder_summaries.borrow().clone();
+            self.rebuild_camel_folder_rows_with_force(folder_list, &folders, true);
+        }
+
         self.refresh_mail();
     }
 
@@ -47133,7 +47254,7 @@ mod tests {
         assert!(widgets.summary_label.text().contains('5'), "summary label should show count 5");
         assert!(widgets.save_all_box.first_child().is_some(), "save all button should be visible");
 
-        // When switching to a short email, drawer is expanded by default to utilize vertical space
+        // When switching to a short email, drawer remains collapsed by default so it stays compact and unobtrusive
         let msg_short = scope_test_message("msg-att-evo-short", "acc", "inbox", false);
         *msg_short.imp().html_body.borrow_mut() = "<p>Short email body</p>".to_string();
         *msg_short.imp().attachments.borrow_mut() = vec![
@@ -47147,10 +47268,10 @@ mod tests {
             },
         ];
         MailPage::render_message_content(&msg_short, &mail_viewer, &attachment_bar, None, &[]);
-        assert!(widgets.revealer.reveals_child(), "Short email drawer should be expanded by default");
-        assert!(widgets.summary_box.is_visible());
-        assert!(!widgets.chip_box.is_visible());
-        assert!(widgets.view_toggle_box.is_visible());
+        assert!(!widgets.revealer.reveals_child(), "Short email drawer should stay collapsed by default");
+        assert!(!widgets.summary_box.is_visible());
+        assert!(widgets.chip_box.is_visible());
+        assert!(!widgets.view_toggle_box.is_visible());
 
         // When switching to a message without attachments, section and bar hide and save_all_box clears
         let msg_no_att = scope_test_message("msg-no-att-evo", "acc", "inbox", false);

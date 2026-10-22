@@ -1332,10 +1332,10 @@ popover.context-menu separator {
 
 /* ── Attachment Chips & Minimal Composer Attachment Tray (GNOME HIG) ──────────────── */
 .attachment-chip {
-  background-color: alpha(currentColor, 0.07);
+  background-color: alpha(@window_fg_color, 0.06);
   border: none;
-  border-radius: 9999px;
-  padding: 3px 8px 3px 10px;
+  border-radius: 8px;
+  padding: 3px 8px;
   min-height: 28px;
   max-height: 28px;
   box-shadow: none;
@@ -1343,7 +1343,7 @@ popover.context-menu separator {
 }
 
 .attachment-chip:hover {
-  background-color: alpha(currentColor, 0.12);
+  background-color: alpha(@window_fg_color, 0.11);
 }
 
 .attachment-chip:focus,
@@ -1425,8 +1425,8 @@ flowbox > flowboxchild.attachment-flow-child:selected {
 .attachment-bottom-bar,
 .attachment-horizontal-bar {
   background-color: transparent;
-  min-height: 38px;
-  padding: 4px 8px;
+  min-height: 36px;
+  padding: 2px 0;
   transition: background-color 150ms ease;
 }
 
@@ -1438,15 +1438,17 @@ flowbox > flowboxchild.attachment-flow-child:selected {
 }
 
 .attachment-title-box {
-  padding: 4px 8px;
-  border-radius: 6px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 6px;
+  border-radius: 8px;
   cursor: pointer;
   color: alpha(currentColor, 0.80);
   transition: background-color 150ms ease, color 150ms ease;
 }
 
 .attachment-title-box:hover {
-  background-color: alpha(currentColor, 0.08);
+  background-color: alpha(@window_fg_color, 0.08);
   color: currentColor;
 }
 
@@ -1457,24 +1459,26 @@ flowbox > flowboxchild.attachment-flow-child:selected {
 }
 
 .attachment-section-container {
-  background-color: alpha(@window_fg_color, 0.02);
+  background-color: @window_bg_color;
+  border-top: 1px solid alpha(currentColor, 0.08);
   transition: background-color 150ms ease;
 }
 
 .attachment-header-bar {
   min-height: 32px;
-  padding: 1px 12px;
+  padding: 0;
 }
 
 .attachment-summary-clickable {
-  border-radius: 6px;
-  padding: 4px 8px;
+  min-height: 28px;
+  border-radius: 8px;
+  padding: 3px 8px;
   color: alpha(currentColor, 0.85);
   transition: background-color 150ms ease, color 150ms ease;
 }
 
 .attachment-summary-clickable:hover {
-  background-color: alpha(currentColor, 0.08);
+  background-color: alpha(@window_fg_color, 0.08);
   color: currentColor;
 }
 
@@ -1492,27 +1496,28 @@ flowbox > flowboxchild.attachment-flow-child:selected {
 }
 
 button.attachment-save-all-btn {
-  background-color: alpha(currentColor, 0.08);
+  background-color: alpha(@window_fg_color, 0.06);
   color: inherit;
   border: none;
   box-shadow: none;
-  border-radius: 9999px;
-  padding: 4px 12px;
+  border-radius: 8px;
+  min-height: 28px;
+  padding: 3px 10px;
   font-size: 0.82rem;
   font-weight: 600;
   transition: background-color 150ms ease, color 150ms ease;
 }
 
 button.attachment-save-all-btn:hover {
-  background-color: alpha(@accent_color, 0.16);
-  color: @accent_color;
+  background-color: alpha(@window_fg_color, 0.11);
+  color: currentColor;
   border: none;
   box-shadow: none;
 }
 
 button.attachment-save-all-btn:active {
-  background-color: alpha(@accent_color, 0.26);
-  color: @accent_color;
+  background-color: alpha(@window_fg_color, 0.16);
+  color: currentColor;
   border: none;
   box-shadow: none;
 }
@@ -1526,25 +1531,29 @@ button.attachment-save-all-btn:active {
 /* ── Attachment Drawer Cards (Expanded Icons View) ────────────────────────── */
 .attachment-drawer-card,
 .card.attachment-drawer-card {
-  background-color: alpha(currentColor, 0.05);
+  background-color: var(--card-bg-color);
   border: none;
   outline: none;
-  box-shadow: none;
+  box-shadow:
+    0 0 0 1px RGB(0 0 6 / 4%),
+    0 1px 2px 0 RGB(0 0 6 / 6%);
   border-radius: 10px;
   padding: 6px 12px;
   min-height: 48px;
   max-height: 52px;
   min-width: 180px;
   max-width: 280px;
-  transition: background-color 150ms ease;
+  transition: background-color 150ms ease, box-shadow 150ms ease;
 }
 
 .attachment-drawer-card:hover,
 .card.attachment-drawer-card:hover {
-  background-color: alpha(currentColor, 0.09);
+  background-color: var(--card-bg-color);
   border: none;
   outline: none;
-  box-shadow: none;
+  box-shadow:
+    0 0 0 1px alpha(@accent_color, 0.28),
+    0 2px 4px 0 RGB(0 0 6 / 8%);
 }
 
 .attachment-drawer-card:focus,
@@ -1675,17 +1684,20 @@ button.suggested-action.flat:active {
   box-shadow: inset 0 0 0 2px @accent_color;
 }
 
+button.attachment-collapse-btn,
 .attachment-collapse-btn {
-  min-width: 24px;
-  min-height: 24px;
-  padding: 2px;
-  opacity: 0.7;
-  border-radius: 9999px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 6px;
+  opacity: 0.85;
+  border-radius: 8px;
   transition: opacity 150ms ease, background-color 150ms ease;
 }
 
+button.attachment-collapse-btn:hover,
 .attachment-collapse-btn:hover {
   opacity: 1.0;
+  background-color: alpha(@window_fg_color, 0.08);
 }
 
 /* Close button on composer header with standard neutral gray resting background */

@@ -547,9 +547,15 @@ impl MailViewerWindow {
         let attachment_section = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(0)
+            .valign(gtk::Align::End)
+            .vexpand(false)
             .css_classes(vec!["attachment-section-container"])
             .visible(false)
             .build();
+        let att_sec_for_vexpand = attachment_section.clone();
+        mail_viewer.connect_notify_local(Some("vexpand"), move |viewer, _| {
+            att_sec_for_vexpand.set_vexpand(!viewer.vexpands());
+        });
 
         let handle_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -558,7 +564,8 @@ impl MailViewerWindow {
             .margin_top(2)
             .margin_bottom(1)
             .css_classes(vec!["attachment-handle-container"])
-            .focusable(true)
+            .focusable(false)
+            .visible(false)
             .build();
         handle_box.set_cursor_from_name(Some("pointer"));
 
@@ -573,10 +580,10 @@ impl MailViewerWindow {
         let attachment_header = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
-            .margin_start(12)
-            .margin_end(12)
-            .margin_top(1)
-            .margin_bottom(2)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(5)
+            .margin_bottom(5)
             .css_classes(vec!["attachment-header-bar"])
             .build();
 
@@ -594,6 +601,9 @@ impl MailViewerWindow {
         let clip_icon = gtk::Image::from_icon_name("mail-attachment-symbolic");
         clip_icon.set_pixel_size(16);
         clip_icon.set_opacity(0.85);
+        clip_icon.set_halign(gtk::Align::Center);
+        clip_icon.set_valign(gtk::Align::Center);
+        clip_icon.set_hexpand(true);
         title_box.append(&clip_icon);
         attachment_header.append(&title_box);
 
@@ -664,13 +674,13 @@ impl MailViewerWindow {
         attachment_header.append(&view_toggle_box);
 
         let chevron_icon = gtk::Image::from_icon_name("pan-down-symbolic");
-        chevron_icon.set_pixel_size(12);
-        chevron_icon.set_opacity(0.75);
+        chevron_icon.set_pixel_size(16);
+        chevron_icon.set_opacity(1.0);
         chevron_icon.add_css_class("attachment-chevron");
         let btn_collapse = gtk::Button::builder()
             .child(&chevron_icon)
             .tooltip_text(&gettext("Expand attachments"))
-            .css_classes(vec!["flat", "circular", "attachment-collapse-btn"])
+            .css_classes(vec!["flat", "attachment-collapse-btn"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&btn_collapse, &gettext("Expand attachments"));
@@ -1512,9 +1522,9 @@ impl MailViewerWindow {
             }
         }
 
-        // For short emails, expand drawer by default since vertical whitespace is plentiful.
-        // For longer emails, default to collapsed state so reading viewport is prioritized.
-        self.set_attachment_expanded(is_short_mail);
+        // Always default to collapsed state so the attachment bar stays compact and unobtrusive.
+        let _ = is_short_mail;
+        self.set_attachment_expanded(false);
 
         if count > 1 {
             let btn_save_all = self.create_save_all_button(&attachments);

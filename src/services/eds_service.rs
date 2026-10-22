@@ -661,9 +661,28 @@ fn load_configured_account_collections_uncached() -> Vec<EdsAccountCollection> {
                     .string("Collection", "BackendName")
                     .map(|s| s.to_string())
                     .unwrap_or_else(|_| "collection".to_string());
-                let calendar_enabled = kf.boolean("Collection", "CalendarEnabled").unwrap_or(true);
-                let contacts_enabled = kf.boolean("Collection", "ContactsEnabled").unwrap_or(true);
-                let mail_enabled = kf.boolean("Collection", "MailEnabled").unwrap_or(true);
+                let goa_account_id = if kf.has_group("GNOME Online Accounts") {
+                    kf.string("GNOME Online Accounts", "AccountId")
+                        .ok()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                } else {
+                    None
+                };
+                let mut calendar_enabled = kf.boolean("Collection", "CalendarEnabled").unwrap_or(true);
+                let mut contacts_enabled = kf.boolean("Collection", "ContactsEnabled").unwrap_or(true);
+                let mut mail_enabled = kf.boolean("Collection", "MailEnabled").unwrap_or(true);
+                if let Some(ref account_id) = goa_account_id {
+                    if let Some(goa_cal) = is_goa_account_service_enabled(account_id, EdsSourceKind::Calendar) {
+                        calendar_enabled &= goa_cal;
+                    }
+                    if let Some(goa_con) = is_goa_account_service_enabled(account_id, EdsSourceKind::AddressBook) {
+                        contacts_enabled &= goa_con;
+                    }
+                    if let Some(goa_mail) = is_goa_account_service_enabled(account_id, EdsSourceKind::Mail) {
+                        mail_enabled &= goa_mail;
+                    }
+                }
 
                 collections.push(EdsAccountCollection {
                     uid,
@@ -711,19 +730,47 @@ fn load_configured_account_collections_uncached() -> Vec<EdsAccountCollection> {
     collections
 }
 
+/// Check `~/.config/goa-1.0/accounts.conf` for whether a GNOME Online Account has enabled a service.
+fn is_goa_account_service_enabled(account_id: &str, kind: EdsSourceKind) -> Option<bool> {
+    let account_id = account_id.trim();
+    if account_id.is_empty() {
+        return None;
+    }
+    let goa_conf = glib::user_config_dir().join("goa-1.0/accounts.conf");
+    if !goa_conf.is_file() {
+        return None;
+    }
+    let kf = KeyFile::new();
+    if kf.load_from_file(&goa_conf, KeyFileFlags::NONE).is_err() {
+        return None;
+    }
+    let group = format!("Account {account_id}");
+    if !kf.has_group(&group) {
+        return None;
+    }
+    if kf.boolean(&group, "Disabled").unwrap_or(false)
+        || kf.boolean(&group, "IsTemporary").unwrap_or(false)
+    {
+        return Some(false);
+    }
+    let (enabled_key, disabled_key) = match kind {
+        EdsSourceKind::Mail => ("MailEnabled", "MailDisabled"),
+        EdsSourceKind::Calendar => ("CalendarEnabled", "CalendarDisabled"),
+        EdsSourceKind::AddressBook => ("ContactsEnabled", "ContactsDisabled"),
+    };
+    if let Ok(disabled) = kf.boolean(&group, disabled_key) {
+        if disabled {
+            return Some(false);
+        }
+    }
+    if let Ok(enabled) = kf.boolean(&group, enabled_key) {
+        return Some(enabled);
+    }
+    None
+}
+
 /// Check whether a parent source / collection has enabled a specific groupware service (Mail, Calendar, Contacts).
 pub fn is_parent_service_enabled(parent_uid: &str, kind: EdsSourceKind) -> bool {
-    let collections = load_configured_account_collections();
-    if let Some(col) = collections.iter().find(|c| c.uid == parent_uid) {
-        if !col.enabled {
-            return false;
-        }
-        return match kind {
-            EdsSourceKind::Mail => col.mail_enabled,
-            EdsSourceKind::Calendar => col.calendar_enabled,
-            EdsSourceKind::AddressBook => col.contacts_enabled,
-        };
-    }
     let dirs = [
         glib::user_config_dir().join("evolution/sources"),
         glib::home_dir().join(".var/app/org.gnome.Evolution/config/evolution/sources"),
@@ -736,6 +783,13 @@ pub fn is_parent_service_enabled(parent_uid: &str, kind: EdsSourceKind) -> bool 
                 if !kf.boolean("Data Source", "Enabled").unwrap_or(true) {
                     return false;
                 }
+                if kf.has_group("GNOME Online Accounts") {
+                    if let Ok(account_id) = kf.string("GNOME Online Accounts", "AccountId") {
+                        if is_goa_account_service_enabled(account_id.trim(), kind) == Some(false) {
+                            return false;
+                        }
+                    }
+                }
                 if kf.has_group("Collection") {
                     return match kind {
                         EdsSourceKind::Mail => kf.boolean("Collection", "MailEnabled").unwrap_or(true),
@@ -743,8 +797,20 @@ pub fn is_parent_service_enabled(parent_uid: &str, kind: EdsSourceKind) -> bool 
                         EdsSourceKind::AddressBook => kf.boolean("Collection", "ContactsEnabled").unwrap_or(true),
                     };
                 }
+                return true;
             }
         }
+    }
+    let collections = load_configured_account_collections();
+    if let Some(col) = collections.iter().find(|c| c.uid == parent_uid) {
+        if !col.enabled {
+            return false;
+        }
+        return match kind {
+            EdsSourceKind::Mail => col.mail_enabled,
+            EdsSourceKind::Calendar => col.calendar_enabled,
+            EdsSourceKind::AddressBook => col.contacts_enabled,
+        };
     }
     true
 }
@@ -777,6 +843,13 @@ pub fn is_source_enabled_for_service(source_uid: &str, kind: EdsSourceKind) -> b
                 if kf.load_from_file(&path, KeyFileFlags::NONE).is_ok() {
                     if !kf.boolean("Data Source", "Enabled").unwrap_or(true) {
                         return false;
+                    }
+                    if kf.has_group("GNOME Online Accounts") {
+                        if let Ok(account_id) = kf.string("GNOME Online Accounts", "AccountId") {
+                            if is_goa_account_service_enabled(account_id.trim(), kind) == Some(false) {
+                                return false;
+                            }
+                        }
                     }
                     if kf.has_group("Collection") {
                         let service_enabled = match kind {

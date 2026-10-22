@@ -250,9 +250,7 @@ impl MailViewer {
 
     pub fn set_scroll_continues(&self, continues: bool) {
         self.imp().raw_scroll_continues.set(continues);
-        let effective = continues
-            && self.imp().adapted_card_height.get().is_none()
-            && !self.has_visible_bottom_sibling();
+        let effective = continues && self.imp().adapted_card_height.get().is_none();
         if self.imp().effective_scroll_continues.get() == effective {
             return;
         }
@@ -297,9 +295,11 @@ impl MailViewer {
             return;
         }
         let viewer_weak = self.downgrade();
-        let script = r#"
-(() => {
-    try {
+        let was_continuing = if self.imp().effective_scroll_continues.get() { 1 } else { 0 };
+        let script = format!(
+            r#"
+(() => {{
+    try {{
         const y = window.scrollY || (document.documentElement ? document.documentElement.scrollTop : 0) || 0;
         const docEl = document.documentElement;
         const body = document.body;
@@ -310,16 +310,18 @@ impl MailViewer {
             docEl ? docEl.offsetHeight : 0
         );
         const clientH = window.innerHeight;
-        const canScroll = (scrollH - clientH) > 15;
-        const atBottom = !canScroll || (y + clientH >= scrollH - 15);
+        const canScroll = (scrollH - clientH) > 12;
+        const threshold = ({was_continuing} === 0) ? 24 : 6;
+        const atBottom = !canScroll || (y + clientH >= scrollH - threshold);
         return (canScroll && !atBottom) ? 1 : 0;
-    } catch (e) {
+    }} catch (e) {{
         return 0;
-    }
-})()
-"#;
+    }}
+}})()
+"#
+        );
         webview.evaluate_javascript(
-            script,
+            &script,
             None,
             Some("meridian-scroll-eval"),
             None::<&gio::Cancellable>,
@@ -746,6 +748,13 @@ impl MailViewer {
         self.imp().suppressed_by_itip.set(false);
         self.set_visible(true);
         self.invalidate_message_search_context();
+        let source_generation = advance_generation(self.imp().source_generation.get());
+        self.imp().source_generation.set(source_generation);
+        let render_generation = advance_generation(self.imp().render_generation.get());
+        self.imp().render_generation.set(render_generation);
+        self.imp()
+            .render_worker_generation
+            .store(render_generation, Ordering::Release);
         self.imp().remote_images_allowed_for_current.set(false);
         self.imp().remote_images_blocked_for_current.set(false);
         self.imp().current_message_force_light.set(false);
@@ -777,6 +786,7 @@ impl MailViewer {
         #[cfg(target_os = "linux")]
         {
             self.imp().webview_ready.set(false);
+            self.imp().active_webview_uri.take();
             if let Some(label) = self.imp().renderer_error_label.borrow().as_ref() {
                 label.set_visible(false);
             }
@@ -807,6 +817,13 @@ impl MailViewer {
         self.notify_scroll_offset(0.0);
         self.set_scroll_continues(false);
         self.invalidate_message_search_context();
+        let source_generation = advance_generation(self.imp().source_generation.get());
+        self.imp().source_generation.set(source_generation);
+        let render_generation = advance_generation(self.imp().render_generation.get());
+        self.imp().render_generation.set(render_generation);
+        self.imp()
+            .render_worker_generation
+            .store(render_generation, Ordering::Release);
         self.imp().remote_images_allowed_for_current.set(false);
         self.imp().remote_images_blocked_for_current.set(false);
         self.imp().current_message_force_light.set(false);
@@ -851,6 +868,7 @@ impl MailViewer {
         #[cfg(target_os = "linux")]
         {
             self.imp().webview_ready.set(false);
+            self.imp().active_webview_uri.take();
             if let Some(label) = self.imp().renderer_error_label.borrow().as_ref() {
                 label.set_visible(false);
             }
@@ -1222,7 +1240,9 @@ impl MailViewer {
         self.set_fallback_text(&render_plan.visible_text);
         let has_active_banner = self.has_visible_banner();
         let is_empty_fallback = render_plan.used_fallback
-            && (render_plan.visible_text == crate::i18n::gettext("(The message has no displayable content.)")
+            && (render_plan.visible_text == crate::i18n::gettext("Loading message…")
+                || render_plan.visible_text == "Loading message…"
+                || render_plan.visible_text == crate::i18n::gettext("(The message has no displayable content.)")
                 || render_plan.visible_text == "(The message has no displayable content.)"
                 || render_plan.visible_text.trim().is_empty());
         if self.imp().suppressed_by_itip.get() {
@@ -2278,7 +2298,9 @@ impl MailViewer {
                     try {
                         const docEl = document.documentElement;
                         const body = document.body;
+                        const measuredH = measureBodyHeight();
                         const scrollH = Math.max(
+                            measuredH,
                             body ? body.scrollHeight : 0,
                             docEl ? docEl.scrollHeight : 0,
                             body ? body.offsetHeight : 0,
@@ -2302,10 +2324,9 @@ impl MailViewer {
                             }
                         }
 
-                        measureBodyHeight();
-
-                        const canScroll = maxScroll > 15;
-                        const atBottom = !canScroll || (y + clientH >= scrollH - 15);
+                        const canScroll = maxScroll > 12;
+                        const threshold = (lastContinues === false) ? 24 : 6;
+                        const atBottom = !canScroll || (y + clientH >= scrollH - threshold);
                         const continues = canScroll && !atBottom;
 
                         if (continues !== lastContinues) {
@@ -2782,7 +2803,8 @@ impl MailViewer {
             }
             self.set_scroll_continues(false);
         } else {
-            if self.imp().adapted_card_height.get().is_some() || !self.vexpands() {
+            let switched_to_long = self.imp().adapted_card_height.get().is_some() || !self.vexpands();
+            if switched_to_long {
                 self.imp().adapted_card_height.set(None);
                 self.set_vexpand(true);
                 self.set_valign(gtk::Align::Fill);
@@ -2793,10 +2815,21 @@ impl MailViewer {
                     box_container.set_height_request(-1);
                 }
                 self.queue_resize();
+                self.set_scroll_continues(true);
             }
             #[cfg(target_os = "linux")]
             if let Some(wv) = self.imp().webview.borrow().as_ref() {
-                self.evaluate_scroll_continues(wv);
+                if switched_to_long {
+                    let viewer_weak = self.downgrade();
+                    let wv_clone = wv.clone();
+                    glib::timeout_add_local_once(Duration::from_millis(60), move || {
+                        if let Some(v) = viewer_weak.upgrade() {
+                            v.evaluate_scroll_continues(&wv_clone);
+                        }
+                    });
+                } else {
+                    self.evaluate_scroll_continues(wv);
+                }
             }
         }
     }
@@ -4115,7 +4148,7 @@ fn html_to_fallback_text(value: &str) -> String {
 }
 
 fn readable_fallback_text(value: Option<&str>) -> String {
-    let fallback = crate::i18n::gettext("(The message has no displayable content.)");
+    let fallback = crate::i18n::gettext("Loading message…");
     value
         .map(str::trim)
         .filter(|text| !text.is_empty())
@@ -4395,8 +4428,9 @@ mod tests {
         );
         let empty = readable_fallback_text(Some("   "));
         assert!(
-            empty == "(The message has no displayable content.)"
-                || empty == "(Die Nachricht enthält keinen darstellbaren Inhalt.)"
+            empty == "Loading message…"
+                || empty == "Nachricht wird geladen…"
+                || empty == "Nachricht wird geladen …"
         );
     }
 
@@ -5740,11 +5774,11 @@ Content-Type: text/html; charset=utf-8\r\n\
         viewer.set_scroll_continues(true);
         assert_eq!(viewer.margin_bottom(), 0);
 
-        // When sibling becomes visible, update_scroll_continues_layout resets effective continues to false:
+        // When sibling becomes visible (e.g. attachment bar), card stays flush at bottom (margin_bottom == 0):
         sibling.set_visible(true);
         assert!(viewer.has_visible_bottom_sibling());
         viewer.update_scroll_continues_layout();
-        assert_eq!(viewer.margin_bottom(), 8);
+        assert_eq!(viewer.margin_bottom(), 0);
 
         // Sibling hides again:
         sibling.set_visible(false);

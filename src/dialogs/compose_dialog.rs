@@ -1911,6 +1911,9 @@ impl ComposeDialog {
         let clip_icon = gtk::Image::from_icon_name("mail-attachment-symbolic");
         clip_icon.set_pixel_size(16);
         clip_icon.set_opacity(0.85);
+        clip_icon.set_halign(gtk::Align::Center);
+        clip_icon.set_valign(gtk::Align::Center);
+        clip_icon.set_hexpand(true);
         title_box.append(&clip_icon);
 
         let dialog_weak_for_title = self.downgrade();
@@ -2032,11 +2035,11 @@ impl ComposeDialog {
         view_toggle_box.append(&btn_list);
 
         let collapse_icon = gtk::Image::from_icon_name("pan-down-symbolic");
-        collapse_icon.set_pixel_size(12);
+        collapse_icon.set_pixel_size(16);
         let btn_collapse = gtk::Button::builder()
             .child(&collapse_icon)
             .tooltip_text(&crate::i18n::gettext("Expand attachments"))
-            .css_classes(vec!["flat", "circular", "attachment-collapse-btn"])
+            .css_classes(vec!["flat", "attachment-collapse-btn"])
             .valign(gtk::Align::Center)
             .visible(false)
             .build();

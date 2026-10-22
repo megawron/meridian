@@ -2117,10 +2117,15 @@ impl MeridianWindow {
             window.imp().account_reload_source.replace(Some(source_id));
         };
 
-        // 1. File monitoring on Evolution sources directory
+        // 1. File monitoring on Evolution sources and GOA configuration directories
         let mut source_dirs = Vec::new();
         let config_sources = glib::user_config_dir().join("evolution/sources");
         source_dirs.push(config_sources);
+
+        let goa_dir = glib::user_config_dir().join("goa-1.0");
+        if goa_dir.exists() {
+            source_dirs.push(goa_dir);
+        }
 
         let home = glib::home_dir();
         let flatpak_sources = home.join(".var/app/org.gnome.Evolution/config/evolution/sources");
@@ -2213,6 +2218,20 @@ impl MeridianWindow {
                     gio::DBusSignalFlags::NONE,
                     move |_conn, _sender, _path, _iface, _signal, _params| {
                         trigger3();
+                    },
+                ));
+
+                // EDS SourceManager PropertiesChanged (e.g. Enabled / MailEnabled toggles)
+                let trigger4 = trigger_for_dbus.clone();
+                subs.push(bus.signal_subscribe(
+                    Some("org.gnome.evolution.dataserver.Sources5"),
+                    Some("org.freedesktop.DBus.Properties"),
+                    Some("PropertiesChanged"),
+                    None,
+                    None,
+                    gio::DBusSignalFlags::NONE,
+                    move |_conn, _sender, _path, _iface, _signal, _params| {
+                        trigger4();
                     },
                 ));
 
