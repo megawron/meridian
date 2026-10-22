@@ -56,6 +56,7 @@ mod imp {
         pub(super) box_container: RefCell<Option<gtk::Box>>,
         pub(super) raw_scroll_continues: Cell<bool>,
         pub(super) effective_scroll_continues: Cell<bool>,
+        pub(super) last_scroll_offset: Cell<f64>,
         #[cfg(target_os = "linux")]
         pub renderer_stack: RefCell<Option<gtk::Stack>>,
         pub fallback_view: RefCell<Option<gtk::TextView>>,
@@ -161,10 +162,64 @@ mod imp {
             self.parent_size_allocate(width, height, baseline);
         }
     }
+
+    #[derive(Default)]
+    pub struct StackClipBox {
+        pub viewer: glib::WeakRef<super::MailViewer>,
+    }
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for StackClipBox {
+        const NAME: &'static str = "MeridianStackClipBox";
+        type Type = super::StackClipBox;
+        type ParentType = gtk::Widget;
+    }
+
+    impl ObjectImpl for StackClipBox {
+        fn dispose(&self) {
+            if let Some(child) = self.obj().first_child() {
+                child.unparent();
+            }
+        }
+    }
+
+    impl WidgetImpl for StackClipBox {
+        fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
+            if let Some(child) = self.obj().first_child() {
+                child.measure(orientation, for_size)
+            } else {
+                (0, 0, -1, -1)
+            }
+        }
+
+        fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
+            if let Some(child) = self.obj().first_child() {
+                let extra_h = if let Some(viewer) = self.viewer.upgrade() {
+                    if viewer.imp().adapted_card_height.get().is_none() {
+                        viewer.margin_bottom().max(0)
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                };
+                child.size_allocate(
+                    &gtk::Allocation::new(0, 0, width.max(0), (height + extra_h).max(0)),
+                    baseline,
+                );
+            }
+        }
+    }
 }
 
 glib::wrapper! {
     pub struct MailViewer(ObjectSubclass<imp::MailViewer>)
+        @extends gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
+}
+
+glib::wrapper! {
+    pub struct StackClipBox(ObjectSubclass<imp::StackClipBox>)
         @extends gtk::Widget,
         @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
@@ -310,8 +365,8 @@ impl MailViewer {
             docEl ? docEl.offsetHeight : 0
         );
         const clientH = window.innerHeight;
-        const canScroll = (scrollH - clientH) > 12;
-        const threshold = ({was_continuing} === 0) ? 24 : 6;
+        const canScroll = (scrollH - clientH) > 16;
+        const threshold = ({was_continuing} === 0) ? 28 : 10;
         const atBottom = !canScroll || (y + clientH >= scrollH - threshold);
         return (canScroll && !atBottom) ? 1 : 0;
     }} catch (e) {{
@@ -527,7 +582,12 @@ impl MailViewer {
         renderer_stack.add_named(&error_state, Some("error"));
         renderer_stack.add_named(&load_error, Some("load_error"));
         renderer_stack.set_visible_child_name("placeholder");
-        box_container.append(&renderer_stack);
+        let stack_clip_box: StackClipBox = glib::Object::builder().build();
+        stack_clip_box.set_hexpand(true);
+        stack_clip_box.set_vexpand(true);
+        stack_clip_box.imp().viewer.set(Some(self));
+        renderer_stack.set_parent(&stack_clip_box);
+        box_container.append(&stack_clip_box);
         self.imp().renderer_stack.replace(Some(renderer_stack));
         self.imp().renderer_error_label.replace(Some(error_label));
 
@@ -642,7 +702,7 @@ impl MailViewer {
                     } else if next <= -0.5 {
                         compact_accum_clone.set(0.0);
                         if viewer.imp().adapted_card_height.get().is_some()
-                            || !viewer.imp().raw_scroll_continues.get()
+                            || viewer.imp().last_scroll_offset.get() <= 2.0
                         {
                             viewer.notify_scroll_offset(0.0);
                         }
@@ -1645,6 +1705,7 @@ impl MailViewer {
     }
 
     pub(crate) fn notify_scroll_offset(&self, offset_y: f64) {
+        self.imp().last_scroll_offset.set(offset_y);
         for cb in self.imp().on_scroll_offset.borrow().iter() {
             cb(offset_y);
         }
@@ -2237,19 +2298,22 @@ impl MailViewer {
         let scroll_script = webkit6::UserScript::new(
             "(() => {
                 let lastReportedY = 0;
+                let lastScrollY = 0;
                 let resizeGuardUntil = 0;
                 let collapseGuardUntil = 0;
                 let ticking = false;
                 let lastContinues = null;
                 let lastMeasuredHeight = 0;
+                let lastMeasuredWidth = 0;
+                let lastClientH = 0;
 
                 function measureBodyHeight() {
                     try {
                         const body = document.body;
                         if (!body) return 0;
+                        const bodyRect = body.getBoundingClientRect();
                         let maxBottom = 0;
                         const children = body.children;
-                        const scrollY = window.scrollY || window.pageYOffset || 0;
                         for (let i = 0; i < children.length; i++) {
                             const el = children[i];
                             const st = window.getComputedStyle(el);
@@ -2257,7 +2321,7 @@ impl MailViewer {
                             const r = el.getBoundingClientRect();
                             if (r.height > 0 || r.width > 0) {
                                 const mb = parseFloat(st.marginBottom) || 0;
-                                const bottom = r.bottom + scrollY + Math.max(0, mb);
+                                const bottom = (r.bottom - bodyRect.top) + Math.max(0, mb);
                                 if (bottom > maxBottom) {
                                     maxBottom = bottom;
                                 }
@@ -2269,14 +2333,14 @@ impl MailViewer {
                             range.selectNodeContents(body);
                             const rangeRect = range.getBoundingClientRect();
                             if (rangeRect.height > 0 || rangeRect.width > 0) {
-                                rangeBottom = rangeRect.bottom + scrollY;
+                                rangeBottom = rangeRect.bottom - bodyRect.top;
                             }
                         } catch (e) {}
                         const computed = window.getComputedStyle(body);
+                        const padTop = parseFloat(computed.paddingTop) || 12;
                         const padBottom = parseFloat(computed.paddingBottom) || 12;
                         let measured = Math.max(maxBottom + padBottom, rangeBottom + padBottom);
-                        if (measured <= padBottom) {
-                            const bodyRect = body.getBoundingClientRect();
+                        if (measured <= padTop + padBottom) {
                             if (bodyRect.height > 0) {
                                 measured = bodyRect.height;
                             }
@@ -2284,6 +2348,7 @@ impl MailViewer {
                         const ceilH = Math.ceil(measured);
                         if (ceilH > 0 && Math.abs(ceilH - lastMeasuredHeight) >= 2) {
                             lastMeasuredHeight = ceilH;
+                            lastMeasuredWidth = window.innerWidth;
                             if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.meridianContentHeight) {
                                 window.webkit.messageHandlers.meridianContentHeight.postMessage(ceilH);
                             }
@@ -2298,17 +2363,19 @@ impl MailViewer {
                     try {
                         const docEl = document.documentElement;
                         const body = document.body;
-                        const measuredH = measureBodyHeight();
                         const scrollH = Math.max(
-                            measuredH,
                             body ? body.scrollHeight : 0,
                             docEl ? docEl.scrollHeight : 0,
                             body ? body.offsetHeight : 0,
                             docEl ? docEl.offsetHeight : 0
                         );
                         const clientH = window.innerHeight;
+                        const clientW = window.innerWidth;
                         const maxScroll = Math.max(0, scrollH - clientH);
                         const y = window.scrollY || (docEl ? docEl.scrollTop : 0) || 0;
+                        const scrollingUp = y < lastScrollY - 0.5;
+                        lastScrollY = y;
+
                         if (fromScrollEvent && (Math.abs(y - lastReportedY) >= 2 || (y <= 1 && lastReportedY > 1))) {
                             const now = performance.now();
                             if (y < lastReportedY && (now < resizeGuardUntil || now < collapseGuardUntil || maxScroll <= 20)) {
@@ -2324,10 +2391,32 @@ impl MailViewer {
                             }
                         }
 
-                        const canScroll = maxScroll > 12;
-                        const threshold = (lastContinues === false) ? 24 : 6;
-                        const atBottom = !canScroll || (y + clientH >= scrollH - threshold);
-                        const continues = canScroll && !atBottom;
+                        const isMinorHeightResize = !fromScrollEvent
+                            && lastMeasuredHeight > 0
+                            && clientW === lastMeasuredWidth
+                            && Math.abs(clientH - lastClientH) <= 16;
+                        lastClientH = clientH;
+
+                        if (!fromScrollEvent && !isMinorHeightResize) {
+                            measureBodyHeight();
+                        }
+
+                        const canScroll = maxScroll > 16;
+                        let continues;
+                        if (!canScroll) {
+                            continues = false;
+                        } else if (lastContinues === false) {
+                            // Once at the bottom (rounded corners + 8px margin), stay at the bottom
+                            // unless the user actively scrolls upward well away from the bottom edge.
+                            if (fromScrollEvent && scrollingUp && (y + clientH < scrollH - 28)) {
+                                continues = true;
+                            } else {
+                                continues = false;
+                            }
+                        } else {
+                            const atBottom = (y + clientH >= scrollH - 10);
+                            continues = !atBottom;
+                        }
 
                         if (continues !== lastContinues) {
                             lastContinues = continues;
@@ -2386,6 +2475,7 @@ impl MailViewer {
                     });
                 }
                 window.addEventListener('load', () => {
+                    measureBodyHeight();
                     updateMetrics(false);
                 });
             })();",
@@ -2754,7 +2844,7 @@ impl MailViewer {
                 } else {
                     120
                 };
-                let margins = self.margin_top() + self.margin_bottom();
+                let margins = self.margin_top() + 8;
                 (container_h - other_h - margins).max(100)
             } else {
                 500
@@ -2816,10 +2906,8 @@ impl MailViewer {
                 }
                 self.queue_resize();
                 self.set_scroll_continues(true);
-            }
-            #[cfg(target_os = "linux")]
-            if let Some(wv) = self.imp().webview.borrow().as_ref() {
-                if switched_to_long {
+                #[cfg(target_os = "linux")]
+                if let Some(wv) = self.imp().webview.borrow().as_ref() {
                     let viewer_weak = self.downgrade();
                     let wv_clone = wv.clone();
                     glib::timeout_add_local_once(Duration::from_millis(60), move || {
@@ -2827,8 +2915,6 @@ impl MailViewer {
                             v.evaluate_scroll_continues(&wv_clone);
                         }
                     });
-                } else {
-                    self.evaluate_scroll_continues(wv);
                 }
             }
         }
@@ -3570,6 +3656,11 @@ body {
   -webkit-text-size-adjust: 100%;
   word-wrap: break-word !important;
   overflow-wrap: break-word !important;
+}
+body::after {
+  content: "" !important;
+  display: block !important;
+  height: 8px !important;
 }
 table, div, p, span, a, td, th, center, article, section, header, footer {
   max-width: 100% !important;
