@@ -84,6 +84,49 @@ pub(crate) fn normalized_mail_header_style(value: &str) -> &'static str {
     }
 }
 
+pub const DEFAULT_MAIL_HEADER_ACTIONS: &[&str] = &[
+    "reply",
+    "reply-all",
+    "forward",
+    "unread",
+    "delete",
+];
+
+pub const ALL_MAIL_HEADER_ACTIONS: &[&str] = &[
+    "reply",
+    "reply-all",
+    "forward",
+    "archive",
+    "move",
+    "unread",
+    "delete",
+    "junk",
+    "print",
+];
+
+pub fn normalize_mail_header_actions(value: &str) -> Vec<String> {
+    let trimmed = value.trim();
+    if trimmed.eq_ignore_ascii_case("none") {
+        return Vec::new();
+    }
+    if trimmed.is_empty() {
+        return DEFAULT_MAIL_HEADER_ACTIONS
+            .iter()
+            .map(|id| (*id).to_string())
+            .collect();
+    }
+    let requested: HashSet<&str> = trimmed
+        .split(',')
+        .map(str::trim)
+        .filter(|id| ALL_MAIL_HEADER_ACTIONS.contains(id))
+        .collect();
+    ALL_MAIL_HEADER_ACTIONS
+        .iter()
+        .filter(|id| requested.contains(*id))
+        .map(|id| (*id).to_string())
+        .collect()
+}
+
 pub(crate) fn mail_list_profile_column_order(profile: &str) -> Vec<String> {
     let columns = if normalized_mail_list_view_profile(profile) == "wide" {
         &MAIL_LIST_WIDE_COLUMN_IDS
@@ -3027,6 +3070,41 @@ impl AppSettings {
         }
     }
 
+    pub fn mail_header_actions(&self) -> Vec<String> {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("mail-header-actions"))
+            .unwrap_or(false);
+        let raw = if has_key {
+            self.settings.string("mail-header-actions").to_string()
+        } else {
+            String::new()
+        };
+        normalize_mail_header_actions(&raw)
+    }
+
+    pub fn set_mail_header_actions(&self, actions: &[String]) {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("mail-header-actions"))
+            .unwrap_or(false);
+        if !has_key {
+            return;
+        }
+        if actions.is_empty() {
+            self.set_string("mail-header-actions", "none");
+        } else {
+            let normalized = normalize_mail_header_actions(&actions.join(","));
+            if normalized.is_empty() {
+                self.set_string("mail-header-actions", "none");
+            } else {
+                self.set_string("mail-header-actions", &normalized.join(","));
+            }
+        }
+    }
+
     pub fn mail_list_column_order(&self) -> Vec<String> {
         normalize_mail_list_column_order(&self.settings.string("mail-list-column-order"))
     }
@@ -4091,6 +4169,10 @@ impl AppSettings {
                 let style = normalized_mail_header_style(value);
                 self.set_mail_header_style(style);
             }
+            "mail-header-actions" => {
+                let actions = normalize_mail_header_actions(value);
+                self.set_mail_header_actions(&actions);
+            }
             "mail-list-column-order" => {
                 let order = normalize_mail_list_column_order(value);
                 self.set_mail_list_column_order(&order);
@@ -4572,6 +4654,7 @@ impl AppSettings {
             "mail-date-align",
             "mail-list-view-profile",
             "mail-header-style",
+            "mail-header-actions",
             "mail-list-column-order",
             "color-scheme",
             "sign-new-messages",

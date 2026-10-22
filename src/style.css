@@ -456,10 +456,11 @@ image.mail-column-header-icon {
   background-color: transparent;
 }
 
-.mail-detail-subject {
-  font-size: 1.30rem;
+.mail-detail-subject,
+label.mail-detail-subject.title-4 {
+  font-size: 1.36rem;
   font-weight: 700;
-  line-height: 1.30;
+  line-height: 1.28;
   color: @window_fg_color;
   margin-top: 0;
   margin-bottom: 4px;
@@ -1332,7 +1333,7 @@ popover.context-menu separator {
 
 /* ── Attachment Chips & Minimal Composer Attachment Tray (GNOME HIG) ──────────────── */
 .attachment-chip {
-  background-color: alpha(@window_fg_color, 0.06);
+  background-color: alpha(currentColor, 0.105);
   border: none;
   border-radius: 8px;
   padding: 3px 8px;
@@ -1343,7 +1344,14 @@ popover.context-menu separator {
 }
 
 .attachment-chip:hover {
-  background-color: alpha(@window_fg_color, 0.11);
+  background-color: alpha(currentColor, 0.155);
+  border: none;
+  box-shadow: none;
+}
+
+.attachment-type-icon {
+  color: @accent_color;
+  opacity: 0.95;
 }
 
 .attachment-chip:focus,
@@ -1367,7 +1375,7 @@ popover.context-menu separator {
 
 .attachment-chip button.flat.circular:hover {
   opacity: 1.0;
-  background-color: alpha(currentColor, 0.12);
+  background-color: alpha(currentColor, 0.14);
   color: @accent_color;
 }
 
@@ -1393,13 +1401,13 @@ flowbox > flowboxchild.attachment-flow-child:selected {
 }
 
 .attachment-chip-label {
-  font-weight: 500;
+  font-weight: 600;
   font-size: 0.82rem;
 }
 
 .attachment-chip-size {
   font-size: 0.72rem;
-  opacity: 0.65;
+  opacity: 0.72;
 }
 
 .attachment-section-box {
@@ -1443,12 +1451,12 @@ flowbox > flowboxchild.attachment-flow-child:selected {
   padding: 6px;
   border-radius: 8px;
   cursor: pointer;
-  color: alpha(currentColor, 0.80);
+  color: alpha(currentColor, 0.85);
   transition: background-color 150ms ease, color 150ms ease;
 }
 
 .attachment-title-box:hover {
-  background-color: alpha(@window_fg_color, 0.08);
+  background-color: alpha(currentColor, 0.10);
   color: currentColor;
 }
 
@@ -1459,9 +1467,27 @@ flowbox > flowboxchild.attachment-flow-child:selected {
 }
 
 .attachment-section-container {
-  background-color: @window_bg_color;
+  background-color: var(--card-bg-color);
+  color: var(--card-fg-color);
+  border-top: 1px solid alpha(currentColor, 0.10);
+  border-radius: 0;
+  box-shadow: none;
+  transition: background-color 150ms ease, box-shadow 150ms ease;
+}
+
+.attachment-section-container.is-floating-card {
+  background-color: var(--card-bg-color);
+  color: var(--card-fg-color);
+  border-top: none;
+  border-radius: 12px;
+  box-shadow: 0 0 0 1px RGB(0 0 6 / 3%),
+              0 1px 3px 1px RGB(0 0 6 / 7%),
+              0 2px 6px 2px RGB(0 0 6 / 3%);
+}
+
+.attachment-drawer-stack {
   border-top: 1px solid alpha(currentColor, 0.08);
-  transition: background-color 150ms ease;
+  padding-top: 4px;
 }
 
 .attachment-header-bar {
@@ -1478,7 +1504,7 @@ flowbox > flowboxchild.attachment-flow-child:selected {
 }
 
 .attachment-summary-clickable:hover {
-  background-color: alpha(@window_fg_color, 0.08);
+  background-color: alpha(currentColor, 0.10);
   color: currentColor;
 }
 
@@ -1496,7 +1522,7 @@ flowbox > flowboxchild.attachment-flow-child:selected {
 }
 
 button.attachment-save-all-btn {
-  background-color: alpha(@window_fg_color, 0.06);
+  background-color: alpha(currentColor, 0.105);
   color: inherit;
   border: none;
   box-shadow: none;
@@ -1509,14 +1535,14 @@ button.attachment-save-all-btn {
 }
 
 button.attachment-save-all-btn:hover {
-  background-color: alpha(@window_fg_color, 0.11);
+  background-color: alpha(currentColor, 0.155);
   color: currentColor;
   border: none;
   box-shadow: none;
 }
 
 button.attachment-save-all-btn:active {
-  background-color: alpha(@window_fg_color, 0.16);
+  background-color: alpha(currentColor, 0.20);
   color: currentColor;
   border: none;
   box-shadow: none;
@@ -1531,29 +1557,25 @@ button.attachment-save-all-btn:active {
 /* ── Attachment Drawer Cards (Expanded Icons View) ────────────────────────── */
 .attachment-drawer-card,
 .card.attachment-drawer-card {
-  background-color: var(--card-bg-color);
+  background-color: alpha(currentColor, 0.105);
   border: none;
   outline: none;
-  box-shadow:
-    0 0 0 1px RGB(0 0 6 / 4%),
-    0 1px 2px 0 RGB(0 0 6 / 6%);
+  box-shadow: none;
   border-radius: 10px;
   padding: 6px 12px;
   min-height: 48px;
   max-height: 52px;
   min-width: 180px;
   max-width: 280px;
-  transition: background-color 150ms ease, box-shadow 150ms ease;
+  transition: background-color 150ms ease;
 }
 
 .attachment-drawer-card:hover,
 .card.attachment-drawer-card:hover {
-  background-color: var(--card-bg-color);
+  background-color: alpha(currentColor, 0.155);
   border: none;
   outline: none;
-  box-shadow:
-    0 0 0 1px alpha(@accent_color, 0.28),
-    0 2px 4px 0 RGB(0 0 6 / 8%);
+  box-shadow: none;
 }
 
 .attachment-drawer-card:focus,
@@ -3110,7 +3132,42 @@ splitview > .sidebar:backdrop {
 }
 
 /* ── Unified Full-Width View Toolbar ───────────────────────────────────── */
-.unified-mail-toolbar,
+.unified-mail-toolbar {
+  min-height: 28px;
+  margin: 0;
+  padding: 1px 6px;
+  background-color: @view_bg_color;
+  border-bottom: none;
+}
+
+.unified-mail-toolbar button,
+.unified-mail-toolbar menubutton > button {
+  min-width: 28px;
+  min-height: 26px;
+  padding: 2px 6px;
+  margin: 0;
+  border-radius: 6px;
+}
+
+.unified-mail-toolbar .linked button,
+.unified-mail-toolbar .linked menubutton > button {
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+.unified-mail-toolbar button image,
+.unified-mail-toolbar menubutton > button image {
+  min-width: 16px;
+  min-height: 16px;
+  -gtk-icon-size: 16px;
+}
+
+.unified-mail-toolbar separator.vertical {
+  margin-top: 5px;
+  margin-bottom: 5px;
+  opacity: 0.45;
+}
+
 .unified-view-toolbar {
   min-height: 36px;
   padding: 3px 8px;
@@ -3118,7 +3175,6 @@ splitview > .sidebar:backdrop {
   border-bottom: 1px solid alpha(@borders, 0.45);
 }
 
-.unified-mail-toolbar button,
 .unified-view-toolbar button {
   min-width: 30px;
   min-height: 30px;
@@ -3127,22 +3183,16 @@ splitview > .sidebar:backdrop {
   margin-bottom: 1px;
 }
 
-.unified-mail-toolbar .linked button {
-  padding-left: 8px;
-  padding-right: 8px;
-}
-
 .unified-mail-toolbar splitbutton,
 .unified-view-toolbar splitbutton {
-  min-height: 30px;
-  margin-top: 1px;
-  margin-bottom: 1px;
+  min-height: 26px;
+  margin: 0;
 }
 
 .unified-mail-toolbar splitbutton menubutton > button,
 .unified-view-toolbar splitbutton menubutton > button {
   min-width: 22px;
-  padding: 3px 5px;
+  padding: 2px 5px;
 }
 
 .unified-mail-toolbar dropdown,
@@ -3153,7 +3203,7 @@ splitview > .sidebar:backdrop {
 .unified-view-toolbar entry.search,
 .unified-view-toolbar search-entry,
 .unified-view-toolbar .search-entry {
-  min-height: 30px;
+  min-height: 28px;
   margin-top: 1px;
   margin-bottom: 1px;
 }
@@ -5260,45 +5310,55 @@ scrollbar.calendar-year-overlay-scrollbar slider:active {
 .mail-classic-compact-bullet {
   opacity: 0.45;
   font-size: 0.85rem;
-  margin: 0 4px;
+  margin: 0 2px;
 }
 
 .mail-classic-compact-subject {
-  font-weight: 500;
-  font-size: 0.95rem;
-  opacity: 0.90;
+  font-weight: 600;
+  font-size: 0.96rem;
+  opacity: 1.0;
+  color: @window_fg_color;
 }
 
 .mail-compact-bullet {
   opacity: 0.45;
   font-size: 0.85rem;
-  margin: 0 4px;
+  margin: 0;
 }
 
 .mail-compact-subject {
+  font-weight: 600;
+  font-size: 0.96rem;
+  opacity: 1.0;
+  color: @window_fg_color;
+}
+
+.mail-modern-sender-name,
+label.mail-modern-sender-name.heading {
+  font-weight: 600;
+  font-size: 0.94rem;
+}
+
+.mail-modern-header-card.is-compact .mail-modern-sender-name,
+.mail-modern-header-card.is-compact label.mail-modern-sender-name.heading {
   font-weight: 500;
-  font-size: 0.95rem;
-  opacity: 0.90;
+  color: alpha(@window_fg_color, 0.78);
 }
 
-.mail-modern-sender-name {
-  font-weight: 700;
-  font-size: 1.05rem;
-}
-
-.mail-modern-sender-address {
-  font-size: 0.90rem;
+.mail-modern-sender-address,
+label.mail-modern-sender-address.caption {
+  font-size: 0.85rem;
   line-height: 1.35;
 }
 
 button.mail-details-toggle,
 .mail-details-toggle {
-  font-size: 1.0rem;
-  padding: 3px 6px 3px 6px;
-  min-height: 28px;
+  font-size: 0.86rem;
+  padding: 2px 6px 2px 4px;
+  min-height: 22px;
   min-width: 0;
   border-radius: 4px;
-  color: alpha(@window_fg_color, 0.88);
+  color: alpha(@window_fg_color, 0.72);
 }
 
 button.mail-details-toggle:hover,
@@ -5309,8 +5369,8 @@ button.mail-details-toggle:hover,
 
 .mail-details-recipient-label,
 .mail-details-toggle label {
-  font-size: 1.0rem;
-  font-weight: 500;
+  font-size: 0.86rem;
+  font-weight: 400;
   color: inherit;
   min-width: 0;
 }
@@ -5432,10 +5492,20 @@ banner.mail-status-banner button:active,
   transition: padding 140ms ease, min-height 140ms ease;
 }
 
+.mail-conversation-bar.is-expanded {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
 .mail-conversation-bar.is-compact {
   padding: 0 0 0 8px;
   min-height: 26px;
   border-radius: 6px;
+}
+
+.mail-conversation-bar.is-compact.is-expanded {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
 }
 
 .mail-conversation-inner {
@@ -5469,11 +5539,12 @@ banner.mail-status-banner button:active,
 }
 
 .mail-thread-accordion-list {
-  margin-top: 2px;
-  padding: 2px 0;
-  border-radius: 7px;
-  background-color: transparent;
-  border: none;
+  margin-top: 0;
+  padding: 3px;
+  border-radius: 0 0 8px 8px;
+  background-color: alpha(@window_fg_color, 0.028);
+  border: 1px solid alpha(@window_fg_color, 0.055);
+  border-top: none;
   box-shadow: none;
 }
 
@@ -5613,9 +5684,9 @@ menubutton.mail-header-action-btn > button {
 .mail-header-action-btn image,
 button.mail-header-action-btn image,
 menubutton.mail-header-action-btn > button image {
-  min-width: 15px;
-  min-height: 15px;
-  -gtk-icon-size: 15px;
+  min-width: 16px;
+  min-height: 16px;
+  -gtk-icon-size: 16px;
 }
 
 /* ── Action Pills for Hauptaktionen & Nebenaktionen (GNOME HIG / Libadwaita compliant: borderless) ── */

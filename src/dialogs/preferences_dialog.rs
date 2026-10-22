@@ -4807,6 +4807,157 @@ impl PreferencesDialog {
         }
         group_mail_headers_mode.add(&row_header_style);
 
+        let group_mail_header_actions = adw::PreferencesGroup::builder()
+            .title(&crate::i18n::gettext("Header Action Bar"))
+            .description(&crate::i18n::gettext(
+                "Choose which actions are shown as direct buttons in the message header. Unchecked actions automatically appear in the More (▾) dropdown menu.",
+            ))
+            .build();
+
+        let btn_reset_header_actions = gtk::Button::builder()
+            .label(&crate::i18n::gettext("Reset to Defaults"))
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["flat"])
+            .build();
+        group_mail_header_actions.set_header_suffix(Some(&btn_reset_header_actions));
+
+        let header_action_defs: &[(&'static str, &'static str, String, String)] = &[
+            (
+                "reply",
+                "mail-reply-sender-symbolic",
+                crate::i18n::gettext("Reply"),
+                crate::i18n::gettext("Primary communication group"),
+            ),
+            (
+                "reply-all",
+                "mail-reply-all-symbolic",
+                crate::i18n::gettext("Reply All"),
+                crate::i18n::gettext("Primary communication group"),
+            ),
+            (
+                "forward",
+                "mail-forward-symbolic",
+                crate::i18n::gettext("Forward"),
+                crate::i18n::gettext("Primary communication group"),
+            ),
+            (
+                "archive",
+                "mail-archive-symbolic",
+                crate::i18n::gettext("Archive"),
+                crate::i18n::gettext("Secondary triage group"),
+            ),
+            (
+                "move",
+                "folder-symbolic",
+                crate::i18n::gettext("Move to Folder…"),
+                crate::i18n::gettext("Secondary triage group"),
+            ),
+            (
+                "unread",
+                "mail-mark-unread-symbolic",
+                crate::i18n::gettext("Mark as Unread"),
+                crate::i18n::gettext("Secondary triage group"),
+            ),
+            (
+                "delete",
+                "user-trash-symbolic",
+                crate::i18n::gettext("Move to Trash"),
+                crate::i18n::gettext("Secondary triage group"),
+            ),
+            (
+                "junk",
+                "mail-mark-junk-symbolic",
+                crate::i18n::gettext("Mark as Junk"),
+                crate::i18n::gettext("Secondary triage group"),
+            ),
+            (
+                "print",
+                "printer-symbolic",
+                crate::i18n::gettext("Print…"),
+                crate::i18n::gettext("Secondary triage group"),
+            ),
+        ];
+
+        let initial_header_actions: std::collections::HashSet<String> = settings
+            .as_ref()
+            .map(|s| s.mail_header_actions())
+            .unwrap_or_else(|| {
+                crate::services::settings_service::DEFAULT_MAIL_HEADER_ACTIONS
+                    .iter()
+                    .map(|id| (*id).to_string())
+                    .collect()
+            })
+            .into_iter()
+            .collect();
+
+        let header_action_rows: std::rc::Rc<Vec<(&'static str, adw::SwitchRow)>> = {
+            let mut rows = Vec::with_capacity(header_action_defs.len());
+            for (action_id, icon_name, title, subtitle) in header_action_defs {
+                let row = adw::SwitchRow::builder()
+                    .title(title)
+                    .subtitle(subtitle)
+                    .active(initial_header_actions.contains(*action_id))
+                    .build();
+                let icon = gtk::Image::builder()
+                    .icon_name(*icon_name)
+                    .pixel_size(16)
+                    .valign(gtk::Align::Center)
+                    .build();
+                row.add_prefix(&icon);
+                group_mail_header_actions.add(&row);
+                rows.push((*action_id, row));
+            }
+            std::rc::Rc::new(rows)
+        };
+
+        if let Some(settings) = settings.clone() {
+            let syncing_header_actions = std::rc::Rc::new(std::cell::Cell::new(false));
+            for (_, row) in header_action_rows.iter() {
+                let rows_for_toggle = header_action_rows.clone();
+                let settings_for_toggle = settings.clone();
+                let syncing_for_toggle = syncing_header_actions.clone();
+                row.connect_active_notify(move |_| {
+                    if syncing_for_toggle.get() {
+                        return;
+                    }
+                    let active_ids: Vec<String> = rows_for_toggle
+                        .iter()
+                        .filter(|(_, r)| r.is_active())
+                        .map(|(id, _)| (*id).to_string())
+                        .collect();
+                    settings_for_toggle.set_mail_header_actions(&active_ids);
+                });
+            }
+
+            let settings_for_reset = settings.clone();
+            btn_reset_header_actions.connect_clicked(move |_| {
+                let defaults: Vec<String> =
+                    crate::services::settings_service::DEFAULT_MAIL_HEADER_ACTIONS
+                        .iter()
+                        .map(|id| (*id).to_string())
+                        .collect();
+                settings_for_reset.set_mail_header_actions(&defaults);
+            });
+
+            let rows_for_changed = header_action_rows.clone();
+            let syncing_for_changed = syncing_header_actions.clone();
+            let settings_for_changed = settings.clone();
+            settings.connect_changed(Some("mail-header-actions"), move |_, _| {
+                syncing_for_changed.set(true);
+                let enabled: std::collections::HashSet<String> = settings_for_changed
+                    .mail_header_actions()
+                    .into_iter()
+                    .collect();
+                for (id, row) in rows_for_changed.iter() {
+                    let target = enabled.contains(*id);
+                    if row.is_active() != target {
+                        row.set_active(target);
+                    }
+                }
+                syncing_for_changed.set(false);
+            });
+        }
+
         let group_mail_normal_headers = adw::PreferencesGroup::builder()
             .title("Standard Message Headers")
             .build();
@@ -4817,10 +4968,12 @@ impl PreferencesDialog {
             let update_headers_sens = {
                 let r_show = row_show_all_headers.clone();
                 let r_style = row_header_style.clone();
+                let g_actions = group_mail_header_actions.clone();
                 let g_normal = group_mail_normal_headers.clone();
                 move || {
                     let show_all = r_show.is_active();
                     r_style.set_sensitive(!show_all);
+                    g_actions.set_sensitive(!show_all);
                     g_normal.set_sensitive(!show_all);
                 }
             };
@@ -6115,6 +6268,7 @@ impl PreferencesDialog {
             .icon_name("document-properties-symbolic")
             .build();
         page_mail_headers.add(&group_mail_headers_mode);
+        page_mail_headers.add(&group_mail_header_actions);
         page_mail_headers.add(&group_mail_normal_headers);
 
         let page_mail_junk = adw::PreferencesPage::builder()

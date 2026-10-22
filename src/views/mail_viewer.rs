@@ -306,6 +306,10 @@ impl MailViewer {
     pub fn set_scroll_continues(&self, continues: bool) {
         self.imp().raw_scroll_continues.set(continues);
         let effective = continues && self.imp().adapted_card_height.get().is_none();
+        let bottom_margin = if effective { 0 } else { 8 };
+        if self.margin_bottom() != bottom_margin {
+            self.set_margin_bottom(bottom_margin);
+        }
         if self.imp().effective_scroll_continues.get() == effective {
             return;
         }
@@ -317,7 +321,6 @@ impl MailViewer {
                 box_container.remove_css_class("scroll-continues");
             }
         }
-        self.set_margin_bottom(if effective { 0 } else { 8 });
     }
 
     pub fn has_visible_bottom_sibling(&self) -> bool {

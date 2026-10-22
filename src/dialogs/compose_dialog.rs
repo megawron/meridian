@@ -6349,24 +6349,7 @@ impl ComposeDialog {
 }
 
 fn attachment_icon_name(mime_type: &str, filename: &str) -> &'static str {
-    let is_image = mime_type.starts_with("image/");
-    let is_pdf = mime_type.contains("pdf") || filename.to_lowercase().ends_with(".pdf");
-
-    if is_image {
-        "image-x-generic-symbolic"
-    } else if is_pdf {
-        "x-office-document-symbolic"
-    } else {
-        match mime_type {
-            m if m.contains("zip") || m.contains("tar") || m.contains("compressed") => {
-                "package-x-generic-symbolic"
-            }
-            m if m.starts_with("audio/") => "audio-x-generic-symbolic",
-            m if m.starts_with("video/") => "video-x-generic-symbolic",
-            m if m.contains("text/") => "text-x-generic-symbolic",
-            _ => "mail-attachment-symbolic",
-        }
-    }
+    crate::models::mail_message::AttachmentInfo::icon_name_for(mime_type, filename)
 }
 
 fn load_attachment_texture(attachment: &DraftAttachment, scale_size: i32) -> Option<(gdk::Texture, i32, i32)> {

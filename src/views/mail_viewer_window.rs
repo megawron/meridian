@@ -547,14 +547,26 @@ impl MailViewerWindow {
         let attachment_section = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(0)
-            .valign(gtk::Align::End)
+            .valign(gtk::Align::Start)
             .vexpand(false)
             .css_classes(vec!["attachment-section-container"])
             .visible(false)
             .build();
         let att_sec_for_vexpand = attachment_section.clone();
         mail_viewer.connect_notify_local(Some("vexpand"), move |viewer, _| {
-            att_sec_for_vexpand.set_vexpand(!viewer.vexpands());
+            att_sec_for_vexpand.set_vexpand(false);
+            att_sec_for_vexpand.set_valign(gtk::Align::Start);
+            if !viewer.vexpands() {
+                att_sec_for_vexpand.add_css_class("is-floating-card");
+                att_sec_for_vexpand.set_margin_start(8);
+                att_sec_for_vexpand.set_margin_end(8);
+                att_sec_for_vexpand.set_margin_bottom(8);
+            } else {
+                att_sec_for_vexpand.remove_css_class("is-floating-card");
+                att_sec_for_vexpand.set_margin_start(0);
+                att_sec_for_vexpand.set_margin_end(0);
+                att_sec_for_vexpand.set_margin_bottom(0);
+            }
         });
 
         let handle_box = gtk::Box::builder()
@@ -635,7 +647,8 @@ impl MailViewerWindow {
             .build();
         attachment_header.append(&chip_box);
 
-        let header_spacer = gtk::Box::builder().hexpand(true).build();
+        let header_spacer = gtk::Box::builder().hexpand(true).valign(gtk::Align::Fill).build();
+        header_spacer.set_cursor_from_name(Some("pointer"));
         attachment_header.append(&header_spacer);
 
         let save_all_box = gtk::Box::builder()
@@ -699,6 +712,7 @@ impl MailViewerWindow {
             .transition_duration(150)
             .hhomogeneous(false)
             .vhomogeneous(false)
+            .css_classes(vec!["attachment-drawer-stack"])
             .build();
 
         // Attachment bar (icons view)
@@ -808,14 +822,24 @@ impl MailViewerWindow {
 
         let toggle_title = toggle_action.clone();
         let title_click = gtk::GestureClick::new();
-        title_click.connect_released(move |_, _, _, _| {
+        title_click.connect_released(move |gesture, _, _, _| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
             toggle_title();
         });
         title_box.add_controller(title_click);
 
+        let toggle_spacer = toggle_action.clone();
+        let spacer_click = gtk::GestureClick::new();
+        spacer_click.connect_released(move |gesture, _, _, _| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            toggle_spacer();
+        });
+        header_spacer.add_controller(spacer_click);
+
         let toggle_handle = toggle_action.clone();
         let handle_click = gtk::GestureClick::new();
-        handle_click.connect_released(move |_, _, _, _| {
+        handle_click.connect_released(move |gesture, _, _, _| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
             toggle_handle();
         });
         handle_box.add_controller(handle_click);
@@ -837,7 +861,8 @@ impl MailViewerWindow {
 
         let toggle_summary = toggle_action.clone();
         let click_gesture = gtk::GestureClick::new();
-        click_gesture.connect_released(move |_, _, _, _| {
+        click_gesture.connect_released(move |gesture, _, _, _| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
             toggle_summary();
         });
         summary_box.add_controller(click_gesture);
@@ -1554,18 +1579,9 @@ impl MailViewerWindow {
                     .build();
                 row_box.set_cursor_from_name(Some("pointer"));
 
-                let icon_name = match att.mime_type.as_str() {
-                    m if m.starts_with("image/") => "image-x-generic-symbolic",
-                    m if m.contains("pdf") => "x-office-document-symbolic",
-                    m if m.contains("zip") || m.contains("tar") || m.contains("compressed") => {
-                        "package-x-generic-symbolic"
-                    }
-                    m if m.starts_with("audio/") => "audio-x-generic-symbolic",
-                    m if m.starts_with("video/") => "video-x-generic-symbolic",
-                    m if m.contains("text/") => "text-x-generic-symbolic",
-                    _ => "mail-attachment-symbolic",
-                };
+                let icon_name = att.icon_name();
                 let list_icon = gtk::Image::new();
+                list_icon.add_css_class("attachment-type-icon");
                 set_image_icon_with_fallback(&list_icon, icon_name, "mail-attachment-symbolic");
                 list_icon.set_pixel_size(18);
                 row_box.append(&list_icon);
@@ -1867,18 +1883,9 @@ impl MailViewerWindow {
             .build();
         card.set_cursor_from_name(Some("pointer"));
 
-        let icon_name = match att.mime_type.as_str() {
-            m if m.starts_with("image/") => "image-x-generic-symbolic",
-            m if m.contains("pdf") => "x-office-document-symbolic",
-            m if m.contains("zip") || m.contains("tar") || m.contains("compressed") => {
-                "package-x-generic-symbolic"
-            }
-            m if m.starts_with("audio/") => "audio-x-generic-symbolic",
-            m if m.starts_with("video/") => "video-x-generic-symbolic",
-            m if m.contains("text/") => "text-x-generic-symbolic",
-            _ => "mail-attachment-symbolic",
-        };
+        let icon_name = att.icon_name();
         let icon = gtk::Image::new();
+        icon.add_css_class("attachment-type-icon");
         set_image_icon_with_fallback(&icon, icon_name, "mail-attachment-symbolic");
         icon.set_pixel_size(24);
         card.append(&icon);
@@ -2019,18 +2026,9 @@ impl MailViewerWindow {
             .build();
         chip_box.set_cursor_from_name(Some("pointer"));
 
-        let icon_name = match att.mime_type.as_str() {
-            m if m.starts_with("image/") => "image-x-generic-symbolic",
-            m if m.contains("pdf") => "x-office-document-symbolic",
-            m if m.contains("zip") || m.contains("tar") || m.contains("compressed") => {
-                "package-x-generic-symbolic"
-            }
-            m if m.starts_with("audio/") => "audio-x-generic-symbolic",
-            m if m.starts_with("video/") => "video-x-generic-symbolic",
-            m if m.contains("text/") => "text-x-generic-symbolic",
-            _ => "mail-attachment-symbolic",
-        };
+        let icon_name = att.icon_name();
         let icon = gtk::Image::new();
+        icon.add_css_class("attachment-type-icon");
         set_image_icon_with_fallback(&icon, icon_name, "mail-attachment-symbolic");
         icon.set_pixel_size(15);
         chip_box.append(&icon);

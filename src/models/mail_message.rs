@@ -39,6 +39,192 @@ pub struct AttachmentInfo {
 }
 
 impl AttachmentInfo {
+    /// Infers a specific MIME type from a filename extension when the declared
+    /// MIME type is generic (such as `application/octet-stream`) or missing.
+    pub fn infer_mime_type_from_filename(filename: &str) -> Option<&'static str> {
+        let ext = std::path::Path::new(filename.trim())
+            .extension()
+            .and_then(|e| e.to_str())?
+            .to_ascii_lowercase();
+        match ext.as_str() {
+            "jpg" | "jpeg" | "jpe" | "jfif" => Some("image/jpeg"),
+            "png" => Some("image/png"),
+            "gif" => Some("image/gif"),
+            "webp" => Some("image/webp"),
+            "svg" | "svgz" => Some("image/svg+xml"),
+            "bmp" | "dib" => Some("image/bmp"),
+            "tif" | "tiff" => Some("image/tiff"),
+            "ico" => Some("image/vnd.microsoft.icon"),
+            "heic" | "heif" => Some("image/heic"),
+            "avif" => Some("image/avif"),
+            "pdf" => Some("application/pdf"),
+            "doc" | "dot" => Some("application/msword"),
+            "docx" | "dotx" | "docm" => {
+                Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            }
+            "odt" | "ott" => Some("application/vnd.oasis.opendocument.text"),
+            "rtf" => Some("application/rtf"),
+            "xls" | "xlt" | "xla" => Some("application/vnd.ms-excel"),
+            "xlsx" | "xltx" | "xlsm" | "xlsb" => {
+                Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            }
+            "ods" | "ots" => Some("application/vnd.oasis.opendocument.spreadsheet"),
+            "csv" | "tsv" => Some("text/csv"),
+            "ppt" | "pot" | "pps" => Some("application/vnd.ms-powerpoint"),
+            "pptx" | "potx" | "ppsx" | "pptm" => {
+                Some("application/vnd.openxmlformats-officedocument.presentationml.presentation")
+            }
+            "odp" | "otp" => Some("application/vnd.oasis.opendocument.presentation"),
+            "zip" => Some("application/zip"),
+            "tar" => Some("application/x-tar"),
+            "gz" | "tgz" => Some("application/gzip"),
+            "7z" => Some("application/x-7z-compressed"),
+            "rar" => Some("application/vnd.rar"),
+            "bz2" | "tbz2" => Some("application/x-bzip2"),
+            "xz" | "txz" => Some("application/x-xz"),
+            "mp3" => Some("audio/mpeg"),
+            "wav" => Some("audio/wav"),
+            "ogg" | "oga" => Some("audio/ogg"),
+            "flac" => Some("audio/flac"),
+            "m4a" | "aac" => Some("audio/mp4"),
+            "mp4" | "m4v" => Some("video/mp4"),
+            "mkv" => Some("video/x-matroska"),
+            "mov" => Some("video/quicktime"),
+            "avi" => Some("video/x-msvideo"),
+            "webm" => Some("video/webm"),
+            "txt" | "log" | "md" | "markdown" => Some("text/plain"),
+            "html" | "htm" => Some("text/html"),
+            "json" => Some("application/json"),
+            "xml" => Some("application/xml"),
+            "ics" | "vcs" => Some("text/calendar"),
+            "vcf" => Some("text/vcard"),
+            "eml" => Some("message/rfc822"),
+            _ => None,
+        }
+    }
+
+    /// Returns the effective MIME type, falling back to filename extension
+    /// inference when the declared MIME type is empty or generic (`application/octet-stream`).
+    pub fn effective_mime_type(&self) -> String {
+        let raw = self.mime_type.trim();
+        let lower = raw.to_ascii_lowercase();
+        let is_generic = lower.is_empty()
+            || lower == "application/octet-stream"
+            || lower == "binary/octet-stream"
+            || lower == "application/unknown"
+            || lower == "application/x-unknown"
+            || lower == "unknown";
+        if is_generic {
+            if let Some(inferred) = Self::infer_mime_type_from_filename(&self.filename) {
+                return inferred.to_string();
+            }
+        }
+        raw.to_string()
+    }
+
+    /// Resolves the best symbolic icon name for a given MIME type and filename.
+    pub fn icon_name_for(mime_type: &str, filename: &str) -> &'static str {
+        let raw_lower = mime_type.trim().to_ascii_lowercase();
+        let effective = if raw_lower.is_empty()
+            || raw_lower == "application/octet-stream"
+            || raw_lower == "binary/octet-stream"
+            || raw_lower == "application/unknown"
+            || raw_lower == "application/x-unknown"
+            || raw_lower == "unknown"
+        {
+            Self::infer_mime_type_from_filename(filename)
+                .unwrap_or(raw_lower.as_str())
+                .to_ascii_lowercase()
+        } else {
+            raw_lower
+        };
+        let ext = std::path::Path::new(filename.trim())
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+
+        if effective.starts_with("image/")
+            || matches!(
+                ext.as_str(),
+                "jpg" | "jpeg" | "jpe" | "jfif" | "png" | "gif" | "webp" | "svg" | "svgz" | "bmp"
+                    | "tif" | "tiff" | "ico" | "heic" | "heif" | "avif"
+            )
+        {
+            "image-x-generic-symbolic"
+        } else if effective.contains("spreadsheet")
+            || effective.contains("excel")
+            || effective == "text/csv"
+            || matches!(
+                ext.as_str(),
+                "xls" | "xlsx" | "xlsm" | "xlsb" | "xlt" | "xltx" | "ods" | "ots" | "csv" | "tsv"
+            )
+        {
+            "x-office-spreadsheet-symbolic"
+        } else if effective.contains("presentation")
+            || effective.contains("powerpoint")
+            || matches!(
+                ext.as_str(),
+                "ppt" | "pptx" | "pptm" | "pps" | "ppsx" | "pot" | "potx" | "odp" | "otp"
+            )
+        {
+            "x-office-presentation-symbolic"
+        } else if effective.contains("calendar") || matches!(ext.as_str(), "ics" | "vcs") {
+            "x-office-calendar-symbolic"
+        } else if effective.contains("vcard") || ext == "vcf" {
+            "x-office-address-book-symbolic"
+        } else if effective.contains("pdf")
+            || effective.contains("msword")
+            || effective.contains("wordprocessing")
+            || effective.contains("opendocument.text")
+            || effective == "application/rtf"
+            || matches!(
+                ext.as_str(),
+                "pdf" | "doc" | "docx" | "dot" | "dotx" | "docm" | "odt" | "ott" | "rtf"
+            )
+        {
+            "x-office-document-symbolic"
+        } else if effective.contains("zip")
+            || effective.contains("tar")
+            || effective.contains("compressed")
+            || effective.contains("archive")
+            || effective.contains("gzip")
+            || effective.contains("bzip")
+            || effective.contains("xz")
+            || effective.contains("rar")
+            || matches!(
+                ext.as_str(),
+                "zip" | "tar" | "gz" | "tgz" | "7z" | "rar" | "bz2" | "tbz2" | "xz" | "txz"
+            )
+        {
+            "package-x-generic-symbolic"
+        } else if effective.starts_with("audio/")
+            || matches!(ext.as_str(), "mp3" | "wav" | "ogg" | "oga" | "flac" | "m4a" | "aac")
+        {
+            "audio-x-generic-symbolic"
+        } else if effective.starts_with("video/")
+            || matches!(ext.as_str(), "mp4" | "m4v" | "mkv" | "mov" | "avi" | "webm")
+        {
+            "video-x-generic-symbolic"
+        } else if effective.starts_with("text/")
+            || effective.contains("json")
+            || effective.contains("xml")
+            || matches!(
+                ext.as_str(),
+                "txt" | "log" | "md" | "markdown" | "json" | "xml" | "html" | "htm" | "yaml" | "yml"
+            )
+        {
+            "text-x-generic-symbolic"
+        } else {
+            "mail-attachment-symbolic"
+        }
+    }
+
+    /// Returns the symbolic icon name for this attachment.
+    pub fn icon_name(&self) -> &'static str {
+        Self::icon_name_for(&self.mime_type, &self.filename)
+    }
+
     /// Returns true if this is a user-facing file attachment rather than an
     /// inline body resource (such as a signature logo or embedded CID image).
     pub fn is_user_attachment(&self) -> bool {
@@ -53,12 +239,29 @@ impl AttachmentInfo {
         !(self.is_inline && self.content_id.is_some())
     }
 
-    /// User-friendly description of the attachment's file type (e.g. "PDF document", "PNG image").
+    /// User-friendly description of the attachment's file type (e.g. "PDF document", "JPEG image").
     pub fn type_description(&self) -> String {
-        let desc = gio::content_type_get_description(&self.mime_type);
-        let s = desc.to_string();
-        if !s.is_empty() && s != self.mime_type && s != "unknown" {
-            return s;
+        let effective_mime = self.effective_mime_type();
+        let eff_lower = effective_mime.to_ascii_lowercase();
+        let is_generic = eff_lower.is_empty()
+            || eff_lower == "application/octet-stream"
+            || eff_lower == "binary/octet-stream"
+            || eff_lower == "application/unknown"
+            || eff_lower == "application/x-unknown"
+            || eff_lower == "unknown";
+        if !is_generic {
+            let desc = gio::content_type_get_description(&effective_mime);
+            let s = desc.to_string();
+            let s_lower = s.trim().to_ascii_lowercase();
+            if !s_lower.is_empty()
+                && s_lower != eff_lower
+                && s_lower != "unknown"
+                && s_lower != "unbekannt"
+                && !s_lower.contains("unknown ")
+                && !s_lower.contains("octet-stream")
+            {
+                return s;
+            }
         }
         let ext = std::path::Path::new(&self.filename)
             .extension()
@@ -67,8 +270,10 @@ impl AttachmentInfo {
             .to_uppercase();
         if !ext.is_empty() {
             format!("{ext} file")
+        } else if !is_generic {
+            effective_mime
         } else {
-            self.mime_type.clone()
+            "File".to_string()
         }
     }
 }
@@ -831,5 +1036,51 @@ mod tests {
             content: Arc::from([]),
         };
         assert!(no_cid_image.is_user_attachment());
+    }
+
+    #[test]
+    fn test_attachment_info_icon_and_type_description_fallback() {
+        use super::AttachmentInfo;
+
+        // 1. JPEG image sent with generic application/octet-stream MIME type
+        let octet_jpg = AttachmentInfo {
+            filename: "img0001.jpg".to_string(),
+            size_formatted: "12.7 KiB".to_string(),
+            mime_type: "application/octet-stream".to_string(),
+            content_id: None,
+            is_inline: false,
+            content: Arc::from([]),
+        };
+        assert_eq!(octet_jpg.effective_mime_type(), "image/jpeg");
+        assert_eq!(octet_jpg.icon_name(), "image-x-generic-symbolic");
+        assert_ne!(octet_jpg.type_description().to_ascii_lowercase(), "unknown");
+
+        // 2. Excel spreadsheet (.xlsx)
+        let xlsx = AttachmentInfo {
+            filename: "Fuhrparkliste vom 13. Juli 2026.xlsx".to_string(),
+            size_formatted: "14.4 KiB".to_string(),
+            mime_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                .to_string(),
+            content_id: None,
+            is_inline: false,
+            content: Arc::from([]),
+        };
+        assert_eq!(xlsx.icon_name(), "x-office-spreadsheet-symbolic");
+
+        // 3. Word document (.docx) and PDF (.pdf)
+        assert_eq!(
+            AttachmentInfo::icon_name_for("application/octet-stream", "Bericht.docx"),
+            "x-office-document-symbolic"
+        );
+        assert_eq!(
+            AttachmentInfo::icon_name_for("application/pdf", "Rechnung.pdf"),
+            "x-office-document-symbolic"
+        );
+
+        // 4. Presentation (.pptx)
+        assert_eq!(
+            AttachmentInfo::icon_name_for("application/octet-stream", "Folien.pptx"),
+            "x-office-presentation-symbolic"
+        );
     }
 }
