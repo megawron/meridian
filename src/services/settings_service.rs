@@ -92,6 +92,17 @@ pub const DEFAULT_MAIL_HEADER_ACTIONS: &[&str] = &[
     "delete",
 ];
 
+pub const DEFAULT_MAIL_HEADER_LEFT_ACTIONS: &[&str] = &[
+    "reply",
+    "reply-all",
+    "forward",
+];
+
+pub const DEFAULT_MAIL_HEADER_RIGHT_ACTIONS: &[&str] = &[
+    "unread",
+    "delete",
+];
+
 pub const ALL_MAIL_HEADER_ACTIONS: &[&str] = &[
     "reply",
     "reply-all",
@@ -99,31 +110,128 @@ pub const ALL_MAIL_HEADER_ACTIONS: &[&str] = &[
     "archive",
     "move",
     "unread",
+    "star",
+    "follow-up",
+    "important",
+    "edit-labels",
     "delete",
     "junk",
     "print",
+    "source",
+    "add-sender-contact",
 ];
 
+pub const DEFAULT_MAIL_LIST_TOOLBAR_ITEMS: &[&str] = &[
+    "filter:unread",
+    "filter:flagged",
+    "filter:followup",
+    "filter:attachment",
+    "filter:important",
+    "separator",
+    "mark-all-read",
+    "undo",
+];
+
+pub fn parse_mail_header_action_groups(value: &str) -> (Vec<String>, Vec<String>) {
+    let trimmed = value.trim();
+    if trimmed.eq_ignore_ascii_case("none") {
+        return (Vec::new(), Vec::new());
+    }
+    if trimmed.is_empty() {
+        return (
+            DEFAULT_MAIL_HEADER_LEFT_ACTIONS
+                .iter()
+                .map(|id| (*id).to_string())
+                .collect(),
+            DEFAULT_MAIL_HEADER_RIGHT_ACTIONS
+                .iter()
+                .map(|id| (*id).to_string())
+                .collect(),
+        );
+    }
+    if let Some((left_raw, right_raw)) = trimmed.split_once('|') {
+        let mut seen = HashSet::new();
+        let left: Vec<String> = left_raw
+            .split(',')
+            .map(str::trim)
+            .filter(|id| ALL_MAIL_HEADER_ACTIONS.contains(id))
+            .filter(|id| seen.insert((*id).to_string()))
+            .map(str::to_string)
+            .collect();
+        let right: Vec<String> = right_raw
+            .split(',')
+            .map(str::trim)
+            .filter(|id| ALL_MAIL_HEADER_ACTIONS.contains(id))
+            .filter(|id| seen.insert((*id).to_string()))
+            .map(str::to_string)
+            .collect();
+        return (left, right);
+    }
+    let mut seen = HashSet::new();
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    for id in trimmed
+        .split(',')
+        .map(str::trim)
+        .filter(|id| ALL_MAIL_HEADER_ACTIONS.contains(id))
+    {
+        if !seen.insert(id.to_string()) {
+            continue;
+        }
+        if matches!(id, "reply" | "reply-all" | "forward") {
+            left.push(id.to_string());
+        } else {
+            right.push(id.to_string());
+        }
+    }
+    (left, right)
+}
+
+pub fn format_mail_header_action_groups(left: &[String], right: &[String]) -> String {
+    let mut seen = HashSet::new();
+    let left_clean: Vec<String> = left
+        .iter()
+        .map(|s| s.trim())
+        .filter(|id| ALL_MAIL_HEADER_ACTIONS.contains(id))
+        .filter(|id| seen.insert((*id).to_string()))
+        .map(str::to_string)
+        .collect();
+    let right_clean: Vec<String> = right
+        .iter()
+        .map(|s| s.trim())
+        .filter(|id| ALL_MAIL_HEADER_ACTIONS.contains(id))
+        .filter(|id| seen.insert((*id).to_string()))
+        .map(str::to_string)
+        .collect();
+    if left_clean.is_empty() && right_clean.is_empty() {
+        "none".to_string()
+    } else {
+        format!("{}|{}", left_clean.join(","), right_clean.join(","))
+    }
+}
+
 pub fn normalize_mail_header_actions(value: &str) -> Vec<String> {
+    let (mut left, right) = parse_mail_header_action_groups(value);
+    left.extend(right);
+    left
+}
+
+pub fn normalize_mail_list_toolbar_items(value: &str) -> Vec<String> {
     let trimmed = value.trim();
     if trimmed.eq_ignore_ascii_case("none") {
         return Vec::new();
     }
     if trimmed.is_empty() {
-        return DEFAULT_MAIL_HEADER_ACTIONS
+        return DEFAULT_MAIL_LIST_TOOLBAR_ITEMS
             .iter()
             .map(|id| (*id).to_string())
             .collect();
     }
-    let requested: HashSet<&str> = trimmed
+    trimmed
         .split(',')
         .map(str::trim)
-        .filter(|id| ALL_MAIL_HEADER_ACTIONS.contains(id))
-        .collect();
-    ALL_MAIL_HEADER_ACTIONS
-        .iter()
-        .filter(|id| requested.contains(*id))
-        .map(|id| (*id).to_string())
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
         .collect()
 }
 
@@ -2294,18 +2402,55 @@ impl AppSettings {
 
     /// Select the folder shown when the mail view is opened.
     pub fn mail_default_folder(&self) -> String {
-        match self.settings.string("mail-default-folder").as_str() {
-            "all" | "inbox" | "sent" | "drafts" | "trash" | "archive" | "spam" => {
-                self.settings.string("mail-default-folder").to_string()
-            }
-            _ => "inbox".to_string(),
+        let raw = self.settings.string("mail-default-folder").to_string();
+        let trimmed = raw.trim();
+        let is_valid_account_folder = trimmed
+            .split_once("::")
+            .is_some_and(|(src, fname)| !src.trim().is_empty() && !fname.trim().is_empty());
+        if matches!(
+            trimmed,
+            "all"
+                | "inbox"
+                | "sent"
+                | "drafts"
+                | "trash"
+                | "archive"
+                | "spam"
+                | "unified_inbox"
+                | "unified_unread"
+                | "unified_flagged"
+                | "unified_sent"
+        ) || is_valid_account_folder
+        {
+            trimmed.to_string()
+        } else {
+            "inbox".to_string()
         }
     }
 
     pub fn set_mail_default_folder(&self, value: &str) {
-        let value = match value {
-            "all" | "inbox" | "sent" | "drafts" | "trash" | "archive" | "spam" => value,
-            _ => "inbox",
+        let trimmed = value.trim();
+        let is_valid_account_folder = trimmed
+            .split_once("::")
+            .is_some_and(|(src, fname)| !src.trim().is_empty() && !fname.trim().is_empty());
+        let value = if matches!(
+            trimmed,
+            "all"
+                | "inbox"
+                | "sent"
+                | "drafts"
+                | "trash"
+                | "archive"
+                | "spam"
+                | "unified_inbox"
+                | "unified_unread"
+                | "unified_flagged"
+                | "unified_sent"
+        ) || is_valid_account_folder
+        {
+            trimmed
+        } else {
+            "inbox"
         };
         if let Err(error) = self.settings.set_string("mail-default-folder", value) {
             tracing::warn!(%error, "Could not persist default mail folder");
@@ -3084,6 +3229,33 @@ impl AppSettings {
         normalize_mail_header_actions(&raw)
     }
 
+    pub fn mail_header_action_groups(&self) -> (Vec<String>, Vec<String>) {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("mail-header-actions"))
+            .unwrap_or(false);
+        let raw = if has_key {
+            self.settings.string("mail-header-actions").to_string()
+        } else {
+            String::new()
+        };
+        parse_mail_header_action_groups(&raw)
+    }
+
+    pub fn set_mail_header_action_groups(&self, left: &[String], right: &[String]) {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("mail-header-actions"))
+            .unwrap_or(false);
+        if !has_key {
+            return;
+        }
+        let formatted = format_mail_header_action_groups(left, right);
+        self.set_string("mail-header-actions", &formatted);
+    }
+
     pub fn set_mail_header_actions(&self, actions: &[String]) {
         let has_key = self
             .settings
@@ -3096,12 +3268,44 @@ impl AppSettings {
         if actions.is_empty() {
             self.set_string("mail-header-actions", "none");
         } else {
-            let normalized = normalize_mail_header_actions(&actions.join(","));
-            if normalized.is_empty() {
-                self.set_string("mail-header-actions", "none");
-            } else {
-                self.set_string("mail-header-actions", &normalized.join(","));
-            }
+            let (left, right) = parse_mail_header_action_groups(&actions.join(","));
+            let formatted = format_mail_header_action_groups(&left, &right);
+            self.set_string("mail-header-actions", &formatted);
+        }
+    }
+
+    pub fn mail_list_toolbar_items(&self) -> Vec<String> {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("mail-list-toolbar-items"))
+            .unwrap_or(false);
+        let raw = if has_key {
+            self.settings.string("mail-list-toolbar-items").to_string()
+        } else {
+            String::new()
+        };
+        normalize_mail_list_toolbar_items(&raw)
+    }
+
+    pub fn set_mail_list_toolbar_items(&self, items: &[String]) {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("mail-list-toolbar-items"))
+            .unwrap_or(false);
+        if !has_key {
+            return;
+        }
+        let cleaned: Vec<String> = items
+            .iter()
+            .map(|s| s.trim().replace(',', " "))
+            .filter(|s| !s.is_empty())
+            .collect();
+        if cleaned.is_empty() {
+            self.set_string("mail-list-toolbar-items", "none");
+        } else {
+            self.set_string("mail-list-toolbar-items", &cleaned.join(","));
         }
     }
 
@@ -4170,8 +4374,12 @@ impl AppSettings {
                 self.set_mail_header_style(style);
             }
             "mail-header-actions" => {
-                let actions = normalize_mail_header_actions(value);
-                self.set_mail_header_actions(&actions);
+                let (left, right) = parse_mail_header_action_groups(value);
+                self.set_mail_header_action_groups(&left, &right);
+            }
+            "mail-list-toolbar-items" => {
+                let items = normalize_mail_list_toolbar_items(value);
+                self.set_mail_list_toolbar_items(&items);
             }
             "mail-list-column-order" => {
                 let order = normalize_mail_list_column_order(value);

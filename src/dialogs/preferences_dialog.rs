@@ -4101,38 +4101,34 @@ impl PreferencesDialog {
         }
         group_mail_comfort.add(&row_magic_spacebar);
 
+        let current_default_folder = settings
+            .as_ref()
+            .map(AppSettings::mail_default_folder);
+        let startup_folder_entries =
+            collect_account_panel_folders(current_default_folder.as_deref());
+        let startup_folder_labels: Vec<&str> = startup_folder_entries
+            .iter()
+            .map(|(_, label)| label.as_str())
+            .collect();
         let row_mail_default_folder = adw::ComboRow::builder()
             .title("Startup Folder")
-            .model(&gtk::StringList::new(&[
-                "Inbox",
-                "All Messages",
-                "Sent",
-                "Drafts",
-                "Trash",
-                "Archive",
-                "Spam",
-            ]))
+            .model(&gtk::StringList::new(&startup_folder_labels))
             .build();
         if let Some(settings) = settings.clone() {
-            row_mail_default_folder.set_selected(match settings.mail_default_folder().as_str() {
-                "all" => 1,
-                "sent" => 2,
-                "drafts" => 3,
-                "trash" => 4,
-                "archive" => 5,
-                "spam" => 6,
-                _ => 0,
-            });
+            let cur = settings.mail_default_folder();
+            let initial_idx = startup_folder_entries
+                .iter()
+                .position(|(id, _)| id == &cur)
+                .unwrap_or(0) as u32;
+            row_mail_default_folder.set_selected(initial_idx);
+            let entries_for_select = startup_folder_entries.clone();
             row_mail_default_folder.connect_selected_notify(move |row| {
-                settings.set_mail_default_folder(match row.selected() {
-                    1 => "all",
-                    2 => "sent",
-                    3 => "drafts",
-                    4 => "trash",
-                    5 => "archive",
-                    6 => "spam",
-                    _ => "inbox",
-                });
+                let idx = row.selected() as usize;
+                let folder_id = entries_for_select
+                    .get(idx)
+                    .map(|(id, _)| id.as_str())
+                    .unwrap_or("inbox");
+                settings.set_mail_default_folder(folder_id);
             });
         }
         group_mail_startup.add(&row_mail_default_folder);
@@ -4807,156 +4803,8 @@ impl PreferencesDialog {
         }
         group_mail_headers_mode.add(&row_header_style);
 
-        let group_mail_header_actions = adw::PreferencesGroup::builder()
-            .title(&crate::i18n::gettext("Header Action Bar"))
-            .description(&crate::i18n::gettext(
-                "Choose which actions are shown as direct buttons in the message header. Unchecked actions automatically appear in the More (▾) dropdown menu.",
-            ))
-            .build();
-
-        let btn_reset_header_actions = gtk::Button::builder()
-            .label(&crate::i18n::gettext("Reset to Defaults"))
-            .valign(gtk::Align::Center)
-            .css_classes(vec!["flat"])
-            .build();
-        group_mail_header_actions.set_header_suffix(Some(&btn_reset_header_actions));
-
-        let header_action_defs: &[(&'static str, &'static str, String, String)] = &[
-            (
-                "reply",
-                "mail-reply-sender-symbolic",
-                crate::i18n::gettext("Reply"),
-                crate::i18n::gettext("Primary communication group"),
-            ),
-            (
-                "reply-all",
-                "mail-reply-all-symbolic",
-                crate::i18n::gettext("Reply All"),
-                crate::i18n::gettext("Primary communication group"),
-            ),
-            (
-                "forward",
-                "mail-forward-symbolic",
-                crate::i18n::gettext("Forward"),
-                crate::i18n::gettext("Primary communication group"),
-            ),
-            (
-                "archive",
-                "mail-archive-symbolic",
-                crate::i18n::gettext("Archive"),
-                crate::i18n::gettext("Secondary triage group"),
-            ),
-            (
-                "move",
-                "folder-symbolic",
-                crate::i18n::gettext("Move to Folder…"),
-                crate::i18n::gettext("Secondary triage group"),
-            ),
-            (
-                "unread",
-                "mail-mark-unread-symbolic",
-                crate::i18n::gettext("Mark as Unread"),
-                crate::i18n::gettext("Secondary triage group"),
-            ),
-            (
-                "delete",
-                "user-trash-symbolic",
-                crate::i18n::gettext("Move to Trash"),
-                crate::i18n::gettext("Secondary triage group"),
-            ),
-            (
-                "junk",
-                "mail-mark-junk-symbolic",
-                crate::i18n::gettext("Mark as Junk"),
-                crate::i18n::gettext("Secondary triage group"),
-            ),
-            (
-                "print",
-                "printer-symbolic",
-                crate::i18n::gettext("Print…"),
-                crate::i18n::gettext("Secondary triage group"),
-            ),
-        ];
-
-        let initial_header_actions: std::collections::HashSet<String> = settings
-            .as_ref()
-            .map(|s| s.mail_header_actions())
-            .unwrap_or_else(|| {
-                crate::services::settings_service::DEFAULT_MAIL_HEADER_ACTIONS
-                    .iter()
-                    .map(|id| (*id).to_string())
-                    .collect()
-            })
-            .into_iter()
-            .collect();
-
-        let header_action_rows: std::rc::Rc<Vec<(&'static str, adw::SwitchRow)>> = {
-            let mut rows = Vec::with_capacity(header_action_defs.len());
-            for (action_id, icon_name, title, subtitle) in header_action_defs {
-                let row = adw::SwitchRow::builder()
-                    .title(title)
-                    .subtitle(subtitle)
-                    .active(initial_header_actions.contains(*action_id))
-                    .build();
-                let icon = gtk::Image::builder()
-                    .icon_name(*icon_name)
-                    .pixel_size(16)
-                    .valign(gtk::Align::Center)
-                    .build();
-                row.add_prefix(&icon);
-                group_mail_header_actions.add(&row);
-                rows.push((*action_id, row));
-            }
-            std::rc::Rc::new(rows)
-        };
-
-        if let Some(settings) = settings.clone() {
-            let syncing_header_actions = std::rc::Rc::new(std::cell::Cell::new(false));
-            for (_, row) in header_action_rows.iter() {
-                let rows_for_toggle = header_action_rows.clone();
-                let settings_for_toggle = settings.clone();
-                let syncing_for_toggle = syncing_header_actions.clone();
-                row.connect_active_notify(move |_| {
-                    if syncing_for_toggle.get() {
-                        return;
-                    }
-                    let active_ids: Vec<String> = rows_for_toggle
-                        .iter()
-                        .filter(|(_, r)| r.is_active())
-                        .map(|(id, _)| (*id).to_string())
-                        .collect();
-                    settings_for_toggle.set_mail_header_actions(&active_ids);
-                });
-            }
-
-            let settings_for_reset = settings.clone();
-            btn_reset_header_actions.connect_clicked(move |_| {
-                let defaults: Vec<String> =
-                    crate::services::settings_service::DEFAULT_MAIL_HEADER_ACTIONS
-                        .iter()
-                        .map(|id| (*id).to_string())
-                        .collect();
-                settings_for_reset.set_mail_header_actions(&defaults);
-            });
-
-            let rows_for_changed = header_action_rows.clone();
-            let syncing_for_changed = syncing_header_actions.clone();
-            let settings_for_changed = settings.clone();
-            settings.connect_changed(Some("mail-header-actions"), move |_, _| {
-                syncing_for_changed.set(true);
-                let enabled: std::collections::HashSet<String> = settings_for_changed
-                    .mail_header_actions()
-                    .into_iter()
-                    .collect();
-                for (id, row) in rows_for_changed.iter() {
-                    let target = enabled.contains(*id);
-                    if row.is_active() != target {
-                        row.set_active(target);
-                    }
-                }
-                syncing_for_changed.set(false);
-            });
-        }
+        let group_mail_header_actions = build_mail_header_toolbar_editor(settings.clone());
+        let group_mail_list_toolbar = build_mail_list_toolbar_editor(settings.clone());
 
         let group_mail_normal_headers = adw::PreferencesGroup::builder()
             .title("Standard Message Headers")
@@ -6281,6 +6129,7 @@ impl PreferencesDialog {
             .title(&gettext("Message List & Layout"))
             .icon_name("view-list-symbolic")
             .build();
+        page_mail_layout.add(&group_mail_list_toolbar);
         page_mail_layout.add(&group_mail_window_layout);
         page_mail_layout.add(&group_mail_elements);
         page_mail_layout.add(&group_mail_list);
@@ -7067,6 +6916,1421 @@ fn default_mail_normal_headers_for_editor() -> Vec<(String, bool)> {
     .into_iter()
     .map(|(name, visible)| (name.to_string(), visible))
     .collect()
+}
+
+fn collect_account_panel_folders(current_setting: Option<&str>) -> Vec<(String, String)> {
+    let mut entries: Vec<(String, String)> = vec![
+        ("inbox".to_string(), crate::i18n::gettext("Inbox")),
+        ("all".to_string(), crate::i18n::gettext("All Messages")),
+        ("sent".to_string(), crate::i18n::gettext("Sent")),
+        ("drafts".to_string(), crate::i18n::gettext("Drafts")),
+        ("trash".to_string(), crate::i18n::gettext("Trash")),
+        ("archive".to_string(), crate::i18n::gettext("Archive")),
+        ("spam".to_string(), crate::i18n::gettext("Spam")),
+        ("unified_unread".to_string(), crate::i18n::gettext("Unread")),
+        ("unified_flagged".to_string(), crate::i18n::gettext("Starred")),
+    ];
+    let mut seen_ids: std::collections::HashSet<String> =
+        entries.iter().map(|(id, _)| id.clone()).collect();
+
+    let live_summaries = gtk::Window::list_toplevels()
+        .into_iter()
+        .find_map(|w| w.downcast::<crate::window::MeridianWindow>().ok())
+        .and_then(|win| win.mail_page())
+        .map(|mp| mp.cached_folder_summaries())
+        .unwrap_or_default();
+
+    let profiles = AccountConfigStore::default().load();
+    let mut covered_sources = std::collections::HashSet::<String>::new();
+
+    for profile in profiles.iter().filter(|p| p.enabled) {
+        let acct_label = if !profile.display_name.trim().is_empty() {
+            profile.display_name.trim().to_string()
+        } else {
+            profile.email.trim().to_string()
+        };
+        let eds_uid =
+            crate::services::account_config_service::eds_source_uid_for_email(&profile.email);
+        let prof_canon = profile.id.strip_prefix("eds:").unwrap_or(&profile.id);
+        let eds_canon = eds_uid.strip_prefix("eds:").unwrap_or(&eds_uid);
+
+        let matching_live: Vec<_> = live_summaries
+            .iter()
+            .filter(|f| {
+                let f_canon = f.source_uid.strip_prefix("eds:").unwrap_or(&f.source_uid);
+                f.is_selectable
+                    && !f.folder_name.starts_with('.')
+                    && !f.folder_name.contains("/.")
+                    && f.folder_name != "[Gmail]"
+                    && !f.folder_name.eq_ignore_ascii_case("[Google Mail]")
+                    && (f_canon == prof_canon
+                        || (!eds_canon.is_empty() && f_canon == eds_canon)
+                        || f.source_display_name.eq_ignore_ascii_case(&profile.display_name)
+                        || f.source_display_name.eq_ignore_ascii_case(&profile.email))
+            })
+            .collect();
+
+        if !matching_live.is_empty() {
+            for f in matching_live {
+                let f_canon = f.source_uid.strip_prefix("eds:").unwrap_or(&f.source_uid);
+                covered_sources.insert(f_canon.to_string());
+                let key = format!("{f_canon}::{}", f.folder_name);
+                if seen_ids.insert(key.clone()) {
+                    let clean_disp = f
+                        .display_name
+                        .strip_prefix("[Gmail]/")
+                        .or_else(|| f.display_name.strip_prefix("[Google Mail]/"))
+                        .unwrap_or(&f.display_name);
+                    entries.push((key, format!("{acct_label} — {clean_disp}")));
+                }
+            }
+        } else {
+            let uid = if !eds_canon.is_empty() {
+                eds_canon
+            } else {
+                prof_canon
+            };
+            covered_sources.insert(uid.to_string());
+            for (raw_fname, localized) in [
+                ("INBOX", crate::i18n::gettext("Inbox")),
+                ("Sent", crate::i18n::gettext("Sent")),
+                ("Drafts", crate::i18n::gettext("Drafts")),
+                ("Archive", crate::i18n::gettext("Archive")),
+                ("Trash", crate::i18n::gettext("Trash")),
+                ("Junk", crate::i18n::gettext("Spam")),
+            ] {
+                let key = format!("{uid}::{raw_fname}");
+                if seen_ids.insert(key.clone()) {
+                    entries.push((key, format!("{acct_label} — {localized}")));
+                }
+            }
+        }
+    }
+
+    for f in &live_summaries {
+        let f_canon = f.source_uid.strip_prefix("eds:").unwrap_or(&f.source_uid);
+        if f_canon == "local"
+            || f.source_display_name.to_ascii_lowercase().contains("computer")
+            || covered_sources.contains(f_canon)
+            || !f.is_selectable
+            || f.folder_name.starts_with('.')
+            || f.folder_name.contains("/.")
+            || f.folder_name == "[Gmail]"
+            || f.folder_name.eq_ignore_ascii_case("[Google Mail]")
+        {
+            continue;
+        }
+        let key = format!("{f_canon}::{}", f.folder_name);
+        if seen_ids.insert(key.clone()) {
+            let clean_disp = f
+                .display_name
+                .strip_prefix("[Gmail]/")
+                .or_else(|| f.display_name.strip_prefix("[Google Mail]/"))
+                .unwrap_or(&f.display_name);
+            let acct = if f.source_display_name.trim().is_empty() {
+                f_canon
+            } else {
+                f.source_display_name.trim()
+            };
+            entries.push((key, format!("{acct} — {clean_disp}")));
+        }
+    }
+
+    if let Some(cur) = current_setting.map(str::trim).filter(|s| !s.is_empty()) {
+        if seen_ids.insert(cur.to_string()) {
+            let label = cur
+                .split_once("::")
+                .map(|(src, fname)| format!("{src} — {fname}"))
+                .unwrap_or_else(|| cur.to_string());
+            entries.push((cur.to_string(), label));
+        }
+    }
+
+    entries
+}
+
+fn header_action_meta(id: &str) -> (&'static str, String) {
+    match id {
+        "reply" => ("mail-reply-sender-symbolic", crate::i18n::gettext("Reply")),
+        "reply-all" => ("mail-reply-all-symbolic", crate::i18n::gettext("Reply All")),
+        "forward" => ("mail-forward-symbolic", crate::i18n::gettext("Forward")),
+        "archive" => ("package-x-generic-symbolic", crate::i18n::gettext("Archive")),
+        "move" => ("folder-symbolic", crate::i18n::gettext("Move To")),
+        "unread" => ("mail-unread-symbolic", crate::i18n::gettext("Unread")),
+        "delete" => ("user-trash-symbolic", crate::i18n::gettext("Delete")),
+        "junk" => ("mail-mark-junk-symbolic", crate::i18n::gettext("Spam")),
+        "print" => ("document-print-symbolic", crate::i18n::gettext("Print")),
+        "star" => ("starred-symbolic", crate::i18n::gettext("Star")),
+        "follow-up" => ("bookmark-new-symbolic", crate::i18n::gettext("Follow-Up")),
+        "important" => ("emblem-important-symbolic", crate::i18n::gettext("Important")),
+        "edit-labels" => ("preferences-color-symbolic", crate::i18n::gettext("Labels")),
+        "source" => ("text-x-generic-symbolic", crate::i18n::gettext("Source")),
+        "add-sender-contact" => ("contact-new-symbolic", crate::i18n::gettext("Add Contact")),
+        _ => ("folder-symbolic", id.to_string()),
+    }
+}
+
+fn make_toolbar_tile_icon(
+    base_token: &str,
+    icon_name: &str,
+    labels: &[crate::services::settings_service::MailLabelDefinition],
+) -> gtk::Widget {
+    if base_token == "separator" {
+        return gtk::Separator::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .height_request(16)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .build()
+            .upcast();
+    }
+    if let Some(tag) = base_token.strip_prefix("label:") {
+        let color_hex = labels
+            .iter()
+            .find(|l| l.tag.eq_ignore_ascii_case(tag) || l.name.eq_ignore_ascii_case(tag))
+            .map(|l| l.color.clone())
+            .unwrap_or_else(|| "#3584e4".to_string());
+        let rgba = gtk::gdk::RGBA::parse(&color_hex)
+            .unwrap_or_else(|_| gtk::gdk::RGBA::new(0.21, 0.52, 0.89, 1.0));
+        let dot = gtk::DrawingArea::builder()
+            .content_width(14)
+            .content_height(16)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .build();
+        dot.set_draw_func(move |_, cr, w, h| {
+            let r = 5.0_f64;
+            cr.arc(w as f64 / 2.0, h as f64 / 2.0, r, 0.0, std::f64::consts::TAU);
+            cr.set_source_rgba(rgba.red() as f64, rgba.green() as f64, rgba.blue() as f64, 1.0);
+            let _ = cr.fill();
+        });
+        return dot.upcast();
+    }
+    gtk::Image::builder()
+        .icon_name(icon_name)
+        .pixel_size(16)
+        .halign(gtk::Align::Center)
+        .build()
+        .upcast()
+}
+
+fn make_draggable_toolbar_tile(
+    base_token: &str,
+    icon_name: &str,
+    label_text: &str,
+    drag_payload: String,
+    labels: &[crate::services::settings_service::MailLabelDefinition],
+) -> (gtk::FlowBoxChild, gtk::Box) {
+    let tile_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(3)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .css_classes(vec!["hylki-toolbar-tile"])
+        .build();
+    tile_box.set_cursor_from_name(Some("grab"));
+
+    let icon_widget = make_toolbar_tile_icon(base_token, icon_name, labels);
+    let lbl = gtk::Label::builder()
+        .label(label_text)
+        .css_classes(vec!["caption"])
+        .halign(gtk::Align::Center)
+        .build();
+    tile_box.append(&icon_widget);
+    tile_box.append(&lbl);
+
+    let ds = gtk::DragSource::builder()
+        .actions(gtk::gdk::DragAction::MOVE)
+        .build();
+    ds.connect_prepare(move |_, _, _| {
+        Some(gtk::gdk::ContentProvider::for_value(&drag_payload.to_value()))
+    });
+    let tb_begin = tile_box.clone();
+    let base_ghost = base_token.to_string();
+    let icon_ghost = icon_name.to_string();
+    let label_ghost = label_text.to_string();
+    let labels_ghost = labels.to_vec();
+    ds.connect_drag_begin(move |_, drag| {
+        tb_begin.add_css_class("dragging");
+        let ghost = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(3)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["card", "hylki-toolbar-tile"])
+            .build();
+        let g_icon = make_toolbar_tile_icon(&base_ghost, &icon_ghost, &labels_ghost);
+        let g_lbl = gtk::Label::builder()
+            .label(&label_ghost)
+            .css_classes(vec!["caption"])
+            .halign(gtk::Align::Center)
+            .build();
+        ghost.append(&g_icon);
+        ghost.append(&g_lbl);
+        let drag_icon = gtk::DragIcon::for_drag(drag);
+        drag_icon.set_child(Some(&ghost));
+        drag.set_hotspot(36, 26);
+    });
+    let tb_end = tile_box.clone();
+    ds.connect_drag_end(move |_, _, _| {
+        tb_end.remove_css_class("dragging");
+    });
+    tile_box.add_controller(ds);
+
+    let child = gtk::FlowBoxChild::builder()
+        .focusable(false)
+        .child(&tile_box)
+        .build();
+    (child, tile_box)
+}
+
+fn build_mail_header_toolbar_editor(settings: Option<AppSettings>) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title(&crate::i18n::gettext("Header Action Bar"))
+        .description(&crate::i18n::gettext(
+            "Drag buttons between the groups and into the order you want (or click a tile). The left group always stays on the toolbar; the right group folds into the ▾ menu when the reading pane is narrow. Changes apply at once.",
+        ))
+        .build();
+
+    let btn_restore = gtk::Button::builder()
+        .label(&crate::i18n::gettext("Restore Defaults"))
+        .valign(gtk::Align::Center)
+        .css_classes(vec!["flat"])
+        .build();
+    group.set_header_suffix(Some(&btn_restore));
+
+    let card = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .css_classes(vec!["card", "hylki-toolbar-editor-card"])
+        .build();
+
+    let make_zone_section = |title: &str, subtitle: &str| -> (gtk::Box, gtk::Box) {
+        let sec = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .css_classes(vec!["hylki-zone-section"])
+            .build();
+        let hdr = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+        let lbl_title = gtk::Label::builder()
+            .label(title)
+            .css_classes(vec!["heading"])
+            .halign(gtk::Align::Start)
+            .build();
+        let lbl_sub = gtk::Label::builder()
+            .label(subtitle)
+            .css_classes(vec!["caption", "dim-label"])
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Baseline)
+            .build();
+        hdr.append(&lbl_title);
+        hdr.append(&lbl_sub);
+        sec.append(&hdr);
+
+        let drop_zone = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .css_classes(vec!["hylki-drop-zone"])
+            .build();
+        sec.append(&drop_zone);
+        (sec, drop_zone)
+    };
+
+    let (sec_left, zone_left) = make_zone_section(
+        &crate::i18n::gettext("Left group"),
+        &crate::i18n::gettext("Always shown"),
+    );
+    let (sec_right, zone_right) = make_zone_section(
+        &crate::i18n::gettext("Right group"),
+        &crate::i18n::gettext("Folds into ▾ when narrow"),
+    );
+    let (sec_hidden, zone_hidden) = make_zone_section(
+        &crate::i18n::gettext("Not shown"),
+        &crate::i18n::gettext("Drop a button here to move it into the ▾ menu"),
+    );
+
+    card.append(&sec_left);
+    card.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    card.append(&sec_right);
+    card.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    card.append(&sec_hidden);
+    group.add(&card);
+
+    let initial_groups = settings
+        .as_ref()
+        .map(AppSettings::mail_header_action_groups)
+        .unwrap_or_else(|| {
+            (
+                crate::services::settings_service::DEFAULT_MAIL_HEADER_LEFT_ACTIONS
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect(),
+                crate::services::settings_service::DEFAULT_MAIL_HEADER_RIGHT_ACTIONS
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect(),
+            )
+        });
+    let state: Rc<RefCell<(Vec<String>, Vec<String>)>> = Rc::new(RefCell::new(initial_groups));
+    let syncing = Rc::new(Cell::new(false));
+
+    type RebuildFn = Rc<RefCell<Option<Box<dyn Fn()>>>>;
+    let rebuild_ref: RebuildFn = Rc::new(RefCell::new(None));
+
+    let save_and_rebuild = {
+        let state = state.clone();
+        let settings = settings.clone();
+        let syncing = syncing.clone();
+        let rebuild_ref = rebuild_ref.clone();
+        Rc::new(move || {
+            let (left, right) = state.borrow().clone();
+            if let Some(ref s) = settings {
+                syncing.set(true);
+                s.set_mail_header_action_groups(&left, &right);
+                syncing.set(false);
+            }
+            if let Some(ref f) = *rebuild_ref.borrow() {
+                f();
+            }
+        })
+    };
+
+    let attach_zone_drop = |zone: &gtk::Box, target_group: &'static str| {
+        let dt = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
+        let z_enter = zone.clone();
+        dt.connect_enter(move |_, _, _| {
+            z_enter.add_css_class("drop-active");
+            gtk::gdk::DragAction::MOVE
+        });
+        let z_leave = zone.clone();
+        dt.connect_leave(move |_| {
+            z_leave.remove_css_class("drop-active");
+        });
+        let z_drop = zone.clone();
+        let state_drop = state.clone();
+        let save_drop = save_and_rebuild.clone();
+        dt.connect_drop(move |_, val, _, _| {
+            z_drop.remove_css_class("drop-active");
+            let Ok(payload) = val.get::<String>() else { return false; };
+            let Some(action_id) = payload.strip_prefix("header-tile:") else { return false; };
+            {
+                let mut st = state_drop.borrow_mut();
+                st.0.retain(|x| x != action_id);
+                st.1.retain(|x| x != action_id);
+                match target_group {
+                    "left" => st.0.push(action_id.to_string()),
+                    "right" => st.1.push(action_id.to_string()),
+                    _ => {}
+                }
+            }
+            save_drop();
+            true
+        });
+        zone.add_controller(dt);
+    };
+
+    attach_zone_drop(&zone_left, "left");
+    attach_zone_drop(&zone_right, "right");
+    attach_zone_drop(&zone_hidden, "hidden");
+
+    {
+        let zone_left = zone_left.clone();
+        let zone_right = zone_right.clone();
+        let zone_hidden = zone_hidden.clone();
+        let state = state.clone();
+        let save_and_rebuild = save_and_rebuild.clone();
+        *rebuild_ref.borrow_mut() = Some(Box::new(move || {
+            for z in [&zone_left, &zone_right, &zone_hidden] {
+                while let Some(c) = z.first_child() {
+                    z.remove(&c);
+                }
+            }
+            let (left, right) = state.borrow().clone();
+            let hidden: Vec<String> = crate::services::settings_service::ALL_MAIL_HEADER_ACTIONS
+                .iter()
+                .filter(|id| !left.contains(&(**id).to_string()) && !right.contains(&(**id).to_string()))
+                .map(|id| (*id).to_string())
+                .collect();
+
+            let populate_zone = |zone: &gtk::Box, items: &[String], group_name: &'static str| {
+                if items.is_empty() {
+                    let empty_lbl = gtk::Label::builder()
+                        .label(&crate::i18n::gettext("Empty"))
+                        .css_classes(vec!["dim-label", "hylki-empty-label"])
+                        .hexpand(true)
+                        .halign(gtk::Align::Center)
+                        .valign(gtk::Align::Center)
+                        .build();
+                    zone.append(&empty_lbl);
+                    return;
+                }
+                let flow = gtk::FlowBox::builder()
+                    .selection_mode(gtk::SelectionMode::None)
+                    .activate_on_single_click(false)
+                    .homogeneous(false)
+                    .max_children_per_line(10)
+                    .min_children_per_line(1)
+                    .column_spacing(6)
+                    .row_spacing(6)
+                    .hexpand(true)
+                    .build();
+                for (idx, item_id) in items.iter().enumerate() {
+                    let (icon_name, label_text) = header_action_meta(item_id);
+                    let drag_id = format!("header-tile:{item_id}");
+                    let (flow_child, tile_box) =
+                        make_draggable_toolbar_tile(item_id, icon_name, &label_text, drag_id, &[]);
+
+                    // DropTarget on individual tile for precise insertion
+                    let dt = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
+                    let tb_enter = tile_box.clone();
+                    dt.connect_enter(move |_, _, _| {
+                        tb_enter.add_css_class("drop-target-tile");
+                        gtk::gdk::DragAction::MOVE
+                    });
+                    let tb_leave = tile_box.clone();
+                    dt.connect_leave(move |_| {
+                        tb_leave.remove_css_class("drop-target-tile");
+                    });
+                    let tb_drop = tile_box.clone();
+                    let target_id = item_id.clone();
+                    let state_tile = state.clone();
+                    let save_tile = save_and_rebuild.clone();
+                    dt.connect_drop(move |_, val, _, _| {
+                        tb_drop.remove_css_class("drop-target-tile");
+                        let Ok(payload) = val.get::<String>() else { return false; };
+                        let Some(dragged_id) = payload.strip_prefix("header-tile:") else { return false; };
+                        if dragged_id == target_id {
+                            return false;
+                        }
+                        {
+                            let mut st = state_tile.borrow_mut();
+                            st.0.retain(|x| x != dragged_id);
+                            st.1.retain(|x| x != dragged_id);
+                            match group_name {
+                                "left" => {
+                                    let pos = st.0.iter().position(|x| x == &target_id).unwrap_or(st.0.len());
+                                    st.0.insert(pos, dragged_id.to_string());
+                                }
+                                "right" => {
+                                    let pos = st.1.iter().position(|x| x == &target_id).unwrap_or(st.1.len());
+                                    st.1.insert(pos, dragged_id.to_string());
+                                }
+                                _ => {}
+                            }
+                        }
+                        save_tile();
+                        true
+                    });
+                    tile_box.add_controller(dt);
+
+                    // Click popover on release (does not block DragSource)
+                    let id_click = item_id.clone();
+                    let state_click = state.clone();
+                    let save_click = save_and_rebuild.clone();
+                    let total_len = items.len();
+                    let click_gesture = gtk::GestureClick::builder().button(1).build();
+                    let tb_for_pop = tile_box.clone();
+                    click_gesture.connect_released(move |_, _, _, _| {
+                        let pop_box = gtk::Box::builder()
+                            .orientation(gtk::Orientation::Vertical)
+                            .spacing(2)
+                            .margin_start(4)
+                            .margin_end(4)
+                            .margin_top(4)
+                            .margin_bottom(4)
+                            .build();
+                        let pop = gtk::Popover::builder()
+                            .child(&pop_box)
+                            .has_arrow(false)
+                            .css_classes(vec!["menu", "context-menu"])
+                            .build();
+                        pop.set_parent(&tb_for_pop);
+
+                        let make_menu_btn = |label: &str, sensitive: bool| -> gtk::Button {
+                            gtk::Button::builder()
+                                .child(
+                                    &gtk::Label::builder()
+                                        .label(label)
+                                        .halign(gtk::Align::Start)
+                                        .build(),
+                                )
+                                .halign(gtk::Align::Fill)
+                                .sensitive(sensitive)
+                                .css_classes(vec!["flat", "context-menu-item"])
+                                .build()
+                        };
+
+                        if group_name != "hidden" && total_len > 1 {
+                            let b_left = make_menu_btn(&crate::i18n::gettext("Move Left"), idx > 0);
+                            let st_l = state_click.clone();
+                            let sv_l = save_click.clone();
+                            let pw_l = pop.downgrade();
+                            b_left.connect_clicked(move |_| {
+                                {
+                                    let mut st = st_l.borrow_mut();
+                                    let vec = if group_name == "left" { &mut st.0 } else { &mut st.1 };
+                                    if idx > 0 && idx < vec.len() {
+                                        vec.swap(idx, idx - 1);
+                                    }
+                                }
+                                if let Some(p) = pw_l.upgrade() { p.popdown(); }
+                                sv_l();
+                            });
+                            pop_box.append(&b_left);
+
+                            let b_right = make_menu_btn(&crate::i18n::gettext("Move Right"), idx + 1 < total_len);
+                            let st_r = state_click.clone();
+                            let sv_r = save_click.clone();
+                            let pw_r = pop.downgrade();
+                            b_right.connect_clicked(move |_| {
+                                {
+                                    let mut st = st_r.borrow_mut();
+                                    let vec = if group_name == "left" { &mut st.0 } else { &mut st.1 };
+                                    if idx + 1 < vec.len() {
+                                        vec.swap(idx, idx + 1);
+                                    }
+                                }
+                                if let Some(p) = pw_r.upgrade() { p.popdown(); }
+                                sv_r();
+                            });
+                            pop_box.append(&b_right);
+                            pop_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+                        }
+
+                        for (dest_key, dest_label) in [
+                            ("left", crate::i18n::gettext("Move to Left group")),
+                            ("right", crate::i18n::gettext("Move to Right group")),
+                            ("hidden", crate::i18n::gettext("Move to Not shown (▾ menu)")),
+                        ] {
+                            if dest_key == group_name {
+                                continue;
+                            }
+                            let b = make_menu_btn(&dest_label, true);
+                            let st_m = state_click.clone();
+                            let sv_m = save_click.clone();
+                            let id_m = id_click.clone();
+                            let pw_m = pop.downgrade();
+                            b.connect_clicked(move |_| {
+                                {
+                                    let mut st = st_m.borrow_mut();
+                                    st.0.retain(|x| x != &id_m);
+                                    st.1.retain(|x| x != &id_m);
+                                    match dest_key {
+                                        "left" => st.0.push(id_m.clone()),
+                                        "right" => st.1.push(id_m.clone()),
+                                        _ => {}
+                                    }
+                                }
+                                if let Some(p) = pw_m.upgrade() { p.popdown(); }
+                                sv_m();
+                            });
+                            pop_box.append(&b);
+                        }
+
+                        pop.connect_closed(|p| {
+                            let p_clone = p.clone();
+                            glib::idle_add_local_once(move || {
+                                p_clone.unparent();
+                            });
+                        });
+                        pop.popup();
+                    });
+                    tile_box.add_controller(click_gesture);
+
+                    flow.insert(&flow_child, -1);
+                }
+                zone.append(&flow);
+            };
+
+            populate_zone(&zone_left, &left, "left");
+            populate_zone(&zone_right, &right, "right");
+            populate_zone(&zone_hidden, &hidden, "hidden");
+        }));
+    }
+
+    if let Some(ref f) = *rebuild_ref.borrow() {
+        f();
+    }
+
+    {
+        let state_reset = state.clone();
+        let save_reset = save_and_rebuild.clone();
+        btn_restore.connect_clicked(move |_| {
+            *state_reset.borrow_mut() = (
+                crate::services::settings_service::DEFAULT_MAIL_HEADER_LEFT_ACTIONS
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect(),
+                crate::services::settings_service::DEFAULT_MAIL_HEADER_RIGHT_ACTIONS
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect(),
+            );
+            save_reset();
+        });
+    }
+
+    if let Some(ref s) = settings {
+        let s_clone = s.clone();
+        let state_ext = state.clone();
+        let syncing_ext = syncing.clone();
+        let rebuild_ext = rebuild_ref.clone();
+        s.connect_changed(Some("mail-header-actions"), move |_, _| {
+            if syncing_ext.get() {
+                return;
+            }
+            *state_ext.borrow_mut() = s_clone.mail_header_action_groups();
+            if let Some(ref f) = *rebuild_ext.borrow() {
+                f();
+            }
+        });
+    }
+
+    group
+}
+
+fn list_toolbar_item_meta(raw_item: &str, labels: &[crate::services::settings_service::MailLabelDefinition]) -> (&'static str, String) {
+    let (base, alias) = match raw_item.split_once('=') {
+        Some((b, a)) => (b.trim(), Some(a.trim())),
+        None => (raw_item.trim(), None),
+    };
+    let (icon, default_lbl) = match base {
+        "filter:unread" => ("mail-unread-symbolic", crate::i18n::gettext("Unread")),
+        "filter:flagged" | "filter:starred" => ("starred-symbolic", crate::i18n::gettext("Starred")),
+        "filter:followup" | "filter:follow-up" => ("bookmark-new-symbolic", crate::i18n::gettext("Follow-Up")),
+        "filter:attachment" | "filter:attachments" => ("mail-attachment-symbolic", crate::i18n::gettext("Attachments")),
+        "filter:important" => ("emblem-important-symbolic", crate::i18n::gettext("Important")),
+        "filter:today" => ("x-office-calendar-symbolic", crate::i18n::gettext("Today")),
+        "follow-up" => ("bookmark-new-symbolic", crate::i18n::gettext("Set Follow-Up")),
+        "star" => ("starred-symbolic", crate::i18n::gettext("Star")),
+        "important" => ("emblem-important-symbolic", crate::i18n::gettext("Important")),
+        "edit-labels" => ("preferences-color-symbolic", crate::i18n::gettext("Labels")),
+        "mark-read" => ("mail-read-symbolic", crate::i18n::gettext("Mark Read")),
+        "mark-unread" => ("mail-unread-symbolic", crate::i18n::gettext("Mark Unread")),
+        "move" => ("folder-symbolic", crate::i18n::gettext("Move To")),
+        "copy" => ("edit-copy-symbolic", crate::i18n::gettext("Copy To")),
+        "archive" => ("package-x-generic-symbolic", crate::i18n::gettext("Archive")),
+        "delete" => ("user-trash-symbolic", crate::i18n::gettext("Delete")),
+        "junk" => ("mail-mark-junk-symbolic", crate::i18n::gettext("Spam")),
+        "not-junk" => ("security-high-symbolic", crate::i18n::gettext("Not Junk")),
+        "mark-all-read" => ("mail-read-symbolic", crate::i18n::gettext("All Read")),
+        "next-unread-folder" => ("go-jump-symbolic", crate::i18n::gettext("Next Unread")),
+        "expand-threads" => ("view-list-symbolic", crate::i18n::gettext("Threads")),
+        "mark-thread-read" => ("mail-read-symbolic", crate::i18n::gettext("Read Thread")),
+        "delete-thread" => ("user-trash-symbolic", crate::i18n::gettext("Delete Thread")),
+        "select-all" => ("edit-select-all-symbolic", crate::i18n::gettext("Select All")),
+        "refresh-mail" => ("view-refresh-symbolic", crate::i18n::gettext("Refresh")),
+        "apply-filters" => ("system-run-symbolic", crate::i18n::gettext("Run Filters")),
+        "filter-editor" => ("emblem-system-symbolic", crate::i18n::gettext("Filter Rules")),
+        "search-advanced" => ("system-search-symbolic", crate::i18n::gettext("Adv. Search")),
+        "oof-settings" => ("user-away-symbolic", crate::i18n::gettext("Out of Office")),
+        "expunge" => ("user-trash-symbolic", crate::i18n::gettext("Expunge")),
+        "undo" => ("edit-undo-symbolic", crate::i18n::gettext("Undo")),
+        "redo" => ("edit-redo-symbolic", crate::i18n::gettext("Redo")),
+        "separator" => ("object-flip-horizontal-symbolic", crate::i18n::gettext("Separator |")),
+        "spacer" => ("object-flip-horizontal-symbolic", crate::i18n::gettext("Flexible Space")),
+        "reply" => ("mail-reply-sender-symbolic", crate::i18n::gettext("Reply")),
+        "reply-all" => ("mail-reply-all-symbolic", crate::i18n::gettext("Reply All")),
+        "forward" => ("mail-forward-symbolic", crate::i18n::gettext("Forward")),
+        "edit-as-new" => ("document-edit-symbolic", crate::i18n::gettext("Edit as New")),
+        "add-sender-contact" => ("contact-new-symbolic", crate::i18n::gettext("Add Contact")),
+        "print" => ("document-print-symbolic", crate::i18n::gettext("Print")),
+        "export" => ("document-save-symbolic", crate::i18n::gettext("Save EML")),
+        "source" => ("text-x-generic-symbolic", crate::i18n::gettext("Source")),
+        "prev" => ("go-previous-symbolic", crate::i18n::gettext("Previous")),
+        "next" => ("go-next-symbolic", crate::i18n::gettext("Next")),
+        other if other.starts_with("folder:") => {
+            let spec = other.strip_prefix("folder:").unwrap_or("");
+            let name = match spec {
+                "unified_inbox" | "inbox" => crate::i18n::gettext("Inbox"),
+                "unified_sent" | "sent" => crate::i18n::gettext("Sent"),
+                "drafts" => crate::i18n::gettext("Drafts"),
+                "archive" => crate::i18n::gettext("Archive"),
+                "trash" => crate::i18n::gettext("Trash"),
+                "spam" => crate::i18n::gettext("Junk"),
+                _ => spec.rsplit_once("::").map(|(_, f)| f).unwrap_or(spec).to_string(),
+            };
+            ("folder-symbolic", name)
+        }
+        other if other.starts_with("label:") => {
+            let tag = other.strip_prefix("label:").unwrap_or("");
+            let name = labels
+                .iter()
+                .find(|l| l.tag.eq_ignore_ascii_case(tag) || l.name.eq_ignore_ascii_case(tag))
+                .map(|l| l.display_name())
+                .unwrap_or_else(|| tag.to_string());
+            ("preferences-color-symbolic", name)
+        }
+        _ => ("folder-symbolic", base.to_string()),
+    };
+    let final_label = alias.filter(|a| !a.is_empty()).map(str::to_string).unwrap_or(default_lbl);
+    (icon, final_label)
+}
+
+fn build_mail_list_toolbar_editor(settings: Option<AppSettings>) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title(&crate::i18n::gettext("List Action & Quick-Filter Bar"))
+        .description(&crate::i18n::gettext(
+            "Customize the bar above the message list with quick filters, pinned mailboxes, labels, and list actions. Drag tiles to reorder, or click any active tile to rename it.",
+        ))
+        .build();
+
+    let btn_restore = gtk::Button::builder()
+        .label(&crate::i18n::gettext("Restore Defaults"))
+        .valign(gtk::Align::Center)
+        .css_classes(vec!["flat"])
+        .build();
+    group.set_header_suffix(Some(&btn_restore));
+
+    let row_show_bar = adw::SwitchRow::builder()
+        .title(&crate::i18n::gettext("Show Action & Quick-Filter Bar above message list"))
+        .subtitle(&crate::i18n::gettext("Displays your pinned folders, 1-click filters, and list tools in the middle pane"))
+        .active(settings.as_ref().map(|s| s.mail_show_toolbar()).unwrap_or(false))
+        .build();
+    if let Some(ref s) = settings {
+        let s_toggle = s.clone();
+        row_show_bar.connect_active_notify(move |r| {
+            s_toggle.set_mail_show_toolbar(r.is_active());
+        });
+        let row_weak = row_show_bar.downgrade();
+        s.connect_changed(Some("mail-show-toolbar"), move |st, _| {
+            if let Some(r) = row_weak.upgrade() {
+                let act = st.boolean("mail-show-toolbar");
+                if r.is_active() != act {
+                    r.set_active(act);
+                }
+            }
+        });
+    }
+    group.add(&row_show_bar);
+
+    // Strict GNOME Libadwaita ComboRow for pinning any folder from the Account Panel
+    let panel_folders = collect_account_panel_folders(None);
+    let folder_presets: Vec<(String, String)> = panel_folders
+        .into_iter()
+        .map(|(id, label)| {
+            let token_id = if id == "inbox" {
+                "folder:unified_inbox".to_string()
+            } else {
+                format!("folder:{id}")
+            };
+            (token_id, label)
+        })
+        .collect();
+    let folder_labels: Vec<&str> = folder_presets.iter().map(|(_, l)| l.as_str()).collect();
+    let row_pin_folder = adw::ComboRow::builder()
+        .title(&crate::i18n::gettext("Pin Folder to Action Bar"))
+        .subtitle(&crate::i18n::gettext(
+            "Choose any folder from your account panel and click + Pin (click the pinned tile below to give it a custom short name)",
+        ))
+        .model(&gtk::StringList::new(&folder_labels))
+        .build();
+    let btn_pin_folder = gtk::Button::builder()
+        .label(&format!("+ {}", crate::i18n::gettext("Pin")))
+        .valign(gtk::Align::Center)
+        .css_classes(vec!["flat"])
+        .build();
+    row_pin_folder.add_suffix(&btn_pin_folder);
+    group.add(&row_pin_folder);
+
+    let card = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .margin_top(8)
+        .css_classes(vec!["card", "hylki-toolbar-editor-card"])
+        .build();
+
+    let sec_active = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(6)
+        .css_classes(vec!["hylki-zone-section"])
+        .build();
+    let hdr_active = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .build();
+    hdr_active.append(
+        &gtk::Label::builder()
+            .label(&crate::i18n::gettext("Active Bar"))
+            .css_classes(vec!["heading"])
+            .build(),
+    );
+    hdr_active.append(
+        &gtk::Label::builder()
+            .label(&crate::i18n::gettext("Drag to reorder · Click a tile to rename or remove"))
+            .css_classes(vec!["caption", "dim-label"])
+            .build(),
+    );
+    let zone_active = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .css_classes(vec!["hylki-drop-zone"])
+        .build();
+    sec_active.append(&hdr_active);
+    sec_active.append(&zone_active);
+
+    // Palette section
+    let sec_palette = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(6)
+        .css_classes(vec!["hylki-zone-section"])
+        .build();
+    let hdr_palette = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .build();
+    hdr_palette.append(
+        &gtk::Label::builder()
+            .label(&crate::i18n::gettext("Available Quick Filters, Tools & Layout"))
+            .css_classes(vec!["heading"])
+            .build(),
+    );
+    hdr_palette.append(
+        &gtk::Label::builder()
+            .label(&crate::i18n::gettext("Drag into Active Bar or click to add"))
+            .css_classes(vec!["caption", "dim-label"])
+            .build(),
+    );
+    let zone_palette = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .css_classes(vec!["hylki-drop-zone"])
+        .build();
+    sec_palette.append(&hdr_palette);
+    sec_palette.append(&zone_palette);
+
+    card.append(&sec_active);
+    card.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    card.append(&sec_palette);
+    group.add(&card);
+
+    let initial_items = settings
+        .as_ref()
+        .map(AppSettings::mail_list_toolbar_items)
+        .unwrap_or_else(|| {
+            crate::services::settings_service::DEFAULT_MAIL_LIST_TOOLBAR_ITEMS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect()
+        });
+    let state: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(initial_items));
+    let syncing = Rc::new(Cell::new(false));
+
+    type RebuildListFn = Rc<RefCell<Option<Box<dyn Fn()>>>>;
+    let rebuild_ref: RebuildListFn = Rc::new(RefCell::new(None));
+
+    let save_and_rebuild = {
+        let state = state.clone();
+        let settings = settings.clone();
+        let syncing = syncing.clone();
+        let rebuild_ref = rebuild_ref.clone();
+        Rc::new(move || {
+            let items = state.borrow().clone();
+            if let Some(ref s) = settings {
+                syncing.set(true);
+                s.set_mail_list_toolbar_items(&items);
+                syncing.set(false);
+            }
+            if let Some(ref f) = *rebuild_ref.borrow() {
+                f();
+            }
+        })
+    };
+
+    // Pin Folder handler
+    {
+        let state_pin = state.clone();
+        let save_pin = save_and_rebuild.clone();
+        let combo_pin = row_pin_folder.clone();
+        btn_pin_folder.connect_clicked(move |_| {
+            let idx = combo_pin.selected() as usize;
+            let Some((base_id, full_label)) = folder_presets.get(idx) else { return; };
+            let short_default = full_label
+                .rsplit_once(" — ")
+                .map(|(_, f)| f.trim())
+                .unwrap_or(full_label.as_str())
+                .replace(',', " ");
+            let token = if base_id.contains("::") && !short_default.is_empty() {
+                format!("{base_id}={short_default}")
+            } else {
+                base_id.clone()
+            };
+            state_pin.borrow_mut().push(token);
+            save_pin();
+        });
+    }
+
+    // Active zone DropTarget
+    {
+        let dt = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
+        let z_enter = zone_active.clone();
+        dt.connect_enter(move |_, _, _| {
+            z_enter.add_css_class("drop-active");
+            gtk::gdk::DragAction::MOVE
+        });
+        let z_leave = zone_active.clone();
+        dt.connect_leave(move |_| {
+            z_leave.remove_css_class("drop-active");
+        });
+        let z_drop = zone_active.clone();
+        let state_drop = state.clone();
+        let save_drop = save_and_rebuild.clone();
+        dt.connect_drop(move |_, val, _, _| {
+            z_drop.remove_css_class("drop-active");
+            let Ok(payload) = val.get::<String>() else { return false; };
+            if let Some(idx_str) = payload.strip_prefix("list-active:") {
+                if let Ok(from_idx) = idx_str.parse::<usize>() {
+                    let mut st = state_drop.borrow_mut();
+                    if from_idx < st.len() {
+                        let item = st.remove(from_idx);
+                        st.push(item);
+                    }
+                }
+                save_drop();
+                return true;
+            }
+            if let Some(pal_token) = payload.strip_prefix("list-palette:") {
+                state_drop.borrow_mut().push(pal_token.to_string());
+                save_drop();
+                return true;
+            }
+            false
+        });
+        zone_active.add_controller(dt);
+    }
+
+    // Palette zone DropTarget (dropping an active item here removes it)
+    {
+        let dt = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
+        let z_enter = zone_palette.clone();
+        dt.connect_enter(move |_, _, _| {
+            z_enter.add_css_class("drop-active");
+            gtk::gdk::DragAction::MOVE
+        });
+        let z_leave = zone_palette.clone();
+        dt.connect_leave(move |_| {
+            z_leave.remove_css_class("drop-active");
+        });
+        let z_drop = zone_palette.clone();
+        let state_drop = state.clone();
+        let save_drop = save_and_rebuild.clone();
+        dt.connect_drop(move |_, val, _, _| {
+            z_drop.remove_css_class("drop-active");
+            let Ok(payload) = val.get::<String>() else { return false; };
+            if let Some(idx_str) = payload.strip_prefix("list-active:") {
+                if let Ok(from_idx) = idx_str.parse::<usize>() {
+                    let mut st = state_drop.borrow_mut();
+                    if from_idx < st.len() {
+                        st.remove(from_idx);
+                    }
+                }
+                save_drop();
+                return true;
+            }
+            false
+        });
+        zone_palette.add_controller(dt);
+    }
+
+    const PALETTE_TOKENS: &[&str] = &[
+        "filter:unread",
+        "filter:flagged",
+        "filter:followup",
+        "filter:important",
+        "filter:attachment",
+        "filter:today",
+        "follow-up",
+        "star",
+        "important",
+        "edit-labels",
+        "mark-read",
+        "mark-unread",
+        "move",
+        "copy",
+        "archive",
+        "delete",
+        "junk",
+        "not-junk",
+        "mark-all-read",
+        "next-unread-folder",
+        "expand-threads",
+        "mark-thread-read",
+        "delete-thread",
+        "select-all",
+        "refresh-mail",
+        "apply-filters",
+        "filter-editor",
+        "search-advanced",
+        "oof-settings",
+        "expunge",
+        "undo",
+        "redo",
+        "separator",
+        "spacer",
+        "reply",
+        "reply-all",
+        "forward",
+        "edit-as-new",
+        "add-sender-contact",
+        "print",
+        "export",
+        "source",
+        "prev",
+        "next",
+    ];
+
+    {
+        let zone_active = zone_active.clone();
+        let zone_palette = zone_palette.clone();
+        let state = state.clone();
+        let settings_for_labels = settings.clone();
+        let save_and_rebuild = save_and_rebuild.clone();
+        *rebuild_ref.borrow_mut() = Some(Box::new(move || {
+            for z in [&zone_active, &zone_palette] {
+                while let Some(c) = z.first_child() {
+                    z.remove(&c);
+                }
+            }
+            let items = state.borrow().clone();
+            let labels = settings_for_labels
+                .as_ref()
+                .map(|s| s.mail_labels())
+                .unwrap_or_default();
+
+            if items.is_empty() {
+                zone_active.append(
+                    &gtk::Label::builder()
+                        .label(&crate::i18n::gettext("Empty — drag items from the palette below"))
+                        .css_classes(vec!["dim-label", "hylki-empty-label"])
+                        .hexpand(true)
+                        .halign(gtk::Align::Center)
+                        .build(),
+                );
+            } else {
+                let flow_active = gtk::FlowBox::builder()
+                    .selection_mode(gtk::SelectionMode::None)
+                    .activate_on_single_click(false)
+                    .max_children_per_line(10)
+                    .min_children_per_line(1)
+                    .column_spacing(6)
+                    .row_spacing(6)
+                    .hexpand(true)
+                    .build();
+                let total_len = items.len();
+                for (idx, raw_item) in items.iter().enumerate() {
+                    let (icon_name, label_text) = list_toolbar_item_meta(raw_item, &labels);
+                    let (base_token, current_alias) = match raw_item.split_once('=') {
+                        Some((b, a)) => (b.trim().to_string(), a.trim().to_string()),
+                        None => (raw_item.trim().to_string(), String::new()),
+                    };
+                    let drag_payload = format!("list-active:{idx}");
+                    let (flow_child, tile_box) = make_draggable_toolbar_tile(
+                        &base_token,
+                        icon_name,
+                        &label_text,
+                        drag_payload,
+                        &labels,
+                    );
+
+                    let dt = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
+                    let tb_enter = tile_box.clone();
+                    dt.connect_enter(move |_, _, _| {
+                        tb_enter.add_css_class("drop-target-tile");
+                        gtk::gdk::DragAction::MOVE
+                    });
+                    let tb_leave = tile_box.clone();
+                    dt.connect_leave(move |_| {
+                        tb_leave.remove_css_class("drop-target-tile");
+                    });
+                    let tb_drop = tile_box.clone();
+                    let state_dt = state.clone();
+                    let save_dt = save_and_rebuild.clone();
+                    dt.connect_drop(move |_, val, _, _| {
+                        tb_drop.remove_css_class("drop-target-tile");
+                        let Ok(payload) = val.get::<String>() else { return false; };
+                        if let Some(from_str) = payload.strip_prefix("list-active:") {
+                            if let Ok(from_idx) = from_str.parse::<usize>() {
+                                if from_idx == idx {
+                                    return false;
+                                }
+                                let mut st = state_dt.borrow_mut();
+                                if from_idx < st.len() {
+                                    let item = st.remove(from_idx);
+                                    let insert_at = idx.min(st.len());
+                                    st.insert(insert_at, item);
+                                }
+                                drop(st);
+                                save_dt();
+                                return true;
+                            }
+                        }
+                        if let Some(pal_token) = payload.strip_prefix("list-palette:") {
+                            let mut st = state_dt.borrow_mut();
+                            let insert_at = idx.min(st.len());
+                            st.insert(insert_at, pal_token.to_string());
+                            drop(st);
+                            save_dt();
+                            return true;
+                        }
+                        false
+                    });
+                    tile_box.add_controller(dt);
+
+                    // Clean GNOME Libadwaita menu popover on click / right-click
+                    let st_click = state.clone();
+                    let sv_click = save_and_rebuild.clone();
+                    let bt_for_menu = base_token.clone();
+                    let alias_for_menu = current_alias.clone();
+                    let tb_for_menu = tile_box.clone();
+                    let open_tile_menu = Rc::new(move || {
+                        let pop_box = gtk::Box::builder()
+                            .orientation(gtk::Orientation::Vertical)
+                            .spacing(2)
+                            .margin_start(4)
+                            .margin_end(4)
+                            .margin_top(4)
+                            .margin_bottom(4)
+                            .build();
+                        let pop = gtk::Popover::builder()
+                            .child(&pop_box)
+                            .has_arrow(false)
+                            .css_classes(vec!["menu", "context-menu"])
+                            .build();
+                        pop.set_parent(&tb_for_menu);
+
+                        let make_menu_btn = |label: &str, sensitive: bool| -> gtk::Button {
+                            gtk::Button::builder()
+                                .child(
+                                    &gtk::Label::builder()
+                                        .label(label)
+                                        .halign(gtk::Align::Start)
+                                        .build(),
+                                )
+                                .halign(gtk::Align::Fill)
+                                .sensitive(sensitive)
+                                .css_classes(vec!["flat", "context-menu-item"])
+                                .build()
+                        };
+
+                        if !matches!(bt_for_menu.as_str(), "separator" | "spacer") {
+                            let b_rename = make_menu_btn(&crate::i18n::gettext("Rename…"), true);
+                            let st_rn = st_click.clone();
+                            let sv_rn = sv_click.clone();
+                            let bt_rn = bt_for_menu.clone();
+                            let al_rn = alias_for_menu.clone();
+                            let pw_rn = pop.downgrade();
+                            let tb_dlg = tb_for_menu.clone();
+                            b_rename.connect_clicked(move |_| {
+                                if let Some(p) = pw_rn.upgrade() {
+                                    p.popdown();
+                                }
+                                let dialog = adw::AlertDialog::builder()
+                                    .heading(&crate::i18n::gettext("Rename Action Bar Item"))
+                                    .body(&crate::i18n::gettext("Enter a custom label for this button, or leave it empty to use the default icon/name."))
+                                    .default_response("save")
+                                    .close_response("cancel")
+                                    .build();
+                                dialog.add_response("cancel", &crate::i18n::gettext("Cancel"));
+                                dialog.add_response("save", &crate::i18n::gettext("Save"));
+                                dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+                                let entry = gtk::Entry::builder()
+                                    .text(&al_rn)
+                                    .placeholder_text(&crate::i18n::gettext("Default label"))
+                                    .activates_default(true)
+                                    .build();
+                                dialog.set_extra_child(Some(&entry));
+                                let st_save = st_rn.clone();
+                                let sv_save = sv_rn.clone();
+                                let bt_save = bt_rn.clone();
+                                let entry_resp = entry.clone();
+                                dialog.connect_response(Some("save"), move |_, _| {
+                                    {
+                                        let mut st = st_save.borrow_mut();
+                                        if idx < st.len() {
+                                            let a = entry_resp.text().trim().replace(',', " ");
+                                            st[idx] = if a.is_empty() {
+                                                bt_save.clone()
+                                            } else {
+                                                format!("{bt_save}={a}")
+                                            };
+                                        }
+                                    }
+                                    sv_save();
+                                });
+                                dialog.present(Some(&tb_dlg));
+                            });
+                            pop_box.append(&b_rename);
+                        }
+
+                        if total_len > 1 {
+                            let b_l = make_menu_btn(&crate::i18n::gettext("Move Left"), idx > 0);
+                            let st_l = st_click.clone();
+                            let sv_l = sv_click.clone();
+                            let pw_l = pop.downgrade();
+                            b_l.connect_clicked(move |_| {
+                                {
+                                    let mut st = st_l.borrow_mut();
+                                    if idx > 0 && idx < st.len() {
+                                        st.swap(idx, idx - 1);
+                                    }
+                                }
+                                if let Some(p) = pw_l.upgrade() { p.popdown(); }
+                                sv_l();
+                            });
+                            pop_box.append(&b_l);
+
+                            let b_r = make_menu_btn(&crate::i18n::gettext("Move Right"), idx + 1 < total_len);
+                            let st_r = st_click.clone();
+                            let sv_r = sv_click.clone();
+                            let pw_r = pop.downgrade();
+                            b_r.connect_clicked(move |_| {
+                                {
+                                    let mut st = st_r.borrow_mut();
+                                    if idx + 1 < st.len() {
+                                        st.swap(idx, idx + 1);
+                                    }
+                                }
+                                if let Some(p) = pw_r.upgrade() { p.popdown(); }
+                                sv_r();
+                            });
+                            pop_box.append(&b_r);
+                        }
+
+                        pop_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+                        let b_rem = make_menu_btn(&crate::i18n::gettext("Remove from Action Bar"), true);
+                        let st_rem = st_click.clone();
+                        let sv_rem = sv_click.clone();
+                        let pw_rem = pop.downgrade();
+                        b_rem.connect_clicked(move |_| {
+                            {
+                                let mut st = st_rem.borrow_mut();
+                                if idx < st.len() {
+                                    st.remove(idx);
+                                }
+                            }
+                            if let Some(p) = pw_rem.upgrade() { p.popdown(); }
+                            sv_rem();
+                        });
+                        pop_box.append(&b_rem);
+
+                        pop.connect_closed(|p| {
+                            let p_clone = p.clone();
+                            glib::idle_add_local_once(move || {
+                                p_clone.unparent();
+                            });
+                        });
+                        pop.popup();
+                    });
+
+                    let click_g = gtk::GestureClick::builder().button(1).build();
+                    let open_l = open_tile_menu.clone();
+                    click_g.connect_released(move |_, _, _, _| {
+                        open_l();
+                    });
+                    tile_box.add_controller(click_g);
+
+                    let rclick_g = gtk::GestureClick::builder().button(3).build();
+                    let open_r = open_tile_menu.clone();
+                    rclick_g.connect_pressed(move |g, _, _, _| {
+                        g.set_state(gtk::EventSequenceState::Claimed);
+                        open_r();
+                    });
+                    tile_box.add_controller(rclick_g);
+
+                    flow_active.insert(&flow_child, -1);
+                }
+                zone_active.append(&flow_active);
+            }
+
+            // Populate Palette (items not in Active Bar, plus repeatable separator/spacer + configured labels)
+            let active_bases: std::collections::HashSet<String> = items
+                .iter()
+                .map(|it| it.split('=').next().unwrap_or(it).trim().to_string())
+                .collect();
+            let mut palette_items: Vec<String> = PALETTE_TOKENS
+                .iter()
+                .filter(|t| matches!(**t, "separator" | "spacer") || !active_bases.contains(**t))
+                .map(|t| (*t).to_string())
+                .collect();
+            for lbl_def in &labels {
+                let tag_token = format!("label:{}", lbl_def.tag);
+                if !active_bases.contains(&tag_token) {
+                    palette_items.push(tag_token);
+                }
+            }
+
+            let flow_palette = gtk::FlowBox::builder()
+                .selection_mode(gtk::SelectionMode::None)
+                .activate_on_single_click(false)
+                .max_children_per_line(10)
+                .min_children_per_line(1)
+                .column_spacing(6)
+                .row_spacing(6)
+                .hexpand(true)
+                .build();
+            for pal_token in palette_items {
+                let (icon_name, label_text) = list_toolbar_item_meta(&pal_token, &labels);
+                let drag_str = format!("list-palette:{pal_token}");
+                let (flow_child, tile_box) = make_draggable_toolbar_tile(
+                    &pal_token,
+                    icon_name,
+                    &label_text,
+                    drag_str,
+                    &labels,
+                );
+                tile_box.set_tooltip_text(Some(&crate::i18n::gettext("Drag into Active Bar or click to add")));
+
+                let st_add = state.clone();
+                let sv_add = save_and_rebuild.clone();
+                let tok_add = pal_token.clone();
+                let click_add = gtk::GestureClick::builder().button(1).build();
+                click_add.connect_released(move |_, _, _, _| {
+                    st_add.borrow_mut().push(tok_add.clone());
+                    sv_add();
+                });
+                tile_box.add_controller(click_add);
+
+                flow_palette.insert(&flow_child, -1);
+            }
+            zone_palette.append(&flow_palette);
+        }));
+    }
+
+    if let Some(ref f) = *rebuild_ref.borrow() {
+        f();
+    }
+
+    {
+        let state_reset = state.clone();
+        let save_reset = save_and_rebuild.clone();
+        btn_restore.connect_clicked(move |_| {
+            *state_reset.borrow_mut() = crate::services::settings_service::DEFAULT_MAIL_LIST_TOOLBAR_ITEMS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect();
+            save_reset();
+        });
+    }
+
+    if let Some(ref s) = settings {
+        let s_clone = s.clone();
+        let state_ext = state.clone();
+        let syncing_ext = syncing.clone();
+        let rebuild_ext = rebuild_ref.clone();
+        s.connect_changed(Some("mail-list-toolbar-items"), move |_, _| {
+            if syncing_ext.get() {
+                return;
+            }
+            *state_ext.borrow_mut() = s_clone.mail_list_toolbar_items();
+            if let Some(ref f) = *rebuild_ext.borrow() {
+                f();
+            }
+        });
+    }
+
+    group
 }
 
 fn build_mail_normal_headers_editor(settings: Option<AppSettings>) -> gtk::Box {

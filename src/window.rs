@@ -4661,6 +4661,38 @@ impl MeridianWindow {
         ));
         self.add_action(&action_preferences);
 
+        let action_list_toolbar_prefs = gio::SimpleAction::new("open-mail-list-toolbar-prefs", None);
+        action_list_toolbar_prefs.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let dialog = crate::dialogs::PreferencesDialog::new();
+                dialog.select_page("mail_layout");
+                let win_clone = win.clone();
+                dialog.connect_closed(move |_| {
+                    win_clone.reorder_account_roots();
+                });
+                dialog.present(Some(&win));
+            }
+        ));
+        self.add_action(&action_list_toolbar_prefs);
+
+        let action_header_prefs = gio::SimpleAction::new("open-mail-header-prefs", None);
+        action_header_prefs.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                let dialog = crate::dialogs::PreferencesDialog::new();
+                dialog.select_page("headers");
+                let win_clone = win.clone();
+                dialog.connect_closed(move |_| {
+                    win_clone.reorder_account_roots();
+                });
+                dialog.present(Some(&win));
+            }
+        ));
+        self.add_action(&action_header_prefs);
+
         let action_toggle_debug = gio::SimpleAction::new("toggle-debug-console", None);
         let win_weak_debug = self.downgrade();
         action_toggle_debug.connect_activate(move |_, _| {
@@ -5811,6 +5843,18 @@ impl MeridianWindow {
             }
         ));
         self.add_action(&action_refresh_folder);
+
+        let action_pin_folder = gio::SimpleAction::new("pin-folder-to-toolbar", None);
+        action_pin_folder.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    mail_page.pin_selected_folder_to_toolbar();
+                }
+            }
+        ));
+        self.add_action(&action_pin_folder);
 
         let action_mark_all_read = gio::SimpleAction::new("mark-all-read", None);
         action_mark_all_read.connect_activate(glib::clone!(

@@ -1034,151 +1034,16 @@ label.account-heading,
   color: @window_fg_color;
 }
 
-/* ── Compact Desktop Menus, Dropdowns & Popovers (Libadwaita HIG) ────── */
-/* Global DropDown Styling */
-dropdown {
-  min-height: 28px;
-}
-
-dropdown > button.combo {
-  min-height: 28px;
-  padding: 2px 8px;
-  font-size: 1rem;
-  font-weight: 500;
-  border-radius: 6px;
-  transition: all 120ms ease;
-}
-
-/* Eliminate phantom icon padding in dropdown buttons */
-dropdown > button.combo stack,
-dropdown > button.combo stack > row,
-dropdown > button.combo stack > row.activatable,
-dropdown > button.combo row {
-  padding-left: 0;
-  margin-left: 0;
-  background: none;
-  border: none;
-  box-shadow: none;
-}
-
-dropdown > button.combo stack > row > box,
-dropdown > button.combo stack > row.activatable > box {
-  padding: 0;
-  margin: 0;
-  border-spacing: 0;
-}
-
-dropdown > button.combo stack image:not(.arrow),
-dropdown > button.combo stack check,
-dropdown > button.combo stack image.checkmark {
-  display: none;
-  margin: 0;
-  padding: 0;
-  min-width: 0;
-  min-height: 0;
-  -gtk-icon-size: 0px;
-}
-
-dropdown > button.combo stack label {
-  margin-left: 0;
-  padding-left: 0;
-}
-
-dropdown > button.combo arrow {
-  -gtk-icon-size: 14px;
-  min-width: 14px;
-  min-height: 14px;
-  opacity: 0.7;
-  margin-left: 4px;
-}
-
-dropdown > button.combo:hover arrow {
-  opacity: 1;
-}
-
-/* Dropdown Popovers (geöffneter Zustand) */
-dropdown popover {
-  padding: 3px;
-}
-
-dropdown popover contents {
-  padding: 4px;
-  border-radius: 9px;
-  box-shadow: 0 4px 14px alpha(@borders, 0.35);
-}
-
-dropdown popover scrolledwindow {
-  min-height: 30px;
-  max-height: 360px;
-}
-
-dropdown popover listview {
-  background-color: transparent;
-  padding: 1px 0;
-}
-
-dropdown popover listview row {
-  min-height: 28px;
-  padding: 3px 8px;
-  margin: 1px 2px;
-  border-radius: 6px;
-  font-size: 1rem;
-  color: @popover_fg_color;
-  transition: background-color 100ms ease;
-}
-
-dropdown popover listview row:hover {
-  background-color: alpha(@window_fg_color, 0.08);
-}
-
-dropdown popover listview row:selected {
-  background-color: @accent_bg_color;
-  color: @accent_fg_color;
-  font-weight: 500;
-}
-
-dropdown popover listview row:selected:hover {
-  background-color: @accent_bg_color;
-  color: @accent_fg_color;
-}
-
-dropdown popover listview row image.checkmark,
-dropdown popover listview row check {
-  margin-right: 6px;
-  min-width: 14px;
-  min-height: 14px;
-  -gtk-icon-size: 14px;
-}
-
-/* Composer specific dropdown optimization */
-dropdown.composer-dropdown > button.combo {
-  padding-left: 8px;
-  padding-right: 8px;
-}
-
-dropdown.composer-dropdown popover listview row {
-  padding: 4px 10px;
-}
-
-/* ── Popover & Context Menus (Libadwaita / GNOME HIG standard) ─────────────── */
-popover.menu,
+/* ── Native Libadwaita Menus, Dropdowns & Popovers (GNOME HIG) ──────── */
+/* Let Libadwaita style dropdowns, ComboRows, and popover.menu natively;
+   only style custom popover.context-menu containers to match popover.menu. */
 popover.context-menu {
   padding: 0;
 }
 
-popover.menu > contents {
-  min-width: 120px;
-  padding: 0;
-  border-radius: 12px;
-}
-
-popover.menu > contents > scrolledwindow > viewport > stack > box {
-  padding: 4px;
-}
-
 popover.context-menu > contents {
-  min-width: 120px;
-  padding: 4px;
+  min-width: 140px;
+  padding: 6px;
   border-radius: 12px;
 }
 
@@ -1195,37 +1060,24 @@ popover.context-menu button label {
   font-size: 1.0rem;
 }
 
-/* Compact, clean menu item metrics: text-focused, shifted left without wasted icon gap */
-popover.menu modelbutton,
 popover.context-menu button.context-menu-item,
 popover.context-menu button.flat {
-  min-height: 30px;
+  min-height: 32px;
   padding: 0 8px;
-  margin: 1px 0;
-  border-radius: 7px;
+  margin: 0;
+  border-radius: 6px;
   font-size: 1.0rem;
   font-weight: 400;
-  transition: background-color 150ms ease-out;
 }
 
-popover.menu modelbutton label,
 popover.context-menu button.context-menu-item label,
 popover.context-menu button.flat label {
-  min-height: 20px;
   padding: 0;
   margin: 0;
   font-size: 1.0rem;
   font-weight: 400;
 }
 
-popover.menu modelbutton arrow {
-  min-width: 16px;
-  min-height: 16px;
-  -gtk-icon-size: 16px;
-  opacity: 0.7;
-}
-
-popover.menu modelbutton image,
 popover.context-menu button.context-menu-item image {
   min-width: 16px;
   min-height: 16px;
@@ -1233,20 +1085,8 @@ popover.context-menu button.context-menu-item image {
   margin-right: 6px;
 }
 
-popover.menu accelerator,
-popover.menu label.accelerator,
-popover.menu .accelerator {
-  min-height: 16px;
-  padding: 0;
-  margin-left: 12px;
-  font-size: 0.85rem;
-  font-weight: 400;
-  opacity: 0.55;
-}
-
-popover.menu separator,
 popover.context-menu separator {
-  margin: 4px 0;
+  margin: 6px 0;
 }
 
 /* Prevent parent containers (headerbars, drawer headers, action pills) from leaking bold weights */
@@ -3133,20 +2973,130 @@ splitview > .sidebar:backdrop {
 
 /* ── Unified Full-Width View Toolbar ───────────────────────────────────── */
 .unified-mail-toolbar {
-  min-height: 28px;
+  min-height: 32px;
   margin: 0;
-  padding: 1px 6px;
+  padding: 2px 4px;
   background-color: @view_bg_color;
   border-bottom: none;
 }
 
 .unified-mail-toolbar button,
-.unified-mail-toolbar menubutton > button {
-  min-width: 28px;
-  min-height: 26px;
-  padding: 2px 6px;
+.unified-mail-toolbar menubutton > button,
+.unified-mail-toolbar button.mail-list-bar-btn {
+  min-width: 18px;
+  min-height: 18px;
+  padding: 5px 6px;
   margin: 0;
   border-radius: 6px;
+}
+
+.unified-mail-toolbar button.mail-list-bar-pill {
+  min-height: 18px;
+  padding: 4px 8px;
+  margin: 0;
+  border-radius: 7px;
+  font-size: 0.84rem;
+  font-weight: 600;
+  background-color: alpha(@window_fg_color, 0.055);
+  color: alpha(@window_fg_color, 0.88);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.unified-mail-toolbar button.mail-list-bar-pill:hover {
+  background-color: alpha(@window_fg_color, 0.10);
+  color: @window_fg_color;
+}
+
+.unified-mail-toolbar button.mail-list-bar-pill.active {
+  background-color: alpha(@accent_bg_color, 0.16);
+  color: @accent_color;
+}
+
+.unified-mail-toolbar button.mail-list-bar-pill.active label,
+.unified-mail-toolbar button.mail-list-bar-pill.active image {
+  color: @accent_color;
+}
+
+.mobile-screen .unified-mail-toolbar {
+  min-height: 40px;
+  padding: 4px 6px;
+}
+
+.mobile-screen .unified-mail-toolbar button,
+.mobile-screen .unified-mail-toolbar button.mail-list-bar-btn,
+.mobile-screen .unified-mail-toolbar button.mail-list-bar-pill {
+  min-height: 24px;
+  padding: 6px 10px;
+}
+
+/* ── Hylki / Firefox-style Drag & Drop Toolbar Editor (Preferences) ────── */
+.hylki-toolbar-editor-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.hylki-zone-section {
+  padding: 12px 14px;
+}
+
+.hylki-drop-zone {
+  min-height: 58px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  border: 1.5px dashed alpha(@borders, 0.85);
+  background-color: alpha(@window_fg_color, 0.015);
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+
+.hylki-drop-zone.drop-active {
+  border: 1.5px dashed @accent_color;
+  background-color: alpha(@accent_bg_color, 0.09);
+}
+
+.hylki-drop-zone flowboxchild {
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+}
+
+.hylki-toolbar-tile {
+  min-width: 64px;
+  min-height: 44px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background-color: alpha(@window_fg_color, 0.065);
+  color: @window_fg_color;
+  border: 1.5px solid transparent;
+  box-shadow: none;
+  transition: background-color 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+
+.hylki-toolbar-tile:hover {
+  background-color: alpha(@window_fg_color, 0.12);
+}
+
+.hylki-toolbar-tile:active {
+  background-color: alpha(@window_fg_color, 0.18);
+}
+
+.hylki-toolbar-tile.dragging {
+  opacity: 0.4;
+}
+
+.hylki-toolbar-tile.drop-target-tile {
+  border-color: @accent_color;
+  background-color: alpha(@accent_bg_color, 0.16);
+}
+
+.hylki-toolbar-tile label {
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+.hylki-empty-label {
+  font-size: 0.88rem;
+  padding: 14px 0;
 }
 
 .unified-mail-toolbar .linked button,

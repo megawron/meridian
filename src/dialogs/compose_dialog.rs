@@ -1354,7 +1354,6 @@ impl ComposeDialog {
         set_accessible_label(&lbl_reply_to, &crate::i18n::gettext("Reply-To"));
         let entry_reply_to = gtk::Entry::builder()
             .input_purpose(gtk::InputPurpose::Email)
-            .placeholder_text(crate::i18n::gettext("Reply-To address…"))
             .hexpand(true)
             .css_classes(vec!["composer-field-entry"])
             .build();
@@ -1387,7 +1386,6 @@ impl ComposeDialog {
         set_accessible_label(&lbl_to, &crate::i18n::gettext("Recipients"));
         let entry_to = gtk::Entry::builder()
             .input_purpose(gtk::InputPurpose::Email)
-            .placeholder_text(crate::i18n::gettext("Enter recipients…"))
             .hexpand(true)
             .css_classes(vec!["composer-field-entry"])
             .build();
@@ -1457,7 +1455,6 @@ impl ComposeDialog {
         set_accessible_label(&lbl_cc, &crate::i18n::gettext("Copy (Cc)"));
         let entry_cc = gtk::Entry::builder()
             .input_purpose(gtk::InputPurpose::Email)
-            .placeholder_text(crate::i18n::gettext("Additional recipients (Cc)…"))
             .hexpand(true)
             .visible(show_cc)
             .css_classes(vec!["composer-field-entry"])
@@ -1490,7 +1487,6 @@ impl ComposeDialog {
         set_accessible_label(&lbl_bcc, &crate::i18n::gettext("Blind Copy (Bcc)"));
         let entry_bcc = gtk::Entry::builder()
             .input_purpose(gtk::InputPurpose::Email)
-            .placeholder_text(crate::i18n::gettext("Undisclosed recipients (Bcc)…"))
             .hexpand(true)
             .visible(show_bcc)
             .css_classes(vec!["composer-field-entry"])
@@ -1515,7 +1511,6 @@ impl ComposeDialog {
             .valign(gtk::Align::Center)
             .build();
         let entry_subject = gtk::Entry::builder()
-            .placeholder_text(crate::i18n::gettext("Subject…"))
             .hexpand(true)
             .css_classes(vec!["composer-field-entry", "composer-subject-entry"])
             .build();

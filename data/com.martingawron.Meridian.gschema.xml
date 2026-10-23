@@ -658,8 +658,12 @@
       <summary>Style of the email message header (modern card or classic tabular)</summary>
     </key>
     <key name="mail-header-actions" type="s">
-      <default>'reply,reply-all,forward,unread,delete'</default>
-      <summary>Enabled direct action buttons in the mail message header action bar</summary>
+      <default>'reply,reply-all,forward|unread,delete'</default>
+      <summary>Enabled direct action buttons in the mail message header action bar (left_group|right_group)</summary>
+    </key>
+    <key name="mail-list-toolbar-items" type="s">
+      <default>'filter:unread,filter:flagged,filter:followup,filter:attachment,filter:important,separator,mark-all-read,undo'</default>
+      <summary>Ordered items (quick filters, pinned folders, labels, and actions) in the middle-pane mail list action bar</summary>
     </key>
     <key name="mail-list-column-order" type="s">
       <default>'status,attachment,flagged,follow-up,avatar,sender,recipient,subject,date,size,preview,follow-up-due,location,messages,important'</default>

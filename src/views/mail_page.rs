@@ -81,6 +81,7 @@ enum MessageFilter {
     Flagged,
     Important,
     HasAttachments,
+    FollowUp,
 }
 
 impl MessageFilter {
@@ -90,6 +91,7 @@ impl MessageFilter {
             2 => Self::Flagged,
             3 => Self::Important,
             4 => Self::HasAttachments,
+            5 => Self::FollowUp,
             _ => Self::All,
         }
     }
@@ -101,6 +103,7 @@ impl MessageFilter {
             Self::Flagged => 2,
             Self::Important => 3,
             Self::HasAttachments => 4,
+            Self::FollowUp => 5,
         }
     }
 }
@@ -353,10 +356,22 @@ impl FolderSelection {
     }
 
     fn from_folder_id(folder_id: &str) -> Self {
-        let folder_id = match folder_id {
+        let trimmed = folder_id.trim();
+        if let Some((src, fname)) = trimmed.split_once("::") {
+            let src = src.trim();
+            let fname = fname.trim();
+            if !src.is_empty() && !fname.is_empty() {
+                return Self {
+                    folder_id: fname.to_string(),
+                    source_uid: Some(src.to_string()),
+                    folder_name: Some(fname.to_string()),
+                };
+            }
+        }
+        let folder_id = match trimmed {
             "all" | "inbox" | "sent" | "drafts" | "trash" | "archive" | "spam" | "outbox"
             | "unified_inbox" | "unified_unread" | "unified_flagged" | "unified_sent" => {
-                folder_id
+                trimmed
             }
             _ => "inbox",
         };
@@ -374,9 +389,9 @@ impl FolderSelection {
         let folder_id = AppSettings::try_new()
             .map(|settings| settings.mail_default_folder())
             .unwrap_or_else(|| "inbox".to_string());
-        if unified_enabled {
+        if unified_enabled && !folder_id.contains("::") {
             match folder_id.as_str() {
-                "inbox" | "all" | "unified_unread" => return Self::from_folder_id("unified_inbox"),
+                "inbox" | "all" => return Self::from_folder_id("unified_inbox"),
                 "sent" => return Self::from_folder_id("unified_sent"),
                 _ => {}
             }
@@ -4247,6 +4262,7 @@ fn message_matches_filter(
         MessageFilter::Flagged => message.is_flagged(),
         MessageFilter::Important => message.is_important(),
         MessageFilter::HasAttachments => !message.attachments().is_empty(),
+        MessageFilter::FollowUp => message.follow_up_state() != MailFollowUpState::None,
     };
     let scope_matches = match search_scope {
         QuickSearchScope::AllAccounts => true,
@@ -5344,9 +5360,10 @@ fn configured_mail_page_limit() -> i32 {
 
 impl MailLoadRequest {
     fn initial() -> Self {
+        let initial_sel = FolderSelection::configured_initial();
         Self {
-            source_uid: None,
-            folder_name: None,
+            source_uid: initial_sel.source_uid,
+            folder_name: initial_sel.folder_name,
             offset: 0,
             max_messages_per_folder: configured_mail_page_limit(),
             graph_cursors: HashMap::new(),
@@ -6810,6 +6827,7 @@ mod imp {
         pub mail_undo_button: RefCell<Option<gtk::Button>>,
         pub mail_source_button: RefCell<Option<gtk::Button>>,
         pub mail_secondary_actions_box: RefCell<Option<gtk::Box>>,
+        pub mail_list_toolbar_box: RefCell<Option<gtk::Box>>,
         pub mail_status_group: RefCell<Option<gtk::Box>>,
         pub mail_status_separator: RefCell<Option<gtk::Separator>>,
         pub message_state: RefCell<Option<gtk::Label>>,
@@ -7350,98 +7368,134 @@ impl MailPage {
             lbl.set_visible(show_remote_label);
         }
 
-        let enabled_actions: HashSet<String> = AppSettings::try_new()
-            .map(|s| s.mail_header_actions())
+        let (left_actions, right_actions) = AppSettings::try_new()
+            .map(|s| s.mail_header_action_groups())
             .unwrap_or_else(|| {
-                crate::services::settings_service::DEFAULT_MAIL_HEADER_ACTIONS
-                    .iter()
-                    .map(|id| (*id).to_string())
-                    .collect()
-            })
-            .into_iter()
+                (
+                    crate::services::settings_service::DEFAULT_MAIL_HEADER_LEFT_ACTIONS
+                        .iter()
+                        .map(|id| (*id).to_string())
+                        .collect(),
+                    crate::services::settings_service::DEFAULT_MAIL_HEADER_RIGHT_ACTIONS
+                        .iter()
+                        .map(|id| (*id).to_string())
+                        .collect(),
+                )
+            });
+        let enabled_actions: HashSet<String> = left_actions
+            .iter()
+            .chain(right_actions.iter())
+            .cloned()
             .collect();
 
-        // Sync Action Pill 1 (Communication: reply, reply-all, forward)
         if let Some(reply_group) = imp.modern_reply_group.borrow().as_ref() {
             while let Some(child) = reply_group.first_child() {
                 reply_group.remove(&child);
             }
-            let mut any_reply_visible = false;
-            if enabled_actions.contains("reply") {
-                if let Some(btn) = imp.modern_reply_button.borrow().as_ref() {
-                    reply_group.append(btn);
-                    btn.set_visible(true);
-                    any_reply_visible = true;
-                }
-            }
-            if enabled_actions.contains("reply-all") {
-                if let Some(btn) = imp.modern_reply_all_button.borrow().as_ref() {
-                    reply_group.append(btn);
-                    let vis = show_extra_actions || !any_reply_visible;
-                    btn.set_visible(vis);
-                    any_reply_visible |= vis;
-                }
-            } else if let Some(btn) = imp.modern_reply_all_button.borrow().as_ref() {
-                btn.set_visible(show_extra_actions);
-            }
-            if enabled_actions.contains("forward") {
-                if let Some(btn) = imp.modern_forward_button.borrow().as_ref() {
-                    reply_group.append(btn);
-                    let vis = show_extra_actions || !any_reply_visible;
-                    btn.set_visible(vis);
-                    any_reply_visible |= vis;
-                }
-            } else if let Some(btn) = imp.modern_forward_button.borrow().as_ref() {
-                btn.set_visible(show_extra_actions);
-            }
-            reply_group.set_visible(any_reply_visible);
         }
-
-        // Sync Action Pill 2 (Triage: archive, move, unread, delete, junk, print + More menu)
         if let Some(triage_group) = imp.modern_triage_group.borrow().as_ref() {
             while let Some(child) = triage_group.first_child() {
                 triage_group.remove(&child);
             }
-            if let Some(btn) = imp.modern_archive_button.borrow().as_ref() {
-                if enabled_actions.contains("archive") {
-                    triage_group.append(btn);
-                    btn.set_visible(show_triage);
-                } else {
-                    btn.set_visible(false);
+        }
+
+        if let Some(btn) = imp.modern_reply_button.borrow().as_ref() {
+            btn.set_visible(true);
+        }
+        if let Some(btn) = imp.modern_reply_all_button.borrow().as_ref() {
+            btn.set_visible(show_extra_actions);
+        }
+        if let Some(btn) = imp.modern_forward_button.borrow().as_ref() {
+            btn.set_visible(show_extra_actions);
+        }
+        if let Some(btn) = imp.modern_archive_button.borrow().as_ref() {
+            btn.set_visible(false);
+        }
+        if let Some(btn) = imp.modern_move_button.borrow().as_ref() {
+            btn.set_visible(false);
+        }
+        if let Some(btn) = imp.modern_unread_button.borrow().as_ref() {
+            btn.set_visible(show_triage);
+        }
+        if let Some(btn) = imp.modern_delete_button.borrow().as_ref() {
+            btn.set_visible(show_triage);
+        }
+        if let Some(btn) = imp.modern_junk_button.borrow().as_ref() {
+            btn.set_visible(show_junk);
+        }
+        if let Some(btn) = imp.modern_print_button.borrow().as_ref() {
+            btn.set_visible(false);
+        }
+
+        let button_for_id = |id: &str| -> Option<gtk::Button> {
+            match id {
+                "reply" => imp.modern_reply_button.borrow().clone(),
+                "reply-all" => imp.modern_reply_all_button.borrow().clone(),
+                "forward" => imp.modern_forward_button.borrow().clone(),
+                "archive" => imp.modern_archive_button.borrow().clone(),
+                "move" => imp.modern_move_button.borrow().clone(),
+                "unread" => imp.modern_unread_button.borrow().clone(),
+                "delete" => imp.modern_delete_button.borrow().clone(),
+                "junk" => imp.modern_junk_button.borrow().clone(),
+                "print" => imp.modern_print_button.borrow().clone(),
+                other => {
+                    let (icon_name, tip, act) = match other {
+                        "star" => ("starred-symbolic", gettext("Toggle Star (S)"), "win.toggle-star"),
+                        "follow-up" => ("bookmark-new-symbolic", gettext("Follow-Up… (Ctrl+Shift+F)"), "win.edit-follow-up"),
+                        "important" => ("emblem-important-symbolic", gettext("Toggle Important (I)"), "win.toggle-important"),
+                        "edit-labels" => ("preferences-color-symbolic", gettext("Edit Labels… (L)"), "win.edit-message-labels"),
+                        "source" => ("text-x-generic-symbolic", gettext("View Source (Ctrl+U)"), "win.view-message-source"),
+                        "add-sender-contact" => ("contact-new-symbolic", gettext("Add Sender to Address Book"), "win.add-sender-to-contacts"),
+                        _ => return None,
+                    };
+                    let icon = gtk::Image::builder().icon_name(icon_name).pixel_size(16).build();
+                    let btn = gtk::Button::builder()
+                        .child(&icon)
+                        .tooltip_text(&tip)
+                        .action_name(act)
+                        .css_classes(vec!["flat", "mail-header-action-btn"])
+                        .valign(gtk::Align::Center)
+                        .build();
+                    set_accessible_label(&btn, &tip);
+                    Some(btn)
                 }
             }
-            if let Some(btn) = imp.modern_move_button.borrow().as_ref() {
-                if enabled_actions.contains("move") {
-                    triage_group.append(btn);
-                    btn.set_visible(show_triage);
-                } else {
-                    btn.set_visible(false);
+        };
+
+        // Sync Action Pill 1 (Left group: always shown in user-configured order)
+        if let Some(reply_group) = imp.modern_reply_group.borrow().as_ref() {
+            let mut any_reply_visible = false;
+            for id in &left_actions {
+                if let Some(btn) = button_for_id(id) {
+                    if let Some(p) = btn.parent().and_downcast::<gtk::Box>() {
+                        p.remove(&btn);
+                    }
+                    reply_group.append(&btn);
+                    let vis = match id.as_str() {
+                        "reply-all" | "forward" => show_extra_actions || !any_reply_visible,
+                        _ => true,
+                    };
+                    btn.set_visible(vis);
+                    any_reply_visible |= vis;
                 }
             }
-            if let Some(btn) = imp.modern_unread_button.borrow().as_ref() {
-                if enabled_actions.contains("unread") {
-                    triage_group.append(btn);
-                }
-                btn.set_visible(show_triage);
-            }
-            if let Some(btn) = imp.modern_delete_button.borrow().as_ref() {
-                if enabled_actions.contains("delete") {
-                    triage_group.append(btn);
-                }
-                btn.set_visible(show_triage);
-            }
-            if let Some(btn) = imp.modern_junk_button.borrow().as_ref() {
-                if enabled_actions.contains("junk") {
-                    triage_group.append(btn);
-                }
-                btn.set_visible(show_junk);
-            }
-            if let Some(btn) = imp.modern_print_button.borrow().as_ref() {
-                if enabled_actions.contains("print") {
-                    triage_group.append(btn);
-                    btn.set_visible(show_extra_actions);
-                } else {
-                    btn.set_visible(false);
+            reply_group.set_visible(any_reply_visible);
+        }
+
+        // Sync Action Pill 2 (Right group: folds into More menu when narrow, in user-configured order)
+        if let Some(triage_group) = imp.modern_triage_group.borrow().as_ref() {
+            for id in &right_actions {
+                if let Some(btn) = button_for_id(id) {
+                    if let Some(p) = btn.parent().and_downcast::<gtk::Box>() {
+                        p.remove(&btn);
+                    }
+                    triage_group.append(&btn);
+                    let vis = match id.as_str() {
+                        "junk" => show_junk,
+                        "print" => show_extra_actions,
+                        _ => show_triage,
+                    };
+                    btn.set_visible(vis);
                 }
             }
             if let Some(more_btn) = imp.modern_more_button.borrow().as_ref() {
@@ -7509,6 +7563,13 @@ impl MailPage {
                 Some("win.toggle-mail-light-mode"),
             );
             m_more_menu.append_section(None, &tools_section);
+
+            let customize_section = gio::Menu::new();
+            customize_section.append(
+                Some(&gettext("Customize Header Actions…")),
+                Some("win.open-mail-header-prefs"),
+            );
+            m_more_menu.append_section(None, &customize_section);
 
             more_btn.set_menu_model(Some(&m_more_menu));
         }
@@ -8956,6 +9017,12 @@ impl MailPage {
                     page.sync_preview_actions_labels();
                 }
             });
+            let page_weak_for_list_toolbar = self.downgrade();
+            settings.connect_changed(Some("mail-list-toolbar-items"), move |_, _| {
+                if let Some(page) = page_weak_for_list_toolbar.upgrade() {
+                    page.rebuild_mail_list_toolbar();
+                }
+            });
             let page_weak_for_header_collapse = self.downgrade();
             settings.connect_changed(Some("mail-headers-collapsed"), move |_, _| {
                 if let Some(page) = page_weak_for_header_collapse.upgrade() {
@@ -9113,6 +9180,7 @@ impl MailPage {
             let page_weak_for_labels = self.downgrade();
             settings.connect_changed(Some("mail-labels"), move |_, _| {
                 if let Some(page) = page_weak_for_labels.upgrade() {
+                    page.rebuild_mail_list_toolbar();
                     page.refresh_mail();
                 }
             });
@@ -9243,7 +9311,7 @@ impl MailPage {
         let unified_enabled = AppSettings::try_new()
             .map(|settings| settings.mail_enable_unified_inbox())
             .unwrap_or(true);
-        let selection = if unified_enabled {
+        let selection = if unified_enabled && !folder_id.contains("::") {
             match folder_id {
                 "inbox" | "all" => FolderSelection::from_folder_id("unified_inbox"),
                 "sent" => FolderSelection::from_folder_id("unified_sent"),
@@ -9287,7 +9355,12 @@ impl MailPage {
             .borrow()
             .clone()
             .unwrap_or_else(MailLoadRequest::initial);
-        request.folder_name = None;
+        if selection.source_uid.is_some() {
+            request.source_uid = selection.source_uid.clone();
+            request.folder_name = selection.folder_name.clone();
+        } else {
+            request.folder_name = None;
+        }
         request.offset = 0;
         self.start_mail_load(request, true);
     }
@@ -11774,6 +11847,10 @@ impl MailPage {
             action_section.append(
                 Some(&str_mark_read),
                 Some("win.mark-all-read"),
+            );
+            action_section.append(
+                Some(&gettext("Pin to Action Bar")),
+                Some("win.pin-folder-to-toolbar"),
             );
             folder_menu.append_section(None, &action_section);
 
@@ -18874,6 +18951,7 @@ impl MailPage {
         if let Some(win) = crate::window::find_meridian_window(self) {
             win.update_sidebar_title(&display_title);
         }
+        self.rebuild_mail_list_toolbar();
         if let Some(title_lbl) = self.imp().drawer_header_title.borrow().as_ref() {
             title_lbl.set_label(&display_title);
         }
@@ -19691,10 +19769,17 @@ impl MailPage {
         actions_box.append(&secondary_actions_box);
         self.imp().mail_secondary_actions_box.replace(Some(secondary_actions_box.clone()));
 
+        let custom_toolbar_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .valign(gtk::Align::Center)
+            .build();
+        self.imp().mail_list_toolbar_box.replace(Some(custom_toolbar_box.clone()));
+
         let actions_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Never)
-            .child(&actions_box)
+            .child(&custom_toolbar_box)
             .propagate_natural_width(false)
             .propagate_natural_height(true)
             .min_content_width(0)
@@ -19703,6 +19788,80 @@ impl MailPage {
             .build();
 
         toolbar.append(&actions_scroll);
+
+        // Right-clicking empty space on the Action Bar opens a native Libadwaita context menu
+        {
+            let bg_gesture = gtk::GestureClick::builder().button(3).build();
+            let page_weak_bg = self.downgrade();
+            bg_gesture.connect_pressed(move |g, _, x, y| {
+                g.set_state(gtk::EventSequenceState::Claimed);
+                let Some(page) = page_weak_bg.upgrade() else { return; };
+                let Some(parent) = g.widget() else { return; };
+                let pop_box = gtk::Box::builder()
+                    .orientation(gtk::Orientation::Vertical)
+                    .spacing(0)
+                    .build();
+                let pop = gtk::Popover::builder()
+                    .child(&pop_box)
+                    .has_arrow(false)
+                    .css_classes(vec!["menu", "context-menu"])
+                    .build();
+                pop.set_parent(&parent);
+                pop.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+
+                let btn_customize = gtk::Button::builder()
+                    .child(
+                        &gtk::Label::builder()
+                            .label(&gettext("Customize Action Bar…"))
+                            .halign(gtk::Align::Start)
+                            .build(),
+                    )
+                    .halign(gtk::Align::Fill)
+                    .css_classes(vec!["flat", "context-menu-item"])
+                    .build();
+                let pop_w1 = pop.downgrade();
+                let page_w1 = page.downgrade();
+                btn_customize.connect_clicked(move |_| {
+                    if let Some(p) = pop_w1.upgrade() {
+                        p.popdown();
+                    }
+                    if let Some(pg) = page_w1.upgrade() {
+                        let _ = pg.activate_action("win.open-mail-list-toolbar-prefs", None);
+                    }
+                });
+                pop_box.append(&btn_customize);
+
+                let btn_hide = gtk::Button::builder()
+                    .child(
+                        &gtk::Label::builder()
+                            .label(&gettext("Hide Action Bar"))
+                            .halign(gtk::Align::Start)
+                            .build(),
+                    )
+                    .halign(gtk::Align::Fill)
+                    .css_classes(vec!["flat", "context-menu-item"])
+                    .build();
+                let pop_w2 = pop.downgrade();
+                btn_hide.connect_clicked(move |_| {
+                    if let Some(p) = pop_w2.upgrade() {
+                        p.popdown();
+                    }
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_mail_show_toolbar(false);
+                    }
+                });
+                pop_box.append(&btn_hide);
+
+                pop.connect_closed(|p| {
+                    let p_clone = p.clone();
+                    glib::idle_add_local_once(move || {
+                        p_clone.unparent();
+                    });
+                });
+                pop.popup();
+            });
+            toolbar.add_controller(bg_gesture);
+        }
 
         self.imp().mail_reply_button.replace(Some(reply_btn.clone()));
         self.imp().mail_reply_all_button.replace(Some(reply_all_btn.clone()));
@@ -19718,7 +19877,541 @@ impl MailPage {
         self.imp().mail_important_button.replace(Some(important_btn.clone()));
         self.imp().mail_undo_button.replace(Some(undo_btn.clone()));
 
+        self.rebuild_mail_list_toolbar();
+
         toolbar
+    }
+
+    pub(crate) fn cached_folder_summaries(&self) -> Vec<CamelFolderSummary> {
+        self.imp().mail_folder_summaries.borrow().clone()
+    }
+
+    pub fn pin_selected_folder_to_toolbar(&self) {
+        let sel = self.folder_context_action_selection();
+        let token = if sel.is_remote() {
+            let src = sel.source_uid.as_deref().unwrap_or("");
+            let fname = sel.folder_name.as_deref().unwrap_or(&sel.folder_id);
+            let short = Self::clean_folder_display_title(fname).replace(',', " ");
+            format!("folder:{src}::{fname}={short}")
+        } else {
+            let fid = sel.folder_id.trim();
+            if fid.is_empty() {
+                return;
+            }
+            let (raw_title, _) = sel.title_and_icon();
+            let short = Self::clean_folder_display_title(&raw_title).replace(',', " ");
+            format!("folder:{fid}={short}")
+        };
+        let base_key = token.split('=').next().unwrap_or(&token);
+        if let Some(settings) = AppSettings::try_new() {
+            let mut items = settings.mail_list_toolbar_items();
+            if !items.iter().any(|it| it.split('=').next().unwrap_or(it) == base_key) {
+                items.push(token);
+                settings.set_mail_list_toolbar_items(&items);
+            }
+            if !settings.mail_show_toolbar() {
+                settings.set_mail_show_toolbar(true);
+            }
+            self.rebuild_mail_list_toolbar();
+            self.show_toast(&gettext("Folder pinned to Action Bar"));
+        }
+    }
+
+    pub(crate) fn rebuild_mail_list_toolbar(&self) {
+        let Some(container) = self.imp().mail_list_toolbar_box.borrow().clone() else {
+            return;
+        };
+        while let Some(child) = container.first_child() {
+            container.remove(&child);
+        }
+
+        let items = AppSettings::try_new()
+            .map(|s| s.mail_list_toolbar_items())
+            .unwrap_or_else(|| {
+                crate::services::settings_service::DEFAULT_MAIL_LIST_TOOLBAR_ITEMS
+                    .iter()
+                    .map(|id| (*id).to_string())
+                    .collect()
+            });
+        let configured_labels = AppSettings::try_new()
+            .map(|s| s.mail_labels())
+            .unwrap_or_default();
+        let active_qf = self
+            .imp()
+            .quick_filter
+            .borrow()
+            .as_ref()
+            .map(|qf| qf.selected())
+            .unwrap_or(0);
+        let active_folder = self.active_folder_selection();
+        let active_search_text = self
+            .imp()
+            .search_entry
+            .borrow()
+            .as_ref()
+            .map(|e| e.text().to_string())
+            .unwrap_or_default();
+
+        for (item_idx, raw_item) in items.iter().enumerate() {
+            let (base_token, custom_alias) = match raw_item.split_once('=') {
+                Some((b, a)) => (b.trim(), Some(a.trim().to_string())),
+                None => (raw_item.trim(), None),
+            };
+            if base_token.is_empty() {
+                continue;
+            }
+            if base_token == "separator" {
+                let sep = gtk::Separator::new(gtk::Orientation::Vertical);
+                self.attach_list_toolbar_item_context_menu(&sep, item_idx, base_token, custom_alias.as_deref());
+                container.append(&sep);
+                continue;
+            }
+            if base_token == "spacer" {
+                let spacer = gtk::Box::builder()
+                    .orientation(gtk::Orientation::Horizontal)
+                    .hexpand(true)
+                    .width_request(12)
+                    .build();
+                self.attach_list_toolbar_item_context_menu(&spacer, item_idx, base_token, custom_alias.as_deref());
+                container.append(&spacer);
+                continue;
+            }
+
+            if let Some(filter_kind) = base_token.strip_prefix("filter:") {
+                if filter_kind == "today" {
+                    let default_label = gettext("Today");
+                    let display_label = custom_alias.clone().unwrap_or(default_label);
+                    let query_token = "on:today";
+                    let is_active = active_search_text.trim().eq_ignore_ascii_case(query_token);
+                    let btn = Self::make_list_toolbar_pill("x-office-calendar-symbolic", &display_label, &display_label, is_active);
+                    let page_weak = self.downgrade();
+                    btn.connect_clicked(move |_| {
+                        let Some(page) = page_weak.upgrade() else { return; };
+                        if let Some(entry) = page.imp().search_entry.borrow().as_ref() {
+                            let cur = entry.text().to_string();
+                            if cur.trim().eq_ignore_ascii_case(query_token) {
+                                entry.set_text("");
+                            } else {
+                                entry.set_text(query_token);
+                            }
+                        }
+                        page.rebuild_mail_list_toolbar();
+                    });
+                    self.attach_list_toolbar_item_context_menu(&btn, item_idx, base_token, custom_alias.as_deref());
+                    container.append(&btn);
+                    continue;
+                }
+                let (qf_index, default_label, icon_name) = match filter_kind {
+                    "unread" => (1u32, gettext("Unread"), "mail-unread-symbolic"),
+                    "flagged" | "starred" => (2u32, gettext("Starred"), "starred-symbolic"),
+                    "important" => (3u32, gettext("Important"), "emblem-important-symbolic"),
+                    "attachment" | "attachments" => (4u32, gettext("Attachments"), "mail-attachment-symbolic"),
+                    "followup" | "follow-up" => (5u32, gettext("Follow-Up"), "bookmark-new-symbolic"),
+                    _ => continue,
+                };
+                let display_label = custom_alias.clone().unwrap_or(default_label);
+                let is_active = active_qf == qf_index;
+                let btn = Self::make_list_toolbar_pill(icon_name, &display_label, &display_label, is_active);
+                let page_weak = self.downgrade();
+                btn.connect_clicked(move |_| {
+                    let Some(page) = page_weak.upgrade() else { return; };
+                    if let Some(qf) = page.imp().quick_filter.borrow().as_ref() {
+                        let next = if qf.selected() == qf_index { 0 } else { qf_index };
+                        qf.set_selected(next);
+                    }
+                    page.rebuild_mail_list_toolbar();
+                });
+                self.attach_list_toolbar_item_context_menu(&btn, item_idx, base_token, custom_alias.as_deref());
+                container.append(&btn);
+                continue;
+            }
+
+            if let Some(folder_spec) = base_token.strip_prefix("folder:") {
+                let (target_sel, default_label, icon_name) = if let Some((src, fname)) = folder_spec.split_once("::") {
+                    let sel = FolderSelection {
+                        folder_id: fname.to_string(),
+                        source_uid: Some(src.to_string()),
+                        folder_name: Some(fname.to_string()),
+                    };
+                    let lbl = Self::clean_folder_display_title(fname);
+                    let (_, ic) = sel.title_and_icon();
+                    (sel, lbl, ic)
+                } else {
+                    let sel = FolderSelection::from_folder_id(folder_spec);
+                    let (raw_t, ic) = sel.title_and_icon();
+                    let lbl = Self::clean_folder_display_title(&raw_t);
+                    (sel, lbl, ic)
+                };
+                let display_label = custom_alias.clone().unwrap_or(default_label);
+                let is_active = active_folder == target_sel;
+                let btn = Self::make_list_toolbar_pill(icon_name, &display_label, &display_label, is_active);
+                btn.add_css_class("folder-pill");
+                let page_weak = self.downgrade();
+                btn.connect_clicked(move |_| {
+                    let Some(page) = page_weak.upgrade() else { return; };
+                    if let Some(current) = page.imp().folder_selection.borrow().as_ref() {
+                        current.replace(target_sel.clone());
+                    }
+                    page.select_folder_row(&target_sel);
+                    page.refresh_mail();
+                });
+                self.attach_list_toolbar_item_context_menu(&btn, item_idx, base_token, custom_alias.as_deref());
+                container.append(&btn);
+                continue;
+            }
+
+            if let Some(label_tag) = base_token.strip_prefix("label:") {
+                let def = configured_labels.iter().find(|d| {
+                    d.tag.eq_ignore_ascii_case(label_tag) || d.name.eq_ignore_ascii_case(label_tag)
+                });
+                let default_label = def
+                    .map(|d| d.display_name())
+                    .unwrap_or_else(|| label_tag.to_string());
+                let color_hex = def
+                    .map(|d| d.color.clone())
+                    .unwrap_or_else(|| "#3584e4".to_string());
+                let display_label = custom_alias.clone().unwrap_or(default_label);
+                let query_token = format!("tag:{label_tag}");
+                let is_active = active_search_text.trim().eq_ignore_ascii_case(&query_token);
+                let btn = Self::make_list_toolbar_color_pill(&color_hex, &display_label, is_active);
+                let page_weak = self.downgrade();
+                btn.connect_clicked(move |_| {
+                    let Some(page) = page_weak.upgrade() else { return; };
+                    if let Some(entry) = page.imp().search_entry.borrow().as_ref() {
+                        let cur = entry.text().to_string();
+                        if cur.trim().eq_ignore_ascii_case(&query_token) {
+                            entry.set_text("");
+                        } else {
+                            entry.set_text(&query_token);
+                        }
+                    }
+                    page.rebuild_mail_list_toolbar();
+                });
+                self.attach_list_toolbar_item_context_menu(&btn, item_idx, base_token, custom_alias.as_deref());
+                container.append(&btn);
+                continue;
+            }
+
+            // Standard & List actions
+            let (icon_name, default_label, action_name) = match base_token {
+                "follow-up" => ("bookmark-new-symbolic", gettext("Follow-Up"), Some("win.edit-follow-up")),
+                "star" => ("starred-symbolic", gettext("Star"), Some("win.toggle-star")),
+                "important" => ("emblem-important-symbolic", gettext("Important"), Some("win.toggle-important")),
+                "edit-labels" => ("preferences-color-symbolic", gettext("Labels"), Some("win.edit-message-labels")),
+                "mark-read" => ("mail-read-symbolic", gettext("Mark Read"), Some("win.mark-read")),
+                "mark-unread" => ("mail-unread-symbolic", gettext("Mark Unread"), Some("win.mark-unread")),
+                "move" => ("folder-symbolic", gettext("Move To"), Some("win.move-message")),
+                "copy" => ("edit-copy-symbolic", gettext("Copy To"), Some("win.copy-message")),
+                "archive" => ("package-x-generic-symbolic", gettext("Archive"), Some("win.archive")),
+                "delete" => ("user-trash-symbolic", gettext("Delete"), Some("win.delete")),
+                "junk" => ("mail-mark-junk-symbolic", gettext("Junk"), Some("win.mark-junk")),
+                "not-junk" => ("security-high-symbolic", gettext("Not Junk"), Some("win.mark-not-junk")),
+                "mark-all-read" => ("mail-read-symbolic", gettext("All Read"), Some("win.mark-all-read")),
+                "next-unread-folder" => ("go-jump-symbolic", gettext("Next Unread"), Some("win.next-unread-folder")),
+                "expand-threads" => ("view-list-symbolic", gettext("Threads"), None),
+                "mark-thread-read" => ("mail-read-symbolic", gettext("Read Thread"), Some("win.mark-thread-read")),
+                "delete-thread" => ("user-trash-symbolic", gettext("Delete Thread"), Some("win.delete-thread")),
+                "select-all" => ("edit-select-all-symbolic", gettext("Select All"), Some("win.select-all-messages")),
+                "refresh-mail" => ("view-refresh-symbolic", gettext("Refresh"), Some("win.refresh-mail")),
+                "apply-filters" => ("system-run-symbolic", gettext("Run Filters"), Some("win.apply-filters")),
+                "filter-editor" => ("emblem-system-symbolic", gettext("Filter Rules"), Some("win.open-filter-editor")),
+                "search-advanced" => ("system-search-symbolic", gettext("Adv. Search"), Some("win.search-advanced")),
+                "oof-settings" => ("user-away-symbolic", gettext("Out of Office"), Some("win.open-oof-settings")),
+                "expunge" => ("user-trash-symbolic", gettext("Expunge"), Some("win.folder-expunge")),
+                "undo" => ("edit-undo-symbolic", gettext("Undo"), Some("win.undo")),
+                "redo" => ("edit-redo-symbolic", gettext("Redo"), Some("win.redo")),
+                "reply" => ("mail-reply-sender-symbolic", gettext("Reply"), Some("win.reply")),
+                "reply-all" => ("mail-reply-all-symbolic", gettext("Reply All"), Some("win.reply-all")),
+                "forward" => ("mail-forward-symbolic", gettext("Forward"), Some("win.forward")),
+                "edit-as-new" => ("document-edit-symbolic", gettext("Edit as New"), Some("win.edit-as-new")),
+                "add-sender-contact" => ("contact-new-symbolic", gettext("Add Contact"), Some("win.add-sender-to-contacts")),
+                "print" => ("document-print-symbolic", gettext("Print"), Some("win.mail-print")),
+                "export" => ("document-save-symbolic", gettext("Save EML"), Some("win.export")),
+                "source" => ("text-x-generic-symbolic", gettext("Source"), Some("win.view-message-source")),
+                "prev" => ("go-previous-symbolic", gettext("Previous"), Some("win.mail-prev")),
+                "next" => ("go-next-symbolic", gettext("Next"), Some("win.mail-next")),
+                _ => continue,
+            };
+            let show_text = custom_alias.as_deref().is_some_and(|s| !s.is_empty());
+            let label_text = custom_alias.clone().unwrap_or_else(|| default_label.clone());
+            let btn = if show_text {
+                Self::make_list_toolbar_pill(icon_name, &label_text, &default_label, false)
+            } else {
+                Self::make_list_toolbar_icon_btn(icon_name, &default_label)
+            };
+            if let Some(act) = action_name {
+                btn.set_action_name(Some(act));
+            } else if base_token == "expand-threads" {
+                let page_weak = self.downgrade();
+                btn.connect_clicked(move |_| {
+                    let Some(page) = page_weak.upgrade() else { return; };
+                    let any_expanded = !page.imp().expanded_threads.borrow().is_empty();
+                    if any_expanded {
+                        page.collapse_all_threads();
+                    } else {
+                        page.expand_all_threads();
+                    }
+                });
+            }
+            self.attach_list_toolbar_item_context_menu(&btn, item_idx, base_token, custom_alias.as_deref());
+            container.append(&btn);
+        }
+    }
+
+    fn make_list_toolbar_icon_btn(icon_name: &str, tooltip: &str) -> gtk::Button {
+        let img = gtk::Image::builder()
+            .pixel_size(16)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .build();
+        set_image_icon_with_fallback(&img, icon_name, "folder-symbolic");
+        let btn = gtk::Button::builder()
+            .child(&img)
+            .tooltip_text(tooltip)
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["flat", "mail-list-bar-btn"])
+            .build();
+        set_accessible_label(&btn, tooltip);
+        btn
+    }
+
+    fn make_list_toolbar_pill(icon_name: &str, label_text: &str, tooltip: &str, is_active: bool) -> gtk::Button {
+        let row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(5)
+            .valign(gtk::Align::Center)
+            .build();
+        let img = gtk::Image::builder()
+            .pixel_size(16)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .build();
+        set_image_icon_with_fallback(&img, icon_name, "folder-symbolic");
+        row.append(&img);
+        if !label_text.trim().is_empty() {
+            let lbl = gtk::Label::builder()
+                .label(label_text)
+                .valign(gtk::Align::Center)
+                .build();
+            row.append(&lbl);
+        }
+        let mut classes = vec!["flat", "mail-list-bar-pill"];
+        if is_active {
+            classes.push("active");
+        }
+        let btn = gtk::Button::builder()
+            .child(&row)
+            .tooltip_text(tooltip)
+            .valign(gtk::Align::Center)
+            .css_classes(classes)
+            .build();
+        set_accessible_label(&btn, tooltip);
+        btn
+    }
+
+    fn make_list_toolbar_color_pill(color_hex: &str, label_text: &str, is_active: bool) -> gtk::Button {
+        let row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(5)
+            .valign(gtk::Align::Center)
+            .build();
+        let rgba = gdk::RGBA::parse(color_hex).unwrap_or_else(|_| gdk::RGBA::new(0.2, 0.5, 0.9, 1.0));
+        let dot = gtk::DrawingArea::builder()
+            .content_width(10)
+            .content_height(10)
+            .valign(gtk::Align::Center)
+            .build();
+        dot.set_draw_func(move |_, cr, w, h| {
+            let r = (w.min(h) as f64) / 2.0;
+            cr.arc(w as f64 / 2.0, h as f64 / 2.0, r, 0.0, std::f64::consts::TAU);
+            cr.set_source_rgba(rgba.red() as f64, rgba.green() as f64, rgba.blue() as f64, 1.0);
+            let _ = cr.fill();
+        });
+        row.append(&dot);
+        let lbl = gtk::Label::builder()
+            .label(label_text)
+            .valign(gtk::Align::Center)
+            .build();
+        row.append(&lbl);
+        let mut classes = vec!["flat", "mail-list-bar-pill"];
+        if is_active {
+            classes.push("active");
+        }
+        gtk::Button::builder()
+            .child(&row)
+            .tooltip_text(label_text)
+            .valign(gtk::Align::Center)
+            .css_classes(classes)
+            .build()
+    }
+
+    fn attach_list_toolbar_item_context_menu(
+        &self,
+        widget: &impl IsA<gtk::Widget>,
+        item_idx: usize,
+        base_token: &str,
+        current_alias: Option<&str>,
+    ) {
+        let gesture = gtk::GestureClick::builder().button(3).build();
+        let page_weak = self.downgrade();
+        let base_token_str = base_token.to_string();
+        let alias_str = current_alias.unwrap_or("").to_string();
+        gesture.connect_pressed(move |g, _, x, y| {
+            g.set_state(gtk::EventSequenceState::Claimed);
+            let Some(page) = page_weak.upgrade() else { return; };
+            let Some(parent) = g.widget() else { return; };
+            let total_len = AppSettings::try_new()
+                .map(|s| s.mail_list_toolbar_items().len())
+                .unwrap_or(0);
+            let pop_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(2)
+                .margin_start(4)
+                .margin_end(4)
+                .margin_top(4)
+                .margin_bottom(4)
+                .build();
+            let pop = gtk::Popover::builder()
+                .child(&pop_box)
+                .has_arrow(false)
+                .css_classes(vec!["menu", "context-menu"])
+                .build();
+            pop.set_parent(&parent);
+            pop.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+
+            let make_menu_btn = |label: &str, sensitive: bool| -> gtk::Button {
+                gtk::Button::builder()
+                    .child(
+                        &gtk::Label::builder()
+                            .label(label)
+                            .halign(gtk::Align::Start)
+                            .build(),
+                    )
+                    .halign(gtk::Align::Fill)
+                    .sensitive(sensitive)
+                    .css_classes(vec!["flat", "context-menu-item"])
+                    .build()
+            };
+
+            if !matches!(base_token_str.as_str(), "separator" | "spacer") {
+                let btn_rename = make_menu_btn(&gettext("Rename…"), true);
+                let pop_weak_rn = pop.downgrade();
+                let page_weak_rn = page.downgrade();
+                let base_for_rn = base_token_str.clone();
+                let alias_for_rn = alias_str.clone();
+                btn_rename.connect_clicked(move |_| {
+                    if let Some(p) = pop_weak_rn.upgrade() {
+                        p.popdown();
+                    }
+                    let Some(pg) = page_weak_rn.upgrade() else { return; };
+                    let dialog = adw::AlertDialog::builder()
+                        .heading(&gettext("Rename Action Bar Item"))
+                        .body(&gettext("Enter a custom label for this button, or leave it empty to use the default icon/name."))
+                        .default_response("save")
+                        .close_response("cancel")
+                        .build();
+                    dialog.add_response("cancel", &gettext("Cancel"));
+                    dialog.add_response("save", &gettext("Save"));
+                    dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+                    let entry = gtk::Entry::builder()
+                        .text(&alias_for_rn)
+                        .placeholder_text(&gettext("Default label"))
+                        .activates_default(true)
+                        .build();
+                    dialog.set_extra_child(Some(&entry));
+                    let entry_for_resp = entry.clone();
+                    let base_save = base_for_rn.clone();
+                    dialog.connect_response(Some("save"), move |_, _| {
+                        if let Some(settings) = AppSettings::try_new() {
+                            let mut items = settings.mail_list_toolbar_items();
+                            if item_idx < items.len() {
+                                let new_alias = entry_for_resp.text().trim().replace(',', " ");
+                                items[item_idx] = if new_alias.is_empty() {
+                                    base_save.clone()
+                                } else {
+                                    format!("{base_save}={new_alias}")
+                                };
+                                settings.set_mail_list_toolbar_items(&items);
+                            }
+                        }
+                    });
+                    dialog.present(Some(&pg));
+                });
+                pop_box.append(&btn_rename);
+            }
+
+            let btn_left = make_menu_btn(&gettext("Move Left"), item_idx > 0);
+            let pop_weak_l = pop.downgrade();
+            btn_left.connect_clicked(move |_| {
+                if let Some(p) = pop_weak_l.upgrade() {
+                    p.popdown();
+                }
+                if let Some(settings) = AppSettings::try_new() {
+                    let mut items = settings.mail_list_toolbar_items();
+                    if item_idx > 0 && item_idx < items.len() {
+                        items.swap(item_idx, item_idx - 1);
+                        settings.set_mail_list_toolbar_items(&items);
+                    }
+                }
+            });
+            pop_box.append(&btn_left);
+
+            let btn_right = make_menu_btn(&gettext("Move Right"), item_idx + 1 < total_len);
+            let pop_weak_r = pop.downgrade();
+            btn_right.connect_clicked(move |_| {
+                if let Some(p) = pop_weak_r.upgrade() {
+                    p.popdown();
+                }
+                if let Some(settings) = AppSettings::try_new() {
+                    let mut items = settings.mail_list_toolbar_items();
+                    if item_idx + 1 < items.len() {
+                        items.swap(item_idx, item_idx + 1);
+                        settings.set_mail_list_toolbar_items(&items);
+                    }
+                }
+            });
+            pop_box.append(&btn_right);
+
+            pop_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+            let btn_remove = make_menu_btn(&gettext("Remove from Action Bar"), true);
+            let pop_weak_rem = pop.downgrade();
+            btn_remove.connect_clicked(move |_| {
+                if let Some(p) = pop_weak_rem.upgrade() {
+                    p.popdown();
+                }
+                if let Some(settings) = AppSettings::try_new() {
+                    let mut items = settings.mail_list_toolbar_items();
+                    if item_idx < items.len() {
+                        items.remove(item_idx);
+                        settings.set_mail_list_toolbar_items(&items);
+                    }
+                }
+            });
+            pop_box.append(&btn_remove);
+
+            let btn_prefs = make_menu_btn(&gettext("Customize Action Bar…"), true);
+            let pop_weak_prefs = pop.downgrade();
+            let page_weak_prefs = page.downgrade();
+            btn_prefs.connect_clicked(move |_| {
+                if let Some(p) = pop_weak_prefs.upgrade() {
+                    p.popdown();
+                }
+                if let Some(pg) = page_weak_prefs.upgrade() {
+                    let _ = pg.activate_action("win.open-mail-list-toolbar-prefs", None);
+                }
+            });
+            pop_box.append(&btn_prefs);
+
+            pop.connect_closed(|p| {
+                let p_clone = p.clone();
+                glib::idle_add_local_once(move || {
+                    p_clone.unparent();
+                });
+            });
+            pop.popup();
+        });
+        widget.add_controller(gesture);
     }
 
     fn message_context_menu() -> gio::Menu {
@@ -23947,6 +24640,7 @@ impl MailPage {
             &crate::i18n::gettext("Flagged"),
             &crate::i18n::gettext("Important"),
             &crate::i18n::gettext("With Attachment"),
+            &crate::i18n::gettext("Follow-Up"),
         ]);
         let quick_filter = gtk::DropDown::new(Some(quick_filter_model), None::<&gtk::Expression>);
         quick_filter.set_tooltip_text(Some(&crate::i18n::gettext("Message filter")));
