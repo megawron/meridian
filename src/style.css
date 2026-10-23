@@ -3029,74 +3029,27 @@ splitview > .sidebar:backdrop {
   padding: 6px 10px;
 }
 
-/* ── Hylki / Firefox-style Drag & Drop Toolbar Editor (Preferences) ────── */
-.hylki-toolbar-editor-card {
-  padding: 0;
-  overflow: hidden;
-}
-
-.hylki-zone-section {
-  padding: 12px 14px;
-}
-
-.hylki-drop-zone {
-  min-height: 58px;
-  padding: 6px 8px;
+/* ── Hylki Drag & Drop Toolbar Editor (Preferences) ────────────────────── */
+.toolbar-zone {
+  border: 1px dashed alpha(currentColor, 0.25);
   border-radius: 10px;
-  border: 1.5px dashed alpha(@borders, 0.85);
-  background-color: alpha(@window_fg_color, 0.015);
-  transition: border-color 140ms ease, background-color 140ms ease;
+  padding: 6px;
 }
 
-.hylki-drop-zone.drop-active {
-  border: 1.5px dashed @accent_color;
-  background-color: alpha(@accent_bg_color, 0.09);
+.toolbar-zone.drop-active {
+  border-color: @accent_color;
+  background: alpha(@accent_bg_color, 0.08);
 }
 
-.hylki-drop-zone flowboxchild {
-  padding: 0;
-  margin: 0;
-  border: none;
-  background: transparent;
-}
-
-.hylki-toolbar-tile {
-  min-width: 64px;
-  min-height: 44px;
+.toolbar-chip {
   padding: 6px 10px;
   border-radius: 8px;
-  background-color: alpha(@window_fg_color, 0.065);
-  color: @window_fg_color;
-  border: 1.5px solid transparent;
-  box-shadow: none;
-  transition: background-color 120ms ease, border-color 120ms ease, opacity 120ms ease;
+  background: alpha(currentColor, 0.06);
+  min-width: 48px;
 }
 
-.hylki-toolbar-tile:hover {
-  background-color: alpha(@window_fg_color, 0.12);
-}
-
-.hylki-toolbar-tile:active {
-  background-color: alpha(@window_fg_color, 0.18);
-}
-
-.hylki-toolbar-tile.dragging {
-  opacity: 0.4;
-}
-
-.hylki-toolbar-tile.drop-target-tile {
-  border-color: @accent_color;
-  background-color: alpha(@accent_bg_color, 0.16);
-}
-
-.hylki-toolbar-tile label {
-  font-size: 0.78rem;
-  font-weight: 500;
-}
-
-.hylki-empty-label {
-  font-size: 0.88rem;
-  padding: 14px 0;
+.toolbar-chip:hover {
+  background: alpha(currentColor, 0.12);
 }
 
 .unified-mail-toolbar .linked button,

@@ -7070,6 +7070,168 @@ fn header_action_meta(id: &str) -> (&'static str, String) {
     }
 }
 
+mod toolbar_zone_imp {
+    use super::*;
+
+    pub struct ToolbarZone {
+        pub gap_index: Cell<Option<usize>>,
+        pub gap_width: Cell<i32>,
+    }
+
+    impl Default for ToolbarZone {
+        fn default() -> Self {
+            Self {
+                gap_index: Cell::new(None),
+                gap_width: Cell::new(52),
+            }
+        }
+    }
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for ToolbarZone {
+        const NAME: &'static str = "MeridianToolbarZone";
+        type Type = super::ToolbarZone;
+        type ParentType = gtk::Widget;
+    }
+
+    impl ObjectImpl for ToolbarZone {
+        fn dispose(&self) {
+            while let Some(child) = self.obj().first_child() {
+                child.unparent();
+            }
+        }
+    }
+
+    impl WidgetImpl for ToolbarZone {
+        fn request_mode(&self) -> gtk::SizeRequestMode {
+            gtk::SizeRequestMode::HeightForWidth
+        }
+
+        fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
+            if orientation == gtk::Orientation::Horizontal {
+                return (60, 240, -1, -1);
+            }
+            let avail = if for_size > 0 { for_size } else { 420 };
+            let (_, total_h) = self.layout_slots(avail, true);
+            let h = total_h.max(44);
+            (h, h, -1, -1)
+        }
+
+        fn size_allocate(&self, width: i32, _height: i32, _baseline: i32) {
+            let (slots, _) = self.layout_slots(width, true);
+            for (child_opt, x, y, w, h) in slots {
+                if let Some(child) = child_opt {
+                    child.size_allocate(&gtk::Allocation::new(x, y, w, h), -1);
+                }
+            }
+        }
+    }
+
+    impl ToolbarZone {
+        pub fn layout_slots(
+            &self,
+            avail_width: i32,
+            include_gap: bool,
+        ) -> (Vec<(Option<gtk::Widget>, i32, i32, i32, i32)>, i32) {
+            let mut items: Vec<(Option<gtk::Widget>, i32, i32)> = Vec::new();
+            let mut max_h = 36_i32;
+
+            let mut child_opt = self.obj().first_child();
+            while let Some(child) = child_opt {
+                let next = child.next_sibling();
+                if child.should_layout() {
+                    let (_, nat_w, _, _) = child.measure(gtk::Orientation::Horizontal, -1);
+                    let (_, nat_h, _, _) = child.measure(gtk::Orientation::Vertical, nat_w);
+                    max_h = max_h.max(nat_h);
+                    items.push((Some(child), nat_w, nat_h));
+                }
+                child_opt = next;
+            }
+
+            if include_gap {
+                if let Some(gap_idx) = self.gap_index.get() {
+                    let idx = gap_idx.min(items.len());
+                    let gw = self.gap_width.get().max(48);
+                    items.insert(idx, (None, gw, max_h));
+                }
+            }
+
+            let avail = avail_width.max(1);
+            let mut x = 0_i32;
+            let mut y = 0_i32;
+            let mut row_h = 0_i32;
+            let mut out = Vec::with_capacity(items.len());
+
+            for (w_opt, w, h) in items {
+                if x > 0 && x + w > avail {
+                    x = 0;
+                    y += row_h + 6;
+                    row_h = 0;
+                }
+                out.push((w_opt, x, y, w, h));
+                x += w + 6;
+                row_h = row_h.max(h);
+            }
+
+            let total_h = if out.is_empty() { 0 } else { y + row_h };
+            (out, total_h)
+        }
+    }
+}
+
+glib::wrapper! {
+    pub struct ToolbarZone(ObjectSubclass<toolbar_zone_imp::ToolbarZone>)
+        @extends gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
+}
+
+impl ToolbarZone {
+    pub fn new() -> Self {
+        let obj: Self = glib::Object::builder().build();
+        obj.add_css_class("toolbar-zone");
+        obj.set_hexpand(true);
+        obj
+    }
+
+    pub fn append(&self, child: &impl IsA<gtk::Widget>) {
+        child.as_ref().set_parent(self);
+    }
+
+    pub fn clear(&self) {
+        self.imp().gap_index.set(None);
+        while let Some(child) = self.first_child() {
+            child.unparent();
+        }
+    }
+
+    pub fn set_gap(&self, gap_index: Option<usize>, gap_width: i32) {
+        let imp = self.imp();
+        let w = gap_width.max(48);
+        if imp.gap_index.get() != gap_index || imp.gap_width.get() != w {
+            imp.gap_index.set(gap_index);
+            imp.gap_width.set(w);
+            self.queue_resize();
+        }
+    }
+
+    pub fn drop_index(&self, x: f64, y: f64) -> usize {
+        let lx = x - 6.0;
+        let ly = y - 6.0;
+        let avail = (self.width() - 12).max(1);
+        let (slots, _) = self.imp().layout_slots(avail, false);
+        let mut idx = 0;
+        for (_, cx, cy, cw, ch) in slots {
+            let row_top = cy as f64;
+            let row_bottom = (cy + ch) as f64;
+            let center_x = (cx as f64) + (cw as f64) * 0.5;
+            if ly >= row_bottom || (ly >= row_top && lx >= center_x) {
+                idx += 1;
+            }
+        }
+        idx
+    }
+}
+
 fn make_toolbar_tile_icon(
     base_token: &str,
     icon_name: &str,
@@ -7114,21 +7276,22 @@ fn make_toolbar_tile_icon(
         .upcast()
 }
 
-fn make_draggable_toolbar_tile(
+fn make_toolbar_chip(
     base_token: &str,
     icon_name: &str,
     label_text: &str,
     drag_payload: String,
     labels: &[crate::services::settings_service::MailLabelDefinition],
-) -> (gtk::FlowBoxChild, gtk::Box) {
-    let tile_box = gtk::Box::builder()
+    parent_zone: &ToolbarZone,
+    dragged_width: &Rc<Cell<i32>>,
+) -> gtk::Box {
+    let chip = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(3)
-        .halign(gtk::Align::Center)
+        .spacing(2)
         .valign(gtk::Align::Center)
-        .css_classes(vec!["hylki-toolbar-tile"])
+        .css_classes(vec!["toolbar-chip"])
         .build();
-    tile_box.set_cursor_from_name(Some("grab"));
+    chip.set_cursor_from_name(Some("grab"));
 
     let icon_widget = make_toolbar_tile_icon(base_token, icon_name, labels);
     let lbl = gtk::Label::builder()
@@ -7136,8 +7299,8 @@ fn make_draggable_toolbar_tile(
         .css_classes(vec!["caption"])
         .halign(gtk::Align::Center)
         .build();
-    tile_box.append(&icon_widget);
-    tile_box.append(&lbl);
+    chip.append(&icon_widget);
+    chip.append(&lbl);
 
     let ds = gtk::DragSource::builder()
         .actions(gtk::gdk::DragAction::MOVE)
@@ -7145,19 +7308,23 @@ fn make_draggable_toolbar_tile(
     ds.connect_prepare(move |_, _, _| {
         Some(gtk::gdk::ContentProvider::for_value(&drag_payload.to_value()))
     });
-    let tb_begin = tile_box.clone();
+    let chip_begin = chip.clone();
+    let zone_begin = parent_zone.clone();
+    let dw_begin = dragged_width.clone();
     let base_ghost = base_token.to_string();
     let icon_ghost = icon_name.to_string();
     let label_ghost = label_text.to_string();
     let labels_ghost = labels.to_vec();
     ds.connect_drag_begin(move |_, drag| {
-        tb_begin.add_css_class("dragging");
+        let w = chip_begin.width().max(52);
+        let h = chip_begin.height().max(36);
+        dw_begin.set(w);
+
         let ghost = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(3)
-            .halign(gtk::Align::Center)
+            .spacing(2)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["card", "hylki-toolbar-tile"])
+            .css_classes(vec!["toolbar-chip"])
             .build();
         let g_icon = make_toolbar_tile_icon(&base_ghost, &icon_ghost, &labels_ghost);
         let g_lbl = gtk::Label::builder()
@@ -7169,26 +7336,82 @@ fn make_draggable_toolbar_tile(
         ghost.append(&g_lbl);
         let drag_icon = gtk::DragIcon::for_drag(drag);
         drag_icon.set_child(Some(&ghost));
-        drag.set_hotspot(36, 26);
-    });
-    let tb_end = tile_box.clone();
-    ds.connect_drag_end(move |_, _, _| {
-        tb_end.remove_css_class("dragging");
-    });
-    tile_box.add_controller(ds);
+        drag.set_hotspot(w / 2, h / 2);
 
-    let child = gtk::FlowBoxChild::builder()
-        .focusable(false)
-        .child(&tile_box)
+        chip_begin.set_visible(false);
+        zone_begin.queue_resize();
+    });
+    let chip_end = chip.clone();
+    let zone_end = parent_zone.clone();
+    ds.connect_drag_end(move |_, _, _| {
+        chip_end.set_visible(true);
+        zone_end.queue_resize();
+    });
+    chip.add_controller(ds);
+
+    chip
+}
+
+fn make_toolbar_zone_row(
+    list_box: &gtk::ListBox,
+    title: &str,
+    subtitle: &str,
+    empty_text: &str,
+) -> (ToolbarZone, gtk::Label) {
+    let row_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(6)
+        .margin_top(10)
+        .margin_bottom(10)
+        .margin_start(12)
+        .margin_end(12)
         .build();
-    (child, tile_box)
+    let hdr = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .build();
+    let lbl_title = gtk::Label::builder()
+        .label(title)
+        .halign(gtk::Align::Start)
+        .build();
+    let lbl_sub = gtk::Label::builder()
+        .label(subtitle)
+        .css_classes(vec!["dim-label", "caption"])
+        .halign(gtk::Align::Start)
+        .build();
+    hdr.append(&lbl_title);
+    hdr.append(&lbl_sub);
+    row_box.append(&hdr);
+
+    let zone = ToolbarZone::new();
+    let empty_lbl = gtk::Label::builder()
+        .label(empty_text)
+        .css_classes(vec!["dim-label"])
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .can_target(false)
+        .build();
+    let overlay = gtk::Overlay::new();
+    overlay.set_child(Some(&zone));
+    overlay.add_overlay(&empty_lbl);
+    row_box.append(&overlay);
+
+    let row = gtk::ListBoxRow::builder()
+        .activatable(false)
+        .selectable(false)
+        .can_focus(false)
+        .child(&row_box)
+        .build();
+    list_box.append(&row);
+
+    (zone, empty_lbl)
 }
 
 fn build_mail_header_toolbar_editor(settings: Option<AppSettings>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::builder()
         .title(&crate::i18n::gettext("Header Action Bar"))
         .description(&crate::i18n::gettext(
-            "Drag buttons between the groups and into the order you want (or click a tile). The left group always stays on the toolbar; the right group folds into the ▾ menu when the reading pane is narrow. Changes apply at once.",
+            "Drag buttons between the groups and into the order you want. The left group always stays on the toolbar; the right group folds into the ▾ menu when the reading pane is narrow. Changes apply at once.",
         ))
         .build();
 
@@ -7199,64 +7422,31 @@ fn build_mail_header_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefe
         .build();
     group.set_header_suffix(Some(&btn_restore));
 
-    let card = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .css_classes(vec!["card", "hylki-toolbar-editor-card"])
+    let list_box = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(vec!["boxed-list"])
         .build();
 
-    let make_zone_section = |title: &str, subtitle: &str| -> (gtk::Box, gtk::Box) {
-        let sec = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(6)
-            .css_classes(vec!["hylki-zone-section"])
-            .build();
-        let hdr = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .build();
-        let lbl_title = gtk::Label::builder()
-            .label(title)
-            .css_classes(vec!["heading"])
-            .halign(gtk::Align::Start)
-            .build();
-        let lbl_sub = gtk::Label::builder()
-            .label(subtitle)
-            .css_classes(vec!["caption", "dim-label"])
-            .halign(gtk::Align::Start)
-            .valign(gtk::Align::Baseline)
-            .build();
-        hdr.append(&lbl_title);
-        hdr.append(&lbl_sub);
-        sec.append(&hdr);
-
-        let drop_zone = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(6)
-            .css_classes(vec!["hylki-drop-zone"])
-            .build();
-        sec.append(&drop_zone);
-        (sec, drop_zone)
-    };
-
-    let (sec_left, zone_left) = make_zone_section(
+    let empty_str = crate::i18n::gettext("Empty");
+    let (zone_left, empty_left) = make_toolbar_zone_row(
+        &list_box,
         &crate::i18n::gettext("Left group"),
         &crate::i18n::gettext("Always shown"),
+        &empty_str,
     );
-    let (sec_right, zone_right) = make_zone_section(
+    let (zone_right, empty_right) = make_toolbar_zone_row(
+        &list_box,
         &crate::i18n::gettext("Right group"),
         &crate::i18n::gettext("Folds into ▾ when narrow"),
+        &empty_str,
     );
-    let (sec_hidden, zone_hidden) = make_zone_section(
+    let (zone_hidden, empty_hidden) = make_toolbar_zone_row(
+        &list_box,
         &crate::i18n::gettext("Not shown"),
         &crate::i18n::gettext("Drop a button here to move it into the ▾ menu"),
+        &empty_str,
     );
-
-    card.append(&sec_left);
-    card.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    card.append(&sec_right);
-    card.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    card.append(&sec_hidden);
-    group.add(&card);
+    group.add(&list_box);
 
     let initial_groups = settings
         .as_ref()
@@ -7275,6 +7465,7 @@ fn build_mail_header_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefe
         });
     let state: Rc<RefCell<(Vec<String>, Vec<String>)>> = Rc::new(RefCell::new(initial_groups));
     let syncing = Rc::new(Cell::new(false));
+    let dragged_width = Rc::new(Cell::new(52_i32));
 
     type RebuildFn = Rc<RefCell<Option<Box<dyn Fn()>>>>;
     let rebuild_ref: RebuildFn = Rc::new(RefCell::new(None));
@@ -7297,22 +7488,42 @@ fn build_mail_header_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefe
         })
     };
 
-    let attach_zone_drop = |zone: &gtk::Box, target_group: &'static str| {
+    let attach_zone_drop = |zone: &ToolbarZone, empty_lbl: &gtk::Label, target_group: &'static str| {
         let dt = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
         let z_enter = zone.clone();
-        dt.connect_enter(move |_, _, _| {
+        let e_enter = empty_lbl.clone();
+        let dw_enter = dragged_width.clone();
+        dt.connect_enter(move |_, x, y| {
             z_enter.add_css_class("drop-active");
+            e_enter.set_visible(false);
+            let idx = z_enter.drop_index(x, y);
+            z_enter.set_gap(Some(idx), dw_enter.get());
+            gtk::gdk::DragAction::MOVE
+        });
+        let z_motion = zone.clone();
+        let e_motion = empty_lbl.clone();
+        let dw_motion = dragged_width.clone();
+        dt.connect_motion(move |_, x, y| {
+            z_motion.add_css_class("drop-active");
+            e_motion.set_visible(false);
+            let idx = z_motion.drop_index(x, y);
+            z_motion.set_gap(Some(idx), dw_motion.get());
             gtk::gdk::DragAction::MOVE
         });
         let z_leave = zone.clone();
+        let e_leave = empty_lbl.clone();
         dt.connect_leave(move |_| {
             z_leave.remove_css_class("drop-active");
+            z_leave.set_gap(None, 52);
+            e_leave.set_visible(z_leave.first_child().is_none());
         });
         let z_drop = zone.clone();
         let state_drop = state.clone();
         let save_drop = save_and_rebuild.clone();
-        dt.connect_drop(move |_, val, _, _| {
+        dt.connect_drop(move |_, val, x, y| {
             z_drop.remove_css_class("drop-active");
+            let insert_idx = z_drop.drop_index(x, y);
+            z_drop.set_gap(None, 52);
             let Ok(payload) = val.get::<String>() else { return false; };
             let Some(action_id) = payload.strip_prefix("header-tile:") else { return false; };
             {
@@ -7320,8 +7531,14 @@ fn build_mail_header_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefe
                 st.0.retain(|x| x != action_id);
                 st.1.retain(|x| x != action_id);
                 match target_group {
-                    "left" => st.0.push(action_id.to_string()),
-                    "right" => st.1.push(action_id.to_string()),
+                    "left" => {
+                        let at = insert_idx.min(st.0.len());
+                        st.0.insert(at, action_id.to_string());
+                    }
+                    "right" => {
+                        let at = insert_idx.min(st.1.len());
+                        st.1.insert(at, action_id.to_string());
+                    }
                     _ => {}
                 }
             }
@@ -7331,21 +7548,23 @@ fn build_mail_header_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefe
         zone.add_controller(dt);
     };
 
-    attach_zone_drop(&zone_left, "left");
-    attach_zone_drop(&zone_right, "right");
-    attach_zone_drop(&zone_hidden, "hidden");
+    attach_zone_drop(&zone_left, &empty_left, "left");
+    attach_zone_drop(&zone_right, &empty_right, "right");
+    attach_zone_drop(&zone_hidden, &empty_hidden, "hidden");
 
     {
         let zone_left = zone_left.clone();
         let zone_right = zone_right.clone();
         let zone_hidden = zone_hidden.clone();
+        let empty_left = empty_left.clone();
+        let empty_right = empty_right.clone();
+        let empty_hidden = empty_hidden.clone();
         let state = state.clone();
         let save_and_rebuild = save_and_rebuild.clone();
+        let dragged_width = dragged_width.clone();
         *rebuild_ref.borrow_mut() = Some(Box::new(move || {
             for z in [&zone_left, &zone_right, &zone_hidden] {
-                while let Some(c) = z.first_child() {
-                    z.remove(&c);
-                }
+                z.clear();
             }
             let (left, right) = state.borrow().clone();
             let hidden: Vec<String> = crate::services::settings_service::ALL_MAIL_HEADER_ACTIONS
@@ -7354,85 +7573,28 @@ fn build_mail_header_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefe
                 .map(|id| (*id).to_string())
                 .collect();
 
-            let populate_zone = |zone: &gtk::Box, items: &[String], group_name: &'static str| {
-                if items.is_empty() {
-                    let empty_lbl = gtk::Label::builder()
-                        .label(&crate::i18n::gettext("Empty"))
-                        .css_classes(vec!["dim-label", "hylki-empty-label"])
-                        .hexpand(true)
-                        .halign(gtk::Align::Center)
-                        .valign(gtk::Align::Center)
-                        .build();
-                    zone.append(&empty_lbl);
-                    return;
-                }
-                let flow = gtk::FlowBox::builder()
-                    .selection_mode(gtk::SelectionMode::None)
-                    .activate_on_single_click(false)
-                    .homogeneous(false)
-                    .max_children_per_line(10)
-                    .min_children_per_line(1)
-                    .column_spacing(6)
-                    .row_spacing(6)
-                    .hexpand(true)
-                    .build();
+            let populate_zone = |zone: &ToolbarZone, empty_lbl: &gtk::Label, items: &[String], group_name: &'static str| {
+                empty_lbl.set_visible(items.is_empty());
+                let total_len = items.len();
                 for (idx, item_id) in items.iter().enumerate() {
                     let (icon_name, label_text) = header_action_meta(item_id);
                     let drag_id = format!("header-tile:{item_id}");
-                    let (flow_child, tile_box) =
-                        make_draggable_toolbar_tile(item_id, icon_name, &label_text, drag_id, &[]);
+                    let chip = make_toolbar_chip(
+                        item_id,
+                        icon_name,
+                        &label_text,
+                        drag_id,
+                        &[],
+                        zone,
+                        &dragged_width,
+                    );
 
-                    // DropTarget on individual tile for precise insertion
-                    let dt = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
-                    let tb_enter = tile_box.clone();
-                    dt.connect_enter(move |_, _, _| {
-                        tb_enter.add_css_class("drop-target-tile");
-                        gtk::gdk::DragAction::MOVE
-                    });
-                    let tb_leave = tile_box.clone();
-                    dt.connect_leave(move |_| {
-                        tb_leave.remove_css_class("drop-target-tile");
-                    });
-                    let tb_drop = tile_box.clone();
-                    let target_id = item_id.clone();
-                    let state_tile = state.clone();
-                    let save_tile = save_and_rebuild.clone();
-                    dt.connect_drop(move |_, val, _, _| {
-                        tb_drop.remove_css_class("drop-target-tile");
-                        let Ok(payload) = val.get::<String>() else { return false; };
-                        let Some(dragged_id) = payload.strip_prefix("header-tile:") else { return false; };
-                        if dragged_id == target_id {
-                            return false;
-                        }
-                        {
-                            let mut st = state_tile.borrow_mut();
-                            st.0.retain(|x| x != dragged_id);
-                            st.1.retain(|x| x != dragged_id);
-                            match group_name {
-                                "left" => {
-                                    let pos = st.0.iter().position(|x| x == &target_id).unwrap_or(st.0.len());
-                                    st.0.insert(pos, dragged_id.to_string());
-                                }
-                                "right" => {
-                                    let pos = st.1.iter().position(|x| x == &target_id).unwrap_or(st.1.len());
-                                    st.1.insert(pos, dragged_id.to_string());
-                                }
-                                _ => {}
-                            }
-                        }
-                        save_tile();
-                        true
-                    });
-                    tile_box.add_controller(dt);
-
-                    // Click popover on release (does not block DragSource)
+                    // Click / Right-click popover on release (does not block DragSource)
                     let id_click = item_id.clone();
                     let state_click = state.clone();
                     let save_click = save_and_rebuild.clone();
-                    let total_len = items.len();
-                    let click_gesture = gtk::GestureClick::builder().button(1).build();
-                    let tb_for_pop = tile_box.clone();
-                    click_gesture.connect_released(move |_, _, _, _| {
+                    let tb_for_pop = chip.clone();
+                    let open_menu = Rc::new(move || {
                         let pop_box = gtk::Box::builder()
                             .orientation(gtk::Orientation::Vertical)
                             .spacing(2)
@@ -7537,16 +7699,29 @@ fn build_mail_header_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefe
                         });
                         pop.popup();
                     });
-                    tile_box.add_controller(click_gesture);
 
-                    flow.insert(&flow_child, -1);
+                    let click_g = gtk::GestureClick::builder().button(1).build();
+                    let open_l = open_menu.clone();
+                    click_g.connect_released(move |_, _, _, _| {
+                        open_l();
+                    });
+                    chip.add_controller(click_g);
+
+                    let rclick_g = gtk::GestureClick::builder().button(3).build();
+                    let open_r = open_menu.clone();
+                    rclick_g.connect_pressed(move |g, _, _, _| {
+                        g.set_state(gtk::EventSequenceState::Claimed);
+                        open_r();
+                    });
+                    chip.add_controller(rclick_g);
+
+                    zone.append(&chip);
                 }
-                zone.append(&flow);
             };
 
-            populate_zone(&zone_left, &left, "left");
-            populate_zone(&zone_right, &right, "right");
-            populate_zone(&zone_hidden, &hidden, "hidden");
+            populate_zone(&zone_left, &empty_left, &left, "left");
+            populate_zone(&zone_right, &empty_right, &right, "right");
+            populate_zone(&zone_hidden, &empty_hidden, &hidden, "hidden");
         }));
     }
 
@@ -7673,7 +7848,7 @@ fn build_mail_list_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefere
     let group = adw::PreferencesGroup::builder()
         .title(&crate::i18n::gettext("List Action & Quick-Filter Bar"))
         .description(&crate::i18n::gettext(
-            "Customize the bar above the message list with quick filters, pinned mailboxes, labels, and list actions. Drag tiles to reorder, or click any active tile to rename it.",
+            "Customize the bar above the message list with quick filters, pinned mailboxes, labels, and list actions. Drag buttons between the groups and into the order you want.",
         ))
         .build();
 
@@ -7685,6 +7860,7 @@ fn build_mail_list_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefere
     group.set_header_suffix(Some(&btn_restore));
 
     let row_show_bar = adw::SwitchRow::builder()
+        .use_markup(false)
         .title(&crate::i18n::gettext("Show Action & Quick-Filter Bar above message list"))
         .subtitle(&crate::i18n::gettext("Displays your pinned folders, 1-click filters, and list tools in the middle pane"))
         .active(settings.as_ref().map(|s| s.mail_show_toolbar()).unwrap_or(false))
@@ -7721,9 +7897,10 @@ fn build_mail_list_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefere
         .collect();
     let folder_labels: Vec<&str> = folder_presets.iter().map(|(_, l)| l.as_str()).collect();
     let row_pin_folder = adw::ComboRow::builder()
+        .use_markup(false)
         .title(&crate::i18n::gettext("Pin Folder to Action Bar"))
         .subtitle(&crate::i18n::gettext(
-            "Choose any folder from your account panel and click + Pin (click the pinned tile below to give it a custom short name)",
+            "Choose any folder from your account panel and click + Pin (click the pinned button below to give it a custom short name)",
         ))
         .model(&gtk::StringList::new(&folder_labels))
         .build();
@@ -7735,75 +7912,24 @@ fn build_mail_list_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefere
     row_pin_folder.add_suffix(&btn_pin_folder);
     group.add(&row_pin_folder);
 
-    let card = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
+    let list_box = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
         .margin_top(8)
-        .css_classes(vec!["card", "hylki-toolbar-editor-card"])
+        .css_classes(vec!["boxed-list"])
         .build();
-
-    let sec_active = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(6)
-        .css_classes(vec!["hylki-zone-section"])
-        .build();
-    let hdr_active = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(8)
-        .build();
-    hdr_active.append(
-        &gtk::Label::builder()
-            .label(&crate::i18n::gettext("Active Bar"))
-            .css_classes(vec!["heading"])
-            .build(),
+    let (zone_active, empty_active) = make_toolbar_zone_row(
+        &list_box,
+        &crate::i18n::gettext("Active Bar"),
+        &crate::i18n::gettext("Drag between buttons to reorder · Click a button to rename or remove"),
+        &crate::i18n::gettext("Empty"),
     );
-    hdr_active.append(
-        &gtk::Label::builder()
-            .label(&crate::i18n::gettext("Drag to reorder · Click a tile to rename or remove"))
-            .css_classes(vec!["caption", "dim-label"])
-            .build(),
+    let (zone_palette, empty_palette) = make_toolbar_zone_row(
+        &list_box,
+        &crate::i18n::gettext("Not shown"),
+        &crate::i18n::gettext("Drag into Active Bar or click to add · Drop here to remove"),
+        &crate::i18n::gettext("Empty"),
     );
-    let zone_active = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(6)
-        .css_classes(vec!["hylki-drop-zone"])
-        .build();
-    sec_active.append(&hdr_active);
-    sec_active.append(&zone_active);
-
-    // Palette section
-    let sec_palette = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(6)
-        .css_classes(vec!["hylki-zone-section"])
-        .build();
-    let hdr_palette = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(8)
-        .build();
-    hdr_palette.append(
-        &gtk::Label::builder()
-            .label(&crate::i18n::gettext("Available Quick Filters, Tools & Layout"))
-            .css_classes(vec!["heading"])
-            .build(),
-    );
-    hdr_palette.append(
-        &gtk::Label::builder()
-            .label(&crate::i18n::gettext("Drag into Active Bar or click to add"))
-            .css_classes(vec!["caption", "dim-label"])
-            .build(),
-    );
-    let zone_palette = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(6)
-        .css_classes(vec!["hylki-drop-zone"])
-        .build();
-    sec_palette.append(&hdr_palette);
-    sec_palette.append(&zone_palette);
-
-    card.append(&sec_active);
-    card.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    card.append(&sec_palette);
-    group.add(&card);
+    group.add(&list_box);
 
     let initial_items = settings
         .as_ref()
@@ -7816,6 +7942,7 @@ fn build_mail_list_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefere
         });
     let state: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(initial_items));
     let syncing = Rc::new(Cell::new(false));
+    let dragged_width = Rc::new(Cell::new(52_i32));
 
     type RebuildListFn = Rc<RefCell<Option<Box<dyn Fn()>>>>;
     let rebuild_ref: RebuildListFn = Rc::new(RefCell::new(None));
@@ -7861,37 +7988,62 @@ fn build_mail_list_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefere
         });
     }
 
-    // Active zone DropTarget
+    // Active zone DropTarget (live insertion gap between buttons)
     {
         let dt = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
         let z_enter = zone_active.clone();
-        dt.connect_enter(move |_, _, _| {
+        let e_enter = empty_active.clone();
+        let dw_enter = dragged_width.clone();
+        dt.connect_enter(move |_, x, y| {
             z_enter.add_css_class("drop-active");
+            e_enter.set_visible(false);
+            let idx = z_enter.drop_index(x, y);
+            z_enter.set_gap(Some(idx), dw_enter.get());
+            gtk::gdk::DragAction::MOVE
+        });
+        let z_motion = zone_active.clone();
+        let e_motion = empty_active.clone();
+        let dw_motion = dragged_width.clone();
+        dt.connect_motion(move |_, x, y| {
+            z_motion.add_css_class("drop-active");
+            e_motion.set_visible(false);
+            let idx = z_motion.drop_index(x, y);
+            z_motion.set_gap(Some(idx), dw_motion.get());
             gtk::gdk::DragAction::MOVE
         });
         let z_leave = zone_active.clone();
+        let e_leave = empty_active.clone();
         dt.connect_leave(move |_| {
             z_leave.remove_css_class("drop-active");
+            z_leave.set_gap(None, 52);
+            e_leave.set_visible(z_leave.first_child().is_none());
         });
         let z_drop = zone_active.clone();
         let state_drop = state.clone();
         let save_drop = save_and_rebuild.clone();
-        dt.connect_drop(move |_, val, _, _| {
+        dt.connect_drop(move |_, val, x, y| {
             z_drop.remove_css_class("drop-active");
+            let insert_idx = z_drop.drop_index(x, y);
+            z_drop.set_gap(None, 52);
             let Ok(payload) = val.get::<String>() else { return false; };
             if let Some(idx_str) = payload.strip_prefix("list-active:") {
                 if let Ok(from_idx) = idx_str.parse::<usize>() {
                     let mut st = state_drop.borrow_mut();
                     if from_idx < st.len() {
                         let item = st.remove(from_idx);
-                        st.push(item);
+                        let at = insert_idx.min(st.len());
+                        st.insert(at, item);
                     }
                 }
                 save_drop();
                 return true;
             }
             if let Some(pal_token) = payload.strip_prefix("list-palette:") {
-                state_drop.borrow_mut().push(pal_token.to_string());
+                {
+                    let mut st = state_drop.borrow_mut();
+                    let at = insert_idx.min(st.len());
+                    st.insert(at, pal_token.to_string());
+                }
                 save_drop();
                 return true;
             }
@@ -7904,19 +8056,38 @@ fn build_mail_list_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefere
     {
         let dt = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
         let z_enter = zone_palette.clone();
-        dt.connect_enter(move |_, _, _| {
+        let e_enter = empty_palette.clone();
+        let dw_enter = dragged_width.clone();
+        dt.connect_enter(move |_, x, y| {
             z_enter.add_css_class("drop-active");
+            e_enter.set_visible(false);
+            let idx = z_enter.drop_index(x, y);
+            z_enter.set_gap(Some(idx), dw_enter.get());
+            gtk::gdk::DragAction::MOVE
+        });
+        let z_motion = zone_palette.clone();
+        let e_motion = empty_palette.clone();
+        let dw_motion = dragged_width.clone();
+        dt.connect_motion(move |_, x, y| {
+            z_motion.add_css_class("drop-active");
+            e_motion.set_visible(false);
+            let idx = z_motion.drop_index(x, y);
+            z_motion.set_gap(Some(idx), dw_motion.get());
             gtk::gdk::DragAction::MOVE
         });
         let z_leave = zone_palette.clone();
+        let e_leave = empty_palette.clone();
         dt.connect_leave(move |_| {
             z_leave.remove_css_class("drop-active");
+            z_leave.set_gap(None, 52);
+            e_leave.set_visible(z_leave.first_child().is_none());
         });
         let z_drop = zone_palette.clone();
         let state_drop = state.clone();
         let save_drop = save_and_rebuild.clone();
         dt.connect_drop(move |_, val, _, _| {
             z_drop.remove_css_class("drop-active");
+            z_drop.set_gap(None, 52);
             let Ok(payload) = val.get::<String>() else { return false; };
             if let Some(idx_str) = payload.strip_prefix("list-active:") {
                 if let Ok(from_idx) = idx_str.parse::<usize>() {
@@ -7983,14 +8154,15 @@ fn build_mail_list_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefere
     {
         let zone_active = zone_active.clone();
         let zone_palette = zone_palette.clone();
+        let empty_active = empty_active.clone();
+        let empty_palette = empty_palette.clone();
         let state = state.clone();
         let settings_for_labels = settings.clone();
         let save_and_rebuild = save_and_rebuild.clone();
+        let dragged_width = dragged_width.clone();
         *rebuild_ref.borrow_mut() = Some(Box::new(move || {
             for z in [&zone_active, &zone_palette] {
-                while let Some(c) = z.first_child() {
-                    z.remove(&c);
-                }
+                z.clear();
             }
             let items = state.borrow().clone();
             let labels = settings_for_labels
@@ -7998,250 +8170,188 @@ fn build_mail_list_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefere
                 .map(|s| s.mail_labels())
                 .unwrap_or_default();
 
-            if items.is_empty() {
-                zone_active.append(
-                    &gtk::Label::builder()
-                        .label(&crate::i18n::gettext("Empty — drag items from the palette below"))
-                        .css_classes(vec!["dim-label", "hylki-empty-label"])
-                        .hexpand(true)
-                        .halign(gtk::Align::Center)
-                        .build(),
+            empty_active.set_visible(items.is_empty());
+            let total_len = items.len();
+            for (idx, raw_item) in items.iter().enumerate() {
+                let (icon_name, label_text) = list_toolbar_item_meta(raw_item, &labels);
+                let (base_token, current_alias) = match raw_item.split_once('=') {
+                    Some((b, a)) => (b.trim().to_string(), a.trim().to_string()),
+                    None => (raw_item.trim().to_string(), String::new()),
+                };
+                let drag_payload = format!("list-active:{idx}");
+                let tile_box = make_toolbar_chip(
+                    &base_token,
+                    icon_name,
+                    &label_text,
+                    drag_payload,
+                    &labels,
+                    &zone_active,
+                    &dragged_width,
                 );
-            } else {
-                let flow_active = gtk::FlowBox::builder()
-                    .selection_mode(gtk::SelectionMode::None)
-                    .activate_on_single_click(false)
-                    .max_children_per_line(10)
-                    .min_children_per_line(1)
-                    .column_spacing(6)
-                    .row_spacing(6)
-                    .hexpand(true)
-                    .build();
-                let total_len = items.len();
-                for (idx, raw_item) in items.iter().enumerate() {
-                    let (icon_name, label_text) = list_toolbar_item_meta(raw_item, &labels);
-                    let (base_token, current_alias) = match raw_item.split_once('=') {
-                        Some((b, a)) => (b.trim().to_string(), a.trim().to_string()),
-                        None => (raw_item.trim().to_string(), String::new()),
+
+                // Clean GNOME Libadwaita menu popover on click / right-click
+                let st_click = state.clone();
+                let sv_click = save_and_rebuild.clone();
+                let bt_for_menu = base_token.clone();
+                let alias_for_menu = current_alias.clone();
+                let tb_for_menu = tile_box.clone();
+                let open_tile_menu = Rc::new(move || {
+                    let pop_box = gtk::Box::builder()
+                        .orientation(gtk::Orientation::Vertical)
+                        .spacing(2)
+                        .margin_start(4)
+                        .margin_end(4)
+                        .margin_top(4)
+                        .margin_bottom(4)
+                        .build();
+                    let pop = gtk::Popover::builder()
+                        .child(&pop_box)
+                        .has_arrow(false)
+                        .css_classes(vec!["menu", "context-menu"])
+                        .build();
+                    pop.set_parent(&tb_for_menu);
+
+                    let make_menu_btn = |label: &str, sensitive: bool| -> gtk::Button {
+                        gtk::Button::builder()
+                            .child(
+                                &gtk::Label::builder()
+                                    .label(label)
+                                    .halign(gtk::Align::Start)
+                                    .build(),
+                            )
+                            .halign(gtk::Align::Fill)
+                            .sensitive(sensitive)
+                            .css_classes(vec!["flat", "context-menu-item"])
+                            .build()
                     };
-                    let drag_payload = format!("list-active:{idx}");
-                    let (flow_child, tile_box) = make_draggable_toolbar_tile(
-                        &base_token,
-                        icon_name,
-                        &label_text,
-                        drag_payload,
-                        &labels,
-                    );
 
-                    let dt = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
-                    let tb_enter = tile_box.clone();
-                    dt.connect_enter(move |_, _, _| {
-                        tb_enter.add_css_class("drop-target-tile");
-                        gtk::gdk::DragAction::MOVE
-                    });
-                    let tb_leave = tile_box.clone();
-                    dt.connect_leave(move |_| {
-                        tb_leave.remove_css_class("drop-target-tile");
-                    });
-                    let tb_drop = tile_box.clone();
-                    let state_dt = state.clone();
-                    let save_dt = save_and_rebuild.clone();
-                    dt.connect_drop(move |_, val, _, _| {
-                        tb_drop.remove_css_class("drop-target-tile");
-                        let Ok(payload) = val.get::<String>() else { return false; };
-                        if let Some(from_str) = payload.strip_prefix("list-active:") {
-                            if let Ok(from_idx) = from_str.parse::<usize>() {
-                                if from_idx == idx {
-                                    return false;
-                                }
-                                let mut st = state_dt.borrow_mut();
-                                if from_idx < st.len() {
-                                    let item = st.remove(from_idx);
-                                    let insert_at = idx.min(st.len());
-                                    st.insert(insert_at, item);
-                                }
-                                drop(st);
-                                save_dt();
-                                return true;
+                    if !matches!(bt_for_menu.as_str(), "separator" | "spacer") {
+                        let b_rename = make_menu_btn(&crate::i18n::gettext("Rename…"), true);
+                        let st_rn = st_click.clone();
+                        let sv_rn = sv_click.clone();
+                        let bt_rn = bt_for_menu.clone();
+                        let al_rn = alias_for_menu.clone();
+                        let pw_rn = pop.downgrade();
+                        let tb_dlg = tb_for_menu.clone();
+                        b_rename.connect_clicked(move |_| {
+                            if let Some(p) = pw_rn.upgrade() {
+                                p.popdown();
                             }
-                        }
-                        if let Some(pal_token) = payload.strip_prefix("list-palette:") {
-                            let mut st = state_dt.borrow_mut();
-                            let insert_at = idx.min(st.len());
-                            st.insert(insert_at, pal_token.to_string());
-                            drop(st);
-                            save_dt();
-                            return true;
-                        }
-                        false
-                    });
-                    tile_box.add_controller(dt);
-
-                    // Clean GNOME Libadwaita menu popover on click / right-click
-                    let st_click = state.clone();
-                    let sv_click = save_and_rebuild.clone();
-                    let bt_for_menu = base_token.clone();
-                    let alias_for_menu = current_alias.clone();
-                    let tb_for_menu = tile_box.clone();
-                    let open_tile_menu = Rc::new(move || {
-                        let pop_box = gtk::Box::builder()
-                            .orientation(gtk::Orientation::Vertical)
-                            .spacing(2)
-                            .margin_start(4)
-                            .margin_end(4)
-                            .margin_top(4)
-                            .margin_bottom(4)
-                            .build();
-                        let pop = gtk::Popover::builder()
-                            .child(&pop_box)
-                            .has_arrow(false)
-                            .css_classes(vec!["menu", "context-menu"])
-                            .build();
-                        pop.set_parent(&tb_for_menu);
-
-                        let make_menu_btn = |label: &str, sensitive: bool| -> gtk::Button {
-                            gtk::Button::builder()
-                                .child(
-                                    &gtk::Label::builder()
-                                        .label(label)
-                                        .halign(gtk::Align::Start)
-                                        .build(),
-                                )
-                                .halign(gtk::Align::Fill)
-                                .sensitive(sensitive)
-                                .css_classes(vec!["flat", "context-menu-item"])
-                                .build()
-                        };
-
-                        if !matches!(bt_for_menu.as_str(), "separator" | "spacer") {
-                            let b_rename = make_menu_btn(&crate::i18n::gettext("Rename…"), true);
-                            let st_rn = st_click.clone();
-                            let sv_rn = sv_click.clone();
-                            let bt_rn = bt_for_menu.clone();
-                            let al_rn = alias_for_menu.clone();
-                            let pw_rn = pop.downgrade();
-                            let tb_dlg = tb_for_menu.clone();
-                            b_rename.connect_clicked(move |_| {
-                                if let Some(p) = pw_rn.upgrade() {
-                                    p.popdown();
-                                }
-                                let dialog = adw::AlertDialog::builder()
-                                    .heading(&crate::i18n::gettext("Rename Action Bar Item"))
-                                    .body(&crate::i18n::gettext("Enter a custom label for this button, or leave it empty to use the default icon/name."))
-                                    .default_response("save")
-                                    .close_response("cancel")
-                                    .build();
-                                dialog.add_response("cancel", &crate::i18n::gettext("Cancel"));
-                                dialog.add_response("save", &crate::i18n::gettext("Save"));
-                                dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
-                                let entry = gtk::Entry::builder()
-                                    .text(&al_rn)
-                                    .placeholder_text(&crate::i18n::gettext("Default label"))
-                                    .activates_default(true)
-                                    .build();
-                                dialog.set_extra_child(Some(&entry));
-                                let st_save = st_rn.clone();
-                                let sv_save = sv_rn.clone();
-                                let bt_save = bt_rn.clone();
-                                let entry_resp = entry.clone();
-                                dialog.connect_response(Some("save"), move |_, _| {
-                                    {
-                                        let mut st = st_save.borrow_mut();
-                                        if idx < st.len() {
-                                            let a = entry_resp.text().trim().replace(',', " ");
-                                            st[idx] = if a.is_empty() {
-                                                bt_save.clone()
-                                            } else {
-                                                format!("{bt_save}={a}")
-                                            };
-                                        }
-                                    }
-                                    sv_save();
-                                });
-                                dialog.present(Some(&tb_dlg));
-                            });
-                            pop_box.append(&b_rename);
-                        }
-
-                        if total_len > 1 {
-                            let b_l = make_menu_btn(&crate::i18n::gettext("Move Left"), idx > 0);
-                            let st_l = st_click.clone();
-                            let sv_l = sv_click.clone();
-                            let pw_l = pop.downgrade();
-                            b_l.connect_clicked(move |_| {
+                            let dialog = adw::AlertDialog::builder()
+                                .heading(&crate::i18n::gettext("Rename Action Bar Item"))
+                                .body(&crate::i18n::gettext("Enter a custom label for this button, or leave it empty to use the default icon/name."))
+                                .default_response("save")
+                                .close_response("cancel")
+                                .build();
+                            dialog.add_response("cancel", &crate::i18n::gettext("Cancel"));
+                            dialog.add_response("save", &crate::i18n::gettext("Save"));
+                            dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+                            let entry = gtk::Entry::builder()
+                                .text(&al_rn)
+                                .placeholder_text(&crate::i18n::gettext("Default label"))
+                                .activates_default(true)
+                                .build();
+                            dialog.set_extra_child(Some(&entry));
+                            let st_save = st_rn.clone();
+                            let sv_save = sv_rn.clone();
+                            let bt_save = bt_rn.clone();
+                            let entry_resp = entry.clone();
+                            dialog.connect_response(Some("save"), move |_, _| {
                                 {
-                                    let mut st = st_l.borrow_mut();
-                                    if idx > 0 && idx < st.len() {
-                                        st.swap(idx, idx - 1);
+                                    let mut st = st_save.borrow_mut();
+                                    if idx < st.len() {
+                                        let a = entry_resp.text().trim().replace(',', " ");
+                                        st[idx] = if a.is_empty() {
+                                            bt_save.clone()
+                                        } else {
+                                            format!("{bt_save}={a}")
+                                        };
                                     }
                                 }
-                                if let Some(p) = pw_l.upgrade() { p.popdown(); }
-                                sv_l();
+                                sv_save();
                             });
-                            pop_box.append(&b_l);
+                            dialog.present(Some(&tb_dlg));
+                        });
+                        pop_box.append(&b_rename);
+                    }
 
-                            let b_r = make_menu_btn(&crate::i18n::gettext("Move Right"), idx + 1 < total_len);
-                            let st_r = st_click.clone();
-                            let sv_r = sv_click.clone();
-                            let pw_r = pop.downgrade();
-                            b_r.connect_clicked(move |_| {
-                                {
-                                    let mut st = st_r.borrow_mut();
-                                    if idx + 1 < st.len() {
-                                        st.swap(idx, idx + 1);
-                                    }
-                                }
-                                if let Some(p) = pw_r.upgrade() { p.popdown(); }
-                                sv_r();
-                            });
-                            pop_box.append(&b_r);
-                        }
-
-                        pop_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
-                        let b_rem = make_menu_btn(&crate::i18n::gettext("Remove from Action Bar"), true);
-                        let st_rem = st_click.clone();
-                        let sv_rem = sv_click.clone();
-                        let pw_rem = pop.downgrade();
-                        b_rem.connect_clicked(move |_| {
+                    if total_len > 1 {
+                        let b_l = make_menu_btn(&crate::i18n::gettext("Move Left"), idx > 0);
+                        let st_l = st_click.clone();
+                        let sv_l = sv_click.clone();
+                        let pw_l = pop.downgrade();
+                        b_l.connect_clicked(move |_| {
                             {
-                                let mut st = st_rem.borrow_mut();
-                                if idx < st.len() {
-                                    st.remove(idx);
+                                let mut st = st_l.borrow_mut();
+                                if idx > 0 && idx < st.len() {
+                                    st.swap(idx, idx - 1);
                                 }
                             }
-                            if let Some(p) = pw_rem.upgrade() { p.popdown(); }
-                            sv_rem();
+                            if let Some(p) = pw_l.upgrade() { p.popdown(); }
+                            sv_l();
                         });
-                        pop_box.append(&b_rem);
+                        pop_box.append(&b_l);
 
-                        pop.connect_closed(|p| {
-                            let p_clone = p.clone();
-                            glib::idle_add_local_once(move || {
-                                p_clone.unparent();
-                            });
+                        let b_r = make_menu_btn(&crate::i18n::gettext("Move Right"), idx + 1 < total_len);
+                        let st_r = st_click.clone();
+                        let sv_r = sv_click.clone();
+                        let pw_r = pop.downgrade();
+                        b_r.connect_clicked(move |_| {
+                            {
+                                let mut st = st_r.borrow_mut();
+                                if idx + 1 < st.len() {
+                                    st.swap(idx, idx + 1);
+                                }
+                            }
+                            if let Some(p) = pw_r.upgrade() { p.popdown(); }
+                            sv_r();
                         });
-                        pop.popup();
-                    });
+                        pop_box.append(&b_r);
+                    }
 
-                    let click_g = gtk::GestureClick::builder().button(1).build();
-                    let open_l = open_tile_menu.clone();
-                    click_g.connect_released(move |_, _, _, _| {
-                        open_l();
-                    });
-                    tile_box.add_controller(click_g);
+                    pop_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
-                    let rclick_g = gtk::GestureClick::builder().button(3).build();
-                    let open_r = open_tile_menu.clone();
-                    rclick_g.connect_pressed(move |g, _, _, _| {
-                        g.set_state(gtk::EventSequenceState::Claimed);
-                        open_r();
+                    let b_rem = make_menu_btn(&crate::i18n::gettext("Remove from Action Bar"), true);
+                    let st_rem = st_click.clone();
+                    let sv_rem = sv_click.clone();
+                    let pw_rem = pop.downgrade();
+                    b_rem.connect_clicked(move |_| {
+                        {
+                            let mut st = st_rem.borrow_mut();
+                            if idx < st.len() {
+                                st.remove(idx);
+                            }
+                        }
+                        if let Some(p) = pw_rem.upgrade() { p.popdown(); }
+                        sv_rem();
                     });
-                    tile_box.add_controller(rclick_g);
+                    pop_box.append(&b_rem);
 
-                    flow_active.insert(&flow_child, -1);
-                }
-                zone_active.append(&flow_active);
+                    pop.connect_closed(|p| {
+                        let p_clone = p.clone();
+                        glib::idle_add_local_once(move || {
+                            p_clone.unparent();
+                        });
+                    });
+                    pop.popup();
+                });
+
+                let click_g = gtk::GestureClick::builder().button(1).build();
+                let open_l = open_tile_menu.clone();
+                click_g.connect_released(move |_, _, _, _| {
+                    open_l();
+                });
+                tile_box.add_controller(click_g);
+
+                let rclick_g = gtk::GestureClick::builder().button(3).build();
+                let open_r = open_tile_menu.clone();
+                rclick_g.connect_pressed(move |g, _, _, _| {
+                    g.set_state(gtk::EventSequenceState::Claimed);
+                    open_r();
+                });
+                tile_box.add_controller(rclick_g);
+
+                zone_active.append(&tile_box);
             }
 
             // Populate Palette (items not in Active Bar, plus repeatable separator/spacer + configured labels)
@@ -8261,24 +8371,18 @@ fn build_mail_list_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefere
                 }
             }
 
-            let flow_palette = gtk::FlowBox::builder()
-                .selection_mode(gtk::SelectionMode::None)
-                .activate_on_single_click(false)
-                .max_children_per_line(10)
-                .min_children_per_line(1)
-                .column_spacing(6)
-                .row_spacing(6)
-                .hexpand(true)
-                .build();
+            empty_palette.set_visible(palette_items.is_empty());
             for pal_token in palette_items {
                 let (icon_name, label_text) = list_toolbar_item_meta(&pal_token, &labels);
                 let drag_str = format!("list-palette:{pal_token}");
-                let (flow_child, tile_box) = make_draggable_toolbar_tile(
+                let tile_box = make_toolbar_chip(
                     &pal_token,
                     icon_name,
                     &label_text,
                     drag_str,
                     &labels,
+                    &zone_palette,
+                    &dragged_width,
                 );
                 tile_box.set_tooltip_text(Some(&crate::i18n::gettext("Drag into Active Bar or click to add")));
 
@@ -8292,9 +8396,8 @@ fn build_mail_list_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefere
                 });
                 tile_box.add_controller(click_add);
 
-                flow_palette.insert(&flow_child, -1);
+                zone_palette.append(&tile_box);
             }
-            zone_palette.append(&flow_palette);
         }));
     }
 
