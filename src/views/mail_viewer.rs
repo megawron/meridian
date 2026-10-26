@@ -2302,8 +2302,11 @@ impl MailViewer {
             "(() => {
                 let lastReportedY = 0;
                 let lastScrollY = 0;
+                let isHeaderCompact = false;
                 let resizeGuardUntil = 0;
                 let collapseGuardUntil = 0;
+                let expandGuardUntil = 0;
+                let userScrollUpUntil = 0;
                 let ticking = false;
                 let lastContinues = null;
                 let lastMeasuredHeight = 0;
@@ -2379,28 +2382,45 @@ impl MailViewer {
                         const scrollingUp = y < lastScrollY - 0.5;
                         lastScrollY = y;
 
-                        if (fromScrollEvent && (Math.abs(y - lastReportedY) >= 2 || (y <= 1 && lastReportedY > 1))) {
+                        if (fromScrollEvent) {
                             const now = performance.now();
-                            if (y < lastReportedY && (now < resizeGuardUntil || now < collapseGuardUntil || maxScroll <= 20)) {
-                                // Keep header compacted when viewport expands during collapse or when content now fits completely on screen
-                            } else {
-                                if (y > 35 && lastReportedY <= 35) {
-                                    collapseGuardUntil = now + 450;
-                                }
-                                lastReportedY = y;
+                            const isUserScrollingUp = now < userScrollUpUntil;
+                            if (y <= 15 && (isHeaderCompact || lastReportedY > 0) && (isUserScrollingUp || (scrollingUp && now >= resizeGuardUntil && now >= collapseGuardUntil && maxScroll > 0))) {
+                                isHeaderCompact = false;
+                                expandGuardUntil = now + 350;
+                                lastReportedY = 0;
                                 if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.meridianScroll) {
-                                    window.webkit.messageHandlers.meridianScroll.postMessage(y);
+                                    window.webkit.messageHandlers.meridianScroll.postMessage(0);
+                                }
+                            } else if (y > 35 && !isUserScrollingUp) {
+                                if (!isHeaderCompact) {
+                                    if (now >= expandGuardUntil) {
+                                        isHeaderCompact = true;
+                                        collapseGuardUntil = now + 450;
+                                        lastReportedY = y;
+                                        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.meridianScroll) {
+                                            window.webkit.messageHandlers.meridianScroll.postMessage(y);
+                                        }
+                                    }
+                                } else if (Math.abs(y - lastReportedY) >= 2) {
+                                    lastReportedY = y;
+                                    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.meridianScroll) {
+                                        window.webkit.messageHandlers.meridianScroll.postMessage(y);
+                                    }
                                 }
                             }
                         }
 
-                        const isMinorHeightResize = !fromScrollEvent
+                        const isHeightOnlyResize = !fromScrollEvent
                             && lastMeasuredHeight > 0
-                            && clientW === lastMeasuredWidth
-                            && Math.abs(clientH - lastClientH) <= 16;
+                            && clientW === lastMeasuredWidth;
+                        if (!fromScrollEvent && clientH > lastClientH + 10 && lastClientH > 0) {
+                            // Viewport height grew (e.g. header collapsed): guard against automatic scroll clamp
+                            collapseGuardUntil = Math.max(collapseGuardUntil, performance.now() + 400);
+                        }
                         lastClientH = clientH;
 
-                        if (!fromScrollEvent && !isMinorHeightResize) {
+                        if (!fromScrollEvent && !isHeightOnlyResize) {
                             measureBodyHeight();
                         }
 
@@ -2443,22 +2463,45 @@ impl MailViewer {
                 window.addEventListener('wheel', (e) => {
                     const y = window.scrollY || (document.documentElement ? document.documentElement.scrollTop : 0) || 0;
                     const now = performance.now();
-                    if (e.deltaY > 0 && y > 5 && lastReportedY <= 35) {
-                        collapseGuardUntil = now + 450;
-                        lastReportedY = Math.max(y, 40);
-                        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.meridianScroll) {
-                            window.webkit.messageHandlers.meridianScroll.postMessage(lastReportedY);
+                    if (e.deltaY > 0) {
+                        userScrollUpUntil = 0;
+                        if (!isHeaderCompact && y > 35 && now >= expandGuardUntil) {
+                            isHeaderCompact = true;
+                            collapseGuardUntil = now + 450;
+                            lastReportedY = y;
+                            if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.meridianScroll) {
+                                window.webkit.messageHandlers.meridianScroll.postMessage(lastReportedY);
+                            }
                         }
-                    } else if (e.deltaY < 0 && y <= 2 && now >= resizeGuardUntil && now >= collapseGuardUntil) {
-                        lastReportedY = 0;
-                        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.meridianScroll) {
-                            window.webkit.messageHandlers.meridianScroll.postMessage(0);
+                    } else if (e.deltaY < 0) {
+                        userScrollUpUntil = now + 800;
+                        collapseGuardUntil = 0;
+                        resizeGuardUntil = 0;
+                        if ((isHeaderCompact || lastReportedY > 0) && y <= 20) {
+                            isHeaderCompact = false;
+                            expandGuardUntil = now + 350;
+                            lastReportedY = 0;
+                            if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.meridianScroll) {
+                                window.webkit.messageHandlers.meridianScroll.postMessage(0);
+                            }
                         }
                     }
                 }, { passive: true });
 
+                window.addEventListener('keydown', (e) => {
+                    if (e.key === 'ArrowUp' || e.key === 'PageUp' || e.key === 'Home') {
+                        userScrollUpUntil = performance.now() + 800;
+                        collapseGuardUntil = 0;
+                        resizeGuardUntil = 0;
+                    } else if (e.key === 'ArrowDown' || e.key === 'PageDown' || e.key === 'End' || e.key === ' ') {
+                        userScrollUpUntil = 0;
+                    }
+                }, { passive: true });
+
                 window.addEventListener('resize', () => {
-                    resizeGuardUntil = performance.now() + 300;
+                    if (lastMeasuredWidth > 0 && window.innerWidth !== lastMeasuredWidth) {
+                        resizeGuardUntil = performance.now() + 250;
+                    }
                     updateMetrics(false);
                 }, { passive: true });
 

@@ -4860,7 +4860,15 @@ pub(crate) fn replace_formatted_header_rows(grid: &gtk::Grid, fields: &[(String,
         grid.remove(&child);
     }
     grid.set_hexpand(true);
-    let mut ordered: Vec<&(String, String)> = fields.iter().collect();
+    let mut ordered: Vec<&(String, String)> = fields
+        .iter()
+        .filter(|(name, _)| {
+            !matches!(
+                name.trim().to_ascii_lowercase().as_str(),
+                "from" | "to" | "von" | "an"
+            )
+        })
+        .collect();
     ordered.sort_by_key(|(name, _)| header_priority_rank(name));
     for (row, (name, value)) in ordered.into_iter().enumerate() {
         let full_name = format!("{name}:");
@@ -8310,8 +8318,12 @@ impl MailPage {
     }
 
     pub(crate) fn set_all_headers_visible(&self, visible: bool) {
+        let was_compact = self.imp().is_compact_header.get();
         let selected = self.selected_message();
         self.refresh_normal_headers_for_message(selected.as_ref());
+        if was_compact && !visible {
+            self.set_header_compact(true);
+        }
         if visible {
             self.refresh_all_headers_for_message(selected.as_ref());
         } else {
@@ -8321,6 +8333,7 @@ impl MailPage {
             }
             if let Some(revealer) = self.imp().all_headers_revealer.borrow().as_ref() {
                 revealer.set_reveal_child(false);
+                revealer.set_visible(false);
             }
         }
     }
@@ -8413,7 +8426,7 @@ impl MailPage {
             if let Some(classic_box) = self.imp().classic_header_box.borrow().as_ref() {
                 classic_box.set_visible(message.is_some());
             }
-            grid.set_visible(message.is_some() && !show_all);
+            grid.set_visible(message.is_some());
 
             let Some(message) = message else {
                 replace_normal_header_rows(&grid, &[]);
@@ -8468,6 +8481,55 @@ impl MailPage {
                 .filter(|(name, _)| name != "Betreff" && !name.eq_ignore_ascii_case("subject"))
                 .collect();
             replace_normal_header_rows(&grid, &filtered_fields);
+
+            if !filtered_fields.is_empty() {
+                let last_row = (filtered_fields.len() - 1) as i32;
+                if let Some(val_widget) = grid.child_at(1, last_row) {
+                    grid.remove(&val_widget);
+                    if let Ok(lbl) = val_widget.clone().downcast::<gtk::Label>() {
+                        lbl.set_hexpand(false);
+                        lbl.set_halign(gtk::Align::Start);
+                        lbl.set_width_chars(-1);
+                        lbl.set_max_width_chars(68);
+                    }
+                    let row_box = gtk::Box::builder()
+                        .orientation(gtk::Orientation::Horizontal)
+                        .spacing(4)
+                        .halign(gtk::Align::Fill)
+                        .valign(gtk::Align::Baseline)
+                        .hexpand(true)
+                        .build();
+                    row_box.append(&val_widget);
+                    let arrow_text = if show_all { "▴" } else { "▾" };
+                    let tip_text = if show_all {
+                        gettext("Hide all headers")
+                    } else {
+                        gettext("Show all headers")
+                    };
+                    let classic_toggle_btn = gtk::Button::builder()
+                        .label(arrow_text)
+                        .tooltip_text(&tip_text)
+                        .css_classes(vec!["flat", "mail-details-toggle"])
+                        .valign(gtk::Align::Baseline)
+                        .halign(gtk::Align::Start)
+                        .build();
+                    let page_weak = self.downgrade();
+                    classic_toggle_btn.connect_clicked(move |_| {
+                        let current = AppSettings::try_new()
+                            .map(|s| s.mail_show_all_headers())
+                            .unwrap_or(false);
+                        let next = !current;
+                        if let Some(s) = AppSettings::try_new() {
+                            s.set_mail_show_all_headers(next);
+                        }
+                        if let Some(page) = page_weak.upgrade() {
+                            page.set_all_headers_visible(next);
+                        }
+                    });
+                    row_box.append(&classic_toggle_btn);
+                    grid.attach(&row_box, 1, last_row, 1, 1);
+                }
+            }
         }
     }
     fn generate_initials_texture(name: &str, size: i32) -> gtk::gdk::Texture {
@@ -8702,6 +8764,40 @@ impl MailPage {
     pub(crate) fn set_header_compact(&self, compact: bool) {
         let imp = self.imp();
         imp.thread_strips_manual_open_in_compact.set(false);
+        if compact {
+            let show_all = AppSettings::try_new()
+                .map(|s| s.mail_show_all_headers())
+                .unwrap_or(false);
+            let revealer_open = imp
+                .all_headers_revealer
+                .borrow()
+                .as_ref()
+                .is_some_and(|r| r.reveals_child() || r.is_visible());
+            if show_all || revealer_open {
+                self.cancel_all_headers_request();
+                if let Some(grid) = imp.all_headers_grid.borrow().as_ref() {
+                    replace_formatted_header_rows(grid, &[]);
+                }
+                if let Some(revealer) = imp.all_headers_revealer.borrow().as_ref() {
+                    revealer.set_reveal_child(false);
+                    revealer.set_visible(false);
+                }
+                if let Some(recip_lbl) = imp.modern_recipient_summary.borrow().as_ref() {
+                    let text = recip_lbl.text().to_string();
+                    if text.contains('▴') {
+                        recip_lbl.set_text(&text.replace('▴', "▾"));
+                    }
+                }
+                if let Some(details_btn) = imp.modern_details_button.borrow().as_ref() {
+                    details_btn.set_tooltip_text(Some(&gettext("Show all headers")));
+                }
+                if let Some(s) = AppSettings::try_new() {
+                    if s.mail_show_all_headers() {
+                        s.set_mail_show_all_headers(false);
+                    }
+                }
+            }
+        }
         if imp.is_compact_header.get() == compact {
             let show_accordion = AppSettings::try_new()
                 .map(|s| s.mail_conversation_accordion())
@@ -8756,13 +8852,11 @@ impl MailPage {
         if let Some(card) = imp.modern_header_card.borrow().as_ref() {
             if compact {
                 card.add_css_class("is-compact");
-                card.set_margin_top(0);
-                card.set_margin_bottom(0);
             } else {
                 card.remove_css_class("is-compact");
-                card.set_margin_top(2);
-                card.set_margin_bottom(2);
             }
+            card.set_margin_top(0);
+            card.set_margin_bottom(0);
         }
         if let Some(bar) = imp.modern_actions_bar.borrow().as_ref() {
             bar.set_margin_top(0);
@@ -8863,13 +8957,19 @@ impl MailPage {
             return;
         }
         let is_compact = self.imp().is_compact_header.get();
+        let all_headers_open = self
+            .imp()
+            .all_headers_revealer
+            .borrow()
+            .as_ref()
+            .is_some_and(|r| r.reveals_child() || r.is_visible());
         let prev_y = self.imp().last_viewer_scroll_y.replace(offset_y);
         if !is_compact && offset_y > 35.0 {
             self.set_header_compact(true);
         } else if is_compact {
-            if offset_y < 15.0 {
+            if offset_y <= 15.0 {
                 self.set_header_compact(false);
-            } else if self.imp().thread_strips_manual_open_in_compact.get()
+            } else if (self.imp().thread_strips_manual_open_in_compact.get() || all_headers_open)
                 && offset_y > 35.0
                 && offset_y > prev_y + 18.0
             {
@@ -21716,7 +21816,7 @@ impl MailPage {
             .title(&dialog_title)
             .modal(true)
             .default_width(400)
-            .default_height(500)
+            .default_height(640)
             .build();
         if let Some(root) = self.root().and_downcast::<gtk::Window>() {
             dialog.set_transient_for(Some(&root));
@@ -22092,7 +22192,7 @@ impl MailPage {
 
             scrolled.set_vexpand(false);
             scrolled.set_propagate_natural_height(true);
-            scrolled.set_max_content_height(520);
+            scrolled.set_max_content_height(660);
             pop_box.append(&scrolled);
 
             let popover = gtk::Popover::builder()
@@ -29410,7 +29510,7 @@ impl MailPage {
 
         let mail_subject_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideDown)
-            .transition_duration(200)
+            .transition_duration(0)
             .reveal_child(true)
             .child(&mail_subject_label)
             .build();
@@ -29479,7 +29579,7 @@ impl MailPage {
 
         let modern_sender_address_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideRight)
-            .transition_duration(150)
+            .transition_duration(0)
             .reveal_child(true)
             .child(&modern_sender_address)
             .build();
@@ -29518,7 +29618,7 @@ impl MailPage {
 
         let compact_subject_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideRight)
-            .transition_duration(200)
+            .transition_duration(0)
             .reveal_child(false)
             .visible(false)
             .hexpand(true)
@@ -29589,7 +29689,7 @@ impl MailPage {
 
         let modern_recipient_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideDown)
-            .transition_duration(200)
+            .transition_duration(0)
             .reveal_child(true)
             .child(&modern_recipient_line)
             .build();
@@ -29931,7 +30031,7 @@ impl MailPage {
             .column_spacing(10)
             .margin_start(4)
             .margin_end(6)
-            .margin_top(4)
+            .margin_top(6)
             .margin_bottom(6)
             .hexpand(true)
             .halign(gtk::Align::Fill)
@@ -29945,11 +30045,14 @@ impl MailPage {
             .min_content_height(72)
             .max_content_height(560)
             .propagate_natural_height(true)
+            .margin_top(6)
+            .margin_bottom(8)
+            .css_classes(vec!["mail-all-headers-scroll"])
             .child(&all_headers_grid)
             .build();
         let all_headers_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideDown)
-            .transition_duration(120)
+            .transition_duration(0)
             .reveal_child(false)
             .visible(false)
             .child(&all_headers_scroll)
@@ -30172,7 +30275,7 @@ impl MailPage {
 
         let classic_compact_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideDown)
-            .transition_duration(120)
+            .transition_duration(0)
             .reveal_child(false)
             .child(&classic_compact_box)
             .build();
@@ -30189,7 +30292,7 @@ impl MailPage {
 
         let classic_details_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideDown)
-            .transition_duration(120)
+            .transition_duration(0)
             .reveal_child(true)
             .child(&classic_details_box)
             .build();

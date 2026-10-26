@@ -518,6 +518,19 @@ label.mail-detail-subject.title-4 {
   padding: 0 2px;
 }
 
+.mail-all-headers-scroll {
+  border-top: 1px solid alpha(@window_fg_color, 0.12);
+  border-bottom: 1px solid alpha(@window_fg_color, 0.12);
+}
+
+.mail-all-headers-scroll undershoot,
+.mail-all-headers-scroll undershoot.top,
+.mail-all-headers-scroll undershoot.bottom {
+  background: none;
+  border: none;
+  box-shadow: none;
+}
+
 .mail-normal-headers label {
   line-height: 1.35;
 }
@@ -5227,29 +5240,29 @@ scrollbar.calendar-year-overlay-scrollbar slider:active {
   background-color: transparent;
   border: none;
   box-shadow: none;
-  margin: 2px 0 2px 0;
-  transition: padding 200ms ease, margin 200ms ease;
+  margin: 0;
+  transition: none;
 }
 
 .mail-modern-header-card.is-compact {
-  padding: 0;
+  padding: 2px 0 2px 0;
   margin: 0;
-  min-height: 32px;
+  min-height: 0;
 }
 
 /* ── Classic Mail Header Collapsible & Responsive Layout ─────────────── */
 .mail-classic-header-box {
   padding: 2px 0;
-  transition: padding 200ms ease;
+  transition: none;
 }
 
 .mail-classic-header-box.is-compact {
-  padding: 0;
-  min-height: 36px;
+  padding: 2px 0;
+  min-height: 0;
 }
 
 .mail-classic-compact-box {
-  min-height: 36px;
+  min-height: 28px;
 }
 
 .mail-classic-compact-sender {
@@ -5439,7 +5452,7 @@ banner.mail-status-banner button:active,
   padding: 0 0 0 10px;
   min-height: 30px;
   overflow: hidden;
-  transition: padding 140ms ease, min-height 140ms ease;
+  transition: none;
 }
 
 .mail-conversation-bar.is-expanded {
