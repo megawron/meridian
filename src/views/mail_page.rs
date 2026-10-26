@@ -6828,6 +6828,10 @@ mod imp {
         pub mail_source_button: RefCell<Option<gtk::Button>>,
         pub mail_secondary_actions_box: RefCell<Option<gtk::Box>>,
         pub mail_list_toolbar_box: RefCell<Option<gtk::Box>>,
+        pub(super) mail_list_toolbar_entries: RefCell<Vec<super::ListToolbarEntry>>,
+        pub mail_list_overflow_btn: RefCell<Option<gtk::MenuButton>>,
+        pub mail_list_overflow_box: RefCell<Option<gtk::Box>>,
+        pub mail_list_toolbar_last_width: Cell<i32>,
         pub mail_status_group: RefCell<Option<gtk::Box>>,
         pub mail_status_separator: RefCell<Option<gtk::Separator>>,
         pub message_state: RefCell<Option<gtk::Label>>,
@@ -7174,6 +7178,7 @@ mod imp {
         fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
             self.parent_size_allocate(width, height, baseline);
             self.obj().sync_preview_actions_labels();
+            self.obj().sync_list_toolbar_responsive();
         }
     }
 }
@@ -7184,6 +7189,21 @@ glib::wrapper! {
     pub struct MailPage(ObjectSubclass<imp::MailPage>)
         @extends gtk::Widget,
         @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ListToolbarEntry {
+    pub widget: gtk::Widget,
+    pub button: Option<gtk::Button>,
+    pub pill_label: Option<gtk::Label>,
+    pub full_w: i32,
+    pub compact_w: i32,
+    pub is_separator: bool,
+    pub is_spacer: bool,
+    pub collapse_priority: u8,
+    pub menu_label: String,
+    pub menu_icon: String,
+    pub is_active: bool,
 }
 
 struct AttachmentSectionWidgets {
@@ -7580,6 +7600,7 @@ impl MailPage {
         if let Some(rev) = imp.modern_date_revealer.borrow().as_ref() {
             rev.set_visible(show_date);
         }
+        self.sync_list_toolbar_responsive();
     }
 
     pub(crate) fn apply_toolbar_button_modes(&self, is_compact: bool) {
@@ -7690,6 +7711,7 @@ impl MailPage {
             sec.set_visible(!is_compact_tb);
         }
         self.apply_toolbar_button_modes(true);
+        self.sync_list_toolbar_responsive();
     }
 
     pub(crate) fn drill_down_level(&self) -> MailDrillDownLevel {
@@ -19773,21 +19795,15 @@ impl MailPage {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(4)
             .valign(gtk::Align::Center)
-            .build();
-        self.imp().mail_list_toolbar_box.replace(Some(custom_toolbar_box.clone()));
-
-        let actions_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Never)
-            .child(&custom_toolbar_box)
-            .propagate_natural_width(false)
-            .propagate_natural_height(true)
-            .min_content_width(0)
-            .min_content_height(0)
             .hexpand(true)
             .build();
+        self.imp().mail_list_toolbar_box.replace(Some(custom_toolbar_box.clone()));
+        toolbar.append(&custom_toolbar_box);
 
-        toolbar.append(&actions_scroll);
+        let (overflow_btn, overflow_box) = Self::build_list_toolbar_overflow_button();
+        self.imp().mail_list_overflow_btn.replace(Some(overflow_btn.clone()));
+        self.imp().mail_list_overflow_box.replace(Some(overflow_box));
+        toolbar.append(&overflow_btn);
 
         // Right-clicking empty space on the Action Bar opens a native Libadwaita context menu
         {
@@ -19917,6 +19933,32 @@ impl MailPage {
         }
     }
 
+    fn build_list_toolbar_overflow_button() -> (gtk::MenuButton, gtk::Box) {
+        let pop_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .margin_start(4)
+            .margin_end(4)
+            .margin_top(4)
+            .margin_bottom(4)
+            .build();
+        let pop = gtk::Popover::builder()
+            .child(&pop_box)
+            .has_arrow(false)
+            .css_classes(vec!["menu", "context-menu"])
+            .build();
+        let overflow_btn = gtk::MenuButton::builder()
+            .icon_name("pan-down-symbolic")
+            .tooltip_text(&gettext("More actions"))
+            .popover(&pop)
+            .valign(gtk::Align::Center)
+            .halign(gtk::Align::End)
+            .visible(false)
+            .css_classes(vec!["flat", "mail-list-bar-btn"])
+            .build();
+        (overflow_btn, pop_box)
+    }
+
     pub(crate) fn rebuild_mail_list_toolbar(&self) {
         let Some(container) = self.imp().mail_list_toolbar_box.borrow().clone() else {
             return;
@@ -19952,6 +19994,25 @@ impl MailPage {
             .map(|e| e.text().to_string())
             .unwrap_or_default();
 
+        let mut entries: Vec<ListToolbarEntry> = Vec::with_capacity(items.len());
+        let measure_pill = |btn: &gtk::Button, lbl: &Option<gtk::Label>| -> (i32, i32) {
+            if let Some(l) = lbl {
+                l.set_visible(true);
+                btn.remove_css_class("compact-pill");
+                let (_, nat_full, _, _) = btn.measure(gtk::Orientation::Horizontal, -1);
+                l.set_visible(false);
+                btn.add_css_class("compact-pill");
+                let (_, nat_compact, _, _) = btn.measure(gtk::Orientation::Horizontal, -1);
+                l.set_visible(true);
+                btn.remove_css_class("compact-pill");
+                (nat_full.max(30) + 2, nat_compact.max(28) + 2)
+            } else {
+                let (_, nat_w, _, _) = btn.measure(gtk::Orientation::Horizontal, -1);
+                let w = nat_w.max(28) + 2;
+                (w, w)
+            }
+        };
+
         for (item_idx, raw_item) in items.iter().enumerate() {
             let (base_token, custom_alias) = match raw_item.split_once('=') {
                 Some((b, a)) => (b.trim(), Some(a.trim().to_string())),
@@ -19964,6 +20025,19 @@ impl MailPage {
                 let sep = gtk::Separator::new(gtk::Orientation::Vertical);
                 self.attach_list_toolbar_item_context_menu(&sep, item_idx, base_token, custom_alias.as_deref());
                 container.append(&sep);
+                entries.push(ListToolbarEntry {
+                    widget: sep.upcast(),
+                    button: None,
+                    pill_label: None,
+                    full_w: 6,
+                    compact_w: 6,
+                    is_separator: true,
+                    is_spacer: false,
+                    collapse_priority: 0,
+                    menu_label: String::new(),
+                    menu_icon: String::new(),
+                    is_active: false,
+                });
                 continue;
             }
             if base_token == "spacer" {
@@ -19974,16 +20048,35 @@ impl MailPage {
                     .build();
                 self.attach_list_toolbar_item_context_menu(&spacer, item_idx, base_token, custom_alias.as_deref());
                 container.append(&spacer);
+                entries.push(ListToolbarEntry {
+                    widget: spacer.upcast(),
+                    button: None,
+                    pill_label: None,
+                    full_w: 12,
+                    compact_w: 12,
+                    is_separator: false,
+                    is_spacer: true,
+                    collapse_priority: 0,
+                    menu_label: String::new(),
+                    menu_icon: String::new(),
+                    is_active: false,
+                });
                 continue;
             }
 
             if let Some(filter_kind) = base_token.strip_prefix("filter:") {
                 if filter_kind == "today" {
                     let default_label = gettext("Today");
+                    let has_alias = custom_alias.as_deref().is_some_and(|s| !s.is_empty());
                     let display_label = custom_alias.clone().unwrap_or(default_label);
                     let query_token = "on:today";
                     let is_active = active_search_text.trim().eq_ignore_ascii_case(query_token);
-                    let btn = Self::make_list_toolbar_pill("x-office-calendar-symbolic", &display_label, &display_label, is_active);
+                    let (btn, pill_lbl) = Self::make_list_toolbar_pill_with_label(
+                        "x-office-calendar-symbolic",
+                        &display_label,
+                        &display_label,
+                        is_active,
+                    );
                     let page_weak = self.downgrade();
                     btn.connect_clicked(move |_| {
                         let Some(page) = page_weak.upgrade() else { return; };
@@ -19998,7 +20091,21 @@ impl MailPage {
                         page.rebuild_mail_list_toolbar();
                     });
                     self.attach_list_toolbar_item_context_menu(&btn, item_idx, base_token, custom_alias.as_deref());
+                    let (full_w, compact_w) = measure_pill(&btn, &pill_lbl);
                     container.append(&btn);
+                    entries.push(ListToolbarEntry {
+                        widget: btn.clone().upcast(),
+                        button: Some(btn),
+                        pill_label: pill_lbl,
+                        full_w,
+                        compact_w,
+                        is_separator: false,
+                        is_spacer: false,
+                        collapse_priority: if is_active { 2 } else if has_alias { 2 } else { 1 },
+                        menu_label: display_label,
+                        menu_icon: "x-office-calendar-symbolic".to_string(),
+                        is_active,
+                    });
                     continue;
                 }
                 let (qf_index, default_label, icon_name) = match filter_kind {
@@ -20009,9 +20116,15 @@ impl MailPage {
                     "followup" | "follow-up" => (5u32, gettext("Follow-Up"), "bookmark-new-symbolic"),
                     _ => continue,
                 };
+                let has_alias = custom_alias.as_deref().is_some_and(|s| !s.is_empty());
                 let display_label = custom_alias.clone().unwrap_or(default_label);
                 let is_active = active_qf == qf_index;
-                let btn = Self::make_list_toolbar_pill(icon_name, &display_label, &display_label, is_active);
+                let (btn, pill_lbl) = Self::make_list_toolbar_pill_with_label(
+                    icon_name,
+                    &display_label,
+                    &display_label,
+                    is_active,
+                );
                 let page_weak = self.downgrade();
                 btn.connect_clicked(move |_| {
                     let Some(page) = page_weak.upgrade() else { return; };
@@ -20022,7 +20135,21 @@ impl MailPage {
                     page.rebuild_mail_list_toolbar();
                 });
                 self.attach_list_toolbar_item_context_menu(&btn, item_idx, base_token, custom_alias.as_deref());
+                let (full_w, compact_w) = measure_pill(&btn, &pill_lbl);
                 container.append(&btn);
+                entries.push(ListToolbarEntry {
+                    widget: btn.clone().upcast(),
+                    button: Some(btn),
+                    pill_label: pill_lbl,
+                    full_w,
+                    compact_w,
+                    is_separator: false,
+                    is_spacer: false,
+                    collapse_priority: if is_active { 2 } else if has_alias { 2 } else { 1 },
+                    menu_label: display_label,
+                    menu_icon: icon_name.to_string(),
+                    is_active,
+                });
                 continue;
             }
 
@@ -20044,7 +20171,12 @@ impl MailPage {
                 };
                 let display_label = custom_alias.clone().unwrap_or(default_label);
                 let is_active = active_folder == target_sel;
-                let btn = Self::make_list_toolbar_pill(icon_name, &display_label, &display_label, is_active);
+                let (btn, pill_lbl) = Self::make_list_toolbar_pill_with_label(
+                    icon_name,
+                    &display_label,
+                    &display_label,
+                    is_active,
+                );
                 btn.add_css_class("folder-pill");
                 let page_weak = self.downgrade();
                 btn.connect_clicked(move |_| {
@@ -20056,7 +20188,21 @@ impl MailPage {
                     page.refresh_mail();
                 });
                 self.attach_list_toolbar_item_context_menu(&btn, item_idx, base_token, custom_alias.as_deref());
+                let (full_w, compact_w) = measure_pill(&btn, &pill_lbl);
                 container.append(&btn);
+                entries.push(ListToolbarEntry {
+                    widget: btn.clone().upcast(),
+                    button: Some(btn),
+                    pill_label: pill_lbl,
+                    full_w,
+                    compact_w,
+                    is_separator: false,
+                    is_spacer: false,
+                    collapse_priority: 3,
+                    menu_label: display_label,
+                    menu_icon: icon_name.to_string(),
+                    is_active,
+                });
                 continue;
             }
 
@@ -20073,7 +20219,7 @@ impl MailPage {
                 let display_label = custom_alias.clone().unwrap_or(default_label);
                 let query_token = format!("tag:{label_tag}");
                 let is_active = active_search_text.trim().eq_ignore_ascii_case(&query_token);
-                let btn = Self::make_list_toolbar_color_pill(&color_hex, &display_label, is_active);
+                let (btn, pill_lbl) = Self::make_list_toolbar_color_pill_with_label(&color_hex, &display_label, is_active);
                 let page_weak = self.downgrade();
                 btn.connect_clicked(move |_| {
                     let Some(page) = page_weak.upgrade() else { return; };
@@ -20088,7 +20234,21 @@ impl MailPage {
                     page.rebuild_mail_list_toolbar();
                 });
                 self.attach_list_toolbar_item_context_menu(&btn, item_idx, base_token, custom_alias.as_deref());
+                let (full_w, compact_w) = measure_pill(&btn, &pill_lbl);
                 container.append(&btn);
+                entries.push(ListToolbarEntry {
+                    widget: btn.clone().upcast(),
+                    button: Some(btn),
+                    pill_label: pill_lbl,
+                    full_w,
+                    compact_w,
+                    is_separator: false,
+                    is_spacer: false,
+                    collapse_priority: 3,
+                    menu_label: display_label,
+                    menu_icon: "preferences-color-symbolic".to_string(),
+                    is_active,
+                });
                 continue;
             }
 
@@ -20134,10 +20294,10 @@ impl MailPage {
             };
             let show_text = custom_alias.as_deref().is_some_and(|s| !s.is_empty());
             let label_text = custom_alias.clone().unwrap_or_else(|| default_label.clone());
-            let btn = if show_text {
-                Self::make_list_toolbar_pill(icon_name, &label_text, &default_label, false)
+            let (btn, pill_lbl) = if show_text {
+                Self::make_list_toolbar_pill_with_label(icon_name, &label_text, &default_label, false)
             } else {
-                Self::make_list_toolbar_icon_btn(icon_name, &default_label)
+                (Self::make_list_toolbar_icon_btn(icon_name, &default_label), None)
             };
             if let Some(act) = action_name {
                 btn.set_action_name(Some(act));
@@ -20154,7 +20314,238 @@ impl MailPage {
                 });
             }
             self.attach_list_toolbar_item_context_menu(&btn, item_idx, base_token, custom_alias.as_deref());
+            let (full_w, compact_w) = measure_pill(&btn, &pill_lbl);
             container.append(&btn);
+            entries.push(ListToolbarEntry {
+                widget: btn.clone().upcast(),
+                button: Some(btn),
+                pill_label: pill_lbl,
+                full_w,
+                compact_w,
+                is_separator: false,
+                is_spacer: false,
+                collapse_priority: if show_text { 3 } else { 0 },
+                menu_label: label_text,
+                menu_icon: icon_name.to_string(),
+                is_active: false,
+            });
+        }
+
+        self.imp().mail_list_toolbar_entries.replace(entries);
+        self.imp().mail_list_toolbar_last_width.set(-1);
+        self.sync_list_toolbar_responsive();
+
+        let page_weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(page) = page_weak.upgrade() {
+                page.imp().mail_list_toolbar_last_width.set(-1);
+                page.sync_list_toolbar_responsive();
+            }
+        });
+    }
+
+    pub(crate) fn sync_list_toolbar_responsive(&self) {
+        let imp = self.imp();
+        let entries = imp.mail_list_toolbar_entries.borrow().clone();
+        if entries.is_empty() {
+            if let Some(ob) = imp.mail_list_overflow_btn.borrow().as_ref() {
+                ob.set_visible(false);
+            }
+            return;
+        }
+
+        let raw_w = imp
+            .classic_toolbar
+            .borrow()
+            .as_ref()
+            .map(|w| w.width())
+            .filter(|&w| w > 40)
+            .unwrap_or_else(|| {
+                if imp.mail_layout.get() == MailLayout::Horizontal {
+                    let w = imp.inner_paned.width();
+                    if w > 40 { w } else { self.width() }
+                } else {
+                    let pos = imp.inner_paned.position();
+                    if pos > 40 { pos } else { 380 }
+                }
+            });
+
+        let avail_w = (raw_w - 20).max(60);
+        if imp.mail_list_toolbar_last_width.get() == avail_w {
+            return;
+        }
+        imp.mail_list_toolbar_last_width.set(avail_w);
+
+        let n = entries.len();
+        let mut compact = vec![false; n];
+        let mut vis = vec![true; n];
+
+        let calc_width = |c_flags: &[bool], v_flags: &[bool]| -> i32 {
+            let mut sum = 0i32;
+            let mut count = 0i32;
+            for (i, e) in entries.iter().enumerate() {
+                if !v_flags[i] {
+                    continue;
+                }
+                sum += if c_flags[i] { e.compact_w } else { e.full_w };
+                count += 1;
+            }
+            if count > 1 {
+                sum += (count - 1) * 4;
+            }
+            sum
+        };
+
+        // Stage 1 & 2: If full pills exceed available width, progressively compact pill labels
+        // from right to left (priority 1 = inactive filters, 2 = active/custom filters, 3 = folders/labels).
+        if calc_width(&compact, &vis) > avail_w {
+            for prio in 1..=3u8 {
+                for idx in (0..n).rev() {
+                    if entries[idx].collapse_priority == prio && entries[idx].pill_label.is_some() {
+                        compact[idx] = true;
+                        if calc_width(&compact, &vis) <= avail_w {
+                            break;
+                        }
+                    }
+                }
+                if calc_width(&compact, &vis) <= avail_w {
+                    break;
+                }
+            }
+        }
+
+        // Stage 3: If even with compacted pills total width still exceeds avail_w,
+        // move overflowing rightmost items into the `▾` overflow popover menu.
+        let mut has_overflow = false;
+        if calc_width(&compact, &vis) > avail_w {
+            let budget = (avail_w - 34).max(32);
+            let mut running_w = 0i32;
+            let mut shown_count = 0i32;
+            for i in 0..n {
+                let item_w = if compact[i] { entries[i].compact_w } else { entries[i].full_w };
+                let step_w = if shown_count > 0 { item_w + 4 } else { item_w };
+                if running_w + step_w <= budget || (shown_count == 0 && !entries[i].is_separator) {
+                    vis[i] = true;
+                    running_w += step_w;
+                    shown_count += 1;
+                } else {
+                    for j in i..n {
+                        vis[j] = false;
+                        if !entries[j].is_separator && !entries[j].is_spacer {
+                            has_overflow = true;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Clean up leading, trailing, or consecutive visible separators
+        let mut prev_was_sep = true;
+        for i in 0..n {
+            if !vis[i] {
+                continue;
+            }
+            if entries[i].is_separator {
+                if prev_was_sep {
+                    vis[i] = false;
+                } else {
+                    prev_was_sep = true;
+                }
+            } else {
+                prev_was_sep = false;
+            }
+        }
+        for i in (0..n).rev() {
+            if !vis[i] {
+                continue;
+            }
+            if entries[i].is_separator {
+                vis[i] = false;
+            } else {
+                break;
+            }
+        }
+
+        // Apply compact states and visibility to widgets
+        for i in 0..n {
+            if let Some(lbl) = entries[i].pill_label.as_ref() {
+                lbl.set_visible(!compact[i]);
+            }
+            if compact[i] {
+                entries[i].widget.add_css_class("compact-pill");
+            } else {
+                entries[i].widget.remove_css_class("compact-pill");
+            }
+            entries[i].widget.set_visible(vis[i]);
+        }
+
+        // Populate overflow menu if needed
+        if let Some(overflow_btn) = imp.mail_list_overflow_btn.borrow().as_ref() {
+            overflow_btn.set_visible(has_overflow);
+            if let Some(overflow_box) = imp.mail_list_overflow_box.borrow().as_ref() {
+                while let Some(child) = overflow_box.first_child() {
+                    overflow_box.remove(&child);
+                }
+                if has_overflow {
+                    let pop_opt = overflow_btn.popover();
+                    for i in 0..n {
+                        if vis[i] || entries[i].is_separator || entries[i].is_spacer {
+                            continue;
+                        }
+                        let Some(target_btn) = entries[i].button.clone() else {
+                            continue;
+                        };
+                        let row = gtk::Box::builder()
+                            .orientation(gtk::Orientation::Horizontal)
+                            .spacing(8)
+                            .valign(gtk::Align::Center)
+                            .build();
+                        let img = gtk::Image::builder()
+                            .pixel_size(16)
+                            .valign(gtk::Align::Center)
+                            .build();
+                        set_image_icon_with_fallback(&img, &entries[i].menu_icon, "folder-symbolic");
+                        let lbl = gtk::Label::builder()
+                            .label(&entries[i].menu_label)
+                            .halign(gtk::Align::Start)
+                            .valign(gtk::Align::Center)
+                            .build();
+                        row.append(&img);
+                        row.append(&lbl);
+
+                        let mut classes = vec!["flat", "context-menu-item"];
+                        if entries[i].is_active {
+                            classes.push("active");
+                        }
+                        let menu_item = gtk::Button::builder()
+                            .child(&row)
+                            .halign(gtk::Align::Fill)
+                            .css_classes(classes)
+                            .build();
+                        let pop_weak = pop_opt.as_ref().map(|p| p.downgrade());
+                        let page_weak = self.downgrade();
+                        menu_item.connect_clicked(move |_| {
+                            if let Some(pw) = pop_weak.as_ref() {
+                                if let Some(p) = pw.upgrade() {
+                                    p.popdown();
+                                }
+                            }
+                            if let Some(act) = target_btn.action_name() {
+                                if let Some(page) = page_weak.upgrade() {
+                                    let _ = page.activate_action(
+                                        act.as_str(),
+                                        target_btn.action_target_value().as_ref(),
+                                    );
+                                }
+                            } else {
+                                target_btn.emit_clicked();
+                            }
+                        });
+                        overflow_box.append(&menu_item);
+                    }
+                }
+            }
         }
     }
 
@@ -20175,7 +20566,12 @@ impl MailPage {
         btn
     }
 
-    fn make_list_toolbar_pill(icon_name: &str, label_text: &str, tooltip: &str, is_active: bool) -> gtk::Button {
+    fn make_list_toolbar_pill_with_label(
+        icon_name: &str,
+        label_text: &str,
+        tooltip: &str,
+        is_active: bool,
+    ) -> (gtk::Button, Option<gtk::Label>) {
         let row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(5)
@@ -20188,13 +20584,16 @@ impl MailPage {
             .build();
         set_image_icon_with_fallback(&img, icon_name, "folder-symbolic");
         row.append(&img);
-        if !label_text.trim().is_empty() {
+        let pill_lbl = if !label_text.trim().is_empty() {
             let lbl = gtk::Label::builder()
                 .label(label_text)
                 .valign(gtk::Align::Center)
                 .build();
             row.append(&lbl);
-        }
+            Some(lbl)
+        } else {
+            None
+        };
         let mut classes = vec!["flat", "mail-list-bar-pill"];
         if is_active {
             classes.push("active");
@@ -20206,10 +20605,14 @@ impl MailPage {
             .css_classes(classes)
             .build();
         set_accessible_label(&btn, tooltip);
-        btn
+        (btn, pill_lbl)
     }
 
-    fn make_list_toolbar_color_pill(color_hex: &str, label_text: &str, is_active: bool) -> gtk::Button {
+    fn make_list_toolbar_color_pill_with_label(
+        color_hex: &str,
+        label_text: &str,
+        is_active: bool,
+    ) -> (gtk::Button, Option<gtk::Label>) {
         let row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(5)
@@ -20237,12 +20640,13 @@ impl MailPage {
         if is_active {
             classes.push("active");
         }
-        gtk::Button::builder()
+        let btn = gtk::Button::builder()
             .child(&row)
             .tooltip_text(label_text)
             .valign(gtk::Align::Center)
             .css_classes(classes)
-            .build()
+            .build();
+        (btn, Some(lbl))
     }
 
     fn attach_list_toolbar_item_context_menu(
@@ -25787,6 +26191,14 @@ impl MailPage {
             .min_content_width(0)
             .min_content_height(0)
             .build();
+        if let Some(vport) = unified_toolbar_scroll.child().and_downcast::<gtk::Viewport>() {
+            vport.set_scroll_to_focus(false);
+        }
+        unified_toolbar_scroll.hadjustment().connect_value_changed(|adj| {
+            if adj.value() != 0.0 {
+                adj.set_value(0.0);
+            }
+        });
         unified_toolbar_scroll.set_visible(
             AppSettings::try_new()
                 .map(|settings| settings.mail_show_toolbar())

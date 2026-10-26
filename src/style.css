@@ -2975,7 +2975,7 @@ splitview > .sidebar:backdrop {
 .unified-mail-toolbar {
   min-height: 32px;
   margin: 0;
-  padding: 2px 4px;
+  padding: 3px 8px;
   background-color: @view_bg_color;
   border-bottom: none;
 }
@@ -3000,6 +3000,10 @@ splitview > .sidebar:backdrop {
   background-color: alpha(@window_fg_color, 0.055);
   color: alpha(@window_fg_color, 0.88);
   transition: background-color 120ms ease, color 120ms ease;
+}
+
+.unified-mail-toolbar button.mail-list-bar-pill.compact-pill {
+  padding: 5px 6px;
 }
 
 .unified-mail-toolbar button.mail-list-bar-pill:hover {
