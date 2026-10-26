@@ -1606,7 +1606,7 @@ mod imp {
         pub memopad_collapse_btn: RefCell<Option<gtk::Button>>,
         pub sidebar_options_btn: RefCell<Option<gtk::MenuButton>>,
         pub sidebar_options_box: RefCell<Option<gtk::Box>>,
-        pub sidebar_panel_specs: RefCell<Vec<super::SidebarPanelSpec>>,
+        pub(crate) sidebar_panel_specs: RefCell<Vec<super::SidebarPanelSpec>>,
         pub sidebar_show_memos: Cell<bool>,
         pub sidebar_details_on_top: Cell<bool>,
         pub sidebar_saved_vpane_pos: Cell<i32>,
@@ -7975,25 +7975,11 @@ impl CalendarPage {
         let year_vadjustment = gtk::Adjustment::new(0.0, 0.0, 100.0, 40.0, 200.0, 100.0);
         self.imp().year_vadjustment.replace(Some(year_vadjustment.clone()));
 
-        let year_vscrollbar = gtk::Scrollbar::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .adjustment(&year_vadjustment)
-            .build();
-        year_vscrollbar.set_halign(gtk::Align::End);
-        year_vscrollbar.set_valign(gtk::Align::Fill);
-        year_vscrollbar.set_margin_end(2);
-        year_vscrollbar.set_margin_start(0);
-        year_vscrollbar.set_margin_top(0);
-        year_vscrollbar.set_margin_bottom(0);
-        year_vscrollbar.add_css_class("calendar-year-overlay-scrollbar");
-
         let year_overlay = gtk::Overlay::builder()
             .hexpand(true)
             .vexpand(true)
             .child(&year_canvas)
             .build();
-        year_overlay.add_overlay(&year_vscrollbar);
-        year_overlay.set_measure_overlay(&year_vscrollbar, false);
 
         let calendar_area = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -8033,6 +8019,7 @@ impl CalendarPage {
             .wide_handle(false)
             .hexpand(true)
             .vexpand(true)
+            .css_classes(vec!["year-view-paned"])
             .build();
 
         year_paned.set_start_child(Some(&calendar_area));
@@ -14085,10 +14072,29 @@ impl CalendarPage {
             .label(&format_date(date))
             .css_classes(vec!["calendar-year-details-title"])
             .halign(gtk::Align::Start)
-            .hexpand(true)
             .ellipsize(pango::EllipsizeMode::End)
             .build();
-        header_box.append(&title_lbl);
+        let title_btn = gtk::Button::builder()
+            .child(&title_lbl)
+            .tooltip_text(&gettext("Open in Day View"))
+            .css_classes(vec!["flat", "calendar-year-details-title-btn"])
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .build();
+        title_btn.set_cursor_from_name(Some("pointer"));
+        let page_for_open = self.downgrade();
+        title_btn.connect_clicked(move |_| {
+            if let Some(page) = page_for_open.upgrade() {
+                *page.imp().current_date.borrow_mut() = date;
+                page.imp()
+                    .view_state
+                    .borrow_mut()
+                    .set_anchor(date, configured_first_weekday());
+                page.imp().view_state.borrow_mut().select_civil_day(date);
+                page.select_calendar_view(CalendarView::Day);
+            }
+        });
+        header_box.append(&title_btn);
 
         // Mode switcher: [ Liste | Tagesplan ]
         let current_mode = self.imp().year_preview_mode.get();
@@ -14139,26 +14145,6 @@ impl CalendarPage {
         });
         switcher_box.append(&sched_btn);
         header_box.append(&switcher_box);
-
-        // Open in Day View button
-        let open_day_btn = gtk::Button::builder()
-            .icon_name("go-jump-symbolic")
-            .tooltip_text(&gettext("Open in Day View"))
-            .css_classes(vec!["flat"])
-            .build();
-        let page_for_open = self.downgrade();
-        open_day_btn.connect_clicked(move |_| {
-            if let Some(page) = page_for_open.upgrade() {
-                *page.imp().current_date.borrow_mut() = date;
-                page.imp()
-                    .view_state
-                    .borrow_mut()
-                    .set_anchor(date, configured_first_weekday());
-                page.imp().view_state.borrow_mut().select_civil_day(date);
-                page.select_calendar_view(CalendarView::Day);
-            }
-        });
-        header_box.append(&open_day_btn);
 
         container.append(&header_box);
 
@@ -14728,7 +14714,7 @@ impl CalendarPage {
         let month_header_w = 32.0;
         let usable_w = (avail_width - month_header_w).max(31.0 * 26.0);
         let col_w = usable_w / 31.0;
-        let row_h = (avail_height / 12.0).max(48.0);
+        let row_h = (avail_height / 12.0).max(84.0);
         YearPlannerCanvasLayout {
             year,
             width: month_header_w + 31.0 * col_w,
@@ -31968,7 +31954,8 @@ mod tests {
         let year = 2026;
         let pl = CalendarPage::prepare_year_planner_layout(year, 1200.0, 720.0);
         assert_eq!(pl.year, 2026);
-        assert!((pl.height - 720.0).abs() < 1e-6);
+        assert!((pl.height - 12.0 * 84.0).abs() < 1e-6);
+        assert!(pl.height > 720.0);
         assert!((pl.width - 1200.0).abs() < 1e-6);
         assert_eq!(pl.month_header_w, 32.0);
 

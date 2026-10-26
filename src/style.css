@@ -4672,32 +4672,63 @@ button.month-bar-chip.span-end {
 
 /* ── Calendar Year Day Details Panel (Right / Bottom) ───────────────────── */
 .calendar-year-details-panel {
-  background-color: @window_bg_color;
+  background-color: #ffffff;
   border-radius: 0;
-  border: none;
+  border: 1px solid alpha(@borders, 0.55);
   padding: 0;
   margin: 0;
 }
 
+:root:not(.light) .calendar-year-details-panel,
+.dark .calendar-year-details-panel {
+  background-color: @view_bg_color;
+}
+
 .calendar-year-details-panel.side-mode {
-  border-left: 1px solid alpha(@borders, 0.45);
+  border-left: 1px solid alpha(@borders, 0.65);
+  border-right: 1px solid alpha(@borders, 0.65);
+  border-top: 1px solid alpha(@borders, 0.55);
+  border-bottom: none;
   min-width: 160px;
   margin: 0;
   padding: 0;
 }
 
 .calendar-year-details-panel.bottom-mode {
-  border-top: 1px solid alpha(@borders, 0.45);
+  border-top: 1px solid alpha(@borders, 0.65);
+  border-right: 1px solid alpha(@borders, 0.65);
+  border-left: none;
+  border-bottom: none;
   min-height: 120px;
   margin: 0;
   padding: 0;
 }
 
+paned.year-view-paned > separator {
+  background-color: alpha(@borders, 0.65);
+}
+
 .calendar-year-details-header {
-  padding: 8px 12px;
-  border-bottom: 1px solid alpha(@borders, 0.35);
+  padding: 6px 10px;
+  border-bottom: 1px solid alpha(@borders, 0.45);
   margin: 0;
-  background-color: @card_bg_color;
+  background-color: #ffffff;
+}
+
+:root:not(.light) .calendar-year-details-header,
+.dark .calendar-year-details-header {
+  background-color: @view_bg_color;
+}
+
+.calendar-year-details-title-btn {
+  padding: 2px 6px;
+  margin-left: -4px;
+  min-height: 26px;
+  border-radius: 6px;
+}
+
+.calendar-year-details-title-btn:hover .calendar-year-details-title {
+  color: @accent_color;
 }
 
 .calendar-year-details-title {
