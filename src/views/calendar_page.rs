@@ -188,6 +188,26 @@ pub(crate) struct PreparedCalendarListRow {
 pub(crate) enum YearCanvasHitTarget {
     MonthHeader(u32),
     Day(NaiveDate),
+    YearCard(i32),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedMultiYearCardLayout {
+    pub(crate) year: i32,
+    pub(crate) card_x: f64,
+    pub(crate) card_y: f64,
+    pub(crate) card_w: f64,
+    pub(crate) card_h: f64,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedMultiYearCanvasLayout {
+    pub(crate) anchor_year: i32,
+    pub(crate) start_year: i32,
+    pub(crate) end_year: i32,
+    pub(crate) width: f64,
+    pub(crate) height: f64,
+    pub(crate) cards: Vec<PreparedMultiYearCardLayout>,
 }
 
 #[derive(Clone, Debug)]
@@ -225,6 +245,15 @@ pub(crate) enum YearViewStyle {
     #[default]
     Planner,
     Grid,
+    MultiYear,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum YearGridIndicatorStyle {
+    #[default]
+    ColoredDots,
+    Heatmap,
+    SingleDot,
 }
 
 fn year_view_style_config_path() -> std::path::PathBuf {
@@ -238,6 +267,9 @@ pub(crate) fn load_persisted_year_view_style() -> YearViewStyle {
         if raw.trim().eq_ignore_ascii_case("grid") {
             return YearViewStyle::Grid;
         }
+        if raw.trim().eq_ignore_ascii_case("multi-year") {
+            return YearViewStyle::MultiYear;
+        }
     }
     YearViewStyle::Planner
 }
@@ -250,6 +282,38 @@ pub(crate) fn persist_year_view_style(style: YearViewStyle) {
     let val = match style {
         YearViewStyle::Planner => "planner",
         YearViewStyle::Grid => "grid",
+        YearViewStyle::MultiYear => "multi-year",
+    };
+    let _ = std::fs::write(path, val);
+}
+
+fn year_grid_indicator_style_config_path() -> std::path::PathBuf {
+    glib::user_config_dir()
+        .join("meridian")
+        .join("year-grid-indicator-style")
+}
+
+pub(crate) fn load_persisted_year_grid_indicator_style() -> YearGridIndicatorStyle {
+    if let Ok(raw) = std::fs::read_to_string(year_grid_indicator_style_config_path()) {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "heatmap" => return YearGridIndicatorStyle::Heatmap,
+            "single-dot" | "single" => return YearGridIndicatorStyle::SingleDot,
+            "colored-dots" | "dots" => return YearGridIndicatorStyle::ColoredDots,
+            _ => {}
+        }
+    }
+    YearGridIndicatorStyle::ColoredDots
+}
+
+pub(crate) fn persist_year_grid_indicator_style(style: YearGridIndicatorStyle) {
+    let path = year_grid_indicator_style_config_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let val = match style {
+        YearGridIndicatorStyle::ColoredDots => "colored-dots",
+        YearGridIndicatorStyle::Heatmap => "heatmap",
+        YearGridIndicatorStyle::SingleDot => "single-dot",
     };
     let _ = std::fs::write(path, val);
 }
@@ -1307,7 +1371,7 @@ pub(crate) struct MoveDragState {
 
 // ─── GObject Subclass ───────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum SidebarPanelId {
     Tasks,
     Details,
@@ -1346,6 +1410,7 @@ pub(crate) enum SidebarPanelMode {
     Off,
     Split,
     Tab,
+    Window,
 }
 
 impl SidebarPanelMode {
@@ -1354,6 +1419,7 @@ impl SidebarPanelMode {
             Self::Off => "off",
             Self::Split => "split",
             Self::Tab => "tab",
+            Self::Window => "window",
         }
     }
 
@@ -1362,6 +1428,7 @@ impl SidebarPanelMode {
             "off" => Some(Self::Off),
             "split" => Some(Self::Split),
             "tab" => Some(Self::Tab),
+            "window" => Some(Self::Window),
             _ => None,
         }
     }
@@ -1532,6 +1599,7 @@ mod imp {
         pub(crate) year_preview_mode: Cell<YearPreviewMode>,
         pub(crate) year_preview_orientation: Cell<YearPreviewOrientation>,
         pub(crate) year_view_style: Cell<YearViewStyle>,
+        pub(crate) year_grid_indicator_style: Cell<YearGridIndicatorStyle>,
         pub(crate) year_planner_months: RefCell<[YearPlannerMonthData; 12]>,
         pub(crate) year_day_previews: RefCell<HashMap<NaiveDate, Vec<YearPlannerDayPreviewItem>>>,
         pub(crate) year_projection_cache: RefCell<
@@ -1607,6 +1675,8 @@ mod imp {
         pub sidebar_options_btn: RefCell<Option<gtk::MenuButton>>,
         pub sidebar_options_box: RefCell<Option<gtk::Box>>,
         pub(crate) sidebar_panel_specs: RefCell<Vec<super::SidebarPanelSpec>>,
+        pub(crate) sidebar_detached_windows:
+            RefCell<HashMap<super::SidebarPanelId, (gtk::Window, gtk::Box)>>,
         pub sidebar_show_memos: Cell<bool>,
         pub sidebar_details_on_top: Cell<bool>,
         pub sidebar_saved_vpane_pos: Cell<i32>,
@@ -1747,6 +1817,7 @@ mod imp {
                 year_preview_mode: Cell::new(YearPreviewMode::Schedule),
                 year_preview_orientation: Cell::new(YearPreviewOrientation::Side),
                 year_view_style: Cell::new(load_persisted_year_view_style()),
+                year_grid_indicator_style: Cell::new(load_persisted_year_grid_indicator_style()),
                 year_planner_months: RefCell::new(std::array::from_fn(|_| YearPlannerMonthData::default())),
                 year_day_previews: RefCell::new(HashMap::new()),
                 year_projection_cache: RefCell::new(HashMap::new()),
@@ -1813,6 +1884,7 @@ mod imp {
                 sidebar_options_btn: RefCell::new(None),
                 sidebar_options_box: RefCell::new(None),
                 sidebar_panel_specs: RefCell::new(super::default_sidebar_panel_specs()),
+                sidebar_detached_windows: RefCell::new(HashMap::new()),
                 sidebar_show_memos: Cell::new(false),
                 sidebar_details_on_top: Cell::new(false),
                 sidebar_saved_vpane_pos: Cell::new(320),
@@ -2175,7 +2247,15 @@ impl CalendarPage {
             CalendarView::Agenda => {
                 format!("{} {}", Self::month_name(date.month()), date.year())
             }
-            CalendarView::Year => date.year().to_string(),
+            CalendarView::Year => {
+                if self.imp().year_view_style.get() == YearViewStyle::MultiYear {
+                    let start_y = date.year() - (date.year() - 2020).rem_euclid(12);
+                    let end_y = start_y + 11;
+                    format!("{start_y}–{end_y}")
+                } else {
+                    date.year().to_string()
+                }
+            }
             CalendarView::List => self
                 .imp()
                 .calendar_list_projection_count
@@ -2310,13 +2390,16 @@ impl CalendarPage {
         if let Some(split_btn) = self.imp().year_view_options_split_btn.borrow().as_ref() {
             match style {
                 YearViewStyle::Planner => split_btn.set_icon_name("view-list-symbolic"),
-                YearViewStyle::Grid => split_btn.set_icon_name("view-grid-symbolic"),
+                YearViewStyle::Grid | YearViewStyle::MultiYear => {
+                    split_btn.set_icon_name("view-grid-symbolic")
+                }
             }
         }
         if let Some(vadj) = self.imp().year_vadjustment.borrow().as_ref() {
             vadj.set_value(0.0);
         }
         self.update_year_paned_layout();
+        self.sync_toolbar_navigation_title();
         if let Some(canvas) = self.imp().year_canvas.borrow().as_ref() {
             canvas.queue_draw();
         }
@@ -2333,6 +2416,17 @@ impl CalendarPage {
             if let Some(details) = self.imp().year_details_container.borrow().as_ref() {
                 self.render_year_day_details(details, selected_day);
             }
+        }
+    }
+
+    pub(crate) fn set_year_grid_indicator_style(&self, style: YearGridIndicatorStyle) {
+        if self.imp().year_grid_indicator_style.get() == style {
+            return;
+        }
+        self.imp().year_grid_indicator_style.set(style);
+        persist_year_grid_indicator_style(style);
+        if let Some(canvas) = self.imp().year_canvas.borrow().as_ref() {
+            canvas.queue_draw();
         }
     }
 
@@ -2576,6 +2670,12 @@ impl CalendarPage {
                 .group(&btn_off)
                 .active(spec.mode == SidebarPanelMode::Tab)
                 .build();
+            let btn_win = gtk::ToggleButton::builder()
+                .label(&gettext("Window"))
+                .tooltip_text(&gettext("Detach into a standalone window"))
+                .group(&btn_off)
+                .active(spec.mode == SidebarPanelMode::Window)
+                .build();
 
             let page_weak_off = self.downgrade();
             btn_off.connect_toggled(move |b| {
@@ -2601,10 +2701,19 @@ impl CalendarPage {
                     }
                 }
             });
+            let page_weak_win = self.downgrade();
+            btn_win.connect_toggled(move |b| {
+                if b.is_active() {
+                    if let Some(page) = page_weak_win.upgrade() {
+                        page.set_sidebar_panel_mode(panel_id, SidebarPanelMode::Window);
+                    }
+                }
+            });
 
             mode_box.append(&btn_off);
             mode_box.append(&btn_split);
             mode_box.append(&btn_tab);
+            mode_box.append(&btn_win);
             row.append(&mode_box);
 
             opt_box.append(&row);
@@ -2742,10 +2851,168 @@ impl CalendarPage {
             && self.is_agenda_detail_visible();
 
         let specs = self.imp().sidebar_panel_specs.borrow().clone();
+
+        // Manage detached standalone windows for panels in SidebarPanelMode::Window
+        for panel_id in [
+            SidebarPanelId::Tasks,
+            SidebarPanelId::Details,
+            SidebarPanelId::Memos,
+        ] {
+            let is_window_mode = specs
+                .iter()
+                .any(|s| s.id == panel_id && s.mode == SidebarPanelMode::Window);
+            let content_widget: gtk::Widget = match panel_id {
+                SidebarPanelId::Tasks => taskpad_content_box.clone().upcast(),
+                SidebarPanelId::Details => event_inspector_scroll.clone().upcast(),
+                SidebarPanelId::Memos => memopad_content_box.clone().upcast(),
+            };
+
+            if !is_window_mode {
+                let removed = self
+                    .imp()
+                    .sidebar_detached_windows
+                    .borrow_mut()
+                    .remove(&panel_id);
+                if let Some((win, _host_box)) = removed {
+                    detach_widget_from_parent(&content_widget);
+                    win.destroy();
+                }
+            } else {
+                let existing = self
+                    .imp()
+                    .sidebar_detached_windows
+                    .borrow()
+                    .get(&panel_id)
+                    .cloned();
+                let (win, host_box) = if let Some(pair) = existing {
+                    pair
+                } else {
+                    let header = gtk::HeaderBar::new();
+                    let title_lbl = gtk::Label::builder()
+                        .label(&panel_id.display_title())
+                        .css_classes(vec!["title"])
+                        .build();
+                    header.set_title_widget(Some(&title_lbl));
+
+                    if panel_id == SidebarPanelId::Tasks {
+                        let add_btn = gtk::Button::builder()
+                            .icon_name("list-add-symbolic")
+                            .tooltip_text(&gettext("Create new task"))
+                            .css_classes(vec!["flat"])
+                            .build();
+                        let page_weak = self.downgrade();
+                        add_btn.connect_clicked(move |_| {
+                            if let Some(page) = page_weak.upgrade() {
+                                if let Some(root) = page.root() {
+                                    if let Ok(window) =
+                                        root.downcast::<crate::window::MeridianWindow>()
+                                    {
+                                        window.present_new_task();
+                                    }
+                                }
+                            }
+                        });
+                        header.pack_start(&add_btn);
+                    } else if panel_id == SidebarPanelId::Memos {
+                        let add_btn = gtk::Button::builder()
+                            .icon_name("list-add-symbolic")
+                            .tooltip_text(&gettext("Create new memo"))
+                            .css_classes(vec!["flat"])
+                            .build();
+                        let page_weak = self.downgrade();
+                        add_btn.connect_clicked(move |_| {
+                            if let Some(page) = page_weak.upgrade() {
+                                if let Some(root) = page.root() {
+                                    if let Ok(window) =
+                                        root.downcast::<crate::window::MeridianWindow>()
+                                    {
+                                        window.present_new_memo();
+                                    }
+                                }
+                            }
+                        });
+                        header.pack_start(&add_btn);
+                    }
+
+                    let dock_btn = gtk::Button::builder()
+                        .icon_name("sidebar-show-right-symbolic")
+                        .tooltip_text(&gettext("Dock back into sidebar"))
+                        .css_classes(vec!["flat"])
+                        .build();
+                    let page_weak_dock = self.downgrade();
+                    dock_btn.connect_clicked(move |_| {
+                        if let Some(page) = page_weak_dock.upgrade() {
+                            page.set_sidebar_panel_mode(panel_id, SidebarPanelMode::Split);
+                        }
+                    });
+                    header.pack_end(&dock_btn);
+
+                    let host_box = gtk::Box::builder()
+                        .orientation(gtk::Orientation::Vertical)
+                        .spacing(4)
+                        .margin_start(8)
+                        .margin_end(8)
+                        .margin_top(6)
+                        .margin_bottom(8)
+                        .hexpand(true)
+                        .vexpand(true)
+                        .build();
+
+                    let win = gtk::Window::builder()
+                        .title(&format!("Meridian — {}", panel_id.display_title()))
+                        .default_width(340)
+                        .default_height(460)
+                        .titlebar(&header)
+                        .child(&host_box)
+                        .build();
+                    if let Some(root) = self.root().and_then(|r| r.downcast::<gtk::Window>().ok()) {
+                        win.set_transient_for(Some(&root));
+                    }
+
+                    let page_weak_close = self.downgrade();
+                    let content_for_close = content_widget.clone();
+                    win.connect_close_request(move |w| {
+                        detach_widget_from_parent(&content_for_close);
+                        if let Some(page) = page_weak_close.upgrade() {
+                            page.imp()
+                                .sidebar_detached_windows
+                                .borrow_mut()
+                                .remove(&panel_id);
+                            if !page.imp().syncing_sidebar_vpane.get() {
+                                page.set_sidebar_panel_mode(panel_id, SidebarPanelMode::Split);
+                            }
+                        }
+                        w.destroy();
+                        glib::Propagation::Stop
+                    });
+
+                    self.imp()
+                        .sidebar_detached_windows
+                        .borrow_mut()
+                        .insert(panel_id, (win.clone(), host_box.clone()));
+                    (win, host_box)
+                };
+
+                ensure_widget_in_box(&content_widget, &host_box);
+                content_widget.set_visible(true);
+                if panel_id == SidebarPanelId::Tasks {
+                    if let Some(s) = self.imp().taskpad_scroll.borrow().as_ref() {
+                        s.set_visible(true);
+                    }
+                } else if panel_id == SidebarPanelId::Memos {
+                    if let Some(s) = self.imp().memopad_scroll.borrow().as_ref() {
+                        s.set_visible(true);
+                    }
+                }
+                win.present();
+            }
+        }
+
         let active: Vec<SidebarPanelSpec> = specs
             .into_iter()
             .filter(|s| {
                 s.mode != SidebarPanelMode::Off
+                    && s.mode != SidebarPanelMode::Window
                     && !(s.id == SidebarPanelId::Details && hide_sidebar_details)
             })
             .collect();
@@ -2900,6 +3167,18 @@ impl CalendarPage {
                 let exp = sidebar_lower_stack.is_visible();
                 ordered_containers.push((sidebar_lower_box.clone(), lower_header.clone(), exp));
             }
+        }
+
+        if ordered_containers.is_empty() {
+            use_taskpad_box = true;
+            taskpad_title.set_text(&gettext("Sidebar"));
+            taskpad_title.set_visible(true);
+            taskpad_count.set_visible(false);
+            taskpad_stack_switcher.set_visible(false);
+            taskpad_add_btn.set_visible(false);
+            taskpad_memos_add_btn.set_visible(false);
+            taskpad_stack.set_visible(false);
+            ordered_containers.push((taskpad_box.clone(), taskpad_header.clone(), false));
         }
 
         if !use_taskpad_box {
@@ -3375,10 +3654,63 @@ impl CalendarPage {
     }
 
     pub fn zoom_in(&self) {
+        if *self.imp().current_view.borrow() == CalendarView::Year {
+            match self.imp().year_view_style.get() {
+                YearViewStyle::MultiYear => {
+                    let hovered = self.imp().year_hovered_target.borrow().clone();
+                    if let Some(YearCanvasHitTarget::YearCard(target_y)) = hovered {
+                        let cur = *self.imp().current_date.borrow();
+                        let max_d = days_in_month(target_y, cur.month());
+                        if let Some(next_d) =
+                            NaiveDate::from_ymd_opt(target_y, cur.month(), cur.day().min(max_d))
+                        {
+                            self.navigate_to_date(next_d);
+                        }
+                    }
+                    self.set_year_view_style(YearViewStyle::Grid);
+                }
+                YearViewStyle::Grid | YearViewStyle::Planner => {
+                    let hovered = self.imp().year_hovered_target.borrow().clone();
+                    let cur = *self.imp().current_date.borrow();
+                    match hovered {
+                        Some(YearCanvasHitTarget::MonthHeader(m)) => {
+                            if let Some(first_of_m) = NaiveDate::from_ymd_opt(cur.year(), m, 1) {
+                                *self.imp().current_date.borrow_mut() = first_of_m;
+                                self.imp()
+                                    .view_state
+                                    .borrow_mut()
+                                    .set_anchor(first_of_m, configured_first_weekday());
+                                self.imp().view_state.borrow_mut().select_civil_day(first_of_m);
+                            }
+                        }
+                        Some(YearCanvasHitTarget::Day(d)) => {
+                            *self.imp().current_date.borrow_mut() = d;
+                            self.imp()
+                                .view_state
+                                .borrow_mut()
+                                .set_anchor(d, configured_first_weekday());
+                            self.imp().view_state.borrow_mut().select_civil_day(d);
+                        }
+                        _ => {}
+                    }
+                    self.select_calendar_view(CalendarView::Month);
+                }
+            }
+            return;
+        }
         self.adjust_chip_scale(0.10);
     }
 
     pub fn zoom_out(&self) {
+        if *self.imp().current_view.borrow() == CalendarView::Year {
+            if matches!(
+                self.imp().year_view_style.get(),
+                YearViewStyle::Grid | YearViewStyle::Planner
+            ) {
+                self.set_year_view_style(YearViewStyle::MultiYear);
+            }
+            return;
+        }
         self.adjust_chip_scale(-0.10);
     }
 
@@ -5427,24 +5759,6 @@ impl CalendarPage {
                 *self.imp().current_date.borrow(),
                 today,
                 first_weekday,
-            )
-        } else if viewport.view == CalendarView::Agenda {
-            let agenda_dates: std::collections::HashSet<NaiveDate> = self
-                .imp()
-                .agenda_items
-                .borrow()
-                .iter()
-                .filter_map(|item| match item {
-                    PreparedAgendaItem::DateHeader { date, .. } => Some(*date),
-                    _ => None,
-                })
-                .collect();
-            compute_date_chooser_weeks_with_visibility(
-                view_date,
-                viewport.anchor_date,
-                today,
-                first_weekday,
-                |d| agenda_dates.contains(&d),
             )
         } else {
             compute_date_chooser_weeks_for_viewport(
@@ -7827,6 +8141,7 @@ impl CalendarPage {
             .build();
 
         let initial_year_style = self.imp().year_view_style.get();
+        let initial_indicator_style = self.imp().year_grid_indicator_style.get();
 
         let planner_btn_content = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -7853,18 +8168,78 @@ impl CalendarPage {
             .active(initial_year_style == YearViewStyle::Grid)
             .build();
 
+        let multi_btn_content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .halign(gtk::Align::Center)
+            .build();
+        multi_btn_content.append(&gtk::Image::from_icon_name("x-office-calendar-symbolic"));
+        multi_btn_content.append(&gtk::Label::new(Some(&crate::i18n::gettext("Years"))));
+        let year_multi_btn = gtk::ToggleButton::builder()
+            .child(&multi_btn_content)
+            .group(&year_planner_btn)
+            .active(initial_year_style == YearViewStyle::MultiYear)
+            .build();
+
         year_mode_toggle_box.append(&year_planner_btn);
         year_mode_toggle_box.append(&year_grid_btn);
+        year_mode_toggle_box.append(&year_multi_btn);
         year_mode_section.append(&year_mode_toggle_box);
         year_view_pop_box.append(&year_mode_section);
+
+        let ind_section = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .build();
+        let ind_title = gtk::Label::builder()
+            .label(&crate::i18n::gettext("Grid Event Indicators"))
+            .css_classes(vec!["caption-heading", "dim-label"])
+            .xalign(0.0)
+            .build();
+        ind_section.append(&ind_title);
+
+        let ind_toggle_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .css_classes(vec!["linked"])
+            .homogeneous(true)
+            .build();
+
+        let ind_dots_btn = gtk::ToggleButton::builder()
+            .label(&crate::i18n::gettext("Colored Dots"))
+            .active(initial_indicator_style == YearGridIndicatorStyle::ColoredDots)
+            .build();
+        let ind_heatmap_btn = gtk::ToggleButton::builder()
+            .label(&crate::i18n::gettext("Heatmap"))
+            .group(&ind_dots_btn)
+            .active(initial_indicator_style == YearGridIndicatorStyle::Heatmap)
+            .build();
+        let ind_single_btn = gtk::ToggleButton::builder()
+            .label(&crate::i18n::gettext("Single Dot"))
+            .group(&ind_dots_btn)
+            .active(initial_indicator_style == YearGridIndicatorStyle::SingleDot)
+            .build();
+
+        ind_toggle_box.append(&ind_dots_btn);
+        ind_toggle_box.append(&ind_heatmap_btn);
+        ind_toggle_box.append(&ind_single_btn);
+        ind_section.append(&ind_toggle_box);
+        year_view_pop_box.append(&ind_section);
+
+        let zoom_hint = gtk::Label::builder()
+            .label(&crate::i18n::gettext("Tip: Ctrl + Scroll zooms between Years, Grid, and Month"))
+            .css_classes(vec!["caption", "dim-label"])
+            .xalign(0.0)
+            .build();
+        year_view_pop_box.append(&zoom_hint);
+
         year_view_options_popover.set_child(Some(&year_view_pop_box));
 
         let year_view_options_split_btn = adw::SplitButton::builder()
             .icon_name(match initial_year_style {
                 YearViewStyle::Planner => "view-list-symbolic",
-                YearViewStyle::Grid => "view-grid-symbolic",
+                YearViewStyle::Grid | YearViewStyle::MultiYear => "view-grid-symbolic",
             })
-            .tooltip_text(&crate::i18n::gettext("Switch Year View Style (Planner / Grid)"))
+            .tooltip_text(&crate::i18n::gettext("Switch Year View Style (Planner / Grid / Years)"))
             .popover(&year_view_options_popover)
             .valign(gtk::Align::Center)
             .build();
@@ -7904,8 +8279,57 @@ impl CalendarPage {
         }
         {
             let page_weak = self.downgrade();
+            let pop_weak = year_view_options_popover.downgrade();
+            year_multi_btn.connect_toggled(move |btn| {
+                if !btn.is_active() {
+                    return;
+                }
+                if let Some(page) = page_weak.upgrade() {
+                    page.set_year_view_style(YearViewStyle::MultiYear);
+                }
+                if let Some(pop) = pop_weak.upgrade() {
+                    pop.popdown();
+                }
+            });
+        }
+        {
+            let page_weak = self.downgrade();
+            ind_dots_btn.connect_toggled(move |btn| {
+                if btn.is_active() {
+                    if let Some(page) = page_weak.upgrade() {
+                        page.set_year_grid_indicator_style(YearGridIndicatorStyle::ColoredDots);
+                    }
+                }
+            });
+        }
+        {
+            let page_weak = self.downgrade();
+            ind_heatmap_btn.connect_toggled(move |btn| {
+                if btn.is_active() {
+                    if let Some(page) = page_weak.upgrade() {
+                        page.set_year_grid_indicator_style(YearGridIndicatorStyle::Heatmap);
+                    }
+                }
+            });
+        }
+        {
+            let page_weak = self.downgrade();
+            ind_single_btn.connect_toggled(move |btn| {
+                if btn.is_active() {
+                    if let Some(page) = page_weak.upgrade() {
+                        page.set_year_grid_indicator_style(YearGridIndicatorStyle::SingleDot);
+                    }
+                }
+            });
+        }
+        {
+            let page_weak = self.downgrade();
             let planner_btn_clone = year_planner_btn.clone();
             let grid_btn_clone = year_grid_btn.clone();
+            let multi_btn_clone = year_multi_btn.clone();
+            let dots_btn_clone = ind_dots_btn.clone();
+            let heat_btn_clone = ind_heatmap_btn.clone();
+            let single_btn_clone = ind_single_btn.clone();
             year_view_options_popover.connect_show(move |_| {
                 let Some(page) = page_weak.upgrade() else { return };
                 match page.imp().year_view_style.get() {
@@ -7917,6 +8341,28 @@ impl CalendarPage {
                     YearViewStyle::Grid => {
                         if !grid_btn_clone.is_active() {
                             grid_btn_clone.set_active(true);
+                        }
+                    }
+                    YearViewStyle::MultiYear => {
+                        if !multi_btn_clone.is_active() {
+                            multi_btn_clone.set_active(true);
+                        }
+                    }
+                }
+                match page.imp().year_grid_indicator_style.get() {
+                    YearGridIndicatorStyle::ColoredDots => {
+                        if !dots_btn_clone.is_active() {
+                            dots_btn_clone.set_active(true);
+                        }
+                    }
+                    YearGridIndicatorStyle::Heatmap => {
+                        if !heat_btn_clone.is_active() {
+                            heat_btn_clone.set_active(true);
+                        }
+                    }
+                    YearGridIndicatorStyle::SingleDot => {
+                        if !single_btn_clone.is_active() {
+                            single_btn_clone.set_active(true);
                         }
                     }
                 }
@@ -7933,7 +8379,7 @@ impl CalendarPage {
                         grid_btn_clone.set_active(true);
                         page.set_year_view_style(YearViewStyle::Grid);
                     }
-                    YearViewStyle::Grid => {
+                    YearViewStyle::Grid | YearViewStyle::MultiYear => {
                         planner_btn_clone.set_active(true);
                         page.set_year_view_style(YearViewStyle::Planner);
                     }
@@ -8066,7 +8512,18 @@ impl CalendarPage {
             gtk::EventControllerScrollFlags::VERTICAL | gtk::EventControllerScrollFlags::KINETIC,
         );
         let vadj_for_scroll = year_vadjustment.clone();
-        scroll_ctrl.connect_scroll(move |_, _, dy| {
+        let page_weak_scroll = self.downgrade();
+        scroll_ctrl.connect_scroll(move |ctrl, _, dy| {
+            if ctrl.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) {
+                if let Some(page) = page_weak_scroll.upgrade() {
+                    if dy < 0.0 {
+                        page.zoom_in();
+                    } else if dy > 0.0 {
+                        page.zoom_out();
+                    }
+                }
+                return glib::Propagation::Stop;
+            }
             let page_size = vadj_for_scroll.page_size();
             let upper = vadj_for_scroll.upper();
             let max_val = (upper - page_size).max(0.0);
@@ -8158,13 +8615,46 @@ impl CalendarPage {
                         0.0
                     };
                     let markers = page.imp().year_markers.borrow();
+                    let day_previews = page.imp().year_day_previews.borrow();
+                    let indicator_style = page.imp().year_grid_indicator_style.get();
                     let _ = cr.save();
                     cr.translate(0.0, -scroll_y);
-                    Self::draw_year_canvas(
+                    Self::draw_year_canvas_with_style(
                         cr,
                         &layout,
                         &markers,
+                        &day_previews,
+                        indicator_style,
                         selected_day,
+                        today,
+                        hovered.as_ref(),
+                        is_dark,
+                    );
+                    let _ = cr.restore();
+                }
+                YearViewStyle::MultiYear => {
+                    let first_weekday = configured_first_weekday();
+                    let layout = Self::prepare_multi_year_canvas_layout(year, width, height, first_weekday);
+                    let total_h = layout.height.ceil();
+                    let scroll_y = if let Some(vadj) = page.imp().year_vadjustment.borrow().as_ref() {
+                        if (vadj.upper() - total_h).abs() > 1.0 {
+                            vadj.set_upper(total_h.max(1.0));
+                        }
+                        if (vadj.page_size() - height).abs() > 1.0 {
+                            vadj.set_page_size(height);
+                            vadj.set_page_increment((height * 0.9).max(10.0));
+                        }
+                        let max_scroll = (total_h - height).max(0.0);
+                        vadj.value().clamp(0.0, max_scroll)
+                    } else {
+                        0.0
+                    };
+                    let _ = cr.save();
+                    cr.translate(0.0, -scroll_y);
+                    Self::draw_multi_year_canvas(
+                        cr,
+                        &layout,
+                        year,
                         today,
                         hovered.as_ref(),
                         is_dark,
@@ -8201,9 +8691,28 @@ impl CalendarPage {
                     let gl = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
                     (Self::hit_test_year_canvas(&gl, x, logical_y), None)
                 }
+                YearViewStyle::MultiYear => {
+                    let first_weekday = configured_first_weekday();
+                    let ml = Self::prepare_multi_year_canvas_layout(year, width, height, first_weekday);
+                    (Self::hit_test_multi_year_canvas(&ml, x, logical_y), None)
+                }
             };
             if let Some(target) = target {
                 match target {
+                    YearCanvasHitTarget::YearCard(target_y) => {
+                        let cur_anchor = page.current_calendar_viewport().anchor_date;
+                        let new_date = NaiveDate::from_ymd_opt(target_y, cur_anchor.month(), cur_anchor.day().min(28))
+                            .or_else(|| NaiveDate::from_ymd_opt(target_y, 1, 1))
+                            .unwrap_or(cur_anchor);
+                        *page.imp().current_date.borrow_mut() = new_date;
+                        page.imp()
+                            .view_state
+                            .borrow_mut()
+                            .set_anchor(new_date, configured_first_weekday());
+                        page.imp().view_state.borrow_mut().select_civil_day(new_date);
+                        page.set_year_view_style(YearViewStyle::Grid);
+                        page.sync_mini_calendar();
+                    }
                     YearCanvasHitTarget::MonthHeader(m) => {
                         if let Some(pop) = page.imp().year_planner_popover.borrow_mut().take() {
                             pop.popdown();
@@ -8270,6 +8779,7 @@ impl CalendarPage {
                     let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
                     Self::hit_test_year_canvas(&layout, x, logical_y)
                 }
+                YearViewStyle::MultiYear => None,
             };
             if let Some(target) = target {
                 match target {
@@ -8282,6 +8792,7 @@ impl CalendarPage {
                             show_calendar_day_context_menu(&page, &area, first_of_month, None, rect);
                         }
                     }
+                    YearCanvasHitTarget::YearCard(_) => {}
                 }
             }
         });
@@ -8314,6 +8825,7 @@ impl CalendarPage {
                     let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
                     Self::hit_test_year_canvas(&layout, x, logical_y)
                 }
+                YearViewStyle::MultiYear => None,
             };
             if let Some(target) = target {
                 match target {
@@ -8326,6 +8838,7 @@ impl CalendarPage {
                             show_calendar_day_context_menu(&page, &area, first_of_month, None, rect);
                         }
                     }
+                    YearCanvasHitTarget::YearCard(_) => {}
                 }
             }
         });
@@ -8354,6 +8867,11 @@ impl CalendarPage {
                     let first_weekday = configured_first_weekday();
                     let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
                     Self::hit_test_year_canvas(&layout, x, logical_y)
+                }
+                YearViewStyle::MultiYear => {
+                    let first_weekday = configured_first_weekday();
+                    let ml = Self::prepare_multi_year_canvas_layout(year, width, height, first_weekday);
+                    Self::hit_test_multi_year_canvas(&ml, x, logical_y)
                 }
             };
             let old_target = page.imp().year_hovered_target.borrow().clone();
@@ -8402,9 +8920,18 @@ impl CalendarPage {
                     let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
                     Self::hit_test_year_canvas(&layout, x as f64, logical_y)
                 }
+                YearViewStyle::MultiYear => {
+                    let first_weekday = configured_first_weekday();
+                    let ml = Self::prepare_multi_year_canvas_layout(year, width, height, first_weekday);
+                    Self::hit_test_multi_year_canvas(&ml, x as f64, logical_y)
+                }
             };
             if let Some(target) = target {
                 match target {
+                    YearCanvasHitTarget::YearCard(target_y) => {
+                        tooltip.set_text(Some(&format!("{}: {}", crate::i18n::gettext("Open year view for"), target_y)));
+                        true
+                    }
                     YearCanvasHitTarget::MonthHeader(m) => {
                         tooltip.set_text(Some(&format!("{}: {} {}", crate::i18n::gettext("Go to month view for"), Self::calendar_month_name(m), year)));
                         true
@@ -11303,6 +11830,20 @@ impl CalendarPage {
         }
         self.imp().agenda_needs_initial_scroll.set(true);
         self.imp().agenda_selected_row.set(None);
+        if *self.imp().current_view.borrow() == CalendarView::Year
+            && self.imp().year_view_style.get() == YearViewStyle::MultiYear
+        {
+            let cur = self.imp().view_state.borrow().anchor_date;
+            let next_d = step_date_by_year(cur, direction.signum() * 12);
+            self.imp()
+                .view_state
+                .borrow_mut()
+                .set_anchor(next_d, configured_first_weekday());
+            self.imp().view_state.borrow_mut().select_civil_day(next_d);
+            *self.imp().current_date.borrow_mut() = next_d;
+            self.sync_mini_calendar();
+            return;
+        }
         self.imp().view_state.borrow_mut().navigate_step(
             direction,
             configured_first_weekday(),
@@ -11499,21 +12040,6 @@ impl CalendarPage {
                 cal.select_day(&dt);
             }
             cal.clear_marks();
-            let agenda_dates_set = if current_view == CalendarView::Agenda {
-                Some(
-                    self.imp()
-                        .agenda_items
-                        .borrow()
-                        .iter()
-                        .filter_map(|item| match item {
-                            PreparedAgendaItem::DateHeader { date, .. } => Some(*date),
-                            _ => None,
-                        })
-                        .collect::<std::collections::HashSet<NaiveDate>>(),
-                )
-            } else {
-                None
-            };
             let days_count = days_in_month(y, m);
             for day in 1..=days_count {
                 if let Some(d) = NaiveDate::from_ymd_opt(y, m, day) {
@@ -11521,12 +12047,11 @@ impl CalendarPage {
                         custom.contains(d)
                     } else if is_month_view {
                         has_selected_date && is_day_visible_in_viewport(&viewport, d)
-                    } else if current_view == CalendarView::Year
-                        || current_view == CalendarView::List
-                    {
+                    } else if matches!(
+                        current_view,
+                        CalendarView::Year | CalendarView::List | CalendarView::Agenda
+                    ) {
                         false
-                    } else if let Some(ref ag_dates) = agenda_dates_set {
-                        ag_dates.contains(&d)
                     } else {
                         is_day_visible_in_viewport(&viewport, d)
                     };
@@ -14500,6 +15025,30 @@ impl CalendarPage {
         hovered_target: Option<&YearCanvasHitTarget>,
         is_dark: bool,
     ) {
+        Self::draw_year_canvas_with_style(
+            cr,
+            layout,
+            markers,
+            &HashMap::new(),
+            YearGridIndicatorStyle::SingleDot,
+            selected_day,
+            today,
+            hovered_target,
+            is_dark,
+        );
+    }
+
+    fn draw_year_canvas_with_style(
+        cr: &gtk::cairo::Context,
+        layout: &PreparedYearCanvasLayout,
+        markers: &BTreeMap<NaiveDate, usize>,
+        day_previews: &HashMap<NaiveDate, Vec<YearPlannerDayPreviewItem>>,
+        indicator_style: YearGridIndicatorStyle,
+        selected_day: Option<NaiveDate>,
+        today: NaiveDate,
+        hovered_target: Option<&YearCanvasHitTarget>,
+        is_dark: bool,
+    ) {
         let fg = if is_dark { 1.0 } else { 0.0 };
         let primary_alpha = if is_dark { 0.95 } else { 0.88 };
         let secondary_alpha = if is_dark { 0.55 } else { 0.45 };
@@ -14621,6 +15170,23 @@ impl CalendarPage {
                         cr.arc(cx, cy, radius, 0.0, 2.0 * std::f64::consts::PI);
                         cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, if is_dark { 0.28 } else { 0.20 });
                         let _ = cr.fill();
+                        if indicator_style == YearGridIndicatorStyle::Heatmap {
+                            cr.arc(cx, cy, radius, 0.0, 2.0 * std::f64::consts::PI);
+                            cr.set_line_width(1.2);
+                            cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 0.85);
+                            let _ = cr.stroke();
+                        }
+                    } else if indicator_style == YearGridIndicatorStyle::Heatmap && event_count > 0 {
+                        let heat_alpha = if event_count == 1 {
+                            if is_dark { 0.14 } else { 0.10 }
+                        } else if event_count <= 3 {
+                            if is_dark { 0.26 } else { 0.20 }
+                        } else {
+                            if is_dark { 0.42 } else { 0.34 }
+                        };
+                        cr.arc(cx, cy, radius, 0.0, 2.0 * std::f64::consts::PI);
+                        cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, heat_alpha);
+                        let _ = cr.fill();
                     } else if is_hovered {
                         cr.arc(cx, cy, radius, 0.0, 2.0 * std::f64::consts::PI);
                         cr.set_source_rgba(fg, fg, fg, if is_dark { 0.08 } else { 0.05 });
@@ -14632,7 +15198,7 @@ impl CalendarPage {
                     cr.select_font_face(
                         "sans-serif",
                         gtk::cairo::FontSlant::Normal,
-                        if is_selected || is_today {
+                        if is_selected || is_today || (indicator_style == YearGridIndicatorStyle::Heatmap && event_count >= 4) {
                             gtk::cairo::FontWeight::Bold
                         } else {
                             gtk::cairo::FontWeight::Normal
@@ -14648,30 +15214,230 @@ impl CalendarPage {
                         cr.set_source_rgba(fg, fg, fg, primary_alpha);
                     }
 
+                    let show_bottom_dots = event_count > 0 && indicator_style != YearGridIndicatorStyle::Heatmap;
                     if let Ok(ext) = cr.text_extents(&day_str) {
-                        let text_cy = if event_count > 0 { cy - 1.8 } else { cy };
+                        let text_cy = if show_bottom_dots { cy - 1.8 } else { cy };
                         let tx = cx - ext.width() / 2.0 - ext.x_bearing();
                         let ty = text_cy - ext.height() / 2.0 - ext.y_bearing();
                         cr.move_to(tx, ty);
                         let _ = cr.show_text(&day_str);
                     }
 
-                    // Event indicator dot
-                    if event_count > 0 {
+                    // Event indicator dot(s)
+                    if show_bottom_dots {
                         let dot_y = cy + 7.5;
-                        cr.arc(cx, dot_y, 1.6, 0.0, 2.0 * std::f64::consts::PI);
-                        if is_today {
-                            cr.set_source_rgba(1.0, 1.0, 1.0, 0.90);
-                        } else if is_selected {
-                            cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 1.0);
-                        } else {
-                            cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 0.85);
+                        match indicator_style {
+                            YearGridIndicatorStyle::ColoredDots => {
+                                let mut colors: Vec<(u8, u8, u8)> = day_previews
+                                    .get(&cell_date)
+                                    .map(|items| items.iter().take(3).map(|it| it.color_rgb).collect())
+                                    .unwrap_or_default();
+                                if colors.is_empty() {
+                                    colors.push((53, 132, 228));
+                                }
+                                let n = colors.len().min(3);
+                                let dot_r = 1.55;
+                                let gap = 4.0;
+                                let total_w = (n as f64 - 1.0) * gap;
+                                let start_x = cx - total_w * 0.5;
+                                for (i, &(r, g, b)) in colors.iter().take(3).enumerate() {
+                                    let dx = start_x + i as f64 * gap;
+                                    cr.arc(dx, dot_y, dot_r, 0.0, 2.0 * std::f64::consts::PI);
+                                    if is_today {
+                                        cr.set_source_rgba(1.0, 1.0, 1.0, 0.92);
+                                    } else {
+                                        cr.set_source_rgba(r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0, 0.92);
+                                    }
+                                    let _ = cr.fill();
+                                }
+                            }
+                            YearGridIndicatorStyle::SingleDot | YearGridIndicatorStyle::Heatmap => {
+                                cr.arc(cx, dot_y, 1.6, 0.0, 2.0 * std::f64::consts::PI);
+                                if is_today {
+                                    cr.set_source_rgba(1.0, 1.0, 1.0, 0.90);
+                                } else if is_selected {
+                                    cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 1.0);
+                                } else {
+                                    cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 0.85);
+                                }
+                                let _ = cr.fill();
+                            }
                         }
-                        let _ = cr.fill();
                     }
                 }
 
                 curr_week = curr_week + Duration::days(7);
+            }
+        }
+    }
+
+    fn prepare_multi_year_canvas_layout(
+        anchor_year: i32,
+        width: f64,
+        avail_height: f64,
+        _first_weekday: Weekday,
+    ) -> PreparedMultiYearCanvasLayout {
+        let start_year = (anchor_year / 12) * 12;
+        let num_cols = if width >= 820.0 {
+            4
+        } else if width >= 560.0 {
+            3
+        } else {
+            2
+        };
+        let num_rows = (12 + num_cols - 1) / num_cols;
+        let margin_x = 24.0f64;
+        let margin_y = 20.0f64;
+        let spacing_x = 20.0f64;
+        let spacing_y = 20.0f64;
+
+        let usable_w = (width - 2.0 * margin_x - (num_cols - 1) as f64 * spacing_x).max(200.0);
+        let card_w = (usable_w / num_cols as f64).floor();
+        let total_cards_w = num_cols as f64 * card_w + (num_cols - 1) as f64 * spacing_x;
+        let actual_margin_x = ((width - total_cards_w) * 0.5).max(margin_x);
+
+        let usable_h = (avail_height - 2.0 * margin_y - (num_rows - 1) as f64 * spacing_y).max(360.0);
+        let card_h = (usable_h / num_rows as f64).floor().clamp(110.0, 210.0);
+
+        let mut cards = Vec::with_capacity(12);
+        for idx in 0..12 {
+            let y = start_year + idx as i32;
+            let c = idx % num_cols;
+            let r = idx / num_cols;
+            let card_x = actual_margin_x + c as f64 * (card_w + spacing_x);
+            let card_y = margin_y + r as f64 * (card_h + spacing_y);
+            cards.push(PreparedMultiYearCardLayout {
+                year: y,
+                card_x,
+                card_y,
+                card_w,
+                card_h,
+            });
+        }
+
+        let total_h = margin_y * 2.0 + num_rows as f64 * card_h + (num_rows - 1) as f64 * spacing_y;
+        PreparedMultiYearCanvasLayout {
+            anchor_year,
+            start_year,
+            end_year: start_year + 11,
+            width,
+            height: total_h.max(avail_height),
+            cards,
+        }
+    }
+
+    fn hit_test_multi_year_canvas(
+        layout: &PreparedMultiYearCanvasLayout,
+        x: f64,
+        y: f64,
+    ) -> Option<YearCanvasHitTarget> {
+        for card in &layout.cards {
+            if x >= card.card_x
+                && x <= card.card_x + card.card_w
+                && y >= card.card_y
+                && y <= card.card_y + card.card_h
+            {
+                return Some(YearCanvasHitTarget::YearCard(card.year));
+            }
+        }
+        None
+    }
+
+    fn draw_multi_year_canvas(
+        cr: &gtk::cairo::Context,
+        layout: &PreparedMultiYearCanvasLayout,
+        selected_year: i32,
+        today: NaiveDate,
+        hovered_target: Option<&YearCanvasHitTarget>,
+        is_dark: bool,
+    ) {
+        let fg = if is_dark { 1.0 } else { 0.0 };
+        let current_year = today.year();
+
+        for card in &layout.cards {
+            let is_hovered = hovered_target == Some(&YearCanvasHitTarget::YearCard(card.year));
+            let is_current = card.year == current_year;
+            let is_selected = card.year == selected_year;
+
+            // Card background
+            draw_cairo_rounded_rect(cr, card.card_x, card.card_y, card.card_w, card.card_h, 12.0);
+            if is_hovered {
+                cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, if is_dark { 0.16 } else { 0.10 });
+            } else if is_selected {
+                cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, if is_dark { 0.10 } else { 0.06 });
+            } else if is_dark {
+                cr.set_source_rgba(1.0, 1.0, 1.0, 0.035);
+            } else {
+                cr.set_source_rgba(0.0, 0.0, 0.0, 0.025);
+            }
+            let _ = cr.fill();
+
+            // Card border
+            draw_cairo_rounded_rect(cr, card.card_x + 0.5, card.card_y + 0.5, card.card_w - 1.0, card.card_h - 1.0, 12.0);
+            if is_current {
+                cr.set_line_width(1.8);
+                cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 0.90);
+            } else if is_selected || is_hovered {
+                cr.set_line_width(1.2);
+                cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 0.55);
+            } else {
+                cr.set_line_width(1.0);
+                cr.set_source_rgba(fg, fg, fg, if is_dark { 0.10 } else { 0.08 });
+            }
+            let _ = cr.stroke();
+
+            // Year number title
+            let year_str = card.year.to_string();
+            cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+            cr.set_font_size(22.0);
+            if is_current || is_hovered {
+                cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 1.0);
+            } else {
+                cr.set_source_rgba(fg, fg, fg, if is_dark { 0.94 } else { 0.88 });
+            }
+            if let Ok(ext) = cr.text_extents(&year_str) {
+                let tx = card.card_x + (card.card_w - ext.width()) * 0.5 - ext.x_bearing();
+                let ty = card.card_y + 34.0;
+                cr.move_to(tx, ty);
+                let _ = cr.show_text(&year_str);
+            }
+
+            // 4x3 miniature month labels inside the year card (Apple Calendar style)
+            let grid_top = card.card_y + 48.0;
+            let grid_h = (card.card_h - 56.0).max(40.0);
+            let pad_x = 12.0;
+            let grid_w = (card.card_w - 2.0 * pad_x).max(60.0);
+            let m_col_w = grid_w / 4.0;
+            let m_row_h = grid_h / 3.0;
+
+            cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
+            cr.set_font_size(10.0);
+            for m in 1..=12 {
+                let m_idx = (m - 1) as usize;
+                let mc = m_idx % 4;
+                let mr = m_idx / 4;
+                let mx = card.card_x + pad_x + mc as f64 * m_col_w;
+                let my = grid_top + mr as f64 * m_row_h;
+                let is_curr_month = is_current && today.month() == m;
+                if is_curr_month {
+                    let pill_w = (m_col_w - 4.0).clamp(24.0, 42.0);
+                    let pill_h = 16.0;
+                    let px = mx + (m_col_w - pill_w) * 0.5;
+                    let py = my + (m_row_h - pill_h) * 0.5;
+                    draw_cairo_rounded_rect(cr, px, py, pill_w, pill_h, 4.0);
+                    cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, if is_dark { 0.30 } else { 0.18 });
+                    let _ = cr.fill();
+                    cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 1.0);
+                } else {
+                    cr.set_source_rgba(fg, fg, fg, if is_dark { 0.55 } else { 0.50 });
+                }
+                let short_m = Self::calendar_month_short_name(m);
+                if let Ok(ext) = cr.text_extents(&short_m) {
+                    let tx = mx + (m_col_w - ext.width()) * 0.5 - ext.x_bearing();
+                    let ty = my + m_row_h * 0.5 - ext.height() * 0.5 - ext.y_bearing();
+                    cr.move_to(tx, ty);
+                    let _ = cr.show_text(&short_m);
+                }
             }
         }
     }
@@ -15946,7 +16712,7 @@ impl CalendarPage {
             self.imp().year_paned.borrow().as_ref(),
             self.imp().year_details_container.borrow().as_ref(),
         ) {
-            if self.imp().year_view_style.get() == YearViewStyle::Planner {
+            if self.imp().year_view_style.get() != YearViewStyle::Grid {
                 details_container.set_visible(false);
                 return;
             }
