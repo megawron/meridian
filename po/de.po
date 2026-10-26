@@ -8488,3 +8488,57 @@ msgid "%d week"
 msgid_plural "%d weeks"
 msgstr[0] "%d Woche"
 msgstr[1] "%d Wochen"
+
+msgid "Use the arrows to reorder columns, and toggle visibility."
+msgstr "Verwenden Sie die Pfeile, um die Spaltenreihenfolge zu ändern, und schalten Sie die Sichtbarkeit um."
+
+msgid "Analyze Headers…"
+msgstr "Kopfzeilen analysieren…"
+
+msgid "Copy All Headers"
+msgstr "Alle Kopfzeilen kopieren"
+
+msgid "Copy Sender Address"
+msgstr "Absenderadresse kopieren"
+
+msgid "Copy Subject"
+msgstr "Betreff kopieren"
+
+msgid "Email Header Analysis"
+msgstr "E-Mail-Kopfzeilen-Analyse"
+
+msgid "All headers copied to clipboard"
+msgstr "Alle Kopfzeilen in die Zwischenablage kopiert"
+
+msgid "Sender address copied to clipboard"
+msgstr "Absenderadresse in die Zwischenablage kopiert"
+
+msgid "Subject copied to clipboard"
+msgstr "Betreff in die Zwischenablage kopiert"
+
+msgid "All headers & analysis…"
+msgstr "Alle Kopfzeilen & Analyse…"
+
+msgid "Open full header table and SPF/DKIM/DMARC analysis"
+msgstr "Vollständige Kopfzeilentabelle und SPF/DKIM/DMARC-Analyse öffnen"
+
+msgid "Show all inline ▾"
+msgstr "Alle inline anzeigen ▾"
+
+msgid "Hide inline headers ▴"
+msgstr "Inline-Kopfzeilen ausblenden ▴"
+
+msgid "Expand or collapse all technical headers inline"
+msgstr "Alle technischen Kopfzeilen direkt ein- oder ausblenden"
+
+msgid "Show all headers ▾"
+msgstr "Alle Kopfzeilen anzeigen ▾"
+
+msgid "Show fewer headers ▴"
+msgstr "Weniger Kopfzeilen ▴"
+
+msgid "Expand or collapse all technical headers"
+msgstr "Alle technischen Kopfzeilen ein- oder ausblenden"
+
+
+

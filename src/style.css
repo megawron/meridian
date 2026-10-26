@@ -337,8 +337,10 @@ image.mail-column-header-icon {
 
 .mail-column-header-cell {
   padding: 2px 4px;
+  margin: 0;
+  border-radius: 0;
   border-right: 1px solid alpha(@borders, 0.25);
-  min-height: 24px;
+  min-height: 26px;
   background-color: transparent;
   transition: background-color 120ms ease;
   cursor: pointer;
@@ -376,33 +378,74 @@ image.mail-column-header-icon {
 .mail-column-header-cell.subject-cell,
 .mail-column-header-cell.contact-cell {
   border-right: none;
-  padding: 2px 6px;
+  padding: 2px 5px;
 }
 
 .mail-column-header-cell.date-cell {
   border-right: none;
-  padding: 2px 16px 2px 6px;
+  padding: 2px 6px 2px 5px;
+}
+
+.mail-column-header-cell.last-header-cell {
+  padding-right: 10px;
 }
 
 .mail-column-separator {
-  min-width: 6px;
-  max-width: 6px;
+  min-width: 1px;
+  max-width: 1px;
+  margin: 0;
+  padding: 0;
   cursor: col-resize;
-  background-color: transparent;
-  background-image: linear-gradient(to right, transparent 2px, alpha(@borders, 0.45) 2px, alpha(@borders, 0.45) 3px, transparent 3px);
-  transition: background-color 120ms ease, background-image 120ms ease;
+  background-color: alpha(@borders, 0.45);
+  background-image: none;
+  transition: background-color 120ms ease;
 }
 
 .mail-column-separator:hover,
-.mail-column-separator:active {
-  background-color: transparent;
-  background-image: linear-gradient(to right, transparent 2px, @accent_color 2px, @accent_color 3px, transparent 3px);
+.mail-column-separator:active,
+.mail-column-separator.separator-hover {
+  background-color: @accent_color;
+  background-image: none;
 }
 
 .mail-column-row-separator {
-  min-width: 6px;
-  max-width: 6px;
+  min-width: 1px;
+  max-width: 1px;
+  margin: 0;
+  padding: 0;
   background-color: transparent;
+}
+
+.column-order-row {
+  min-height: 34px;
+  padding: 2px 8px;
+}
+
+.column-order-row.drop-before {
+  box-shadow: inset 0 2px 0 0 @accent_color;
+}
+
+.column-order-row.drop-after {
+  box-shadow: inset 0 -2px 0 0 @accent_color;
+}
+
+.account-sync-toggle {
+  padding: 2px;
+  border-radius: 4px;
+  transition: opacity 120ms ease, background-color 120ms ease;
+}
+
+.account-sync-toggle:hover {
+  opacity: 1.0;
+  background-color: alpha(@window_fg_color, 0.1);
+}
+
+.account-root-row.account-paused > label {
+  opacity: 0.5;
+}
+
+.account-root-row.account-paused .account-sync-toggle {
+  opacity: 0.65;
 }
 
 .mail-thread-expander {

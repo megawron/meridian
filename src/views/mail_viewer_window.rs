@@ -437,19 +437,23 @@ impl MailViewerWindow {
         self.imp().crypto_chip.replace(Some(crypto_chip));
 
         let all_headers_grid = gtk::Grid::builder()
-            .row_spacing(3)
-            .column_spacing(8)
+            .row_spacing(4)
+            .column_spacing(10)
             .margin_start(6)
             .margin_end(6)
             .margin_top(4)
-            .margin_bottom(4)
+            .margin_bottom(6)
+            .hexpand(true)
+            .halign(gtk::Align::Fill)
             .css_classes(vec!["mail-all-headers"])
             .build();
         let all_headers_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .overlay_scrolling(false)
+            .hexpand(true)
             .min_content_height(80)
-            .max_content_height(220)
+            .max_content_height(560)
             .propagate_natural_height(true)
             .child(&all_headers_grid)
             .build();
