@@ -267,6 +267,18 @@
       <default>false</default>
       <summary>Show Memos section in the Calendar right sidebar</summary>
     </key>
+    <key name="calendar-sidebar-details-on-top" type="b">
+      <default>false</default>
+      <summary>Place Appointment Details section above Tasks in the Calendar right sidebar</summary>
+    </key>
+    <key name="calendar-sidebar-layout" type="s">
+      <default>'tasks:split,details:split,memos:off'</default>
+      <summary>Ordered panel layout and display modes (off, split, tab) for the Calendar right sidebar</summary>
+    </key>
+    <key name="calendar-tag-inner-vpane-position" type="i">
+      <default>240</default>
+      <summary>Secondary splitter position in the Calendar right sidebar when 3 sections are open</summary>
+    </key>
     <key name="calendar-show-agenda-preview" type="b">
       <default>true</default>
       <summary>Show appointment details preview pane in the Agenda view</summary>

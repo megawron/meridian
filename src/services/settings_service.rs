@@ -1334,6 +1334,78 @@ impl AppSettings {
         }
     }
 
+    pub fn calendar_sidebar_details_on_top(&self) -> bool {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("calendar-sidebar-details-on-top"))
+            .unwrap_or(false);
+        if has_key {
+            self.settings.boolean("calendar-sidebar-details-on-top")
+        } else {
+            false
+        }
+    }
+
+    pub fn set_calendar_sidebar_details_on_top(&self, value: bool) {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("calendar-sidebar-details-on-top"))
+            .unwrap_or(false);
+        if has_key {
+            self.set_boolean("calendar-sidebar-details-on-top", value);
+        }
+    }
+
+    pub fn calendar_sidebar_layout(&self) -> String {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("calendar-sidebar-layout"))
+            .unwrap_or(false);
+        if has_key {
+            self.settings.string("calendar-sidebar-layout").to_string()
+        } else {
+            "tasks:split,details:split,memos:off".to_string()
+        }
+    }
+
+    pub fn set_calendar_sidebar_layout(&self, value: &str) {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("calendar-sidebar-layout"))
+            .unwrap_or(false);
+        if has_key {
+            self.set_string("calendar-sidebar-layout", value);
+        }
+    }
+
+    pub fn calendar_tag_inner_vpane_position(&self) -> i32 {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("calendar-tag-inner-vpane-position"))
+            .unwrap_or(false);
+        if has_key {
+            self.settings.int("calendar-tag-inner-vpane-position")
+        } else {
+            240
+        }
+    }
+
+    pub fn set_calendar_tag_inner_vpane_position(&self, value: i32) {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("calendar-tag-inner-vpane-position"))
+            .unwrap_or(false);
+        if has_key {
+            self.set_int("calendar-tag-inner-vpane-position", value);
+        }
+    }
+
     pub fn calendar_show_agenda_preview(&self) -> bool {
         let has_key = self
             .settings

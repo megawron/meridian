@@ -1307,6 +1307,156 @@ pub(crate) struct MoveDragState {
 
 // ─── GObject Subclass ───────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SidebarPanelId {
+    Tasks,
+    Details,
+    Memos,
+}
+
+impl SidebarPanelId {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Tasks => "tasks",
+            Self::Details => "details",
+            Self::Memos => "memos",
+        }
+    }
+
+    pub(crate) fn from_str(s: &str) -> Option<Self> {
+        match s.trim() {
+            "tasks" => Some(Self::Tasks),
+            "details" => Some(Self::Details),
+            "memos" => Some(Self::Memos),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn display_title(self) -> String {
+        match self {
+            Self::Tasks => gettext("Tasks"),
+            Self::Details => gettext("Details"),
+            Self::Memos => gettext("Memos"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SidebarPanelMode {
+    Off,
+    Split,
+    Tab,
+}
+
+impl SidebarPanelMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Split => "split",
+            Self::Tab => "tab",
+        }
+    }
+
+    pub(crate) fn from_str(s: &str) -> Option<Self> {
+        match s.trim() {
+            "off" => Some(Self::Off),
+            "split" => Some(Self::Split),
+            "tab" => Some(Self::Tab),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SidebarPanelSpec {
+    pub id: SidebarPanelId,
+    pub mode: SidebarPanelMode,
+}
+
+pub(crate) fn default_sidebar_panel_specs() -> Vec<SidebarPanelSpec> {
+    vec![
+        SidebarPanelSpec {
+            id: SidebarPanelId::Tasks,
+            mode: SidebarPanelMode::Split,
+        },
+        SidebarPanelSpec {
+            id: SidebarPanelId::Details,
+            mode: SidebarPanelMode::Split,
+        },
+        SidebarPanelSpec {
+            id: SidebarPanelId::Memos,
+            mode: SidebarPanelMode::Off,
+        },
+    ]
+}
+
+pub(crate) fn parse_sidebar_layout(raw: &str) -> Vec<SidebarPanelSpec> {
+    let mut specs = Vec::with_capacity(3);
+    for token in raw.split(',') {
+        let mut parts = token.splitn(2, ':');
+        let Some(id_str) = parts.next() else { continue };
+        let Some(mode_str) = parts.next() else { continue };
+        let Some(id) = SidebarPanelId::from_str(id_str) else { continue };
+        let Some(mode) = SidebarPanelMode::from_str(mode_str) else { continue };
+        if !specs.iter().any(|s: &SidebarPanelSpec| s.id == id) {
+            specs.push(SidebarPanelSpec { id, mode });
+        }
+    }
+    for fallback in default_sidebar_panel_specs() {
+        if !specs.iter().any(|s| s.id == fallback.id) {
+            specs.push(fallback);
+        }
+    }
+    if !specs.iter().any(|s| s.mode != SidebarPanelMode::Off) {
+        specs[0].mode = SidebarPanelMode::Split;
+    }
+    specs
+}
+
+pub(crate) fn format_sidebar_layout(specs: &[SidebarPanelSpec]) -> String {
+    specs
+        .iter()
+        .map(|s| format!("{}:{}", s.id.as_str(), s.mode.as_str()))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn detach_widget_from_parent(widget: &impl IsA<gtk::Widget>) {
+    let w = widget.as_ref();
+    if let Some(parent) = w.parent() {
+        if let Ok(bx) = parent.clone().downcast::<gtk::Box>() {
+            bx.remove(w);
+        } else if let Ok(st) = parent.clone().downcast::<gtk::Stack>() {
+            st.remove(w);
+        } else if let Ok(paned) = parent.clone().downcast::<gtk::Paned>() {
+            if paned.start_child().as_ref() == Some(w) {
+                paned.set_start_child(gtk::Widget::NONE);
+            }
+            if paned.end_child().as_ref() == Some(w) {
+                paned.set_end_child(gtk::Widget::NONE);
+            }
+        }
+    }
+}
+
+fn ensure_widget_in_stack(widget: &impl IsA<gtk::Widget>, stack: &gtk::Stack, name: &str) {
+    let w = widget.as_ref();
+    if w.parent().as_ref() == Some(stack.upcast_ref::<gtk::Widget>()) {
+        return;
+    }
+    detach_widget_from_parent(w);
+    stack.add_named(w, Some(name));
+}
+
+fn ensure_widget_in_box(widget: &impl IsA<gtk::Widget>, target_box: &gtk::Box) {
+    let w = widget.as_ref();
+    if w.parent().as_ref() == Some(target_box.upcast_ref::<gtk::Widget>()) {
+        return;
+    }
+    detach_widget_from_parent(w);
+    target_box.append(w);
+}
+
 mod imp {
     use super::*;
     use std::cell::RefCell;
@@ -1431,15 +1581,39 @@ mod imp {
         pub event_inspector_content: RefCell<Option<gtk::Box>>,
         pub event_inspector_scroll: RefCell<Option<gtk::ScrolledWindow>>,
         pub current_inspected_event: RefCell<Option<(CalendarEventRecord, Option<NaiveDate>)>>,
+        pub sidebar_lower_box: RefCell<Option<gtk::Box>>,
+        pub lower_header: RefCell<Option<gtk::Box>>,
         pub sidebar_lower_stack: RefCell<Option<gtk::Stack>>,
         pub sidebar_stack_switcher: RefCell<Option<gtk::Box>>,
         pub sidebar_details_title: RefCell<Option<gtk::Label>>,
         pub sidebar_memos_add_btn: RefCell<Option<gtk::Button>>,
+        pub sidebar_tasks_add_btn: RefCell<Option<gtk::Button>>,
+        pub taskpad_box: RefCell<Option<gtk::Box>>,
+        pub taskpad_header: RefCell<Option<gtk::Box>>,
+        pub taskpad_content_box: RefCell<Option<gtk::Box>>,
+        pub taskpad_stack: RefCell<Option<gtk::Stack>>,
+        pub taskpad_stack_switcher: RefCell<Option<gtk::Box>>,
+        pub taskpad_title: RefCell<Option<gtk::Label>>,
+        pub taskpad_add_btn: RefCell<Option<gtk::Button>>,
+        pub taskpad_memos_add_btn: RefCell<Option<gtk::Button>>,
         pub taskpad_scroll: RefCell<Option<gtk::ScrolledWindow>>,
         pub taskpad_collapse_btn: RefCell<Option<gtk::Button>>,
         pub inspector_collapse_btn: RefCell<Option<gtk::Button>>,
+        pub memopad_section_box: RefCell<Option<gtk::Box>>,
+        pub memopad_header: RefCell<Option<gtk::Box>>,
+        pub memopad_content_box: RefCell<Option<gtk::Box>>,
+        pub memopad_scroll: RefCell<Option<gtk::ScrolledWindow>>,
+        pub memopad_collapse_btn: RefCell<Option<gtk::Button>>,
+        pub sidebar_options_btn: RefCell<Option<gtk::MenuButton>>,
+        pub sidebar_options_box: RefCell<Option<gtk::Box>>,
+        pub sidebar_panel_specs: RefCell<Vec<super::SidebarPanelSpec>>,
         pub sidebar_show_memos: Cell<bool>,
+        pub sidebar_details_on_top: Cell<bool>,
+        pub sidebar_saved_vpane_pos: Cell<i32>,
+        pub sidebar_saved_inner_vpane_pos: Cell<i32>,
+        pub syncing_sidebar_vpane: Cell<bool>,
         pub tag_vpaned: RefCell<Option<gtk::Paned>>,
+        pub tag_inner_vpaned: RefCell<Option<gtk::Paned>>,
         pub content_hpaned: RefCell<Option<gtk::Paned>>,
         pub toolbar: RefCell<Option<gtk::Widget>>,
         pub outer_paned: RefCell<Option<gtk::Paned>>,
@@ -1613,15 +1787,39 @@ mod imp {
                 event_inspector_content: RefCell::new(None),
                 event_inspector_scroll: RefCell::new(None),
                 current_inspected_event: RefCell::new(None),
+                sidebar_lower_box: RefCell::new(None),
+                lower_header: RefCell::new(None),
                 sidebar_lower_stack: RefCell::new(None),
                 sidebar_stack_switcher: RefCell::new(None),
                 sidebar_details_title: RefCell::new(None),
                 sidebar_memos_add_btn: RefCell::new(None),
+                sidebar_tasks_add_btn: RefCell::new(None),
+                taskpad_box: RefCell::new(None),
+                taskpad_header: RefCell::new(None),
+                taskpad_content_box: RefCell::new(None),
+                taskpad_stack: RefCell::new(None),
+                taskpad_stack_switcher: RefCell::new(None),
+                taskpad_title: RefCell::new(None),
+                taskpad_add_btn: RefCell::new(None),
+                taskpad_memos_add_btn: RefCell::new(None),
                 taskpad_scroll: RefCell::new(None),
                 taskpad_collapse_btn: RefCell::new(None),
                 inspector_collapse_btn: RefCell::new(None),
+                memopad_section_box: RefCell::new(None),
+                memopad_header: RefCell::new(None),
+                memopad_content_box: RefCell::new(None),
+                memopad_scroll: RefCell::new(None),
+                memopad_collapse_btn: RefCell::new(None),
+                sidebar_options_btn: RefCell::new(None),
+                sidebar_options_box: RefCell::new(None),
+                sidebar_panel_specs: RefCell::new(super::default_sidebar_panel_specs()),
                 sidebar_show_memos: Cell::new(false),
+                sidebar_details_on_top: Cell::new(false),
+                sidebar_saved_vpane_pos: Cell::new(320),
+                sidebar_saved_inner_vpane_pos: Cell::new(240),
+                syncing_sidebar_vpane: Cell::new(false),
                 tag_vpaned: RefCell::new(None),
+                tag_inner_vpaned: RefCell::new(None),
                 content_hpaned: RefCell::new(None),
                 toolbar: RefCell::new(None),
                 outer_paned: RefCell::new(None),
@@ -2160,9 +2358,791 @@ impl CalendarPage {
         if let Some(settings) = AppSettings::try_new() {
             settings.set_calendar_show_agenda_preview(visible);
         }
+        self.sync_sidebar_lower_section_visibility();
+        if !visible {
+            self.refresh_event_inspector();
+        }
         if let Some(win) = crate::window::find_meridian_window(self) {
             win.sync_right_sidebar_toggle();
         }
+    }
+
+    pub(crate) fn persist_sidebar_panel_specs(&self) {
+        let specs = self.imp().sidebar_panel_specs.borrow().clone();
+        let show_memos = specs
+            .iter()
+            .any(|s| s.id == SidebarPanelId::Memos && s.mode != SidebarPanelMode::Off);
+        self.imp().sidebar_show_memos.set(show_memos);
+        let details_idx = specs
+            .iter()
+            .position(|s| s.id == SidebarPanelId::Details)
+            .unwrap_or(1);
+        let tasks_idx = specs
+            .iter()
+            .position(|s| s.id == SidebarPanelId::Tasks)
+            .unwrap_or(0);
+        self.imp().sidebar_details_on_top.set(details_idx < tasks_idx);
+
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_calendar_sidebar_layout(&format_sidebar_layout(&specs));
+            settings.set_calendar_sidebar_show_memos(show_memos);
+            settings.set_calendar_sidebar_details_on_top(details_idx < tasks_idx);
+        }
+    }
+
+    pub(crate) fn set_sidebar_panel_mode(&self, panel: SidebarPanelId, mode: SidebarPanelMode) {
+        {
+            let mut specs = self.imp().sidebar_panel_specs.borrow_mut();
+            if let Some(spec) = specs.iter_mut().find(|s| s.id == panel) {
+                spec.mode = mode;
+            }
+            if !specs.iter().any(|s| s.mode != SidebarPanelMode::Off) {
+                if let Some(other) = specs.iter_mut().find(|s| s.id != panel) {
+                    other.mode = SidebarPanelMode::Split;
+                } else {
+                    specs[0].mode = SidebarPanelMode::Split;
+                }
+            }
+        }
+        self.persist_sidebar_panel_specs();
+        self.rebuild_sidebar_options_popover();
+        self.sync_sidebar_vpane_layout();
+    }
+
+    pub(crate) fn move_sidebar_panel(&self, panel: SidebarPanelId, delta: isize) {
+        {
+            let mut specs = self.imp().sidebar_panel_specs.borrow_mut();
+            if let Some(idx) = specs.iter().position(|s| s.id == panel) {
+                let target = (idx as isize + delta).clamp(0, specs.len() as isize - 1) as usize;
+                if target != idx {
+                    let item = specs.remove(idx);
+                    specs.insert(target, item);
+                }
+            }
+        }
+        self.persist_sidebar_panel_specs();
+        self.rebuild_sidebar_options_popover();
+        self.sync_sidebar_vpane_layout();
+    }
+
+    pub(crate) fn handle_sidebar_panel_drop(
+        &self,
+        src: SidebarPanelId,
+        dst: SidebarPanelId,
+        drop_zone: &str,
+    ) {
+        if src == dst && drop_zone != "split" {
+            return;
+        }
+        {
+            let mut specs = self.imp().sidebar_panel_specs.borrow_mut();
+            if drop_zone == "tab" {
+                if let Some(s) = specs.iter_mut().find(|s| s.id == src) {
+                    s.mode = SidebarPanelMode::Tab;
+                }
+                if let Some(d) = specs.iter_mut().find(|s| s.id == dst) {
+                    d.mode = SidebarPanelMode::Tab;
+                }
+                if let Some(src_idx) = specs.iter().position(|s| s.id == src) {
+                    let item = specs.remove(src_idx);
+                    let dst_idx = specs.iter().position(|s| s.id == dst).unwrap_or(0);
+                    let len = specs.len();
+                    specs.insert((dst_idx + 1).min(len), item);
+                }
+            } else {
+                if let Some(s) = specs.iter_mut().find(|s| s.id == src) {
+                    s.mode = SidebarPanelMode::Split;
+                }
+                if src != dst {
+                    if let Some(src_idx) = specs.iter().position(|s| s.id == src) {
+                        let item = specs.remove(src_idx);
+                        let dst_idx = specs.iter().position(|s| s.id == dst).unwrap_or(0);
+                        let len = specs.len();
+                        let insert_idx = if drop_zone == "before" {
+                            dst_idx
+                        } else {
+                            (dst_idx + 1).min(len)
+                        };
+                        specs.insert(insert_idx, item);
+                    }
+                }
+            }
+        }
+        self.persist_sidebar_panel_specs();
+        self.rebuild_sidebar_options_popover();
+        self.sync_sidebar_vpane_layout();
+    }
+
+    pub(crate) fn rebuild_sidebar_options_popover(&self) {
+        let Some(opt_box) = self.imp().sidebar_options_box.borrow().as_ref().cloned() else {
+            return;
+        };
+        while let Some(child) = opt_box.first_child() {
+            opt_box.remove(&child);
+        }
+
+        let opt_label = gtk::Label::builder()
+            .label(&gettext("Sidebar Layout"))
+            .css_classes(vec!["heading", "caption"])
+            .halign(gtk::Align::Start)
+            .build();
+        opt_box.append(&opt_label);
+
+        let hint_label = gtk::Label::builder()
+            .label(&gettext("Choose own section or tab per area (or drag headers)"))
+            .css_classes(vec!["dim-label", "caption"])
+            .halign(gtk::Align::Start)
+            .margin_bottom(4)
+            .build();
+        opt_box.append(&hint_label);
+
+        let specs = self.imp().sidebar_panel_specs.borrow().clone();
+        let total = specs.len();
+
+        for (idx, spec) in specs.into_iter().enumerate() {
+            let row = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(6)
+                .valign(gtk::Align::Center)
+                .build();
+
+            let order_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(0)
+                .css_classes(vec!["linked"])
+                .valign(gtk::Align::Center)
+                .build();
+
+            let up_btn = gtk::Button::builder()
+                .icon_name("go-up-symbolic")
+                .tooltip_text(&gettext("Move up"))
+                .css_classes(vec!["flat"])
+                .sensitive(idx > 0)
+                .build();
+            let page_weak_up = self.downgrade();
+            let panel_id = spec.id;
+            up_btn.connect_clicked(move |_| {
+                if let Some(page) = page_weak_up.upgrade() {
+                    page.move_sidebar_panel(panel_id, -1);
+                }
+            });
+
+            let down_btn = gtk::Button::builder()
+                .icon_name("go-down-symbolic")
+                .tooltip_text(&gettext("Move down"))
+                .css_classes(vec!["flat"])
+                .sensitive(idx + 1 < total)
+                .build();
+            let page_weak_down = self.downgrade();
+            down_btn.connect_clicked(move |_| {
+                if let Some(page) = page_weak_down.upgrade() {
+                    page.move_sidebar_panel(panel_id, 1);
+                }
+            });
+
+            order_box.append(&up_btn);
+            order_box.append(&down_btn);
+            row.append(&order_box);
+
+            let title_lbl = gtk::Label::builder()
+                .label(&spec.id.display_title())
+                .halign(gtk::Align::Start)
+                .hexpand(true)
+                .width_chars(8)
+                .build();
+            row.append(&title_lbl);
+
+            let mode_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(0)
+                .css_classes(vec!["linked"])
+                .valign(gtk::Align::Center)
+                .build();
+
+            let btn_off = gtk::ToggleButton::builder()
+                .label(&gettext("Off"))
+                .tooltip_text(&gettext("Hide this panel"))
+                .active(spec.mode == SidebarPanelMode::Off)
+                .build();
+            let btn_split = gtk::ToggleButton::builder()
+                .label(&gettext("Section"))
+                .tooltip_text(&gettext("Show as its own resizable section"))
+                .group(&btn_off)
+                .active(spec.mode == SidebarPanelMode::Split)
+                .build();
+            let btn_tab = gtk::ToggleButton::builder()
+                .label(&gettext("Tab"))
+                .tooltip_text(&gettext("Group together as tabs"))
+                .group(&btn_off)
+                .active(spec.mode == SidebarPanelMode::Tab)
+                .build();
+
+            let page_weak_off = self.downgrade();
+            btn_off.connect_toggled(move |b| {
+                if b.is_active() {
+                    if let Some(page) = page_weak_off.upgrade() {
+                        page.set_sidebar_panel_mode(panel_id, SidebarPanelMode::Off);
+                    }
+                }
+            });
+            let page_weak_split = self.downgrade();
+            btn_split.connect_toggled(move |b| {
+                if b.is_active() {
+                    if let Some(page) = page_weak_split.upgrade() {
+                        page.set_sidebar_panel_mode(panel_id, SidebarPanelMode::Split);
+                    }
+                }
+            });
+            let page_weak_tab = self.downgrade();
+            btn_tab.connect_toggled(move |b| {
+                if b.is_active() {
+                    if let Some(page) = page_weak_tab.upgrade() {
+                        page.set_sidebar_panel_mode(panel_id, SidebarPanelMode::Tab);
+                    }
+                }
+            });
+
+            mode_box.append(&btn_off);
+            mode_box.append(&btn_split);
+            mode_box.append(&btn_tab);
+            row.append(&mode_box);
+
+            opt_box.append(&row);
+        }
+    }
+
+    fn populate_sidebar_tab_switcher(
+        switcher: &gtk::Box,
+        stack: &gtk::Stack,
+        tabs: &[SidebarPanelId],
+        tasks_add_btn: Option<&gtk::Button>,
+        memos_add_btn: Option<&gtk::Button>,
+    ) {
+        while let Some(child) = switcher.first_child() {
+            switcher.remove(&child);
+        }
+        let current_child = stack
+            .visible_child_name()
+            .and_then(|s| SidebarPanelId::from_str(s.as_str()));
+        let active_tab = current_child
+            .filter(|id| tabs.contains(id))
+            .unwrap_or_else(|| tabs.first().copied().unwrap_or(SidebarPanelId::Details));
+
+        stack.set_visible_child_name(active_tab.as_str());
+        if let Some(btn) = tasks_add_btn {
+            btn.set_visible(active_tab == SidebarPanelId::Tasks);
+        }
+        if let Some(btn) = memos_add_btn {
+            btn.set_visible(active_tab == SidebarPanelId::Memos);
+        }
+
+        let mut first_btn: Option<gtk::ToggleButton> = None;
+        for &tab_id in tabs {
+            let btn = gtk::ToggleButton::builder()
+                .label(&tab_id.display_title())
+                .active(tab_id == active_tab)
+                .css_classes(vec!["flat"])
+                .build();
+            if let Some(ref group_leader) = first_btn {
+                btn.set_group(Some(group_leader));
+            } else {
+                first_btn = Some(btn.clone());
+            }
+            let stack_clone = stack.clone();
+            let tasks_btn_clone = tasks_add_btn.cloned();
+            let memos_btn_clone = memos_add_btn.cloned();
+            btn.connect_toggled(move |b| {
+                if b.is_active() {
+                    stack_clone.set_visible_child_name(tab_id.as_str());
+                    if let Some(ref tb) = tasks_btn_clone {
+                        tb.set_visible(tab_id == SidebarPanelId::Tasks);
+                    }
+                    if let Some(ref mb) = memos_btn_clone {
+                        mb.set_visible(tab_id == SidebarPanelId::Memos);
+                    }
+                }
+            });
+            switcher.append(&btn);
+        }
+    }
+
+    pub(crate) fn sync_sidebar_lower_section_visibility(&self) {
+        self.sync_sidebar_vpane_layout();
+    }
+
+    pub(crate) fn sync_sidebar_vpane_layout(&self) {
+        let Some(tag_vpaned) = self.imp().tag_vpaned.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(tag_inner_vpaned) = self.imp().tag_inner_vpaned.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(taskpad_box) = self.imp().taskpad_box.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(taskpad_header) = self.imp().taskpad_header.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(taskpad_content_box) = self.imp().taskpad_content_box.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(taskpad_stack) = self.imp().taskpad_stack.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(taskpad_stack_switcher) = self.imp().taskpad_stack_switcher.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(taskpad_title) = self.imp().taskpad_title.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(taskpad_count) = self.imp().taskpad_count.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(taskpad_add_btn) = self.imp().taskpad_add_btn.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(taskpad_memos_add_btn) = self.imp().taskpad_memos_add_btn.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(sidebar_lower_box) = self.imp().sidebar_lower_box.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(lower_header) = self.imp().lower_header.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(sidebar_lower_stack) = self.imp().sidebar_lower_stack.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(sidebar_stack_switcher) = self.imp().sidebar_stack_switcher.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(sidebar_details_title) = self.imp().sidebar_details_title.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(sidebar_memos_add_btn) = self.imp().sidebar_memos_add_btn.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(sidebar_tasks_add_btn) = self.imp().sidebar_tasks_add_btn.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(event_inspector_scroll) = self.imp().event_inspector_scroll.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(memopad_section_box) = self.imp().memopad_section_box.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(memopad_header) = self.imp().memopad_header.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(memopad_content_box) = self.imp().memopad_content_box.borrow().as_ref().cloned() else {
+            return;
+        };
+
+        let hide_sidebar_details = *self.imp().current_view.borrow() == CalendarView::Agenda
+            && self.is_agenda_detail_visible();
+
+        let specs = self.imp().sidebar_panel_specs.borrow().clone();
+        let active: Vec<SidebarPanelSpec> = specs
+            .into_iter()
+            .filter(|s| {
+                s.mode != SidebarPanelMode::Off
+                    && !(s.id == SidebarPanelId::Details && hide_sidebar_details)
+            })
+            .collect();
+
+        let tab_ids: Vec<SidebarPanelId> = active
+            .iter()
+            .filter(|s| s.mode == SidebarPanelMode::Tab)
+            .map(|s| s.id)
+            .collect();
+
+        let mut sections: Vec<Vec<SidebarPanelId>> = Vec::new();
+        if tab_ids.len() == 1 && active.len() >= 2 {
+            let single_tab = tab_ids[0];
+            let partner_id = if single_tab != SidebarPanelId::Details
+                && active.iter().any(|s| s.id == SidebarPanelId::Details)
+            {
+                SidebarPanelId::Details
+            } else {
+                active
+                    .iter()
+                    .find(|s| s.id != single_tab)
+                    .map(|s| s.id)
+                    .unwrap_or(single_tab)
+            };
+            let group_tabs: Vec<SidebarPanelId> = active
+                .iter()
+                .filter(|s| s.id == single_tab || s.id == partner_id)
+                .map(|s| s.id)
+                .collect();
+            for s in &active {
+                if s.id == partner_id {
+                    sections.push(group_tabs.clone());
+                } else if s.id == single_tab {
+                    continue;
+                } else {
+                    sections.push(vec![s.id]);
+                }
+            }
+        } else if tab_ids.len() >= 2 {
+            let mut emitted_tabs = false;
+            for s in &active {
+                if s.mode == SidebarPanelMode::Tab {
+                    if !emitted_tabs {
+                        emitted_tabs = true;
+                        sections.push(tab_ids.clone());
+                    }
+                } else {
+                    sections.push(vec![s.id]);
+                }
+            }
+        } else {
+            for s in &active {
+                sections.push(vec![s.id]);
+            }
+        }
+
+        let mut use_taskpad_box = false;
+        let mut use_lower_box = false;
+        let mut use_memopad_box = false;
+        let mut ordered_containers: Vec<(gtk::Box, gtk::Box, bool)> = Vec::new();
+
+        for tabs in &sections {
+            if tabs.as_slice() == [SidebarPanelId::Tasks] {
+                use_taskpad_box = true;
+                ensure_widget_in_stack(&taskpad_content_box, &taskpad_stack, "tasks");
+                taskpad_content_box.set_visible(true);
+                taskpad_stack.set_visible_child_name("tasks");
+                taskpad_title.set_text(&gettext("Tasks"));
+                taskpad_title.set_visible(true);
+                taskpad_count.set_visible(true);
+                taskpad_stack_switcher.set_visible(false);
+                taskpad_add_btn.set_visible(true);
+                taskpad_memos_add_btn.set_visible(false);
+                let exp = self
+                    .imp()
+                    .taskpad_scroll
+                    .borrow()
+                    .as_ref()
+                    .map(|s| s.is_visible())
+                    .unwrap_or(true);
+                taskpad_stack.set_visible(exp);
+                ordered_containers.push((taskpad_box.clone(), taskpad_header.clone(), exp));
+            } else if tabs.as_slice() == [SidebarPanelId::Memos] {
+                use_memopad_box = true;
+                ensure_widget_in_box(&memopad_content_box, &memopad_section_box);
+                memopad_header.set_visible(true);
+                let exp = self
+                    .imp()
+                    .memopad_scroll
+                    .borrow()
+                    .as_ref()
+                    .map(|s| s.is_visible())
+                    .unwrap_or(true);
+                memopad_content_box.set_visible(exp);
+                ordered_containers.push((memopad_section_box.clone(), memopad_header.clone(), exp));
+            } else if tabs.as_slice() == [SidebarPanelId::Details] {
+                use_lower_box = true;
+                ensure_widget_in_stack(&event_inspector_scroll, &sidebar_lower_stack, "details");
+                sidebar_lower_stack.set_visible_child_name("details");
+                sidebar_details_title.set_text(&gettext("Details"));
+                sidebar_details_title.set_visible(true);
+                sidebar_stack_switcher.set_visible(false);
+                sidebar_tasks_add_btn.set_visible(false);
+                sidebar_memos_add_btn.set_visible(false);
+                let exp = sidebar_lower_stack.is_visible();
+                ordered_containers.push((sidebar_lower_box.clone(), lower_header.clone(), exp));
+            } else if !tabs.contains(&SidebarPanelId::Details) {
+                use_taskpad_box = true;
+                ensure_widget_in_stack(&taskpad_content_box, &taskpad_stack, "tasks");
+                ensure_widget_in_stack(&memopad_content_box, &taskpad_stack, "memos");
+                taskpad_content_box.set_visible(true);
+                memopad_content_box.set_visible(true);
+                taskpad_title.set_visible(false);
+                taskpad_count.set_visible(false);
+                Self::populate_sidebar_tab_switcher(
+                    &taskpad_stack_switcher,
+                    &taskpad_stack,
+                    tabs,
+                    Some(&taskpad_add_btn),
+                    Some(&taskpad_memos_add_btn),
+                );
+                taskpad_stack_switcher.set_visible(true);
+                let exp = self
+                    .imp()
+                    .taskpad_scroll
+                    .borrow()
+                    .as_ref()
+                    .map(|s| s.is_visible())
+                    .unwrap_or(true);
+                taskpad_stack.set_visible(exp);
+                ordered_containers.push((taskpad_box.clone(), taskpad_header.clone(), exp));
+            } else {
+                use_lower_box = true;
+                ensure_widget_in_stack(&event_inspector_scroll, &sidebar_lower_stack, "details");
+                if tabs.contains(&SidebarPanelId::Memos) {
+                    ensure_widget_in_stack(&memopad_content_box, &sidebar_lower_stack, "memos");
+                    memopad_content_box.set_visible(true);
+                }
+                if tabs.contains(&SidebarPanelId::Tasks) {
+                    ensure_widget_in_stack(&taskpad_content_box, &sidebar_lower_stack, "tasks");
+                    taskpad_content_box.set_visible(true);
+                }
+                sidebar_details_title.set_visible(false);
+                Self::populate_sidebar_tab_switcher(
+                    &sidebar_stack_switcher,
+                    &sidebar_lower_stack,
+                    tabs,
+                    Some(&sidebar_tasks_add_btn),
+                    Some(&sidebar_memos_add_btn),
+                );
+                sidebar_stack_switcher.set_visible(true);
+                let exp = sidebar_lower_stack.is_visible();
+                ordered_containers.push((sidebar_lower_box.clone(), lower_header.clone(), exp));
+            }
+        }
+
+        if !use_taskpad_box {
+            taskpad_box.set_visible(false);
+        }
+        if !use_lower_box {
+            sidebar_lower_box.set_visible(false);
+        }
+        if !use_memopad_box {
+            memopad_section_box.set_visible(false);
+        }
+        for (bx, _, _) in &ordered_containers {
+            bx.set_visible(true);
+        }
+
+        if let Some(opt_btn) = self.imp().sidebar_options_btn.borrow().as_ref() {
+            if let Some((_, top_header, _)) = ordered_containers.first() {
+                ensure_widget_in_box(opt_btn, top_header);
+                opt_btn.set_visible(true);
+            }
+        }
+
+        self.imp().syncing_sidebar_vpane.set(true);
+
+        detach_widget_from_parent(&taskpad_box);
+        detach_widget_from_parent(&sidebar_lower_box);
+        detach_widget_from_parent(&memopad_section_box);
+        detach_widget_from_parent(&tag_inner_vpaned);
+
+        tag_vpaned.set_shrink_start_child(false);
+        tag_vpaned.set_shrink_end_child(false);
+        tag_inner_vpaned.set_shrink_start_child(false);
+        tag_inner_vpaned.set_shrink_end_child(false);
+
+        let apply_two_pane_accordion =
+            |paned: &gtk::Paned,
+             top: &gtk::Widget,
+             top_exp: bool,
+             bottom: &gtk::Widget,
+             bottom_exp: bool,
+             saved_pos: i32| {
+                paned.set_start_child(Some(top));
+                paned.set_end_child(Some(bottom));
+                if top_exp && bottom_exp {
+                    top.set_vexpand(true);
+                    top.set_valign(gtk::Align::Fill);
+                    bottom.set_vexpand(true);
+                    bottom.set_valign(gtk::Align::Fill);
+                    paned.set_resize_start_child(true);
+                    paned.set_resize_end_child(true);
+                    paned.set_position(saved_pos.max(108));
+                } else if !top_exp && bottom_exp {
+                    top.set_vexpand(false);
+                    top.set_valign(gtk::Align::Start);
+                    bottom.set_vexpand(true);
+                    bottom.set_valign(gtk::Align::Fill);
+                    paned.set_resize_start_child(false);
+                    paned.set_resize_end_child(true);
+                    paned.set_position(0);
+                } else if top_exp && !bottom_exp {
+                    top.set_vexpand(true);
+                    top.set_valign(gtk::Align::Fill);
+                    bottom.set_vexpand(false);
+                    bottom.set_valign(gtk::Align::Start);
+                    paned.set_resize_start_child(true);
+                    paned.set_resize_end_child(false);
+                    paned.set_position(10000);
+                } else {
+                    top.set_vexpand(false);
+                    top.set_valign(gtk::Align::Start);
+                    bottom.set_vexpand(false);
+                    bottom.set_valign(gtk::Align::Start);
+                    paned.set_resize_start_child(false);
+                    paned.set_resize_end_child(false);
+                    paned.set_position(0);
+                }
+            };
+
+        match ordered_containers.len() {
+            1 => {
+                let (ref bx0, _, exp0) = ordered_containers[0];
+                bx0.set_vexpand(exp0);
+                bx0.set_valign(if exp0 {
+                    gtk::Align::Fill
+                } else {
+                    gtk::Align::Start
+                });
+                tag_vpaned.set_start_child(Some(bx0));
+                tag_vpaned.set_end_child(gtk::Widget::NONE);
+                tag_vpaned.set_resize_start_child(true);
+            }
+            2 => {
+                let (ref bx0, _, exp0) = ordered_containers[0];
+                let (ref bx1, _, exp1) = ordered_containers[1];
+                let saved = self.imp().sidebar_saved_vpane_pos.get();
+                apply_two_pane_accordion(
+                    &tag_vpaned,
+                    bx0.upcast_ref(),
+                    exp0,
+                    bx1.upcast_ref(),
+                    exp1,
+                    saved,
+                );
+            }
+            3 => {
+                let (ref bx0, _, exp0) = ordered_containers[0];
+                let (ref bx1, _, exp1) = ordered_containers[1];
+                let (ref bx2, _, exp2) = ordered_containers[2];
+                let inner_saved = self.imp().sidebar_saved_inner_vpane_pos.get();
+                apply_two_pane_accordion(
+                    &tag_inner_vpaned,
+                    bx1.upcast_ref(),
+                    exp1,
+                    bx2.upcast_ref(),
+                    exp2,
+                    inner_saved,
+                );
+                let outer_saved = self.imp().sidebar_saved_vpane_pos.get();
+                apply_two_pane_accordion(
+                    &tag_vpaned,
+                    bx0.upcast_ref(),
+                    exp0,
+                    tag_inner_vpaned.upcast_ref(),
+                    exp1 || exp2,
+                    outer_saved,
+                );
+            }
+            _ => {}
+        }
+
+        self.imp().syncing_sidebar_vpane.set(false);
+    }
+
+    pub(crate) fn resolve_fallback_inspected_event(
+        &self,
+    ) -> Option<(CalendarEventRecord, Option<NaiveDate>)> {
+        if *self.imp().current_view.borrow() == CalendarView::Agenda {
+            let items_ref = self.imp().agenda_items.borrow();
+            if let Some(idx) = self.imp().agenda_selected_row.get() {
+                if idx < items_ref.len() {
+                    if let PreparedAgendaItem::EventRow { record, date, .. } = &items_ref[idx] {
+                        return Some((record.clone(), Some(*date)));
+                    }
+                }
+            }
+        }
+
+        if let Some(index) = self.imp().calendar_snapshot_index.borrow().clone() {
+            let now = chrono::Local::now();
+            let today = now.date_naive();
+            let now_min = now.time().hour() * 60 + now.time().minute();
+            let query = self.imp().calendar_search_query.borrow().clone();
+            let category = self.imp().calendar_category_filter.borrow().clone();
+            let hidden = self.imp().hidden_calendar_sources.borrow().clone();
+
+            let future_range = CalendarDateRange {
+                start: today,
+                end: today
+                    .checked_add_signed(Duration::days(AGENDA_FUTURE_DAYS))
+                    .unwrap_or(today),
+            };
+            let events_by_date = indexed_events_by_date(
+                &index,
+                future_range,
+                &query,
+                category.as_deref(),
+                &hidden,
+            );
+
+            if let Some(today_events) = events_by_date.get(&today) {
+                if let Some(running) = today_events
+                    .iter()
+                    .find(|ev| is_event_running_now(ev, today))
+                {
+                    return Some((running.clone(), Some(today)));
+                }
+                if let Some(upcoming_today) = today_events.iter().find(|ev| {
+                    !is_event_all_day_on_date(ev, today)
+                        && event_occurrence_times_for_date(ev, today, 30).0 >= now_min
+                }) {
+                    return Some((upcoming_today.clone(), Some(today)));
+                }
+                if let Some(all_day_today) = today_events
+                    .iter()
+                    .find(|ev| is_event_all_day_on_date(ev, today))
+                {
+                    return Some((all_day_today.clone(), Some(today)));
+                }
+            }
+
+            for (&date, day_events) in events_by_date.iter() {
+                if date > today {
+                    if let Some(first_ev) = day_events.first() {
+                        return Some((first_ev.clone(), Some(date)));
+                    }
+                }
+            }
+
+            if let Some(today_events) = events_by_date.get(&today) {
+                if let Some(last_today) = today_events.last() {
+                    return Some((last_today.clone(), Some(today)));
+                }
+            }
+
+            let viewport = self.current_calendar_viewport();
+            let vis_events = indexed_events_by_date(
+                &index,
+                viewport.visible_range,
+                &query,
+                category.as_deref(),
+                &hidden,
+            );
+            for (&date, day_events) in vis_events.iter() {
+                if date >= viewport.anchor_date {
+                    if let Some(ev) = day_events.first() {
+                        return Some((ev.clone(), Some(date)));
+                    }
+                }
+            }
+            for (&date, day_events) in vis_events.iter() {
+                if let Some(ev) = day_events.first() {
+                    return Some((ev.clone(), Some(date)));
+                }
+            }
+        }
+
+        let sorted = self.filtered_sorted_events();
+        if !sorted.is_empty() {
+            let today = chrono::Local::now().date_naive();
+            if let Some(upcoming) = sorted
+                .iter()
+                .find(|ev| event_start_date(ev).is_some_and(|d| d >= today))
+            {
+                let d = event_start_date(upcoming);
+                return Some((upcoming.clone(), d));
+            }
+            if let Some(last) = sorted.last() {
+                let d = event_start_date(last);
+                return Some((last.clone(), d));
+            }
+        }
+
+        None
     }
 
     pub(crate) fn scroll_agenda_item_into_view(&self, idx: usize) {
@@ -2283,13 +3263,21 @@ impl CalendarPage {
             status_box.append(&desc_lbl);
             content_box.append(&status_box);
         }
+        if !self.is_agenda_detail_visible() {
+            self.refresh_event_inspector();
+        }
     }
 
     pub fn refresh_event_inspector(&self) {
         let Some(content_box) = self.imp().event_inspector_content.borrow().as_ref().cloned() else { return };
         clear_box(&content_box);
 
-        let inspected = self.imp().current_inspected_event.borrow().clone();
+        let inspected = self
+            .imp()
+            .current_inspected_event
+            .borrow()
+            .clone()
+            .or_else(|| self.resolve_fallback_inspected_event());
         if let Some((event, date)) = inspected {
             let details_widget = build_calendar_event_details_content(self, &content_box, &event, date, false, None);
             content_box.append(&details_widget);
@@ -2330,7 +3318,11 @@ impl CalendarPage {
         }
         *self.imp().current_inspected_event.borrow_mut() = Some((event.clone(), target_day));
         self.refresh_event_inspector();
-        if let Some(stack) = self.imp().sidebar_lower_stack.borrow().as_ref() {
+        if *self.imp().current_view.borrow() == CalendarView::Agenda
+            && self.is_agenda_detail_visible()
+        {
+            self.sync_sidebar_lower_section_visibility();
+        } else if let Some(stack) = self.imp().sidebar_lower_stack.borrow().as_ref() {
             stack.set_visible_child_name("details");
         }
         // Auto-expand inspector if collapsed
@@ -7997,29 +8989,107 @@ impl CalendarPage {
             }
         ));
 
-        // --- Tag VPaned: Taskpad & Memopad (Upstream GW-CAL-SHELL parity) ---
+        // --- Tag VPaned: Taskpad, Details & Memopad ---
         let tag_vpaned = gtk::Paned::builder()
             .orientation(gtk::Orientation::Vertical)
             .wide_handle(false)
+            .shrink_start_child(false)
+            .shrink_end_child(false)
             .vexpand(true)
             .build();
+        let tag_inner_vpaned = gtk::Paned::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .wide_handle(false)
+            .shrink_start_child(false)
+            .shrink_end_child(false)
+            .vexpand(true)
+            .build();
+
         let tag_vpane_initial_pos = AppSettings::try_new()
             .map(|s| s.calendar_tag_vpane_position())
-            .unwrap_or(320);
+            .unwrap_or(320)
+            .max(116);
+        let tag_inner_initial_pos = AppSettings::try_new()
+            .map(|s| s.calendar_tag_inner_vpane_position())
+            .unwrap_or(240)
+            .max(108);
+
+        let initial_specs = AppSettings::try_new()
+            .map(|s| {
+                let raw = s.calendar_sidebar_layout();
+                let mut parsed = parse_sidebar_layout(&raw);
+                if raw == "tasks:split,details:split,memos:off" && s.calendar_sidebar_show_memos() {
+                    if let Some(m) = parsed.iter_mut().find(|p| p.id == SidebarPanelId::Memos) {
+                        m.mode = SidebarPanelMode::Tab;
+                    }
+                }
+                parsed
+            })
+            .unwrap_or_else(default_sidebar_panel_specs);
+
+        let initial_show_memos = initial_specs
+            .iter()
+            .any(|s| s.id == SidebarPanelId::Memos && s.mode != SidebarPanelMode::Off);
+        let initial_details_on_top = initial_specs
+            .iter()
+            .position(|s| s.id == SidebarPanelId::Details)
+            .unwrap_or(1)
+            < initial_specs
+                .iter()
+                .position(|s| s.id == SidebarPanelId::Tasks)
+                .unwrap_or(0);
+
+        self.imp().sidebar_saved_vpane_pos.set(tag_vpane_initial_pos);
+        self.imp()
+            .sidebar_saved_inner_vpane_pos
+            .set(tag_inner_initial_pos);
+        self.imp().sidebar_show_memos.set(initial_show_memos);
+        self.imp().sidebar_details_on_top.set(initial_details_on_top);
+        self.imp().sidebar_panel_specs.replace(initial_specs);
+
         tag_vpaned.set_position(tag_vpane_initial_pos);
+        tag_inner_vpaned.set_position(tag_inner_initial_pos);
         tag_vpaned.set_visible(show_tag_vpane_initial);
         self.imp().tag_vpaned.replace(Some(tag_vpaned.clone()));
+        self.imp()
+            .tag_inner_vpaned
+            .replace(Some(tag_inner_vpaned.clone()));
 
+        let page_weak_vpane = self.downgrade();
         tag_vpaned.connect_position_notify(move |paned| {
-            let pos = paned.position();
-            if pos > 50 {
-                if let Some(settings) = AppSettings::try_new() {
-                    settings.set_calendar_tag_vpane_position(pos);
+            let Some(page) = page_weak_vpane.upgrade() else { return };
+            if page.imp().syncing_sidebar_vpane.get() {
+                return;
+            }
+            if paned.resizes_start_child() && paned.resizes_end_child() {
+                let pos = paned.position();
+                if pos >= 96 {
+                    page.imp().sidebar_saved_vpane_pos.set(pos);
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_calendar_tag_vpane_position(pos);
+                    }
                 }
             }
         });
 
-        // 1. Taskpad (Start child of tag_vpaned)
+        let page_weak_inner_vpane = self.downgrade();
+        tag_inner_vpaned.connect_position_notify(move |paned| {
+            let Some(page) = page_weak_inner_vpane.upgrade() else { return };
+            if page.imp().syncing_sidebar_vpane.get() {
+                return;
+            }
+            if paned.resizes_start_child() && paned.resizes_end_child() {
+                let pos = paned.position();
+                if pos >= 96 {
+                    page.imp().sidebar_saved_inner_vpane_pos.set(pos);
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_calendar_tag_inner_vpane_position(pos);
+                    }
+                }
+            }
+        });
+
+        // 1. Taskpad Section Container
         let taskpad_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(4)
@@ -8029,11 +9099,15 @@ impl CalendarPage {
             .margin_bottom(0)
             .vexpand(true)
             .build();
+        self.imp().taskpad_box.replace(Some(taskpad_box.clone()));
 
         let taskpad_header = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(4)
             .build();
+        self.imp()
+            .taskpad_header
+            .replace(Some(taskpad_header.clone()));
 
         let taskpad_collapse_btn = gtk::Button::builder()
             .icon_name("pan-down-symbolic")
@@ -8041,7 +9115,9 @@ impl CalendarPage {
             .tooltip_text(&gettext("Toggle section"))
             .valign(gtk::Align::Center)
             .build();
-        self.imp().taskpad_collapse_btn.replace(Some(taskpad_collapse_btn.clone()));
+        self.imp()
+            .taskpad_collapse_btn
+            .replace(Some(taskpad_collapse_btn.clone()));
 
         let taskpad_title = gtk::Label::builder()
             .label(&gettext("Tasks"))
@@ -8049,6 +9125,8 @@ impl CalendarPage {
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .build();
+        self.imp().taskpad_title.replace(Some(taskpad_title.clone()));
+
         let taskpad_count = gtk::Label::builder()
             .css_classes(vec!["dim-label", "caption"])
             .halign(gtk::Align::Start)
@@ -8057,6 +9135,18 @@ impl CalendarPage {
         self.imp()
             .taskpad_count
             .replace(Some(taskpad_count.clone()));
+
+        let taskpad_stack_switcher = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(2)
+            .css_classes(vec!["linked"])
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        self.imp()
+            .taskpad_stack_switcher
+            .replace(Some(taskpad_stack_switcher.clone()));
+
         let taskpad_spacer = gtk::Box::builder().hexpand(true).build();
         let taskpad_add_btn = gtk::Button::builder()
             .icon_name("list-add-symbolic")
@@ -8071,11 +9161,32 @@ impl CalendarPage {
                 }
             }
         });
+        self.imp()
+            .taskpad_add_btn
+            .replace(Some(taskpad_add_btn.clone()));
+
+        let taskpad_memos_add_btn = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text(&gettext("Create new memo"))
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        taskpad_memos_add_btn.connect_clicked(move |btn| {
+            if let Some(root) = btn.root() {
+                if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
+                    window.present_new_memo();
+                }
+            }
+        });
+        self.imp()
+            .taskpad_memos_add_btn
+            .replace(Some(taskpad_memos_add_btn.clone()));
 
         let sidebar_options_btn = gtk::MenuButton::builder()
             .icon_name("view-more-symbolic")
             .css_classes(vec!["flat", "circular"])
-            .tooltip_text(&gettext("Sidebar options"))
+            .tooltip_text(&gettext("Sidebar layout"))
             .valign(gtk::Align::Center)
             .build();
 
@@ -8088,58 +9199,35 @@ impl CalendarPage {
             .margin_top(8)
             .margin_bottom(8)
             .build();
-
-        let opt_label = gtk::Label::builder()
-            .label(&gettext("Sidebar Sections"))
-            .css_classes(vec!["heading", "caption"])
-            .halign(gtk::Align::Start)
-            .build();
-        opt_box.append(&opt_label);
-
-        let initial_show_memos = AppSettings::try_new()
-            .map(|s| s.calendar_sidebar_show_memos())
-            .unwrap_or(false);
-        self.imp().sidebar_show_memos.set(initial_show_memos);
-
-        let memos_check = gtk::CheckButton::builder()
-            .label(&gettext("Show Memos Tab"))
-            .active(initial_show_memos)
-            .build();
-        let page_weak_opts = self.downgrade();
-        memos_check.connect_toggled(move |chk| {
-            let active = chk.is_active();
-            if let Some(page) = page_weak_opts.upgrade() {
-                page.imp().sidebar_show_memos.set(active);
-                if let Some(settings) = AppSettings::try_new() {
-                    settings.set_calendar_sidebar_show_memos(active);
-                }
-                if let (Some(title), Some(switcher), Some(add_btn)) = (
-                    page.imp().sidebar_details_title.borrow().as_ref(),
-                    page.imp().sidebar_stack_switcher.borrow().as_ref(),
-                    page.imp().sidebar_memos_add_btn.borrow().as_ref(),
-                ) {
-                    title.set_visible(!active);
-                    switcher.set_visible(active);
-                    if !active {
-                        add_btn.set_visible(false);
-                        if let Some(stack) = page.imp().sidebar_lower_stack.borrow().as_ref() {
-                            stack.set_visible_child_name("details");
-                        }
-                    }
-                }
-            }
-        });
-        opt_box.append(&memos_check);
         opt_popover.set_child(Some(&opt_box));
         sidebar_options_btn.set_popover(Some(&opt_popover));
+        self.imp()
+            .sidebar_options_btn
+            .replace(Some(sidebar_options_btn.clone()));
+        self.imp()
+            .sidebar_options_box
+            .replace(Some(opt_box.clone()));
 
         taskpad_header.append(&taskpad_collapse_btn);
         taskpad_header.append(&taskpad_title);
         taskpad_header.append(&taskpad_count);
+        taskpad_header.append(&taskpad_stack_switcher);
         taskpad_header.append(&taskpad_spacer);
         taskpad_header.append(&taskpad_add_btn);
+        taskpad_header.append(&taskpad_memos_add_btn);
         taskpad_header.append(&sidebar_options_btn);
         taskpad_box.append(&taskpad_header);
+
+        let taskpad_content_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .margin_bottom(0)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        self.imp()
+            .taskpad_content_box
+            .replace(Some(taskpad_content_box.clone()));
 
         let taskpad_state = gtk::Label::builder()
             .wrap(true)
@@ -8151,7 +9239,7 @@ impl CalendarPage {
         self.imp()
             .taskpad_state
             .replace(Some(taskpad_state.clone()));
-        taskpad_box.append(&taskpad_state);
+        taskpad_content_box.append(&taskpad_state);
 
         let taskpad_canvas = gtk::DrawingArea::builder()
             .can_focus(true)
@@ -8341,30 +9429,51 @@ impl CalendarPage {
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_height(false)
             .propagate_natural_width(false)
-            .min_content_height(40)
+            .min_content_height(80)
             .vexpand(true)
             .child(&taskpad_canvas)
             .build();
         self.imp().taskpad_scroll.replace(Some(taskpad_scroll.clone()));
+        taskpad_content_box.append(&taskpad_scroll);
+
+        let taskpad_stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        taskpad_stack.add_named(&taskpad_content_box, Some("tasks"));
+        self.imp().taskpad_stack.replace(Some(taskpad_stack.clone()));
+        taskpad_box.append(&taskpad_stack);
+
         if let Some(btn) = self.imp().taskpad_collapse_btn.borrow().as_ref() {
             let scroll_weak = taskpad_scroll.downgrade();
+            let stack_weak = taskpad_stack.downgrade();
             let btn_weak = btn.downgrade();
+            let page_weak_coll = self.downgrade();
             btn.connect_clicked(move |_| {
                 if let (Some(scroll), Some(btn)) = (scroll_weak.upgrade(), btn_weak.upgrade()) {
                     let is_vis = scroll.is_visible();
                     scroll.set_visible(!is_vis);
+                    if let Some(st) = stack_weak.upgrade() {
+                        st.set_visible(!is_vis);
+                    }
                     btn.set_icon_name(if is_vis { "pan-end-symbolic" } else { "pan-down-symbolic" });
+                    if let Some(page) = page_weak_coll.upgrade() {
+                        if is_vis {
+                            if let Some(state) = page.imp().taskpad_state.borrow().as_ref() {
+                                state.set_visible(false);
+                            }
+                        } else {
+                            page.refresh_taskpad();
+                        }
+                        page.sync_sidebar_vpane_layout();
+                    }
                 }
             });
         }
-        taskpad_box.append(&taskpad_scroll);
 
-        tag_vpaned.set_start_child(Some(&taskpad_box));
-        tag_vpaned.set_resize_start_child(true);
-        tag_vpaned.set_shrink_start_child(true);
-
-        // 2. Memopad (End child of tag_vpaned)
-        let memopad_box = gtk::Box::builder()
+        // 2. Memopad Standalone Section & Content
+        let memopad_section_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(4)
             .margin_start(6)
@@ -8373,19 +9482,38 @@ impl CalendarPage {
             .margin_bottom(0)
             .vexpand(true)
             .build();
+        self.imp()
+            .memopad_section_box
+            .replace(Some(memopad_section_box.clone()));
 
         let memopad_header = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(6)
+            .spacing(4)
             .build();
+        self.imp()
+            .memopad_header
+            .replace(Some(memopad_header.clone()));
+
+        let memopad_collapse_btn = gtk::Button::builder()
+            .icon_name("pan-down-symbolic")
+            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(&gettext("Toggle section"))
+            .valign(gtk::Align::Center)
+            .build();
+        self.imp()
+            .memopad_collapse_btn
+            .replace(Some(memopad_collapse_btn.clone()));
+
         let memopad_title = gtk::Label::builder()
             .label(&gettext("Memos"))
             .css_classes(vec!["heading"])
             .halign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
             .build();
         let memopad_count = gtk::Label::builder()
             .css_classes(vec!["dim-label", "caption"])
             .halign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
             .build();
         self.imp()
             .memopad_count
@@ -8395,6 +9523,7 @@ impl CalendarPage {
             .icon_name("list-add-symbolic")
             .tooltip_text(&gettext("Create new memo"))
             .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
             .build();
         memopad_add_btn.connect_clicked(move |btn| {
             if let Some(root) = btn.root() {
@@ -8404,11 +9533,23 @@ impl CalendarPage {
             }
         });
 
+        memopad_header.append(&memopad_collapse_btn);
         memopad_header.append(&memopad_title);
         memopad_header.append(&memopad_count);
         memopad_header.append(&memopad_spacer);
         memopad_header.append(&memopad_add_btn);
-        memopad_box.append(&memopad_header);
+        memopad_section_box.append(&memopad_header);
+
+        let memopad_content_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .margin_bottom(0)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        self.imp()
+            .memopad_content_box
+            .replace(Some(memopad_content_box.clone()));
 
         let memopad_state = gtk::Label::builder()
             .wrap(true)
@@ -8420,7 +9561,7 @@ impl CalendarPage {
         self.imp()
             .memopad_state
             .replace(Some(memopad_state.clone()));
-        memopad_box.append(&memopad_state);
+        memopad_content_box.append(&memopad_state);
 
         let memopad_canvas = gtk::DrawingArea::builder()
             .can_focus(true)
@@ -8595,13 +9736,43 @@ impl CalendarPage {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_height(false)
-            .min_content_height(40)
+            .min_content_height(80)
             .vexpand(true)
             .child(&memopad_canvas)
             .build();
-        memopad_box.append(&memopad_scroll);
+        self.imp()
+            .memopad_scroll
+            .replace(Some(memopad_scroll.clone()));
+        memopad_content_box.append(&memopad_scroll);
 
-        // 2. Lower Section: Event Details & Optional Memopad
+        if let Some(btn) = self.imp().memopad_collapse_btn.borrow().as_ref() {
+            let scroll_weak = memopad_scroll.downgrade();
+            let content_weak = memopad_content_box.downgrade();
+            let btn_weak = btn.downgrade();
+            let page_weak_coll = self.downgrade();
+            btn.connect_clicked(move |_| {
+                if let (Some(scroll), Some(btn)) = (scroll_weak.upgrade(), btn_weak.upgrade()) {
+                    let is_vis = scroll.is_visible();
+                    scroll.set_visible(!is_vis);
+                    if let Some(cb) = content_weak.upgrade() {
+                        cb.set_visible(!is_vis);
+                    }
+                    btn.set_icon_name(if is_vis { "pan-end-symbolic" } else { "pan-down-symbolic" });
+                    if let Some(page) = page_weak_coll.upgrade() {
+                        if is_vis {
+                            if let Some(state) = page.imp().memopad_state.borrow().as_ref() {
+                                state.set_visible(false);
+                            }
+                        } else {
+                            page.refresh_memopad();
+                        }
+                        page.sync_sidebar_vpane_layout();
+                    }
+                }
+            });
+        }
+
+        // 3. Lower Section: Event Details & Tab Group Container
         let sidebar_lower_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(4)
@@ -8616,6 +9787,9 @@ impl CalendarPage {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(4)
             .build();
+        self.imp()
+            .lower_header
+            .replace(Some(lower_header.clone()));
 
         let inspector_collapse_btn = gtk::Button::builder()
             .icon_name("pan-down-symbolic")
@@ -8623,9 +9797,9 @@ impl CalendarPage {
             .tooltip_text(&gettext("Toggle section"))
             .valign(gtk::Align::Center)
             .build();
-        self.imp().inspector_collapse_btn.replace(Some(inspector_collapse_btn.clone()));
-
-        let initial_show_memos = self.imp().sidebar_show_memos.get();
+        self.imp()
+            .inspector_collapse_btn
+            .replace(Some(inspector_collapse_btn.clone()));
 
         let sidebar_details_title = gtk::Label::builder()
             .label(&gettext("Details"))
@@ -8634,9 +9808,10 @@ impl CalendarPage {
             .valign(gtk::Align::Center)
             .visible(!initial_show_memos)
             .build();
-        self.imp().sidebar_details_title.replace(Some(sidebar_details_title.clone()));
+        self.imp()
+            .sidebar_details_title
+            .replace(Some(sidebar_details_title.clone()));
 
-        // Switcher box for Details / Memos
         let switcher_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(2)
@@ -8644,21 +9819,29 @@ impl CalendarPage {
             .valign(gtk::Align::Center)
             .visible(initial_show_memos)
             .build();
-        let details_tab_btn = gtk::ToggleButton::builder()
-            .label(&gettext("Details"))
-            .active(true)
-            .css_classes(vec!["flat"])
-            .build();
-        let memos_tab_btn = gtk::ToggleButton::builder()
-            .label(&gettext("Memos"))
-            .group(&details_tab_btn)
-            .css_classes(vec!["flat"])
-            .build();
-        switcher_box.append(&details_tab_btn);
-        switcher_box.append(&memos_tab_btn);
-        self.imp().sidebar_stack_switcher.replace(Some(switcher_box.clone()));
+        self.imp()
+            .sidebar_stack_switcher
+            .replace(Some(switcher_box.clone()));
 
         let lower_spacer = gtk::Box::builder().hexpand(true).build();
+
+        let sidebar_tasks_add_btn = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text(&gettext("Create new task"))
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        sidebar_tasks_add_btn.connect_clicked(move |btn| {
+            if let Some(root) = btn.root() {
+                if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
+                    window.present_new_task();
+                }
+            }
+        });
+        self.imp()
+            .sidebar_tasks_add_btn
+            .replace(Some(sidebar_tasks_add_btn.clone()));
 
         let sidebar_memos_add_btn = gtk::Button::builder()
             .icon_name("list-add-symbolic")
@@ -8674,12 +9857,15 @@ impl CalendarPage {
                 }
             }
         });
-        self.imp().sidebar_memos_add_btn.replace(Some(sidebar_memos_add_btn.clone()));
+        self.imp()
+            .sidebar_memos_add_btn
+            .replace(Some(sidebar_memos_add_btn.clone()));
 
         lower_header.append(&inspector_collapse_btn);
         lower_header.append(&sidebar_details_title);
         lower_header.append(&switcher_box);
         lower_header.append(&lower_spacer);
+        lower_header.append(&sidebar_tasks_add_btn);
         lower_header.append(&sidebar_memos_add_btn);
         sidebar_lower_box.append(&lower_header);
 
@@ -8689,7 +9875,9 @@ impl CalendarPage {
             .vexpand(true)
             .hexpand(true)
             .build();
-        self.imp().sidebar_lower_stack.replace(Some(sidebar_lower_stack.clone()));
+        self.imp()
+            .sidebar_lower_stack
+            .replace(Some(sidebar_lower_stack.clone()));
 
         // Page A: Event Inspector
         let event_inspector_content = gtk::Box::builder()
@@ -8698,60 +9886,130 @@ impl CalendarPage {
             .hexpand(true)
             .vexpand(true)
             .build();
-        self.imp().event_inspector_content.replace(Some(event_inspector_content.clone()));
+        self.imp()
+            .event_inspector_content
+            .replace(Some(event_inspector_content.clone()));
 
         let event_inspector_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_height(false)
             .propagate_natural_width(false)
-            .min_content_height(40)
+            .min_content_height(80)
             .min_content_width(260)
             .vexpand(true)
             .hexpand(true)
             .child(&event_inspector_content)
             .build();
-        self.imp().event_inspector_scroll.replace(Some(event_inspector_scroll.clone()));
+        self.imp()
+            .event_inspector_scroll
+            .replace(Some(event_inspector_scroll.clone()));
         sidebar_lower_stack.add_named(&event_inspector_scroll, Some("details"));
-
-        // Page B: Memopad
-        memopad_header.set_visible(false);
-        sidebar_lower_stack.add_named(&memopad_box, Some("memos"));
+        sidebar_lower_stack.add_named(&memopad_content_box, Some("memos"));
 
         sidebar_lower_box.append(&sidebar_lower_stack);
 
-        let stack_for_details = sidebar_lower_stack.clone();
-        let add_btn_for_details = sidebar_memos_add_btn.clone();
-        details_tab_btn.connect_toggled(move |btn| {
-            if btn.is_active() {
-                stack_for_details.set_visible_child_name("details");
-                add_btn_for_details.set_visible(false);
-            }
-        });
-
-        let stack_for_memos = sidebar_lower_stack.clone();
-        let add_btn_for_memos = sidebar_memos_add_btn.clone();
-        memos_tab_btn.connect_toggled(move |btn| {
-            if btn.is_active() {
-                stack_for_memos.set_visible_child_name("memos");
-                add_btn_for_memos.set_visible(true);
-            }
-        });
-
         let stack_weak_coll = sidebar_lower_stack.downgrade();
         let btn_weak_coll = inspector_collapse_btn.downgrade();
+        let page_weak_insp_coll = self.downgrade();
         inspector_collapse_btn.connect_clicked(move |_| {
             if let (Some(stack), Some(btn)) = (stack_weak_coll.upgrade(), btn_weak_coll.upgrade()) {
                 let is_vis = stack.is_visible();
                 stack.set_visible(!is_vis);
                 btn.set_icon_name(if is_vis { "pan-end-symbolic" } else { "pan-down-symbolic" });
+                if let Some(page) = page_weak_insp_coll.upgrade() {
+                    page.sync_sidebar_vpane_layout();
+                }
             }
         });
 
-        tag_vpaned.set_end_child(Some(&sidebar_lower_box));
-        tag_vpaned.set_resize_end_child(true);
-        tag_vpaned.set_shrink_end_child(true);
+        self.imp()
+            .sidebar_lower_box
+            .replace(Some(sidebar_lower_box.clone()));
 
+        // Wire VS Code-style Drag & Drop on section headers and section boxes
+        let attach_section_dnd =
+            |page: &Self,
+             header: &gtk::Box,
+             section_box: &gtk::Box,
+             default_panel: SidebarPanelId,
+             stack_opt: Option<gtk::Stack>| {
+                let drag_source = gtk::DragSource::builder()
+                    .actions(gdk::DragAction::MOVE)
+                    .build();
+                let stack_for_drag = stack_opt.clone();
+                drag_source.connect_prepare(move |_, _, _| {
+                    let panel = stack_for_drag
+                        .as_ref()
+                        .and_then(|st| st.visible_child_name())
+                        .and_then(|n| SidebarPanelId::from_str(n.as_str()))
+                        .unwrap_or(default_panel);
+                    Some(gdk::ContentProvider::for_value(&panel.as_str().to_value()))
+                });
+                header.add_controller(drag_source);
+
+                let drop_target =
+                    gtk::DropTarget::new(glib::Type::STRING, gdk::DragAction::MOVE);
+                let page_weak_drop = page.downgrade();
+                let box_weak = section_box.downgrade();
+                let stack_for_drop = stack_opt;
+                drop_target.connect_drop(move |_, value, _x, y| {
+                    let Ok(src_str) = value.get::<String>() else {
+                        return false;
+                    };
+                    let Some(src_panel) = SidebarPanelId::from_str(&src_str) else {
+                        return false;
+                    };
+                    let Some(page) = page_weak_drop.upgrade() else {
+                        return false;
+                    };
+                    let dst_panel = stack_for_drop
+                        .as_ref()
+                        .and_then(|st| st.visible_child_name())
+                        .and_then(|n| SidebarPanelId::from_str(n.as_str()))
+                        .unwrap_or(default_panel);
+                    let h = box_weak
+                        .upgrade()
+                        .map(|b| b.height() as f64)
+                        .unwrap_or(120.0)
+                        .max(48.0);
+                    let zone = if y < 34.0 {
+                        "tab"
+                    } else if y < h * 0.55 {
+                        "before"
+                    } else {
+                        "after"
+                    };
+                    page.handle_sidebar_panel_drop(src_panel, dst_panel, zone);
+                    true
+                });
+                section_box.add_controller(drop_target);
+            };
+
+        attach_section_dnd(
+            self,
+            &taskpad_header,
+            &taskpad_box,
+            SidebarPanelId::Tasks,
+            Some(taskpad_stack.clone()),
+        );
+        attach_section_dnd(
+            self,
+            &lower_header,
+            &sidebar_lower_box,
+            SidebarPanelId::Details,
+            Some(sidebar_lower_stack.clone()),
+        );
+        attach_section_dnd(
+            self,
+            &memopad_header,
+            &memopad_section_box,
+            SidebarPanelId::Memos,
+            None,
+        );
+
+        self.rebuild_sidebar_options_popover();
+        self.sync_sidebar_lower_section_visibility();
         self.refresh_event_inspector();
 
         // Connect toggle button to tag_vpaned visibility
@@ -8931,6 +10189,9 @@ impl CalendarPage {
                 page.imp().current_time_minute.set(now_min);
                 page.queue_redraw_all_time_slots();
                 page.check_and_update_agenda_live_state();
+                if page.imp().current_inspected_event.borrow().is_none() {
+                    page.refresh_event_inspector();
+                }
                 glib::ControlFlow::Continue
             } else {
                 glib::ControlFlow::Break
@@ -9845,11 +11106,19 @@ impl CalendarPage {
             return;
         };
 
+        let taskpad_expanded = self
+            .imp()
+            .taskpad_scroll
+            .borrow()
+            .as_ref()
+            .map(|s| s.is_visible())
+            .unwrap_or(true);
+
         match self.calendar_data_state() {
             CalendarDataState::Loading => {
                 taskpad_canvas.set_visible(false);
                 if let Some(state) = self.imp().taskpad_state.borrow().as_ref() {
-                    state.set_visible(true);
+                    state.set_visible(taskpad_expanded);
                     state.set_label(&gettext("Loading tasks…"));
                 }
                 if let Some(count) = self.imp().taskpad_count.borrow().as_ref() {
@@ -9860,7 +11129,7 @@ impl CalendarPage {
             CalendarDataState::Error => {
                 taskpad_canvas.set_visible(false);
                 if let Some(state) = self.imp().taskpad_state.borrow().as_ref() {
-                    state.set_visible(true);
+                    state.set_visible(taskpad_expanded);
                     let default_err = gettext("Tasks could not be loaded");
                     state.set_label(
                         self.imp()
@@ -9915,7 +11184,7 @@ impl CalendarPage {
             count.set_label(&format!("({visible_count})"));
         }
         if let Some(state) = self.imp().taskpad_state.borrow().as_ref() {
-            state.set_visible(visible_count == 0);
+            state.set_visible(taskpad_expanded && visible_count == 0);
             let empty_label = if records.borrow().is_empty() {
                 gettext("No tasks loaded")
             } else {
@@ -9933,11 +11202,19 @@ impl CalendarPage {
             return;
         };
 
+        let memopad_expanded = self
+            .imp()
+            .memopad_scroll
+            .borrow()
+            .as_ref()
+            .map(|s| s.is_visible())
+            .unwrap_or(true);
+
         match self.calendar_data_state() {
             CalendarDataState::Loading => {
                 memopad_canvas.set_visible(false);
                 if let Some(state) = self.imp().memopad_state.borrow().as_ref() {
-                    state.set_visible(true);
+                    state.set_visible(memopad_expanded);
                     state.set_label(&gettext("Loading memos…"));
                 }
                 if let Some(count) = self.imp().memopad_count.borrow().as_ref() {
@@ -9948,7 +11225,7 @@ impl CalendarPage {
             CalendarDataState::Error => {
                 memopad_canvas.set_visible(false);
                 if let Some(state) = self.imp().memopad_state.borrow().as_ref() {
-                    state.set_visible(true);
+                    state.set_visible(memopad_expanded);
                     let default_err = gettext("Memos could not be loaded");
                     state.set_label(
                         self.imp()
@@ -9998,7 +11275,7 @@ impl CalendarPage {
             count.set_label(&format!("({visible_count})"));
         }
         if let Some(state) = self.imp().memopad_state.borrow().as_ref() {
-            state.set_visible(visible_count == 0);
+            state.set_visible(memopad_expanded && visible_count == 0);
             let empty_label = if records.borrow().is_empty() {
                 gettext("No memos loaded")
             } else {
@@ -10451,6 +11728,7 @@ impl CalendarPage {
         self.refresh_period_label();
         self.imp().mini_calendar_last_key.replace(None);
         self.sync_mini_calendar();
+        self.sync_sidebar_lower_section_visibility();
 
         let inspected = self.imp().current_inspected_event.borrow().clone();
         if let Some((current_ev, date)) = inspected {
@@ -10462,6 +11740,8 @@ impl CalendarPage {
                     self.clear_inspected_event();
                 }
             }
+        } else {
+            self.refresh_event_inspector();
         }
     }
 
