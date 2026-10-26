@@ -189,6 +189,23 @@ pub(crate) enum YearCanvasHitTarget {
     MonthHeader(u32),
     Day(NaiveDate),
     YearCard(i32),
+    YearMonth(i32, u32),
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct MultiYearMonthSummary {
+    pub(crate) event_count: usize,
+    pub(crate) busy_days: u32,
+    pub(crate) previews: Vec<(String, (u8, u8, u8))>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedMultiYearMonthTile {
+    pub(crate) month: u32,
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+    pub(crate) w: f64,
+    pub(crate) h: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -198,6 +215,8 @@ pub(crate) struct PreparedMultiYearCardLayout {
     pub(crate) card_y: f64,
     pub(crate) card_w: f64,
     pub(crate) card_h: f64,
+    pub(crate) header_h: f64,
+    pub(crate) month_tiles: [PreparedMultiYearMonthTile; 12],
 }
 
 #[derive(Clone, Debug)]
@@ -1614,6 +1633,10 @@ mod imp {
         >,
         pub(crate) year_view_options_split_btn: RefCell<Option<adw::SplitButton>>,
         pub(crate) year_planner_popover: RefCell<Option<gtk::Popover>>,
+        pub(crate) multi_year_summaries:
+            RefCell<BTreeMap<(i32, u32), super::MultiYearMonthSummary>>,
+        pub(crate) multi_year_rendered_key:
+            RefCell<Option<(i32, u64, String, Option<String>, usize)>>,
         pub year_details_container: RefCell<Option<gtk::Box>>,
         pub year_paned: RefCell<Option<gtk::Paned>>,
         pub year_details_side_width: Cell<i32>,
@@ -1823,6 +1846,8 @@ mod imp {
                 year_projection_cache: RefCell::new(HashMap::new()),
                 year_view_options_split_btn: RefCell::new(None),
                 year_planner_popover: RefCell::new(None),
+                multi_year_summaries: RefCell::new(BTreeMap::new()),
+                multi_year_rendered_key: RefCell::new(None),
                 year_details_container: RefCell::new(None),
                 year_paned: RefCell::new(None),
                 year_details_side_width: Cell::new(240),
@@ -2249,8 +2274,8 @@ impl CalendarPage {
             }
             CalendarView::Year => {
                 if self.imp().year_view_style.get() == YearViewStyle::MultiYear {
-                    let start_y = date.year() - (date.year() - 2020).rem_euclid(12);
-                    let end_y = start_y + 11;
+                    let start_y = date.year();
+                    let end_y = start_y + 5;
                     format!("{start_y}–{end_y}")
                 } else {
                     date.year().to_string()
@@ -2399,7 +2424,13 @@ impl CalendarPage {
             vadj.set_value(0.0);
         }
         self.update_year_paned_layout();
+        self.refresh_period_label();
         self.sync_toolbar_navigation_title();
+        if style == YearViewStyle::MultiYear {
+            self.ensure_multi_year_summaries_for_anchor(
+                self.current_calendar_viewport().anchor_date.year(),
+            );
+        }
         if let Some(canvas) = self.imp().year_canvas.borrow().as_ref() {
             canvas.queue_draw();
         }
@@ -2956,12 +2987,19 @@ impl CalendarPage {
                         .margin_bottom(8)
                         .hexpand(true)
                         .vexpand(true)
+                        .focusable(true)
+                        .can_focus(true)
                         .build();
 
+                    let (def_w, def_h) = if panel_id == SidebarPanelId::Details {
+                        (370, 680)
+                    } else {
+                        (350, 560)
+                    };
                     let win = gtk::Window::builder()
                         .title(&format!("Meridian — {}", panel_id.display_title()))
-                        .default_width(340)
-                        .default_height(460)
+                        .default_width(def_w)
+                        .default_height(def_h)
                         .titlebar(&header)
                         .child(&host_box)
                         .build();
@@ -3005,6 +3043,9 @@ impl CalendarPage {
                     }
                 }
                 win.present();
+                if panel_id == SidebarPanelId::Details {
+                    gtk::prelude::GtkWindowExt::set_focus(&win, Some(&host_box));
+                }
             }
         }
 
@@ -3589,6 +3630,15 @@ impl CalendarPage {
             status_box.append(&desc_lbl);
             content_box.append(&status_box);
         }
+        if let Some((win, host_box)) = self
+            .imp()
+            .sidebar_detached_windows
+            .borrow()
+            .get(&SidebarPanelId::Details)
+            .cloned()
+        {
+            gtk::prelude::GtkWindowExt::set_focus(&win, Some(&host_box));
+        }
     }
 
     pub fn select_and_inspect_event(&self, event: &CalendarEventRecord, target_day: Option<NaiveDate>) {
@@ -3658,16 +3708,32 @@ impl CalendarPage {
             match self.imp().year_view_style.get() {
                 YearViewStyle::MultiYear => {
                     let hovered = self.imp().year_hovered_target.borrow().clone();
-                    if let Some(YearCanvasHitTarget::YearCard(target_y)) = hovered {
-                        let cur = *self.imp().current_date.borrow();
-                        let max_d = days_in_month(target_y, cur.month());
-                        if let Some(next_d) =
-                            NaiveDate::from_ymd_opt(target_y, cur.month(), cur.day().min(max_d))
-                        {
-                            self.navigate_to_date(next_d);
+                    match hovered {
+                        Some(YearCanvasHitTarget::YearCard(target_y)) => {
+                            let cur = *self.imp().current_date.borrow();
+                            let max_d = days_in_month(target_y, cur.month());
+                            if let Some(next_d) =
+                                NaiveDate::from_ymd_opt(target_y, cur.month(), cur.day().min(max_d))
+                            {
+                                self.navigate_to_date(next_d);
+                            }
+                            self.set_year_view_style(YearViewStyle::Grid);
+                        }
+                        Some(YearCanvasHitTarget::YearMonth(target_y, target_m)) => {
+                            if let Some(first_of_m) = NaiveDate::from_ymd_opt(target_y, target_m, 1) {
+                                *self.imp().current_date.borrow_mut() = first_of_m;
+                                self.imp()
+                                    .view_state
+                                    .borrow_mut()
+                                    .set_anchor(first_of_m, configured_first_weekday());
+                                self.imp().view_state.borrow_mut().select_civil_day(first_of_m);
+                                self.select_calendar_view(CalendarView::Month);
+                            }
+                        }
+                        _ => {
+                            self.set_year_view_style(YearViewStyle::Grid);
                         }
                     }
-                    self.set_year_view_style(YearViewStyle::Grid);
                 }
                 YearViewStyle::Grid | YearViewStyle::Planner => {
                     let hovered = self.imp().year_hovered_target.borrow().clone();
@@ -3720,6 +3786,10 @@ impl CalendarPage {
 
     pub fn adjust_chip_scale(&self, delta: f64) {
         let current = configured_chip_scale();
+        if current <= 0.751 && delta > 0.0 {
+            self.set_chip_scale(0.80);
+            return;
+        }
         self.set_chip_scale(current + delta);
     }
 
@@ -3834,7 +3904,11 @@ impl CalendarPage {
         let percent = (rounded * 100.0).round() as i32;
         let msg = match *self.imp().current_view.borrow() {
             CalendarView::Day | CalendarView::Week | CalendarView::WorkWeek => {
-                format!("{}: {percent}%", gettext("Time scale"))
+                if rounded <= 0.751 {
+                    format!("{}: 24h ({percent}%)", gettext("Time scale"))
+                } else {
+                    format!("{}: {percent}%", gettext("Time scale"))
+                }
             }
             _ => format!("{}: {percent}%", gettext("Calendar scale")),
         };
@@ -8633,6 +8707,7 @@ impl CalendarPage {
                     let _ = cr.restore();
                 }
                 YearViewStyle::MultiYear => {
+                    page.ensure_multi_year_summaries_for_anchor(year);
                     let first_weekday = configured_first_weekday();
                     let layout = Self::prepare_multi_year_canvas_layout(year, width, height, first_weekday);
                     let total_h = layout.height.ceil();
@@ -8649,11 +8724,13 @@ impl CalendarPage {
                     } else {
                         0.0
                     };
+                    let summaries = page.imp().multi_year_summaries.borrow();
                     let _ = cr.save();
                     cr.translate(0.0, -scroll_y);
                     Self::draw_multi_year_canvas(
                         cr,
                         &layout,
+                        &summaries,
                         year,
                         today,
                         hovered.as_ref(),
@@ -8712,6 +8789,17 @@ impl CalendarPage {
                         page.imp().view_state.borrow_mut().select_civil_day(new_date);
                         page.set_year_view_style(YearViewStyle::Grid);
                         page.sync_mini_calendar();
+                    }
+                    YearCanvasHitTarget::YearMonth(target_y, target_m) => {
+                        if let Some(first_of_month) = NaiveDate::from_ymd_opt(target_y, target_m, 1) {
+                            *page.imp().current_date.borrow_mut() = first_of_month;
+                            page.imp()
+                                .view_state
+                                .borrow_mut()
+                                .set_anchor(first_of_month, configured_first_weekday());
+                            page.imp().view_state.borrow_mut().select_civil_day(first_of_month);
+                            page.select_calendar_view(CalendarView::Month);
+                        }
                     }
                     YearCanvasHitTarget::MonthHeader(m) => {
                         if let Some(pop) = page.imp().year_planner_popover.borrow_mut().take() {
@@ -8779,7 +8867,11 @@ impl CalendarPage {
                     let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
                     Self::hit_test_year_canvas(&layout, x, logical_y)
                 }
-                YearViewStyle::MultiYear => None,
+                YearViewStyle::MultiYear => {
+                    let first_weekday = configured_first_weekday();
+                    let ml = Self::prepare_multi_year_canvas_layout(year, width, height, first_weekday);
+                    Self::hit_test_multi_year_canvas(&ml, x, logical_y)
+                }
             };
             if let Some(target) = target {
                 match target {
@@ -8789,6 +8881,11 @@ impl CalendarPage {
                     }
                     YearCanvasHitTarget::MonthHeader(m) => {
                         if let Some(first_of_month) = NaiveDate::from_ymd_opt(year, m, 1) {
+                            show_calendar_day_context_menu(&page, &area, first_of_month, None, rect);
+                        }
+                    }
+                    YearCanvasHitTarget::YearMonth(target_y, target_m) => {
+                        if let Some(first_of_month) = NaiveDate::from_ymd_opt(target_y, target_m, 1) {
                             show_calendar_day_context_menu(&page, &area, first_of_month, None, rect);
                         }
                     }
@@ -8825,7 +8922,11 @@ impl CalendarPage {
                     let layout = Self::prepare_year_canvas_layout(year, width, show_week_numbers, first_weekday);
                     Self::hit_test_year_canvas(&layout, x, logical_y)
                 }
-                YearViewStyle::MultiYear => None,
+                YearViewStyle::MultiYear => {
+                    let first_weekday = configured_first_weekday();
+                    let ml = Self::prepare_multi_year_canvas_layout(year, width, height, first_weekday);
+                    Self::hit_test_multi_year_canvas(&ml, x, logical_y)
+                }
             };
             if let Some(target) = target {
                 match target {
@@ -8835,6 +8936,11 @@ impl CalendarPage {
                     }
                     YearCanvasHitTarget::MonthHeader(m) => {
                         if let Some(first_of_month) = NaiveDate::from_ymd_opt(year, m, 1) {
+                            show_calendar_day_context_menu(&page, &area, first_of_month, None, rect);
+                        }
+                    }
+                    YearCanvasHitTarget::YearMonth(target_y, target_m) => {
+                        if let Some(first_of_month) = NaiveDate::from_ymd_opt(target_y, target_m, 1) {
                             show_calendar_day_context_menu(&page, &area, first_of_month, None, rect);
                         }
                     }
@@ -8929,7 +9035,46 @@ impl CalendarPage {
             if let Some(target) = target {
                 match target {
                     YearCanvasHitTarget::YearCard(target_y) => {
-                        tooltip.set_text(Some(&format!("{}: {}", crate::i18n::gettext("Open year view for"), target_y)));
+                        let summaries = page.imp().multi_year_summaries.borrow();
+                        let total: usize = (1..=12)
+                            .filter_map(|m| summaries.get(&(target_y, m)))
+                            .map(|s| s.event_count)
+                            .sum();
+                        let text = if total == 0 {
+                            format!("{}: {}", crate::i18n::gettext("Open year view for"), target_y)
+                        } else if total == 1 {
+                            format!("{} · 1 {}", target_y, crate::i18n::gettext("event"))
+                        } else {
+                            format!("{} · {} {}", target_y, total, crate::i18n::gettext("events"))
+                        };
+                        tooltip.set_text(Some(&text));
+                        true
+                    }
+                    YearCanvasHitTarget::YearMonth(target_y, target_m) => {
+                        let summaries = page.imp().multi_year_summaries.borrow();
+                        let month_label = format!("{} {}", Self::calendar_month_name(target_m), target_y);
+                        let text = if let Some(summary) = summaries.get(&(target_y, target_m)) {
+                            if summary.event_count == 0 {
+                                format!("{}: {}", crate::i18n::gettext("Go to month view for"), month_label)
+                            } else {
+                                let count_lbl = if summary.event_count == 1 {
+                                    format!("1 {}", crate::i18n::gettext("event"))
+                                } else {
+                                    format!("{} {}", summary.event_count, crate::i18n::gettext("events"))
+                                };
+                                let mut lines = vec![format!("{month_label} · {count_lbl}")];
+                                for (title, _) in summary.previews.iter().take(4) {
+                                    lines.push(format!("• {title}"));
+                                }
+                                if summary.event_count > summary.previews.len().min(4) {
+                                    lines.push(format!("+{} …", summary.event_count - summary.previews.len().min(4)));
+                                }
+                                lines.join("\n")
+                            }
+                        } else {
+                            format!("{}: {}", crate::i18n::gettext("Go to month view for"), month_label)
+                        };
+                        tooltip.set_text(Some(&text));
                         true
                     }
                     YearCanvasHitTarget::MonthHeader(m) => {
@@ -11834,13 +11979,15 @@ impl CalendarPage {
             && self.imp().year_view_style.get() == YearViewStyle::MultiYear
         {
             let cur = self.imp().view_state.borrow().anchor_date;
-            let next_d = step_date_by_year(cur, direction.signum() * 12);
+            let next_d = step_date_by_year(cur, direction.signum() * 6);
             self.imp()
                 .view_state
                 .borrow_mut()
                 .set_anchor(next_d, configured_first_weekday());
             self.imp().view_state.borrow_mut().select_civil_day(next_d);
             *self.imp().current_date.borrow_mut() = next_d;
+            self.refresh_period_label();
+            self.refresh_calendar_views();
             self.sync_mini_calendar();
             return;
         }
@@ -12521,7 +12668,8 @@ impl CalendarPage {
             _ => 24,
         };
         let chip_scale = configured_chip_scale();
-        let slot_height = ((base_slot_height as f64) * chip_scale).round().max(12.0) as i32;
+        let is_fit_24h = chip_scale <= 0.751;
+        let slot_height = ((base_slot_height as f64) * chip_scale).round().max(8.0) as i32;
         let time_col_width = 52;
 
         let second_zone_name = configured_second_zone();
@@ -12874,12 +13022,14 @@ impl CalendarPage {
         view.append(&header_grid);
 
         // ══════════════════════════════════════════════════════════════════════════
-        // Timed Hours Grid (Scrollable)
+        // Timed Hours Grid (Scrollable or Full 24h Fit)
         // ══════════════════════════════════════════════════════════════════════════
         let timed_grid = gtk::Grid::builder()
             .column_spacing(0)
             .row_spacing(0)
+            .row_homogeneous(is_fit_24h)
             .hexpand(true)
+            .vexpand(true)
             .css_classes(vec!["calendar-time-grid"])
             .build();
 
@@ -12889,7 +13039,7 @@ impl CalendarPage {
 
         // Current-time red indicator line canvas in the time gutter (attached first so it renders behind hour labels)
         let gutter_canvas = gtk::DrawingArea::builder()
-            .height_request(total_grid_height)
+            .height_request(if is_fit_24h { -1 } else { total_grid_height })
             .hexpand(false)
             .vexpand(true)
             .can_target(false)
@@ -12910,23 +13060,25 @@ impl CalendarPage {
             }
         });
 
+        let hour_label_scale = if is_fit_24h { 0.52 } else { chip_scale };
         for hour in 0..total_hours {
             let start_slot = (hour * slots_per_hour) as i32;
             let minute = (hour * 60) as u32;
 
             let gutter_label = gtk::Label::builder()
                 .use_markup(true)
-                .label(&format_hour_markup_scaled(minute, use_12h, chip_scale))
+                .label(&format_hour_markup_scaled(minute, use_12h, hour_label_scale))
                 .css_classes(vec!["calendar-time-gutter-label"])
                 .halign(gtk::Align::End)
                 .valign(gtk::Align::Start)
-                .margin_top(1)
+                .margin_top(if is_fit_24h { 0 } else { 1 })
                 .build();
             let gutter_box = gtk::Box::builder()
                 .orientation(gtk::Orientation::Vertical)
                 .css_classes(vec!["calendar-time-gutter", "calendar-hour-cell"])
                 .width_request(time_col_width)
-                .height_request(hour_height)
+                .height_request(if is_fit_24h { -1 } else { hour_height })
+                .vexpand(is_fit_24h)
                 .valign(gtk::Align::Fill)
                 .build();
             gutter_box.append(&gutter_label);
@@ -12948,7 +13100,7 @@ impl CalendarPage {
                     .css_classes(vec!["secondary-tz-label"])
                     .halign(gtk::Align::End)
                     .valign(gtk::Align::Start)
-                    .margin_top(1)
+                    .margin_top(if is_fit_24h { 0 } else { 1 })
                     .build();
                 let sec_box = gtk::Box::builder()
                     .orientation(gtk::Orientation::Vertical)
@@ -12958,7 +13110,8 @@ impl CalendarPage {
                         "calendar-hour-cell",
                     ])
                     .width_request(time_col_width)
-                    .height_request(hour_height)
+                    .height_request(if is_fit_24h { -1 } else { hour_height })
+                    .vexpand(is_fit_24h)
                     .valign(gtk::Align::Fill)
                     .build();
                 sec_box.append(&sec_label);
@@ -12994,7 +13147,7 @@ impl CalendarPage {
             let last_click_rc: Rc<Cell<Option<(usize, std::time::Instant)>>> = Rc::new(Cell::new(None));
 
             let drawing_area = gtk::DrawingArea::builder()
-                .height_request(total_grid_height)
+                .height_request(if is_fit_24h { -1 } else { total_grid_height })
                 .hexpand(true)
                 .vexpand(true)
                 .can_focus(true)
@@ -13011,6 +13164,11 @@ impl CalendarPage {
             drawing_area.set_draw_func(move |_area, cr, width_i32, height_i32| {
                 let width = width_i32 as f64;
                 let height = height_i32 as f64;
+                let eff_slot_h = if is_fit_24h {
+                    (height / slot_count as f64).max(1.0)
+                } else {
+                    slot_height as f64
+                };
                 let is_dark = adw::StyleManager::default().is_dark();
 
                 if let Ok(mut font_options) = gtk::cairo::FontOptions::new() {
@@ -13031,7 +13189,7 @@ impl CalendarPage {
                 cr.set_source_rgba(line_color, line_color, line_color, hour_line_alpha);
                 cr.set_line_width(1.0);
                 for slot in (slots_per_hour..slot_count).step_by(slots_per_hour) {
-                    let y = (slot as f64 * slot_height as f64).round() - 0.5;
+                    let y = (slot as f64 * eff_slot_h).round() - 0.5;
                     cr.move_to(0.0, y);
                     cr.line_to(width, y);
                 }
@@ -13060,7 +13218,7 @@ impl CalendarPage {
                 cr.set_dash(&[2.0, 2.0], 0.0);
                 for slot in 1..slot_count {
                     if slot % slots_per_hour != 0 {
-                        let y = (slot as f64 * slot_height as f64).round() - 0.5;
+                        let y = (slot as f64 * eff_slot_h).round() - 0.5;
                         cr.move_to(0.0, y);
                         cr.line_to(width, y);
                     }
@@ -13108,8 +13266,8 @@ impl CalendarPage {
                     }
 
                 if let Some((min_s, max_s)) = sel_range {
-                    let sy1 = min_s as f64 * slot_height as f64;
-                    let sy2 = (max_s + 1) as f64 * slot_height as f64;
+                    let sy1 = min_s as f64 * eff_slot_h;
+                    let sy2 = (max_s + 1) as f64 * eff_slot_h;
                     let sh = (sy2 - sy1).max(2.0);
                     draw_cairo_rounded_rect(cr, 2.0, sy1 + 1.0, (width - 5.0).max(10.0), sh - 2.0, 6.0);
                     cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 0.25);
@@ -13143,7 +13301,7 @@ impl CalendarPage {
                         cr,
                         chip,
                         width,
-                        slot_height as f64,
+                        eff_slot_h,
                         is_dark,
                         is_past,
                     );
@@ -13174,7 +13332,7 @@ impl CalendarPage {
                         cr,
                         chip,
                         width,
-                        slot_height as f64,
+                        eff_slot_h,
                         is_dark,
                         is_past,
                     );
@@ -13191,7 +13349,7 @@ impl CalendarPage {
                             cr,
                             ms,
                             width,
-                            slot_height as f64,
+                            eff_slot_h,
                             interval_minutes as u32,
                             is_dark,
                             use_12h,
@@ -13216,10 +13374,15 @@ impl CalendarPage {
                     Some("grabbing")
                 } else {
                     let w = area.width() as f64;
-                    let on_edge = find_chip_bottom_edge_at(&placed_chips_motion.borrow(), x, y, w, slot_height as f64);
+                    let eff_slot_h = if is_fit_24h {
+                        (area.height() as f64 / slot_count as f64).max(1.0)
+                    } else {
+                        slot_height as f64
+                    };
+                    let on_edge = find_chip_bottom_edge_at(&placed_chips_motion.borrow(), x, y, w, eff_slot_h);
                     if on_edge.is_some() {
                         Some("ns-resize")
-                    } else if find_chip_at(&placed_chips_motion.borrow(), x, y, w, slot_height as f64).is_some() {
+                    } else if find_chip_at(&placed_chips_motion.borrow(), x, y, w, eff_slot_h).is_some() {
                         Some("pointer")
                     } else {
                         None
@@ -13247,7 +13410,12 @@ impl CalendarPage {
             let placed_chips_tt = placed_chips_rc.clone();
             drawing_area.connect_query_tooltip(move |area, x, y, _keyboard, tooltip| {
                 let w = area.width() as f64;
-                let found = find_chip_at(&placed_chips_tt.borrow(), x as f64, y as f64, w, slot_height as f64);
+                let eff_slot_h = if is_fit_24h {
+                    (area.height() as f64 / slot_count as f64).max(1.0)
+                } else {
+                    slot_height as f64
+                };
+                let found = find_chip_at(&placed_chips_tt.borrow(), x as f64, y as f64, w, eff_slot_h);
                 if let Some(idx) = found {
                     let chip = &placed_chips_tt.borrow()[idx];
                     let untitled = gettext("(Untitled)");
@@ -13288,8 +13456,13 @@ impl CalendarPage {
                 let Some(page) = page_weak_click.upgrade() else { return };
                 let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
                 let w = area.width() as f64;
-                let on_edge = find_chip_bottom_edge_at(&placed_chips_click.borrow(), click_x, click_y, w, slot_height as f64);
-                let found = on_edge.or_else(|| find_chip_at(&placed_chips_click.borrow(), click_x, click_y, w, slot_height as f64));
+                let eff_slot_h = if is_fit_24h {
+                    (area.height() as f64 / slot_count as f64).max(1.0)
+                } else {
+                    slot_height as f64
+                };
+                let on_edge = find_chip_bottom_edge_at(&placed_chips_click.borrow(), click_x, click_y, w, eff_slot_h);
+                let found = on_edge.or_else(|| find_chip_at(&placed_chips_click.borrow(), click_x, click_y, w, eff_slot_h));
 
                 if let Some(chip_idx) = found {
                     let chip = &placed_chips_click.borrow()[chip_idx];
@@ -13304,7 +13477,7 @@ impl CalendarPage {
                 } else {
                     // Clicked on an empty time slot
                     page.clear_inspected_event();
-                    let slot = ((click_y / slot_height as f64).floor() as usize).min(slot_count.saturating_sub(1));
+                    let slot = ((click_y / eff_slot_h).floor() as usize).min(slot_count.saturating_sub(1));
                     let start_min = (slot * interval_minutes as usize) as u32;
                     let end_min = ((slot + 1) * interval_minutes as usize) as u32;
 
@@ -13372,9 +13545,9 @@ impl CalendarPage {
                         let start_time = s_date.and_hms_opt(0, 0, 0).unwrap() + Duration::minutes(s_min as i64);
                         let end_time = e_date.and_hms_opt(0, 0, 0).unwrap() + Duration::minutes(e_min as i64);
                         let rect = {
-                            let y = (s_min as f64 / interval_minutes as f64) * slot_height as f64;
+                            let y = (s_min as f64 / interval_minutes as f64) * eff_slot_h;
                             let dur_min = (e_min.saturating_sub(s_min)).max(interval_minutes as u32);
-                            let h = (dur_min as f64 / interval_minutes as f64) * slot_height as f64;
+                            let h = (dur_min as f64 / interval_minutes as f64) * eff_slot_h;
                             let w = area.width() as f64;
                             gdk::Rectangle::new(0, y as i32, w as i32, h as i32)
                         };
@@ -13394,12 +13567,17 @@ impl CalendarPage {
                     let Some(page) = page_weak_release.upgrade() else { return };
                     let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
                     let w = area.width() as f64;
-                    let found = find_chip_at(&placed_chips_release.borrow(), click_x, click_y, w, slot_height as f64);
+                    let eff_slot_h = if is_fit_24h {
+                        (area.height() as f64 / slot_count as f64).max(1.0)
+                    } else {
+                        slot_height as f64
+                    };
+                    let found = find_chip_at(&placed_chips_release.borrow(), click_x, click_y, w, eff_slot_h);
                     if let Some(chip_idx) = found {
                         let chip = &placed_chips_release.borrow()[chip_idx];
                         page.select_and_inspect_event(&chip.event, Some(target_date));
                         if !page.is_tag_vpane_visible() {
-                            let (cx, cy, cw, ch) = chip_rect_coordinates(chip, w, slot_height as f64);
+                            let (cx, cy, cw, ch) = chip_rect_coordinates(chip, w, eff_slot_h);
                             let rect = gdk::Rectangle::new(cx as i32, cy as i32, cw as i32, ch as i32);
                             show_calendar_event_details_popover_full(
                                 &page,
@@ -13434,11 +13612,16 @@ impl CalendarPage {
             drag_gesture.connect_drag_begin(move |gesture, start_x, start_y| {
                 let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
                 let w = area.width() as f64;
+                let eff_slot_h = if is_fit_24h {
+                    (area.height() as f64 / slot_count as f64).max(1.0)
+                } else {
+                    slot_height as f64
+                };
                 drag_start_x_begin.set(start_x);
                 drag_start_y_begin.set(start_y);
 
                 // 1. Check if user is resizing bottom edge
-                let on_edge = find_chip_bottom_edge_at(&placed_chips_for_drag.borrow(), start_x, start_y, w, slot_height as f64);
+                let on_edge = find_chip_bottom_edge_at(&placed_chips_for_drag.borrow(), start_x, start_y, w, eff_slot_h);
                 if let Some(chip_idx) = on_edge {
                     gesture.set_state(gtk::EventSequenceState::Claimed);
                     if let Some(page) = page_weak_drag_begin.upgrade() {
@@ -13457,7 +13640,7 @@ impl CalendarPage {
                 }
 
                 // 2. Check if user clicked an event to move it
-                let on_chip = find_chip_at(&placed_chips_for_drag.borrow(), start_x, start_y, w, slot_height as f64);
+                let on_chip = find_chip_at(&placed_chips_for_drag.borrow(), start_x, start_y, w, eff_slot_h);
                 if let Some(chip_idx) = on_chip {
                     let chip = &placed_chips_for_drag.borrow()[chip_idx];
                     if event_mutation_error(&chip.event).is_none() {
@@ -13465,8 +13648,8 @@ impl CalendarPage {
                             page.clear_selected_time_slot();
                         }
                         let grab_y = start_y.max(0.0);
-                        let chip_top_y = chip.start_slot as f64 * slot_height as f64;
-                        let offset_in_chip = ((grab_y - chip_top_y).max(0.0) / slot_height as f64).floor() as usize;
+                        let chip_top_y = chip.start_slot as f64 * eff_slot_h;
+                        let offset_in_chip = ((grab_y - chip_top_y).max(0.0) / eff_slot_h).floor() as usize;
                         let grab_slot_offset = offset_in_chip.min(chip.row_span.saturating_sub(1));
 
                         move_drag_begin.borrow_mut().replace(MoveDragState {
@@ -13486,7 +13669,7 @@ impl CalendarPage {
                 }
 
                 // 3. Otherwise, empty time slot selection drag
-                let s = ((start_y.max(0.0) / slot_height as f64).floor() as usize).min(slot_count.saturating_sub(1));
+                let s = ((start_y.max(0.0) / eff_slot_h).floor() as usize).min(slot_count.saturating_sub(1));
                 drag_start_slot_begin.set(s);
                 let start_min = (s * interval_minutes as usize) as u32;
                 let end_min = ((s + 1) * interval_minutes as usize) as u32;
@@ -13522,8 +13705,13 @@ impl CalendarPage {
                         }
                     }
                     let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
+                    let eff_slot_h = if is_fit_24h {
+                        (area.height() as f64 / slot_count as f64).max(1.0)
+                    } else {
+                        slot_height as f64
+                    };
                     let cur_y = (drag_start_y_update.get() + offset_y).max(0.0);
-                    let cur_slot = ((cur_y / slot_height as f64).round() as usize)
+                    let cur_slot = ((cur_y / eff_slot_h).round() as usize)
                         .clamp(rs.start_slot + 1, slot_count);
                     if cur_slot != rs.current_end_slot {
                         rs.current_end_slot = cur_slot;
@@ -13553,13 +13741,18 @@ impl CalendarPage {
                         let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
                         let w = area.width() as f64;
                         if w <= 0.0 { return; }
+                        let eff_slot_h = if is_fit_24h {
+                            (area.height() as f64 / slot_count as f64).max(1.0)
+                        } else {
+                            slot_height as f64
+                        };
 
                         let day_offset = ((drag_start_x_update.get() + offset_x) / w).floor() as i32;
                         let cur_day_idx = (day_index as i32 + day_offset).clamp(0, days_for_update.len() as i32 - 1) as usize;
                         let cur_date = days_for_update[cur_day_idx];
 
                         let cur_y = (drag_start_y_update.get() + offset_y).max(0.0);
-                        let pointer_slot = (cur_y / slot_height as f64).floor() as i64;
+                        let pointer_slot = (cur_y / eff_slot_h).floor() as i64;
                         let max_start_slot = (slot_count.saturating_sub(ms.row_span)) as i64;
                         let target_start = (pointer_slot - ms.grab_slot_offset as i64).clamp(0, max_start_slot) as usize;
 
@@ -13587,13 +13780,18 @@ impl CalendarPage {
                     let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
                     let w = area.width() as f64;
                     if w <= 0.0 { return; }
+                    let eff_slot_h = if is_fit_24h {
+                        (area.height() as f64 / slot_count as f64).max(1.0)
+                    } else {
+                        slot_height as f64
+                    };
 
                     let day_offset = ((drag_start_x_update.get() + offset_x) / w).floor() as i32;
                     let cur_day_idx = (day_index as i32 + day_offset).clamp(0, days_for_update.len() as i32 - 1) as usize;
                     let cur_date = days_for_update[cur_day_idx];
 
                     let cur_y = (drag_start_y_update.get() + offset_y).max(0.0);
-                    let cur_slot = ((cur_y / slot_height as f64).floor() as usize).min(slot_count.saturating_sub(1));
+                    let cur_slot = ((cur_y / eff_slot_h).floor() as usize).min(slot_count.saturating_sub(1));
                     let start_s = drag_start_slot_update.get();
 
                     let (start_d, end_d, start_m, end_m) = if cur_date == target_date {
@@ -13683,10 +13881,15 @@ impl CalendarPage {
                         };
                         let start_time = d_start.and_hms_opt(0, 0, 0).unwrap() + Duration::minutes(t_start as i64);
                         let end_time = d_end.and_hms_opt(0, 0, 0).unwrap() + Duration::minutes(t_end as i64);
+                        let eff_slot_h = if is_fit_24h {
+                            (area.height() as f64 / slot_count as f64).max(1.0)
+                        } else {
+                            slot_height as f64
+                        };
                         let rect = {
-                            let y = (t_start as f64 / interval_minutes as f64) * slot_height as f64;
+                            let y = (t_start as f64 / interval_minutes as f64) * eff_slot_h;
                             let dur_min = (t_end.saturating_sub(t_start)).max(interval_minutes as u32);
-                            let h = (dur_min as f64 / interval_minutes as f64) * slot_height as f64;
+                            let h = (dur_min as f64 / interval_minutes as f64) * eff_slot_h;
                             let w = area.width() as f64;
                             gdk::Rectangle::new(0, y as i32, w as i32, h as i32)
                         };
@@ -13721,7 +13924,12 @@ impl CalendarPage {
                 let Some(page) = page_weak_tgrc.upgrade() else { return };
                 let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
                 let w = area.width() as f64;
-                let found = find_chip_at(&placed_chips_tgrc.borrow(), x, y, w, slot_height as f64);
+                let eff_slot_h = if is_fit_24h {
+                    (area.height() as f64 / slot_count as f64).max(1.0)
+                } else {
+                    slot_height as f64
+                };
+                let found = find_chip_at(&placed_chips_tgrc.borrow(), x, y, w, eff_slot_h);
                 let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
 
                 if let Some(chip_idx) = found {
@@ -13729,7 +13937,7 @@ impl CalendarPage {
                     page.clear_selected_time_slot();
                     show_calendar_event_context_menu(&page, &area, &chip.event, rect);
                 } else {
-                    let slot = ((y / slot_height as f64).floor() as usize).min(slot_count.saturating_sub(1));
+                    let slot = ((y / eff_slot_h).floor() as usize).min(slot_count.saturating_sub(1));
                     let start_min = (slot * interval_minutes as usize) as u32;
                     let end_min = ((slot + 1) * interval_minutes as usize) as u32;
 
@@ -13754,7 +13962,12 @@ impl CalendarPage {
                 let Some(page) = page_weak_tglp.upgrade() else { return };
                 let Some(area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
                 let w = area.width() as f64;
-                let found = find_chip_at(&placed_chips_tglp.borrow(), x, y, w, slot_height as f64);
+                let eff_slot_h = if is_fit_24h {
+                    (area.height() as f64 / slot_count as f64).max(1.0)
+                } else {
+                    slot_height as f64
+                };
+                let found = find_chip_at(&placed_chips_tglp.borrow(), x, y, w, eff_slot_h);
                 let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
 
                 if let Some(chip_idx) = found {
@@ -13762,7 +13975,7 @@ impl CalendarPage {
                     page.clear_selected_time_slot();
                     show_calendar_event_context_menu(&page, &area, &chip.event, rect);
                 } else {
-                    let slot = ((y / slot_height as f64).floor() as usize).min(slot_count.saturating_sub(1));
+                    let slot = ((y / eff_slot_h).floor() as usize).min(slot_count.saturating_sub(1));
                     let start_min = (slot * interval_minutes as usize) as u32;
                     let end_min = ((slot + 1) * interval_minutes as usize) as u32;
 
@@ -13828,7 +14041,12 @@ impl CalendarPage {
                 let delta_minutes = if event.all_day {
                     0
                 } else {
-                    let target_min = ((y / total_h_f64) * 1440.0) as u32;
+                    let drop_h = target
+                        .widget()
+                        .map(|w| w.height() as f64)
+                        .filter(|&h| h > 1.0)
+                        .unwrap_or(total_h_f64);
+                    let target_min = ((y / drop_h) * 1440.0) as u32;
                     let snapped_min = (target_min / interval_min_val) * interval_min_val;
                     let start_dt = event_start_datetime(&event);
                     let current_minute = start_dt.map(|dt| dt.time().hour() * 60 + dt.time().minute()).unwrap_or(0);
@@ -13854,7 +14072,11 @@ impl CalendarPage {
 
         let timed_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(if is_fit_24h {
+                gtk::PolicyType::Never
+            } else {
+                gtk::PolicyType::Automatic
+            })
             .vexpand(true)
             .hexpand(true)
             .child(&timed_grid)
@@ -13876,10 +14098,13 @@ impl CalendarPage {
         let target_start_min = earliest_event_min;
 
         let center_ratio_captured = target_center_ratio;
-        let initial_applied = Rc::new(Cell::new(false));
+        let initial_applied = Rc::new(Cell::new(is_fit_24h));
         let apply_scheduled = Rc::new(Cell::new(false));
 
         let compute_target_y = move |adj: &gtk::Adjustment| -> f64 {
+            if is_fit_24h {
+                return 0.0;
+            }
             let max_scroll = (adj.upper() - adj.page_size()).max(0.0);
             if let Some(center_ratio) = center_ratio_captured {
                 let center_y = center_ratio * adj.upper();
@@ -13902,20 +14127,22 @@ impl CalendarPage {
         // previous grid, hand the new ScrolledWindow an adjustment that already holds the target
         // value. GtkViewport keeps that value on its first allocation, so the very first frame is
         // already at the correct position instead of jumping from 0 afterwards.
-        if let Some(page) = prev_page_size {
-            let upper = (total_grid_height as f64).max(page);
-            let preset = gtk::Adjustment::new(
-                0.0,
-                0.0,
-                upper,
-                slot_height as f64,
-                page * 0.9,
-                page,
-            );
-            let target = compute_target_y(&preset);
-            preset.set_value(target);
-            timed_scroll.set_vadjustment(Some(&preset));
-            initial_applied.set(true);
+        if !is_fit_24h {
+            if let Some(page) = prev_page_size {
+                let upper = (total_grid_height as f64).max(page);
+                let preset = gtk::Adjustment::new(
+                    0.0,
+                    0.0,
+                    upper,
+                    slot_height as f64,
+                    page * 0.9,
+                    page,
+                );
+                let target = compute_target_y(&preset);
+                preset.set_value(target);
+                timed_scroll.set_vadjustment(Some(&preset));
+                initial_applied.set(true);
+            }
         }
         let vadj = timed_scroll.vadjustment();
 
@@ -15271,47 +15498,170 @@ impl CalendarPage {
         }
     }
 
+    pub(crate) fn ensure_multi_year_summaries_for_anchor(&self, start_year: i32) {
+        let query = self.imp().calendar_search_query.borrow().clone();
+        let category = self.imp().calendar_category_filter.borrow().clone();
+        let hidden_sources = self.imp().hidden_calendar_sources.borrow().clone();
+        let hidden_count = hidden_sources.len();
+        let revision = self.imp().calendar_revision.get();
+        let key = (start_year, revision, query, category, hidden_count);
+        if self.imp().multi_year_rendered_key.borrow().as_ref() == Some(&key) {
+            return;
+        }
+
+        let end_year = start_year + 5;
+        let Some(start_date) = NaiveDate::from_ymd_opt(start_year, 1, 1) else {
+            return;
+        };
+        let Some(end_date) = NaiveDate::from_ymd_opt(end_year, 12, 31) else {
+            return;
+        };
+        let range = CalendarDateRange {
+            start: start_date,
+            end: end_date,
+        };
+        let by_date = self.events_by_date(range);
+
+        let mut month_identities: BTreeMap<(i32, u32), (BTreeSet<CalendarEventIdentity>, usize)> =
+            BTreeMap::new();
+        let mut month_busy_days: BTreeMap<(i32, u32), u32> = BTreeMap::new();
+        let mut month_previews: BTreeMap<(i32, u32), Vec<(String, (u8, u8, u8), Option<CalendarEventIdentity>)>> =
+            BTreeMap::new();
+
+        for (date, evs) in by_date {
+            if evs.is_empty() {
+                continue;
+            }
+            let ym = (date.year(), date.month());
+            *month_busy_days.entry(ym).or_insert(0) += 1;
+            let (seen_ids, anon_count) = month_identities.entry(ym).or_default();
+            let previews = month_previews.entry(ym).or_default();
+
+            for ev in evs {
+                let id_opt = CalendarEventIdentity::from_event(&ev);
+                let is_new_in_month = if let Some(ref id) = id_opt {
+                    seen_ids.insert(id.clone())
+                } else {
+                    *anon_count += 1;
+                    true
+                };
+                if is_new_in_month && previews.len() < 5 {
+                    let title = if ev.summary.trim().is_empty() {
+                        gettext("(Untitled)")
+                    } else {
+                        ev.summary.trim().to_string()
+                    };
+                    let hex = event_color_for_record(&ev);
+                    let rgb = parse_hex_color(&hex).unwrap_or((53, 132, 228));
+                    previews.push((title, rgb, id_opt));
+                }
+            }
+        }
+
+        let mut summaries: BTreeMap<(i32, u32), MultiYearMonthSummary> = BTreeMap::new();
+        for y in start_year..=end_year {
+            for m in 1..=12 {
+                let ym = (y, m);
+                let event_count = month_identities
+                    .get(&ym)
+                    .map(|(ids, anon)| ids.len() + *anon)
+                    .unwrap_or(0);
+                let busy_days = month_busy_days.get(&ym).copied().unwrap_or(0);
+                let previews = month_previews
+                    .remove(&ym)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(t, c, _)| (t, c))
+                    .collect();
+                if event_count > 0 || busy_days > 0 {
+                    summaries.insert(
+                        ym,
+                        MultiYearMonthSummary {
+                            event_count,
+                            busy_days,
+                            previews,
+                        },
+                    );
+                }
+            }
+        }
+
+        *self.imp().multi_year_summaries.borrow_mut() = summaries;
+        self.imp().multi_year_rendered_key.replace(Some(key));
+    }
+
     fn prepare_multi_year_canvas_layout(
         anchor_year: i32,
         width: f64,
         avail_height: f64,
         _first_weekday: Weekday,
     ) -> PreparedMultiYearCanvasLayout {
-        let start_year = (anchor_year / 12) * 12;
-        let num_cols = if width >= 820.0 {
-            4
-        } else if width >= 560.0 {
+        let start_year = anchor_year;
+        let num_years = 6usize;
+        let num_cols = if width >= 760.0 {
             3
-        } else {
+        } else if width >= 460.0 {
             2
+        } else {
+            1
         };
-        let num_rows = (12 + num_cols - 1) / num_cols;
-        let margin_x = 24.0f64;
-        let margin_y = 20.0f64;
-        let spacing_x = 20.0f64;
-        let spacing_y = 20.0f64;
+        let num_rows = (num_years + num_cols - 1) / num_cols;
+        let margin_x = 20.0f64;
+        let margin_y = 16.0f64;
+        let spacing_x = 16.0f64;
+        let spacing_y = 16.0f64;
 
-        let usable_w = (width - 2.0 * margin_x - (num_cols - 1) as f64 * spacing_x).max(200.0);
+        let usable_w = (width - 2.0 * margin_x - (num_cols - 1) as f64 * spacing_x).max(220.0);
         let card_w = (usable_w / num_cols as f64).floor();
         let total_cards_w = num_cols as f64 * card_w + (num_cols - 1) as f64 * spacing_x;
         let actual_margin_x = ((width - total_cards_w) * 0.5).max(margin_x);
 
-        let usable_h = (avail_height - 2.0 * margin_y - (num_rows - 1) as f64 * spacing_y).max(360.0);
-        let card_h = (usable_h / num_rows as f64).floor().clamp(110.0, 210.0);
+        let usable_h = (avail_height - 2.0 * margin_y - (num_rows - 1) as f64 * spacing_y).max(400.0);
+        let card_h = (usable_h / num_rows as f64).floor().clamp(210.0, 440.0);
+        let header_h = 40.0f64;
+        let pad_x = 10.0f64;
+        let pad_bottom = 10.0f64;
+        let tile_gap_x = 6.0f64;
+        let tile_gap_y = 6.0f64;
 
-        let mut cards = Vec::with_capacity(12);
-        for idx in 0..12 {
+        let mut cards = Vec::with_capacity(num_years);
+        for idx in 0..num_years {
             let y = start_year + idx as i32;
             let c = idx % num_cols;
             let r = idx / num_cols;
             let card_x = actual_margin_x + c as f64 * (card_w + spacing_x);
             let card_y = margin_y + r as f64 * (card_h + spacing_y);
+
+            let grid_x = card_x + pad_x;
+            let grid_y = card_y + header_h;
+            let grid_w = (card_w - 2.0 * pad_x).max(80.0);
+            let grid_h = (card_h - header_h - pad_bottom).max(90.0);
+            let tile_w = ((grid_w - 3.0 * tile_gap_x) / 4.0).max(16.0);
+            let tile_h = ((grid_h - 2.0 * tile_gap_y) / 3.0).max(20.0);
+
+            let month_tiles = std::array::from_fn(|m_idx| {
+                let m = (m_idx + 1) as u32;
+                let mc = m_idx % 4;
+                let mr = m_idx / 4;
+                let tx = grid_x + mc as f64 * (tile_w + tile_gap_x);
+                let ty = grid_y + mr as f64 * (tile_h + tile_gap_y);
+                PreparedMultiYearMonthTile {
+                    month: m,
+                    x: tx,
+                    y: ty,
+                    w: tile_w,
+                    h: tile_h,
+                }
+            });
+
             cards.push(PreparedMultiYearCardLayout {
                 year: y,
                 card_x,
                 card_y,
                 card_w,
                 card_h,
+                header_h,
+                month_tiles,
             });
         }
 
@@ -15319,7 +15669,7 @@ impl CalendarPage {
         PreparedMultiYearCanvasLayout {
             anchor_year,
             start_year,
-            end_year: start_year + 11,
+            end_year: start_year + (num_years as i32 - 1),
             width,
             height: total_h.max(avail_height),
             cards,
@@ -15337,6 +15687,15 @@ impl CalendarPage {
                 && y >= card.card_y
                 && y <= card.card_y + card.card_h
             {
+                for tile in &card.month_tiles {
+                    if x >= tile.x
+                        && x <= tile.x + tile.w
+                        && y >= tile.y
+                        && y <= tile.y + tile.h
+                    {
+                        return Some(YearCanvasHitTarget::YearMonth(card.year, tile.month));
+                    }
+                }
                 return Some(YearCanvasHitTarget::YearCard(card.year));
             }
         }
@@ -15346,6 +15705,7 @@ impl CalendarPage {
     fn draw_multi_year_canvas(
         cr: &gtk::cairo::Context,
         layout: &PreparedMultiYearCanvasLayout,
+        summaries: &BTreeMap<(i32, u32), MultiYearMonthSummary>,
         selected_year: i32,
         today: NaiveDate,
         hovered_target: Option<&YearCanvasHitTarget>,
@@ -15355,20 +15715,25 @@ impl CalendarPage {
         let current_year = today.year();
 
         for card in &layout.cards {
-            let is_hovered = hovered_target == Some(&YearCanvasHitTarget::YearCard(card.year));
+            let is_card_hovered = hovered_target == Some(&YearCanvasHitTarget::YearCard(card.year));
             let is_current = card.year == current_year;
             let is_selected = card.year == selected_year;
 
+            let year_total_events: usize = (1..=12)
+                .filter_map(|m| summaries.get(&(card.year, m)))
+                .map(|s| s.event_count)
+                .sum();
+
             // Card background
             draw_cairo_rounded_rect(cr, card.card_x, card.card_y, card.card_w, card.card_h, 12.0);
-            if is_hovered {
-                cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, if is_dark { 0.16 } else { 0.10 });
+            if is_card_hovered {
+                cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, if is_dark { 0.12 } else { 0.07 });
             } else if is_selected {
-                cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, if is_dark { 0.10 } else { 0.06 });
+                cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, if is_dark { 0.07 } else { 0.04 });
             } else if is_dark {
                 cr.set_source_rgba(1.0, 1.0, 1.0, 0.035);
             } else {
-                cr.set_source_rgba(0.0, 0.0, 0.0, 0.025);
+                cr.set_source_rgba(0.0, 0.0, 0.0, 0.02);
             }
             let _ = cr.fill();
 
@@ -15377,66 +15742,251 @@ impl CalendarPage {
             if is_current {
                 cr.set_line_width(1.8);
                 cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 0.90);
-            } else if is_selected || is_hovered {
-                cr.set_line_width(1.2);
+            } else if is_selected || is_card_hovered {
+                cr.set_line_width(1.3);
                 cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 0.55);
             } else {
                 cr.set_line_width(1.0);
-                cr.set_source_rgba(fg, fg, fg, if is_dark { 0.10 } else { 0.08 });
+                cr.set_source_rgba(fg, fg, fg, if is_dark { 0.11 } else { 0.09 });
             }
             let _ = cr.stroke();
 
-            // Year number title
+            // Year number title on top-left
             let year_str = card.year.to_string();
             cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
-            cr.set_font_size(22.0);
-            if is_current || is_hovered {
+            cr.set_font_size(19.0);
+            if is_current || is_card_hovered {
                 cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 1.0);
             } else {
-                cr.set_source_rgba(fg, fg, fg, if is_dark { 0.94 } else { 0.88 });
+                cr.set_source_rgba(fg, fg, fg, if is_dark { 0.95 } else { 0.88 });
             }
-            if let Ok(ext) = cr.text_extents(&year_str) {
-                let tx = card.card_x + (card.card_w - ext.width()) * 0.5 - ext.x_bearing();
-                let ty = card.card_y + 34.0;
+            cr.move_to(card.card_x + 14.0, card.card_y + 27.0);
+            let _ = cr.show_text(&year_str);
+
+            // Year total events badge on top-right
+            let badge_str = if year_total_events == 0 {
+                gettext("No events")
+            } else if year_total_events == 1 {
+                format!("1 {}", gettext("event"))
+            } else {
+                format!("{} {}", year_total_events, gettext("events"))
+            };
+            cr.select_font_face(
+                "sans-serif",
+                gtk::cairo::FontSlant::Normal,
+                if year_total_events > 0 {
+                    gtk::cairo::FontWeight::Bold
+                } else {
+                    gtk::cairo::FontWeight::Normal
+                },
+            );
+            cr.set_font_size(10.5);
+            if let Ok(ext) = cr.text_extents(&badge_str) {
+                let pill_pad_x = 7.0;
+                let pill_w = ext.width() + pill_pad_x * 2.0;
+                let pill_h = 19.0;
+                let pill_x = card.card_x + card.card_w - 12.0 - pill_w;
+                let pill_y = card.card_y + 11.0;
+
+                draw_cairo_rounded_rect(cr, pill_x, pill_y, pill_w, pill_h, 9.5);
+                if year_total_events > 0 {
+                    cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, if is_dark { 0.24 } else { 0.14 });
+                } else {
+                    cr.set_source_rgba(fg, fg, fg, if is_dark { 0.06 } else { 0.045 });
+                }
+                let _ = cr.fill();
+
+                if year_total_events > 0 {
+                    cr.set_source_rgba(
+                        if is_dark { 120.0 / 255.0 } else { 35.0 / 255.0 },
+                        if is_dark { 180.0 / 255.0 } else { 105.0 / 255.0 },
+                        if is_dark { 255.0 / 255.0 } else { 205.0 / 255.0 },
+                        0.96,
+                    );
+                } else {
+                    cr.set_source_rgba(fg, fg, fg, if is_dark { 0.42 } else { 0.40 });
+                }
+                let tx = pill_x + (pill_w - ext.width()) * 0.5 - ext.x_bearing();
+                let ty = pill_y + (pill_h - ext.height()) * 0.5 - ext.y_bearing();
                 cr.move_to(tx, ty);
-                let _ = cr.show_text(&year_str);
+                let _ = cr.show_text(&badge_str);
             }
 
-            // 4x3 miniature month labels inside the year card (Apple Calendar style)
-            let grid_top = card.card_y + 48.0;
-            let grid_h = (card.card_h - 56.0).max(40.0);
-            let pad_x = 12.0;
-            let grid_w = (card.card_w - 2.0 * pad_x).max(60.0);
-            let m_col_w = grid_w / 4.0;
-            let m_row_h = grid_h / 3.0;
-
-            cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
-            cr.set_font_size(10.0);
-            for m in 1..=12 {
-                let m_idx = (m - 1) as usize;
-                let mc = m_idx % 4;
-                let mr = m_idx / 4;
-                let mx = card.card_x + pad_x + mc as f64 * m_col_w;
-                let my = grid_top + mr as f64 * m_row_h;
+            // 12 interactive month tiles (4x3) inside the year card
+            for tile in &card.month_tiles {
+                let m = tile.month;
                 let is_curr_month = is_current && today.month() == m;
+                let is_tile_hovered =
+                    hovered_target == Some(&YearCanvasHitTarget::YearMonth(card.year, m));
+                let summary_opt = summaries.get(&(card.year, m));
+                let ev_count = summary_opt.map(|s| s.event_count).unwrap_or(0);
+
+                // Tile background (with subtle activity heatmap tint when ev_count > 0)
+                draw_cairo_rounded_rect(cr, tile.x, tile.y, tile.w, tile.h, 7.0);
+                if is_tile_hovered {
+                    cr.set_source_rgba(
+                        53.0 / 255.0,
+                        132.0 / 255.0,
+                        228.0 / 255.0,
+                        if is_dark { 0.28 } else { 0.18 },
+                    );
+                } else if is_curr_month {
+                    cr.set_source_rgba(
+                        53.0 / 255.0,
+                        132.0 / 255.0,
+                        228.0 / 255.0,
+                        if is_dark { 0.20 } else { 0.12 },
+                    );
+                } else if ev_count > 0 {
+                    let intensity = (ev_count as f64 / 8.0).clamp(0.18, 1.0);
+                    let alpha = if is_dark {
+                        0.07 + 0.12 * intensity
+                    } else {
+                        0.045 + 0.09 * intensity
+                    };
+                    cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, alpha);
+                } else if is_dark {
+                    cr.set_source_rgba(1.0, 1.0, 1.0, 0.03);
+                } else {
+                    cr.set_source_rgba(0.0, 0.0, 0.0, 0.022);
+                }
+                let _ = cr.fill();
+
+                // Tile border
+                draw_cairo_rounded_rect(
+                    cr,
+                    tile.x + 0.5,
+                    tile.y + 0.5,
+                    tile.w - 1.0,
+                    tile.h - 1.0,
+                    7.0,
+                );
                 if is_curr_month {
-                    let pill_w = (m_col_w - 4.0).clamp(24.0, 42.0);
-                    let pill_h = 16.0;
-                    let px = mx + (m_col_w - pill_w) * 0.5;
-                    let py = my + (m_row_h - pill_h) * 0.5;
-                    draw_cairo_rounded_rect(cr, px, py, pill_w, pill_h, 4.0);
-                    cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, if is_dark { 0.30 } else { 0.18 });
-                    let _ = cr.fill();
-                    cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 1.0);
+                    cr.set_line_width(1.4);
+                    cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 0.90);
+                } else if is_tile_hovered {
+                    cr.set_line_width(1.2);
+                    cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 0.70);
+                } else if ev_count > 0 {
+                    cr.set_line_width(1.0);
+                    cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, if is_dark { 0.30 } else { 0.24 });
+                } else {
+                    cr.set_line_width(1.0);
+                    cr.set_source_rgba(fg, fg, fg, if is_dark { 0.06 } else { 0.05 });
+                }
+                let _ = cr.stroke();
+
+                // Month short name at top-left of tile
+                let short_m = Self::calendar_month_short_name(m);
+                cr.select_font_face(
+                    "sans-serif",
+                    gtk::cairo::FontSlant::Normal,
+                    if is_curr_month || ev_count > 0 || is_tile_hovered {
+                        gtk::cairo::FontWeight::Bold
+                    } else {
+                        gtk::cairo::FontWeight::Normal
+                    },
+                );
+                cr.set_font_size(11.0);
+                if is_curr_month || is_tile_hovered {
+                    cr.set_source_rgba(
+                        if is_dark { 110.0 / 255.0 } else { 35.0 / 255.0 },
+                        if is_dark { 175.0 / 255.0 } else { 108.0 / 255.0 },
+                        if is_dark { 255.0 / 255.0 } else { 210.0 / 255.0 },
+                        1.0,
+                    );
+                } else if ev_count > 0 {
+                    cr.set_source_rgba(fg, fg, fg, if is_dark { 0.92 } else { 0.86 });
                 } else {
                     cr.set_source_rgba(fg, fg, fg, if is_dark { 0.55 } else { 0.50 });
                 }
-                let short_m = Self::calendar_month_short_name(m);
-                if let Ok(ext) = cr.text_extents(&short_m) {
-                    let tx = mx + (m_col_w - ext.width()) * 0.5 - ext.x_bearing();
-                    let ty = my + m_row_h * 0.5 - ext.height() * 0.5 - ext.y_bearing();
-                    cr.move_to(tx, ty);
-                    let _ = cr.show_text(&short_m);
+                cr.move_to(tile.x + 6.0, tile.y + 14.5);
+                let _ = cr.show_text(&short_m);
+
+                // Event count badge at top-right of tile (if > 0)
+                if ev_count > 0 {
+                    let count_str = ev_count.to_string();
+                    cr.select_font_face(
+                        "sans-serif",
+                        gtk::cairo::FontSlant::Normal,
+                        gtk::cairo::FontWeight::Bold,
+                    );
+                    cr.set_font_size(9.5);
+                    if let Ok(ext) = cr.text_extents(&count_str) {
+                        let b_w = (ext.width() + 8.0).max(15.0);
+                        let b_h = 13.5;
+                        let b_x = tile.x + tile.w - b_w - 4.5;
+                        let b_y = tile.y + 3.5;
+                        draw_cairo_rounded_rect(cr, b_x, b_y, b_w, b_h, 6.5);
+                        cr.set_source_rgba(
+                            53.0 / 255.0,
+                            132.0 / 255.0,
+                            228.0 / 255.0,
+                            if is_dark { 0.35 } else { 0.20 },
+                        );
+                        let _ = cr.fill();
+
+                        cr.set_source_rgba(
+                            if is_dark { 150.0 / 255.0 } else { 28.0 / 255.0 },
+                            if is_dark { 205.0 / 255.0 } else { 96.0 / 255.0 },
+                            if is_dark { 255.0 / 255.0 } else { 195.0 / 255.0 },
+                            0.98,
+                        );
+                        let tx = b_x + (b_w - ext.width()) * 0.5 - ext.x_bearing();
+                        let ty = b_y + (b_h - ext.height()) * 0.5 - ext.y_bearing();
+                        cr.move_to(tx, ty);
+                        let _ = cr.show_text(&count_str);
+                    }
+                }
+
+                // Event preview items inside tile (up to 2 lines with colored dot + title)
+                if let Some(summary) = summary_opt {
+                    if !summary.previews.is_empty() && tile.h >= 36.0 {
+                        let _ = cr.save();
+                        draw_cairo_rounded_rect(
+                            cr,
+                            tile.x + 2.0,
+                            tile.y + 18.0,
+                            (tile.w - 4.0).max(1.0),
+                            (tile.h - 20.0).max(1.0),
+                            4.0,
+                        );
+                        cr.clip();
+
+                        let max_rows = if tile.h >= 52.0 { 2 } else { 1 };
+                        cr.select_font_face(
+                            "sans-serif",
+                            gtk::cairo::FontSlant::Normal,
+                            gtk::cairo::FontWeight::Normal,
+                        );
+                        cr.set_font_size(9.5);
+                        for (idx, (title, (r, g, b))) in
+                            summary.previews.iter().take(max_rows).enumerate()
+                        {
+                            let row_y = tile.y + 28.0 + idx as f64 * 12.5;
+                            // Colored dot
+                            cr.arc(
+                                tile.x + 8.5,
+                                row_y - 3.2,
+                                2.6,
+                                0.0,
+                                std::f64::consts::TAU,
+                            );
+                            cr.set_source_rgba(
+                                *r as f64 / 255.0,
+                                *g as f64 / 255.0,
+                                *b as f64 / 255.0,
+                                0.95,
+                            );
+                            let _ = cr.fill();
+
+                            // Title text
+                            cr.set_source_rgba(fg, fg, fg, if is_dark { 0.82 } else { 0.78 });
+                            cr.move_to(tile.x + 14.0, row_y);
+                            let _ = cr.show_text(title);
+                        }
+                        let _ = cr.restore();
+                    }
                 }
             }
         }
@@ -16916,6 +17466,10 @@ impl CalendarPage {
                     }
                 }
             });
+        }
+
+        if self.imp().year_view_style.get() == YearViewStyle::MultiYear {
+            self.ensure_multi_year_summaries_for_anchor(year);
         }
 
         // Reset scroll position if year changed
@@ -22803,9 +23357,9 @@ pub(crate) fn format_hour_markup_scaled(minute_of_day: u32, use_12h: bool, scale
     // handsome readable size. When compacting (< 1.0), they elegantly shrink so they
     // never crowd or overflow compact hour rows.
     let (main_sz, sub_sz, rise) = if scale < 1.0 {
-        let ms = ((18000.0 * scale).round() as i32).max(12000);
-        let ss = ((9500.0 * scale).round() as i32).max(7000);
-        let r = ((7000.0 * scale).round() as i32).max(4500);
+        let ms = ((18000.0 * scale).round() as i32).max(8500);
+        let ss = ((9500.0 * scale).round() as i32).max(6000);
+        let r = ((7000.0 * scale).round() as i32).max(3000);
         (ms, ss, r)
     } else {
         (18000, 9500, 7000)
@@ -24396,6 +24950,9 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
         .hexpand(true)
         .width_chars(1)
         .build();
+    title_entry.connect_map(|entry| {
+        entry.select_region(0, 0);
+    });
     content_box.append(&title_entry);
 
     // 2. Calendar Source & Status Badges
@@ -24732,8 +25289,9 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
         .propagate_natural_width(false)
-        .min_content_height(60)
-        .max_content_height(120)
+        .min_content_height(90)
+        .max_content_height(240)
+        .vexpand(true)
         .css_classes(vec!["calendar-details-note-box"])
         .build();
     let notes_view = gtk::TextView::builder()
