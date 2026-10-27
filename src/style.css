@@ -4036,16 +4036,16 @@ button.month-bar-chip.span-end {
 }
 
 .calendar-details-note-box {
-  background-color: transparent;
+  background-color: alpha(@window_fg_color, 0.025);
   border-radius: 6px;
-  border: 1px solid transparent;
-  padding: 4px 6px;
+  border: 1px solid alpha(@borders, 0.25);
+  padding: 2px 6px;
   transition: all 120ms ease-in-out;
 }
 
 .calendar-details-note-box:hover {
-  background-color: alpha(@window_fg_color, 0.03);
-  border-color: alpha(@borders, 0.35);
+  background-color: alpha(@window_fg_color, 0.04);
+  border-color: alpha(@borders, 0.45);
 }
 
 .calendar-details-note-box:focus-within {
@@ -4056,6 +4056,29 @@ button.month-bar-chip.span-end {
 
 .calendar-details-note-box textview {
   background-color: transparent;
+}
+
+.calendar-sidebar-scroll undershoot,
+.calendar-sidebar-scroll undershoot.top,
+.calendar-sidebar-scroll undershoot.bottom {
+  border: none;
+  box-shadow: none;
+  background: none;
+}
+
+.calendar-sidebar-scroll undershoot.bottom {
+  background: linear-gradient(to top, alpha(@window_bg_color, 0.92), transparent 16px);
+}
+
+.calendar-sidebar-scroll undershoot.top {
+  background: linear-gradient(to bottom, alpha(@window_bg_color, 0.92), transparent 16px);
+}
+
+.calendar-details-save-btn {
+  padding: 2px 10px;
+  min-height: 26px;
+  border-radius: 99px;
+  font-size: 0.82rem;
 }
 
 .calendar-details-title-entry {

@@ -10719,9 +10719,9 @@ impl CalendarPage {
         // Page A: Event Inspector
         let event_inspector_content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(8)
+            .spacing(6)
             .hexpand(true)
-            .vexpand(true)
+            .vexpand(false)
             .build();
         self.imp()
             .event_inspector_content
@@ -10736,6 +10736,7 @@ impl CalendarPage {
             .min_content_width(260)
             .vexpand(true)
             .hexpand(true)
+            .css_classes(vec!["calendar-sidebar-scroll"])
             .child(&event_inspector_content)
             .build();
         self.imp()
@@ -25429,15 +25430,20 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
 
     let content_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(6)
+        .spacing(4)
         .margin_start(8)
         .margin_end(8)
-        .margin_top(4)
-        .margin_bottom(8)
+        .margin_top(2)
+        .margin_bottom(6)
         .hexpand(true)
         .build();
 
-    // 1. Title Entry (editable directly in the sidebar, clean flat style)
+    // 1. Title Entry + Compact Action Buttons (Edit / Delete) in top row
+    let top_row = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(4)
+        .valign(gtk::Align::Center)
+        .build();
     let title_entry = gtk::Entry::builder()
         .text(&event.summary)
         .placeholder_text(&crate::i18n::gettext("Event title"))
@@ -25448,7 +25454,38 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
     title_entry.connect_map(|entry| {
         entry.select_region(0, 0);
     });
-    content_box.append(&title_entry);
+
+    let save_content = adw::ButtonContent::builder()
+        .icon_name("object-select-symbolic")
+        .label(&crate::i18n::gettext("Save"))
+        .build();
+    let save_btn = gtk::Button::builder()
+        .child(&save_content)
+        .tooltip_text(&crate::i18n::gettext("Save changes"))
+        .css_classes(vec!["suggested-action", "calendar-details-save-btn"])
+        .valign(gtk::Align::Center)
+        .visible(false)
+        .build();
+
+    let more_btn = gtk::Button::builder()
+        .icon_name("document-edit-symbolic")
+        .tooltip_text(&crate::i18n::gettext("Open full editor dialog"))
+        .css_classes(vec!["flat", "circular"])
+        .valign(gtk::Align::Center)
+        .build();
+
+    let del_btn = gtk::Button::builder()
+        .icon_name("user-trash-symbolic")
+        .tooltip_text(&crate::i18n::gettext("Delete Appointment"))
+        .css_classes(vec!["flat", "destructive-action", "circular"])
+        .valign(gtk::Align::Center)
+        .build();
+
+    top_row.append(&title_entry);
+    top_row.append(&save_btn);
+    top_row.append(&more_btn);
+    top_row.append(&del_btn);
+    content_box.append(&top_row);
 
     // 2. Calendar Source & Status Badges
     let cal_row = gtk::Box::builder()
@@ -25463,11 +25500,8 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
         .css_classes(vec!["caption", "heading"])
         .ellipsize(pango::EllipsizeMode::End)
         .build();
-    let cal_chevron = gtk::Image::from_icon_name("pan-down-symbolic");
-    cal_chevron.add_css_class("dim-label");
     cal_row.append(&dot);
     cal_row.append(&cal_label);
-    cal_row.append(&cal_chevron);
 
     let badges = extract_event_badges(&event.component);
     for (badge_text, badge_class) in badges {
@@ -25499,31 +25533,25 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
     loc_box.append(&loc_entry);
     content_box.append(&loc_box);
 
-    // 4. Timing Summary (Relative timing + Duration, e.g. "Ended 2 days ago" / "8 hr duration")
+    // 4. Compact Single-Line Timing Summary (e.g. "Starts in 15h, 14m · All Day")
     let (rel_text, dur_text) = format_event_timing_summary(event, target_day);
-    let timing_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(1)
-        .margin_top(2)
-        .margin_bottom(2)
-        .build();
-    let rel_lbl = gtk::Label::builder()
-        .label(&rel_text)
+    let combined_timing = if rel_text.trim().is_empty() {
+        dur_text
+    } else if dur_text.trim().is_empty() {
+        rel_text
+    } else {
+        format!("{rel_text} · {dur_text}")
+    };
+    let timing_lbl = gtk::Label::builder()
+        .label(&combined_timing)
         .css_classes(vec!["caption", "dim-label"])
         .wrap(true)
         .wrap_mode(pango::WrapMode::WordChar)
         .xalign(0.0)
+        .margin_top(1)
+        .margin_bottom(1)
         .build();
-    let dur_lbl = gtk::Label::builder()
-        .label(&dur_text)
-        .css_classes(vec!["caption", "dim-label"])
-        .wrap(true)
-        .wrap_mode(pango::WrapMode::WordChar)
-        .xalign(0.0)
-        .build();
-    timing_box.append(&rel_lbl);
-    timing_box.append(&dur_lbl);
-    content_box.append(&timing_box);
+    content_box.append(&timing_lbl);
 
     // 5. Date & Time Controls
     let all_day = crate::dialogs::event_dialog::component_property_has_date_value(&event.component, "DTSTART");
@@ -25576,26 +25604,31 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
     // Toggle time entries visibility on switch state change
     let start_time_clone = entry_start_time.clone();
     let end_time_clone = entry_end_time.clone();
+    let save_btn_for_switch = save_btn.clone();
     allday_switch.connect_state_set(move |_, state| {
         start_time_clone.set_visible(!state);
         end_time_clone.set_visible(!state);
+        save_btn_for_switch.set_visible(true);
         glib::Propagation::Proceed
     });
 
-    // BusyCal 2-column Property Grid
+    // Compact 2-column Property Grid (without duplicate color or fake travel-time rows)
     let grid = gtk::Grid::builder()
         .column_spacing(10)
-        .row_spacing(4)
+        .row_spacing(3)
         .hexpand(true)
-        .margin_top(4)
-        .margin_bottom(4)
+        .margin_top(2)
+        .margin_bottom(2)
         .build();
 
-    // Row 0: all-day
-    grid.attach(&inspector_field_label(&crate::i18n::gettext("all-day")), 0, 0, 1, 1);
-    grid.attach(&allday_switch, 1, 0, 1, 1);
+    let mut grid_row = 0i32;
 
-    // Row 1: starts
+    // Row: all-day
+    grid.attach(&inspector_field_label(&crate::i18n::gettext("all-day")), 0, grid_row, 1, 1);
+    grid.attach(&allday_switch, 1, grid_row, 1, 1);
+    grid_row += 1;
+
+    // Row: starts
     let starts_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(4)
@@ -25603,10 +25636,11 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
         .build();
     starts_box.append(&entry_start_date);
     starts_box.append(&entry_start_time);
-    grid.attach(&inspector_field_label(&crate::i18n::gettext("starts")), 0, 1, 1, 1);
-    grid.attach(&starts_box, 1, 1, 1, 1);
+    grid.attach(&inspector_field_label(&crate::i18n::gettext("starts")), 0, grid_row, 1, 1);
+    grid.attach(&starts_box, 1, grid_row, 1, 1);
+    grid_row += 1;
 
-    // Row 2: ends
+    // Row: ends
     let ends_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(4)
@@ -25614,94 +25648,81 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
         .build();
     ends_box.append(&entry_end_date);
     ends_box.append(&entry_end_time);
-    grid.attach(&inspector_field_label(&crate::i18n::gettext("ends")), 0, 2, 1, 1);
-    grid.attach(&ends_box, 1, 2, 1, 1);
+    grid.attach(&inspector_field_label(&crate::i18n::gettext("ends")), 0, grid_row, 1, 1);
+    grid.attach(&ends_box, 1, grid_row, 1, 1);
+    grid_row += 1;
 
-    // Row 3: repeat
-    let rec_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(1)
-        .halign(gtk::Align::Start)
-        .valign(gtk::Align::Center)
-        .build();
-    let (rec_title, rec_subtitle) = if let Some(rec_text) = format_recurrence_summary(event) {
+    // Row: repeat (only show 'end' row when event actually repeats)
+    let has_recurrence = format_recurrence_summary(event).is_some();
+    if let Some(rec_text) = format_recurrence_summary(event) {
+        let rec_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(1)
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
+            .build();
         let rrule_raw = ical_property(&event.component, "RRULE").unwrap_or_default();
-        let sub = format_rrule_detail_description(&rrule_raw);
-        (rec_text, sub)
-    } else {
-        (crate::i18n::gettext("None"), None)
-    };
-    let rec_main_lbl = gtk::Label::builder()
-        .label(&rec_title)
-        .css_classes(vec!["caption"])
-        .halign(gtk::Align::Start)
-        .build();
-    rec_box.append(&rec_main_lbl);
-    if let Some(sub) = rec_subtitle {
-        let rec_sub_lbl = gtk::Label::builder()
-            .label(&sub)
-            .css_classes(vec!["caption", "dim-label"])
-            .wrap(true)
-            .wrap_mode(pango::WrapMode::WordChar)
+        let rec_subtitle = format_rrule_detail_description(&rrule_raw);
+        let rec_main_lbl = gtk::Label::builder()
+            .label(&rec_text)
+            .css_classes(vec!["caption"])
             .halign(gtk::Align::Start)
             .build();
-        rec_box.append(&rec_sub_lbl);
+        rec_box.append(&rec_main_lbl);
+        if let Some(sub) = rec_subtitle {
+            let rec_sub_lbl = gtk::Label::builder()
+                .label(&sub)
+                .css_classes(vec!["caption", "dim-label"])
+                .wrap(true)
+                .wrap_mode(pango::WrapMode::WordChar)
+                .halign(gtk::Align::Start)
+                .build();
+            rec_box.append(&rec_sub_lbl);
+        }
+        grid.attach(&inspector_field_label(&crate::i18n::gettext("repeat")), 0, grid_row, 1, 1);
+        grid.attach(&rec_box, 1, grid_row, 1, 1);
+        grid_row += 1;
+
+        let end_summary = format_recurrence_end_summary(&event.component);
+        let end_lbl = gtk::Label::builder()
+            .label(&end_summary)
+            .css_classes(vec!["caption"])
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
+            .build();
+        grid.attach(&inspector_field_label(&crate::i18n::gettext("end")), 0, grid_row, 1, 1);
+        grid.attach(&end_lbl, 1, grid_row, 1, 1);
+        grid_row += 1;
+    } else {
+        let _ = has_recurrence;
+        let rec_lbl = gtk::Label::builder()
+            .label(&crate::i18n::gettext("None"))
+            .css_classes(vec!["caption", "dim-label"])
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
+            .build();
+        grid.attach(&inspector_field_label(&crate::i18n::gettext("repeat")), 0, grid_row, 1, 1);
+        grid.attach(&rec_lbl, 1, grid_row, 1, 1);
+        grid_row += 1;
     }
-    grid.attach(&inspector_field_label(&crate::i18n::gettext("repeat")), 0, 3, 1, 1);
-    grid.attach(&rec_box, 1, 3, 1, 1);
 
-    // Row 4: end
-    let end_summary = format_recurrence_end_summary(&event.component);
-    let end_lbl = gtk::Label::builder()
-        .label(&end_summary)
-        .css_classes(vec!["caption"])
-        .halign(gtk::Align::Start)
-        .valign(gtk::Align::Center)
-        .build();
-    grid.attach(&inspector_field_label(&crate::i18n::gettext("end")), 0, 4, 1, 1);
-    grid.attach(&end_lbl, 1, 4, 1, 1);
-
-    // Row 5: travel time
-    let travel_val_lbl = gtk::Label::builder()
-        .label(&crate::i18n::gettext("None"))
-        .css_classes(vec!["caption", "dim-label"])
-        .halign(gtk::Align::Start)
-        .valign(gtk::Align::Center)
-        .build();
-    grid.attach(&inspector_field_label(&crate::i18n::gettext("travel time")), 0, 5, 1, 1);
-    grid.attach(&travel_val_lbl, 1, 5, 1, 1);
-
-    // Row 6: alarm
-    let alarm_summary = format_alarm_summary(&event.component).unwrap_or_else(|| crate::i18n::gettext("None"));
+    // Row: alarm
+    let alarm_opt = format_alarm_summary(&event.component);
+    let alarm_summary = alarm_opt.clone().unwrap_or_else(|| crate::i18n::gettext("None"));
     let alarm_val_lbl = gtk::Label::builder()
         .label(&alarm_summary)
-        .css_classes(vec!["caption"])
+        .css_classes(if alarm_opt.is_some() {
+            vec!["caption"]
+        } else {
+            vec!["caption", "dim-label"]
+        })
         .halign(gtk::Align::Start)
         .valign(gtk::Align::Center)
         .wrap(true)
         .wrap_mode(pango::WrapMode::WordChar)
         .build();
-    grid.attach(&inspector_field_label(&crate::i18n::gettext("alarm")), 0, 6, 1, 1);
-    grid.attach(&alarm_val_lbl, 1, 6, 1, 1);
-
-    // Row 7: color
-    let color_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(4)
-        .halign(gtk::Align::Start)
-        .valign(gtk::Align::Center)
-        .build();
-    let cdot = gtk::Label::new(None);
-    cdot.set_markup(&format!("<span foreground=\"{color}\">●</span>"));
-    let cname_lbl = gtk::Label::builder()
-        .label(cal_name)
-        .css_classes(vec!["caption"])
-        .ellipsize(pango::EllipsizeMode::End)
-        .build();
-    color_box.append(&cdot);
-    color_box.append(&cname_lbl);
-    grid.attach(&inspector_field_label(&crate::i18n::gettext("color")), 0, 7, 1, 1);
-    grid.attach(&color_box, 1, 7, 1, 1);
+    grid.attach(&inspector_field_label(&crate::i18n::gettext("alarm")), 0, grid_row, 1, 1);
+    grid.attach(&alarm_val_lbl, 1, grid_row, 1, 1);
 
     content_box.append(&grid);
 
@@ -25733,7 +25754,7 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
         let att_header = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(6)
-            .margin_top(4)
+            .margin_top(2)
             .build();
         let att_icon = gtk::Image::from_icon_name("avatar-default-symbolic");
         att_icon.add_css_class("dim-label");
@@ -25771,23 +25792,25 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
         content_box.append(&att_flow);
     }
 
-    // 8. Notes / Description (directly editable TextView with clean flat styling)
+    // 8. Compact Notes / Description (auto-sizing, no huge empty gap when notes are empty)
     let notes_label = gtk::Label::builder()
         .label(&crate::i18n::gettext("Notes"))
         .css_classes(vec!["caption", "heading"])
         .xalign(0.0)
-        .margin_top(4)
+        .margin_top(2)
         .build();
     content_box.append(&notes_label);
 
+    let has_notes = !event.description.trim().is_empty();
     let notes_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
         .propagate_natural_width(false)
-        .min_content_height(90)
-        .max_content_height(240)
-        .vexpand(true)
-        .css_classes(vec!["calendar-details-note-box"])
+        .propagate_natural_height(true)
+        .min_content_height(if has_notes { 48 } else { 28 })
+        .max_content_height(110)
+        .vexpand(false)
+        .css_classes(vec!["calendar-details-note-box", "calendar-sidebar-scroll"])
         .build();
     let notes_view = gtk::TextView::builder()
         .wrap_mode(gtk::WrapMode::WordChar)
@@ -25802,37 +25825,26 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
     notes_scroll.set_child(Some(&notes_view));
     content_box.append(&notes_scroll);
 
-    // 9. Actions: Save, More Options, Delete
-    let actions_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(6)
-        .margin_top(4)
-        .build();
-
-    let save_btn = gtk::Button::builder()
-        .label(&crate::i18n::gettext("Save"))
-        .icon_name("document-save-symbolic")
-        .css_classes(vec!["suggested-action"])
-        .hexpand(true)
-        .build();
-
-    let more_btn = gtk::Button::builder()
-        .label(&crate::i18n::gettext("More..."))
-        .icon_name("document-edit-symbolic")
-        .tooltip_text(&crate::i18n::gettext("Open full editor dialog"))
-        .css_classes(vec!["flat"])
-        .build();
-
-    let del_btn = gtk::Button::builder()
-        .icon_name("user-trash-symbolic")
-        .tooltip_text(&crate::i18n::gettext("Delete Appointment"))
-        .css_classes(vec!["flat", "destructive-action", "circular"])
-        .build();
-
-    actions_box.append(&save_btn);
-    actions_box.append(&more_btn);
-    actions_box.append(&del_btn);
-    content_box.append(&actions_box);
+    // Reveal the Save button whenever any inline field is modified
+    for entry in [
+        &title_entry,
+        &loc_entry,
+        &entry_start_date,
+        &entry_start_time,
+        &entry_end_date,
+        &entry_end_time,
+    ] {
+        let sb = save_btn.clone();
+        entry.connect_changed(move |_| {
+            sb.set_visible(true);
+        });
+    }
+    {
+        let sb = save_btn.clone();
+        notes_view.buffer().connect_changed(move |_| {
+            sb.set_visible(true);
+        });
+    }
 
     // Save wiring
     let page_save = page.downgrade();
@@ -25845,8 +25857,10 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
     let e_date_save = entry_end_date.clone();
     let e_time_save = entry_end_time.clone();
     let notes_save = notes_view.clone();
+    let save_btn_hide = save_btn.clone();
 
     let save_action = std::rc::Rc::new(move || {
+        save_btn_hide.set_visible(false);
         let Some(page) = page_save.upgrade() else { return };
         let title = title_save.text();
         let loc = loc_save.text();
