@@ -256,6 +256,11 @@ impl PreferencesDialog {
         glib::Object::builder().build()
     }
 
+    pub fn present_standalone(&self) {
+        self.set_title(&gettext("Settings"));
+        adw::prelude::AdwDialogExt::present(self, None::<&gtk::Widget>);
+    }
+
     fn present_account_dialog(&self, dialog: crate::dialogs::AccountSetupDialog) {
         let page = self.downgrade();
         dialog.connect_closed(move |_| {
@@ -2143,12 +2148,20 @@ impl PreferencesDialog {
         page_network.add(&group_network_options);
 
         let group_calendar_local = adw::PreferencesGroup::builder()
-            .title(&crate::i18n::gettext("Local calendar sources and import"))
+            .title(&crate::i18n::gettext("Local Calendar Storage & Import"))
+            .description(&crate::i18n::gettext(
+                "Storage folder on this computer for local appointments and one-time import of external .ics files",
+            ))
             .build();
+        let default_cal_dir_label = format!(
+            "{} ({})",
+            CalendarStoreService::new().calendar_dir().display(),
+            crate::i18n::gettext("Default")
+        );
         let row_local_calendar = directory_picker_row(
             self,
-            &crate::i18n::gettext("Local calendar folder"),
-            &crate::i18n::gettext("Automatically detected iCalendar folder"),
+            &crate::i18n::gettext("Storage Folder for Local Calendar"),
+            &default_cal_dir_label,
             settings
                 .as_ref()
                 .map(AppSettings::local_calendar_directory)
@@ -2159,12 +2172,20 @@ impl PreferencesDialog {
         group_calendar_local.add(&row_local_calendar);
 
         let group_contacts_local = adw::PreferencesGroup::builder()
-            .title(&crate::i18n::gettext("Local contacts and import"))
+            .title(&crate::i18n::gettext("Local Contacts Storage & Import"))
+            .description(&crate::i18n::gettext(
+                "Storage folder on this computer for local vCard contacts and one-time import of external .vcf files",
+            ))
             .build();
+        let default_contact_dir_label = format!(
+            "{} ({})",
+            ContactStoreService::new().contact_dir().display(),
+            crate::i18n::gettext("Default")
+        );
         let row_local_contacts = directory_picker_row(
             self,
-            &crate::i18n::gettext("Local contacts folder"),
-            &crate::i18n::gettext("Automatically detected vCard folder"),
+            &crate::i18n::gettext("Storage Folder for Local Contacts"),
+            &default_contact_dir_label,
             settings
                 .as_ref()
                 .map(AppSettings::local_contact_directory)
@@ -2175,19 +2196,18 @@ impl PreferencesDialog {
         group_contacts_local.add(&row_local_contacts);
 
         let row_import_calendar = adw::ActionRow::builder()
-            .title(&crate::i18n::gettext("Import iCalendar Files"))
+            .title(&crate::i18n::gettext("Import Appointments from iCalendar (.ics)…"))
             .subtitle(&crate::i18n::gettext(
-                "Copy ICS/VCS files into local calendar without overwriting",
+                "Copy external ICS/VCS files into your local calendar without overwriting",
             ))
             .activatable(true)
             .build();
         let import_calendar_button = gtk::Button::builder()
-            .icon_name("document-open-symbolic")
+            .label(&crate::i18n::gettext("Import…"))
             .tooltip_text(&crate::i18n::gettext("Select iCalendar Files"))
-            .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
-        row_import_calendar.add_prefix(&gtk::Image::from_icon_name("document-open-symbolic"));
+        row_import_calendar.add_prefix(&gtk::Image::from_icon_name("x-office-calendar-symbolic"));
         row_import_calendar.add_suffix(&import_calendar_button);
         let import_calendar_btn_clone = import_calendar_button.clone();
         row_import_calendar.connect_activated(move |_| import_calendar_btn_clone.emit_clicked());
@@ -2254,17 +2274,18 @@ impl PreferencesDialog {
         group_calendar_local.add(&row_import_calendar);
 
         let row_import_contacts = adw::ActionRow::builder()
-            .title("Import vCard Files")
-            .subtitle("Copy VCF/vCard files into local address book without overwriting")
+            .title(&crate::i18n::gettext("Import Contacts from vCard (.vcf)…"))
+            .subtitle(&crate::i18n::gettext(
+                "Copy external VCF/vCard files into your local address book without overwriting",
+            ))
             .activatable(true)
             .build();
         let import_contacts_button = gtk::Button::builder()
-            .icon_name("document-open-symbolic")
-            .tooltip_text("Select vCard Files")
-            .css_classes(vec!["flat"])
+            .label(&crate::i18n::gettext("Import…"))
+            .tooltip_text(&crate::i18n::gettext("Select vCard Files"))
             .valign(gtk::Align::Center)
             .build();
-        row_import_contacts.add_prefix(&gtk::Image::from_icon_name("document-open-symbolic"));
+        row_import_contacts.add_prefix(&gtk::Image::from_icon_name("contact-new-symbolic"));
         row_import_contacts.add_suffix(&import_contacts_button);
         let import_contacts_btn_clone = import_contacts_button.clone();
         row_import_contacts.connect_activated(move |_| import_contacts_btn_clone.emit_clicked());
@@ -2324,8 +2345,6 @@ impl PreferencesDialog {
             }
         ));
         group_contacts_local.add(&row_import_contacts);
-        page_contacts.add(&group_contacts_local);
-
 
         let group_default_address_book = adw::PreferencesGroup::builder()
             .title("Default Address Book")
@@ -2522,6 +2541,7 @@ impl PreferencesDialog {
         group_contacts_autocomplete.add(&row_completion_min_query_length);
         group_contacts_autocomplete.add(&row_completion_book_sources);
         page_contacts.add(&group_contacts_autocomplete);
+        page_contacts.add(&group_contacts_local);
 
         let group_backup = adw::PreferencesGroup::builder()
             .title("Data and Backup")
@@ -4112,8 +4132,12 @@ impl PreferencesDialog {
             .collect();
         let row_mail_default_folder = adw::ComboRow::builder()
             .title("Startup Folder")
+            .subtitle(&crate::i18n::gettext(
+                "Folder opened automatically when starting Meridian",
+            ))
             .model(&gtk::StringList::new(&startup_folder_labels))
             .build();
+        configure_folder_combo_row(&row_mail_default_folder);
         if let Some(settings) = settings.clone() {
             let cur = settings.mail_default_folder();
             let initial_idx = startup_folder_entries
@@ -6513,8 +6537,8 @@ impl PreferencesDialog {
                 let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
                 line.set_margin_start(8);
                 line.set_margin_end(8);
-                line.set_margin_top(6);
-                line.set_margin_bottom(6);
+                line.set_margin_top(4);
+                line.set_margin_bottom(4);
                 let icon = gtk::Image::from_icon_name(page.icon);
                 line.append(&icon);
                 let title_label = gtk::Label::new(Some(&gettext(page.title)));
@@ -6888,11 +6912,9 @@ impl PreferencesDialog {
     }
 
     fn show_toast(&self, message: &str) {
-        if let Some(root) = self.root() {
-            if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
-                window.add_toast(&adw::Toast::new(message));
-                return;
-            }
+        if let Some(window) = crate::window::find_meridian_window(self) {
+            window.add_toast(&adw::Toast::new(message));
+            return;
         }
         tracing::warn!(%message, "Preferences dialog result");
     }
@@ -6916,6 +6938,126 @@ fn default_mail_normal_headers_for_editor() -> Vec<(String, bool)> {
     .into_iter()
     .map(|(name, visible)| (name.to_string(), visible))
     .collect()
+}
+
+fn configure_folder_combo_row(row: &adw::ComboRow) {
+    let expr = gtk::PropertyExpression::new(
+        gtk::StringObject::static_type(),
+        None::<gtk::Expression>,
+        "string",
+    );
+    row.set_expression(Some(&expr));
+    row.set_enable_search(true);
+
+    let factory = gtk::SignalListItemFactory::new();
+    factory.connect_setup(|_, obj| {
+        let Some(list_item) = obj.downcast_ref::<gtk::ListItem>() else { return };
+        let label = gtk::Label::builder()
+            .xalign(1.0)
+            .valign(gtk::Align::Center)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .max_width_chars(38)
+            .build();
+        list_item.set_child(Some(&label));
+    });
+    factory.connect_bind(|_, obj| {
+        let Some(list_item) = obj.downcast_ref::<gtk::ListItem>() else { return };
+        let Some(str_obj) = list_item.item().and_downcast::<gtk::StringObject>() else { return };
+        let Some(label) = list_item.child().and_downcast::<gtk::Label>() else { return };
+        let raw = str_obj.string();
+        if let Some((folder, acct)) = raw.split_once(" — ") {
+            label.set_label(&format!("{folder} ({acct})"));
+        } else {
+            label.set_label(&raw);
+        }
+    });
+    row.set_factory(Some(&factory));
+
+    let list_factory = gtk::SignalListItemFactory::new();
+    list_factory.connect_setup(|_, obj| {
+        let Some(list_item) = obj.downcast_ref::<gtk::ListItem>() else { return };
+        let hbox = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(10)
+            .margin_start(6)
+            .margin_end(8)
+            .margin_top(4)
+            .margin_bottom(4)
+            .width_request(280)
+            .build();
+        let icon = gtk::Image::builder()
+            .icon_name("folder-symbolic")
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["dim-label"])
+            .build();
+        let vbox = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(1)
+            .hexpand(true)
+            .valign(gtk::Align::Center)
+            .build();
+        let title_lbl = gtk::Label::builder()
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .build();
+        let sub_lbl = gtk::Label::builder()
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::Middle)
+            .css_classes(vec!["caption", "dim-label"])
+            .build();
+        vbox.append(&title_lbl);
+        vbox.append(&sub_lbl);
+        hbox.append(&icon);
+        hbox.append(&vbox);
+        list_item.set_child(Some(&hbox));
+    });
+    list_factory.connect_bind(|_, obj| {
+        let Some(list_item) = obj.downcast_ref::<gtk::ListItem>() else { return };
+        let Some(str_obj) = list_item.item().and_downcast::<gtk::StringObject>() else { return };
+        let Some(hbox) = list_item.child().and_downcast::<gtk::Box>() else { return };
+        let Some(icon) = hbox.first_child().and_downcast::<gtk::Image>() else { return };
+        let Some(vbox) = icon.next_sibling().and_downcast::<gtk::Box>() else { return };
+        let Some(title_lbl) = vbox.first_child().and_downcast::<gtk::Label>() else { return };
+        let Some(sub_lbl) = title_lbl.next_sibling().and_downcast::<gtk::Label>() else { return };
+
+        let raw = str_obj.string();
+        let (folder, acct) = if let Some((f, a)) = raw.split_once(" — ") {
+            (f.trim(), Some(a.trim()))
+        } else {
+            (raw.as_str(), None)
+        };
+        title_lbl.set_label(folder);
+        if let Some(a) = acct {
+            sub_lbl.set_label(a);
+            sub_lbl.set_visible(true);
+        } else {
+            sub_lbl.set_label(&crate::i18n::gettext("All Accounts"));
+            sub_lbl.set_visible(true);
+        }
+
+        let lower = folder.to_ascii_lowercase();
+        let icon_name = if lower.contains("inbox") || lower.contains("posteingang") {
+            "mail-inbox-symbolic"
+        } else if lower.contains("unread") || lower.contains("ungelesen") {
+            "mail-unread-symbolic"
+        } else if lower.contains("star") || lower.contains("markiert") || lower.contains("flag") {
+            "starred-symbolic"
+        } else if lower.contains("sent") || lower.contains("gesendet") {
+            "mail-send-symbolic"
+        } else if lower.contains("draft") || lower.contains("entw") {
+            "document-edit-symbolic"
+        } else if lower.contains("trash") || lower.contains("papierkorb") || lower.contains("deleted") {
+            "user-trash-symbolic"
+        } else if lower.contains("spam") || lower.contains("junk") {
+            "mail-mark-junk-symbolic"
+        } else if lower.contains("archive") || lower.contains("archiv") {
+            "package-x-generic-symbolic"
+        } else {
+            "folder-symbolic"
+        };
+        icon.set_icon_name(Some(icon_name));
+    });
+    row.set_list_factory(Some(&list_factory));
 }
 
 fn collect_account_panel_folders(current_setting: Option<&str>) -> Vec<(String, String)> {
@@ -6981,7 +7123,7 @@ fn collect_account_panel_folders(current_setting: Option<&str>) -> Vec<(String, 
                         .strip_prefix("[Gmail]/")
                         .or_else(|| f.display_name.strip_prefix("[Google Mail]/"))
                         .unwrap_or(&f.display_name);
-                    entries.push((key, format!("{acct_label} — {clean_disp}")));
+                    entries.push((key, format!("{clean_disp} — {acct_label}")));
                 }
             }
         } else {
@@ -7001,7 +7143,7 @@ fn collect_account_panel_folders(current_setting: Option<&str>) -> Vec<(String, 
             ] {
                 let key = format!("{uid}::{raw_fname}");
                 if seen_ids.insert(key.clone()) {
-                    entries.push((key, format!("{acct_label} — {localized}")));
+                    entries.push((key, format!("{localized} — {acct_label}")));
                 }
             }
         }
@@ -7032,7 +7174,7 @@ fn collect_account_panel_folders(current_setting: Option<&str>) -> Vec<(String, 
             } else {
                 f.source_display_name.trim()
             };
-            entries.push((key, format!("{acct} — {clean_disp}")));
+            entries.push((key, format!("{clean_disp} — {acct}")));
         }
     }
 
@@ -7040,7 +7182,7 @@ fn collect_account_panel_folders(current_setting: Option<&str>) -> Vec<(String, 
         if seen_ids.insert(cur.to_string()) {
             let label = cur
                 .split_once("::")
-                .map(|(src, fname)| format!("{src} — {fname}"))
+                .map(|(src, fname)| format!("{fname} — {src}"))
                 .unwrap_or_else(|| cur.to_string());
             entries.push((cur.to_string(), label));
         }
@@ -7904,6 +8046,7 @@ fn build_mail_list_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefere
         ))
         .model(&gtk::StringList::new(&folder_labels))
         .build();
+    configure_folder_combo_row(&row_pin_folder);
     let btn_pin_folder = gtk::Button::builder()
         .label(&format!("+ {}", crate::i18n::gettext("Pin")))
         .valign(gtk::Align::Center)
@@ -8995,9 +9138,9 @@ fn source_preference_row(
         EdsSourceKind::Mail => false,
     };
     let subtitle = subtitle.to_string();
+    let settings_for_load = settings.clone();
     glib::spawn_future_local(async move {
         let discovery = eds_service::discover_sources(kind).await;
-        let discovery_status = discovery.status_text();
         let mut sources = discovery.sources;
         sources.retain(|source| source.enabled);
         sources
@@ -9006,10 +9149,18 @@ fn source_preference_row(
         let mut names = sources
             .iter()
             .map(|source| {
-                if source.backend_name.trim().is_empty() {
+                let raw_backend = source.backend_name.trim();
+                if raw_backend.is_empty() {
                     source.display_name.clone()
                 } else {
-                    format!("{} · {}", source.display_name, source.backend_name)
+                    let friendly_backend = match raw_backend.to_ascii_lowercase().as_str() {
+                        "google" => "Google".to_string(),
+                        "ews" | "exchange" | "office365" => "Exchange".to_string(),
+                        "local" => crate::i18n::gettext("On This Computer"),
+                        "webdav" | "carddav" | "caldav" => "DAV".to_string(),
+                        _ => raw_backend.to_string(),
+                    };
+                    format!("{} · {}", source.display_name, friendly_backend)
                 }
             })
             .collect::<Vec<_>>();
@@ -9018,35 +9169,55 @@ fn source_preference_row(
             .map(|source| source.uid)
             .collect::<Vec<_>>();
 
-        if let Some(preferred_source_uid) = preferred_source_uid.as_deref()
-            && !uids.iter().any(|uid| uid == preferred_source_uid)
-        {
-            names.insert(
-                0,
-                format!("Unavailable source · {preferred_source_uid}"),
-            );
-            uids.insert(0, preferred_source_uid.to_string());
-        }
-        if local_available {
+        // Always append the local built-in source BEFORE checking preferred_source_uid
+        // so that "local-addressbook" / "local-calendar" is never misclassified as unavailable!
+        if local_available && !uids.iter().any(|uid| uid == &local_uid) {
             names.push(local_label);
             uids.push(local_uid.clone());
         }
 
-        let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
-        source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
-        source_uids_for_load.replace(uids.clone());
-        row_for_load.set_subtitle(&format!("{subtitle} · {discovery_status}"));
-
-        let selected_index = preferred_source_uid
+        // Resolve preferred source UID (including legacy aliases like "local")
+        let resolved_preferred_index = preferred_source_uid
             .as_deref()
-            .and_then(|uid| uids.iter().position(|candidate| candidate == uid))
+            .and_then(|pref| {
+                uids.iter().position(|candidate| candidate == pref).or_else(|| {
+                    if pref.eq_ignore_ascii_case("local")
+                        || pref.starts_with("local-")
+                        || pref.starts_with("system-")
+                    {
+                        uids.iter()
+                            .position(|candidate| candidate == &local_uid)
+                            .or_else(|| {
+                                uids.iter().position(|candidate| {
+                                    candidate.starts_with("system-") || candidate == "local"
+                                })
+                            })
+                    } else {
+                        None
+                    }
+                })
+            })
             .or_else(|| {
                 local_available
                     .then(|| uids.iter().position(|uid| uid == &local_uid))
                     .flatten()
-            });
-        if let Some(selected_index) = selected_index {
+            })
+            .or_else(|| (!uids.is_empty()).then_some(0));
+
+        let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
+        source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
+        source_uids_for_load.replace(uids.clone());
+        row_for_load.set_subtitle(&subtitle);
+
+        if let Some(selected_index) = resolved_preferred_index {
             row_for_load.set_selected(selected_index as u32);
+            if let (Some(settings), Some(resolved_uid)) =
+                (settings_for_load.as_ref(), uids.get(selected_index))
+            {
+                if preferred_source_uid.as_deref() != Some(resolved_uid.as_str()) {
+                    set_source(settings, resolved_uid);
+                }
+            }
         }
     });
 
@@ -9065,27 +9236,29 @@ where
     F: Fn(&AppSettings, &str) + 'static,
 {
     let default_subtitle = default_subtitle.to_string();
+    let has_custom = !initial_path.trim().is_empty();
     let row = adw::ActionRow::builder()
         .title(title)
-        .subtitle(&default_subtitle)
+        .subtitle(if has_custom {
+            initial_path.as_str()
+        } else {
+            default_subtitle.as_str()
+        })
         .activatable(true)
         .build();
     row.add_prefix(&gtk::Image::from_icon_name("folder-symbolic"));
-    if !initial_path.trim().is_empty() {
-        row.set_subtitle(&initial_path);
-    }
 
     let choose_button = gtk::Button::builder()
-        .icon_name("folder-open-symbolic")
-        .tooltip_text("Select Folder")
-        .css_classes(vec!["flat"])
+        .label(&crate::i18n::gettext("Change…"))
+        .tooltip_text(&crate::i18n::gettext("Select custom storage folder"))
         .valign(gtk::Align::Center)
         .build();
     let clear_button = gtk::Button::builder()
         .icon_name("edit-clear-symbolic")
-        .tooltip_text("Reset to automatic selection")
+        .tooltip_text(&crate::i18n::gettext("Reset to default folder"))
         .css_classes(vec!["flat"])
         .valign(gtk::Align::Center)
+        .visible(has_custom)
         .build();
     row.add_suffix(&choose_button);
     row.add_suffix(&clear_button);
@@ -9098,6 +9271,7 @@ where
     let set_path: Rc<dyn Fn(&AppSettings, &str)> = Rc::new(set_path);
     let dialog_weak = parent.downgrade();
     let row_for_choose = row.clone();
+    let clear_for_choose = clear_button.clone();
     let settings_for_choose = settings.clone();
     let set_path_for_choose = Rc::clone(&set_path);
     choose_button.connect_clicked(move |_| {
@@ -9105,7 +9279,7 @@ where
             return;
         };
         let file_dialog = gtk::FileDialog::builder()
-            .title("Select local import folder")
+            .title(&crate::i18n::gettext("Select Storage Folder"))
             .modal(true)
             .build();
         let parent_window = dialog
@@ -9114,6 +9288,7 @@ where
         let settings_for_result = settings_for_choose.clone();
         let set_path_for_result = Rc::clone(&set_path_for_choose);
         let row_for_result = row_for_choose.clone();
+        let clear_for_result = clear_for_choose.clone();
         file_dialog.select_folder(
             parent_window.as_ref(),
             None::<&gio::Cancellable>,
@@ -9129,17 +9304,20 @@ where
                     set_path_for_result(settings, &path);
                 }
                 row_for_result.set_subtitle(&path);
+                clear_for_result.set_visible(true);
             },
         );
     });
 
     let row_for_clear = row.clone();
+    let clear_for_self = clear_button.clone();
     let settings_for_clear = settings;
     clear_button.connect_clicked(move |_| {
         if let Some(settings) = settings_for_clear.as_ref() {
             set_path(settings, "");
         }
         row_for_clear.set_subtitle(&default_subtitle);
+        clear_for_self.set_visible(false);
     });
 
     row

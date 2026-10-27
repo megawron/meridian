@@ -4067,11 +4067,11 @@ button.month-bar-chip.span-end {
 }
 
 .calendar-sidebar-scroll undershoot.bottom {
-  background: linear-gradient(to top, alpha(@window_bg_color, 0.92), transparent 16px);
+  background: linear-gradient(to top, alpha(@window_bg_color, 0.65), transparent 8px);
 }
 
 .calendar-sidebar-scroll undershoot.top {
-  background: linear-gradient(to bottom, alpha(@window_bg_color, 0.92), transparent 16px);
+  background: linear-gradient(to bottom, alpha(@window_bg_color, 0.65), transparent 8px);
 }
 
 .calendar-details-save-btn {
@@ -6356,15 +6356,20 @@ popover.image-options-popover button.flat:hover {
 
 /* ── Settings Window & Sidebar (Libadwaita / Hylki Parity) ──────────────── */
 .settings-side-heading {
-  padding: 14px 12px 4px 12px;
+  padding: 10px 12px 3px 12px;
+  min-height: 22px;
 }
 
 .settings-side-heading:first-child {
-  padding-top: 6px;
+  padding-top: 4px;
 }
 
 .settings-side > row {
-  min-height: 36px;
+  min-height: 31px;
+  padding-top: 1px;
+  padding-bottom: 1px;
+  margin-top: 1px;
+  margin-bottom: 1px;
 }
 
 .settings-search-hit {
@@ -6372,5 +6377,14 @@ popover.image-options-popover button.flat:hover {
   border-radius: 12px;
   transition: background-color 400ms ease-out;
 }
+
+.composer-mode-switcher button {
+  padding: 2px 8px;
+  min-height: 24px;
+  min-width: 36px;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
 
 

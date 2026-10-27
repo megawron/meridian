@@ -3668,12 +3668,12 @@ impl AppSettings {
 
     pub fn task_preview_orientation(&self) -> String {
         normalize_task_preview_orientation_value(&self.settings.string("task-preview-orientation"))
-            .unwrap_or_else(|_| "classic".to_string())
+            .unwrap_or_else(|_| "vertical".to_string())
     }
 
     pub fn set_task_preview_orientation(&self, value: &str) {
         let value = normalize_task_preview_orientation_value(value)
-            .unwrap_or_else(|_| "classic".to_string());
+            .unwrap_or_else(|_| "vertical".to_string());
         self.set_string("task-preview-orientation", &value);
     }
 
@@ -5840,7 +5840,7 @@ mod tests {
         assert_eq!(reloaded.task_filter(), "all");
         assert!(reloaded.task_category_filter().is_empty());
         assert_eq!(reloaded.task_search_mode(), "any-field");
-        assert_eq!(reloaded.task_preview_orientation(), "classic");
+        assert_eq!(reloaded.task_preview_orientation(), "vertical");
 
         assert!(
             reloaded
@@ -5895,8 +5895,8 @@ mod tests {
         assert!(reset.task_category_filter().is_empty());
         assert_eq!(reset.task_search_mode(), "any-field");
         assert!(reset.task_preview_visible());
-        assert_eq!(reset.task_preview_orientation(), "classic");
-        assert_eq!(reset.task_preview_position("vertical"), 200);
+        assert_eq!(reset.task_preview_orientation(), "vertical");
+        assert_eq!(reset.task_preview_position("vertical"), 420);
         assert_eq!(reset.task_preview_position("classic"), 400);
     }
 
@@ -5949,7 +5949,7 @@ mod tests {
         assert_eq!(reset.memo_category_filter(), "any");
         assert_eq!(reset.memo_source_filter(), "");
         assert!(reset.memo_preview_visible());
-        assert_eq!(reset.memo_preview_orientation(), "classic");
+        assert_eq!(reset.memo_preview_orientation(), "vertical");
     }
 
     #[test]

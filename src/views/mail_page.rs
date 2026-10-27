@@ -7158,6 +7158,7 @@ mod imp {
         pub agenda_tasks_add_memo_btn: RefCell<Option<gtk::Button>>,
         pub agenda_tasks_scroll: RefCell<Option<gtk::ScrolledWindow>>,
         pub agenda_tasks_canvas: RefCell<Option<gtk::DrawingArea>>,
+        pub agenda_tasks_labels_fixed: RefCell<Option<gtk::Fixed>>,
         pub(crate) agenda_tasks_canvas_items: RefCell<Vec<AgendaSidebarCanvasItem>>,
         pub agenda_tasks_hovered_row: Cell<Option<usize>>,
         pub agenda_tasks_selected_row: Cell<Option<usize>>,
@@ -34646,49 +34647,51 @@ pub(crate) fn draw_agenda_sidebar_canvas_ext(
                 }
 
                 // 4. Text content with high contrast GNOME Calendar typography
-                cr.set_source_rgb(fg_r as f64 / 255.0, fg_g as f64 / 255.0, fg_b as f64 / 255.0);
+                if draw_header_text {
+                    cr.set_source_rgb(fg_r as f64 / 255.0, fg_g as f64 / 255.0, fg_b as f64 / 255.0);
 
-                let _ = cr.save();
-                let content_x = (bar_x + 8.0).round();
-                let content_w = (bar_w - 12.0).max(0.0);
-                cr.rectangle(content_x, bar_y, content_w, bar_h);
-                let _ = cr.clip();
+                    let _ = cr.save();
+                    let content_x = (bar_x + 8.0).round();
+                    let content_w = (bar_w - 12.0).max(0.0);
+                    cr.rectangle(content_x, bar_y, content_w, bar_h);
+                    let _ = cr.clip();
 
-                let text_y = (bar_y + (bar_h / 2.0) + 4.0).round();
-                if let Some(t) = time_str {
-                    cr.select_font_face(
-                        "Cantarell",
-                        gtk::cairo::FontSlant::Normal,
-                        gtk::cairo::FontWeight::Bold,
-                    );
-                    cr.set_font_size(12.0);
-                    let time_text = format!("{} ", t);
-                    let time_w = cr.text_extents(&time_text).map(|e| e.x_advance()).unwrap_or(40.0).round();
-                    cr.move_to(content_x, text_y);
-                    let _ = cr.show_text(&time_text);
+                    let text_y = (bar_y + (bar_h / 2.0) + 4.0).round();
+                    if let Some(t) = time_str {
+                        cr.select_font_face(
+                            "Cantarell",
+                            gtk::cairo::FontSlant::Normal,
+                            gtk::cairo::FontWeight::Bold,
+                        );
+                        cr.set_font_size(12.0);
+                        let time_text = format!("{} ", t);
+                        let time_w = cr.text_extents(&time_text).map(|e| e.x_advance()).unwrap_or(40.0).round();
+                        cr.move_to(content_x, text_y);
+                        let _ = cr.show_text(&time_text);
 
-                    cr.select_font_face(
-                        "Cantarell",
-                        gtk::cairo::FontSlant::Normal,
-                        gtk::cairo::FontWeight::Normal,
-                    );
-                    cr.set_font_size(12.0);
-                    let title_avail = (content_w - time_w).max(0.0);
-                    let trunc_summary = truncate_cairo_text(cr, summary, title_avail);
-                    cr.move_to(content_x + time_w, text_y);
-                    let _ = cr.show_text(&trunc_summary);
-                } else {
-                    cr.select_font_face(
-                        "Cantarell",
-                        gtk::cairo::FontSlant::Normal,
-                        gtk::cairo::FontWeight::Bold,
-                    );
-                    cr.set_font_size(12.0);
-                    let trunc_summary = truncate_cairo_text(cr, summary, content_w);
-                    cr.move_to(content_x, text_y);
-                    let _ = cr.show_text(&trunc_summary);
+                        cr.select_font_face(
+                            "Cantarell",
+                            gtk::cairo::FontSlant::Normal,
+                            gtk::cairo::FontWeight::Normal,
+                        );
+                        cr.set_font_size(12.0);
+                        let title_avail = (content_w - time_w).max(0.0);
+                        let trunc_summary = truncate_cairo_text(cr, summary, title_avail);
+                        cr.move_to(content_x + time_w, text_y);
+                        let _ = cr.show_text(&trunc_summary);
+                    } else {
+                        cr.select_font_face(
+                            "Cantarell",
+                            gtk::cairo::FontSlant::Normal,
+                            gtk::cairo::FontWeight::Bold,
+                        );
+                        cr.set_font_size(12.0);
+                        let trunc_summary = truncate_cairo_text(cr, summary, content_w);
+                        cr.move_to(content_x, text_y);
+                        let _ = cr.show_text(&trunc_summary);
+                    }
+                    let _ = cr.restore();
                 }
-                let _ = cr.restore();
             }
             AgendaSidebarCanvasItem::TaskRow {
                 completed,
@@ -34752,87 +34755,91 @@ pub(crate) fn draw_agenda_sidebar_canvas_ext(
                     let _ = cr.stroke();
                 }
 
-                // Due text on the right (if present)
-                let mut right_reserve = 6.0;
-                let today = chrono::Local::now().date_naive();
-                if let Some(due_str) = format_task_due_short(&task.due, today) {
-                    let is_overdue = !*completed && is_task_overdue(&task.due, today);
+                if draw_header_text {
+                    // Due text on the right (if present)
+                    let mut right_reserve = 6.0;
+                    let today = chrono::Local::now().date_naive();
+                    if let Some(due_str) = format_task_due_short(&task.due, today) {
+                        let is_overdue = !*completed && is_task_overdue(&task.due, today);
+                        cr.select_font_face(
+                            "Cantarell",
+                            gtk::cairo::FontSlant::Normal,
+                            gtk::cairo::FontWeight::Normal,
+                        );
+                        cr.set_font_size(11.0);
+                        if let Ok(ext) = cr.text_extents(&due_str) {
+                            let due_w = ext.x_advance().round();
+                            let due_x = (width - due_w - 10.0).round();
+                            let due_y = (row_y + (row_h / 2.0) + 4.0).round();
+                            if is_overdue {
+                                cr.set_source_rgba(0.95, 0.25, 0.25, 0.95);
+                            } else if is_dark {
+                                cr.set_source_rgba(0.70, 0.70, 0.70, 0.75);
+                            } else {
+                                cr.set_source_rgba(0.45, 0.45, 0.45, 0.75);
+                            }
+                            cr.move_to(due_x, due_y);
+                            let _ = cr.show_text(&due_str);
+                            right_reserve = due_w + 14.0;
+                        }
+                    }
+
+                    // Summary text
+                    let text_x = (cx + cw + 8.0).round();
+                    let text_y = (row_y + (row_h / 2.0) + 4.0).round();
+                    let max_w = (width - text_x - right_reserve).max(10.0);
+
                     cr.select_font_face(
                         "Cantarell",
                         gtk::cairo::FontSlant::Normal,
                         gtk::cairo::FontWeight::Normal,
                     );
-                    cr.set_font_size(11.0);
-                    if let Ok(ext) = cr.text_extents(&due_str) {
-                        let due_w = ext.x_advance().round();
-                        let due_x = (width - due_w - 10.0).round();
-                        let due_y = (row_y + (row_h / 2.0) + 4.0).round();
-                        if is_overdue {
-                            cr.set_source_rgba(0.95, 0.25, 0.25, 0.95);
-                        } else if is_dark {
-                            cr.set_source_rgba(0.70, 0.70, 0.70, 0.75);
+                    cr.set_font_size(12.0);
+
+                    if *completed {
+                        if is_dark {
+                            cr.set_source_rgba(0.55, 0.55, 0.55, 0.7);
                         } else {
-                            cr.set_source_rgba(0.45, 0.45, 0.45, 0.75);
+                            cr.set_source_rgba(0.5, 0.5, 0.5, 0.7);
                         }
-                        cr.move_to(due_x, due_y);
-                        let _ = cr.show_text(&due_str);
-                        right_reserve = due_w + 14.0;
+                    } else if is_dark {
+                        cr.set_source_rgba(0.92, 0.92, 0.92, 1.0);
+                    } else {
+                        cr.set_source_rgba(0.15, 0.15, 0.15, 1.0);
+                    }
+
+                    let trunc_summary = truncate_cairo_text(cr, summary, max_w);
+                    cr.move_to(text_x, text_y);
+                    let _ = cr.show_text(&trunc_summary);
+
+                    // Strikethrough if completed
+                    if *completed {
+                        if let Ok(ext) = cr.text_extents(&trunc_summary) {
+                            cr.set_line_width(1.0);
+                            let strike_y = (text_y - (ext.height() / 2.0)).round() + 0.5;
+                            cr.move_to(text_x, strike_y);
+                            cr.line_to(text_x + ext.width(), strike_y);
+                            let _ = cr.stroke();
+                        }
                     }
                 }
-
-                // Summary text
-                let text_x = (cx + cw + 8.0).round();
-                let text_y = (row_y + (row_h / 2.0) + 4.0).round();
-                let max_w = (width - text_x - right_reserve).max(10.0);
-
-                cr.select_font_face(
-                    "Cantarell",
-                    gtk::cairo::FontSlant::Normal,
-                    gtk::cairo::FontWeight::Normal,
-                );
-                cr.set_font_size(12.0);
-
-                if *completed {
+            }
+            AgendaSidebarCanvasItem::EmptyState { text, y, height } => {
+                if draw_header_text {
+                    cr.select_font_face(
+                        "Cantarell",
+                        gtk::cairo::FontSlant::Italic,
+                        gtk::cairo::FontWeight::Normal,
+                    );
+                    cr.set_font_size(12.0);
                     if is_dark {
                         cr.set_source_rgba(0.55, 0.55, 0.55, 0.7);
                     } else {
                         cr.set_source_rgba(0.5, 0.5, 0.5, 0.7);
                     }
-                } else if is_dark {
-                    cr.set_source_rgba(0.92, 0.92, 0.92, 1.0);
-                } else {
-                    cr.set_source_rgba(0.15, 0.15, 0.15, 1.0);
+                    cr.move_to(22.0, (*y + (*height / 2.0) + 4.0).round());
+                    let _ = cr.show_text(text);
                 }
-
-                let trunc_summary = truncate_cairo_text(cr, summary, max_w);
-                cr.move_to(text_x, text_y);
-                let _ = cr.show_text(&trunc_summary);
-
-                // Strikethrough if completed
-                if *completed {
-                    if let Ok(ext) = cr.text_extents(&trunc_summary) {
-                        cr.set_line_width(1.0);
-                        let strike_y = (text_y - (ext.height() / 2.0)).round() + 0.5;
-                        cr.move_to(text_x, strike_y);
-                        cr.line_to(text_x + ext.width(), strike_y);
-                        let _ = cr.stroke();
-                    }
-                }
-            }
-            AgendaSidebarCanvasItem::EmptyState { text, y, height } => {
-                cr.select_font_face(
-                    "Cantarell",
-                    gtk::cairo::FontSlant::Italic,
-                    gtk::cairo::FontWeight::Normal,
-                );
-                cr.set_font_size(12.0);
-                if is_dark {
-                    cr.set_source_rgba(0.55, 0.55, 0.55, 0.7);
-                } else {
-                    cr.set_source_rgba(0.5, 0.5, 0.5, 0.7);
-                }
-                cr.move_to(22.0, (*y + (*height / 2.0) + 4.0).round());
-                let _ = cr.show_text(text);
             }
         }
     }
@@ -36093,6 +36100,22 @@ impl MailPage {
             }
         });
         agenda_canvas.add_controller(motion);
+        let page_for_agenda_resize = self.downgrade();
+        let last_agenda_w = std::rc::Rc::new(std::cell::Cell::new(0i32));
+        agenda_canvas.connect_resize(move |_canvas, width, _height| {
+            if width > 0 && (width - last_agenda_w.get()).abs() > 1 {
+                last_agenda_w.set(width);
+                if let Some(page) = page_for_agenda_resize.upgrade() {
+                    if let Some(fixed) = page.imp().agenda_labels_fixed.borrow().as_ref() {
+                        let items = page.imp().agenda_canvas_items.borrow().clone();
+                        let is_dark = adw::StyleManager::default().is_dark()
+                            || AppSettings::try_new().map(|s| s.force_dark_mode()).unwrap_or(false);
+                        let today = chrono::Local::now().date_naive();
+                        Self::populate_agenda_canvas_labels(fixed, &items, width, is_dark, today);
+                    }
+                }
+            }
+        });
         let agenda_overlay = gtk::Overlay::new();
         agenda_overlay.set_child(Some(&agenda_canvas));
         let agenda_labels_fixed = gtk::Fixed::new();
@@ -36329,7 +36352,7 @@ impl MailPage {
                 || AppSettings::try_new()
                     .map(|s| s.force_dark_mode())
                     .unwrap_or(false);
-            draw_agenda_sidebar_canvas(cr, &items, width as f64, hovered_idx, selected_idx, is_dark);
+            draw_agenda_sidebar_canvas_ext(cr, &items, width as f64, hovered_idx, selected_idx, is_dark, false);
         });
 
         let tasks_click = gtk::GestureClick::new();
@@ -36467,7 +36490,33 @@ impl MailPage {
             }
         });
         agenda_tasks_canvas.add_controller(tasks_motion);
-        tasks_scrolled.set_child(Some(&agenda_tasks_canvas));
+        let page_for_tasks_resize = self.downgrade();
+        let last_tasks_w = std::rc::Rc::new(std::cell::Cell::new(0i32));
+        agenda_tasks_canvas.connect_resize(move |_canvas, width, _height| {
+            if width > 0 && (width - last_tasks_w.get()).abs() > 1 {
+                last_tasks_w.set(width);
+                if let Some(page) = page_for_tasks_resize.upgrade() {
+                    if let Some(fixed) = page.imp().agenda_tasks_labels_fixed.borrow().as_ref() {
+                        let items = page.imp().agenda_tasks_canvas_items.borrow().clone();
+                        let is_dark = adw::StyleManager::default().is_dark()
+                            || AppSettings::try_new().map(|s| s.force_dark_mode()).unwrap_or(false);
+                        let today = chrono::Local::now().date_naive();
+                        Self::populate_agenda_canvas_labels(fixed, &items, width, is_dark, today);
+                    }
+                }
+            }
+        });
+        let tasks_overlay = gtk::Overlay::new();
+        tasks_overlay.set_child(Some(&agenda_tasks_canvas));
+        let agenda_tasks_labels_fixed = gtk::Fixed::new();
+        agenda_tasks_labels_fixed.set_can_target(false);
+        agenda_tasks_labels_fixed.set_hexpand(true);
+        agenda_tasks_labels_fixed.set_vexpand(true);
+        tasks_overlay.add_overlay(&agenda_tasks_labels_fixed);
+        self.imp()
+            .agenda_tasks_labels_fixed
+            .replace(Some(agenda_tasks_labels_fixed));
+        tasks_scrolled.set_child(Some(&tasks_overlay));
 
         let tasks_stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
@@ -36804,8 +36853,188 @@ impl MailPage {
                 }
             });
         }
+        let page_weak_dark = self.downgrade();
+        adw::StyleManager::default().connect_dark_notify(move |_| {
+            if let Some(page) = page_weak_dark.upgrade() {
+                page.rebuild_agenda_canvas_layout();
+            }
+        });
 
         container
+    }
+
+    fn populate_agenda_canvas_labels(
+        fixed: &gtk::Fixed,
+        items: &[AgendaSidebarCanvasItem],
+        canvas_width: i32,
+        is_dark: bool,
+        today: chrono::NaiveDate,
+    ) {
+        while let Some(child) = fixed.first_child() {
+            fixed.remove(&child);
+        }
+        let avail_width = if canvas_width > 20 { canvas_width } else { 250 };
+        for item in items {
+            match item {
+                AgendaSidebarCanvasItem::DateHeader {
+                    title, y, height, ..
+                }
+                | AgendaSidebarCanvasItem::TasksSectionHeader {
+                    title, y, height, ..
+                } => {
+                    let is_today = title == "Heute" || title == "Today";
+                    let mut classes = vec!["heading", "caption-heading"];
+                    if is_today {
+                        classes.push("accent");
+                    }
+                    let lbl = gtk::Label::builder()
+                        .label(title)
+                        .css_classes(classes)
+                        .halign(gtk::Align::Start)
+                        .valign(gtk::Align::Center)
+                        .xalign(0.0)
+                        .ellipsize(pango::EllipsizeMode::End)
+                        .width_request((avail_width - 26).max(40))
+                        .height_request(*height as i32)
+                        .can_target(false)
+                        .build();
+                    fixed.put(&lbl, 22.0, (*y).round());
+                }
+                AgendaSidebarCanvasItem::EventBar {
+                    summary,
+                    color,
+                    time_str,
+                    y,
+                    height,
+                    ..
+                } => {
+                    let bar_x = 4.0_f64;
+                    let bar_y = (*y + 1.0).round();
+                    let bar_h = (*height - 2.0).round();
+                    let content_x = (bar_x + 8.0).round();
+                    let content_w = ((avail_width as f64) - 20.0).max(24.0) as i32;
+                    let (_, _, _, fg_hex) =
+                        crate::views::calendar_page::pastel_colors_for_hex(color, is_dark);
+                    let s_esc = glib::markup_escape_text(summary);
+                    let markup = if let Some(t) = time_str {
+                        let t_esc = glib::markup_escape_text(t);
+                        format!(
+                            "<span foreground=\"{fg}\" size=\"9216\"><b>{t_esc}</b> {s_esc}</span>",
+                            fg = fg_hex
+                        )
+                    } else {
+                        format!(
+                            "<span foreground=\"{fg}\" size=\"9216\"><b>{s_esc}</b></span>",
+                            fg = fg_hex
+                        )
+                    };
+                    let lbl = gtk::Label::builder()
+                        .use_markup(true)
+                        .label(&markup)
+                        .halign(gtk::Align::Start)
+                        .valign(gtk::Align::Center)
+                        .xalign(0.0)
+                        .ellipsize(pango::EllipsizeMode::End)
+                        .single_line_mode(true)
+                        .width_request(content_w)
+                        .height_request(bar_h as i32)
+                        .can_target(false)
+                        .build();
+                    fixed.put(&lbl, content_x, bar_y);
+                }
+                AgendaSidebarCanvasItem::TaskRow {
+                    completed,
+                    summary,
+                    checkbox_rect,
+                    task,
+                    y,
+                    height,
+                } => {
+                    let row_y = y.round();
+                    let row_h = height.round();
+                    let (cx, _cy, cw, _ch) = *checkbox_rect;
+                    let text_x = (cx + cw + 8.0).round();
+                    let row_w = ((avail_width as f64) - text_x - 8.0).max(24.0) as i32;
+
+                    let row_box = gtk::Box::builder()
+                        .orientation(gtk::Orientation::Horizontal)
+                        .spacing(6)
+                        .width_request(row_w)
+                        .height_request(row_h as i32)
+                        .valign(gtk::Align::Center)
+                        .can_target(false)
+                        .build();
+
+                    let fg = if *completed {
+                        if is_dark { "#8c8c8c" } else { "#808080" }
+                    } else if is_dark {
+                        "#ebebeb"
+                    } else {
+                        "#262626"
+                    };
+                    let s_esc = glib::markup_escape_text(summary);
+                    let summary_markup = if *completed {
+                        format!(
+                            "<span foreground=\"{fg}\" size=\"9216\" strikethrough=\"true\">{s_esc}</span>"
+                        )
+                    } else {
+                        format!("<span foreground=\"{fg}\" size=\"9216\">{s_esc}</span>")
+                    };
+                    let summary_lbl = gtk::Label::builder()
+                        .use_markup(true)
+                        .label(&summary_markup)
+                        .hexpand(true)
+                        .halign(gtk::Align::Fill)
+                        .valign(gtk::Align::Center)
+                        .xalign(0.0)
+                        .ellipsize(pango::EllipsizeMode::End)
+                        .single_line_mode(true)
+                        .can_target(false)
+                        .build();
+                    row_box.append(&summary_lbl);
+
+                    if let Some(due_str) = format_task_due_short(&task.due, today) {
+                        let is_overdue = !*completed && is_task_overdue(&task.due, today);
+                        let due_fg = if is_overdue {
+                            "#f24040"
+                        } else if is_dark {
+                            "#b3b3b3"
+                        } else {
+                            "#737373"
+                        };
+                        let d_esc = glib::markup_escape_text(&due_str);
+                        let due_markup = format!(
+                            "<span foreground=\"{due_fg}\" size=\"8448\">{d_esc}</span>"
+                        );
+                        let due_lbl = gtk::Label::builder()
+                            .use_markup(true)
+                            .label(&due_markup)
+                            .halign(gtk::Align::End)
+                            .valign(gtk::Align::Center)
+                            .single_line_mode(true)
+                            .can_target(false)
+                            .build();
+                        row_box.append(&due_lbl);
+                    }
+
+                    fixed.put(&row_box, text_x, row_y);
+                }
+                AgendaSidebarCanvasItem::EmptyState { text, y, height } => {
+                    let lbl = gtk::Label::builder()
+                        .label(text)
+                        .css_classes(vec!["dim-label", "caption"])
+                        .halign(gtk::Align::Start)
+                        .valign(gtk::Align::Center)
+                        .xalign(0.0)
+                        .ellipsize(pango::EllipsizeMode::End)
+                        .width_request((avail_width - 26).max(40))
+                        .height_request((*height).round() as i32)
+                        .can_target(false)
+                        .build();
+                    fixed.put(&lbl, 22.0, (*y).round());
+                }
+            }
+        }
     }
 
     pub fn rebuild_agenda_canvas_layout(&self) {
@@ -36858,34 +37087,13 @@ impl MailPage {
             use_12h,
         );
 
+        let is_dark = adw::StyleManager::default().is_dark()
+            || AppSettings::try_new()
+                .map(|s| s.force_dark_mode())
+                .unwrap_or(false);
+
         if let Some(fixed) = self.imp().agenda_labels_fixed.borrow().as_ref() {
-            while let Some(child) = fixed.first_child() {
-                fixed.remove(&child);
-            }
-            for item in &events_items {
-                if let AgendaSidebarCanvasItem::DateHeader {
-                    title, y, height, ..
-                }
-                | AgendaSidebarCanvasItem::TasksSectionHeader {
-                    title, y, height, ..
-                } = item
-                {
-                    let is_today = title == "Heute" || title == "Today";
-                    let mut classes = vec!["heading", "caption-heading"];
-                    if is_today {
-                        classes.push("accent");
-                    }
-                    let lbl = gtk::Label::builder()
-                        .label(title)
-                        .css_classes(classes)
-                        .halign(gtk::Align::Start)
-                        .valign(gtk::Align::Center)
-                        .height_request(*height as i32)
-                        .can_target(false)
-                        .build();
-                    fixed.put(&lbl, 22.0, (*y).round());
-                }
-            }
+            Self::populate_agenda_canvas_labels(fixed, &events_items, canvas.width(), is_dark, today);
         }
 
         self.imp().agenda_canvas_items.replace(events_items);
@@ -36908,6 +37116,16 @@ impl MailPage {
             let badge_str = if active_count > 0 { active_count.to_string() } else { String::new() };
             if let Some(badge) = self.imp().agenda_tasks_count_badge.borrow().as_ref() {
                 badge.set_label(&badge_str);
+            }
+
+            if let Some(fixed) = self.imp().agenda_tasks_labels_fixed.borrow().as_ref() {
+                Self::populate_agenda_canvas_labels(
+                    fixed,
+                    &tasks_items,
+                    tasks_canvas.width(),
+                    is_dark,
+                    today,
+                );
             }
 
             self.imp().agenda_tasks_canvas_items.replace(tasks_items);

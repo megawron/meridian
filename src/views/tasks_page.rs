@@ -445,8 +445,8 @@ enum TaskPreviewOrientation {
 impl TaskPreviewOrientation {
     fn from_setting(value: &str) -> Self {
         match value {
-            "vertical" => Self::Vertical,
-            _ => Self::Classic,
+            "classic" => Self::Classic,
+            _ => Self::Vertical,
         }
     }
 
@@ -483,7 +483,7 @@ impl TaskPreviewOrientation {
     fn default_position(self) -> i32 {
         match self {
             Self::Classic => 400,
-            Self::Vertical => 200,
+            Self::Vertical => 420,
         }
     }
 }
@@ -4948,7 +4948,7 @@ impl TasksPage {
             .map(|settings| {
                 TaskPreviewOrientation::from_setting(&settings.task_preview_orientation())
             })
-            .unwrap_or(TaskPreviewOrientation::Classic);
+            .unwrap_or(TaskPreviewOrientation::Vertical);
         preview_orientation_selector.set_selected(preview_orientation.index());
         preview_orientation_selector.set_tooltip_text(Some(&crate::i18n::gettext("Task preview layout")));
 
@@ -18363,7 +18363,7 @@ mod tests {
         );
         assert_eq!(
             TaskPreviewOrientation::from_setting("unexpected"),
-            TaskPreviewOrientation::Classic
+            TaskPreviewOrientation::Vertical
         );
         assert_eq!(TaskPreviewOrientation::Classic.setting_value(), "classic");
         assert_eq!(TaskPreviewOrientation::Vertical.setting_value(), "vertical");

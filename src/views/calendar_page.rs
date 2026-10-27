@@ -3247,6 +3247,11 @@ impl CalendarPage {
             } else if tabs.as_slice() == [SidebarPanelId::Details] {
                 use_lower_box = true;
                 ensure_widget_in_stack(&event_inspector_scroll, &sidebar_lower_stack, "details");
+                event_inspector_scroll.set_visible(true);
+                event_inspector_scroll.set_vexpand(true);
+                event_inspector_scroll.set_valign(gtk::Align::Fill);
+                sidebar_lower_stack.set_vexpand(true);
+                sidebar_lower_stack.set_valign(gtk::Align::Fill);
                 sidebar_lower_stack.set_visible_child_name("details");
                 sidebar_details_title.set_text(&gettext("Details"));
                 sidebar_details_title.set_visible(true);
@@ -3287,6 +3292,11 @@ impl CalendarPage {
             } else {
                 use_lower_box = true;
                 ensure_widget_in_stack(&event_inspector_scroll, &sidebar_lower_stack, "details");
+                event_inspector_scroll.set_visible(true);
+                event_inspector_scroll.set_vexpand(true);
+                event_inspector_scroll.set_valign(gtk::Align::Fill);
+                sidebar_lower_stack.set_vexpand(true);
+                sidebar_lower_stack.set_valign(gtk::Align::Fill);
                 if tabs.contains(&SidebarPanelId::Memos) {
                     ensure_widget_in_stack(&memopad_content_box, &sidebar_lower_stack, "memos");
                     memopad_content_box.set_visible(true);
@@ -3817,13 +3827,28 @@ impl CalendarPage {
             stack.set_visible_child_name("details");
         }
         // Auto-expand inspector if collapsed
+        let mut needs_layout_sync = false;
         if let Some(scroll) = self.imp().event_inspector_scroll.borrow().as_ref() {
             if !scroll.is_visible() {
                 scroll.set_visible(true);
-                if let Some(btn) = self.imp().inspector_collapse_btn.borrow().as_ref() {
-                    btn.set_icon_name("pan-down-symbolic");
-                }
+                needs_layout_sync = true;
             }
+            scroll.set_vexpand(true);
+            scroll.set_valign(gtk::Align::Fill);
+        }
+        if let Some(stack) = self.imp().sidebar_lower_stack.borrow().as_ref() {
+            if !stack.is_visible() {
+                stack.set_visible(true);
+                needs_layout_sync = true;
+            }
+            stack.set_vexpand(true);
+            stack.set_valign(gtk::Align::Fill);
+        }
+        if needs_layout_sync {
+            if let Some(btn) = self.imp().inspector_collapse_btn.borrow().as_ref() {
+                btn.set_icon_name("pan-down-symbolic");
+            }
+            self.sync_sidebar_vpane_layout();
         }
     }
 
@@ -10541,6 +10566,18 @@ impl CalendarPage {
                 return;
             }
             if paned.resizes_start_child() && paned.resizes_end_child() {
+                if let Some(start) = paned.start_child() {
+                    if start.valign() != gtk::Align::Fill || !start.vexpands() {
+                        start.set_vexpand(true);
+                        start.set_valign(gtk::Align::Fill);
+                    }
+                }
+                if let Some(end) = paned.end_child() {
+                    if end.valign() != gtk::Align::Fill || !end.vexpands() {
+                        end.set_vexpand(true);
+                        end.set_valign(gtk::Align::Fill);
+                    }
+                }
                 let pos = paned.position();
                 if pos >= 96 {
                     page.imp().sidebar_saved_vpane_pos.set(pos);
@@ -10558,6 +10595,18 @@ impl CalendarPage {
                 return;
             }
             if paned.resizes_start_child() && paned.resizes_end_child() {
+                if let Some(start) = paned.start_child() {
+                    if start.valign() != gtk::Align::Fill || !start.vexpands() {
+                        start.set_vexpand(true);
+                        start.set_valign(gtk::Align::Fill);
+                    }
+                }
+                if let Some(end) = paned.end_child() {
+                    if end.valign() != gtk::Align::Fill || !end.vexpands() {
+                        end.set_vexpand(true);
+                        end.set_valign(gtk::Align::Fill);
+                    }
+                }
                 let pos = paned.position();
                 if pos >= 96 {
                     page.imp().sidebar_saved_inner_vpane_pos.set(pos);
@@ -11361,8 +11410,10 @@ impl CalendarPage {
         // Lower Stack
         let sidebar_lower_stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
+            .vhomogeneous(false)
             .vexpand(true)
             .hexpand(true)
+            .valign(gtk::Align::Fill)
             .build();
         self.imp()
             .sidebar_lower_stack
@@ -11373,7 +11424,8 @@ impl CalendarPage {
             .orientation(gtk::Orientation::Vertical)
             .spacing(6)
             .hexpand(true)
-            .vexpand(false)
+            .vexpand(true)
+            .valign(gtk::Align::Start)
             .build();
         self.imp()
             .event_inspector_content
@@ -11382,12 +11434,13 @@ impl CalendarPage {
         let event_inspector_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .propagate_natural_height(false)
+            .propagate_natural_height(true)
             .propagate_natural_width(false)
             .min_content_height(80)
             .min_content_width(260)
             .vexpand(true)
             .hexpand(true)
+            .valign(gtk::Align::Fill)
             .css_classes(vec!["calendar-sidebar-scroll"])
             .child(&event_inspector_content)
             .build();
@@ -16430,6 +16483,38 @@ impl CalendarPage {
                     let is_hovered = hovered_target == Some(&YearCanvasHitTarget::Day(cell_date));
                     let event_count = markers.get(&cell_date).copied().unwrap_or(0);
 
+                    let heatmap_rgba = |count: usize, dark: bool| -> (f64, f64, f64, f64) {
+                        if count == 1 {
+                            // 1 event: soft emerald/mint green (calm/light load)
+                            if dark {
+                                (46.0 / 255.0, 194.0 / 255.0, 126.0 / 255.0, 0.28)
+                            } else {
+                                (38.0 / 255.0, 162.0 / 255.0, 105.0 / 255.0, 0.22)
+                            }
+                        } else if count == 2 {
+                            // 2 events: warm amber/gold (moderate load)
+                            if dark {
+                                (245.0 / 255.0, 194.0 / 255.0, 17.0 / 255.0, 0.34)
+                            } else {
+                                (229.0 / 255.0, 165.0 / 255.0, 10.0 / 255.0, 0.26)
+                            }
+                        } else if count == 3 {
+                            // 3 events: vibrant orange (busy day)
+                            if dark {
+                                (255.0 / 255.0, 120.0 / 255.0, 0.0 / 255.0, 0.40)
+                            } else {
+                                (230.0 / 255.0, 97.0 / 255.0, 0.0 / 255.0, 0.30)
+                            }
+                        } else {
+                            // 4+ events: coral/crimson (high density / hot)
+                            if dark {
+                                (246.0 / 255.0, 97.0 / 255.0, 81.0 / 255.0, 0.46)
+                            } else {
+                                (224.0 / 255.0, 27.0 / 255.0, 36.0 / 255.0, 0.34)
+                            }
+                        }
+                    };
+
                     // Day shape: circle indicator on today, single selected day, or start/end caps of a multi-day range
                     if is_today {
                         cr.arc(cx, cy, radius, 0.0, 2.0 * std::f64::consts::PI);
@@ -16441,24 +16526,23 @@ impl CalendarPage {
                         let _ = cr.fill();
                     } else if is_selected && !is_multi_range {
                         cr.arc(cx, cy, radius, 0.0, 2.0 * std::f64::consts::PI);
-                        cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, if is_dark { 0.30 } else { 0.22 });
+                        if indicator_style == YearGridIndicatorStyle::Heatmap && event_count > 0 {
+                            let (hr, hg, hb, ha) = heatmap_rgba(event_count, is_dark);
+                            cr.set_source_rgba(hr, hg, hb, ha);
+                        } else {
+                            cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, if is_dark { 0.30 } else { 0.22 });
+                        }
                         let _ = cr.fill();
                         if indicator_style == YearGridIndicatorStyle::Heatmap {
                             cr.arc(cx, cy, radius, 0.0, 2.0 * std::f64::consts::PI);
-                            cr.set_line_width(1.2);
-                            cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 0.85);
+                            cr.set_line_width(1.5);
+                            cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 0.92);
                             let _ = cr.stroke();
                         }
                     } else if !is_selected && indicator_style == YearGridIndicatorStyle::Heatmap && event_count > 0 {
-                        let heat_alpha = if event_count == 1 {
-                            if is_dark { 0.14 } else { 0.10 }
-                        } else if event_count <= 3 {
-                            if is_dark { 0.26 } else { 0.20 }
-                        } else {
-                            if is_dark { 0.42 } else { 0.34 }
-                        };
+                        let (hr, hg, hb, ha) = heatmap_rgba(event_count, is_dark);
                         cr.arc(cx, cy, radius, 0.0, 2.0 * std::f64::consts::PI);
-                        cr.set_source_rgba(53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, heat_alpha);
+                        cr.set_source_rgba(hr, hg, hb, ha);
                         let _ = cr.fill();
                     } else if is_hovered {
                         cr.arc(cx, cy, radius, 0.0, 2.0 * std::f64::consts::PI);
@@ -22381,11 +22465,24 @@ pub(crate) fn compute_current_time_line_y(height: f64, now_min: f64) -> f64 {
 
 fn draw_current_time_indicator_line(cr: &gtk::cairo::Context, width: f64, height: f64, now_min: f64) {
     let line_y = compute_current_time_line_y(height, now_min);
-    cr.set_source_rgba(224.0 / 255.0, 27.0 / 255.0, 36.0 / 255.0, 1.0);
+    let is_dark = adw::StyleManager::default().is_dark();
+    let (r, g, b) = if is_dark {
+        (255.0 / 255.0, 92.0 / 255.0, 92.0 / 255.0)
+    } else {
+        (230.0 / 255.0, 45.0 / 255.0, 66.0 / 255.0)
+    };
+    cr.set_source_rgba(r, g, b, 0.95);
     cr.set_line_width(2.0);
     cr.move_to(0.0, line_y);
     cr.line_to(width, line_y);
     let _ = cr.stroke();
+
+    // Crisp leading indicator dot on the left edge when drawing inside a day column (width > 72px)
+    if width > 72.0 {
+        cr.arc(4.5, line_y, 4.0, 0.0, 2.0 * std::f64::consts::PI);
+        cr.set_source_rgba(r, g, b, 1.0);
+        let _ = cr.fill();
+    }
 }
 
 fn draw_time_grid_chip_card(

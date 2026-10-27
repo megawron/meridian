@@ -77,7 +77,10 @@ mod imp {
         pub web_context: RefCell<Option<webkit6::WebContext>>,
         pub format_toolbar: RefCell<Option<gtk::Box>>,
         pub format_toolbar_revealer: RefCell<Option<gtk::Revealer>>,
+        pub mode_html_btn: RefCell<Option<gtk::ToggleButton>>,
+        pub mode_txt_btn: RefCell<Option<gtk::ToggleButton>>,
         pub plain_text_mode: Cell<bool>,
+        pub plain_text_mode_callbacks: RefCell<DragInternalCallbackList>,
         pub web_view_ready: Cell<bool>,
         pub pending_scripts: RefCell<Vec<String>>,
         pub spell_checking_enabled: Cell<bool>,
@@ -1306,6 +1309,14 @@ impl HtmlEditor {
         self.imp().plain_text_mode.get()
     }
 
+    pub fn connect_plain_text_mode_changed<F: Fn(bool) + 'static>(&self, f: F) {
+        self.imp()
+            .plain_text_mode_callbacks
+            .borrow_mut()
+            .0
+            .push(std::rc::Rc::new(f));
+    }
+
     /// Switch between rich HTML and literal text while preserving the current
     /// visible content.  The conversion is performed inside the DOM so user
     /// text is never interpolated into JavaScript source.
@@ -1317,9 +1328,14 @@ impl HtmlEditor {
         if let Some(toolbar) = self.imp().format_toolbar.borrow().as_ref() {
             toolbar.set_sensitive(!plain_text);
         }
-        if plain_text {
-            if let Some(revealer) = self.imp().format_toolbar_revealer.borrow().as_ref() {
-                revealer.set_reveal_child(false);
+        if let Some(btn_html) = self.imp().mode_html_btn.borrow().as_ref() {
+            if btn_html.is_active() != (!plain_text) {
+                btn_html.set_active(!plain_text);
+            }
+        }
+        if let Some(btn_txt) = self.imp().mode_txt_btn.borrow().as_ref() {
+            if btn_txt.is_active() != plain_text {
+                btn_txt.set_active(plain_text);
             }
         }
         let script = if plain_text {
@@ -1338,6 +1354,10 @@ impl HtmlEditor {
         };
         self.evaluate_or_queue(script);
         self.evaluate_or_queue(format!("window.__plainTextMode = {};", plain_text));
+        let callbacks = self.imp().plain_text_mode_callbacks.borrow().0.clone();
+        for cb in callbacks {
+            cb(plain_text);
+        }
     }
 
     pub fn is_format_toolbar_visible(&self) -> bool {
@@ -1400,7 +1420,7 @@ impl HtmlEditor {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(4)
             .margin_start(16)
-            .margin_end(16)
+            .margin_end(8)
             .margin_top(0)
             .margin_bottom(10)
             .css_classes(vec!["composer-format-toolbar"])
@@ -1593,12 +1613,74 @@ impl HtmlEditor {
             .propagate_natural_width(false)
             .propagate_natural_height(true)
             .min_content_width(0)
+            .hexpand(true)
             .css_classes(vec!["format-toolbar-scrolled"])
             .child(&toolbar)
             .build();
 
+        let mode_switcher = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(0)
+            .css_classes(vec!["linked", "composer-mode-switcher"])
+            .valign(gtk::Align::Center)
+            .margin_start(8)
+            .margin_end(16)
+            .margin_bottom(10)
+            .build();
+
+        let btn_mode_html = gtk::ToggleButton::builder()
+            .label("HTML")
+            .tooltip_text(&gettext("HTML-Format (Formatierter Text)"))
+            .active(true)
+            .css_classes(vec!["caption-heading"])
+            .build();
+        set_accessible_label(&btn_mode_html, "HTML");
+
+        let btn_mode_txt = gtk::ToggleButton::builder()
+            .label("TXT")
+            .tooltip_text(&gettext("Nur-Text-Format (Plain Text)"))
+            .group(&btn_mode_html)
+            .active(false)
+            .css_classes(vec!["caption-heading"])
+            .build();
+        set_accessible_label(&btn_mode_txt, "TXT");
+
+        mode_switcher.append(&btn_mode_html);
+        mode_switcher.append(&btn_mode_txt);
+
+        self.imp().mode_html_btn.replace(Some(btn_mode_html.clone()));
+        self.imp().mode_txt_btn.replace(Some(btn_mode_txt.clone()));
+
+        let editor_weak_html = self.downgrade();
+        btn_mode_html.connect_toggled(move |btn| {
+            if btn.is_active() {
+                if let Some(editor) = editor_weak_html.upgrade() {
+                    editor.set_plain_text_mode(false);
+                }
+            }
+        });
+        let editor_weak_txt = self.downgrade();
+        btn_mode_txt.connect_toggled(move |btn| {
+            if btn.is_active() {
+                if let Some(editor) = editor_weak_txt.upgrade() {
+                    editor.set_plain_text_mode(true);
+                }
+            }
+        });
+
+        let toolbar_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        toolbar_row.append(&toolbar_scroll);
+        toolbar_row.append(
+            &gtk::Separator::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .margin_top(4)
+                .margin_bottom(14)
+                .build(),
+        );
+        toolbar_row.append(&mode_switcher);
+
         let toolbar_container = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        toolbar_container.append(&toolbar_scroll);
+        toolbar_container.append(&toolbar_row);
 
         let toolbar_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideDown)

@@ -909,7 +909,7 @@
       <summary>Show the memos toolbar</summary>
     </key>
     <key name="memo-preview-orientation" type="s">
-      <default>'classic'</default>
+      <default>'vertical'</default>
       <summary>Memo preview orientation</summary>
       <choices>
         <choice value='classic'/>
@@ -935,7 +935,7 @@
       <summary>Show the tasks toolbar</summary>
     </key>
     <key name="task-preview-orientation" type="s">
-      <default>'classic'</default>
+      <default>'vertical'</default>
       <summary>Task preview orientation</summary>
       <choices>
         <choice value='classic'/>
@@ -943,7 +943,7 @@
       </choices>
     </key>
     <key name="task-hpane-position" type="i">
-      <default>200</default>
+      <default>420</default>
       <range min="80" max="4096"/>
       <summary>Horizontal task preview divider position</summary>
     </key>

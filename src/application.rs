@@ -222,10 +222,10 @@ mod imp {
                         dialog.select_page(page);
                     }
                 }
-                dialog.present(Some(&window));
+                dialog.present_standalone();
             } else if std::env::args().any(|a| a == "--preferences") {
                 let dialog = crate::dialogs::PreferencesDialog::new();
-                dialog.present(Some(&window));
+                dialog.present_standalone();
             }
 
             if std::env::args().any(|a| a == "--account-setup") {
@@ -596,13 +596,12 @@ impl MeridianApplication {
         // ── Preferences ──
         let action_preferences = gio::SimpleAction::new("preferences", None);
         action_preferences.connect_activate(glib::clone!(
-            #[weak(rename_to = app)]
+            #[weak(rename_to = _app)]
             self,
             move |_, _| {
                 tracing::info!("Preferences action triggered");
                 let dialog = crate::dialogs::PreferencesDialog::new();
-                let parent = app.active_window();
-                dialog.present(parent.as_ref());
+                dialog.present_standalone();
             }
         ));
         self.add_action(&action_preferences);

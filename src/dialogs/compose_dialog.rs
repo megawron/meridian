@@ -1189,16 +1189,53 @@ impl ComposeDialog {
         let composer_html = AppSettings::try_new()
             .map(|settings| settings.composer_html())
             .unwrap_or(true);
-        btn_format.set_sensitive(composer_html);
-        if !composer_html {
-            btn_format.set_active(false);
-        }
         let btn_plain_text = gtk::ToggleButton::builder()
             .icon_name("text-x-generic-symbolic")
             .tooltip_text("Nur-Text-Modus beim Verfassen")
             .active(!composer_html)
             .css_classes(vec!["flat"])
             .build();
+
+        let header_mode_switcher = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(0)
+            .css_classes(vec!["linked", "composer-mode-switcher"])
+            .valign(gtk::Align::Center)
+            .visible(!show_format_toolbar)
+            .build();
+        let header_btn_html = gtk::ToggleButton::builder()
+            .label("HTML")
+            .tooltip_text("HTML-Format (Formatierter Text)")
+            .active(composer_html)
+            .css_classes(vec!["caption-heading"])
+            .build();
+        set_accessible_label(&header_btn_html, "HTML");
+        let header_btn_txt = gtk::ToggleButton::builder()
+            .label("TXT")
+            .tooltip_text("Nur-Text-Format (Plain Text)")
+            .group(&header_btn_html)
+            .active(!composer_html)
+            .css_classes(vec!["caption-heading"])
+            .build();
+        set_accessible_label(&header_btn_txt, "TXT");
+        header_mode_switcher.append(&header_btn_html);
+        header_mode_switcher.append(&header_btn_txt);
+        header_bar.pack_start(&header_mode_switcher);
+
+        {
+            let btn_plain_for_html = btn_plain_text.clone();
+            header_btn_html.connect_toggled(move |b| {
+                if b.is_active() && btn_plain_for_html.is_active() {
+                    btn_plain_for_html.set_active(false);
+                }
+            });
+            let btn_plain_for_txt = btn_plain_text.clone();
+            header_btn_txt.connect_toggled(move |b| {
+                if b.is_active() && !btn_plain_for_txt.is_active() {
+                    btn_plain_for_txt.set_active(true);
+                }
+            });
+        }
 
         toolbar_view.add_top_bar(&header_bar);
 
@@ -1710,10 +1747,12 @@ impl ComposeDialog {
             html_editor.set_format_toolbar_visible(true);
         }
 
+        let header_mode_for_fmt = header_mode_switcher.clone();
         btn_format.connect_toggled(glib::clone!(
             #[weak(rename_to = dialog)]
             self,
             move |btn| {
+                header_mode_for_fmt.set_visible(!btn.is_active());
                 if let Some(editor) = dialog.imp().html_editor.borrow().as_ref() {
                     editor.set_format_toolbar_visible(btn.is_active());
                 }
@@ -1848,31 +1887,36 @@ impl ComposeDialog {
             }
         });
 
+        let btn_plain_for_editor = btn_plain_text.clone();
+        html_editor.connect_plain_text_mode_changed(move |is_plain| {
+            if btn_plain_for_editor.is_active() != is_plain {
+                btn_plain_for_editor.set_active(is_plain);
+            }
+        });
+
         let settings_for_composer_mode = AppSettings::try_new();
         let editor_for_composer_mode = html_editor.clone();
         let dialog_for_composer_mode = self.downgrade();
+        let header_html_for_mode = header_btn_html.clone();
+        let header_txt_for_mode = header_btn_txt.clone();
         btn_plain_text.connect_toggled(move |button| {
-            editor_for_composer_mode.set_plain_text_mode(button.is_active());
+            let is_plain = button.is_active();
+            if header_html_for_mode.is_active() != (!is_plain) {
+                header_html_for_mode.set_active(!is_plain);
+            }
+            if header_txt_for_mode.is_active() != is_plain {
+                header_txt_for_mode.set_active(is_plain);
+            }
+            editor_for_composer_mode.set_plain_text_mode(is_plain);
             let suppress_persistence = dialog_for_composer_mode
                 .upgrade()
                 .is_some_and(|dialog| dialog.imp().suppress_setting_persistence.get());
             if !suppress_persistence {
                 if let Some(settings) = settings_for_composer_mode.as_ref() {
-                    settings.set_composer_html(!button.is_active());
+                    settings.set_composer_html(!is_plain);
                 }
             }
             if let Some(dialog) = dialog_for_composer_mode.upgrade() {
-                if let Some(btn_format) = dialog.imp().format_button.borrow().as_ref() {
-                    btn_format.set_sensitive(!button.is_active());
-                    if button.is_active() {
-                        btn_format.set_active(false);
-                    } else {
-                        let show_toolbar = AppSettings::try_new()
-                            .map(|s| s.composer_show_format_toolbar())
-                            .unwrap_or(false);
-                        btn_format.set_active(show_toolbar);
-                    }
-                }
                 dialog.mark_changed();
             }
         });

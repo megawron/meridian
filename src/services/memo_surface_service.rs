@@ -324,8 +324,8 @@ pub struct MemoPreview {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MemoPreviewOrientation {
-    #[default]
     Classic,
+    #[default]
     Vertical,
 }
 
@@ -383,7 +383,7 @@ impl Default for MemoPreviewState {
     fn default() -> Self {
         Self {
             visible: true,
-            orientation: MemoPreviewOrientation::Classic,
+            orientation: MemoPreviewOrientation::Vertical,
         }
     }
 }

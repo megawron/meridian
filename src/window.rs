@@ -4656,7 +4656,7 @@ impl MeridianWindow {
                 dialog.connect_closed(move |_| {
                     win_clone.reorder_account_roots();
                 });
-                dialog.present(Some(&win));
+                dialog.present_standalone();
             }
         ));
         self.add_action(&action_preferences);
@@ -4672,7 +4672,7 @@ impl MeridianWindow {
                 dialog.connect_closed(move |_| {
                     win_clone.reorder_account_roots();
                 });
-                dialog.present(Some(&win));
+                dialog.present_standalone();
             }
         ));
         self.add_action(&action_list_toolbar_prefs);
@@ -4688,7 +4688,7 @@ impl MeridianWindow {
                 dialog.connect_closed(move |_| {
                     win_clone.reorder_account_roots();
                 });
-                dialog.present(Some(&win));
+                dialog.present_standalone();
             }
         ));
         self.add_action(&action_header_prefs);
