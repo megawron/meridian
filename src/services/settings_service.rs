@@ -1343,7 +1343,7 @@ impl AppSettings {
         if has_key {
             self.settings.boolean("calendar-sidebar-details-on-top")
         } else {
-            false
+            true
         }
     }
 
@@ -1367,7 +1367,7 @@ impl AppSettings {
         if has_key {
             self.settings.string("calendar-sidebar-layout").to_string()
         } else {
-            "tasks:split,details:split,memos:off".to_string()
+            "details:split,tasks:split,memos:off".to_string()
         }
     }
 

@@ -268,11 +268,11 @@
       <summary>Show Memos section in the Calendar right sidebar</summary>
     </key>
     <key name="calendar-sidebar-details-on-top" type="b">
-      <default>false</default>
+      <default>true</default>
       <summary>Place Appointment Details section above Tasks in the Calendar right sidebar</summary>
     </key>
     <key name="calendar-sidebar-layout" type="s">
-      <default>'tasks:split,details:split,memos:off'</default>
+      <default>'details:split,tasks:split,memos:off'</default>
       <summary>Ordered panel layout and display modes (off, split, tab) for the Calendar right sidebar</summary>
     </key>
     <key name="calendar-tag-inner-vpane-position" type="i">
