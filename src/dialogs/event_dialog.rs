@@ -466,43 +466,77 @@ fn create_timezone_picker_popover(entry: &gtk::Entry) -> (gtk::Button, gtk::Popo
         .css_classes(vec!["flat"])
         .build();
     let popover = gtk::Popover::builder().has_arrow(true).build();
+    let pop_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(4)
+        .margin_start(6)
+        .margin_end(6)
+        .margin_top(6)
+        .margin_bottom(6)
+        .width_request(240)
+        .build();
+    let search_entry = gtk::SearchEntry::builder()
+        .placeholder_text("Zeitzone suchen…")
+        .build();
+    pop_box.append(&search_entry);
+
     let scroll = gtk::ScrolledWindow::builder()
-        .max_content_height(220)
+        .max_content_height(240)
+        .min_content_height(180)
         .hscrollbar_policy(gtk::PolicyType::Never)
         .build();
     let list = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(2)
-        .margin_start(6)
-        .margin_end(6)
-        .margin_top(6)
-        .margin_bottom(6)
         .build();
 
-    let timezones = [
-        "Europe/Berlin",
-        "Europe/Vienna",
-        "Europe/Zurich",
-        "Europe/London",
-        "Europe/Paris",
-        "America/New_York",
-        "America/Chicago",
-        "America/Denver",
-        "America/Los_Angeles",
-        "Asia/Tokyo",
-        "Asia/Shanghai",
-        "UTC",
+    let timezones: &[(&str, &str)] = &[
+        ("Europe/Berlin", "Europe/Berlin (MEZ/MESZ)"),
+        ("Europe/Vienna", "Europe/Vienna"),
+        ("Europe/Zurich", "Europe/Zurich"),
+        ("Europe/London", "Europe/London (GMT/BST)"),
+        ("Europe/Paris", "Europe/Paris"),
+        ("Europe/Madrid", "Europe/Madrid"),
+        ("Europe/Rome", "Europe/Rome"),
+        ("Europe/Amsterdam", "Europe/Amsterdam"),
+        ("Europe/Warsaw", "Europe/Warsaw"),
+        ("Europe/Stockholm", "Europe/Stockholm"),
+        ("Europe/Athens", "Europe/Athens (OEZ)"),
+        ("Europe/Istanbul", "Europe/Istanbul"),
+        ("America/New_York", "America/New_York (ET)"),
+        ("America/Chicago", "America/Chicago (CT)"),
+        ("America/Denver", "America/Denver (MT)"),
+        ("America/Los_Angeles", "America/Los_Angeles (PT)"),
+        ("America/Toronto", "America/Toronto"),
+        ("America/Vancouver", "America/Vancouver"),
+        ("America/Sao_Paulo", "America/Sao_Paulo"),
+        ("Asia/Dubai", "Asia/Dubai (GST)"),
+        ("Asia/Kolkata", "Asia/Kolkata (IST)"),
+        ("Asia/Bangkok", "Asia/Bangkok"),
+        ("Asia/Singapore", "Asia/Singapore (SGT)"),
+        ("Asia/Shanghai", "Asia/Shanghai (CST)"),
+        ("Asia/Hong_Kong", "Asia/Hong_Kong"),
+        ("Asia/Seoul", "Asia/Seoul (KST)"),
+        ("Asia/Tokyo", "Asia/Tokyo (JST)"),
+        ("Australia/Sydney", "Australia/Sydney (AEST)"),
+        ("Pacific/Auckland", "Pacific/Auckland (NZST)"),
+        ("UTC", "UTC (Koordinierte Weltzeit)"),
+        ("", "Fließend (ohne feste Zeitzone)"),
     ];
 
-    for tz in timezones {
+    let mut rows: Vec<(String, gtk::Button)> = Vec::with_capacity(timezones.len());
+    for (tz_id, tz_label) in timezones {
         let tz_btn = gtk::Button::builder()
-            .label(tz)
+            .label(*tz_label)
             .css_classes(vec!["flat"])
-            .halign(gtk::Align::Start)
+            .halign(gtk::Align::Fill)
             .build();
+        if let Some(lbl) = tz_btn.child().and_downcast::<gtk::Label>() {
+            lbl.set_xalign(0.0);
+        }
         let entry_weak = entry.downgrade();
         let popover_weak = popover.downgrade();
-        let tz_str = tz.to_string();
+        let tz_str = (*tz_id).to_string();
         tz_btn.connect_clicked(move |_| {
             if let Some(entry) = entry_weak.upgrade() {
                 entry.set_text(&tz_str);
@@ -512,14 +546,25 @@ fn create_timezone_picker_popover(entry: &gtk::Entry) -> (gtk::Button, gtk::Popo
             }
         });
         list.append(&tz_btn);
+        rows.push((format!("{} {}", tz_id.to_lowercase(), tz_label.to_lowercase()), tz_btn));
     }
 
+    search_entry.connect_search_changed(move |se| {
+        let q = se.text().trim().to_lowercase();
+        for (haystack, row_btn) in &rows {
+            row_btn.set_visible(q.is_empty() || haystack.contains(&q));
+        }
+    });
+
     scroll.set_child(Some(&list));
-    popover.set_child(Some(&scroll));
+    pop_box.append(&scroll);
+    popover.set_child(Some(&pop_box));
     popover.set_parent(&btn);
 
     let popover_clone = popover.clone();
+    let search_clone = search_entry.clone();
     btn.connect_clicked(move |_| {
+        search_clone.set_text("");
         popover_clone.popup();
     });
 
@@ -1598,19 +1643,58 @@ impl EventDialog {
         row_status.add_suffix(&dropdown_transparency);
         group_options.add(&row_status);
 
+        let default_tz = crate::services::ical_time_service::default_calendar_timezone_id();
         let row_tz = adw::ActionRow::builder()
             .title("Zeitzone")
+            .subtitle("Leer lassen für fließende Ortszeit")
             .build();
         let entry_tz = gtk::Entry::builder()
-            .text("Europe/Berlin")
-            .width_request(130)
+            .text(&default_tz)
+            .placeholder_text("Fließend (Lokal)")
+            .width_request(155)
             .valign(gtk::Align::Center)
             .build();
         let (btn_tz, _pop_tz) = create_timezone_picker_popover(&entry_tz);
         btn_tz.set_valign(gtk::Align::Center);
+        let btn_diff_end_tz = gtk::ToggleButton::builder()
+            .icon_name("airplane-mode-symbolic")
+            .tooltip_text("Abweichende End-Zeitzone (z. B. für Flüge oder Reisen über Zeitzonen)")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
         row_tz.add_suffix(&entry_tz);
         row_tz.add_suffix(&btn_tz);
+        row_tz.add_suffix(&btn_diff_end_tz);
         group_options.add(&row_tz);
+
+        let row_end_tz = adw::ActionRow::builder()
+            .title("End-Zeitzone (Ankunft)")
+            .subtitle("Abweichende Zeitzone für das Terminende")
+            .visible(false)
+            .build();
+        let entry_end_tz = gtk::Entry::builder()
+            .text(&default_tz)
+            .placeholder_text("Fließend (Lokal)")
+            .width_request(155)
+            .valign(gtk::Align::Center)
+            .build();
+        let (btn_end_tz, _pop_end_tz) = create_timezone_picker_popover(&entry_end_tz);
+        btn_end_tz.set_valign(gtk::Align::Center);
+        row_end_tz.add_suffix(&entry_end_tz);
+        row_end_tz.add_suffix(&btn_end_tz);
+        group_options.add(&row_end_tz);
+
+        let row_end_tz_for_toggle = row_end_tz.clone();
+        let entry_end_tz_for_toggle = entry_end_tz.clone();
+        let entry_tz_for_toggle = entry_tz.clone();
+        let row_allday_for_tz_toggle = row_allday.clone();
+        btn_diff_end_tz.connect_toggled(move |btn| {
+            let active = btn.is_active() && !row_allday_for_tz_toggle.is_active();
+            row_end_tz_for_toggle.set_visible(active);
+            if active && entry_end_tz_for_toggle.text().trim().is_empty() {
+                entry_end_tz_for_toggle.set_text(&entry_tz_for_toggle.text());
+            }
+        });
 
         let row_conference = adw::EntryRow::builder()
             .title("Webseite / Meeting-Link")
@@ -1954,12 +2038,18 @@ impl EventDialog {
         let btn_start_time_allday = btn_start_time.clone();
         let entry_end_time_allday = entry_end_time.clone();
         let btn_end_time_allday = btn_end_time.clone();
+        let row_tz_allday = row_tz.clone();
+        let row_end_tz_allday = row_end_tz.clone();
+        let btn_diff_end_tz_allday = btn_diff_end_tz.clone();
         row_allday.connect_active_notify(move |chk| {
             let active = chk.is_active();
             entry_start_time_allday.set_sensitive(!active);
             btn_start_time_allday.set_sensitive(!active);
             entry_end_time_allday.set_sensitive(!active);
             btn_end_time_allday.set_sensitive(!active);
+            row_tz_allday.set_sensitive(!active);
+            row_end_tz_allday.set_sensitive(!active);
+            row_end_tz_allday.set_visible(!active && btn_diff_end_tz_allday.is_active());
             update_tl_allday();
         });
         if self.imp().initial_allday.get() {
@@ -2077,7 +2167,25 @@ impl EventDialog {
             );
             let all_day = component_property_has_date_value(component, "DTSTART");
             row_allday.set_active(all_day);
-            if let Some(start_disp) = crate::services::ical_time_service::property_local_display(component, "DTSTART", all_day) {
+            let start_explicit_tz = crate::services::ical_time_service::property_explicit_tzid(component, "DTSTART");
+            let end_explicit_tz = crate::services::ical_time_service::property_explicit_tzid(component, "DTEND");
+            if let Some(ref stz) = start_explicit_tz {
+                entry_tz.set_text(stz);
+                entry_end_tz.set_text(stz);
+            }
+            if let Some(ref etz) = end_explicit_tz {
+                entry_end_tz.set_text(etz);
+                if start_explicit_tz.as_deref() != Some(etz.as_str()) {
+                    btn_diff_end_tz.set_active(true);
+                }
+            }
+            let start_display_opt = if start_explicit_tz.is_some() {
+                crate::services::ical_time_service::property_wallclock_display(component, "DTSTART", all_day)
+                    .or_else(|| crate::services::ical_time_service::property_local_display(component, "DTSTART", all_day))
+            } else {
+                crate::services::ical_time_service::property_local_display(component, "DTSTART", all_day)
+            };
+            if let Some(start_disp) = start_display_opt {
                 let (d, t) = split_datetime_for_entries(&start_disp);
                 let d_fmt = parse_date_lenient(&d).map(|dt| {
                     prev_start_date_cell.set(dt);
@@ -2095,7 +2203,13 @@ impl EventDialog {
                 entry_start_date.set_text(&d_fmt);
                 entry_start_time.set_text(&t);
             }
-            if let Some(end_disp) = crate::services::ical_time_service::property_local_display(component, "DTEND", all_day) {
+            let end_display_opt = if end_explicit_tz.is_some() {
+                crate::services::ical_time_service::property_wallclock_display(component, "DTEND", all_day)
+                    .or_else(|| crate::services::ical_time_service::property_local_display(component, "DTEND", all_day))
+            } else {
+                crate::services::ical_time_service::property_local_display(component, "DTEND", all_day)
+            };
+            if let Some(end_disp) = end_display_opt {
                 let (d, t) = split_datetime_for_entries(&end_disp);
                 let d_fmt = parse_date_lenient(&d).map(format_date_for_locale_entry).unwrap_or(d);
                 entry_end_date.set_text(&d_fmt);
@@ -2455,6 +2569,9 @@ impl EventDialog {
             let entry_categories = entry_categories.clone();
             let alarm_editor = alarm_editor.clone();
             let row_private = row_private.clone();
+            let entry_tz = entry_tz.clone();
+            let entry_end_tz = entry_end_tz.clone();
+            let btn_diff_end_tz = btn_diff_end_tz.clone();
 
             Rc::new(move |close_after: bool| {
                 let Some(dialog) = dialog_weak.upgrade() else {
@@ -2488,6 +2605,22 @@ impl EventDialog {
                         format!("{end_date_iso} {}", e_time.trim()),
                     )
                 };
+                let start_tz_str = entry_tz.text().to_string();
+                let end_tz_str = entry_end_tz.text().to_string();
+                let end_tz_opt = btn_diff_end_tz.is_active().then_some(end_tz_str.as_str());
+                let end_val_for_builder = match prepare_end_val_for_timezones(
+                    all_day,
+                    &start_val,
+                    &end_val,
+                    &start_tz_str,
+                    end_tz_opt,
+                ) {
+                    Ok(v) => v,
+                    Err(error) => {
+                        dialog.show_toast(&error);
+                        return;
+                    }
+                };
 
                 alarm_editor.set_summary(&entry_title.text());
                 let alarms = alarm_editor.alarms();
@@ -2520,7 +2653,7 @@ impl EventDialog {
                         dropdown_transparency.selected() == 1,
                         all_day,
                         &start_val,
-                        &end_val,
+                        &end_val_for_builder,
                         &description,
                         &row_recurrence.text(),
                         &row_rdates.text(),
@@ -2540,7 +2673,7 @@ impl EventDialog {
                         dropdown_transparency.selected() == 1,
                         all_day,
                         &start_val,
-                        &end_val,
+                        &end_val_for_builder,
                         &description,
                         &row_recurrence.text(),
                         &row_rdates.text(),
@@ -2554,7 +2687,16 @@ impl EventDialog {
                     ),
                 };
 
-                let component = match component {
+                let component = match component.and_then(|comp| {
+                    apply_event_timezones_to_component(
+                        &comp,
+                        all_day,
+                        &start_val,
+                        &end_val,
+                        &start_tz_str,
+                        end_tz_opt,
+                    )
+                }) {
                     Ok(component) => component,
                     Err(error) => {
                         dialog.show_toast(&error);
@@ -2648,6 +2790,9 @@ impl EventDialog {
         let split_alarm_editor = alarm_editor.clone();
         let split_row_private = row_private.clone();
         let split_entry_room = entry_room.clone();
+        let split_entry_tz = entry_tz.clone();
+        let split_entry_end_tz = entry_end_tz.clone();
+        let split_btn_diff_end_tz = btn_diff_end_tz.clone();
         let split_selected_source_uid = Rc::clone(&selected_source_uid);
 
         let split_fn: Rc<dyn Fn()> = Rc::new(move || {
@@ -2678,6 +2823,17 @@ impl EventDialog {
                     format!("{end_date_iso} {}", e_time.trim()),
                 )
             };
+            let start_tz_str = split_entry_tz.text().to_string();
+            let end_tz_str = split_entry_end_tz.text().to_string();
+            let end_tz_opt = split_btn_diff_end_tz.is_active().then_some(end_tz_str.as_str());
+            let end_val_for_builder = prepare_end_val_for_timezones(
+                all_day,
+                &start_val,
+                &end_val,
+                &start_tz_str,
+                end_tz_opt,
+            )
+            .unwrap_or_else(|_| end_val.clone());
 
             split_alarm_editor.set_summary(&split_entry_title.text());
             let alarms = split_alarm_editor.alarms();
@@ -2718,7 +2874,7 @@ impl EventDialog {
                     split_dropdown_transparency.selected() == 1,
                     all_day,
                     &start_val,
-                    &end_val,
+                    &end_val_for_builder,
                     &description,
                     &split_row_recurrence.text(),
                     &split_row_rdates.text(),
@@ -2738,7 +2894,7 @@ impl EventDialog {
                     split_dropdown_transparency.selected() == 1,
                     all_day,
                     &start_val,
-                    &end_val,
+                    &end_val_for_builder,
                     &description,
                     &split_row_recurrence.text(),
                     &split_row_rdates.text(),
@@ -2750,7 +2906,17 @@ impl EventDialog {
                     split_row_private.is_active(),
                     &split_entry_room.text(),
                 ),
-            };
+            }
+            .and_then(|comp| {
+                apply_event_timezones_to_component(
+                    &comp,
+                    all_day,
+                    &start_val,
+                    &end_val,
+                    &start_tz_str,
+                    end_tz_opt,
+                )
+            });
 
             let stored_parent = dialog.imp().stored_parent.borrow().clone();
             dialog.imp().close_confirmed.set(true);
@@ -4110,6 +4276,102 @@ fn parse_event_datetime(value: &str, all_day: bool, field_name: &str) -> Result<
     NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M")
         .map(|date_time| date_time.format("%Y%m%dT%H%M%S").to_string())
         .map_err(|_| format!("{field_name}: erwartet YYYY-MM-DD HH:MM"))
+}
+
+fn normalize_timezone_input(raw: &str) -> Result<Option<String>, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("floating")
+        || trimmed.eq_ignore_ascii_case("fließend")
+        || trimmed.eq_ignore_ascii_case("fliessend")
+        || trimmed.eq_ignore_ascii_case("local")
+        || trimmed.eq_ignore_ascii_case("lokal")
+    {
+        return Ok(None);
+    }
+    if trimmed.eq_ignore_ascii_case("utc") {
+        return Ok(Some("UTC".to_string()));
+    }
+    if glib::TimeZone::from_identifier(Some(trimmed)).is_none() {
+        return Err(format!("Ungültige Zeitzone: {trimmed}"));
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+fn prepare_end_val_for_timezones(
+    all_day: bool,
+    start_val: &str,
+    end_val: &str,
+    start_tz: &str,
+    end_tz: Option<&str>,
+) -> Result<String, String> {
+    if all_day {
+        return Ok(end_val.to_string());
+    }
+    let start_ical = parse_event_datetime(start_val, false, "Beginn")?;
+    let end_ical = parse_event_datetime(end_val, false, "Ende")?;
+    let stz = normalize_timezone_input(start_tz)?;
+    let etz = match end_tz {
+        Some(e) => normalize_timezone_input(e)?,
+        None => stz.clone(),
+    };
+    if stz != etz {
+        let start_prop = match &stz {
+            Some(tz) => format!("DTSTART;TZID={tz}"),
+            None => "DTSTART".to_string(),
+        };
+        let end_prop = match &etz {
+            Some(tz) => format!("DTEND;TZID={tz}"),
+            None => "DTEND".to_string(),
+        };
+        if let (Some(s_ts), Some(e_ts)) = (
+            crate::services::ical_time_service::property_local_timestamp(&start_prop, &start_ical, 0),
+            crate::services::ical_time_service::property_local_timestamp(&end_prop, &end_ical, 0),
+        ) {
+            if e_ts <= s_ts {
+                return Err("Das Ende (inkl. Zeitzone) muss nach dem Beginn liegen".to_string());
+            }
+            if end_ical <= start_ical {
+                if let Ok(dt) = NaiveDateTime::parse_from_str(start_val.trim(), "%Y-%m-%d %H:%M") {
+                    return Ok((dt + Duration::hours(1)).format("%Y-%m-%d %H:%M").to_string());
+                }
+            }
+        }
+    }
+    Ok(end_val.to_string())
+}
+
+pub(crate) fn apply_event_timezones_to_component(
+    component: &str,
+    all_day: bool,
+    start_val: &str,
+    end_val: &str,
+    start_tz: &str,
+    end_tz: Option<&str>,
+) -> Result<String, String> {
+    if all_day {
+        return Ok(component.to_string());
+    }
+    let stz = normalize_timezone_input(start_tz)?;
+    let etz = match end_tz {
+        Some(e) => normalize_timezone_input(e)?,
+        None => stz.clone(),
+    };
+    let start_ical = parse_event_datetime(start_val, false, "Beginn")?;
+    let end_ical = parse_event_datetime(end_val, false, "Ende")?;
+    let start_prop = match &stz {
+        Some(tz) => format!("DTSTART;TZID={tz}"),
+        None => "DTSTART".to_string(),
+    };
+    let end_prop = match &etz {
+        Some(tz) => format!("DTEND;TZID={tz}"),
+        None => "DTEND".to_string(),
+    };
+    let mut updated = update_ical_property(component, "DTSTART", None);
+    updated = update_ical_property(&updated, &start_prop, Some(&start_ical));
+    updated = update_ical_property(&updated, "DTEND", None);
+    updated = update_ical_property(&updated, &end_prop, Some(&end_ical));
+    Ok(updated)
 }
 
 fn escape_ical_text(value: &str) -> String {

@@ -7130,6 +7130,7 @@ mod imp {
         pub todo_count_badge: RefCell<Option<gtk::Label>>,
         pub active_agenda_popover: RefCell<Option<gtk::Popover>>,
         pub agenda_canvas: RefCell<Option<gtk::DrawingArea>>,
+        pub agenda_labels_fixed: RefCell<Option<gtk::Fixed>>,
         pub(crate) agenda_canvas_items: RefCell<Vec<AgendaSidebarCanvasItem>>,
         pub agenda_canvas_hovered_row: Cell<Option<usize>>,
         pub agenda_canvas_selected_row: Cell<Option<usize>>,
@@ -34480,6 +34481,25 @@ pub(crate) fn draw_agenda_sidebar_canvas(
     selected_idx: Option<usize>,
     is_dark: bool,
 ) {
+    draw_agenda_sidebar_canvas_ext(cr, items, width, hovered_idx, selected_idx, is_dark, true);
+}
+
+pub(crate) fn draw_agenda_sidebar_canvas_ext(
+    cr: &gtk::cairo::Context,
+    items: &[AgendaSidebarCanvasItem],
+    width: f64,
+    hovered_idx: Option<usize>,
+    selected_idx: Option<usize>,
+    is_dark: bool,
+    draw_header_text: bool,
+) {
+    if let Ok(mut font_opts) = gtk::cairo::FontOptions::new() {
+        font_opts.set_antialias(gtk::cairo::Antialias::Gray);
+        font_opts.set_hint_style(gtk::cairo::HintStyle::Full);
+        font_opts.set_hint_metrics(gtk::cairo::HintMetrics::On);
+        cr.set_font_options(&font_opts);
+    }
+
     if is_dark {
         cr.set_source_rgb(0.14, 0.14, 0.14);
     } else {
@@ -34505,6 +34525,8 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                 y,
                 height,
             } => {
+                let row_y = y.round();
+                let row_h = height.round();
                 if is_hovered {
                     let bg_alpha = if is_dark { 0.08 } else { 0.05 };
                     cr.set_source_rgba(
@@ -34513,7 +34535,7 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                         if is_dark { 1.0 } else { 0.0 },
                         bg_alpha,
                     );
-                    draw_cairo_rounded_rect(cr, 4.0, *y + 1.0, (width - 8.0).max(10.0), *height - 2.0, 4.0);
+                    draw_cairo_rounded_rect(cr, 4.0, row_y + 1.0, (width - 8.0).max(10.0), row_h - 2.0, 4.0);
                     let _ = cr.fill();
                 }
 
@@ -34528,40 +34550,42 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                 }
                 if *is_expanded {
                     // Downward chevron
-                    cr.move_to(8.5, *y + 11.0);
-                    cr.line_to(12.0, *y + 14.5);
-                    cr.line_to(15.5, *y + 11.0);
+                    cr.move_to(8.5, row_y + 12.0);
+                    cr.line_to(12.0, row_y + 15.5);
+                    cr.line_to(15.5, row_y + 12.0);
                     let _ = cr.stroke();
                 } else {
                     // Rightward chevron
-                    cr.move_to(10.0, *y + 9.5);
-                    cr.line_to(13.5, *y + 13.0);
-                    cr.line_to(10.0, *y + 16.5);
+                    cr.move_to(10.0, row_y + 10.5);
+                    cr.line_to(13.5, row_y + 14.0);
+                    cr.line_to(10.0, row_y + 17.5);
                     let _ = cr.stroke();
                 }
 
-                // Date label / header title
-                let is_today = title == "Heute" || title == "Today";
-                cr.select_font_face(
-                    "sans-serif",
-                    gtk::cairo::FontSlant::Normal,
-                    gtk::cairo::FontWeight::Bold,
-                );
-                cr.set_font_size(12.5);
-                if is_today {
-                    // Distinct Libadwaita accent blue for Today matching GNOME Calendar
-                    if is_dark {
-                        cr.set_source_rgb(0.47, 0.68, 0.93);
+                if draw_header_text {
+                    // Date label / header title
+                    let is_today = title == "Heute" || title == "Today";
+                    cr.select_font_face(
+                        "Cantarell",
+                        gtk::cairo::FontSlant::Normal,
+                        gtk::cairo::FontWeight::Bold,
+                    );
+                    cr.set_font_size(13.0);
+                    if is_today {
+                        // Distinct Libadwaita accent blue for Today matching GNOME Calendar
+                        if is_dark {
+                            cr.set_source_rgb(0.47, 0.68, 0.93);
+                        } else {
+                            cr.set_source_rgb(0.20, 0.52, 0.89);
+                        }
+                    } else if is_dark {
+                        cr.set_source_rgba(0.88, 0.88, 0.88, 0.95);
                     } else {
-                        cr.set_source_rgb(0.20, 0.52, 0.89);
+                        cr.set_source_rgba(0.18, 0.18, 0.18, 0.92);
                     }
-                } else if is_dark {
-                    cr.set_source_rgba(0.85, 0.85, 0.85, 0.90);
-                } else {
-                    cr.set_source_rgba(0.20, 0.20, 0.20, 0.85);
+                    cr.move_to(22.0, (row_y + (row_h / 2.0) + 4.0).round());
+                    let _ = cr.show_text(title);
                 }
-                cr.move_to(22.0, *y + (*height / 2.0) + 4.5);
-                let _ = cr.show_text(title);
             }
             AgendaSidebarCanvasItem::EventBar {
                 summary,
@@ -34574,8 +34598,8 @@ pub(crate) fn draw_agenda_sidebar_canvas(
             } => {
                 let bar_x = 4.0;
                 let bar_w = (width - 8.0).max(10.0);
-                let bar_y = *y + 1.0;
-                let bar_h = *height - 2.0;
+                let bar_y = (*y + 1.0).round();
+                let bar_h = (*height - 2.0).round();
                 let radius = 4.0;
 
                 let (bg_hex, hov_hex, act_hex, fg_hex) =
@@ -34625,26 +34649,26 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                 cr.set_source_rgb(fg_r as f64 / 255.0, fg_g as f64 / 255.0, fg_b as f64 / 255.0);
 
                 let _ = cr.save();
-                let content_x = bar_x + 8.0;
+                let content_x = (bar_x + 8.0).round();
                 let content_w = (bar_w - 12.0).max(0.0);
                 cr.rectangle(content_x, bar_y, content_w, bar_h);
                 let _ = cr.clip();
 
-                let text_y = bar_y + (bar_h / 2.0) + 4.0;
+                let text_y = (bar_y + (bar_h / 2.0) + 4.0).round();
                 if let Some(t) = time_str {
                     cr.select_font_face(
-                        "sans-serif",
+                        "Cantarell",
                         gtk::cairo::FontSlant::Normal,
                         gtk::cairo::FontWeight::Bold,
                     );
-                    cr.set_font_size(11.5);
+                    cr.set_font_size(12.0);
                     let time_text = format!("{} ", t);
-                    let time_w = cr.text_extents(&time_text).map(|e| e.x_advance()).unwrap_or(40.0);
+                    let time_w = cr.text_extents(&time_text).map(|e| e.x_advance()).unwrap_or(40.0).round();
                     cr.move_to(content_x, text_y);
                     let _ = cr.show_text(&time_text);
 
                     cr.select_font_face(
-                        "sans-serif",
+                        "Cantarell",
                         gtk::cairo::FontSlant::Normal,
                         gtk::cairo::FontWeight::Normal,
                     );
@@ -34655,7 +34679,7 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                     let _ = cr.show_text(&trunc_summary);
                 } else {
                     cr.select_font_face(
-                        "sans-serif",
+                        "Cantarell",
                         gtk::cairo::FontSlant::Normal,
                         gtk::cairo::FontWeight::Bold,
                     );
@@ -34674,6 +34698,8 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                 y,
                 height,
             } => {
+                let row_y = y.round();
+                let row_h = height.round();
                 if is_hovered {
                     let bg_alpha = if is_dark { 0.06 } else { 0.04 };
                     cr.set_source_rgba(
@@ -34682,7 +34708,7 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                         if is_dark { 1.0 } else { 0.0 },
                         bg_alpha,
                     );
-                    draw_cairo_rounded_rect(cr, 4.0, *y, (width - 8.0).max(10.0), *height, 4.0);
+                    draw_cairo_rounded_rect(cr, 4.0, row_y, (width - 8.0).max(10.0), row_h, 4.0);
                     let _ = cr.fill();
                 }
 
@@ -34691,9 +34717,9 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                     draw_cairo_rounded_rect(
                         cr,
                         4.5,
-                        *y + 0.5,
+                        row_y + 0.5,
                         (width - 9.0).max(10.0),
-                        *height - 1.0,
+                        row_h - 1.0,
                         4.0,
                     );
                     cr.set_source_rgba(accent_r as f64 / 255.0, accent_g as f64 / 255.0, accent_b as f64 / 255.0, 0.85);
@@ -34732,15 +34758,15 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                 if let Some(due_str) = format_task_due_short(&task.due, today) {
                     let is_overdue = !*completed && is_task_overdue(&task.due, today);
                     cr.select_font_face(
-                        "sans-serif",
+                        "Cantarell",
                         gtk::cairo::FontSlant::Normal,
                         gtk::cairo::FontWeight::Normal,
                     );
-                    cr.set_font_size(10.5);
+                    cr.set_font_size(11.0);
                     if let Ok(ext) = cr.text_extents(&due_str) {
-                        let due_w = ext.x_advance();
-                        let due_x = width - due_w - 10.0;
-                        let due_y = *y + (*height / 2.0) + 3.5;
+                        let due_w = ext.x_advance().round();
+                        let due_x = (width - due_w - 10.0).round();
+                        let due_y = (row_y + (row_h / 2.0) + 4.0).round();
                         if is_overdue {
                             cr.set_source_rgba(0.95, 0.25, 0.25, 0.95);
                         } else if is_dark {
@@ -34755,16 +34781,16 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                 }
 
                 // Summary text
-                let text_x = cx + cw + 8.0;
-                let text_y = *y + (*height / 2.0) + 4.0;
+                let text_x = (cx + cw + 8.0).round();
+                let text_y = (row_y + (row_h / 2.0) + 4.0).round();
                 let max_w = (width - text_x - right_reserve).max(10.0);
 
                 cr.select_font_face(
-                    "sans-serif",
+                    "Cantarell",
                     gtk::cairo::FontSlant::Normal,
                     gtk::cairo::FontWeight::Normal,
                 );
-                cr.set_font_size(12.5);
+                cr.set_font_size(12.0);
 
                 if *completed {
                     if is_dark {
@@ -34786,7 +34812,7 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                 if *completed {
                     if let Ok(ext) = cr.text_extents(&trunc_summary) {
                         cr.set_line_width(1.0);
-                        let strike_y = text_y - (ext.height() / 2.0) + 0.5;
+                        let strike_y = (text_y - (ext.height() / 2.0)).round() + 0.5;
                         cr.move_to(text_x, strike_y);
                         cr.line_to(text_x + ext.width(), strike_y);
                         let _ = cr.stroke();
@@ -34795,7 +34821,7 @@ pub(crate) fn draw_agenda_sidebar_canvas(
             }
             AgendaSidebarCanvasItem::EmptyState { text, y, height } => {
                 cr.select_font_face(
-                    "sans-serif",
+                    "Cantarell",
                     gtk::cairo::FontSlant::Italic,
                     gtk::cairo::FontWeight::Normal,
                 );
@@ -34805,7 +34831,7 @@ pub(crate) fn draw_agenda_sidebar_canvas(
                 } else {
                     cr.set_source_rgba(0.5, 0.5, 0.5, 0.7);
                 }
-                cr.move_to(22.0, *y + (*height / 2.0) + 4.0);
+                cr.move_to(22.0, (*y + (*height / 2.0) + 4.0).round());
                 let _ = cr.show_text(text);
             }
         }
@@ -35303,19 +35329,6 @@ impl MailPage {
                         }
                     });
                     header.pack_start(&add_btn);
-
-                    let dock_btn = gtk::Button::builder()
-                        .icon_name("sidebar-show-right-symbolic")
-                        .tooltip_text(&gettext("Dock back into sidebar"))
-                        .css_classes(vec!["flat"])
-                        .build();
-                    let page_weak_dock = self.downgrade();
-                    dock_btn.connect_clicked(move |_| {
-                        if let Some(page) = page_weak_dock.upgrade() {
-                            page.set_mail_sidebar_panel_mode(panel_id, SidebarPanelMode::Split);
-                        }
-                    });
-                    header.pack_end(&dock_btn);
 
                     let host_box = gtk::Box::builder()
                         .orientation(gtk::Orientation::Vertical)
@@ -35986,7 +35999,7 @@ impl MailPage {
                 || AppSettings::try_new()
                     .map(|s| s.force_dark_mode())
                     .unwrap_or(false);
-            draw_agenda_sidebar_canvas(cr, &items, width as f64, hovered_idx, selected_idx, is_dark);
+            draw_agenda_sidebar_canvas_ext(cr, &items, width as f64, hovered_idx, selected_idx, is_dark, false);
         });
 
         let click_gesture = gtk::GestureClick::new();
@@ -36080,7 +36093,17 @@ impl MailPage {
             }
         });
         agenda_canvas.add_controller(motion);
-        events_scrolled.set_child(Some(&agenda_canvas));
+        let agenda_overlay = gtk::Overlay::new();
+        agenda_overlay.set_child(Some(&agenda_canvas));
+        let agenda_labels_fixed = gtk::Fixed::new();
+        agenda_labels_fixed.set_can_target(false);
+        agenda_labels_fixed.set_hexpand(true);
+        agenda_labels_fixed.set_vexpand(true);
+        agenda_overlay.add_overlay(&agenda_labels_fixed);
+        self.imp()
+            .agenda_labels_fixed
+            .replace(Some(agenda_labels_fixed));
+        events_scrolled.set_child(Some(&agenda_overlay));
 
         let agenda_section_stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
@@ -36834,6 +36857,36 @@ impl MailPage {
             &resolved_date_fmt,
             use_12h,
         );
+
+        if let Some(fixed) = self.imp().agenda_labels_fixed.borrow().as_ref() {
+            while let Some(child) = fixed.first_child() {
+                fixed.remove(&child);
+            }
+            for item in &events_items {
+                if let AgendaSidebarCanvasItem::DateHeader {
+                    title, y, height, ..
+                }
+                | AgendaSidebarCanvasItem::TasksSectionHeader {
+                    title, y, height, ..
+                } = item
+                {
+                    let is_today = title == "Heute" || title == "Today";
+                    let mut classes = vec!["heading", "caption-heading"];
+                    if is_today {
+                        classes.push("accent");
+                    }
+                    let lbl = gtk::Label::builder()
+                        .label(title)
+                        .css_classes(classes)
+                        .halign(gtk::Align::Start)
+                        .valign(gtk::Align::Center)
+                        .height_request(*height as i32)
+                        .can_target(false)
+                        .build();
+                    fixed.put(&lbl, 22.0, (*y).round());
+                }
+            }
+        }
 
         self.imp().agenda_canvas_items.replace(events_items);
         canvas.set_content_height(events_height as i32);

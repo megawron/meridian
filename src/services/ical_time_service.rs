@@ -146,6 +146,57 @@ pub(crate) fn property_local_timestamp(
     .map(|datetime| datetime.to_unix())
 }
 
+/// Return the configured default calendar IANA timezone identifier (e.g. "Europe/Berlin").
+pub(crate) fn default_calendar_timezone_id() -> String {
+    let configured = AppSettings::try_new()
+        .map(|settings| settings.calendar_time_zone())
+        .unwrap_or_else(|| "system".to_string());
+    if !configured.trim().is_empty() && !configured.eq_ignore_ascii_case("system") {
+        return configured.trim().to_string();
+    }
+    let local_id = TimeZone::local().identifier().to_string();
+    if !local_id.trim().is_empty() && local_id.contains('/') {
+        local_id
+    } else {
+        "Europe/Berlin".to_string()
+    }
+}
+
+/// Return the explicit `TZID` parameter on an iCalendar property if present.
+pub(crate) fn property_explicit_tzid(component: &str, target: &str) -> Option<String> {
+    let (property, _) = property_line(component, target)?;
+    if property_has_parameter(&property, "VALUE", "DATE") {
+        return None;
+    }
+    property_parameter(&property, "TZID")
+        .map(|s| s.trim_matches('"').trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Return the wall-clock `YYYY-MM-DD HH:MM` (or `YYYY-MM-DD`) stored in the property
+/// without converting to the local display timezone. Used when editing an event that
+/// carries an explicit `TZID` so the editor displays the time in the event's timezone.
+pub(crate) fn property_wallclock_display(
+    component: &str,
+    target: &str,
+    all_day: bool,
+) -> Option<String> {
+    let (property, value) = property_line(component, target)?;
+    let date_only = all_day || property_has_parameter(&property, "VALUE", "DATE");
+    let value = value.trim();
+    if value.len() >= 8 && value[..8].chars().all(|c| c.is_ascii_digit()) {
+        let date = NaiveDate::parse_from_str(&value[..8], "%Y%m%d").ok()?;
+        if date_only {
+            return Some(date.format("%Y-%m-%d").to_string());
+        }
+        if value.len() >= 15 && value.as_bytes().get(8) == Some(&b'T') {
+            let dt = NaiveDateTime::parse_from_str(&value[..15], "%Y%m%dT%H%M%S").ok()?;
+            return Some(dt.format("%Y-%m-%d %H:%M").to_string());
+        }
+    }
+    None
+}
+
 /// Format the first matching property for the calendar UI after local-zone
 /// conversion.  Date-only properties remain date-only.
 pub(crate) fn property_local_display(

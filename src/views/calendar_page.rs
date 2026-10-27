@@ -3073,19 +3073,6 @@ impl CalendarPage {
                         header.pack_start(&add_btn);
                     }
 
-                    let dock_btn = gtk::Button::builder()
-                        .icon_name("sidebar-show-right-symbolic")
-                        .tooltip_text(&gettext("Dock back into sidebar"))
-                        .css_classes(vec!["flat"])
-                        .build();
-                    let page_weak_dock = self.downgrade();
-                    dock_btn.connect_clicked(move |_| {
-                        if let Some(page) = page_weak_dock.upgrade() {
-                            page.set_sidebar_panel_mode(panel_id, SidebarPanelMode::Split);
-                        }
-                    });
-                    header.pack_end(&dock_btn);
-
                     let host_box = gtk::Box::builder()
                         .orientation(gtk::Orientation::Vertical)
                         .spacing(4)
