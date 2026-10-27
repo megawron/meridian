@@ -93,37 +93,19 @@ pub fn format_quick_add_date_time(
     let s_date = start.date();
     let e_date = end.date();
     if all_day {
-        if s_date == e_date
-            || (e_date == s_date + chrono::Duration::days(1)
-                && end.time() == chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap())
-        {
+        if e_date <= s_date {
             format!(
                 "{} • {}",
                 format_date_human(s_date),
                 crate::i18n::gettext("All day")
             )
         } else {
-            let actual_end = if end.time() == chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap()
-                && e_date > s_date
-            {
-                e_date - chrono::Duration::days(1)
-            } else {
-                e_date
-            };
-            if actual_end == s_date {
-                format!(
-                    "{} • {}",
-                    format_date_human(s_date),
-                    crate::i18n::gettext("All day")
-                )
-            } else {
-                format!(
-                    "{} – {} • {}",
-                    format_date_short(s_date),
-                    format_date_short(actual_end),
-                    crate::i18n::gettext("All day")
-                )
-            }
+            format!(
+                "{} – {} • {}",
+                format_date_short(s_date),
+                format_date_short(e_date),
+                crate::i18n::gettext("All day")
+            )
         }
     } else if s_date == e_date {
         format!(
@@ -163,7 +145,7 @@ where
     G: Fn(QuickAddEventDraft) + 'static,
 {
     let popover = gtk::Popover::builder()
-        .autohide(true)
+        .autohide(false)
         .has_arrow(true)
         .css_classes(vec!["calendar-quick-add-popover"])
         .build();
@@ -172,6 +154,19 @@ where
         popover.set_pointing_to(Some(rect));
     }
     popover.set_parent(parent);
+
+    let key_ctrl = gtk::EventControllerKey::new();
+    let popover_weak_esc = popover.downgrade();
+    key_ctrl.connect_key_pressed(move |_, key, _, _| {
+        if key == gtk::gdk::Key::Escape {
+            if let Some(p) = popover_weak_esc.upgrade() {
+                p.popdown();
+            }
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    popover.add_controller(key_ctrl);
 
     popover.connect_closed(move |p| {
         p.unparent();
@@ -475,6 +470,6 @@ mod tests {
             .unwrap();
         let formatted = format_quick_add_date_time(start, end, true);
         assert!(formatted.contains("25"));
-        assert!(formatted.contains("27") || formatted.contains("28"));
+        assert!(formatted.contains("28"));
     }
 }

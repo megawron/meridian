@@ -196,7 +196,7 @@ fn parse_time_to_minutes(text: &str) -> Option<u32> {
     }
 }
 
-fn parse_date_lenient(text: &str) -> Option<NaiveDate> {
+pub(crate) fn parse_date_lenient(text: &str) -> Option<NaiveDate> {
     let s = text.trim();
     if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
         return Some(d);
@@ -205,6 +205,12 @@ fn parse_date_lenient(text: &str) -> Option<NaiveDate> {
         return Some(d);
     }
     if let Ok(d) = NaiveDate::parse_from_str(s, "%d.%m.%y") {
+        return Some(d);
+    }
+    if let Ok(d) = NaiveDate::parse_from_str(s, "%m/%d/%Y") {
+        return Some(d);
+    }
+    if let Ok(d) = NaiveDate::parse_from_str(s, "%m/%d/%y") {
         return Some(d);
     }
     let parts: Vec<&str> = s.split('.').collect();
@@ -218,10 +224,32 @@ fn parse_date_lenient(text: &str) -> Option<NaiveDate> {
             return NaiveDate::from_ymd_opt(year, month, day);
         }
     }
+    let slash_parts: Vec<&str> = s.split('/').collect();
+    if slash_parts.len() == 3 {
+        if let (Ok(month), Ok(day), Ok(year)) = (
+            slash_parts[0].trim().parse::<u32>(),
+            slash_parts[1].trim().parse::<u32>(),
+            slash_parts[2].trim().parse::<i32>(),
+        ) {
+            let year = if year < 100 { 2000 + year } else { year };
+            return NaiveDate::from_ymd_opt(year, month, day);
+        }
+    }
     None
 }
 
-fn date_to_iso(text: &str) -> Option<String> {
+pub(crate) fn format_date_for_locale_entry(date: NaiveDate) -> String {
+    let resolved = AppSettings::try_new()
+        .map(|s| s.resolved_date_format())
+        .unwrap_or_else(|| AppSettings::system_locale_date_format().to_string());
+    match resolved.as_str() {
+        "german" => date.format("%d.%m.%Y").to_string(),
+        "us" => date.format("%m/%d/%Y").to_string(),
+        _ => date.format("%Y-%m-%d").to_string(),
+    }
+}
+
+pub(crate) fn date_to_iso(text: &str) -> Option<String> {
     parse_date_lenient(text).map(|d| d.format("%Y-%m-%d").to_string())
 }
 
@@ -337,7 +365,9 @@ fn create_date_picker_popover(entry: &gtk::Entry) -> (gtk::Button, gtk::Popover)
             return;
         }
         let dt = c.date();
-        let formatted = format!("{:04}-{:02}-{:02}", dt.year(), dt.month(), dt.day_of_month());
+        let formatted = NaiveDate::from_ymd_opt(dt.year(), dt.month() as u32, dt.day_of_month() as u32)
+            .map(format_date_for_locale_entry)
+            .unwrap_or_else(|| format!("{:04}-{:02}-{:02}", dt.year(), dt.month(), dt.day_of_month()));
         if let Some(entry) = entry_weak.upgrade() {
             entry.set_text(&formatted);
         }
@@ -1081,11 +1111,29 @@ impl EventDialog {
         Self::new_all_day_for_date_with_summary(date, None, None)
     }
 
+    pub fn new_all_day_for_date_range(start_date: NaiveDate, end_date: NaiveDate) -> Self {
+        Self::new_all_day_for_date_range_with_summary(start_date, end_date, None, None)
+    }
+
     pub fn new_all_day_for_date_with_summary(
         date: NaiveDate,
         summary: Option<&str>,
         source_uid: Option<&str>,
     ) -> Self {
+        Self::new_all_day_for_date_range_with_summary(date, date, summary, source_uid)
+    }
+
+    pub fn new_all_day_for_date_range_with_summary(
+        start_date: NaiveDate,
+        end_date: NaiveDate,
+        summary: Option<&str>,
+        source_uid: Option<&str>,
+    ) -> Self {
+        let (s_d, e_d) = if start_date <= end_date {
+            (start_date, end_date)
+        } else {
+            (end_date, start_date)
+        };
         let title_text = summary
             .filter(|s| !s.trim().is_empty())
             .map(|s| format!("Termin — {s}"))
@@ -1094,7 +1142,9 @@ impl EventDialog {
             .property("title", title_text)
             .property("content-width", 880)
             .property("content-height", 680)
-            .property("initial-date", date.format("%Y-%m-%d").to_string())
+            .property("initial-date", s_d.format("%Y-%m-%d").to_string())
+            .property("initial-start", format!("{} 09:00", s_d.format("%Y-%m-%d")))
+            .property("initial-end", format!("{} 10:00", e_d.format("%Y-%m-%d")))
             .property("initial-allday", true);
         if let Some(s) = summary.filter(|s| !s.trim().is_empty()) {
             builder = builder.property("initial-summary", s);
@@ -1432,8 +1482,8 @@ impl EventDialog {
 
         let entry_start_date = gtk::Entry::builder()
             .width_request(115)
-            .text(&default_start.format("%Y-%m-%d").to_string())
-            .tooltip_text("Datum (YYYY-MM-DD oder DD.MM.YYYY)")
+            .text(&format_date_for_locale_entry(default_start.date()))
+            .tooltip_text("Datum (DD.MM.YYYY, MM/DD/YYYY oder YYYY-MM-DD)")
             .valign(gtk::Align::Center)
             .build();
         let (btn_start_cal, _pop_start_cal) = create_date_picker_popover(&entry_start_date);
@@ -1460,8 +1510,8 @@ impl EventDialog {
 
         let entry_end_date = gtk::Entry::builder()
             .width_request(115)
-            .text(&default_end.format("%Y-%m-%d").to_string())
-            .tooltip_text("Datum (YYYY-MM-DD oder DD.MM.YYYY)")
+            .text(&format_date_for_locale_entry(default_end.date()))
+            .tooltip_text("Datum (DD.MM.YYYY, MM/DD/YYYY oder YYYY-MM-DD)")
             .valign(gtk::Align::Center)
             .build();
         let (btn_end_cal, _pop_end_cal) = create_date_picker_popover(&entry_end_date);
@@ -1631,9 +1681,8 @@ impl EventDialog {
         let entry_start_date_for_avail = entry_start_date.clone();
         btn_room_availability.connect_clicked(move |btn| {
             let date_str = entry_start_date_for_avail.text();
-            let date = chrono::NaiveDate::parse_from_str(date_str.trim(), "%Y-%m-%d")
-                .or_else(|_| chrono::NaiveDate::parse_from_str(date_str.trim(), "%d.%m.%Y"))
-                .unwrap_or_else(|_| chrono::Local::now().date_naive());
+            let date = parse_date_lenient(date_str.trim())
+                .unwrap_or_else(|| chrono::Local::now().date_naive());
             let avail_dialog = crate::dialogs::AvailabilityDialog::new(date);
             avail_dialog.present(Some(btn));
         });
@@ -1872,10 +1921,21 @@ impl EventDialog {
 
         let update_tl_sdate = update_timeline.clone();
         let entry_end_date_for_sdate = entry_end_date.clone();
+        let prev_start_date_cell = Rc::new(Cell::new(default_start.date()));
+        let prev_start_for_sdate = Rc::clone(&prev_start_date_cell);
         entry_start_date.connect_changed(move |entry| {
             let s = entry.text();
-            if let Some(iso) = date_to_iso(&s) {
-                entry_end_date_for_sdate.set_text(&iso);
+            if let Some(new_start) = parse_date_lenient(&s) {
+                let prev_start = prev_start_for_sdate.replace(new_start);
+                let current_end = parse_date_lenient(&entry_end_date_for_sdate.text());
+                let new_end = match current_end {
+                    Some(end_d) => {
+                        let span_days = (end_d - prev_start).num_days().max(0);
+                        new_start + Duration::days(span_days)
+                    }
+                    None => new_start,
+                };
+                entry_end_date_for_sdate.set_text(&format_date_for_locale_entry(new_end));
             }
             update_tl_sdate();
         });
@@ -2019,22 +2079,32 @@ impl EventDialog {
             row_allday.set_active(all_day);
             if let Some(start_disp) = crate::services::ical_time_service::property_local_display(component, "DTSTART", all_day) {
                 let (d, t) = split_datetime_for_entries(&start_disp);
-                entry_start_date.set_text(&d);
+                let d_fmt = parse_date_lenient(&d).map(|dt| {
+                    prev_start_date_cell.set(dt);
+                    format_date_for_locale_entry(dt)
+                }).unwrap_or(d);
+                entry_start_date.set_text(&d_fmt);
                 entry_start_time.set_text(&t);
             } else if let Some(start) = ical_property(component, "DTSTART") {
                 let formatted = format_event_datetime_for_editor(&start, all_day);
                 let (d, t) = split_datetime_for_entries(&formatted);
-                entry_start_date.set_text(&d);
+                let d_fmt = parse_date_lenient(&d).map(|dt| {
+                    prev_start_date_cell.set(dt);
+                    format_date_for_locale_entry(dt)
+                }).unwrap_or(d);
+                entry_start_date.set_text(&d_fmt);
                 entry_start_time.set_text(&t);
             }
             if let Some(end_disp) = crate::services::ical_time_service::property_local_display(component, "DTEND", all_day) {
                 let (d, t) = split_datetime_for_entries(&end_disp);
-                entry_end_date.set_text(&d);
+                let d_fmt = parse_date_lenient(&d).map(format_date_for_locale_entry).unwrap_or(d);
+                entry_end_date.set_text(&d_fmt);
                 entry_end_time.set_text(&t);
             } else if let Some(end) = ical_property(component, "DTEND") {
                 let formatted = format_event_datetime_for_editor(&end, all_day);
                 let (d, t) = split_datetime_for_entries(&formatted);
-                entry_end_date.set_text(&d);
+                let d_fmt = parse_date_lenient(&d).map(format_date_for_locale_entry).unwrap_or(d);
+                entry_end_date.set_text(&d_fmt);
                 entry_end_time.set_text(&t);
             }
             row_recurrence.set_text(&ical_property(component, "RRULE").unwrap_or_default());

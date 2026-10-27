@@ -3817,7 +3817,7 @@ button.itip-calendar-chip-row {
 }
 
 .calendar-time-gutter {
-  min-width: 58px;
+  min-width: 62px;
   border-right: 1px solid alpha(@borders, 0.3);
   background-color: transparent;
 }
