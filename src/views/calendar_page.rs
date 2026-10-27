@@ -1699,6 +1699,7 @@ mod imp {
         pub sidebar_lower_stack: RefCell<Option<gtk::Stack>>,
         pub sidebar_stack_switcher: RefCell<Option<gtk::Box>>,
         pub sidebar_details_title: RefCell<Option<gtk::Label>>,
+        pub sidebar_details_actions_box: RefCell<Option<gtk::Box>>,
         pub sidebar_memos_add_btn: RefCell<Option<gtk::Button>>,
         pub sidebar_tasks_add_btn: RefCell<Option<gtk::Button>>,
         pub taskpad_box: RefCell<Option<gtk::Box>>,
@@ -1914,6 +1915,7 @@ mod imp {
                 sidebar_lower_stack: RefCell::new(None),
                 sidebar_stack_switcher: RefCell::new(None),
                 sidebar_details_title: RefCell::new(None),
+                sidebar_details_actions_box: RefCell::new(None),
                 sidebar_memos_add_btn: RefCell::new(None),
                 sidebar_tasks_add_btn: RefCell::new(None),
                 taskpad_box: RefCell::new(None),
@@ -2803,6 +2805,7 @@ impl CalendarPage {
         tabs: &[SidebarPanelId],
         tasks_add_btn: Option<&gtk::Button>,
         memos_add_btn: Option<&gtk::Button>,
+        details_actions_box: Option<&gtk::Box>,
     ) {
         while let Some(child) = switcher.first_child() {
             switcher.remove(&child);
@@ -2821,6 +2824,9 @@ impl CalendarPage {
         if let Some(btn) = memos_add_btn {
             btn.set_visible(active_tab == SidebarPanelId::Memos);
         }
+        if let Some(dab) = details_actions_box {
+            dab.set_visible(active_tab == SidebarPanelId::Details);
+        }
 
         let mut first_btn: Option<gtk::ToggleButton> = None;
         for &tab_id in tabs {
@@ -2837,6 +2843,7 @@ impl CalendarPage {
             let stack_clone = stack.clone();
             let tasks_btn_clone = tasks_add_btn.cloned();
             let memos_btn_clone = memos_add_btn.cloned();
+            let details_act_clone = details_actions_box.cloned();
             btn.connect_toggled(move |b| {
                 if b.is_active() {
                     stack_clone.set_visible_child_name(tab_id.as_str());
@@ -2845,6 +2852,9 @@ impl CalendarPage {
                     }
                     if let Some(ref mb) = memos_btn_clone {
                         mb.set_visible(tab_id == SidebarPanelId::Memos);
+                    }
+                    if let Some(ref dab) = details_act_clone {
+                        dab.set_visible(tab_id == SidebarPanelId::Details);
                     }
                 }
             });
@@ -3204,6 +3214,9 @@ impl CalendarPage {
                 sidebar_stack_switcher.set_visible(false);
                 sidebar_tasks_add_btn.set_visible(false);
                 sidebar_memos_add_btn.set_visible(false);
+                if let Some(dab) = self.imp().sidebar_details_actions_box.borrow().as_ref() {
+                    dab.set_visible(true);
+                }
                 let exp = sidebar_lower_stack.is_visible();
                 ordered_containers.push((sidebar_lower_box.clone(), lower_header.clone(), exp));
             } else if !tabs.contains(&SidebarPanelId::Details) {
@@ -3220,6 +3233,7 @@ impl CalendarPage {
                     tabs,
                     Some(&taskpad_add_btn),
                     Some(&taskpad_memos_add_btn),
+                    None,
                 );
                 taskpad_stack_switcher.set_visible(true);
                 let exp = self
@@ -3243,12 +3257,14 @@ impl CalendarPage {
                     taskpad_content_box.set_visible(true);
                 }
                 sidebar_details_title.set_visible(false);
+                let dab_opt = self.imp().sidebar_details_actions_box.borrow().clone();
                 Self::populate_sidebar_tab_switcher(
                     &sidebar_stack_switcher,
                     &sidebar_lower_stack,
                     tabs,
                     Some(&sidebar_tasks_add_btn),
                     Some(&sidebar_memos_add_btn),
+                    dab_opt.as_ref(),
                 );
                 sidebar_stack_switcher.set_visible(true);
                 let exp = sidebar_lower_stack.is_visible();
@@ -3333,7 +3349,8 @@ impl CalendarPage {
 
         if let Some(opt_btn) = self.imp().sidebar_options_btn.borrow().as_ref() {
             if let Some((_, top_header, _)) = ordered_containers.first() {
-                ensure_widget_in_box(opt_btn, top_header);
+                detach_widget_from_parent(opt_btn);
+                top_header.append(opt_btn);
                 opt_btn.set_visible(true);
             }
         }
@@ -3686,6 +3703,16 @@ impl CalendarPage {
 
     pub fn refresh_event_inspector(&self) {
         let Some(content_box) = self.imp().event_inspector_content.borrow().as_ref().cloned() else { return };
+        if let Some(win) = content_box.root().and_then(|r| r.downcast::<gtk::Window>().ok()) {
+            if let Some(focused) = gtk::prelude::GtkWindowExt::focus(&win) {
+                if focused.is_ancestor(&content_box) {
+                    gtk::prelude::GtkWindowExt::set_focus(&win, gtk::Widget::NONE);
+                }
+            }
+        }
+        if let Some(dab) = self.imp().sidebar_details_actions_box.borrow().as_ref() {
+            clear_box(dab);
+        }
         clear_box(&content_box);
 
         let inspected = self
@@ -10698,10 +10725,20 @@ impl CalendarPage {
             .sidebar_memos_add_btn
             .replace(Some(sidebar_memos_add_btn.clone()));
 
+        let sidebar_details_actions_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(2)
+            .valign(gtk::Align::Center)
+            .build();
+        self.imp()
+            .sidebar_details_actions_box
+            .replace(Some(sidebar_details_actions_box.clone()));
+
         lower_header.append(&inspector_collapse_btn);
         lower_header.append(&sidebar_details_title);
         lower_header.append(&switcher_box);
         lower_header.append(&lower_spacer);
+        lower_header.append(&sidebar_details_actions_box);
         lower_header.append(&sidebar_tasks_add_btn);
         lower_header.append(&sidebar_memos_add_btn);
         sidebar_lower_box.append(&lower_header);
@@ -25438,12 +25475,7 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
         .hexpand(true)
         .build();
 
-    // 1. Title Entry + Compact Action Buttons (Edit / Delete) in top row
-    let top_row = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(4)
-        .valign(gtk::Align::Center)
-        .build();
+    // 1. Full-width Title Entry + Action Buttons placed in the Details section header
     let title_entry = gtk::Entry::builder()
         .text(&event.summary)
         .placeholder_text(&crate::i18n::gettext("Event title"))
@@ -25481,11 +25513,34 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
         .valign(gtk::Align::Center)
         .build();
 
-    top_row.append(&title_entry);
-    top_row.append(&save_btn);
-    top_row.append(&more_btn);
-    top_row.append(&del_btn);
-    content_box.append(&top_row);
+    let is_main_inspector = page
+        .imp()
+        .event_inspector_content
+        .borrow()
+        .as_ref()
+        .map(|c| c.upcast_ref::<gtk::Widget>() == parent.as_ref())
+        .unwrap_or(false);
+
+    if is_main_inspector {
+        if let Some(dab) = page.imp().sidebar_details_actions_box.borrow().as_ref() {
+            clear_box(dab);
+            dab.append(&save_btn);
+            dab.append(&more_btn);
+            dab.append(&del_btn);
+        }
+        content_box.append(&title_entry);
+    } else {
+        let top_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .valign(gtk::Align::Center)
+            .build();
+        top_row.append(&title_entry);
+        top_row.append(&save_btn);
+        top_row.append(&more_btn);
+        top_row.append(&del_btn);
+        content_box.append(&top_row);
+    }
 
     // 2. Calendar Source & Status Badges
     let cal_row = gtk::Box::builder()
@@ -25861,6 +25916,9 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
 
     let save_action = std::rc::Rc::new(move || {
         save_btn_hide.set_visible(false);
+        if let Some(win) = title_save.root().and_then(|r| r.downcast::<gtk::Window>().ok()) {
+            gtk::prelude::GtkWindowExt::set_focus(&win, gtk::Widget::NONE);
+        }
         let Some(page) = page_save.upgrade() else { return };
         let title = title_save.text();
         let loc = loc_save.text();
