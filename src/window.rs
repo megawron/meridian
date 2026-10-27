@@ -3599,7 +3599,7 @@ impl MeridianWindow {
             .filter(|view| {
                 matches!(
                     view.as_str(),
-                    "mail" | "calendar" | "contacts" | "tasks" | "memos"
+                    "mail" | "calendar" | "contacts" | "tasks"
                 )
             })
             .unwrap_or_else(|| "mail".to_string());
@@ -5027,7 +5027,6 @@ impl MeridianWindow {
             ("switch-calendar", "calendar"),
             ("switch-contacts", "contacts"),
             ("switch-tasks", "tasks"),
-            ("switch-memos", "memos"),
         ] {
             let action = gio::SimpleAction::new(action_name, None);
             let page_name = stack_page.to_string();

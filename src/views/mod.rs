@@ -82,12 +82,11 @@ pub fn build_sidebar_module_switcher(
         .row_homogeneous(false)
         .build();
 
-    let modules: [(&str, String); 5] = [
+    let modules: [(&str, String); 4] = [
         ("mail", crate::i18n::gettext("Mail")),
         ("contacts", crate::i18n::gettext("Contacts")),
         ("calendar", crate::i18n::gettext("Calendar")),
         ("tasks", crate::i18n::gettext("Tasks")),
-        ("memos", crate::i18n::gettext("Memos")),
     ];
 
     let mut buttons_vec = Vec::new();
@@ -132,11 +131,11 @@ pub fn build_sidebar_module_switcher(
         buttons_vec.push(btn);
     }
 
-    let buttons: [gtk::Button; 5] = match buttons_vec.try_into() {
+    let buttons: [gtk::Button; 4] = match buttons_vec.try_into() {
         Ok(arr) => arr,
         Err(_) => unreachable!(),
     };
-    let labels: [gtk::Label; 5] = match labels_vec.try_into() {
+    let labels: [gtk::Label; 4] = match labels_vec.try_into() {
         Ok(arr) => arr,
         Err(_) => unreachable!(),
     };
@@ -153,9 +152,9 @@ pub fn build_sidebar_module_switcher(
                 return;
             }
             // Layout modes:
-            // 4: 5 vertical full-width rows (width < 180)
-            // 1: 1 top full-width + 2x2 grid (180 <= width < 540)
-            // 3: 1x5 horizontal row (width >= 540)
+            // 4: 4 vertical full-width rows (width < 180)
+            // 1: 2x2 symmetric grid (180 <= width < 540)
+            // 3: 1x4 horizontal row (width >= 540)
             let new_mode = if width < 180 {
                 4
             } else if width < 540 {
@@ -185,18 +184,10 @@ pub fn build_sidebar_module_switcher(
                     }
                 }
                 1 => {
-                    grid.attach(&buttons[0], 0, 0, 2, 1);
-                    grid.attach(&buttons[1], 0, 1, 1, 1);
-                    grid.attach(&buttons[2], 1, 1, 1, 1);
-                    grid.attach(&buttons[3], 0, 2, 1, 1);
-                    grid.attach(&buttons[4], 1, 2, 1, 1);
-                }
-                2 => {
-                    grid.attach(&buttons[0], 0, 0, 4, 1);
-                    grid.attach(&buttons[1], 0, 1, 1, 1);
-                    grid.attach(&buttons[2], 1, 1, 1, 1);
-                    grid.attach(&buttons[3], 2, 1, 1, 1);
-                    grid.attach(&buttons[4], 3, 1, 1, 1);
+                    grid.attach(&buttons[0], 0, 0, 1, 1);
+                    grid.attach(&buttons[1], 1, 0, 1, 1);
+                    grid.attach(&buttons[2], 0, 1, 1, 1);
+                    grid.attach(&buttons[3], 1, 1, 1, 1);
                 }
                 _ => {
                     for (i, btn) in buttons.iter().enumerate() {
@@ -265,7 +256,7 @@ mod tests {
             count += 1;
             child = c.next_sibling();
         }
-        assert_eq!(count, 5, "Expected 5 buttons in switcher grid");
+        assert_eq!(count, 4, "Expected 4 buttons in switcher grid");
     }
 
     #[test]

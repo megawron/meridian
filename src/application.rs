@@ -41,7 +41,6 @@ pub(crate) const ACCELERATOR_BINDINGS: &[(&str, &[&str])] = &[
     ("win.switch-calendar", &["<Ctrl>2"]),
     ("win.switch-contacts", &["<Ctrl>3"]),
     ("win.switch-tasks", &["<Ctrl>4"]),
-    ("win.switch-memos", &["<Ctrl>5"]),
     ("win.mail-next", &["<Ctrl>Page_Down", "J"]),
     ("win.mail-prev", &["<Ctrl>Page_Up", "K"]),
     ("win.mail-next-unread", &["<Ctrl>bracketright"]),

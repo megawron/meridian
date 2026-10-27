@@ -5504,7 +5504,7 @@ banner.mail-status-banner button:active,
   box-shadow: none;
   border-radius: 8px;
   padding: 0 0 0 10px;
-  min-height: 30px;
+  min-height: 28px;
   overflow: hidden;
   transition: none;
 }
@@ -5816,8 +5816,8 @@ menubutton.mail-header-action-btn > button image {
 .mail-preview-actions-bar {
   min-height: 28px;
   padding: 0;
-  margin-top: 3px;
-  margin-bottom: 4px;
+  margin-top: 4px;
+  margin-bottom: 0;
   border-bottom: none;
 }
 
@@ -6385,6 +6385,504 @@ popover.image-options-popover button.flat:hover {
   font-size: 0.78rem;
   font-weight: 700;
 }
+
+/* ── Mail-Linked Memos (RFC 5545 VJOURNAL + RFC 2392 mid: — Libadwaita Warning-Yellow Pill Parity) ── */
+.mail-memo-banner-row,
+.mail-memo-editor-bar {
+  background-color: alpha(@warning_bg_color, 0.16);
+  border: none;
+  border-radius: 8px;
+  box-shadow: none;
+  padding: 0 6px 0 0;
+  min-height: 28px;
+  overflow: hidden;
+}
+
+.mail-memo-banner-icon {
+  color: shade(@warning_bg_color, 0.68);
+}
+
+.mail-memo-banner-text {
+  font-size: 0.80rem;
+  font-weight: 600;
+  color: shade(@warning_bg_color, 0.58);
+}
+
+.mail-memo-entry,
+entry.mail-memo-entry,
+.mail-memo-entry:focus-within,
+entry.mail-memo-entry:focus-within {
+  min-height: 28px;
+  padding: 0;
+  margin: 0;
+  font-size: 0.80rem;
+  font-weight: 600;
+  color: shade(@warning_bg_color, 0.58);
+  background: transparent;
+  background-color: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  outline: none;
+}
+
+.mail-memo-entry > text,
+entry.mail-memo-entry > text {
+  background: transparent;
+  background-color: transparent;
+  color: shade(@warning_bg_color, 0.58);
+}
+
+.mail-memo-scope-badge {
+  border-radius: 8px;
+  padding: 0 9px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  min-height: 28px;
+}
+
+.mail-memo-scope-badge.is-private {
+  background-color: alpha(@warning_bg_color, 0.22);
+  color: shade(@warning_bg_color, 0.58);
+}
+
+.mail-memo-scope-badge.is-team {
+  background-color: alpha(@accent_bg_color, 0.18);
+  color: @accent_color;
+}
+
+.mail-memo-scope-toggle {
+  background-color: alpha(@warning_bg_color, 0.18);
+  border-radius: 8px;
+  border: none;
+  box-shadow: none;
+  min-height: 28px;
+  overflow: hidden;
+}
+
+.mail-memo-scope-toggle button.mail-memo-scope-btn {
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  border: none;
+  border-radius: 8px;
+  box-shadow: none;
+  background: transparent;
+  color: shade(@warning_bg_color, 0.62);
+}
+
+.mail-memo-scope-toggle button.mail-memo-scope-btn:checked {
+  background-color: alpha(@warning_bg_color, 0.34);
+  color: shade(@warning_bg_color, 0.50);
+}
+
+.mail-memo-action-btn,
+button.mail-memo-action-btn {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 1px;
+  margin: 0;
+  color: shade(@warning_bg_color, 0.62);
+}
+
+button.mail-memo-delete-btn:hover,
+.mail-memo-delete-btn:hover {
+  background-color: alpha(@error_bg_color, 0.16);
+  color: @error_color;
+}
+
+.mail-header-memo-btn.has-linked-memo image {
+  color: shade(@warning_bg_color, 0.72);
+}
+
+.memos-sidebar-section {
+  background-color: alpha(@warning_bg_color, 0.06);
+  border-radius: 8px;
+}
+
+popover.memo-note-popover > contents,
+popover.calendar-details-popover.memo-note-popover > contents,
+.popover.memo-note-popover > contents {
+  background-color: #fdf6d6;
+  border: 1px solid alpha(@warning_bg_color, 0.30);
+  border-radius: 12px;
+  box-shadow: 0 1px 3px 1px rgba(0, 0, 6, 0.07),
+              0 2px 6px 2px rgba(0, 0, 6, 0.03);
+  padding: 10px 12px;
+}
+
+popover.memo-note-popover > arrow,
+popover.calendar-details-popover.memo-note-popover > arrow,
+.popover.memo-note-popover > arrow {
+  background-color: #fdf6d6;
+  border-color: alpha(@warning_bg_color, 0.30);
+}
+
+.memo-note-popover-date {
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: shade(@warning_bg_color, 0.60);
+  opacity: 0.80;
+}
+
+.memo-note-popover-body {
+  font-size: 0.94rem;
+  font-weight: 500;
+  color: shade(@warning_bg_color, 0.42);
+  line-height: 1.40;
+}
+
+.memo-note-linked-mail-btn,
+button.memo-note-linked-mail-btn {
+  background-color: alpha(@warning_bg_color, 0.16);
+  border: none;
+  border-radius: 8px;
+  padding: 4px 9px;
+  color: shade(@warning_bg_color, 0.56);
+  min-height: 24px;
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+.memo-note-linked-mail-btn label {
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+.memo-note-linked-mail-btn:hover,
+button.memo-note-linked-mail-btn:hover {
+  background-color: alpha(@warning_bg_color, 0.25);
+}
+
+@media (prefers-color-scheme: dark) {
+  .mail-memo-banner-row,
+  .mail-memo-editor-bar {
+    background-color: alpha(@warning_bg_color, 0.20);
+    box-shadow: none;
+  }
+
+  .mail-memo-banner-icon {
+    color: lighter(@warning_color);
+  }
+
+  .mail-memo-banner-text {
+    color: lighter(@warning_color);
+  }
+
+  .mail-memo-entry,
+  entry.mail-memo-entry,
+  .mail-memo-entry:focus-within,
+  entry.mail-memo-entry:focus-within {
+    color: lighter(@warning_color);
+    background: transparent;
+    background-color: transparent;
+    outline: none;
+  }
+
+  .mail-memo-entry > text,
+  entry.mail-memo-entry > text {
+    color: lighter(@warning_color);
+    background: transparent;
+    background-color: transparent;
+  }
+
+  .mail-memo-scope-badge.is-private {
+    background-color: alpha(@warning_bg_color, 0.24);
+    color: lighter(@warning_color);
+  }
+
+  .mail-memo-scope-toggle {
+    background-color: alpha(@warning_bg_color, 0.18);
+  }
+
+  .mail-memo-scope-toggle button.mail-memo-scope-btn {
+    color: lighter(@warning_color);
+  }
+
+  .mail-memo-scope-toggle button.mail-memo-scope-btn:checked {
+    background-color: alpha(@warning_bg_color, 0.34);
+    color: #fef9c3;
+  }
+
+  .mail-memo-action-btn,
+  button.mail-memo-action-btn {
+    color: lighter(@warning_color);
+  }
+
+  .mail-header-memo-btn.has-linked-memo image {
+    color: lighter(@warning_color);
+  }
+
+  .memos-sidebar-section {
+    background-color: alpha(@warning_bg_color, 0.06);
+  }
+
+  popover.memo-note-popover > contents,
+  popover.calendar-details-popover.memo-note-popover > contents,
+  .popover.memo-note-popover > contents {
+    background-color: #2c2412;
+    border-color: alpha(@warning_bg_color, 0.38);
+  }
+
+  popover.memo-note-popover > arrow,
+  popover.calendar-details-popover.memo-note-popover > arrow,
+  .popover.memo-note-popover > arrow {
+    background-color: #2c2412;
+    border-color: alpha(@warning_bg_color, 0.38);
+  }
+
+  .memo-note-popover-date {
+    color: lighter(@warning_color);
+    opacity: 0.75;
+  }
+
+  .memo-note-popover-body {
+    color: #fef9c3;
+  }
+
+  .memo-note-linked-mail-btn,
+  button.memo-note-linked-mail-btn {
+    background-color: alpha(@warning_bg_color, 0.18);
+    color: lighter(@warning_color);
+  }
+
+  .memo-note-linked-mail-btn:hover,
+  button.memo-note-linked-mail-btn:hover {
+    background-color: alpha(@warning_bg_color, 0.28);
+  }
+}
+
+/* ── Modern Libadwaita Tasks Workspace ── */
+.tasks-smart-filter-list {
+  background: transparent;
+  padding: 0 6px;
+}
+
+.task-smart-filter-row {
+  border-radius: 7px;
+  min-height: 28px;
+  margin-bottom: 1px;
+}
+
+.task-smart-count-badge {
+  font-size: 0.74rem;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background-color: alpha(currentColor, 0.10);
+  color: alpha(currentColor, 0.78);
+}
+
+.task-smart-count-badge.task-smart-count-overdue {
+  background-color: alpha(@error_bg_color, 0.18);
+  color: @error_color;
+}
+
+.task-workspace-header {
+  padding: 2px 2px 4px 2px;
+}
+
+.task-workspace-title {
+  font-weight: 700;
+}
+
+.task-workspace-subtitle {
+  font-size: 0.82rem;
+}
+
+.task-quick-add-box {
+  background-color: @card_bg_color;
+  border: 1px solid alpha(currentColor, 0.10);
+  border-radius: 10px;
+  padding: 4px 8px 4px 12px;
+  min-height: 36px;
+  box-shadow: 0 1px 2px alpha(black, 0.04);
+}
+
+.task-quick-add-entry,
+entry.task-quick-add-entry {
+  background: transparent;
+  border: none;
+  outline: none;
+  box-shadow: none;
+  min-height: 28px;
+}
+
+.task-quick-preset-pill,
+button.task-quick-preset-pill {
+  font-size: 0.78rem;
+  font-weight: 600;
+  min-height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background-color: alpha(currentColor, 0.06);
+}
+
+.task-quick-preset-pill.active,
+button.task-quick-preset-pill.active {
+  background-color: alpha(@accent_bg_color, 0.16);
+  color: @accent_color;
+}
+
+.task-quick-preset-pill.prio-high,
+button.task-quick-preset-pill.prio-high {
+  background-color: alpha(@error_bg_color, 0.16);
+  color: @error_color;
+}
+
+.task-quick-submit-btn,
+button.task-quick-submit-btn {
+  font-size: 0.80rem;
+  font-weight: 700;
+  min-height: 26px;
+  padding: 0 12px;
+  border-radius: 7px;
+  background-color: alpha(@accent_bg_color, 0.14);
+  color: @accent_color;
+}
+
+.task-quick-submit-btn:hover,
+button.task-quick-submit-btn:hover {
+  background-color: alpha(@accent_bg_color, 0.24);
+}
+
+.task-group-header {
+  padding: 2px 2px;
+}
+
+.task-group-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  opacity: 0.82;
+}
+
+.task-group-title.task-group-title-overdue {
+  color: @error_color;
+  opacity: 1.0;
+}
+
+.task-group-title.task-group-title-today {
+  color: @accent_color;
+  opacity: 1.0;
+}
+
+.task-group-count-pill {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background-color: alpha(currentColor, 0.09);
+}
+
+.task-group-count-pill.task-group-count-overdue {
+  background-color: alpha(@error_bg_color, 0.18);
+  color: @error_color;
+}
+
+.task-workspace-row {
+  transition: background-color 120ms ease;
+}
+
+.task-workspace-row.selected {
+  background-color: alpha(@accent_bg_color, 0.14);
+}
+
+.task-card-title {
+  font-size: 0.92rem;
+  font-weight: 500;
+}
+
+.task-card-title.task-card-title-completed {
+  text-decoration: line-through;
+  opacity: 0.55;
+}
+
+.task-step-progress-pill {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background-color: alpha(currentColor, 0.08);
+  opacity: 0.85;
+}
+
+.task-meta-pill {
+  font-size: 0.74rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.task-meta-pill-date {
+  background-color: alpha(currentColor, 0.07);
+  opacity: 0.82;
+}
+
+.task-meta-pill-today {
+  background-color: alpha(@accent_bg_color, 0.15);
+  color: @accent_color;
+}
+
+.task-meta-pill-overdue {
+  background-color: alpha(@error_bg_color, 0.16);
+  color: @error_color;
+}
+
+.task-meta-pill-category {
+  background-color: alpha(currentColor, 0.08);
+  opacity: 0.88;
+}
+
+.task-meta-pill-progress {
+  background-color: alpha(@warning_bg_color, 0.20);
+  color: darker(@warning_color);
+}
+
+.task-star-btn {
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0;
+  opacity: 0.45;
+}
+
+.task-star-btn:hover,
+.task-star-btn.active {
+  opacity: 1.0;
+}
+
+.task-star-btn.active {
+  color: @warning_color;
+}
+
+.task-check-btn.task-check-high > check {
+  border-color: @error_color;
+}
+
+.task-inspector-title-entry,
+entry.task-inspector-title-entry {
+  font-size: 1.05rem;
+  font-weight: 700;
+  min-height: 36px;
+}
+
+.task-inspector-due-pill,
+button.task-inspector-due-pill {
+  font-size: 0.75rem;
+  font-weight: 600;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background-color: alpha(currentColor, 0.07);
+}
+
+.task-inspector-notes-view {
+  border-radius: 8px;
+}
+
+
+
 
 
 

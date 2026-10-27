@@ -148,6 +148,15 @@ mod imp {
         pub(super) hidden_task_sources: RefCell<HashSet<String>>,
         pub(super) task_color_css_provider: RefCell<Option<gtk::CssProvider>>,
         pub(super) task_search_bar: RefCell<Option<gtk::SearchBar>>,
+        pub(super) task_smart_filter_list: RefCell<Option<gtk::ListBox>>,
+        pub(super) task_smart_filter_badges: RefCell<Vec<(TaskFilter, gtk::Label)>>,
+        pub(super) task_smart_filter_syncing: Cell<bool>,
+        pub(super) task_workspace_title: RefCell<Option<gtk::Label>>,
+        pub(super) task_workspace_subtitle: RefCell<Option<gtk::Label>>,
+        pub(super) task_workspace_groups_box: RefCell<Option<gtk::Box>>,
+        pub(super) task_quick_due_preset: Cell<u8>,
+        pub(super) task_quick_prio_preset: Cell<u8>,
+        pub(super) task_inspector_box: RefCell<Option<gtk::Box>>,
         pub new_task_button: RefCell<Option<gtk::Button>>,
         pub search_entry: RefCell<Option<gtk::SearchEntry>>,
         pub is_mobile: Cell<bool>,
@@ -4547,6 +4556,114 @@ impl TasksPage {
         self.imp().task_source_properties_button.replace(Some(properties_task_source_button.clone()));
         self.imp().task_source_delete_button.replace(Some(delete_task_source_button.clone()));
 
+        let smart_header_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .margin_start(12)
+            .margin_end(8)
+            .margin_top(10)
+            .margin_bottom(4)
+            .build();
+        let smart_header_lbl = gtk::Label::builder()
+            .label(&gettext("FOCUS"))
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .css_classes(vec!["account-heading"])
+            .build();
+        smart_header_box.append(&smart_header_lbl);
+        sidebar_box.append(&smart_header_box);
+
+        let task_smart_filter_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::Single)
+            .css_classes(vec!["navigation-sidebar", "tasks-smart-filter-list"])
+            .build();
+        let smart_views: [(TaskFilter, &str, String); 8] = [
+            (TaskFilter::Today, "alarm-symbolic", gettext("Due Today")),
+            (TaskFilter::Next7, "x-office-calendar-symbolic", gettext("Next 7 Days")),
+            (TaskFilter::Overdue, "dialog-warning-symbolic", gettext("Overdue")),
+            (TaskFilter::Important, "starred-symbolic", gettext("Important")),
+            (TaskFilter::InProgress, "media-playback-start-symbolic", gettext("In Progress")),
+            (TaskFilter::Uncompleted, "view-list-bullet-symbolic", gettext("Open Tasks")),
+            (TaskFilter::All, "view-list-symbolic", gettext("All Tasks")),
+            (TaskFilter::Completed, "emblem-ok-symbolic", gettext("Completed")),
+        ];
+        let mut smart_badges = Vec::new();
+        let initial_smart_filter = self.imp().task_filter.get();
+        let mut initial_smart_row: Option<gtk::ListBoxRow> = None;
+        for (sf, icon_name, title) in &smart_views {
+            let row_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(8)
+                .margin_start(8)
+                .margin_end(8)
+                .margin_top(4)
+                .margin_bottom(4)
+                .build();
+            let icon = gtk::Image::builder()
+                .icon_name(*icon_name)
+                .pixel_size(15)
+                .css_classes(vec!["dim-label"])
+                .build();
+            let lbl = gtk::Label::builder()
+                .label(title)
+                .halign(gtk::Align::Start)
+                .hexpand(true)
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .build();
+            let mut badge_classes = vec!["task-smart-count-badge"];
+            if *sf == TaskFilter::Overdue {
+                badge_classes.push("task-smart-count-overdue");
+            }
+            let badge = gtk::Label::builder()
+                .label("0")
+                .valign(gtk::Align::Center)
+                .visible(false)
+                .css_classes(badge_classes)
+                .build();
+            row_box.append(&icon);
+            row_box.append(&lbl);
+            row_box.append(&badge);
+            let row = gtk::ListBoxRow::builder()
+                .child(&row_box)
+                .css_classes(vec!["calendar-sidebar-row", "task-smart-filter-row"])
+                .build();
+            unsafe {
+                row.set_data("smart-task-filter", *sf);
+            }
+            task_smart_filter_list.append(&row);
+            if *sf == initial_smart_filter {
+                initial_smart_row = Some(row);
+            }
+            smart_badges.push((*sf, badge));
+        }
+        if let Some(row) = initial_smart_row.as_ref() {
+            task_smart_filter_list.select_row(Some(row));
+        }
+        self.imp()
+            .task_smart_filter_list
+            .replace(Some(task_smart_filter_list.clone()));
+        self.imp()
+            .task_smart_filter_badges
+            .replace(smart_badges);
+        sidebar_box.append(&task_smart_filter_list);
+
+        let lists_header_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .margin_start(12)
+            .margin_end(6)
+            .margin_top(12)
+            .margin_bottom(2)
+            .build();
+        let lists_header_lbl = gtk::Label::builder()
+            .label(&gettext("TASK LISTS"))
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .css_classes(vec!["account-heading"])
+            .build();
+        lists_header_box.append(&lists_header_lbl);
+        lists_header_box.append(&new_task_source_button);
+        sidebar_box.append(&lists_header_box);
+
         sidebar_box.append(&task_source_list);
 
         let sidebar_scroll = gtk::ScrolledWindow::builder()
@@ -5242,10 +5359,26 @@ impl TasksPage {
             .vexpand(true)
             .hscrollbar_policy(gtk::PolicyType::Never)
             .build();
+        let inspector_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(12)
+            .margin_start(14)
+            .margin_end(14)
+            .margin_top(12)
+            .margin_bottom(16)
+            .build();
+        let inspector_scroll = gtk::ScrolledWindow::builder()
+            .child(&inspector_box)
+            .vexpand(true)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .build();
+        self.imp()
+            .task_inspector_box
+            .replace(Some(inspector_box.clone()));
         let preview_empty_state = adw::StatusPage::builder()
             .icon_name("document-properties-symbolic")
             .title(&gettext("No task selected"))
-            .description(&gettext("Select a task from the list to view details and notes."))
+            .description(&gettext("Select a task from the list to view and edit its details, checklist, and notes."))
             .vexpand(true)
             .hexpand(true)
             .build();
@@ -5255,7 +5388,8 @@ impl TasksPage {
             .hexpand(true)
             .build();
         preview_stack.add_named(&preview_empty_state, Some("empty"));
-        preview_stack.add_named(&preview_scroll, Some("content"));
+        preview_stack.add_named(&inspector_scroll, Some("content"));
+        preview_stack.add_named(&preview_scroll, Some("raw_text"));
         preview_stack.set_visible_child_name("empty");
 
         let preview_box = gtk::Box::builder()
@@ -6135,6 +6269,22 @@ impl TasksPage {
             }
 
             filter_dropdown_for_apply.set_selected(task_filter_index(filter) as u32);
+            if let Some(smart_list) = page.imp().task_smart_filter_list.borrow().as_ref() {
+                page.imp().task_smart_filter_syncing.set(true);
+                let mut matched_row = None;
+                let mut child = smart_list.first_child();
+                while let Some(w) = child {
+                    child = w.next_sibling();
+                    if let Ok(r) = w.downcast::<gtk::ListBoxRow>() {
+                        if unsafe { r.data::<TaskFilter>("smart-task-filter").is_some_and(|v| *v.as_ref() == filter) } {
+                            matched_row = Some(r);
+                            break;
+                        }
+                    }
+                }
+                smart_list.select_row(matched_row.as_ref());
+                page.imp().task_smart_filter_syncing.set(false);
+            }
             render_task_rows(
                 &page,
                 &task_list_for_categories,
@@ -6143,6 +6293,22 @@ impl TasksPage {
             );
             syncing_filter_for_apply.set(false);
         };
+
+        let apply_for_smart_list = apply_filter.clone();
+        let page_weak_for_smart_list = self.downgrade();
+        task_smart_filter_list.connect_row_selected(move |_, row| {
+            let Some(page) = page_weak_for_smart_list.upgrade() else {
+                return;
+            };
+            if page.imp().task_smart_filter_syncing.get() {
+                return;
+            }
+            if let Some(row) = row {
+                if let Some(sf) = unsafe { row.data::<TaskFilter>("smart-task-filter").map(|v| *v.as_ref()) } {
+                    apply_for_smart_list(sf);
+                }
+            }
+        });
 
         let apply_for_dropdown = apply_filter.clone();
         filter_dropdown.connect_selected_notify(move |dropdown| {
@@ -6511,6 +6677,60 @@ impl TasksPage {
             });
         }
 
+        // ── Workspace Header Bar ──
+        let workspace_header_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
+            .margin_bottom(2)
+            .css_classes(vec!["task-workspace-header"])
+            .build();
+        let workspace_title_col = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .hexpand(true)
+            .valign(gtk::Align::Center)
+            .build();
+        let workspace_title_label = gtk::Label::builder()
+            .label(&gettext("All Tasks"))
+            .halign(gtk::Align::Start)
+            .css_classes(vec!["title-3", "task-workspace-title"])
+            .build();
+        let workspace_subtitle_label = gtk::Label::builder()
+            .label(&gettext("0 open tasks"))
+            .halign(gtk::Align::Start)
+            .css_classes(vec!["dim-label", "caption", "task-workspace-subtitle"])
+            .build();
+        workspace_title_col.append(&workspace_title_label);
+        workspace_title_col.append(&workspace_subtitle_label);
+        self.imp()
+            .task_workspace_title
+            .replace(Some(workspace_title_label.clone()));
+        self.imp()
+            .task_workspace_subtitle
+            .replace(Some(workspace_subtitle_label.clone()));
+
+        let workspace_actions_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .valign(gtk::Align::Center)
+            .build();
+        let new_task_header_btn = gtk::Button::builder()
+            .css_classes(vec!["suggested-action", "task-workspace-new-btn"])
+            .tooltip_text(&gettext("Create new task with full options (Ctrl+N)"))
+            .valign(gtk::Align::Center)
+            .build();
+        let new_task_btn_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        new_task_btn_content.append(&gtk::Image::from_icon_name("list-add-symbolic"));
+        new_task_btn_content.append(&gtk::Label::new(Some(&gettext("New Task"))));
+        new_task_header_btn.set_child(Some(&new_task_btn_content));
+        let btn_add_for_header = btn_add_task.clone();
+        new_task_header_btn.connect_clicked(move |_| {
+            btn_add_for_header.emit_clicked();
+        });
+        workspace_actions_row.append(&new_task_header_btn);
+        workspace_header_box.append(&workspace_title_col);
+        workspace_header_box.append(&workspace_actions_row);
+
         // ── Quick-Add Bar ──
         let quick_add_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -6520,27 +6740,124 @@ impl TasksPage {
         let quick_add_icon = gtk::Image::builder()
             .icon_name("list-add-symbolic")
             .pixel_size(16)
-            .css_classes(vec!["dim-label"])
+            .css_classes(vec!["dim-label", "task-row-icon"])
             .valign(gtk::Align::Center)
             .build();
         let quick_add_entry = gtk::Entry::builder()
-            .placeholder_text(&crate::i18n::gettext("Add new task… (Press Enter)"))
+            .placeholder_text(&crate::i18n::gettext("Add a task… (type @today, @tomorrow, !high, #Category or press Enter)"))
             .hexpand(true)
             .css_classes(vec!["task-quick-add-entry"])
             .build();
         set_accessible_label(&quick_add_entry, &crate::i18n::gettext("Quickly add new task"));
+
+        let quick_due_btn = gtk::Button::builder()
+            .label(&gettext("No Date"))
+            .tooltip_text(&gettext("Click to cycle due date preset (No Date → Today → Tomorrow → +7 Days)"))
+            .css_classes(vec!["flat", "task-quick-preset-pill"])
+            .valign(gtk::Align::Center)
+            .build();
+        {
+            let page_weak = self.downgrade();
+            quick_due_btn.connect_clicked(move |btn| {
+                let Some(page) = page_weak.upgrade() else { return; };
+                let next = (page.imp().task_quick_due_preset.get() + 1) % 4;
+                page.imp().task_quick_due_preset.set(next);
+                match next {
+                    1 => {
+                        btn.set_label(&gettext("Today"));
+                        btn.add_css_class("active");
+                    }
+                    2 => {
+                        btn.set_label(&gettext("Tomorrow"));
+                        btn.add_css_class("active");
+                    }
+                    3 => {
+                        btn.set_label(&gettext("+7 Days"));
+                        btn.add_css_class("active");
+                    }
+                    _ => {
+                        btn.set_label(&gettext("No Date"));
+                        btn.remove_css_class("active");
+                    }
+                }
+            });
+        }
+
+        let quick_prio_btn = gtk::Button::builder()
+            .label(&gettext("Normal"))
+            .tooltip_text(&gettext("Click to cycle priority preset (Normal → High → Medium)"))
+            .css_classes(vec!["flat", "task-quick-preset-pill"])
+            .valign(gtk::Align::Center)
+            .build();
+        {
+            let page_weak = self.downgrade();
+            quick_prio_btn.connect_clicked(move |btn| {
+                let Some(page) = page_weak.upgrade() else { return; };
+                let next = match page.imp().task_quick_prio_preset.get() {
+                    0 => 1,
+                    1 => 5,
+                    _ => 0,
+                };
+                page.imp().task_quick_prio_preset.set(next);
+                match next {
+                    1 => {
+                        btn.set_label(&gettext("High !"));
+                        btn.add_css_class("active");
+                        btn.add_css_class("prio-high");
+                    }
+                    5 => {
+                        btn.set_label(&gettext("Medium"));
+                        btn.add_css_class("active");
+                        btn.remove_css_class("prio-high");
+                    }
+                    _ => {
+                        btn.set_label(&gettext("Normal"));
+                        btn.remove_css_class("active");
+                        btn.remove_css_class("prio-high");
+                    }
+                }
+            });
+        }
+
+        let quick_submit_btn = gtk::Button::builder()
+            .label(&gettext("Add"))
+            .tooltip_text(&gettext("Add task (Enter)"))
+            .css_classes(vec!["flat", "task-quick-submit-btn"])
+            .valign(gtk::Align::Center)
+            .build();
+        {
+            let entry_for_submit = quick_add_entry.clone();
+            quick_submit_btn.connect_clicked(move |_| {
+                entry_for_submit.emit_activate();
+            });
+        }
+
         quick_add_box.append(&quick_add_icon);
         quick_add_box.append(&quick_add_entry);
+        quick_add_box.append(&quick_due_btn);
+        quick_add_box.append(&quick_prio_btn);
+        quick_add_box.append(&quick_submit_btn);
 
         let page_weak_for_quick_add = self.downgrade();
         quick_add_entry.connect_activate(move |entry| {
-            let text = entry.text().trim().to_string();
-            if text.is_empty() {
+            let raw_text = entry.text().trim().to_string();
+            if raw_text.is_empty() {
                 return;
             }
             let Some(page) = page_weak_for_quick_add.upgrade() else {
                 return;
             };
+
+            let (clean_title, parsed_due, parsed_prio, parsed_categories) =
+                parse_smart_quick_add_input(
+                    &raw_text,
+                    page.imp().task_quick_due_preset.get(),
+                    page.imp().task_quick_prio_preset.get(),
+                    page.imp().task_filter.get(),
+                );
+            if clean_title.is_empty() {
+                return;
+            }
 
             let capabilities = page.imp().task_source_capabilities.borrow().clone();
             let source_uids = page.imp().task_source_uids.borrow().clone();
@@ -6570,16 +6887,23 @@ impl TasksPage {
                 .unwrap_or_else(|_| "local-calendar".to_string())
             };
 
+            let active_cat_filter = page.imp().task_category_filter.borrow().clone().unwrap_or_default();
+            let final_categories = if !parsed_categories.is_empty() {
+                parsed_categories
+            } else {
+                active_cat_filter
+            };
+
             let component = match build_task_component_with_dates(
-                &text,
+                &clean_title,
+                "",
+                &parsed_due,
                 "",
                 "",
                 "",
                 "",
-                "",
-                "",
-                0,
-                "",
+                parsed_prio,
+                &final_categories,
                 &[],
                 "",
                 "",
@@ -6598,7 +6922,7 @@ impl TasksPage {
 
             let entry_for_done = entry.clone();
             let page_for_done = page.downgrade();
-            let text_for_toast = text.clone();
+            let text_for_toast = clean_title.clone();
             let (tx, rx) = async_channel::bounded(1);
 
             std::thread::spawn(move || {
@@ -7091,9 +7415,23 @@ impl TasksPage {
             task_table_canvas.add_controller(key_controller);
         }
 
-        tasks_content_box.append(&quick_add_box);
+        let task_workspace_groups_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(16)
+            .hexpand(true)
+            .build();
+        self.imp()
+            .task_workspace_groups_box
+            .replace(Some(task_workspace_groups_box.clone()));
+
+        task_table_header.set_visible(false);
+        task_table_canvas.set_visible(false);
+        task_list.set_visible(false);
+
+        tasks_content_box.append(&task_workspace_groups_box);
         tasks_content_box.append(&task_table_header);
         tasks_content_box.append(&task_table_canvas);
+        tasks_content_box.append(&task_list);
 
         let task_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -7125,12 +7463,30 @@ impl TasksPage {
             .task_container_stack
             .replace(Some(task_container_stack.clone()));
 
+        let workspace_center_col = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(10)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        let workspace_top_pinned = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(10)
+            .margin_start(16)
+            .margin_end(16)
+            .margin_top(12)
+            .build();
+        workspace_top_pinned.append(&workspace_header_box);
+        workspace_top_pinned.append(&quick_add_box);
+        workspace_center_col.append(&workspace_top_pinned);
+        workspace_center_col.append(&task_container_stack);
+
         let preview_paned = gtk::Paned::builder()
             .orientation(preview_orientation.paned_orientation())
             .wide_handle(false)
             .vexpand(true)
             .build();
-        preview_paned.set_start_child(Some(&task_container_stack));
+        preview_paned.set_start_child(Some(&workspace_center_col));
         preview_paned.set_end_child(Some(&preview_box));
         preview_paned.set_resize_start_child(true);
         preview_paned.set_resize_end_child(true);
@@ -8842,6 +9198,188 @@ fn draw_task_table_canvas(
     }
 }
 
+fn parse_smart_quick_add_input(
+    raw: &str,
+    due_preset: u8,
+    prio_preset: u8,
+    active_filter: TaskFilter,
+) -> (String, String, u8, String) {
+    let today = Local::now().date_naive();
+    let mut due_str: Option<String> = None;
+    let mut prio: Option<u8> = None;
+    let mut categories: Vec<String> = Vec::new();
+    let mut title_words: Vec<&str> = Vec::new();
+
+    for token in raw.split_whitespace() {
+        let lower = token.to_lowercase();
+        if let Some(date_tok) = lower.strip_prefix('@') {
+            match date_tok {
+                "today" | "heute" | "tod" => {
+                    due_str = Some(today.format("%Y-%m-%d").to_string());
+                    continue;
+                }
+                "tomorrow" | "morgen" | "tmr" | "tom" => {
+                    due_str = Some((today + Duration::days(1)).format("%Y-%m-%d").to_string());
+                    continue;
+                }
+                "nextweek" | "woche" | "7d" | "+7d" | "next7" => {
+                    due_str = Some((today + Duration::days(7)).format("%Y-%m-%d").to_string());
+                    continue;
+                }
+                _ => {
+                    if NaiveDate::parse_from_str(date_tok, "%Y-%m-%d").is_ok() {
+                        due_str = Some(date_tok.to_string());
+                        continue;
+                    }
+                }
+            }
+        } else if matches!(lower.as_str(), "!high" | "!hoch" | "!1" | "!!!" | "!urgent" | "!wichtig") {
+            prio = Some(1);
+            continue;
+        } else if matches!(lower.as_str(), "!medium" | "!med" | "!mittel" | "!5" | "!!") {
+            prio = Some(5);
+            continue;
+        } else if matches!(lower.as_str(), "!low" | "!niedrig" | "!9") {
+            prio = Some(9);
+            continue;
+        } else if let Some(tag) = token.strip_prefix('#') {
+            let cleaned = tag.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
+            if !cleaned.is_empty() && !categories.iter().any(|c| c.eq_ignore_ascii_case(cleaned)) {
+                categories.push(cleaned.to_string());
+                continue;
+            }
+        }
+        title_words.push(token);
+    }
+
+    let final_title = title_words.join(" ");
+    let final_due = due_str.unwrap_or_else(|| match due_preset {
+        1 => today.format("%Y-%m-%d").to_string(),
+        2 => (today + Duration::days(1)).format("%Y-%m-%d").to_string(),
+        3 => (today + Duration::days(7)).format("%Y-%m-%d").to_string(),
+        _ => {
+            if active_filter == TaskFilter::Today {
+                today.format("%Y-%m-%d").to_string()
+            } else {
+                String::new()
+            }
+        }
+    });
+    let final_prio = prio.unwrap_or_else(|| {
+        if prio_preset > 0 {
+            prio_preset
+        } else if active_filter == TaskFilter::Important {
+            1
+        } else {
+            0
+        }
+    });
+    let final_cats = categories.join(", ");
+    (final_title, final_due, final_prio, final_cats)
+}
+
+pub(crate) fn mutate_task_item_component(
+    page: &TasksPage,
+    task: &TaskItemObject,
+    new_component: String,
+) {
+    let source_uid = task.source_uid();
+    if !task_source_is_writable_on_page(page, &source_uid) {
+        page.show_toast(&gettext("This task list is not confirmed as writable"));
+        return;
+    }
+    let uid = task.id();
+    let uid_for_worker = uid.clone();
+    let source_uid_for_worker = source_uid.clone();
+    let component_for_worker = new_component.clone();
+    let (sender, receiver) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let result = ECalService::new().modify_component(
+            &source_uid_for_worker,
+            ECalComponentType::Task,
+            &uid_for_worker,
+            &component_for_worker,
+        );
+        let _ = sender.send_blocking(result);
+    });
+
+    let task_clone = task.clone();
+    let page_weak = page.downgrade();
+    glib::spawn_future_local(async move {
+        let Ok(result) = receiver.recv().await else {
+            return;
+        };
+        let Some(page) = page_weak.upgrade() else {
+            return;
+        };
+        match result {
+            Ok(res) => {
+                let authoritative = task_authoritative_component(&uid, &res.uid, res.component)
+                    .unwrap_or(new_component);
+                let draft = task_editor_draft_from_component(&authoritative);
+                let is_comp = task_lifecycle_component_is_complete(&authoritative);
+                let prio_str = if draft.priority == 0 {
+                    "normal".to_string()
+                } else {
+                    draft.priority.to_string()
+                };
+                task_clone.set_title(draft.summary);
+                task_clone.set_due_date(draft.due.input);
+                task_clone.set_priority(prio_str);
+                task_clone.set_completed(is_comp);
+                task_clone.set_component(authoritative);
+                page.refresh_tasks();
+                refresh_task_preview(&page);
+            }
+            Err(error) => {
+                page.show_toast(
+                    &gettext("Could not update task: {error}").replace("{error}", &error.to_string()),
+                );
+            }
+        }
+    });
+}
+
+fn parse_task_description_checklist(description: &str) -> (Vec<(bool, String)>, String) {
+    let mut steps = Vec::new();
+    let mut notes_lines = Vec::new();
+    for line in description.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("- [ ] ").or_else(|| trimmed.strip_prefix("* [ ] ")) {
+            steps.push((false, rest.trim().to_string()));
+        } else if let Some(rest) = trimmed
+            .strip_prefix("- [x] ")
+            .or_else(|| trimmed.strip_prefix("- [X] "))
+            .or_else(|| trimmed.strip_prefix("* [x] "))
+            .or_else(|| trimmed.strip_prefix("* [X] "))
+        {
+            steps.push((true, rest.trim().to_string()));
+        } else {
+            notes_lines.push(line);
+        }
+    }
+    let notes = notes_lines.join("\n").trim().to_string();
+    (steps, notes)
+}
+
+fn compose_task_description_with_checklist(steps: &[(bool, String)], notes: &str) -> String {
+    let mut out = Vec::new();
+    for (done, text) in steps {
+        let cleaned = text.trim();
+        if !cleaned.is_empty() {
+            out.push(format!("- [{}] {}", if *done { "x" } else { " " }, cleaned));
+        }
+    }
+    let trimmed_notes = notes.trim();
+    if !trimmed_notes.is_empty() {
+        if !out.is_empty() {
+            out.push(String::new());
+        }
+        out.push(trimmed_notes.to_string());
+    }
+    out.join("\n")
+}
+
 pub(crate) fn toggle_task_item_completion(page: &TasksPage, task: &TaskItemObject, completed: bool) {
     let source_uid = task.source_uid();
     if !task_source_is_writable_on_page(page, &source_uid) {
@@ -9065,12 +9603,19 @@ fn render_task_rows(
         page.imp().task_query.borrow().as_str(),
     );
     let mut tasks = Vec::new();
+    let mut all_source_tasks = Vec::new();
     for index in 0..task_store.n_items() {
         let Some(task) = task_store.item(index).and_downcast::<TaskItemObject>() else {
             continue;
         };
         if hidden_sources.contains(&task.source_uid()) {
             continue;
+        }
+        if source_filter
+            .as_deref()
+            .is_none_or(|src| task.source_uid() == src)
+        {
+            all_source_tasks.push(task.clone());
         }
         if task_matches_filter_with_context(
             &task,
@@ -9083,6 +9628,53 @@ fn render_task_rows(
             tasks.push(task);
         }
     }
+
+    // Update live Smart View count badges in left sidebar
+    {
+        let empty_query = TaskQuery::default();
+        let badges = page.imp().task_smart_filter_badges.borrow().clone();
+        for (sf, badge) in badges {
+            let count = all_source_tasks
+                .iter()
+                .filter(|t| task_matches_filter_with_context(t, sf, None, None, &empty_query, context))
+                .count();
+            badge.set_label(&count.to_string());
+            badge.set_visible(count > 0);
+        }
+    }
+
+    // Update Workspace Header Title & Subtitle metrics
+    {
+        let empty_query = TaskQuery::default();
+        let view_title = TASK_FILTER_OPTIONS
+            .iter()
+            .find(|(f, _, _)| *f == filter)
+            .map(|(_, _, lbl)| gettext(*lbl))
+            .unwrap_or_else(|| gettext("Tasks"));
+        if let Some(title_lbl) = page.imp().task_workspace_title.borrow().as_ref() {
+            title_lbl.set_label(&view_title);
+        }
+        if let Some(sub_lbl) = page.imp().task_workspace_subtitle.borrow().as_ref() {
+            let open_cnt = tasks.iter().filter(|t| !task_is_completed(t)).count();
+            let overdue_cnt = tasks
+                .iter()
+                .filter(|t| task_matches_filter_with_context(t, TaskFilter::Overdue, None, None, &empty_query, context))
+                .count();
+            let today_cnt = tasks
+                .iter()
+                .filter(|t| task_matches_filter_with_context(t, TaskFilter::Today, None, None, &empty_query, context))
+                .count();
+            let mut parts = vec![format!("{} {}", open_cnt, gettext("open"))];
+            if overdue_cnt > 0 {
+                parts.push(format!("{} {}", overdue_cnt, gettext("overdue")));
+            }
+            if today_cnt > 0 {
+                parts.push(format!("{} {}", today_cnt, gettext("due today")));
+            }
+            sub_lbl.set_label(&parts.join(" · "));
+        }
+    }
+
     tasks.sort_by(|left, right| {
         compare_tasks(
             left,
@@ -9092,6 +9684,22 @@ fn render_task_rows(
             context,
         )
     });
+
+    // Populate `task_list` with `adw::ActionRow` items for print/export/search helpers
+    for task in &tasks {
+        let action_row = adw::ActionRow::builder()
+            .title(glib::markup_escape_text(&task.title()))
+            .build();
+        unsafe {
+            action_row.set_data("task-source-uid", task.source_uid());
+            action_row.set_data("task-id", task.id());
+        }
+        let list_row = gtk::ListBoxRow::builder()
+            .child(&action_row)
+            .build();
+        task_list.append(&list_row);
+    }
+
     let canvas_width = page
         .imp()
         .task_table_canvas
@@ -9117,10 +9725,28 @@ fn render_task_rows(
         .map(TaskSelectionIdentity::from_task)
         .filter(|id| preserved_selection.contains(id))
         .collect();
-    page.imp().task_selection.replace(active_selection);
+    page.imp().task_selection.replace(active_selection.clone());
     page.imp().task_selection_restoring.set(false);
+
+    // Populate `task_workspace_groups_box` with modern grouped Libadwaita Task Cards
+    if let Some(groups_box) = page.imp().task_workspace_groups_box.borrow().as_ref() {
+        while let Some(child) = groups_box.first_child() {
+            groups_box.remove(&child);
+        }
+        render_task_workspace_groups(
+            page,
+            groups_box,
+            &tasks,
+            &active_selection,
+            context,
+            sort,
+            filter,
+        );
+    }
+
     let visible = tasks.len();
     update_task_selection_controls(page);
+    refresh_task_preview(page);
     empty_tasks.set_visible(visible == 0);
     if visible == 0 {
         let label = if query_is_empty(&query) && category_filter.is_none() {
@@ -9863,7 +10489,7 @@ fn refresh_task_preview(page: &TasksPage) {
         || *page.imp().task_preview_text.borrow() != text;
     if changed {
         text_view.buffer().set_text(&text);
-        page.imp().task_preview_identity.replace(identity);
+        page.imp().task_preview_identity.replace(identity.clone());
         page.imp().task_preview_text.replace(text.clone());
         // Selection/component changes must never retain a stale query, match
         // range, or visible search bar from the previously rendered task.
@@ -9874,7 +10500,1075 @@ fn refresh_task_preview(page: &TasksPage) {
             find_bar.set_visible(false);
         }
         apply_task_preview_find(page, TaskPreviewFindState::default());
+        populate_task_live_inspector(page, identity.as_ref());
     }
+}
+
+fn render_task_workspace_groups(
+    page: &TasksPage,
+    groups_box: &gtk::Box,
+    tasks: &[TaskItemObject],
+    selection: &[TaskSelectionIdentity],
+    context: TaskFilterContext,
+    sort: TaskSort,
+    filter: TaskFilter,
+) {
+    if tasks.is_empty() {
+        return;
+    }
+
+    let selected_set: HashSet<TaskSelectionIdentity> = selection.iter().cloned().collect();
+    let group_by_time = sort == TaskSort::DueDate
+        && matches!(
+            filter,
+            TaskFilter::All
+                | TaskFilter::Uncompleted
+                | TaskFilter::Today
+                | TaskFilter::Next7
+                | TaskFilter::Next30
+                | TaskFilter::Scheduled
+                | TaskFilter::Important
+        );
+
+    if group_by_time {
+        let mut overdue_vec = Vec::new();
+        let mut today_vec = Vec::new();
+        let mut next7_vec = Vec::new();
+        let mut later_vec = Vec::new();
+        let mut no_due_vec = Vec::new();
+        let mut completed_vec = Vec::new();
+
+        for task in tasks {
+            if task_is_completed(task) {
+                completed_vec.push(task.clone());
+                continue;
+            }
+            let due_opt = task_next_due_date(task, context.today);
+            match due_opt {
+                Some(d) if d < context.today => overdue_vec.push(task.clone()),
+                Some(d) if d == context.today => today_vec.push(task.clone()),
+                Some(d) if d <= context.today + Duration::days(7) => next7_vec.push(task.clone()),
+                Some(_) => later_vec.push(task.clone()),
+                None => no_due_vec.push(task.clone()),
+            }
+        }
+
+        let sections: [(String, &str, Vec<TaskItemObject>); 6] = [
+            (gettext("Overdue"), "overdue", overdue_vec),
+            (gettext("Today"), "today", today_vec),
+            (gettext("Next 7 Days"), "upcoming", next7_vec),
+            (gettext("Later"), "later", later_vec),
+            (gettext("No Due Date"), "nodue", no_due_vec),
+            (gettext("Completed"), "completed", completed_vec),
+        ];
+
+        for (sec_title, sec_kind, sec_tasks) in sections {
+            if sec_tasks.is_empty() {
+                continue;
+            }
+            append_task_workspace_section(
+                page,
+                groups_box,
+                Some((&sec_title, sec_kind, sec_tasks.len())),
+                &sec_tasks,
+                &selected_set,
+                context,
+            );
+        }
+    } else {
+        append_task_workspace_section(page, groups_box, None, tasks, &selected_set, context);
+    }
+}
+
+fn append_task_workspace_section(
+    page: &TasksPage,
+    groups_box: &gtk::Box,
+    header_info: Option<(&str, &str, usize)>,
+    sec_tasks: &[TaskItemObject],
+    selected_set: &HashSet<TaskSelectionIdentity>,
+    context: TaskFilterContext,
+) {
+    let sec_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(6)
+        .hexpand(true)
+        .build();
+
+    if let Some((title, kind, count)) = header_info {
+        let hdr = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .margin_start(4)
+            .margin_end(4)
+            .css_classes(vec!["task-group-header"])
+            .build();
+        let mut title_classes = vec!["task-group-title"];
+        if kind == "overdue" {
+            title_classes.push("task-group-title-overdue");
+        } else if kind == "today" {
+            title_classes.push("task-group-title-today");
+        }
+        let lbl = gtk::Label::builder()
+            .label(title)
+            .halign(gtk::Align::Start)
+            .css_classes(title_classes)
+            .build();
+        let mut pill_classes = vec!["task-group-count-pill"];
+        if kind == "overdue" {
+            pill_classes.push("task-group-count-overdue");
+        }
+        let pill = gtk::Label::builder()
+            .label(&count.to_string())
+            .valign(gtk::Align::Center)
+            .css_classes(pill_classes)
+            .build();
+        hdr.append(&lbl);
+        hdr.append(&pill);
+        sec_box.append(&hdr);
+    }
+
+    let card_list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(vec!["boxed-list", "task-workspace-card-list"])
+        .build();
+
+    for task in sec_tasks {
+        let row = build_task_workspace_card_row(page, task, selected_set, context);
+        card_list.append(&row);
+    }
+
+    sec_box.append(&card_list);
+    groups_box.append(&sec_box);
+}
+
+fn build_task_workspace_card_row(
+    page: &TasksPage,
+    task: &TaskItemObject,
+    selected_set: &HashSet<TaskSelectionIdentity>,
+    context: TaskFilterContext,
+) -> gtk::ListBoxRow {
+    let identity = TaskSelectionIdentity::from_task(task);
+    let is_selected = selected_set.contains(&identity);
+    let completed = task_is_completed(task);
+    let comp = task.component();
+    let draft = task_editor_draft_from_component(&comp);
+    let prio = draft.priority;
+    let is_high_prio = (1..=4).contains(&prio);
+    let (steps, clean_notes) = parse_task_description_checklist(&draft.description);
+
+    let outer_row_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(10)
+        .margin_start(12)
+        .margin_end(10)
+        .margin_top(8)
+        .margin_bottom(8)
+        .valign(gtk::Align::Center)
+        .build();
+
+    // 1. CheckButton
+    let mut check_classes = vec!["task-check-btn"];
+    if is_high_prio && !completed {
+        check_classes.push("task-check-high");
+    }
+    let check_btn = gtk::CheckButton::builder()
+        .active(completed)
+        .valign(gtk::Align::Center)
+        .tooltip_text(&if completed {
+            gettext("Mark as incomplete")
+        } else {
+            gettext("Mark as completed")
+        })
+        .css_classes(check_classes)
+        .build();
+    {
+        let page_weak = page.downgrade();
+        let task_for_toggle = task.clone();
+        check_btn.connect_toggled(move |btn| {
+            let Some(page) = page_weak.upgrade() else { return; };
+            let target_done = btn.is_active();
+            if target_done != task_is_completed(&task_for_toggle) {
+                toggle_task_item_completion(&page, &task_for_toggle, target_done);
+            }
+        });
+    }
+    outer_row_box.append(&check_btn);
+
+    // 2. Center Title + Subtitle (Checklist progress / Notes preview)
+    let center_col = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(2)
+        .hexpand(true)
+        .valign(gtk::Align::Center)
+        .build();
+    let mut title_classes = vec!["task-card-title"];
+    if completed {
+        title_classes.push("task-card-title-completed");
+    }
+    let title_lbl = gtk::Label::builder()
+        .label(&task.title())
+        .halign(gtk::Align::Start)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .css_classes(title_classes)
+        .build();
+    center_col.append(&title_lbl);
+
+    let has_steps = !steps.is_empty();
+    let first_note_line = clean_notes
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    if has_steps || !first_note_line.is_empty() {
+        let sub_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .build();
+        if has_steps {
+            let done_steps = steps.iter().filter(|(d, _)| *d).count();
+            let step_badge = gtk::Label::builder()
+                .label(&format!("{}/{}", done_steps, steps.len()))
+                .css_classes(vec!["task-step-progress-pill"])
+                .build();
+            sub_row.append(&step_badge);
+        }
+        if !first_note_line.is_empty() {
+            let note_lbl = gtk::Label::builder()
+                .label(first_note_line)
+                .halign(gtk::Align::Start)
+                .hexpand(true)
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .css_classes(vec!["dim-label", "caption", "task-card-note-preview"])
+                .build();
+            sub_row.append(&note_lbl);
+        }
+        center_col.append(&sub_row);
+    }
+    outer_row_box.append(&center_col);
+
+    // 3. Right Metadata Pills & Quick Star Button
+    let right_pills = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .valign(gtk::Align::Center)
+        .build();
+
+    // Status pill if In Progress
+    if !completed && (draft.status == "IN-PROCESS" || (1..=99).contains(&draft.percent)) {
+        let status_text = if draft.percent > 0 && draft.percent < 100 {
+            format!("{} · {}%", gettext("In Progress"), draft.percent)
+        } else {
+            gettext("In Progress")
+        };
+        let status_pill = gtk::Label::builder()
+            .label(&status_text)
+            .css_classes(vec!["task-meta-pill", "task-meta-pill-progress"])
+            .build();
+        right_pills.append(&status_pill);
+    }
+
+    // Category chips (up to 2)
+    let cats = category_names_from_ical_component(&comp);
+    for cat in cats.iter().take(2) {
+        let cat_pill = gtk::Label::builder()
+            .label(cat)
+            .css_classes(vec!["task-meta-pill", "task-meta-pill-category"])
+            .build();
+        right_pills.append(&cat_pill);
+    }
+
+    // Due date pill
+    if let Some(due_date) = task_next_due_date(task, context.today) {
+        let is_overdue = !completed && due_date < context.today;
+        let is_today = !completed && due_date == context.today;
+        let is_tomorrow = !completed && due_date == context.today + Duration::days(1);
+        let due_label = if is_today {
+            gettext("Today")
+        } else if is_tomorrow {
+            gettext("Tomorrow")
+        } else if is_overdue {
+            format!("{} · {}", gettext("Overdue"), due_date.format("%d.%m."))
+        } else {
+            due_date.format("%d.%m.%Y").to_string()
+        };
+        let mut due_classes = vec!["task-meta-pill"];
+        if is_overdue {
+            due_classes.push("task-meta-pill-overdue");
+        } else if is_today {
+            due_classes.push("task-meta-pill-today");
+        } else {
+            due_classes.push("task-meta-pill-date");
+        }
+        let due_pill = gtk::Label::builder()
+            .label(&due_label)
+            .css_classes(due_classes)
+            .build();
+        right_pills.append(&due_pill);
+    }
+
+    // Quick Important / Star Toggle Button
+    let star_icon = if is_high_prio {
+        "starred-symbolic"
+    } else {
+        "non-starred-symbolic"
+    };
+    let mut star_classes = vec!["flat", "circular", "task-star-btn"];
+    if is_high_prio {
+        star_classes.push("active");
+    }
+    let star_btn = gtk::Button::builder()
+        .icon_name(star_icon)
+        .tooltip_text(&if is_high_prio {
+            gettext("Remove High Priority")
+        } else {
+            gettext("Mark as Important (High Priority)")
+        })
+        .valign(gtk::Align::Center)
+        .css_classes(star_classes)
+        .build();
+    {
+        let page_weak = page.downgrade();
+        let task_for_star = task.clone();
+        star_btn.connect_clicked(move |_| {
+            let Some(page) = page_weak.upgrade() else { return; };
+            let current_comp = task_for_star.component();
+            let current_draft = task_editor_draft_from_component(&current_comp);
+            let new_prio = if (1..=4).contains(&current_draft.priority) {
+                None
+            } else {
+                Some("1")
+            };
+            let updated = update_ical_property(&current_comp, "PRIORITY", new_prio);
+            mutate_task_item_component(&page, &task_for_star, updated);
+        });
+    }
+    right_pills.append(&star_btn);
+    outer_row_box.append(&right_pills);
+
+    let mut row_classes = vec!["task-workspace-row"];
+    if is_selected {
+        row_classes.push("selected");
+    }
+    if completed {
+        row_classes.push("completed");
+    }
+    let list_row = gtk::ListBoxRow::builder()
+        .child(&outer_row_box)
+        .activatable(true)
+        .selectable(false)
+        .css_classes(row_classes)
+        .build();
+
+    // Primary Click (Single = Select & Open Inspector, Double = Open Full Dialog)
+    {
+        let click = gtk::GestureClick::builder().button(1).build();
+        let page_weak = page.downgrade();
+        let task_for_click = task.clone();
+        let id_for_click = identity.clone();
+        click.connect_pressed(move |gesture, n_press, _x, _y| {
+            let Some(page) = page_weak.upgrade() else { return; };
+            if n_press == 2 {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                if let (Some(store), Some(list), Some(empty)) = (
+                    page.imp().task_store.borrow().clone(),
+                    page.imp().task_list.borrow().clone(),
+                    page.imp().task_empty_state.borrow().clone(),
+                ) {
+                    page.open_task_dialog(store, list, empty, Some(task_for_click.clone()));
+                }
+            } else if n_press == 1 {
+                page.imp().task_selection.replace(vec![id_for_click.clone()]);
+                if page.imp().is_mobile.get() {
+                    page.imp().is_detail_shown.set(true);
+                    page.sync_tasks_layout_visibility();
+                }
+                update_task_selection_controls(&page);
+                refresh_task_preview(&page);
+                if let Some(groups_box) = page.imp().task_workspace_groups_box.borrow().as_ref() {
+                    update_workspace_row_selection_styles(groups_box, &id_for_click);
+                }
+            }
+        });
+        list_row.add_controller(click);
+    }
+
+    // Right-Click Context Menu
+    {
+        let right_click = gtk::GestureClick::builder().button(3).build();
+        let page_weak = page.downgrade();
+        let task_for_menu = task.clone();
+        let id_for_menu = identity.clone();
+        let row_for_menu = list_row.clone();
+        right_click.connect_pressed(move |gesture, _, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let Some(page) = page_weak.upgrade() else { return; };
+            page.imp().task_selection.replace(vec![id_for_menu.clone()]);
+            update_task_selection_controls(&page);
+            refresh_task_preview(&page);
+            if let Some(groups_box) = page.imp().task_workspace_groups_box.borrow().as_ref() {
+                update_workspace_row_selection_styles(groups_box, &id_for_menu);
+            }
+            let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            show_task_workspace_row_context_menu(&page, &row_for_menu, &task_for_menu, rect);
+        });
+        list_row.add_controller(right_click);
+    }
+
+    unsafe {
+        list_row.set_data("workspace-task-id", identity);
+    }
+
+    list_row
+}
+
+fn update_workspace_row_selection_styles(groups_box: &gtk::Box, selected_id: &TaskSelectionIdentity) {
+    let mut sec = groups_box.first_child();
+    while let Some(sec_w) = sec {
+        sec = sec_w.next_sibling();
+        let mut child = sec_w.first_child();
+        while let Some(c) = child {
+            child = c.next_sibling();
+            if let Ok(list_box) = c.downcast::<gtk::ListBox>() {
+                let mut row_opt = list_box.first_child();
+                while let Some(r_w) = row_opt {
+                    row_opt = r_w.next_sibling();
+                    if let Ok(row) = r_w.downcast::<gtk::ListBoxRow>() {
+                        let is_match = unsafe {
+                            row.data::<TaskSelectionIdentity>("workspace-task-id")
+                                .is_some_and(|v| v.as_ref() == selected_id)
+                        };
+                        if is_match {
+                            row.add_css_class("selected");
+                        } else {
+                            row.remove_css_class("selected");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn show_task_workspace_row_context_menu(
+    page: &TasksPage,
+    anchor: &impl IsA<gtk::Widget>,
+    task: &TaskItemObject,
+    rect: gdk::Rectangle,
+) {
+    let (popover, menu_box) = crate::views::create_context_popover(Some(&rect));
+    let writable = task_source_is_writable_on_page(page, &task.source_uid());
+
+    // 1. Toggle completion
+    let completed = task_is_completed(task);
+    let toggle_btn = crate::views::create_context_menu_button(
+        None,
+        &if completed {
+            gettext("Mark as Incomplete")
+        } else {
+            gettext("Mark as Completed")
+        },
+        false,
+    );
+    toggle_btn.set_sensitive(writable);
+    {
+        let pop = popover.clone();
+        let pw = page.downgrade();
+        let t = task.clone();
+        toggle_btn.connect_clicked(move |_| {
+            pop.popdown();
+            if let Some(p) = pw.upgrade() {
+                toggle_task_item_completion(&p, &t, !completed);
+            }
+        });
+    }
+    menu_box.append(&toggle_btn);
+
+    // 2. Quick Schedule: Due Today / Due Tomorrow
+    let today_btn = crate::views::create_context_menu_button(None, &gettext("Due Today"), false);
+    today_btn.set_sensitive(writable);
+    {
+        let pop = popover.clone();
+        let pw = page.downgrade();
+        let t = task.clone();
+        today_btn.connect_clicked(move |_| {
+            pop.popdown();
+            if let Some(p) = pw.upgrade() {
+                let date_str = Local::now().date_naive().format("%Y%m%d").to_string();
+                let updated = update_ical_property(&t.component(), "DUE;VALUE=DATE", Some(&date_str));
+                mutate_task_item_component(&p, &t, updated);
+            }
+        });
+    }
+    menu_box.append(&today_btn);
+
+    let tmr_btn = crate::views::create_context_menu_button(None, &gettext("Due Tomorrow"), false);
+    tmr_btn.set_sensitive(writable);
+    {
+        let pop = popover.clone();
+        let pw = page.downgrade();
+        let t = task.clone();
+        tmr_btn.connect_clicked(move |_| {
+            pop.popdown();
+            if let Some(p) = pw.upgrade() {
+                let date_str = (Local::now().date_naive() + Duration::days(1))
+                    .format("%Y%m%d")
+                    .to_string();
+                let updated = update_ical_property(&t.component(), "DUE;VALUE=DATE", Some(&date_str));
+                mutate_task_item_component(&p, &t, updated);
+            }
+        });
+    }
+    menu_box.append(&tmr_btn);
+
+    // 3. Edit Full Details
+    menu_box.append(&crate::views::create_context_menu_separator());
+    let edit_btn = crate::views::create_context_menu_button(None, &gettext("Edit Task…"), false);
+    {
+        let pop = popover.clone();
+        let pw = page.downgrade();
+        let t = task.clone();
+        edit_btn.connect_clicked(move |_| {
+            pop.popdown();
+            if let Some(p) = pw.upgrade() {
+                if let (Some(store), Some(list), Some(empty)) = (
+                    p.imp().task_store.borrow().clone(),
+                    p.imp().task_list.borrow().clone(),
+                    p.imp().task_empty_state.borrow().clone(),
+                ) {
+                    p.open_task_dialog(store, list, empty, Some(t.clone()));
+                }
+            }
+        });
+    }
+    menu_box.append(&edit_btn);
+
+    // 4. Delete
+    menu_box.append(&crate::views::create_context_menu_separator());
+    let del_btn = crate::views::create_context_menu_button(None, &gettext("Delete Task"), true);
+    del_btn.set_sensitive(writable);
+    {
+        let pop = popover.clone();
+        let pw = page.downgrade();
+        del_btn.connect_clicked(move |_| {
+            pop.popdown();
+            if let Some(p) = pw.upgrade() {
+                if let (Some(store), Some(list), Some(empty), Some(del_action_btn)) = (
+                    p.imp().task_store.borrow().clone(),
+                    p.imp().task_list.borrow().clone(),
+                    p.imp().task_empty_state.borrow().clone(),
+                    p.imp().task_delete_selection_button.borrow().clone(),
+                ) {
+                    present_task_delete_confirmation(&p, &del_action_btn, &store, &list, &empty);
+                }
+            }
+        });
+    }
+    menu_box.append(&del_btn);
+
+    popover.set_parent(anchor);
+    popover.connect_closed(|p| {
+        let p = p.clone();
+        glib::idle_add_local_once(move || {
+            p.unparent();
+        });
+    });
+    popover.popup();
+}
+
+fn populate_task_live_inspector(
+    page: &TasksPage,
+    selected_identity: Option<&TaskSelectionIdentity>,
+) {
+    let Some(inspector_box) = page.imp().task_inspector_box.borrow().as_ref().cloned() else {
+        return;
+    };
+    while let Some(child) = inspector_box.first_child() {
+        inspector_box.remove(&child);
+    }
+    let Some(identity) = selected_identity else {
+        return;
+    };
+    let Some(store) = page.imp().task_store.borrow().as_ref().cloned() else {
+        return;
+    };
+    let Some(task) = (0..store.n_items())
+        .filter_map(|i| store.item(i).and_downcast::<TaskItemObject>())
+        .find(|t| t.source_uid() == identity.source_uid && t.id() == identity.task_uid)
+    else {
+        return;
+    };
+
+    let writable = task_source_is_writable_on_page(page, &task.source_uid());
+    let comp = task.component();
+    let draft = task_editor_draft_from_component(&comp);
+    let completed = task_is_completed(&task);
+    let (steps, clean_notes) = parse_task_description_checklist(&draft.description);
+
+    // 1. Top Inspector Action Bar
+    let top_bar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .build();
+    let complete_btn = gtk::Button::builder()
+        .sensitive(writable)
+        .css_classes(if completed {
+            vec!["task-inspector-complete-btn", "completed"]
+        } else {
+            vec!["suggested-action", "task-inspector-complete-btn"]
+        })
+        .build();
+    let complete_btn_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    complete_btn_box.append(&gtk::Image::from_icon_name("emblem-ok-symbolic"));
+    complete_btn_box.append(&gtk::Label::new(Some(&if completed {
+        gettext("Completed")
+    } else {
+        gettext("Mark Completed")
+    })));
+    complete_btn.set_child(Some(&complete_btn_box));
+    {
+        let pw = page.downgrade();
+        let t = task.clone();
+        complete_btn.connect_clicked(move |_| {
+            if let Some(p) = pw.upgrade() {
+                toggle_task_item_completion(&p, &t, !completed);
+            }
+        });
+    }
+    top_bar.append(&complete_btn);
+    top_bar.append(&gtk::Box::builder().hexpand(true).build());
+
+    let more_dialog_btn = gtk::Button::builder()
+        .icon_name("document-properties-symbolic")
+        .tooltip_text(&gettext("Open full task dialog (Recurrence, Alarms, Attachments)"))
+        .css_classes(vec!["flat"])
+        .build();
+    {
+        let pw = page.downgrade();
+        let t = task.clone();
+        more_dialog_btn.connect_clicked(move |_| {
+            if let Some(p) = pw.upgrade() {
+                if let (Some(s), Some(l), Some(e)) = (
+                    p.imp().task_store.borrow().clone(),
+                    p.imp().task_list.borrow().clone(),
+                    p.imp().task_empty_state.borrow().clone(),
+                ) {
+                    p.open_task_dialog(s, l, e, Some(t.clone()));
+                }
+            }
+        });
+    }
+    top_bar.append(&more_dialog_btn);
+    top_bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+
+    let delete_btn = gtk::Button::builder()
+        .icon_name("user-trash-symbolic")
+        .tooltip_text(&gettext("Delete task"))
+        .sensitive(writable)
+        .css_classes(vec!["flat", "destructive-action"])
+        .build();
+    {
+        let pw = page.downgrade();
+        delete_btn.connect_clicked(move |_| {
+            if let Some(p) = pw.upgrade() {
+                if let (Some(s), Some(l), Some(e), Some(del_b)) = (
+                    p.imp().task_store.borrow().clone(),
+                    p.imp().task_list.borrow().clone(),
+                    p.imp().task_empty_state.borrow().clone(),
+                    p.imp().task_delete_selection_button.borrow().clone(),
+                ) {
+                    present_task_delete_confirmation(&p, &del_b, &s, &l, &e);
+                }
+            }
+        });
+    }
+    top_bar.append(&delete_btn);
+    inspector_box.append(&top_bar);
+
+    // 2. Inline Editable Title
+    let title_row = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .build();
+    let title_entry = gtk::Entry::builder()
+        .text(&task.title())
+        .hexpand(true)
+        .sensitive(writable)
+        .placeholder_text(&gettext("Task summary…"))
+        .css_classes(vec!["task-inspector-title-entry"])
+        .build();
+    let save_title_btn = gtk::Button::builder()
+        .icon_name("emblem-ok-symbolic")
+        .tooltip_text(&gettext("Save title (Enter)"))
+        .visible(false)
+        .css_classes(vec!["flat", "suggested-action"])
+        .build();
+    {
+        let save_btn = save_title_btn.clone();
+        let initial_title = task.title();
+        title_entry.connect_changed(move |entry| {
+            let trimmed = entry.text().trim().to_string();
+            save_btn.set_visible(!trimmed.is_empty() && trimmed != initial_title);
+        });
+    }
+    {
+        let pw = page.downgrade();
+        let t = task.clone();
+        title_entry.connect_activate(move |entry| {
+            let new_title = entry.text().trim().to_string();
+            if new_title.is_empty() || new_title == t.title() {
+                return;
+            }
+            if let Some(p) = pw.upgrade() {
+                let updated = update_ical_property(&t.component(), "SUMMARY", Some(&escape_ical_text(&new_title)));
+                mutate_task_item_component(&p, &t, updated);
+            }
+        });
+    }
+    {
+        let entry_for_btn = title_entry.clone();
+        save_title_btn.connect_clicked(move |_| {
+            entry_for_btn.emit_activate();
+        });
+    }
+    title_row.append(&title_entry);
+    title_row.append(&save_title_btn);
+    inspector_box.append(&title_row);
+
+    // 3. One-Click Workflow Properties Card
+    let props_group = adw::PreferencesGroup::builder()
+        .title(&gettext("Workflow & Schedule"))
+        .build();
+
+    // 3a. Status Segmented Row (Open | In Progress | Done)
+    let status_row = adw::ActionRow::builder()
+        .title(&gettext("Status"))
+        .build();
+    let status_seg = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .css_classes(vec!["linked"])
+        .valign(gtk::Align::Center)
+        .build();
+    let current_status_idx = if completed {
+        2
+    } else if draft.status == "IN-PROCESS" || (1..=99).contains(&draft.percent) {
+        1
+    } else {
+        0
+    };
+    for (idx, label) in [
+        (0, gettext("Open")),
+        (1, gettext("In Progress")),
+        (2, gettext("Done")),
+    ] {
+        let btn = gtk::ToggleButton::builder()
+            .label(&label)
+            .active(current_status_idx == idx)
+            .sensitive(writable)
+            .build();
+        let pw = page.downgrade();
+        let t = task.clone();
+        btn.connect_clicked(move |_| {
+            if current_status_idx == idx {
+                return;
+            }
+            let Some(p) = pw.upgrade() else { return; };
+            if idx == 2 {
+                toggle_task_item_completion(&p, &t, true);
+            } else if idx == 1 {
+                let mut c = update_ical_property(&t.component(), "STATUS", Some("IN-PROCESS"));
+                c = update_ical_property(&c, "PERCENT-COMPLETE", Some("50"));
+                c = update_ical_property(&c, "COMPLETED", None);
+                mutate_task_item_component(&p, &t, c);
+            } else {
+                let mut c = update_ical_property(&t.component(), "STATUS", Some("NEEDS-ACTION"));
+                c = update_ical_property(&c, "PERCENT-COMPLETE", Some("0"));
+                c = update_ical_property(&c, "COMPLETED", None);
+                mutate_task_item_component(&p, &t, c);
+            }
+        });
+        status_seg.append(&btn);
+    }
+    status_row.add_suffix(&status_seg);
+    props_group.add(&status_row);
+
+    // 3b. Priority Segmented Row (None | Low | Medium | High)
+    let prio_row = adw::ActionRow::builder()
+        .title(&gettext("Priority"))
+        .build();
+    let prio_seg = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .css_classes(vec!["linked"])
+        .valign(gtk::Align::Center)
+        .build();
+    let current_prio_bucket = match draft.priority {
+        1..=4 => 1u8,
+        5 => 5u8,
+        6..=9 => 9u8,
+        _ => 0u8,
+    };
+    for (p_val, label) in [
+        (0u8, gettext("None")),
+        (9u8, gettext("Low")),
+        (5u8, gettext("Medium")),
+        (1u8, gettext("High")),
+    ] {
+        let btn = gtk::ToggleButton::builder()
+            .label(&label)
+            .active(current_prio_bucket == p_val)
+            .sensitive(writable)
+            .build();
+        let pw = page.downgrade();
+        let t = task.clone();
+        btn.connect_clicked(move |_| {
+            if current_prio_bucket == p_val {
+                return;
+            }
+            let Some(p) = pw.upgrade() else { return; };
+            let val_str = p_val.to_string();
+            let new_prop = if p_val == 0 { None } else { Some(val_str.as_str()) };
+            let updated = update_ical_property(&t.component(), "PRIORITY", new_prop);
+            mutate_task_item_component(&p, &t, updated);
+        });
+        prio_seg.append(&btn);
+    }
+    prio_row.add_suffix(&prio_seg);
+    props_group.add(&prio_row);
+
+    // 3c. Quick Due Date Row
+    let due_row = adw::ActionRow::builder()
+        .title(&gettext("Due Date"))
+        .subtitle(&if draft.due.input.is_empty() {
+            gettext("No due date")
+        } else {
+            draft.due.input.clone()
+        })
+        .build();
+    let due_pills = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(4)
+        .valign(gtk::Align::Center)
+        .build();
+    let today_naive = Local::now().date_naive();
+    for (label, target_date) in [
+        (gettext("Today"), Some(today_naive)),
+        (gettext("Tomorrow"), Some(today_naive + Duration::days(1))),
+        (gettext("+7d"), Some(today_naive + Duration::days(7))),
+        (gettext("Clear"), None),
+    ] {
+        let b = gtk::Button::builder()
+            .label(&label)
+            .sensitive(writable)
+            .css_classes(vec!["flat", "task-inspector-due-pill"])
+            .build();
+        let pw = page.downgrade();
+        let t = task.clone();
+        b.connect_clicked(move |_| {
+            let Some(p) = pw.upgrade() else { return; };
+            let mut c = update_ical_property(&t.component(), "DUE", None);
+            if let Some(d) = target_date {
+                let d_str = d.format("%Y%m%d").to_string();
+                c = update_ical_property(&c, "DUE;VALUE=DATE", Some(&d_str));
+            }
+            mutate_task_item_component(&p, &t, c);
+        });
+        due_pills.append(&b);
+    }
+    due_row.add_suffix(&due_pills);
+    props_group.add(&due_row);
+
+    // 3d. Categories EntryRow
+    let cat_row = adw::EntryRow::builder()
+        .title(&gettext("Categories (comma-separated)"))
+        .text(&draft.categories)
+        .sensitive(writable)
+        .show_apply_button(true)
+        .build();
+    {
+        let pw = page.downgrade();
+        let t = task.clone();
+        cat_row.connect_apply(move |row| {
+            let Some(p) = pw.upgrade() else { return; };
+            let cats = serialize_categories(row.text().as_str());
+            let new_prop = if cats.is_empty() { None } else { Some(cats.as_str()) };
+            let updated = update_ical_property(&t.component(), "CATEGORIES", new_prop);
+            mutate_task_item_component(&p, &t, updated);
+        });
+    }
+    props_group.add(&cat_row);
+    inspector_box.append(&props_group);
+
+    // 4. Interactive Checklist / Subtasks Section
+    let checklist_group = adw::PreferencesGroup::builder()
+        .title(&gettext("Checklist & Steps"))
+        .description(&if steps.is_empty() {
+            gettext("Break this task down into actionable steps")
+        } else {
+            let done_c = steps.iter().filter(|(d, _)| *d).count();
+            format!("{}/{} {}", done_c, steps.len(), gettext("completed"))
+        })
+        .build();
+
+    for (idx, (step_done, step_text)) in steps.iter().enumerate() {
+        let step_row_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .margin_start(12)
+            .margin_end(8)
+            .margin_top(6)
+            .margin_bottom(6)
+            .build();
+        let step_check = gtk::CheckButton::builder()
+            .active(*step_done)
+            .sensitive(writable)
+            .valign(gtk::Align::Center)
+            .build();
+        let mut step_lbl_classes = vec!["task-checklist-step-label"];
+        if *step_done {
+            step_lbl_classes.push("dim-label");
+        }
+        let step_lbl = gtk::Label::builder()
+            .label(step_text)
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .wrap(true)
+            .css_classes(step_lbl_classes)
+            .build();
+        let del_step_btn = gtk::Button::builder()
+            .icon_name("window-close-symbolic")
+            .tooltip_text(&gettext("Remove step"))
+            .sensitive(writable)
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["flat", "circular"])
+            .build();
+
+        {
+            let pw = page.downgrade();
+            let t = task.clone();
+            let steps_clone = steps.clone();
+            let notes_clone = clean_notes.clone();
+            step_check.connect_toggled(move |chk| {
+                let Some(p) = pw.upgrade() else { return; };
+                let mut updated_steps = steps_clone.clone();
+                if let Some(s) = updated_steps.get_mut(idx) {
+                    s.0 = chk.is_active();
+                }
+                let new_desc = compose_task_description_with_checklist(&updated_steps, &notes_clone);
+                let new_prop = if new_desc.is_empty() {
+                    None
+                } else {
+                    Some(escape_ical_text(&new_desc))
+                };
+                let updated = update_ical_property(&t.component(), "DESCRIPTION", new_prop.as_deref());
+                mutate_task_item_component(&p, &t, updated);
+            });
+        }
+        {
+            let pw = page.downgrade();
+            let t = task.clone();
+            let steps_clone = steps.clone();
+            let notes_clone = clean_notes.clone();
+            del_step_btn.connect_clicked(move |_| {
+                let Some(p) = pw.upgrade() else { return; };
+                let mut updated_steps = steps_clone.clone();
+                if idx < updated_steps.len() {
+                    updated_steps.remove(idx);
+                }
+                let new_desc = compose_task_description_with_checklist(&updated_steps, &notes_clone);
+                let new_prop = if new_desc.is_empty() {
+                    None
+                } else {
+                    Some(escape_ical_text(&new_desc))
+                };
+                let updated = update_ical_property(&t.component(), "DESCRIPTION", new_prop.as_deref());
+                mutate_task_item_component(&p, &t, updated);
+            });
+        }
+
+        step_row_box.append(&step_check);
+        step_row_box.append(&step_lbl);
+        step_row_box.append(&del_step_btn);
+        checklist_group.add(&step_row_box);
+    }
+
+    let add_step_entry = adw::EntryRow::builder()
+        .title(&gettext("Add step… (Press Enter)"))
+        .sensitive(writable)
+        .show_apply_button(true)
+        .build();
+    {
+        let pw = page.downgrade();
+        let t = task.clone();
+        let steps_clone = steps.clone();
+        let notes_clone = clean_notes.clone();
+        add_step_entry.connect_apply(move |row| {
+            let txt = row.text().trim().to_string();
+            if txt.is_empty() {
+                return;
+            }
+            let Some(p) = pw.upgrade() else { return; };
+            let mut updated_steps = steps_clone.clone();
+            updated_steps.push((false, txt));
+            let new_desc = compose_task_description_with_checklist(&updated_steps, &notes_clone);
+            let escaped = escape_ical_text(&new_desc);
+            let updated = update_ical_property(&t.component(), "DESCRIPTION", Some(&escaped));
+            row.set_text("");
+            mutate_task_item_component(&p, &t, updated);
+        });
+    }
+    checklist_group.add(&add_step_entry);
+    inspector_box.append(&checklist_group);
+
+    // 5. Notes Section
+    let save_notes_btn = gtk::Button::builder()
+        .label(&gettext("Save Notes"))
+        .sensitive(false)
+        .valign(gtk::Align::Center)
+        .css_classes(vec!["flat", "suggested-action"])
+        .build();
+    let notes_group = adw::PreferencesGroup::builder()
+        .title(&gettext("Notes"))
+        .header_suffix(&save_notes_btn)
+        .build();
+    let notes_view = gtk::TextView::builder()
+        .editable(writable)
+        .wrap_mode(gtk::WrapMode::WordChar)
+        .height_request(110)
+        .left_margin(12)
+        .right_margin(12)
+        .top_margin(10)
+        .bottom_margin(10)
+        .css_classes(vec!["task-inspector-notes-view"])
+        .build();
+    notes_view.buffer().set_text(&clean_notes);
+    {
+        let save_btn = save_notes_btn.clone();
+        let initial_notes = clean_notes.clone();
+        notes_view.buffer().connect_changed(move |buf| {
+            let current = buf.text(&buf.start_iter(), &buf.end_iter(), false).trim().to_string();
+            save_btn.set_sensitive(current != initial_notes);
+        });
+    }
+    {
+        let pw = page.downgrade();
+        let t = task.clone();
+        let steps_clone = steps.clone();
+        let buf = notes_view.buffer();
+        save_notes_btn.connect_clicked(move |btn| {
+            let Some(p) = pw.upgrade() else { return; };
+            let new_notes = buf.text(&buf.start_iter(), &buf.end_iter(), false).to_string();
+            let full_desc = compose_task_description_with_checklist(&steps_clone, &new_notes);
+            let new_prop = if full_desc.is_empty() {
+                None
+            } else {
+                Some(escape_ical_text(&full_desc))
+            };
+            let updated = update_ical_property(&t.component(), "DESCRIPTION", new_prop.as_deref());
+            btn.set_sensitive(false);
+            mutate_task_item_component(&p, &t, updated);
+        });
+    }
+    notes_group.add(&notes_view);
+    inspector_box.append(&notes_group);
 }
 
 fn task_lifecycle_authoritative_component(

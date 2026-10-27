@@ -31,11 +31,12 @@ fn normalized_mail_sort_field(value: &str) -> &str {
     }
 }
 
-pub(crate) const MAIL_LIST_COLUMN_IDS: [&str; 15] = [
+pub(crate) const MAIL_LIST_COLUMN_IDS: [&str; 16] = [
     "status",
     "attachment",
     "flagged",
     "follow-up",
+    "memo",
     "avatar",
     "sender",
     "recipient",
@@ -49,10 +50,11 @@ pub(crate) const MAIL_LIST_COLUMN_IDS: [&str; 15] = [
     "important",
 ];
 
-const MAIL_LIST_WIDE_COLUMN_IDS: [&str; 15] = [
+const MAIL_LIST_WIDE_COLUMN_IDS: [&str; 16] = [
     "status",
     "flagged",
     "follow-up",
+    "memo",
     "messages",
     "attachment",
     "avatar",
@@ -125,6 +127,7 @@ pub const DEFAULT_MAIL_LIST_TOOLBAR_ITEMS: &[&str] = &[
     "filter:unread",
     "filter:flagged",
     "filter:followup",
+    "filter:memo",
     "filter:attachment",
     "filter:important",
     "separator",
@@ -221,7 +224,10 @@ pub fn normalize_mail_list_toolbar_items(value: &str) -> Vec<String> {
     if trimmed.eq_ignore_ascii_case("none") {
         return Vec::new();
     }
-    if trimmed.is_empty() {
+    if trimmed.is_empty()
+        || trimmed
+            == "filter:unread,filter:flagged,filter:followup,filter:attachment,filter:important,separator,mark-all-read,undo"
+    {
         return DEFAULT_MAIL_LIST_TOOLBAR_ITEMS
             .iter()
             .map(|id| (*id).to_string())
@@ -272,6 +278,26 @@ pub(crate) fn normalize_mail_list_column_order(value: &str) -> Vec<String> {
             let col = order.remove(pos_avatar);
             let new_sender_pos = order.iter().position(|c| c == "sender").unwrap();
             order.insert(new_sender_pos, col);
+        }
+    }
+    // Migration: If memo was appended after sender/date/size from an unmigrated order,
+    // place it right after follow-up (with the left icon columns).
+    if let (Some(pos_memo), Some(pos_sender)) = (
+        order.iter().position(|c| c == "memo"),
+        order.iter().position(|c| c == "sender"),
+    ) {
+        if pos_memo > pos_sender
+            && pos_memo >= order.iter().position(|c| c == "size").unwrap_or(usize::MAX)
+        {
+            let col = order.remove(pos_memo);
+            let insert_at = order
+                .iter()
+                .position(|c| c == "follow-up")
+                .map(|p| p + 1)
+                .or_else(|| order.iter().position(|c| c == "avatar"))
+                .or_else(|| order.iter().position(|c| c == "sender"))
+                .unwrap_or(0);
+            order.insert(insert_at, col);
         }
     }
     order
@@ -5385,12 +5411,13 @@ mod tests {
     fn mail_list_profiles_and_corrupt_orders_normalize_without_losing_columns() {
         let messages = mail_list_profile_column_order("messages");
         assert_eq!(
-            &messages[..9],
+            &messages[..10],
             &[
                 "status",
                 "attachment",
                 "flagged",
                 "follow-up",
+                "memo",
                 "avatar",
                 "sender",
                 "recipient",
@@ -5399,7 +5426,7 @@ mod tests {
             ]
         );
         let wide = mail_list_profile_column_order("wide");
-        assert_eq!(&wide[..4], &["status", "flagged", "follow-up", "messages"]);
+        assert_eq!(&wide[..5], &["status", "flagged", "follow-up", "memo", "messages"]);
         assert_eq!(normalized_mail_list_view_profile("unknown"), "messages");
 
         let normalized = normalize_mail_list_column_order("date,subject,date,unknown,status");

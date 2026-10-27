@@ -3240,8 +3240,14 @@ impl CalendarPage {
                     .memopad_scroll
                     .borrow()
                     .as_ref()
-                    .map(|s| s.is_visible())
+                    .map(|s| {
+                        s.set_vexpand(true);
+                        s.set_valign(gtk::Align::Fill);
+                        s.is_visible()
+                    })
                     .unwrap_or(true);
+                memopad_content_box.set_vexpand(exp);
+                memopad_content_box.set_valign(if exp { gtk::Align::Fill } else { gtk::Align::Start });
                 memopad_content_box.set_visible(exp);
                 ordered_containers.push((memopad_section_box.clone(), memopad_header.clone(), exp));
             } else if tabs.as_slice() == [SidebarPanelId::Details] {
@@ -11009,6 +11015,8 @@ impl CalendarPage {
             .margin_top(4)
             .margin_bottom(0)
             .vexpand(true)
+            .valign(gtk::Align::Fill)
+            .css_classes(vec!["memos-sidebar-section"])
             .build();
         self.imp()
             .memopad_section_box
@@ -20319,12 +20327,28 @@ pub(crate) fn prepare_memopad_layout(memos: &[MemoRecord]) -> PreparedMemopadLay
     let mut current_y = 0.0;
 
     for memo in memos {
-        let title = if memo.summary.trim().is_empty() {
-            gettext("(Untitled)")
-        } else {
+        let first_note_line = memo
+            .description
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or("");
+        let has_linked_mail =
+            crate::services::calendar_store_service::memo_linked_mid(&memo.component).is_some();
+        let title = if has_linked_mail && !first_note_line.is_empty() {
+            if !memo.summary.trim().is_empty() && memo.summary.trim() != first_note_line {
+                format!("{first_note_line} — {}", memo.summary.trim())
+            } else {
+                first_note_line.to_string()
+            }
+        } else if !memo.summary.trim().is_empty() {
             memo.summary.clone()
+        } else if !first_note_line.is_empty() {
+            first_note_line.to_string()
+        } else {
+            gettext("(Untitled)")
         };
-        let subtitle = calendar_memo_subtitle(memo);
+        let subtitle = String::new();
 
         items.push(MemopadRowItem {
             record: memo.clone(),
@@ -20520,10 +20544,11 @@ pub(crate) fn draw_memopad_canvas(
     selected_idx: Option<usize>,
     is_dark: bool,
 ) {
+    // Soft warm paper-yellow background across the entire Memos section
     if is_dark {
-        cr.set_source_rgb(0.14, 0.14, 0.14);
+        cr.set_source_rgb(0.155, 0.150, 0.125);
     } else {
-        cr.set_source_rgb(1.0, 1.0, 1.0);
+        cr.set_source_rgb(1.0, 0.996, 0.960);
     }
     cr.paint().ok();
 
@@ -20534,89 +20559,114 @@ pub(crate) fn draw_memopad_canvas(
 
         let is_selected = selected_idx == Some(idx);
         let is_hovered = hovered_idx == Some(idx);
+        let card_x = 4.0;
+        let card_y = (item.y + 2.0).round();
+        let card_w = (width - 8.0).max(10.0);
+        let card_h = (item.height - 4.0).max(18.0);
 
+        // Soft Libadwaita yellow pill card background (matching .mail-header-load-images-btn & .mail-memo-banner-row)
         if is_selected {
-            cr.set_source_rgba(0.2, 0.5, 0.9, 0.25);
-            draw_cairo_rounded_rect(cr, 4.0, item.y + 2.0, (width - 8.0).max(10.0), item.height - 4.0, 4.0);
+            if is_dark {
+                cr.set_source_rgba(0.96, 0.76, 0.07, 0.28);
+            } else {
+                cr.set_source_rgba(0.898, 0.647, 0.039, 0.26);
+            }
+            draw_cairo_rounded_rect(cr, card_x, card_y, card_w, card_h, 8.0);
             cr.fill().ok();
-            cr.set_source_rgba(0.2, 0.5, 0.9, 0.5);
-            cr.set_line_width(1.0);
-            draw_cairo_rounded_rect(cr, 4.0, item.y + 2.0, (width - 8.0).max(10.0), item.height - 4.0, 4.0);
-            cr.stroke().ok();
         } else if is_hovered {
             if is_dark {
-                cr.set_source_rgba(1.0, 1.0, 1.0, 0.06);
+                cr.set_source_rgba(0.96, 0.76, 0.07, 0.22);
             } else {
-                cr.set_source_rgba(0.0, 0.0, 0.0, 0.04);
+                cr.set_source_rgba(0.898, 0.647, 0.039, 0.21);
             }
-            draw_cairo_rounded_rect(cr, 4.0, item.y + 2.0, (width - 8.0).max(10.0), item.height - 4.0, 4.0);
+            draw_cairo_rounded_rect(cr, card_x, card_y, card_w, card_h, 8.0);
+            cr.fill().ok();
+        } else {
+            if is_dark {
+                cr.set_source_rgba(0.96, 0.76, 0.07, 0.16);
+            } else {
+                cr.set_source_rgba(0.898, 0.647, 0.039, 0.16);
+            }
+            draw_cairo_rounded_rect(cr, card_x, card_y, card_w, card_h, 8.0);
             cr.fill().ok();
         }
 
-        // Memo icon glyph
-        let icon_x = 10.0;
-        let icon_y = item.y + (item.height - 15.0) / 2.0;
-        cr.set_line_width(1.2);
-        if is_dark {
-            cr.set_source_rgba(0.85, 0.75, 0.35, 0.9);
-        } else {
-            cr.set_source_rgba(0.85, 0.65, 0.1, 0.9);
+        // Scope icon glyph (channel-secure-symbolic for private memo, system-users-symbolic for team memo)
+        thread_local! {
+            static MEMO_PRIVATE_ICON: RefCell<Option<gtk::cairo::ImageSurface>> = const { RefCell::new(None) };
+            static MEMO_TEAM_ICON: RefCell<Option<gtk::cairo::ImageSurface>> = const { RefCell::new(None) };
         }
-        draw_cairo_rounded_rect(cr, icon_x, icon_y, 12.0, 15.0, 2.0);
-        cr.stroke().ok();
-        cr.move_to(icon_x + 3.0, icon_y + 5.0);
-        cr.line_to(icon_x + 9.0, icon_y + 5.0);
-        cr.move_to(icon_x + 3.0, icon_y + 9.0);
-        cr.line_to(icon_x + 8.0, icon_y + 9.0);
-        cr.stroke().ok();
+        let is_team_memo =
+            crate::services::calendar_store_service::memo_is_team_shared(&item.record);
+        let icon_surf = if is_team_memo {
+            MEMO_TEAM_ICON.with(|cell| {
+                let mut opt = cell.borrow_mut();
+                if opt.is_none() {
+                    *opt = crate::views::mail_page::MailPage::render_symbolic_icon_to_surface(
+                        "system-users-symbolic",
+                        13,
+                    );
+                }
+                opt.clone()
+            })
+        } else {
+            MEMO_PRIVATE_ICON.with(|cell| {
+                let mut opt = cell.borrow_mut();
+                if opt.is_none() {
+                    *opt = crate::views::mail_page::MailPage::render_symbolic_icon_to_surface(
+                        "channel-secure-symbolic",
+                        13,
+                    );
+                }
+                opt.clone()
+            })
+        };
+        let icon_x = 12.0;
+        let icon_y = (item.y + (item.height - 13.0) / 2.0).round();
+        if is_dark {
+            cr.set_source_rgba(0.98, 0.80, 0.08, 0.90);
+        } else {
+            cr.set_source_rgba(0.68, 0.45, 0.02, 0.90);
+        }
+        if let Some(surf) = icon_surf {
+            cr.mask_surface(&surf, icon_x, icon_y).ok();
+        }
 
         // Subtitle on right
         let mut right_reserve = 12.0;
         if !item.subtitle.trim().is_empty() {
             cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
-            cr.set_font_size(10.5);
+            cr.set_font_size(10.0);
             if let Ok(extents) = cr.text_extents(&item.subtitle) {
                 let sub_w = extents.width();
-                let sub_x = width - sub_w - 12.0;
+                let sub_x = width - sub_w - 11.0;
                 let sub_y = item.y + (item.height / 2.0) + 4.0;
                 if is_dark {
-                    cr.set_source_rgba(0.6, 0.6, 0.6, 0.8);
+                    cr.set_source_rgba(0.95, 0.90, 0.68, 0.72);
                 } else {
-                    cr.set_source_rgba(0.45, 0.45, 0.45, 0.8);
+                    cr.set_source_rgba(0.44, 0.28, 0.05, 0.72);
                 }
                 cr.move_to(sub_x, sub_y);
                 cr.show_text(&item.subtitle).ok();
-                right_reserve = sub_w + 20.0;
+                right_reserve = sub_w + 18.0;
             }
         }
 
         // Title
-        let title_x = 28.0;
+        let title_x = 30.0;
         let title_max_w = (width - title_x - right_reserve).max(20.0);
         let title_y = item.y + (item.height / 2.0) + 4.0;
 
         cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
         cr.set_font_size(12.0);
         if is_dark {
-            cr.set_source_rgba(0.92, 0.92, 0.92, 1.0);
+            cr.set_source_rgba(0.99, 0.97, 0.85, 0.98);
         } else {
-            cr.set_source_rgba(0.12, 0.12, 0.12, 1.0);
+            cr.set_source_rgba(0.24, 0.16, 0.02, 0.98);
         }
         let display_title = truncate_cairo_text(cr, &item.title, title_max_w);
         cr.move_to(title_x, title_y);
         cr.show_text(&display_title).ok();
-
-        // Separator
-        cr.set_line_width(1.0);
-        if is_dark {
-            cr.set_source_rgba(1.0, 1.0, 1.0, 0.05);
-        } else {
-            cr.set_source_rgba(0.0, 0.0, 0.0, 0.05);
-        }
-        let line_y = (item.y + item.height).floor() + 0.5;
-        cr.move_to(title_x, line_y);
-        cr.line_to(width - 8.0, line_y);
-        cr.stroke().ok();
     }
 }
 

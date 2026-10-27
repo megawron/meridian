@@ -109,7 +109,7 @@ pub(crate) const ACTIONS: &[ActionSpec] = action_specs! {
         "win.new", "win.new-contact", "win.new-event", "win.new-memo",
         "win.new-task", "win.oof-settings", "win.search",
         "win.show-help-overlay", "win.switch-calendar", "win.switch-contacts",
-        "win.switch-mail", "win.switch-memos", "win.switch-tasks",
+        "win.switch-mail", "win.switch-tasks",
         "win.filter-editor", "win.search-folder-editor", "win.mail-receive-all",
         "win.mail-send-all", "win.mail-send-receive", "win.mail-stop",
         "win.preferences", "win.toggle-top-switcher",
@@ -207,7 +207,6 @@ pub(crate) const PRIMARY_MENU_ACTIONS: &[MenuActionSpec] = menu_specs! {
     ViewSwitch => [
         ("Mail", "win.switch-mail"), ("Calendar", "win.switch-calendar"),
         ("Contacts", "win.switch-contacts"), ("Tasks", "win.switch-tasks"),
-        ("Memos", "win.switch-memos"),
     ],
     View => [
         ("Show/Hide Folder Sidebar", "win.toggle-sidebar"),
@@ -576,12 +575,6 @@ pub(crate) const SHORTCUTS: &[ShortcutSpec] = &[
         title: "Switch to Tasks",
         action: "win.switch-tasks",
     },
-    ShortcutSpec {
-        section: ShortcutSection::ContactsTasks,
-        group: ShortcutGroup::TasksMemos,
-        title: "Switch to Memos",
-        action: "win.switch-memos",
-    },
 
     // ── General: Modules ──
     ShortcutSpec {
@@ -607,12 +600,6 @@ pub(crate) const SHORTCUTS: &[ShortcutSpec] = &[
         group: ShortcutGroup::GeneralModules,
         title: "Tasks",
         action: "win.switch-tasks",
-    },
-    ShortcutSpec {
-        section: ShortcutSection::General,
-        group: ShortcutGroup::GeneralModules,
-        title: "Memos",
-        action: "win.switch-memos",
     },
 
     // ── General: Application ──

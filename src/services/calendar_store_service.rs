@@ -2779,6 +2779,145 @@ fn format_ical_datetime(value: &str) -> String {
     value.to_string()
 }
 
+pub fn normalize_mid_uri(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let without_scheme = if trimmed.len() >= 4 && trimmed[..4].eq_ignore_ascii_case("mid:") {
+        &trimmed[4..]
+    } else {
+        trimmed
+    };
+    let cleaned = without_scheme
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .trim();
+    if cleaned.is_empty()
+        || cleaned
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control() || matches!(ch, '<' | '>'))
+    {
+        return None;
+    }
+    Some(format!("mid:{cleaned}"))
+}
+
+pub fn memo_linked_mid(component: &str) -> Option<String> {
+    let properties = top_level_properties(component);
+    for (prop, val, _) in &properties {
+        if prop.eq_ignore_ascii_case("URL") {
+            let unescaped = unescape(val);
+            let trimmed = unescaped.trim();
+            if trimmed.len() >= 4 && trimmed[..4].eq_ignore_ascii_case("mid:") {
+                if let Some(norm) = normalize_mid_uri(trimmed) {
+                    return Some(norm);
+                }
+            }
+        }
+    }
+    for (prop, val, _) in &properties {
+        if prop.eq_ignore_ascii_case("RELATED-TO")
+            || prop.eq_ignore_ascii_case("X-MERIDIAN-MESSAGE-ID")
+        {
+            let unescaped = unescape(val);
+            if let Some(norm) = normalize_mid_uri(&unescaped) {
+                return Some(norm);
+            }
+        }
+    }
+    None
+}
+
+pub fn memo_is_team_shared(memo: &MemoRecord) -> bool {
+    let properties = top_level_properties(&memo.component);
+    for (prop, val, _) in &properties {
+        if prop.eq_ignore_ascii_case("CLASS") {
+            let cls = unescape(val);
+            let cls_trimmed = cls.trim();
+            if cls_trimmed.eq_ignore_ascii_case("PUBLIC") {
+                return true;
+            }
+            if cls_trimmed.eq_ignore_ascii_case("PRIVATE")
+                || cls_trimmed.eq_ignore_ascii_case("CONFIDENTIAL")
+            {
+                return false;
+            }
+        }
+    }
+    !memo.source_uid.is_empty()
+        && memo.source_uid != "local-calendar"
+        && memo.source_uid != "system-memo-list"
+}
+
+pub fn build_mail_linked_memo_component(
+    uid: &str,
+    summary: &str,
+    description: &str,
+    mid_uri: &str,
+    is_team: bool,
+) -> String {
+    let normalized_mid = normalize_mid_uri(mid_uri).unwrap_or_else(|| format!("mid:{}", mid_uri.trim()));
+    let raw_mid = normalized_mid.strip_prefix("mid:").unwrap_or(&normalized_mid);
+    let now_stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let today_date = chrono::Local::now().format("%Y%m%d").to_string();
+    let class_val = if is_team { "PUBLIC" } else { "PRIVATE" };
+
+    let mut lines = vec![
+        "BEGIN:VCALENDAR".to_string(),
+        "VERSION:2.0".to_string(),
+        "PRODID:-//Meridian//Mail Linked Memo//EN".to_string(),
+        "BEGIN:VJOURNAL".to_string(),
+    ];
+    append_folded_line(&mut lines, "UID", &strip_line_breaks(uid));
+    append_folded_line(&mut lines, "DTSTAMP", &now_stamp);
+    append_folded_line(&mut lines, "LAST-MODIFIED", &now_stamp);
+    append_folded_line(&mut lines, "DTSTART;VALUE=DATE", &today_date);
+    append_folded_line(&mut lines, "SUMMARY", &escape_ical_text_value(summary));
+    append_folded_line(&mut lines, "DESCRIPTION", &escape_ical_text_value(description));
+    append_folded_line(&mut lines, "CLASS", class_val);
+    append_folded_line(&mut lines, "URL", &serialize_memo_uri_value(&normalized_mid));
+    append_folded_line(&mut lines, "RELATED-TO", &escape_ical_text_value(raw_mid));
+    lines.push("END:VJOURNAL".to_string());
+    lines.push("END:VCALENDAR".to_string());
+    finish_physical_lines(lines)
+}
+
+pub fn update_mail_linked_memo_component(
+    existing_component: &str,
+    summary: &str,
+    description: &str,
+    mid_uri: &str,
+    is_team: bool,
+) -> String {
+    let normalized_mid = normalize_mid_uri(mid_uri).unwrap_or_else(|| format!("mid:{}", mid_uri.trim()));
+    let raw_mid = normalized_mid.strip_prefix("mid:").unwrap_or(&normalized_mid);
+    let now_stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let class_val = if is_team { "PUBLIC" } else { "PRIVATE" };
+
+    let mut updated = update_ical_property(
+        existing_component,
+        "SUMMARY",
+        Some(&escape_ical_text_value(summary)),
+    );
+    updated = update_ical_property(
+        &updated,
+        "DESCRIPTION",
+        Some(&escape_ical_text_value(description)),
+    );
+    updated = update_ical_property(&updated, "CLASS", Some(class_val));
+    updated = update_ical_property(
+        &updated,
+        "URL",
+        Some(&serialize_memo_uri_value(&normalized_mid)),
+    );
+    updated = update_ical_property(
+        &updated,
+        "RELATED-TO",
+        Some(&escape_ical_text_value(raw_mid)),
+    );
+    updated = update_ical_property(&updated, "LAST-MODIFIED", Some(&now_stamp));
+    export_ical_component(&updated)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
