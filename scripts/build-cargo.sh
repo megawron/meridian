@@ -6,6 +6,8 @@
 
 set -eu
 
+export RUST_MIN_STACK="${RUST_MIN_STACK:-67108864}"
+
 cargo_bin=$1
 cargo_profile=$2
 source_root=$3

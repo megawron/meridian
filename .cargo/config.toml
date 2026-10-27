@@ -1,2 +1,5 @@
+[env]
+RUST_MIN_STACK = "67108864"
+
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "link-arg=-fuse-ld=bfd"]

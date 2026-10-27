@@ -34,3 +34,6 @@ uuid = { version = "1", features = ["v4"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 gettext-rs = { version = "0.8", features = ["gettext-system"] }
 regex = "1.11"
+
+[profile.dev]
+debug = 1
