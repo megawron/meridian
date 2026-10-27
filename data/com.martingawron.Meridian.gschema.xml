@@ -500,6 +500,15 @@
       <range min="60" max="2000"/>
       <summary>Vertical split position between events and tasks in mail agenda sidebar</summary>
     </key>
+    <key name="mail-todo-inner-vpane-position" type="i">
+      <default>220</default>
+      <range min="60" max="2000"/>
+      <summary>Secondary splitter position in the Mail right sidebar when 3 sections are open</summary>
+    </key>
+    <key name="mail-sidebar-layout" type="s">
+      <default>'agenda:split,tasks:split,memos:off'</default>
+      <summary>Ordered panel layout and display modes (off, split, tab, window) for the Mail right sidebar</summary>
+    </key>
     <key name="mail-show-toolbar" type="b">
       <default>false</default>
       <summary>Show the mail toolbar</summary>

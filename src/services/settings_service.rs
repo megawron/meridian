@@ -2631,6 +2631,58 @@ impl AppSettings {
         }
     }
 
+    pub fn mail_todo_inner_vpane_position(&self) -> i32 {
+        if self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("mail-todo-inner-vpane-position"))
+            .unwrap_or(false)
+        {
+            let val = self.settings.int("mail-todo-inner-vpane-position");
+            if val > 0 {
+                return val.clamp(60, 2_000);
+            }
+        }
+        220
+    }
+
+    pub fn set_mail_todo_inner_vpane_position(&self, value: i32) {
+        if self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("mail-todo-inner-vpane-position"))
+            .unwrap_or(false)
+        {
+            self.set_int("mail-todo-inner-vpane-position", value.clamp(60, 2_000));
+        }
+    }
+
+    pub fn mail_sidebar_layout(&self) -> String {
+        if self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("mail-sidebar-layout"))
+            .unwrap_or(false)
+        {
+            self.settings.string("mail-sidebar-layout").to_string()
+        } else if self.agenda_show_tasks() {
+            "agenda:split,tasks:split,memos:off".to_string()
+        } else {
+            "agenda:split,tasks:off,memos:off".to_string()
+        }
+    }
+
+    pub fn set_mail_sidebar_layout(&self, value: &str) {
+        if self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("mail-sidebar-layout"))
+            .unwrap_or(false)
+        {
+            self.set_string("mail-sidebar-layout", value);
+        }
+    }
+
     pub fn mail_preview_position(&self, layout: &str) -> i32 {
         let key = if layout == "classic" || layout == "horizontal" {
             "mail-classic-preview-position"

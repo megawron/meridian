@@ -6804,6 +6804,96 @@ pub(crate) struct AgendaGroupedData {
     pub generated_date: chrono::NaiveDate,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum MailSidebarPanelId {
+    Agenda,
+    Tasks,
+    Memos,
+}
+
+impl MailSidebarPanelId {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Agenda => "agenda",
+            Self::Tasks => "tasks",
+            Self::Memos => "memos",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.trim() {
+            "agenda" | "events" => Some(Self::Agenda),
+            "tasks" => Some(Self::Tasks),
+            "memos" => Some(Self::Memos),
+            _ => None,
+        }
+    }
+
+    pub fn display_title(&self) -> String {
+        match self {
+            Self::Agenda => crate::i18n::gettext("Agenda"),
+            Self::Tasks => crate::i18n::gettext("Tasks"),
+            Self::Memos => crate::i18n::gettext("Memos"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct MailSidebarPanelSpec {
+    pub id: MailSidebarPanelId,
+    pub mode: crate::views::calendar_page::SidebarPanelMode,
+}
+
+pub(crate) fn default_mail_sidebar_panel_specs() -> Vec<MailSidebarPanelSpec> {
+    use crate::views::calendar_page::SidebarPanelMode;
+    vec![
+        MailSidebarPanelSpec {
+            id: MailSidebarPanelId::Agenda,
+            mode: SidebarPanelMode::Split,
+        },
+        MailSidebarPanelSpec {
+            id: MailSidebarPanelId::Tasks,
+            mode: SidebarPanelMode::Split,
+        },
+        MailSidebarPanelSpec {
+            id: MailSidebarPanelId::Memos,
+            mode: SidebarPanelMode::Off,
+        },
+    ]
+}
+
+pub(crate) fn parse_mail_sidebar_layout(raw: &str) -> Vec<MailSidebarPanelSpec> {
+    use crate::views::calendar_page::SidebarPanelMode;
+    let mut specs = Vec::new();
+    for part in raw.split(',') {
+        let mut iter = part.split(':');
+        let Some(id_str) = iter.next() else { continue };
+        let Some(mode_str) = iter.next() else { continue };
+        let Some(id) = MailSidebarPanelId::from_str(id_str) else { continue };
+        let Some(mode) = SidebarPanelMode::from_str(mode_str) else { continue };
+        if !specs.iter().any(|s: &MailSidebarPanelSpec| s.id == id) {
+            specs.push(MailSidebarPanelSpec { id, mode });
+        }
+    }
+    for fallback in default_mail_sidebar_panel_specs() {
+        if !specs.iter().any(|s| s.id == fallback.id) {
+            specs.push(fallback);
+        }
+    }
+    if !specs.iter().any(|s| s.mode != SidebarPanelMode::Off) {
+        specs[0].mode = SidebarPanelMode::Split;
+    }
+    specs
+}
+
+pub(crate) fn format_mail_sidebar_layout(specs: &[MailSidebarPanelSpec]) -> String {
+    specs
+        .iter()
+        .map(|s| format!("{}:{}", s.id.as_str(), s.mode.as_str()))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 // ─── GObject Subclass ───────────────────────────────────────────────────────
 
 mod imp {
@@ -7046,7 +7136,25 @@ mod imp {
         pub agenda_canvas_collapsed_days: RefCell<HashSet<chrono::NaiveDate>>,
         pub agenda_canvas_collapsed_tasks: Cell<bool>,
         pub agenda_vpaned: RefCell<Option<gtk::Paned>>,
+        pub agenda_inner_vpaned: RefCell<Option<gtk::Paned>>,
+        pub agenda_section_box: RefCell<Option<gtk::Box>>,
+        pub agenda_section_header: RefCell<Option<gtk::Box>>,
+        pub agenda_section_title: RefCell<Option<gtk::Label>>,
+        pub agenda_section_stack: RefCell<Option<gtk::Stack>>,
+        pub agenda_section_switcher: RefCell<Option<gtk::Box>>,
+        pub agenda_collapse_btn: RefCell<Option<gtk::Button>>,
+        pub agenda_add_event_btn: RefCell<Option<gtk::Button>>,
+        pub agenda_add_task_btn: RefCell<Option<gtk::Button>>,
+        pub agenda_add_memo_btn: RefCell<Option<gtk::Button>>,
+        pub agenda_events_scroll: RefCell<Option<gtk::ScrolledWindow>>,
         pub agenda_tasks_box: RefCell<Option<gtk::Box>>,
+        pub agenda_tasks_header: RefCell<Option<gtk::Box>>,
+        pub agenda_tasks_title: RefCell<Option<gtk::Label>>,
+        pub agenda_tasks_stack: RefCell<Option<gtk::Stack>>,
+        pub agenda_tasks_switcher: RefCell<Option<gtk::Box>>,
+        pub agenda_tasks_add_event_btn: RefCell<Option<gtk::Button>>,
+        pub agenda_tasks_add_task_btn: RefCell<Option<gtk::Button>>,
+        pub agenda_tasks_add_memo_btn: RefCell<Option<gtk::Button>>,
         pub agenda_tasks_scroll: RefCell<Option<gtk::ScrolledWindow>>,
         pub agenda_tasks_canvas: RefCell<Option<gtk::DrawingArea>>,
         pub(crate) agenda_tasks_canvas_items: RefCell<Vec<AgendaSidebarCanvasItem>>,
@@ -7054,6 +7162,24 @@ mod imp {
         pub agenda_tasks_selected_row: Cell<Option<usize>>,
         pub agenda_tasks_collapse_btn: RefCell<Option<gtk::Button>>,
         pub agenda_tasks_count_badge: RefCell<Option<gtk::Label>>,
+        pub agenda_memos_box: RefCell<Option<gtk::Box>>,
+        pub agenda_memos_header: RefCell<Option<gtk::Box>>,
+        pub agenda_memos_scroll: RefCell<Option<gtk::ScrolledWindow>>,
+        pub agenda_memos_canvas: RefCell<Option<gtk::DrawingArea>>,
+        pub(crate) agenda_memos_layout: RefCell<Option<crate::views::calendar_page::PreparedMemopadLayout>>,
+        pub agenda_memos_hovered_row: Cell<Option<usize>>,
+        pub agenda_memos_selected_row: Cell<Option<usize>>,
+        pub agenda_memos_collapse_btn: RefCell<Option<gtk::Button>>,
+        pub agenda_memos_count_badge: RefCell<Option<gtk::Label>>,
+        pub agenda_cached_memos: RefCell<Vec<crate::services::calendar_store_service::MemoRecord>>,
+        pub mail_sidebar_options_btn: RefCell<Option<gtk::MenuButton>>,
+        pub mail_sidebar_options_box: RefCell<Option<gtk::Box>>,
+        pub(crate) mail_sidebar_panel_specs: RefCell<Vec<super::MailSidebarPanelSpec>>,
+        pub(crate) mail_sidebar_detached_windows:
+            RefCell<HashMap<super::MailSidebarPanelId, (gtk::Window, gtk::Box)>>,
+        pub mail_sidebar_saved_vpane_pos: Cell<i32>,
+        pub mail_sidebar_saved_inner_vpane_pos: Cell<i32>,
+        pub syncing_mail_sidebar_vpane: Cell<bool>,
         pub agenda_canvas_cached_data: RefCell<Option<(Vec<crate::services::calendar_store_service::CalendarEventRecord>, Vec<crate::services::calendar_store_service::TaskRecord>)>>,
         pub(crate) agenda_canvas_grouped_data: RefCell<Option<AgendaGroupedData>>,
         pub agenda_refresh_in_flight: Cell<bool>,
@@ -34687,6 +34813,903 @@ pub(crate) fn draw_agenda_sidebar_canvas(
 }
 
 impl MailPage {
+    pub(crate) fn persist_mail_sidebar_panel_specs(&self) {
+        use crate::views::calendar_page::SidebarPanelMode;
+        let specs = self.imp().mail_sidebar_panel_specs.borrow().clone();
+        let show_tasks = specs
+            .iter()
+            .any(|s| s.id == MailSidebarPanelId::Tasks && s.mode != SidebarPanelMode::Off);
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_mail_sidebar_layout(&format_mail_sidebar_layout(&specs));
+            settings.set_agenda_show_tasks(show_tasks);
+        }
+    }
+
+    pub(crate) fn set_mail_sidebar_panel_mode(
+        &self,
+        panel: MailSidebarPanelId,
+        mode: crate::views::calendar_page::SidebarPanelMode,
+    ) {
+        use crate::views::calendar_page::SidebarPanelMode;
+        let has_docked_panels = {
+            let mut specs = self.imp().mail_sidebar_panel_specs.borrow_mut();
+            if let Some(spec) = specs.iter_mut().find(|s| s.id == panel) {
+                spec.mode = mode;
+            }
+            if !specs.iter().any(|s| s.mode != SidebarPanelMode::Off) {
+                if let Some(other) = specs.iter_mut().find(|s| s.id != panel) {
+                    other.mode = SidebarPanelMode::Split;
+                } else {
+                    specs[0].mode = SidebarPanelMode::Split;
+                }
+            }
+            specs
+                .iter()
+                .any(|s| s.mode == SidebarPanelMode::Split || s.mode == SidebarPanelMode::Tab)
+        };
+        self.persist_mail_sidebar_panel_specs();
+        self.rebuild_mail_sidebar_options_popover();
+        self.sync_mail_sidebar_vpane_layout();
+        self.rebuild_agenda_canvas_layout();
+        if !has_docked_panels {
+            if self.is_todo_bar_visible() {
+                self.set_todo_bar_visible(false);
+                if let Some(settings) = AppSettings::try_new() {
+                    settings.set_mail_show_todo_bar(false);
+                }
+            }
+        } else if matches!(mode, SidebarPanelMode::Split | SidebarPanelMode::Tab)
+            && !self.is_todo_bar_visible()
+        {
+            self.set_todo_bar_visible(true);
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_mail_show_todo_bar(true);
+            }
+        }
+        if let Some(win) = crate::window::find_meridian_window(self) {
+            win.sync_right_sidebar_toggle();
+        }
+    }
+
+    pub(crate) fn move_mail_sidebar_panel(&self, panel: MailSidebarPanelId, delta: isize) {
+        {
+            let mut specs = self.imp().mail_sidebar_panel_specs.borrow_mut();
+            if let Some(idx) = specs.iter().position(|s| s.id == panel) {
+                let target = (idx as isize + delta).clamp(0, specs.len() as isize - 1) as usize;
+                if target != idx {
+                    let item = specs.remove(idx);
+                    specs.insert(target, item);
+                }
+            }
+        }
+        self.persist_mail_sidebar_panel_specs();
+        self.rebuild_mail_sidebar_options_popover();
+        self.sync_mail_sidebar_vpane_layout();
+    }
+
+    pub(crate) fn handle_mail_sidebar_panel_drop(
+        &self,
+        src: MailSidebarPanelId,
+        dst: MailSidebarPanelId,
+        drop_zone: &str,
+    ) {
+        use crate::views::calendar_page::SidebarPanelMode;
+        if src == dst && drop_zone != "split" {
+            return;
+        }
+        {
+            let mut specs = self.imp().mail_sidebar_panel_specs.borrow_mut();
+            if drop_zone == "tab" {
+                if let Some(s) = specs.iter_mut().find(|s| s.id == src) {
+                    s.mode = SidebarPanelMode::Tab;
+                }
+                if let Some(d) = specs.iter_mut().find(|s| s.id == dst) {
+                    d.mode = SidebarPanelMode::Tab;
+                }
+                if let Some(src_idx) = specs.iter().position(|s| s.id == src) {
+                    let item = specs.remove(src_idx);
+                    let dst_idx = specs.iter().position(|s| s.id == dst).unwrap_or(0);
+                    let len = specs.len();
+                    specs.insert((dst_idx + 1).min(len), item);
+                }
+            } else {
+                if let Some(s) = specs.iter_mut().find(|s| s.id == src) {
+                    s.mode = SidebarPanelMode::Split;
+                }
+                if src != dst {
+                    if let Some(src_idx) = specs.iter().position(|s| s.id == src) {
+                        let item = specs.remove(src_idx);
+                        let dst_idx = specs.iter().position(|s| s.id == dst).unwrap_or(0);
+                        let len = specs.len();
+                        let insert_idx = if drop_zone == "before" {
+                            dst_idx
+                        } else {
+                            (dst_idx + 1).min(len)
+                        };
+                        specs.insert(insert_idx, item);
+                    }
+                }
+            }
+        }
+        self.persist_mail_sidebar_panel_specs();
+        self.rebuild_mail_sidebar_options_popover();
+        self.sync_mail_sidebar_vpane_layout();
+    }
+
+    pub(crate) fn rebuild_mail_sidebar_options_popover(&self) {
+        use crate::views::calendar_page::SidebarPanelMode;
+        let Some(opt_box) = self.imp().mail_sidebar_options_box.borrow().as_ref().cloned() else {
+            return;
+        };
+        while let Some(child) = opt_box.first_child() {
+            opt_box.remove(&child);
+        }
+
+        let opt_label = gtk::Label::builder()
+            .label(&gettext("Sidebar Layout"))
+            .css_classes(vec!["heading", "caption"])
+            .halign(gtk::Align::Start)
+            .build();
+        opt_box.append(&opt_label);
+
+        let hint_label = gtk::Label::builder()
+            .label(&gettext("Choose own section or tab per area (or drag headers)"))
+            .css_classes(vec!["dim-label", "caption"])
+            .halign(gtk::Align::Start)
+            .margin_bottom(4)
+            .build();
+        opt_box.append(&hint_label);
+
+        let specs = self.imp().mail_sidebar_panel_specs.borrow().clone();
+        let total = specs.len();
+
+        for (idx, spec) in specs.into_iter().enumerate() {
+            let row = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(6)
+                .valign(gtk::Align::Center)
+                .build();
+
+            let order_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(0)
+                .css_classes(vec!["linked"])
+                .valign(gtk::Align::Center)
+                .build();
+
+            let up_btn = gtk::Button::builder()
+                .icon_name("go-up-symbolic")
+                .tooltip_text(&gettext("Move up"))
+                .css_classes(vec!["flat"])
+                .sensitive(idx > 0)
+                .build();
+            let page_weak_up = self.downgrade();
+            let panel_id = spec.id;
+            up_btn.connect_clicked(move |_| {
+                if let Some(page) = page_weak_up.upgrade() {
+                    page.move_mail_sidebar_panel(panel_id, -1);
+                }
+            });
+
+            let down_btn = gtk::Button::builder()
+                .icon_name("go-down-symbolic")
+                .tooltip_text(&gettext("Move down"))
+                .css_classes(vec!["flat"])
+                .sensitive(idx + 1 < total)
+                .build();
+            let page_weak_down = self.downgrade();
+            down_btn.connect_clicked(move |_| {
+                if let Some(page) = page_weak_down.upgrade() {
+                    page.move_mail_sidebar_panel(panel_id, 1);
+                }
+            });
+
+            order_box.append(&up_btn);
+            order_box.append(&down_btn);
+            row.append(&order_box);
+
+            let title_lbl = gtk::Label::builder()
+                .label(&spec.id.display_title())
+                .halign(gtk::Align::Start)
+                .hexpand(true)
+                .width_chars(8)
+                .build();
+            row.append(&title_lbl);
+
+            let mode_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(0)
+                .css_classes(vec!["linked"])
+                .valign(gtk::Align::Center)
+                .build();
+
+            let btn_off = gtk::ToggleButton::builder()
+                .label(&gettext("Off"))
+                .tooltip_text(&gettext("Hide this panel"))
+                .active(spec.mode == SidebarPanelMode::Off)
+                .build();
+            let btn_split = gtk::ToggleButton::builder()
+                .label(&gettext("Section"))
+                .tooltip_text(&gettext("Show as its own resizable section"))
+                .group(&btn_off)
+                .active(spec.mode == SidebarPanelMode::Split)
+                .build();
+            let btn_tab = gtk::ToggleButton::builder()
+                .label(&gettext("Tab"))
+                .tooltip_text(&gettext("Group together as tabs"))
+                .group(&btn_off)
+                .active(spec.mode == SidebarPanelMode::Tab)
+                .build();
+            let btn_win = gtk::ToggleButton::builder()
+                .label(&gettext("Window"))
+                .tooltip_text(&gettext("Detach into a standalone window"))
+                .group(&btn_off)
+                .active(spec.mode == SidebarPanelMode::Window)
+                .build();
+
+            let page_weak_off = self.downgrade();
+            btn_off.connect_toggled(move |b| {
+                if b.is_active() {
+                    if let Some(page) = page_weak_off.upgrade() {
+                        page.set_mail_sidebar_panel_mode(panel_id, SidebarPanelMode::Off);
+                    }
+                }
+            });
+            let page_weak_split = self.downgrade();
+            btn_split.connect_toggled(move |b| {
+                if b.is_active() {
+                    if let Some(page) = page_weak_split.upgrade() {
+                        page.set_mail_sidebar_panel_mode(panel_id, SidebarPanelMode::Split);
+                    }
+                }
+            });
+            let page_weak_tab = self.downgrade();
+            btn_tab.connect_toggled(move |b| {
+                if b.is_active() {
+                    if let Some(page) = page_weak_tab.upgrade() {
+                        page.set_mail_sidebar_panel_mode(panel_id, SidebarPanelMode::Tab);
+                    }
+                }
+            });
+            let page_weak_win = self.downgrade();
+            btn_win.connect_toggled(move |b| {
+                if b.is_active() {
+                    if let Some(page) = page_weak_win.upgrade() {
+                        page.set_mail_sidebar_panel_mode(panel_id, SidebarPanelMode::Window);
+                    }
+                }
+            });
+
+            mode_box.append(&btn_off);
+            mode_box.append(&btn_split);
+            mode_box.append(&btn_tab);
+            mode_box.append(&btn_win);
+            row.append(&mode_box);
+
+            opt_box.append(&row);
+        }
+    }
+
+    fn populate_mail_sidebar_tab_switcher(
+        switcher: &gtk::Box,
+        stack: &gtk::Stack,
+        tabs: &[MailSidebarPanelId],
+        event_add_btn: Option<&gtk::Button>,
+        tasks_add_btn: Option<&gtk::Button>,
+        memos_add_btn: Option<&gtk::Button>,
+    ) {
+        while let Some(child) = switcher.first_child() {
+            switcher.remove(&child);
+        }
+        let current_child = stack
+            .visible_child_name()
+            .and_then(|s| MailSidebarPanelId::from_str(s.as_str()));
+        let active_tab = current_child
+            .filter(|id| tabs.contains(id))
+            .unwrap_or_else(|| tabs.first().copied().unwrap_or(MailSidebarPanelId::Agenda));
+
+        stack.set_visible_child_name(active_tab.as_str());
+        if let Some(btn) = event_add_btn {
+            btn.set_visible(active_tab == MailSidebarPanelId::Agenda);
+        }
+        if let Some(btn) = tasks_add_btn {
+            btn.set_visible(active_tab == MailSidebarPanelId::Tasks);
+        }
+        if let Some(btn) = memos_add_btn {
+            btn.set_visible(active_tab == MailSidebarPanelId::Memos);
+        }
+
+        let mut first_btn: Option<gtk::ToggleButton> = None;
+        for &tab_id in tabs {
+            let btn = gtk::ToggleButton::builder()
+                .label(&tab_id.display_title())
+                .active(tab_id == active_tab)
+                .css_classes(vec!["flat"])
+                .build();
+            if let Some(ref group_leader) = first_btn {
+                btn.set_group(Some(group_leader));
+            } else {
+                first_btn = Some(btn.clone());
+            }
+            let stack_clone = stack.clone();
+            let ev_btn_clone = event_add_btn.cloned();
+            let tasks_btn_clone = tasks_add_btn.cloned();
+            let memos_btn_clone = memos_add_btn.cloned();
+            btn.connect_toggled(move |b| {
+                if b.is_active() {
+                    stack_clone.set_visible_child_name(tab_id.as_str());
+                    if let Some(ref eb) = ev_btn_clone {
+                        eb.set_visible(tab_id == MailSidebarPanelId::Agenda);
+                    }
+                    if let Some(ref tb) = tasks_btn_clone {
+                        tb.set_visible(tab_id == MailSidebarPanelId::Tasks);
+                    }
+                    if let Some(ref mb) = memos_btn_clone {
+                        mb.set_visible(tab_id == MailSidebarPanelId::Memos);
+                    }
+                }
+            });
+            switcher.append(&btn);
+        }
+    }
+
+    pub(crate) fn sync_mail_sidebar_vpane_layout(&self) {
+        use crate::views::calendar_page::{
+            SidebarPanelMode, detach_widget_from_parent, ensure_widget_in_box,
+            ensure_widget_in_stack,
+        };
+        let Some(todo_vpaned) = self.imp().agenda_vpaned.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(todo_inner_vpaned) = self.imp().agenda_inner_vpaned.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(agenda_box) = self.imp().agenda_section_box.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(agenda_header) = self.imp().agenda_section_header.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(agenda_title) = self.imp().agenda_section_title.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(agenda_count) = self.imp().todo_count_badge.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(agenda_stack) = self.imp().agenda_section_stack.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(agenda_switcher) = self.imp().agenda_section_switcher.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(agenda_add_event_btn) = self.imp().agenda_add_event_btn.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(agenda_add_task_btn) = self.imp().agenda_add_task_btn.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(agenda_add_memo_btn) = self.imp().agenda_add_memo_btn.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(events_scroll) = self.imp().agenda_events_scroll.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(tasks_box) = self.imp().agenda_tasks_box.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(tasks_header) = self.imp().agenda_tasks_header.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(tasks_title) = self.imp().agenda_tasks_title.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(tasks_count) = self.imp().agenda_tasks_count_badge.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(tasks_stack) = self.imp().agenda_tasks_stack.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(tasks_switcher) = self.imp().agenda_tasks_switcher.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(tasks_add_event_btn) = self.imp().agenda_tasks_add_event_btn.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(tasks_add_task_btn) = self.imp().agenda_tasks_add_task_btn.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(tasks_add_memo_btn) = self.imp().agenda_tasks_add_memo_btn.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(tasks_scroll) = self.imp().agenda_tasks_scroll.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(memos_box) = self.imp().agenda_memos_box.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(memos_header) = self.imp().agenda_memos_header.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(memos_scroll) = self.imp().agenda_memos_scroll.borrow().as_ref().cloned() else {
+            return;
+        };
+
+        let specs = self.imp().mail_sidebar_panel_specs.borrow().clone();
+
+        // Manage detached standalone windows for panels in SidebarPanelMode::Window
+        for panel_id in [
+            MailSidebarPanelId::Agenda,
+            MailSidebarPanelId::Tasks,
+            MailSidebarPanelId::Memos,
+        ] {
+            let is_window_mode = specs
+                .iter()
+                .any(|s| s.id == panel_id && s.mode == SidebarPanelMode::Window);
+            let content_widget: gtk::Widget = match panel_id {
+                MailSidebarPanelId::Agenda => events_scroll.clone().upcast(),
+                MailSidebarPanelId::Tasks => tasks_scroll.clone().upcast(),
+                MailSidebarPanelId::Memos => memos_scroll.clone().upcast(),
+            };
+
+            if !is_window_mode {
+                let removed = self
+                    .imp()
+                    .mail_sidebar_detached_windows
+                    .borrow_mut()
+                    .remove(&panel_id);
+                if let Some((win, _host_box)) = removed {
+                    detach_widget_from_parent(&content_widget);
+                    win.destroy();
+                }
+            } else {
+                let existing = self
+                    .imp()
+                    .mail_sidebar_detached_windows
+                    .borrow()
+                    .get(&panel_id)
+                    .cloned();
+                let (win, host_box) = if let Some(pair) = existing {
+                    pair
+                } else {
+                    let header = gtk::HeaderBar::new();
+                    let title_lbl = gtk::Label::builder()
+                        .label(&panel_id.display_title())
+                        .css_classes(vec!["title"])
+                        .build();
+                    header.set_title_widget(Some(&title_lbl));
+
+                    let add_tooltip = match panel_id {
+                        MailSidebarPanelId::Agenda => gettext("Create new appointment"),
+                        MailSidebarPanelId::Tasks => gettext("Create new task"),
+                        MailSidebarPanelId::Memos => gettext("Create new memo"),
+                    };
+                    let add_btn = gtk::Button::builder()
+                        .icon_name("list-add-symbolic")
+                        .tooltip_text(&add_tooltip)
+                        .css_classes(vec!["flat"])
+                        .build();
+                    let page_weak = self.downgrade();
+                    add_btn.connect_clicked(move |_| {
+                        if let Some(page) = page_weak.upgrade() {
+                            if let Some(root) = page.root() {
+                                if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
+                                    match panel_id {
+                                        MailSidebarPanelId::Agenda => window.present_new_event(),
+                                        MailSidebarPanelId::Tasks => window.present_new_task(),
+                                        MailSidebarPanelId::Memos => window.present_new_memo(),
+                                    }
+                                }
+                            }
+                        }
+                    });
+                    header.pack_start(&add_btn);
+
+                    let dock_btn = gtk::Button::builder()
+                        .icon_name("sidebar-show-right-symbolic")
+                        .tooltip_text(&gettext("Dock back into sidebar"))
+                        .css_classes(vec!["flat"])
+                        .build();
+                    let page_weak_dock = self.downgrade();
+                    dock_btn.connect_clicked(move |_| {
+                        if let Some(page) = page_weak_dock.upgrade() {
+                            page.set_mail_sidebar_panel_mode(panel_id, SidebarPanelMode::Split);
+                        }
+                    });
+                    header.pack_end(&dock_btn);
+
+                    let host_box = gtk::Box::builder()
+                        .orientation(gtk::Orientation::Vertical)
+                        .spacing(4)
+                        .margin_start(8)
+                        .margin_end(8)
+                        .margin_top(6)
+                        .margin_bottom(8)
+                        .hexpand(true)
+                        .vexpand(true)
+                        .focusable(true)
+                        .can_focus(true)
+                        .build();
+
+                    let win = gtk::Window::builder()
+                        .title(&format!("Meridian — {}", panel_id.display_title()))
+                        .default_width(350)
+                        .default_height(560)
+                        .titlebar(&header)
+                        .child(&host_box)
+                        .build();
+                    if let Some(root) = self.root().and_then(|r| r.downcast::<gtk::Window>().ok()) {
+                        win.set_transient_for(Some(&root));
+                    }
+
+                    let page_weak_close = self.downgrade();
+                    let content_for_close = content_widget.clone();
+                    win.connect_close_request(move |w| {
+                        detach_widget_from_parent(&content_for_close);
+                        if let Some(page) = page_weak_close.upgrade() {
+                            page.imp()
+                                .mail_sidebar_detached_windows
+                                .borrow_mut()
+                                .remove(&panel_id);
+                            if !page.imp().syncing_mail_sidebar_vpane.get() {
+                                page.set_mail_sidebar_panel_mode(panel_id, SidebarPanelMode::Split);
+                            }
+                        }
+                        w.destroy();
+                        glib::Propagation::Stop
+                    });
+
+                    self.imp()
+                        .mail_sidebar_detached_windows
+                        .borrow_mut()
+                        .insert(panel_id, (win.clone(), host_box.clone()));
+                    (win, host_box)
+                };
+
+                ensure_widget_in_box(&content_widget, &host_box);
+                content_widget.set_visible(true);
+                win.present();
+            }
+        }
+
+        let active: Vec<MailSidebarPanelSpec> = specs
+            .into_iter()
+            .filter(|s| s.mode != SidebarPanelMode::Off && s.mode != SidebarPanelMode::Window)
+            .collect();
+
+        let tab_ids: Vec<MailSidebarPanelId> = active
+            .iter()
+            .filter(|s| s.mode == SidebarPanelMode::Tab)
+            .map(|s| s.id)
+            .collect();
+
+        let mut sections: Vec<Vec<MailSidebarPanelId>> = Vec::new();
+        if tab_ids.len() == 1 && active.len() >= 2 {
+            let single_tab = tab_ids[0];
+            let partner_id = if single_tab != MailSidebarPanelId::Tasks
+                && active.iter().any(|s| s.id == MailSidebarPanelId::Tasks)
+            {
+                MailSidebarPanelId::Tasks
+            } else {
+                active
+                    .iter()
+                    .find(|s| s.id != single_tab)
+                    .map(|s| s.id)
+                    .unwrap_or(single_tab)
+            };
+            let group_tabs: Vec<MailSidebarPanelId> = active
+                .iter()
+                .filter(|s| s.id == single_tab || s.id == partner_id)
+                .map(|s| s.id)
+                .collect();
+            for s in &active {
+                if s.id == partner_id {
+                    sections.push(group_tabs.clone());
+                } else if s.id == single_tab {
+                    continue;
+                } else {
+                    sections.push(vec![s.id]);
+                }
+            }
+        } else if tab_ids.len() >= 2 {
+            let mut emitted_tabs = false;
+            for s in &active {
+                if s.mode == SidebarPanelMode::Tab {
+                    if !emitted_tabs {
+                        emitted_tabs = true;
+                        sections.push(tab_ids.clone());
+                    }
+                } else {
+                    sections.push(vec![s.id]);
+                }
+            }
+        } else {
+            for s in &active {
+                sections.push(vec![s.id]);
+            }
+        }
+
+        let mut use_agenda_box = false;
+        let mut use_tasks_box = false;
+        let mut use_memos_box = false;
+        let mut ordered_containers: Vec<(gtk::Box, gtk::Box, bool)> = Vec::new();
+
+        for tabs in &sections {
+            if tabs.as_slice() == [MailSidebarPanelId::Agenda] {
+                use_agenda_box = true;
+                ensure_widget_in_stack(&events_scroll, &agenda_stack, "agenda");
+                events_scroll.set_visible(true);
+                agenda_stack.set_visible_child_name("agenda");
+                agenda_title.set_text(&gettext("Agenda"));
+                agenda_title.set_visible(true);
+                agenda_count.set_visible(true);
+                agenda_switcher.set_visible(false);
+                agenda_add_event_btn.set_visible(true);
+                agenda_add_task_btn.set_visible(false);
+                agenda_add_memo_btn.set_visible(false);
+                let exp = agenda_stack.is_visible();
+                ordered_containers.push((agenda_box.clone(), agenda_header.clone(), exp));
+            } else if tabs.as_slice() == [MailSidebarPanelId::Tasks] {
+                use_tasks_box = true;
+                ensure_widget_in_stack(&tasks_scroll, &tasks_stack, "tasks");
+                tasks_scroll.set_visible(!self.imp().agenda_canvas_collapsed_tasks.get());
+                tasks_stack.set_visible_child_name("tasks");
+                tasks_title.set_text(&gettext("Tasks"));
+                tasks_title.set_visible(true);
+                tasks_count.set_visible(true);
+                tasks_switcher.set_visible(false);
+                tasks_add_event_btn.set_visible(false);
+                tasks_add_task_btn.set_visible(true);
+                tasks_add_memo_btn.set_visible(false);
+                let exp = !self.imp().agenda_canvas_collapsed_tasks.get();
+                tasks_stack.set_visible(exp);
+                ordered_containers.push((tasks_box.clone(), tasks_header.clone(), exp));
+            } else if tabs.as_slice() == [MailSidebarPanelId::Memos] {
+                use_memos_box = true;
+                ensure_widget_in_box(&memos_scroll, &memos_box);
+                memos_header.set_visible(true);
+                let exp = memos_scroll.is_visible();
+                ordered_containers.push((memos_box.clone(), memos_header.clone(), exp));
+            } else if !tabs.contains(&MailSidebarPanelId::Tasks) {
+                use_agenda_box = true;
+                ensure_widget_in_stack(&events_scroll, &agenda_stack, "agenda");
+                ensure_widget_in_stack(&memos_scroll, &agenda_stack, "memos");
+                events_scroll.set_visible(true);
+                memos_scroll.set_visible(true);
+                agenda_title.set_visible(false);
+                agenda_count.set_visible(false);
+                Self::populate_mail_sidebar_tab_switcher(
+                    &agenda_switcher,
+                    &agenda_stack,
+                    tabs,
+                    Some(&agenda_add_event_btn),
+                    Some(&agenda_add_task_btn),
+                    Some(&agenda_add_memo_btn),
+                );
+                agenda_switcher.set_visible(true);
+                let exp = agenda_stack.is_visible();
+                ordered_containers.push((agenda_box.clone(), agenda_header.clone(), exp));
+            } else {
+                use_tasks_box = true;
+                ensure_widget_in_stack(&tasks_scroll, &tasks_stack, "tasks");
+                tasks_scroll.set_visible(true);
+                if tabs.contains(&MailSidebarPanelId::Agenda) {
+                    ensure_widget_in_stack(&events_scroll, &tasks_stack, "agenda");
+                    events_scroll.set_visible(true);
+                }
+                if tabs.contains(&MailSidebarPanelId::Memos) {
+                    ensure_widget_in_stack(&memos_scroll, &tasks_stack, "memos");
+                    memos_scroll.set_visible(true);
+                }
+                tasks_title.set_visible(false);
+                tasks_count.set_visible(false);
+                Self::populate_mail_sidebar_tab_switcher(
+                    &tasks_switcher,
+                    &tasks_stack,
+                    tabs,
+                    Some(&tasks_add_event_btn),
+                    Some(&tasks_add_task_btn),
+                    Some(&tasks_add_memo_btn),
+                );
+                tasks_switcher.set_visible(true);
+                let exp = tasks_stack.is_visible();
+                ordered_containers.push((tasks_box.clone(), tasks_header.clone(), exp));
+            }
+        }
+
+        if ordered_containers.is_empty() {
+            use_agenda_box = true;
+            agenda_title.set_text(&gettext("Sidebar Layout"));
+            agenda_title.set_visible(true);
+            agenda_count.set_visible(false);
+            agenda_switcher.set_visible(false);
+            agenda_add_event_btn.set_visible(false);
+            agenda_add_task_btn.set_visible(false);
+            agenda_add_memo_btn.set_visible(false);
+            if agenda_stack.child_by_name("detached_empty").is_none() {
+                let empty_card = gtk::Box::builder()
+                    .orientation(gtk::Orientation::Vertical)
+                    .spacing(10)
+                    .margin_start(16)
+                    .margin_end(16)
+                    .margin_top(28)
+                    .margin_bottom(28)
+                    .valign(gtk::Align::Center)
+                    .halign(gtk::Align::Center)
+                    .vexpand(true)
+                    .build();
+                let icon = gtk::Image::builder()
+                    .icon_name("window-new-symbolic")
+                    .pixel_size(32)
+                    .css_classes(vec!["dim-label"])
+                    .build();
+                let lbl = gtk::Label::builder()
+                    .label(&gettext("All active panels are open in separate windows."))
+                    .wrap(true)
+                    .justify(gtk::Justification::Center)
+                    .css_classes(vec!["dim-label", "caption"])
+                    .build();
+                let dock_all_btn = gtk::Button::builder()
+                    .label(&gettext("Dock all into sidebar"))
+                    .css_classes(vec!["pill"])
+                    .halign(gtk::Align::Center)
+                    .build();
+                let page_weak_dock_all = self.downgrade();
+                dock_all_btn.connect_clicked(move |_| {
+                    if let Some(page) = page_weak_dock_all.upgrade() {
+                        let win_ids: Vec<MailSidebarPanelId> = page
+                            .imp()
+                            .mail_sidebar_panel_specs
+                            .borrow()
+                            .iter()
+                            .filter(|s| s.mode == SidebarPanelMode::Window)
+                            .map(|s| s.id)
+                            .collect();
+                        for pid in win_ids {
+                            page.set_mail_sidebar_panel_mode(pid, SidebarPanelMode::Split);
+                        }
+                    }
+                });
+                empty_card.append(&icon);
+                empty_card.append(&lbl);
+                empty_card.append(&dock_all_btn);
+                agenda_stack.add_named(&empty_card, Some("detached_empty"));
+            }
+            agenda_stack.set_visible_child_name("detached_empty");
+            agenda_stack.set_visible(true);
+            ordered_containers.push((agenda_box.clone(), agenda_header.clone(), true));
+        }
+
+        if !use_agenda_box {
+            agenda_box.set_visible(false);
+        }
+        if !use_tasks_box {
+            tasks_box.set_visible(false);
+        }
+        if !use_memos_box {
+            memos_box.set_visible(false);
+        }
+        for (bx, _, _) in &ordered_containers {
+            bx.set_visible(true);
+        }
+
+        if let Some(opt_btn) = self.imp().mail_sidebar_options_btn.borrow().as_ref() {
+            if let Some((_, top_header, _)) = ordered_containers.first() {
+                ensure_widget_in_box(opt_btn, top_header);
+                opt_btn.set_visible(true);
+            }
+        }
+
+        self.imp().syncing_mail_sidebar_vpane.set(true);
+
+        detach_widget_from_parent(&agenda_box);
+        detach_widget_from_parent(&tasks_box);
+        detach_widget_from_parent(&memos_box);
+        detach_widget_from_parent(&todo_inner_vpaned);
+
+        todo_vpaned.set_shrink_start_child(false);
+        todo_vpaned.set_shrink_end_child(false);
+        todo_inner_vpaned.set_shrink_start_child(false);
+        todo_inner_vpaned.set_shrink_end_child(false);
+
+        let apply_two_pane_accordion =
+            |paned: &gtk::Paned,
+             top: &gtk::Widget,
+             top_exp: bool,
+             bottom: &gtk::Widget,
+             bottom_exp: bool,
+             saved_pos: i32| {
+                paned.set_start_child(Some(top));
+                paned.set_end_child(Some(bottom));
+                if top_exp && bottom_exp {
+                    top.set_vexpand(true);
+                    top.set_valign(gtk::Align::Fill);
+                    bottom.set_vexpand(true);
+                    bottom.set_valign(gtk::Align::Fill);
+                    paned.set_resize_start_child(true);
+                    paned.set_resize_end_child(true);
+                    paned.set_position(saved_pos.max(96));
+                } else if !top_exp && bottom_exp {
+                    top.set_vexpand(false);
+                    top.set_valign(gtk::Align::Start);
+                    bottom.set_vexpand(true);
+                    bottom.set_valign(gtk::Align::Fill);
+                    paned.set_resize_start_child(false);
+                    paned.set_resize_end_child(true);
+                    paned.set_position(0);
+                } else if top_exp && !bottom_exp {
+                    top.set_vexpand(true);
+                    top.set_valign(gtk::Align::Fill);
+                    bottom.set_vexpand(false);
+                    bottom.set_valign(gtk::Align::Start);
+                    paned.set_resize_start_child(true);
+                    paned.set_resize_end_child(false);
+                    paned.set_position(10000);
+                } else {
+                    top.set_vexpand(false);
+                    top.set_valign(gtk::Align::Start);
+                    bottom.set_vexpand(false);
+                    bottom.set_valign(gtk::Align::Start);
+                    paned.set_resize_start_child(false);
+                    paned.set_resize_end_child(false);
+                    paned.set_position(0);
+                }
+            };
+
+        match ordered_containers.len() {
+            1 => {
+                let (ref bx0, _, exp0) = ordered_containers[0];
+                bx0.set_vexpand(exp0);
+                bx0.set_valign(if exp0 {
+                    gtk::Align::Fill
+                } else {
+                    gtk::Align::Start
+                });
+                todo_vpaned.set_start_child(Some(bx0));
+                todo_vpaned.set_end_child(gtk::Widget::NONE);
+                todo_vpaned.set_resize_start_child(true);
+            }
+            2 => {
+                let (ref bx0, _, exp0) = ordered_containers[0];
+                let (ref bx1, _, exp1) = ordered_containers[1];
+                let saved = self.imp().mail_sidebar_saved_vpane_pos.get();
+                apply_two_pane_accordion(
+                    &todo_vpaned,
+                    bx0.upcast_ref(),
+                    exp0,
+                    bx1.upcast_ref(),
+                    exp1,
+                    saved,
+                );
+            }
+            3 => {
+                let (ref bx0, _, exp0) = ordered_containers[0];
+                let (ref bx1, _, exp1) = ordered_containers[1];
+                let (ref bx2, _, exp2) = ordered_containers[2];
+                let inner_saved = self.imp().mail_sidebar_saved_inner_vpane_pos.get();
+                apply_two_pane_accordion(
+                    &todo_inner_vpaned,
+                    bx1.upcast_ref(),
+                    exp1,
+                    bx2.upcast_ref(),
+                    exp2,
+                    inner_saved,
+                );
+                let outer_saved = self.imp().mail_sidebar_saved_vpane_pos.get();
+                apply_two_pane_accordion(
+                    &todo_vpaned,
+                    bx0.upcast_ref(),
+                    exp0,
+                    todo_inner_vpaned.upcast_ref(),
+                    exp1 || exp2,
+                    outer_saved,
+                );
+            }
+            _ => {}
+        }
+
+        self.imp().syncing_mail_sidebar_vpane.set(false);
+    }
+
     fn build_today_todo_sidebar(&self) -> gtk::Box {
         let container = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -34695,33 +35718,230 @@ impl MailPage {
             .css_classes(vec!["sidebar", "todo-sidebar", "meridian-sidebar-drawer"])
             .build();
 
-        // Header bar: minimal, matching left sidebar drawer header
+        let initial_vpos = AppSettings::try_new()
+            .map(|s| s.mail_todo_vpane_position())
+            .unwrap_or(280)
+            .max(96);
+        let initial_inner_vpos = AppSettings::try_new()
+            .map(|s| s.mail_todo_inner_vpane_position())
+            .unwrap_or(220)
+            .max(96);
+        let initial_specs = AppSettings::try_new()
+            .map(|s| parse_mail_sidebar_layout(&s.mail_sidebar_layout()))
+            .unwrap_or_else(default_mail_sidebar_panel_specs);
+
+        self.imp().mail_sidebar_saved_vpane_pos.set(initial_vpos);
+        self.imp()
+            .mail_sidebar_saved_inner_vpane_pos
+            .set(initial_inner_vpos);
+        self.imp().mail_sidebar_panel_specs.replace(initial_specs);
+
+        let todo_vpaned = gtk::Paned::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .wide_handle(false)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        let todo_inner_vpaned = gtk::Paned::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .wide_handle(false)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        todo_vpaned.set_position(initial_vpos);
+        todo_inner_vpaned.set_position(initial_inner_vpos);
+        self.imp().agenda_vpaned.replace(Some(todo_vpaned.clone()));
+        self.imp()
+            .agenda_inner_vpaned
+            .replace(Some(todo_inner_vpaned.clone()));
+
+        let page_weak_vpane = self.downgrade();
+        todo_vpaned.connect_position_notify(move |paned| {
+            let Some(page) = page_weak_vpane.upgrade() else { return };
+            if page.imp().syncing_mail_sidebar_vpane.get() {
+                return;
+            }
+            if paned.resizes_start_child() && paned.resizes_end_child() {
+                let pos = paned.position();
+                if pos > 60 {
+                    page.imp().mail_sidebar_saved_vpane_pos.set(pos);
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_mail_todo_vpane_position(pos);
+                    }
+                }
+            }
+        });
+
+        let page_weak_inner_vpane = self.downgrade();
+        todo_inner_vpaned.connect_position_notify(move |paned| {
+            let Some(page) = page_weak_inner_vpane.upgrade() else { return };
+            if page.imp().syncing_mail_sidebar_vpane.get() {
+                return;
+            }
+            if paned.resizes_start_child() && paned.resizes_end_child() {
+                let pos = paned.position();
+                if pos > 60 {
+                    page.imp().mail_sidebar_saved_inner_vpane_pos.set(pos);
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_mail_todo_inner_vpane_position(pos);
+                    }
+                }
+            }
+        });
+
+        // 1. Agenda Section Container
+        let agenda_section_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .margin_start(6)
+            .margin_end(6)
+            .margin_top(4)
+            .margin_bottom(0)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        self.imp()
+            .agenda_section_box
+            .replace(Some(agenda_section_box.clone()));
+
         let header_bar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .margin_start(4)
-            .margin_end(4)
+            .spacing(4)
             .css_classes(vec!["sidebar-drawer-header"])
             .build();
         self.imp().todo_header_box.replace(Some(header_bar.clone()));
+        self.imp()
+            .agenda_section_header
+            .replace(Some(header_bar.clone()));
 
-        let icon = gtk::Image::from_icon_name("x-office-calendar-symbolic");
-        header_bar.append(&icon);
+        let agenda_collapse_btn = gtk::Button::builder()
+            .icon_name("pan-down-symbolic")
+            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(&gettext("Toggle section"))
+            .valign(gtk::Align::Center)
+            .build();
+        self.imp()
+            .agenda_collapse_btn
+            .replace(Some(agenda_collapse_btn.clone()));
 
         let title = gtk::Label::builder()
-            .label("Agenda")
+            .label(&gettext("Agenda"))
+            .css_classes(vec!["heading"])
             .halign(gtk::Align::Start)
-            .hexpand(true)
+            .valign(gtk::Align::Center)
             .ellipsize(pango::EllipsizeMode::End)
             .build();
-        header_bar.append(&title);
+        self.imp().agenda_section_title.replace(Some(title.clone()));
 
         let count_badge = gtk::Label::builder()
             .label("")
-            .halign(gtk::Align::End)
-            .css_classes(vec!["sidebar-drawer-total", "dim-label"])
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["sidebar-drawer-total", "dim-label", "caption"])
             .build();
-        self.imp().todo_count_badge.replace(Some(count_badge));
+        self.imp()
+            .todo_count_badge
+            .replace(Some(count_badge.clone()));
+
+        let agenda_switcher = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(2)
+            .css_classes(vec!["linked"])
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        self.imp()
+            .agenda_section_switcher
+            .replace(Some(agenda_switcher.clone()));
+
+        let agenda_spacer = gtk::Box::builder().hexpand(true).build();
+
+        let agenda_add_event_btn = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text(&gettext("Create new appointment"))
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .build();
+        agenda_add_event_btn.connect_clicked(move |btn| {
+            if let Some(root) = btn.root() {
+                if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
+                    window.present_new_event();
+                }
+            }
+        });
+        self.imp()
+            .agenda_add_event_btn
+            .replace(Some(agenda_add_event_btn.clone()));
+
+        let agenda_add_task_btn = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text(&gettext("Create new task"))
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        agenda_add_task_btn.connect_clicked(move |btn| {
+            if let Some(root) = btn.root() {
+                if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
+                    window.present_new_task();
+                }
+            }
+        });
+        self.imp()
+            .agenda_add_task_btn
+            .replace(Some(agenda_add_task_btn.clone()));
+
+        let agenda_add_memo_btn = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text(&gettext("Create new memo"))
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        agenda_add_memo_btn.connect_clicked(move |btn| {
+            if let Some(root) = btn.root() {
+                if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
+                    window.present_new_memo();
+                }
+            }
+        });
+        self.imp()
+            .agenda_add_memo_btn
+            .replace(Some(agenda_add_memo_btn.clone()));
+
+        let sidebar_options_btn = gtk::MenuButton::builder()
+            .icon_name("view-more-symbolic")
+            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(&gettext("Sidebar layout"))
+            .valign(gtk::Align::Center)
+            .build();
+        let opt_popover = gtk::Popover::new();
+        let opt_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .margin_start(10)
+            .margin_end(10)
+            .margin_top(8)
+            .margin_bottom(8)
+            .build();
+        opt_popover.set_child(Some(&opt_box));
+        sidebar_options_btn.set_popover(Some(&opt_popover));
+        self.imp()
+            .mail_sidebar_options_btn
+            .replace(Some(sidebar_options_btn.clone()));
+        self.imp()
+            .mail_sidebar_options_box
+            .replace(Some(opt_box));
+
+        header_bar.append(&agenda_collapse_btn);
+        header_bar.append(&title);
+        header_bar.append(&count_badge);
+        header_bar.append(&agenda_switcher);
+        header_bar.append(&agenda_spacer);
+        header_bar.append(&agenda_add_event_btn);
+        header_bar.append(&agenda_add_task_btn);
+        header_bar.append(&agenda_add_memo_btn);
+        header_bar.append(&sidebar_options_btn);
 
         let page_weak_header = self.downgrade();
         let header_click = gtk::GestureClick::new();
@@ -34733,32 +35953,9 @@ impl MailPage {
             }
         });
         header_bar.add_controller(header_click);
+        agenda_section_box.append(&header_bar);
 
-        container.append(&header_bar);
-
-        // Vertical Paned dividing Events (Top) and Tasks (Bottom)
-        let todo_vpaned = gtk::Paned::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .wide_handle(false)
-            .vexpand(true)
-            .hexpand(true)
-            .build();
-        let initial_vpos = AppSettings::try_new()
-            .map(|s| s.mail_todo_vpane_position())
-            .unwrap_or(280);
-        todo_vpaned.set_position(initial_vpos);
-        self.imp().agenda_vpaned.replace(Some(todo_vpaned.clone()));
-
-        todo_vpaned.connect_position_notify(move |paned| {
-            let pos = paned.position();
-            if pos > 60 {
-                if let Some(settings) = AppSettings::try_new() {
-                    settings.set_mail_todo_vpane_position(pos);
-                }
-            }
-        });
-
-        // 1. Events Section (Start child of todo_vpaned)
+        // Events ScrolledWindow & Canvas
         let events_scrolled = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
@@ -34766,6 +35963,9 @@ impl MailPage {
             .hexpand(true)
             .min_content_height(60)
             .build();
+        self.imp()
+            .agenda_events_scroll
+            .replace(Some(events_scrolled.clone()));
 
         let agenda_canvas = gtk::DrawingArea::builder()
             .hexpand(true)
@@ -34825,10 +36025,14 @@ impl MailPage {
                         }
 
                         page.imp().agenda_tasks_selected_row.set(None);
+                        page.imp().agenda_memos_selected_row.set(None);
                         page.imp().agenda_canvas_selected_row.set(Some(idx));
                         canvas_for_click.queue_draw();
                         if let Some(tasks_c) = page.imp().agenda_tasks_canvas.borrow().as_ref() {
                             tasks_c.queue_draw();
+                        }
+                        if let Some(memos_c) = page.imp().agenda_memos_canvas.borrow().as_ref() {
+                            memos_c.queue_draw();
                         }
 
                         let width = canvas_for_click.width();
@@ -34876,16 +36080,41 @@ impl MailPage {
             }
         });
         agenda_canvas.add_controller(motion);
-
         events_scrolled.set_child(Some(&agenda_canvas));
-        todo_vpaned.set_start_child(Some(&events_scrolled));
-        todo_vpaned.set_resize_start_child(true);
-        todo_vpaned.set_shrink_start_child(true);
 
-        // 2. Tasks Section (End child of todo_vpaned)
+        let agenda_section_stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        agenda_section_stack.add_named(&events_scrolled, Some("agenda"));
+        self.imp()
+            .agenda_section_stack
+            .replace(Some(agenda_section_stack.clone()));
+        agenda_section_box.append(&agenda_section_stack);
+
+        let stack_weak_ag = agenda_section_stack.downgrade();
+        let btn_weak_ag = agenda_collapse_btn.downgrade();
+        let page_weak_ag_coll = self.downgrade();
+        agenda_collapse_btn.connect_clicked(move |_| {
+            if let (Some(st), Some(btn)) = (stack_weak_ag.upgrade(), btn_weak_ag.upgrade()) {
+                let is_vis = st.is_visible();
+                st.set_visible(!is_vis);
+                btn.set_icon_name(if is_vis { "pan-end-symbolic" } else { "pan-down-symbolic" });
+                if let Some(page) = page_weak_ag_coll.upgrade() {
+                    page.sync_mail_sidebar_vpane_layout();
+                }
+            }
+        });
+
+        // 2. Tasks Section Container
         let tasks_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(0)
+            .spacing(4)
+            .margin_start(6)
+            .margin_end(6)
+            .margin_top(4)
+            .margin_bottom(0)
             .vexpand(true)
             .hexpand(true)
             .build();
@@ -34893,38 +36122,109 @@ impl MailPage {
 
         let tasks_header = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .margin_start(4)
-            .margin_end(4)
+            .spacing(4)
             .css_classes(vec!["sidebar-drawer-header"])
             .build();
-
-        let tasks_icon = gtk::Image::from_icon_name("checkbox-checked-symbolic");
-        tasks_header.append(&tasks_icon);
-
-        let tasks_title = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Tasks"))
-            .halign(gtk::Align::Start)
-            .hexpand(true)
-            .ellipsize(pango::EllipsizeMode::End)
-            .build();
-        tasks_header.append(&tasks_title);
-
-        let tasks_count_badge = gtk::Label::builder()
-            .label("")
-            .halign(gtk::Align::End)
-            .css_classes(vec!["sidebar-drawer-total", "dim-label"])
-            .build();
-        self.imp().agenda_tasks_count_badge.replace(Some(tasks_count_badge.clone()));
-        tasks_header.append(&tasks_count_badge);
+        self.imp()
+            .agenda_tasks_header
+            .replace(Some(tasks_header.clone()));
 
         let tasks_collapse_btn = gtk::Button::builder()
             .icon_name("pan-down-symbolic")
             .css_classes(vec!["flat", "circular"])
             .valign(gtk::Align::Center)
-            .tooltip_text(&crate::i18n::gettext("Toggle Tasks Section"))
+            .tooltip_text(&crate::i18n::gettext("Toggle section"))
             .build();
-        self.imp().agenda_tasks_collapse_btn.replace(Some(tasks_collapse_btn.clone()));
+        self.imp()
+            .agenda_tasks_collapse_btn
+            .replace(Some(tasks_collapse_btn.clone()));
+
+        let tasks_title = gtk::Label::builder()
+            .label(&crate::i18n::gettext("Tasks"))
+            .css_classes(vec!["heading"])
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
+            .ellipsize(pango::EllipsizeMode::End)
+            .build();
+        self.imp()
+            .agenda_tasks_title
+            .replace(Some(tasks_title.clone()));
+
+        let tasks_count_badge = gtk::Label::builder()
+            .label("")
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["sidebar-drawer-total", "dim-label", "caption"])
+            .build();
+        self.imp()
+            .agenda_tasks_count_badge
+            .replace(Some(tasks_count_badge.clone()));
+
+        let tasks_switcher = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(2)
+            .css_classes(vec!["linked"])
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        self.imp()
+            .agenda_tasks_switcher
+            .replace(Some(tasks_switcher.clone()));
+
+        let tasks_spacer = gtk::Box::builder().hexpand(true).build();
+
+        let tasks_add_event_btn = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text(&gettext("Create new appointment"))
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        tasks_add_event_btn.connect_clicked(move |btn| {
+            if let Some(root) = btn.root() {
+                if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
+                    window.present_new_event();
+                }
+            }
+        });
+        self.imp()
+            .agenda_tasks_add_event_btn
+            .replace(Some(tasks_add_event_btn.clone()));
+
+        let tasks_add_task_btn = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text(&gettext("Create new task"))
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .build();
+        tasks_add_task_btn.connect_clicked(move |btn| {
+            if let Some(root) = btn.root() {
+                if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
+                    window.present_new_task();
+                }
+            }
+        });
+        self.imp()
+            .agenda_tasks_add_task_btn
+            .replace(Some(tasks_add_task_btn.clone()));
+
+        let tasks_add_memo_btn = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text(&gettext("Create new memo"))
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        tasks_add_memo_btn.connect_clicked(move |btn| {
+            if let Some(root) = btn.root() {
+                if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
+                    window.present_new_memo();
+                }
+            }
+        });
+        self.imp()
+            .agenda_tasks_add_memo_btn
+            .replace(Some(tasks_add_memo_btn.clone()));
 
         let page_weak_collapse = self.downgrade();
         tasks_collapse_btn.connect_clicked(move |_| {
@@ -34935,12 +36235,24 @@ impl MailPage {
                 if let Some(scroll) = page.imp().agenda_tasks_scroll.borrow().as_ref() {
                     scroll.set_visible(!next);
                 }
+                if let Some(st) = page.imp().agenda_tasks_stack.borrow().as_ref() {
+                    st.set_visible(!next);
+                }
                 if let Some(btn) = page.imp().agenda_tasks_collapse_btn.borrow().as_ref() {
                     btn.set_icon_name(if next { "pan-end-symbolic" } else { "pan-down-symbolic" });
                 }
+                page.sync_mail_sidebar_vpane_layout();
             }
         });
+
         tasks_header.append(&tasks_collapse_btn);
+        tasks_header.append(&tasks_title);
+        tasks_header.append(&tasks_count_badge);
+        tasks_header.append(&tasks_switcher);
+        tasks_header.append(&tasks_spacer);
+        tasks_header.append(&tasks_add_event_btn);
+        tasks_header.append(&tasks_add_task_btn);
+        tasks_header.append(&tasks_add_memo_btn);
 
         let page_weak_tasks_header = self.downgrade();
         let tasks_header_click = gtk::GestureClick::new();
@@ -34953,14 +36265,17 @@ impl MailPage {
                     if let Some(scroll) = page.imp().agenda_tasks_scroll.borrow().as_ref() {
                         scroll.set_visible(!next);
                     }
+                    if let Some(st) = page.imp().agenda_tasks_stack.borrow().as_ref() {
+                        st.set_visible(!next);
+                    }
                     if let Some(btn) = page.imp().agenda_tasks_collapse_btn.borrow().as_ref() {
                         btn.set_icon_name(if next { "pan-end-symbolic" } else { "pan-down-symbolic" });
                     }
+                    page.sync_mail_sidebar_vpane_layout();
                 }
             }
         });
         tasks_header.add_controller(tasks_header_click);
-
         tasks_box.append(&tasks_header);
 
         let tasks_scrolled = gtk::ScrolledWindow::builder()
@@ -35069,15 +36384,28 @@ impl MailPage {
                         }
 
                         page.imp().agenda_canvas_selected_row.set(None);
+                        page.imp().agenda_memos_selected_row.set(None);
                         page.imp().agenda_tasks_selected_row.set(Some(idx));
                         canvas_for_tasks_click.queue_draw();
                         if let Some(ev_canvas) = page.imp().agenda_canvas.borrow().as_ref() {
                             ev_canvas.queue_draw();
                         }
+                        if let Some(memos_c) = page.imp().agenda_memos_canvas.borrow().as_ref() {
+                            memos_c.queue_draw();
+                        }
 
                         let width = canvas_for_tasks_click.width();
                         let rect = gdk::Rectangle::new(4, (*row_y as i32).max(0), (width - 8).max(10), (*row_h as i32).max(10));
                         Self::show_agenda_task_popover(&canvas_for_tasks_click, rect, task, page.downgrade());
+                    } else if n_press == 2 {
+                        page.dismiss_active_agenda_popover();
+                        if let Some(root) = page.root().and_downcast::<crate::window::MeridianWindow>() {
+                            let _ = root.open_component(crate::services::reminder_service::ReminderIdentity {
+                                kind: crate::services::reminder_service::ReminderComponentKind::Task,
+                                source_uid: task.source_uid.clone(),
+                                component_uid: task.uid.clone(),
+                            });
+                        }
                     }
                 }
                 _ => {
@@ -35116,18 +36444,320 @@ impl MailPage {
             }
         });
         agenda_tasks_canvas.add_controller(tasks_motion);
-
         tasks_scrolled.set_child(Some(&agenda_tasks_canvas));
-        tasks_box.append(&tasks_scrolled);
 
-        let show_tasks_initial = AppSettings::try_new().map(|s| s.agenda_show_tasks()).unwrap_or(true);
-        tasks_box.set_visible(show_tasks_initial);
+        let tasks_stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        tasks_stack.add_named(&tasks_scrolled, Some("tasks"));
+        self.imp()
+            .agenda_tasks_stack
+            .replace(Some(tasks_stack.clone()));
+        tasks_box.append(&tasks_stack);
 
-        todo_vpaned.set_end_child(Some(&tasks_box));
-        todo_vpaned.set_resize_end_child(true);
-        todo_vpaned.set_shrink_end_child(true);
+        // 3. Memos Section Container
+        let memos_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .margin_start(6)
+            .margin_end(6)
+            .margin_top(4)
+            .margin_bottom(0)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        self.imp().agenda_memos_box.replace(Some(memos_box.clone()));
+
+        let memos_header = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .css_classes(vec!["sidebar-drawer-header"])
+            .build();
+        self.imp()
+            .agenda_memos_header
+            .replace(Some(memos_header.clone()));
+
+        let memos_collapse_btn = gtk::Button::builder()
+            .icon_name("pan-down-symbolic")
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .tooltip_text(&crate::i18n::gettext("Toggle section"))
+            .build();
+        self.imp()
+            .agenda_memos_collapse_btn
+            .replace(Some(memos_collapse_btn.clone()));
+
+        let memos_title = gtk::Label::builder()
+            .label(&crate::i18n::gettext("Memos"))
+            .css_classes(vec!["heading"])
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
+            .ellipsize(pango::EllipsizeMode::End)
+            .build();
+
+        let memos_count_badge = gtk::Label::builder()
+            .label("")
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["sidebar-drawer-total", "dim-label", "caption"])
+            .build();
+        self.imp()
+            .agenda_memos_count_badge
+            .replace(Some(memos_count_badge.clone()));
+
+        let memos_spacer = gtk::Box::builder().hexpand(true).build();
+        let memos_add_btn = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text(&gettext("Create new memo"))
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .build();
+        memos_add_btn.connect_clicked(move |btn| {
+            if let Some(root) = btn.root() {
+                if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
+                    window.present_new_memo();
+                }
+            }
+        });
+
+        memos_header.append(&memos_collapse_btn);
+        memos_header.append(&memos_title);
+        memos_header.append(&memos_count_badge);
+        memos_header.append(&memos_spacer);
+        memos_header.append(&memos_add_btn);
+        memos_box.append(&memos_header);
+
+        let memos_scrolled = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .vexpand(true)
+            .hexpand(true)
+            .min_content_height(40)
+            .build();
+        self.imp()
+            .agenda_memos_scroll
+            .replace(Some(memos_scrolled.clone()));
+
+        let agenda_memos_canvas = gtk::DrawingArea::builder()
+            .hexpand(true)
+            .vexpand(true)
+            .content_height(120)
+            .css_classes(vec!["memopad-canvas"])
+            .build();
+        set_accessible_label(&agenda_memos_canvas, "Agenda Memos Canvas");
+        self.imp()
+            .agenda_memos_canvas
+            .replace(Some(agenda_memos_canvas.clone()));
+
+        let page_for_memos_draw = self.downgrade();
+        agenda_memos_canvas.set_draw_func(move |_canvas, cr, width, height| {
+            let Some(page) = page_for_memos_draw.upgrade() else { return; };
+            let is_dark = adw::StyleManager::default().is_dark()
+                || AppSettings::try_new()
+                    .map(|s| s.force_dark_mode())
+                    .unwrap_or(false);
+            let hovered_idx = page.imp().agenda_memos_hovered_row.get();
+            let selected_idx = page.imp().agenda_memos_selected_row.get();
+            if let Some(layout) = page.imp().agenda_memos_layout.borrow().as_ref() {
+                crate::views::calendar_page::draw_memopad_canvas(
+                    cr,
+                    layout,
+                    width as f64,
+                    height as f64,
+                    hovered_idx,
+                    selected_idx,
+                    is_dark,
+                );
+            }
+        });
+
+        let memos_click = gtk::GestureClick::new();
+        let page_for_memos_click = self.downgrade();
+        let canvas_for_memos_click = agenda_memos_canvas.clone();
+        memos_click.connect_pressed(move |gesture, n_press, x, y| {
+            let Some(page) = page_for_memos_click.upgrade() else { return; };
+            let layout_opt = page.imp().agenda_memos_layout.borrow().clone();
+            let Some(layout) = layout_opt else {
+                page.dismiss_active_agenda_popover();
+                return;
+            };
+            let Some(idx) = crate::views::calendar_page::hit_test_memopad(&layout, x, y) else {
+                page.dismiss_active_agenda_popover();
+                return;
+            };
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let item = &layout.items[idx];
+            if n_press == 1 {
+                page.imp().agenda_canvas_selected_row.set(None);
+                page.imp().agenda_tasks_selected_row.set(None);
+                page.imp().agenda_memos_selected_row.set(Some(idx));
+                canvas_for_memos_click.queue_draw();
+                if let Some(ev_c) = page.imp().agenda_canvas.borrow().as_ref() {
+                    ev_c.queue_draw();
+                }
+                if let Some(tk_c) = page.imp().agenda_tasks_canvas.borrow().as_ref() {
+                    tk_c.queue_draw();
+                }
+                let width = canvas_for_memos_click.width();
+                let rect = gdk::Rectangle::new(
+                    4,
+                    (item.y as i32).max(0),
+                    (width - 8).max(10),
+                    (item.height as i32).max(10),
+                );
+                Self::show_agenda_memo_popover(
+                    &canvas_for_memos_click,
+                    rect,
+                    &item.record,
+                    page.downgrade(),
+                );
+            } else if n_press == 2 {
+                page.dismiss_active_agenda_popover();
+                if let Some(root) = page.root().and_downcast::<crate::window::MeridianWindow>() {
+                    let _ = root.open_component(crate::services::reminder_service::ReminderIdentity {
+                        kind: crate::services::reminder_service::ReminderComponentKind::Memo,
+                        source_uid: item.record.source_uid.clone(),
+                        component_uid: item.record.uid.clone(),
+                    });
+                }
+            }
+        });
+        agenda_memos_canvas.add_controller(memos_click);
+
+        let memos_motion = gtk::EventControllerMotion::new();
+        let page_for_memos_motion = self.downgrade();
+        let canvas_for_memos_motion = agenda_memos_canvas.clone();
+        memos_motion.connect_motion(move |_ctrl, x, y| {
+            let Some(page) = page_for_memos_motion.upgrade() else { return; };
+            let layout_opt = page.imp().agenda_memos_layout.borrow().clone();
+            let Some(layout) = layout_opt else { return; };
+            let hovered = crate::views::calendar_page::hit_test_memopad(&layout, x, y);
+            let prev = page.imp().agenda_memos_hovered_row.get();
+            if hovered != prev {
+                page.imp().agenda_memos_hovered_row.set(hovered);
+                if hovered.is_some() {
+                    canvas_for_memos_motion.set_cursor_from_name(Some("pointer"));
+                } else {
+                    canvas_for_memos_motion.set_cursor_from_name(None);
+                }
+                canvas_for_memos_motion.queue_draw();
+            }
+        });
+        let page_for_memos_leave = self.downgrade();
+        let canvas_for_memos_leave = agenda_memos_canvas.clone();
+        memos_motion.connect_leave(move |_ctrl| {
+            let Some(page) = page_for_memos_leave.upgrade() else { return; };
+            if page.imp().agenda_memos_hovered_row.get().is_some() {
+                page.imp().agenda_memos_hovered_row.set(None);
+                canvas_for_memos_leave.set_cursor_from_name(None);
+                canvas_for_memos_leave.queue_draw();
+            }
+        });
+        agenda_memos_canvas.add_controller(memos_motion);
+        memos_scrolled.set_child(Some(&agenda_memos_canvas));
+        memos_box.append(&memos_scrolled);
+
+        let memos_scroll_weak = memos_scrolled.downgrade();
+        let memos_btn_weak = memos_collapse_btn.downgrade();
+        let page_weak_memos_coll = self.downgrade();
+        memos_collapse_btn.connect_clicked(move |_| {
+            if let (Some(sc), Some(btn)) = (memos_scroll_weak.upgrade(), memos_btn_weak.upgrade()) {
+                let is_vis = sc.is_visible();
+                sc.set_visible(!is_vis);
+                btn.set_icon_name(if is_vis { "pan-end-symbolic" } else { "pan-down-symbolic" });
+                if let Some(page) = page_weak_memos_coll.upgrade() {
+                    page.sync_mail_sidebar_vpane_layout();
+                }
+            }
+        });
+
+        // Attach Drag & Drop on section headers
+        let attach_section_dnd =
+            |page: &Self,
+             header: &gtk::Box,
+             section_box: &gtk::Box,
+             default_panel: MailSidebarPanelId,
+             stack_opt: Option<gtk::Stack>| {
+                let drag_source = gtk::DragSource::builder()
+                    .actions(gdk::DragAction::MOVE)
+                    .build();
+                let stack_for_drag = stack_opt.clone();
+                drag_source.connect_prepare(move |_, _, _| {
+                    let panel = stack_for_drag
+                        .as_ref()
+                        .and_then(|st| st.visible_child_name())
+                        .and_then(|n| MailSidebarPanelId::from_str(n.as_str()))
+                        .unwrap_or(default_panel);
+                    Some(gdk::ContentProvider::for_value(&panel.as_str().to_value()))
+                });
+                header.add_controller(drag_source);
+
+                let drop_target =
+                    gtk::DropTarget::new(glib::Type::STRING, gdk::DragAction::MOVE);
+                let page_weak_drop = page.downgrade();
+                let box_weak = section_box.downgrade();
+                let stack_for_drop = stack_opt;
+                drop_target.connect_drop(move |_, value, _x, y| {
+                    let Ok(src_str) = value.get::<String>() else {
+                        return false;
+                    };
+                    let Some(src_panel) = MailSidebarPanelId::from_str(&src_str) else {
+                        return false;
+                    };
+                    let Some(page) = page_weak_drop.upgrade() else {
+                        return false;
+                    };
+                    let dst_panel = stack_for_drop
+                        .as_ref()
+                        .and_then(|st| st.visible_child_name())
+                        .and_then(|n| MailSidebarPanelId::from_str(n.as_str()))
+                        .unwrap_or(default_panel);
+                    let h = box_weak
+                        .upgrade()
+                        .map(|b| b.height() as f64)
+                        .unwrap_or(120.0)
+                        .max(48.0);
+                    let zone = if y < 34.0 {
+                        "tab"
+                    } else if y < h * 0.55 {
+                        "before"
+                    } else {
+                        "after"
+                    };
+                    page.handle_mail_sidebar_panel_drop(src_panel, dst_panel, zone);
+                    true
+                });
+                section_box.add_controller(drop_target);
+            };
+
+        attach_section_dnd(
+            self,
+            &header_bar,
+            &agenda_section_box,
+            MailSidebarPanelId::Agenda,
+            Some(agenda_section_stack),
+        );
+        attach_section_dnd(
+            self,
+            &tasks_header,
+            &tasks_box,
+            MailSidebarPanelId::Tasks,
+            Some(tasks_stack),
+        );
+        attach_section_dnd(
+            self,
+            &memos_header,
+            &memos_box,
+            MailSidebarPanelId::Memos,
+            None,
+        );
 
         container.append(&todo_vpaned);
+
+        self.rebuild_mail_sidebar_options_popover();
+        self.sync_mail_sidebar_vpane_layout();
 
         // Listen for settings changes to live-update the agenda
         if let Some(settings) = AppSettings::try_new() {
@@ -35146,10 +36776,6 @@ impl MailPage {
             let page_weak_tasks = self.downgrade();
             settings.connect_changed(Some("agenda-show-tasks"), move |_, _| {
                 if let Some(page) = page_weak_tasks.upgrade() {
-                    let show = AppSettings::try_new().map(|s| s.agenda_show_tasks()).unwrap_or(true);
-                    if let Some(box_) = page.imp().agenda_tasks_box.borrow().as_ref() {
-                        box_.set_visible(show);
-                    }
                     page.imp().agenda_canvas_grouped_data.replace(None);
                     page.rebuild_agenda_canvas_layout();
                 }
@@ -35160,6 +36786,7 @@ impl MailPage {
     }
 
     pub fn rebuild_agenda_canvas_layout(&self) {
+        use crate::views::calendar_page::SidebarPanelMode;
         let Some(canvas) = self.imp().agenda_canvas.borrow().clone() else { return; };
         let today = chrono::Local::now().date_naive();
 
@@ -35172,14 +36799,12 @@ impl MailPage {
             .as_ref()
             .map(|s| s.resolved_time_format() == "12h")
             .unwrap_or(false);
-        let show_tasks = settings
-            .as_ref()
-            .map(|s| s.agenda_show_tasks())
-            .unwrap_or(true);
-
-        if let Some(tasks_box) = self.imp().agenda_tasks_box.borrow().as_ref() {
-            tasks_box.set_visible(show_tasks);
-        }
+        let show_tasks = self
+            .imp()
+            .mail_sidebar_panel_specs
+            .borrow()
+            .iter()
+            .any(|s| s.id == MailSidebarPanelId::Tasks && s.mode != SidebarPanelMode::Off);
 
         // Fast path: reuse pre-calculated grouped data if valid for today
         let mut grouped_opt = self.imp().agenda_canvas_grouped_data.borrow().clone();
@@ -35236,6 +36861,24 @@ impl MailPage {
             tasks_canvas.set_content_height(tasks_height as i32);
             tasks_canvas.queue_draw();
         }
+
+        // 3. Layout Memos for memos canvas
+        if let Some(memos_canvas) = self.imp().agenda_memos_canvas.borrow().clone() {
+            let memos = self.imp().agenda_cached_memos.borrow().clone();
+            let memo_layout = crate::views::calendar_page::prepare_memopad_layout(&memos);
+            let memo_count_str = if memo_layout.items.is_empty() {
+                String::new()
+            } else {
+                memo_layout.items.len().to_string()
+            };
+            if let Some(badge) = self.imp().agenda_memos_count_badge.borrow().as_ref() {
+                badge.set_label(&memo_count_str);
+            }
+            let h = (memo_layout.total_height.ceil() as i32).max(60);
+            self.imp().agenda_memos_layout.replace(Some(memo_layout));
+            memos_canvas.set_content_height(h);
+            memos_canvas.queue_draw();
+        }
     }
 
     pub fn refresh_today_tasks(&self) {
@@ -35246,7 +36889,8 @@ impl MailPage {
         // Immediate preview from disk cache ONLY if no in-memory data exists yet
         if self.imp().agenda_canvas_grouped_data.borrow().is_none() {
             if let Some(cached) = crate::services::ecal_service::load_calendar_load_cache() {
-                if !cached.events.is_empty() || !cached.tasks.is_empty() {
+                if !cached.events.is_empty() || !cached.tasks.is_empty() || !cached.memos.is_empty() {
+                    self.imp().agenda_cached_memos.replace(cached.memos);
                     self.populate_agenda(cached.events, cached.tasks);
                 }
             }
@@ -35257,13 +36901,18 @@ impl MailPage {
         let (sender, receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
             let result = crate::services::ecal_service::load_snapshot_prefer_eds();
-            let _ = sender.send_blocking((result.snapshot.events, result.snapshot.tasks));
+            let _ = sender.send_blocking((
+                result.snapshot.events,
+                result.snapshot.tasks,
+                result.snapshot.memos,
+            ));
         });
 
         glib::spawn_future_local(async move {
-            let Ok((events, tasks)) = receiver.recv().await else { return; };
+            let Ok((events, tasks, memos)) = receiver.recv().await else { return; };
             let Some(page) = page_weak.upgrade() else { return; };
             page.imp().agenda_refresh_in_flight.set(false);
+            page.imp().agenda_cached_memos.replace(memos);
             page.populate_agenda(events, tasks);
         });
     }
@@ -35420,6 +37069,10 @@ impl MailPage {
             }
             self.imp().agenda_tasks_selected_row.set(None);
             if let Some(canvas) = self.imp().agenda_tasks_canvas.borrow().as_ref() {
+                canvas.queue_draw();
+            }
+            self.imp().agenda_memos_selected_row.set(None);
+            if let Some(canvas) = self.imp().agenda_memos_canvas.borrow().as_ref() {
                 canvas.queue_draw();
             }
         }
@@ -35986,6 +37639,131 @@ impl MailPage {
             }
         });
         actions_box.append(&tasks_btn);
+        content.append(&actions_box);
+
+        popover.set_child(Some(&content));
+        popover.popup();
+    }
+
+    fn show_agenda_memo_popover(
+        canvas: &gtk::DrawingArea,
+        rect: gdk::Rectangle,
+        memo: &crate::services::calendar_store_service::MemoRecord,
+        page_weak: glib::WeakRef<MailPage>,
+    ) {
+        let Some(page) = page_weak.upgrade() else { return; };
+        if canvas.root().is_none() {
+            return;
+        }
+        let (popover, _is_reused) = page.get_or_create_agenda_popover(canvas, &rect);
+
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(12)
+            .margin_start(16)
+            .margin_end(16)
+            .margin_top(14)
+            .margin_bottom(14)
+            .width_request(280)
+            .build();
+
+        let default_title = gettext("(Untitled)");
+        let title = if memo.summary.trim().is_empty() {
+            &default_title
+        } else {
+            memo.summary.trim()
+        };
+
+        let header_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(10)
+            .valign(gtk::Align::Center)
+            .build();
+
+        let memo_icon = gtk::Image::builder()
+            .icon_name("text-x-generic-symbolic")
+            .pixel_size(16)
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["accent"])
+            .build();
+        header_row.append(&memo_icon);
+
+        let title_label = gtk::Label::builder()
+            .label(title)
+            .wrap(true)
+            .wrap_mode(pango::WrapMode::WordChar)
+            .xalign(0.0)
+            .hexpand(true)
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["heading"])
+            .build();
+        header_row.append(&title_label);
+
+        let close_btn = gtk::Button::builder()
+            .icon_name("window-close-symbolic")
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .halign(gtk::Align::End)
+            .tooltip_text(&gettext("Close"))
+            .build();
+        let pop_weak_close = popover.downgrade();
+        close_btn.connect_clicked(move |_| {
+            if let Some(pop) = pop_weak_close.upgrade() {
+                pop.popdown();
+            }
+        });
+        header_row.append(&close_btn);
+        content.append(&header_row);
+
+        if !memo.description.trim().is_empty() {
+            let desc_label = gtk::Label::builder()
+                .label(memo.description.trim())
+                .wrap(true)
+                .wrap_mode(pango::WrapMode::WordChar)
+                .xalign(0.0)
+                .css_classes(vec!["caption", "dim-label"])
+                .max_width_chars(34)
+                .lines(6)
+                .ellipsize(pango::EllipsizeMode::End)
+                .build();
+            content.append(&desc_label);
+        }
+
+        let sep = gtk::Separator::new(gtk::Orientation::Horizontal);
+        sep.set_margin_top(2);
+        sep.set_margin_bottom(2);
+        content.append(&sep);
+
+        let actions_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+
+        let open_btn = gtk::Button::builder()
+            .label(&gettext("Open Memo"))
+            .css_classes(vec!["flat"])
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .build();
+        let page_for_open = page_weak.clone();
+        let popover_weak_open = popover.downgrade();
+        let src_uid = memo.source_uid.clone();
+        let uid = memo.uid.clone();
+        open_btn.connect_clicked(move |_| {
+            if let Some(pop) = popover_weak_open.upgrade() {
+                pop.popdown();
+            }
+            if let Some(page) = page_for_open.upgrade() {
+                if let Some(root) = page.root().and_downcast::<crate::window::MeridianWindow>() {
+                    let _ = root.open_component(crate::services::reminder_service::ReminderIdentity {
+                        kind: crate::services::reminder_service::ReminderComponentKind::Memo,
+                        source_uid: src_uid.clone(),
+                        component_uid: uid.clone(),
+                    });
+                }
+            }
+        });
+        actions_box.append(&open_btn);
         content.append(&actions_box);
 
         popover.set_child(Some(&content));

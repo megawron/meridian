@@ -1507,7 +1507,7 @@ pub(crate) fn format_sidebar_layout(specs: &[SidebarPanelSpec]) -> String {
         .join(",")
 }
 
-fn detach_widget_from_parent(widget: &impl IsA<gtk::Widget>) {
+pub(crate) fn detach_widget_from_parent(widget: &impl IsA<gtk::Widget>) {
     let w = widget.as_ref();
     if let Some(parent) = w.parent() {
         if let Ok(bx) = parent.clone().downcast::<gtk::Box>() {
@@ -1525,7 +1525,7 @@ fn detach_widget_from_parent(widget: &impl IsA<gtk::Widget>) {
     }
 }
 
-fn ensure_widget_in_stack(widget: &impl IsA<gtk::Widget>, stack: &gtk::Stack, name: &str) {
+pub(crate) fn ensure_widget_in_stack(widget: &impl IsA<gtk::Widget>, stack: &gtk::Stack, name: &str) {
     let w = widget.as_ref();
     if w.parent().as_ref() == Some(stack.upcast_ref::<gtk::Widget>()) {
         return;
@@ -1534,7 +1534,7 @@ fn ensure_widget_in_stack(widget: &impl IsA<gtk::Widget>, stack: &gtk::Stack, na
     stack.add_named(w, Some(name));
 }
 
-fn ensure_widget_in_box(widget: &impl IsA<gtk::Widget>, target_box: &gtk::Box) {
+pub(crate) fn ensure_widget_in_box(widget: &impl IsA<gtk::Widget>, target_box: &gtk::Box) {
     let w = widget.as_ref();
     if w.parent().as_ref() == Some(target_box.upcast_ref::<gtk::Widget>()) {
         return;
@@ -2516,7 +2516,7 @@ impl CalendarPage {
     }
 
     pub(crate) fn set_sidebar_panel_mode(&self, panel: SidebarPanelId, mode: SidebarPanelMode) {
-        {
+        let has_docked_panels = {
             let mut specs = self.imp().sidebar_panel_specs.borrow_mut();
             if let Some(spec) = specs.iter_mut().find(|s| s.id == panel) {
                 spec.mode = mode;
@@ -2528,10 +2528,25 @@ impl CalendarPage {
                     specs[0].mode = SidebarPanelMode::Split;
                 }
             }
-        }
+            specs
+                .iter()
+                .any(|s| s.mode == SidebarPanelMode::Split || s.mode == SidebarPanelMode::Tab)
+        };
         self.persist_sidebar_panel_specs();
         self.rebuild_sidebar_options_popover();
         self.sync_sidebar_vpane_layout();
+        if !has_docked_panels {
+            if self.is_tag_vpane_visible() {
+                self.set_tag_vpane_visible(false);
+            }
+        } else if matches!(mode, SidebarPanelMode::Split | SidebarPanelMode::Tab)
+            && !self.is_tag_vpane_visible()
+        {
+            self.set_tag_vpane_visible(true);
+        }
+        if let Some(win) = crate::window::find_meridian_window(self) {
+            win.sync_right_sidebar_toggle();
+        }
     }
 
     pub(crate) fn move_sidebar_panel(&self, panel: SidebarPanelId, delta: isize) {
@@ -3212,14 +3227,64 @@ impl CalendarPage {
 
         if ordered_containers.is_empty() {
             use_taskpad_box = true;
-            taskpad_title.set_text(&gettext("Sidebar"));
+            taskpad_title.set_text(&gettext("Sidebar Layout"));
             taskpad_title.set_visible(true);
             taskpad_count.set_visible(false);
             taskpad_stack_switcher.set_visible(false);
             taskpad_add_btn.set_visible(false);
             taskpad_memos_add_btn.set_visible(false);
-            taskpad_stack.set_visible(false);
-            ordered_containers.push((taskpad_box.clone(), taskpad_header.clone(), false));
+            if taskpad_stack.child_by_name("detached_empty").is_none() {
+                let empty_card = gtk::Box::builder()
+                    .orientation(gtk::Orientation::Vertical)
+                    .spacing(10)
+                    .margin_start(16)
+                    .margin_end(16)
+                    .margin_top(28)
+                    .margin_bottom(28)
+                    .valign(gtk::Align::Center)
+                    .halign(gtk::Align::Center)
+                    .vexpand(true)
+                    .build();
+                let icon = gtk::Image::builder()
+                    .icon_name("window-new-symbolic")
+                    .pixel_size(32)
+                    .css_classes(vec!["dim-label"])
+                    .build();
+                let lbl = gtk::Label::builder()
+                    .label(&gettext("All active panels are open in separate windows."))
+                    .wrap(true)
+                    .justify(gtk::Justification::Center)
+                    .css_classes(vec!["dim-label", "caption"])
+                    .build();
+                let dock_all_btn = gtk::Button::builder()
+                    .label(&gettext("Dock all into sidebar"))
+                    .css_classes(vec!["pill"])
+                    .halign(gtk::Align::Center)
+                    .build();
+                let page_weak_dock_all = self.downgrade();
+                dock_all_btn.connect_clicked(move |_| {
+                    if let Some(page) = page_weak_dock_all.upgrade() {
+                        let win_ids: Vec<SidebarPanelId> = page
+                            .imp()
+                            .sidebar_panel_specs
+                            .borrow()
+                            .iter()
+                            .filter(|s| s.mode == SidebarPanelMode::Window)
+                            .map(|s| s.id)
+                            .collect();
+                        for pid in win_ids {
+                            page.set_sidebar_panel_mode(pid, SidebarPanelMode::Split);
+                        }
+                    }
+                });
+                empty_card.append(&icon);
+                empty_card.append(&lbl);
+                empty_card.append(&dock_all_btn);
+                taskpad_stack.add_named(&empty_card, Some("detached_empty"));
+            }
+            taskpad_stack.set_visible_child_name("detached_empty");
+            taskpad_stack.set_visible(true);
+            ordered_containers.push((taskpad_box.clone(), taskpad_header.clone(), true));
         }
 
         if !use_taskpad_box {

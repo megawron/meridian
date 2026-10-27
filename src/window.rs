@@ -716,7 +716,7 @@ impl MeridianWindow {
             .and_then(|widget| widget.downcast::<ContactsPage>().ok())
     }
 
-    fn present_new_event(&self) {
+    pub(crate) fn present_new_event(&self) {
         if let Some(calendar_page) = self.calendar_page() {
             calendar_page.present_new_event();
             return;
