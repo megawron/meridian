@@ -4027,13 +4027,7 @@ pub(crate) fn draw_mail_table_canvas(
                 pango_layout.set_font_description(Some(desc));
                 pango_layout.set_text(&row.sender);
                 pango_layout.set_single_paragraph_mode(true);
-                // GNOME HIG: preserve @domain suffix for raw email addresses via middle ellipsization
-                let ellipsize_mode = if row.sender.contains('@') {
-                    gtk::pango::EllipsizeMode::Middle
-                } else {
-                    gtk::pango::EllipsizeMode::End
-                };
-                pango_layout.set_ellipsize(ellipsize_mode);
+                pango_layout.set_ellipsize(gtk::pango::EllipsizeMode::End);
                 pango_layout.set_width((avail_sender_w * gtk::pango::SCALE as f64) as i32);
                 let text_y = y + primary_text_offset;
                 cr.move_to(text_start, text_y);
@@ -4056,12 +4050,7 @@ pub(crate) fn draw_mail_table_canvas(
                 pango_layout.set_font_description(Some(desc));
                 pango_layout.set_text(&row.recipient);
                 pango_layout.set_single_paragraph_mode(true);
-                let ellipsize_mode = if row.recipient.contains('@') {
-                    gtk::pango::EllipsizeMode::Middle
-                } else {
-                    gtk::pango::EllipsizeMode::End
-                };
-                pango_layout.set_ellipsize(ellipsize_mode);
+                pango_layout.set_ellipsize(gtk::pango::EllipsizeMode::End);
                 pango_layout.set_width((avail_recip_w * gtk::pango::SCALE as f64) as i32);
                 let text_y = y + primary_text_offset;
                 cr.move_to(text_start, text_y);
@@ -7307,6 +7296,7 @@ mod imp {
         pub(crate) agenda_memos_layout: RefCell<Option<crate::views::calendar_page::PreparedMemopadLayout>>,
         pub agenda_memos_hovered_row: Cell<Option<usize>>,
         pub agenda_memos_selected_row: Cell<Option<usize>>,
+        pub active_memo_hover_popover: RefCell<Option<gtk::Popover>>,
         pub agenda_memos_collapse_btn: RefCell<Option<gtk::Button>>,
         pub agenda_memos_count_badge: RefCell<Option<gtk::Label>>,
         pub agenda_cached_memos: RefCell<Vec<crate::services::calendar_store_service::MemoRecord>>,
@@ -9852,7 +9842,7 @@ impl MailPage {
                 if let Some(ref rp) = return_path {
                     let rp_lbl = gtk::Label::builder()
                         .label(&format!("Return-Path: {rp}"))
-                        .ellipsize(pango::EllipsizeMode::Middle)
+                        .ellipsize(pango::EllipsizeMode::End)
                         .hexpand(true)
                         .xalign(1.0)
                         .css_classes(vec!["caption", "dim-label"])
@@ -17553,12 +17543,7 @@ impl MailPage {
                 label.set_sensitive(folder.selectable());
                 if is_account_root {
                     label.add_css_class("account-heading");
-                    // GNOME HIG: preserve @domain suffix on email account identifiers
-                    label.set_ellipsize(if name.contains('@') {
-                        pango::EllipsizeMode::Middle
-                    } else {
-                        pango::EllipsizeMode::End
-                    });
+                    label.set_ellipsize(pango::EllipsizeMode::End);
                 } else {
                     label.remove_css_class("account-heading");
                     label.set_ellipsize(pango::EllipsizeMode::End);
@@ -24492,7 +24477,7 @@ impl MailPage {
                 .halign(gtk::Align::Start)
                 .xalign(0.0)
                 .hexpand(true)
-                .ellipsize(pango::EllipsizeMode::Middle)
+                .ellipsize(pango::EllipsizeMode::End)
                 .css_classes(vec!["dim-label"])
                 .build(),
         );
@@ -30128,7 +30113,7 @@ impl MailPage {
             .label("")
             .halign(gtk::Align::Start)
             .css_classes(vec!["caption", "dim-label", "mail-modern-sender-address"])
-            .ellipsize(pango::EllipsizeMode::Middle)
+            .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
             .single_line_mode(true)
             .build();
@@ -32025,6 +32010,54 @@ impl MailPage {
             .css_classes(vec!["mail-memo-scope-btn"])
             .build();
 
+        let page_for_scope_toggle = self.downgrade();
+        mail_memo_team_btn.connect_toggled(move |team_btn| {
+            let Some(page) = page_for_scope_toggle.upgrade() else { return; };
+            let editor_open = page
+                .imp()
+                .mail_memo_editor_revealer
+                .borrow()
+                .as_ref()
+                .is_some_and(|r| r.reveals_child());
+            if !editor_open {
+                return;
+            }
+            let want_team = team_btn.is_active();
+            let scope_memo = page.selected_message().and_then(|msg| {
+                let target_mid = Self::message_memo_link_uri(&msg);
+                page.imp()
+                    .agenda_cached_memos
+                    .borrow()
+                    .iter()
+                    .find(|m| {
+                        crate::services::calendar_store_service::memo_linked_mid(&m.component)
+                            .as_deref()
+                            == Some(target_mid.as_str())
+                            && crate::services::calendar_store_service::memo_is_team_shared(m)
+                                == want_team
+                    })
+                    .cloned()
+            });
+            page.imp().mail_memo_editing_target.replace(
+                scope_memo.as_ref().map(|m| (m.source_uid.clone(), m.uid.clone())),
+            );
+            if let Some(entry) = page.imp().mail_memo_entry.borrow().as_ref() {
+                let text = scope_memo
+                    .as_ref()
+                    .map(|m| {
+                        if !m.description.trim().is_empty() {
+                            m.description.trim().to_string()
+                        } else {
+                            m.summary.trim().to_string()
+                        }
+                    })
+                    .unwrap_or_default();
+                entry.set_text(&text);
+                let _ = entry.grab_focus();
+                entry.set_position(-1);
+            }
+        });
+
         memo_scope_toggle.append(&mail_memo_private_btn);
         memo_scope_toggle.append(&mail_memo_team_btn);
         mail_memo_editor_bar.append(&memo_scope_toggle);
@@ -33123,7 +33156,7 @@ impl MailPage {
 
                     let lbl_name = gtk::Label::builder()
                         .label(&attachment.filename)
-                        .ellipsize(gtk::pango::EllipsizeMode::Middle)
+                        .ellipsize(gtk::pango::EllipsizeMode::End)
                         .width_chars(1)
                         .css_classes(vec!["attachment-list-label"])
                         .hexpand(true)
@@ -33438,7 +33471,7 @@ impl MailPage {
 
         let lbl_name = gtk::Label::builder()
             .label(&att.filename)
-            .ellipsize(gtk::pango::EllipsizeMode::Middle)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
             .max_width_chars(28)
             .css_classes(vec!["attachment-card-name"])
             .xalign(0.0)
@@ -33571,7 +33604,7 @@ fn create_attachment_bar_chip(
 
     let lbl = gtk::Label::builder()
         .label(&att.filename)
-        .ellipsize(gtk::pango::EllipsizeMode::Middle)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
         .width_chars(1)
         .max_width_chars(max_chars)
         .hexpand(true)
@@ -35940,6 +35973,9 @@ impl MailPage {
                     pair
                 } else {
                     let header = gtk::HeaderBar::new();
+                    if panel_id == MailSidebarPanelId::Memos {
+                        header.add_css_class("memos-detached-headerbar");
+                    }
                     let title_lbl = gtk::Label::builder()
                         .label(&panel_id.display_title())
                         .css_classes(vec!["title"])
@@ -35959,6 +35995,10 @@ impl MailPage {
                     let page_weak = self.downgrade();
                     add_btn.connect_clicked(move |_| {
                         if let Some(page) = page_weak.upgrade() {
+                            if panel_id == MailSidebarPanelId::Memos && page.selected_message().is_some() {
+                                page.open_mail_memo_editor(None);
+                                return;
+                            }
                             if let Some(root) = page.root() {
                                 if let Ok(window) = root.downcast::<crate::window::MeridianWindow>() {
                                     match panel_id {
@@ -35972,18 +36012,22 @@ impl MailPage {
                     });
                     header.pack_start(&add_btn);
 
+                    let is_memos_win = panel_id == MailSidebarPanelId::Memos;
                     let host_box = gtk::Box::builder()
                         .orientation(gtk::Orientation::Vertical)
-                        .spacing(4)
-                        .margin_start(8)
-                        .margin_end(8)
-                        .margin_top(6)
-                        .margin_bottom(8)
+                        .spacing(if is_memos_win { 0 } else { 4 })
+                        .margin_start(if is_memos_win { 0 } else { 8 })
+                        .margin_end(if is_memos_win { 0 } else { 8 })
+                        .margin_top(if is_memos_win { 0 } else { 6 })
+                        .margin_bottom(if is_memos_win { 0 } else { 8 })
                         .hexpand(true)
                         .vexpand(true)
                         .focusable(true)
                         .can_focus(true)
                         .build();
+                    if is_memos_win {
+                        host_box.add_css_class("memos-detached-host");
+                    }
 
                     let win = gtk::Window::builder()
                         .title(&format!("Meridian — {}", panel_id.display_title()))
@@ -35992,6 +36036,9 @@ impl MailPage {
                         .titlebar(&header)
                         .child(&host_box)
                         .build();
+                    if is_memos_win {
+                        win.add_css_class("memos-detached-window");
+                    }
                     if let Some(root) = self.root().and_then(|r| r.downcast::<gtk::Window>().ok()) {
                         win.set_transient_for(Some(&root));
                     }
@@ -36121,8 +36168,15 @@ impl MailPage {
             } else if tabs.as_slice() == [MailSidebarPanelId::Memos] {
                 use_memos_box = true;
                 ensure_widget_in_box(&memos_scroll, &memos_box);
+                memos_box.set_vexpand(true);
+                memos_box.set_valign(gtk::Align::Fill);
                 memos_scroll.set_vexpand(true);
                 memos_scroll.set_valign(gtk::Align::Fill);
+                if let Some(c) = self.imp().agenda_memos_canvas.borrow().as_ref() {
+                    c.set_vexpand(true);
+                    c.set_valign(gtk::Align::Fill);
+                    c.queue_draw();
+                }
                 memos_header.set_visible(true);
                 let exp = memos_scroll.is_visible();
                 ordered_containers.push((memos_box.clone(), memos_header.clone(), exp));
@@ -36277,41 +36331,29 @@ impl MailPage {
              saved_pos: i32| {
                 paned.set_start_child(Some(top));
                 paned.set_end_child(Some(bottom));
+                top.set_vexpand(true);
+                top.set_valign(gtk::Align::Fill);
+                bottom.set_vexpand(true);
+                bottom.set_valign(gtk::Align::Fill);
                 if top_exp && bottom_exp {
-                    top.set_vexpand(true);
-                    top.set_valign(gtk::Align::Fill);
-                    bottom.set_vexpand(true);
-                    bottom.set_valign(gtk::Align::Fill);
                     paned.set_resize_start_child(true);
                     paned.set_resize_end_child(true);
                     let total_h = paned.height();
-                    let clamped_pos = if total_h > 340 {
-                        saved_pos.clamp(120, (total_h - 240).max(140))
+                    let clamped_pos = if total_h > 320 {
+                        saved_pos.clamp(120, (total_h - 210).max(140))
                     } else {
-                        saved_pos.clamp(120, 360)
+                        saved_pos.clamp(120, 320)
                     };
                     paned.set_position(clamped_pos);
                 } else if !top_exp && bottom_exp {
-                    top.set_vexpand(false);
-                    top.set_valign(gtk::Align::Start);
-                    bottom.set_vexpand(true);
-                    bottom.set_valign(gtk::Align::Fill);
                     paned.set_resize_start_child(false);
                     paned.set_resize_end_child(true);
                     paned.set_position(0);
                 } else if top_exp && !bottom_exp {
-                    top.set_vexpand(true);
-                    top.set_valign(gtk::Align::Fill);
-                    bottom.set_vexpand(false);
-                    bottom.set_valign(gtk::Align::Start);
                     paned.set_resize_start_child(true);
                     paned.set_resize_end_child(false);
                     paned.set_position(10000);
                 } else {
-                    top.set_vexpand(false);
-                    top.set_valign(gtk::Align::Start);
-                    bottom.set_vexpand(false);
-                    bottom.set_valign(gtk::Align::Start);
                     paned.set_resize_start_child(false);
                     paned.set_resize_end_child(false);
                     paned.set_position(0);
@@ -36320,16 +36362,13 @@ impl MailPage {
 
         match ordered_containers.len() {
             1 => {
-                let (ref bx0, _, exp0) = ordered_containers[0];
-                bx0.set_vexpand(exp0);
-                bx0.set_valign(if exp0 {
-                    gtk::Align::Fill
-                } else {
-                    gtk::Align::Start
-                });
+                let (ref bx0, _, _exp0) = ordered_containers[0];
+                bx0.set_vexpand(true);
+                bx0.set_valign(gtk::Align::Fill);
                 todo_vpaned.set_start_child(Some(bx0));
                 todo_vpaned.set_end_child(gtk::Widget::NONE);
                 todo_vpaned.set_resize_start_child(true);
+                todo_vpaned.set_resize_end_child(false);
             }
             2 => {
                 let (ref bx0, _, exp0) = ordered_containers[0];
@@ -36343,6 +36382,24 @@ impl MailPage {
                     exp1,
                     saved,
                 );
+                let vpaned_weak = todo_vpaned.downgrade();
+                let page_weak = self.downgrade();
+                glib::idle_add_local_once(move || {
+                    if let (Some(paned), Some(page)) = (vpaned_weak.upgrade(), page_weak.upgrade()) {
+                        if paned.resizes_start_child() && paned.resizes_end_child() {
+                            let h = paned.height();
+                            if h > 320 {
+                                let max_pos = (h - 210).max(140);
+                                if paned.position() > max_pos {
+                                    page.imp().syncing_mail_sidebar_vpane.set(true);
+                                    paned.set_position(max_pos);
+                                    page.imp().mail_sidebar_saved_vpane_pos.set(max_pos);
+                                    page.imp().syncing_mail_sidebar_vpane.set(false);
+                                }
+                            }
+                        }
+                    }
+                });
             }
             3 => {
                 let (ref bx0, _, exp0) = ordered_containers[0];
@@ -36366,6 +36423,24 @@ impl MailPage {
                     exp1 || exp2,
                     outer_saved,
                 );
+                let inner_weak = todo_inner_vpaned.downgrade();
+                let page_weak = self.downgrade();
+                glib::idle_add_local_once(move || {
+                    if let (Some(paned), Some(page)) = (inner_weak.upgrade(), page_weak.upgrade()) {
+                        if paned.resizes_start_child() && paned.resizes_end_child() {
+                            let h = paned.height();
+                            if h > 280 {
+                                let max_pos = (h - 170).max(120);
+                                if paned.position() > max_pos {
+                                    page.imp().syncing_mail_sidebar_vpane.set(true);
+                                    paned.set_position(max_pos);
+                                    page.imp().mail_sidebar_saved_inner_vpane_pos.set(max_pos);
+                                    page.imp().syncing_mail_sidebar_vpane.set(false);
+                                }
+                            }
+                        }
+                    }
+                });
             }
             _ => {}
         }
@@ -36424,9 +36499,26 @@ impl MailPage {
             if page.imp().syncing_mail_sidebar_vpane.get() {
                 return;
             }
-            if paned.resizes_start_child() && paned.resizes_end_child() {
+            if paned.resizes_start_child()
+                && paned.resizes_end_child()
+                && paned.start_child().is_some()
+                && paned.end_child().is_some()
+            {
+                if let Some(start) = paned.start_child() {
+                    if start.valign() != gtk::Align::Fill || !start.vexpands() {
+                        start.set_vexpand(true);
+                        start.set_valign(gtk::Align::Fill);
+                    }
+                }
+                if let Some(end) = paned.end_child() {
+                    if end.valign() != gtk::Align::Fill || !end.vexpands() {
+                        end.set_vexpand(true);
+                        end.set_valign(gtk::Align::Fill);
+                    }
+                }
                 let pos = paned.position();
-                if pos > 60 {
+                let h = paned.height();
+                if pos > 60 && (h == 0 || pos <= h - 120) {
                     page.imp().mail_sidebar_saved_vpane_pos.set(pos);
                     if let Some(settings) = AppSettings::try_new() {
                         settings.set_mail_todo_vpane_position(pos);
@@ -36441,9 +36533,26 @@ impl MailPage {
             if page.imp().syncing_mail_sidebar_vpane.get() {
                 return;
             }
-            if paned.resizes_start_child() && paned.resizes_end_child() {
+            if paned.resizes_start_child()
+                && paned.resizes_end_child()
+                && paned.start_child().is_some()
+                && paned.end_child().is_some()
+            {
+                if let Some(start) = paned.start_child() {
+                    if start.valign() != gtk::Align::Fill || !start.vexpands() {
+                        start.set_vexpand(true);
+                        start.set_valign(gtk::Align::Fill);
+                    }
+                }
+                if let Some(end) = paned.end_child() {
+                    if end.valign() != gtk::Align::Fill || !end.vexpands() {
+                        end.set_vexpand(true);
+                        end.set_valign(gtk::Align::Fill);
+                    }
+                }
                 let pos = paned.position();
-                if pos > 60 {
+                let h = paned.height();
+                if pos > 60 && (h == 0 || pos <= h - 120) {
                     page.imp().mail_sidebar_saved_inner_vpane_pos.set(pos);
                     if let Some(settings) = AppSettings::try_new() {
                         settings.set_mail_todo_inner_vpane_position(pos);
@@ -37189,10 +37298,10 @@ impl MailPage {
         // 3. Memos Section Container
         let memos_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(4)
-            .margin_start(6)
-            .margin_end(6)
-            .margin_top(4)
+            .spacing(0)
+            .margin_start(0)
+            .margin_end(0)
+            .margin_top(0)
             .margin_bottom(0)
             .vexpand(true)
             .hexpand(true)
@@ -37204,7 +37313,11 @@ impl MailPage {
         let memos_header = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(4)
-            .css_classes(vec!["sidebar-drawer-header"])
+            .margin_start(6)
+            .margin_end(6)
+            .margin_top(4)
+            .margin_bottom(2)
+            .css_classes(vec!["sidebar-drawer-header", "memos-section-header"])
             .build();
         self.imp()
             .agenda_memos_header
@@ -37275,6 +37388,7 @@ impl MailPage {
             .hexpand(true)
             .valign(gtk::Align::Fill)
             .min_content_height(110)
+            .css_classes(vec!["memos-panel-scroll"])
             .build();
         self.imp()
             .agenda_memos_scroll
@@ -37283,6 +37397,7 @@ impl MailPage {
         let agenda_memos_canvas = gtk::DrawingArea::builder()
             .hexpand(true)
             .vexpand(true)
+            .valign(gtk::Align::Fill)
             .content_height(120)
             .css_classes(vec!["memopad-canvas"])
             .build();
@@ -37290,6 +37405,10 @@ impl MailPage {
         self.imp()
             .agenda_memos_canvas
             .replace(Some(agenda_memos_canvas.clone()));
+
+        agenda_memos_canvas.connect_resize(|canvas, _, _| {
+            canvas.queue_draw();
+        });
 
         let page_for_memos_draw = self.downgrade();
         agenda_memos_canvas.set_draw_func(move |_canvas, cr, width, height| {
@@ -37313,10 +37432,10 @@ impl MailPage {
             }
         });
 
-        let memos_click = gtk::GestureClick::new();
+        let memos_click = gtk::GestureClick::builder().button(1).build();
         let page_for_memos_click = self.downgrade();
         let canvas_for_memos_click = agenda_memos_canvas.clone();
-        memos_click.connect_pressed(move |gesture, n_press, x, y| {
+        memos_click.connect_pressed(move |gesture, _n_press, x, y| {
             let Some(page) = page_for_memos_click.upgrade() else { return; };
             let layout_opt = page.imp().agenda_memos_layout.borrow().clone();
             let Some(layout) = layout_opt else {
@@ -37329,46 +37448,60 @@ impl MailPage {
             };
             gesture.set_state(gtk::EventSequenceState::Claimed);
             let item = &layout.items[idx];
-            if n_press == 1 {
-                page.imp().agenda_canvas_selected_row.set(None);
-                page.imp().agenda_tasks_selected_row.set(None);
-                page.imp().agenda_memos_selected_row.set(Some(idx));
-                canvas_for_memos_click.queue_draw();
-                if let Some(ev_c) = page.imp().agenda_canvas.borrow().as_ref() {
-                    ev_c.queue_draw();
-                }
-                if let Some(tk_c) = page.imp().agenda_tasks_canvas.borrow().as_ref() {
-                    tk_c.queue_draw();
-                }
-                let width = canvas_for_memos_click.width();
-                let rect = gdk::Rectangle::new(
-                    4,
-                    (item.y as i32).max(0),
-                    (width - 8).max(10),
-                    (item.height as i32).max(10),
-                );
-                Self::show_agenda_memo_popover(
-                    &canvas_for_memos_click,
-                    rect,
-                    &item.record,
-                    page.downgrade(),
-                );
-            } else if n_press == 2 {
-                page.dismiss_active_agenda_popover();
-                if let Some(linked_mid) =
-                    crate::services::calendar_store_service::memo_linked_mid(&item.record.component)
-                {
-                    let _ = page.select_message_by_mid(&linked_mid);
-                } else if let Some(root) = page.root().and_downcast::<crate::window::MeridianWindow>() {
-                    let _ = root.open_component(crate::services::reminder_service::ReminderIdentity {
-                        kind: crate::services::reminder_service::ReminderComponentKind::Memo,
-                        source_uid: item.record.source_uid.clone(),
-                        component_uid: item.record.uid.clone(),
-                    });
-                }
+            page.imp().agenda_canvas_selected_row.set(None);
+            page.imp().agenda_tasks_selected_row.set(None);
+            page.imp().agenda_memos_selected_row.set(Some(idx));
+            page.dismiss_active_agenda_popover();
+            canvas_for_memos_click.queue_draw();
+            if let Some(ev_c) = page.imp().agenda_canvas.borrow().as_ref() {
+                ev_c.queue_draw();
+            }
+            if let Some(tk_c) = page.imp().agenda_tasks_canvas.borrow().as_ref() {
+                tk_c.queue_draw();
+            }
+            if let Some(linked_mid) =
+                crate::services::calendar_store_service::memo_linked_mid(&item.record.component)
+            {
+                let _ = page.select_message_by_mid(&linked_mid);
+            } else if let Some(root) = page.root().and_downcast::<crate::window::MeridianWindow>() {
+                let _ = root.open_component(crate::services::reminder_service::ReminderIdentity {
+                    kind: crate::services::reminder_service::ReminderComponentKind::Memo,
+                    source_uid: item.record.source_uid.clone(),
+                    component_uid: item.record.uid.clone(),
+                });
             }
         });
         agenda_memos_canvas.add_controller(memos_click);
+
+        let memos_right_click = gtk::GestureClick::builder().button(3).build();
+        let page_for_memos_rc = self.downgrade();
+        let canvas_for_memos_rc = agenda_memos_canvas.clone();
+        memos_right_click.connect_pressed(move |gesture, _n_press, x, y| {
+            let Some(page) = page_for_memos_rc.upgrade() else { return; };
+            let layout_opt = page.imp().agenda_memos_layout.borrow().clone();
+            let Some(layout) = layout_opt else { return; };
+            let Some(idx) = crate::views::calendar_page::hit_test_memopad(&layout, x, y) else {
+                return;
+            };
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let item = &layout.items[idx];
+            page.imp().agenda_memos_selected_row.set(Some(idx));
+            canvas_for_memos_rc.queue_draw();
+            let width = canvas_for_memos_rc.width();
+            let rect = gdk::Rectangle::new(
+                6,
+                (item.y as i32).max(0),
+                (width - 12).max(10),
+                (item.height as i32).max(10),
+            );
+            Self::show_agenda_memo_popover(
+                &canvas_for_memos_rc,
+                rect,
+                &item.record,
+                page.downgrade(),
+            );
+        });
+        agenda_memos_canvas.add_controller(memos_right_click);
 
         let memos_motion = gtk::EventControllerMotion::new();
         let page_for_memos_motion = self.downgrade();
@@ -37384,31 +37517,23 @@ impl MailPage {
                 if let Some(idx) = hovered {
                     canvas_for_memos_motion.set_cursor_from_name(Some("pointer"));
                     if let Some(item) = layout.items.get(idx) {
-                        let rec = &item.record;
-                        let body = if !rec.description.trim().is_empty() {
-                            rec.description.trim()
-                        } else {
-                            rec.summary.trim()
-                        };
-                        let tip = if crate::services::calendar_store_service::memo_linked_mid(&rec.component).is_some() {
-                            if !rec.summary.trim().is_empty() && !rec.description.trim().is_empty() {
-                                format!(
-                                    "{}\n\n{}: {}",
-                                    body,
-                                    gettext("Email"),
-                                    rec.summary.trim()
-                                )
-                            } else {
-                                body.to_string()
-                            }
-                        } else {
-                            body.to_string()
-                        };
-                        canvas_for_memos_motion.set_tooltip_text(Some(&tip));
+                        let width = canvas_for_memos_motion.width();
+                        let rect = gdk::Rectangle::new(
+                            6,
+                            (item.y as i32).max(0),
+                            (width - 12).max(10),
+                            (item.height as i32).max(10),
+                        );
+                        Self::show_agenda_memo_hover_preview(
+                            &canvas_for_memos_motion,
+                            rect,
+                            &item.record,
+                            page.downgrade(),
+                        );
                     }
                 } else {
                     canvas_for_memos_motion.set_cursor_from_name(None);
-                    canvas_for_memos_motion.set_tooltip_text(None);
+                    page.dismiss_memo_hover_preview();
                 }
                 canvas_for_memos_motion.queue_draw();
             }
@@ -37416,13 +37541,13 @@ impl MailPage {
         let page_for_memos_leave = self.downgrade();
         let canvas_for_memos_leave = agenda_memos_canvas.clone();
         memos_motion.connect_leave(move |_ctrl| {
-            canvas_for_memos_leave.set_tooltip_text(None);
             let Some(page) = page_for_memos_leave.upgrade() else { return; };
             if page.imp().agenda_memos_hovered_row.get().is_some() {
                 page.imp().agenda_memos_hovered_row.set(None);
                 canvas_for_memos_leave.set_cursor_from_name(None);
                 canvas_for_memos_leave.queue_draw();
             }
+            page.dismiss_memo_hover_preview();
         });
         agenda_memos_canvas.add_controller(memos_motion);
         memos_scrolled.set_child(Some(&agenda_memos_canvas));
@@ -38033,7 +38158,14 @@ impl MailPage {
         }
     }
 
+    pub fn dismiss_memo_hover_preview(&self) {
+        if let Some(popover) = self.imp().active_memo_hover_popover.borrow().as_ref() {
+            popover.popdown();
+        }
+    }
+
     pub fn dismiss_active_agenda_popover(&self) {
+        self.dismiss_memo_hover_preview();
         let popover = self.imp().active_agenda_popover.take();
         if let Some(popover) = popover {
             popover.popdown();
@@ -38094,6 +38226,8 @@ impl MailPage {
         if let Some(popover) = existing {
             if popover.parent().as_ref() == Some(canvas.upcast_ref()) {
                 popover.remove_css_class("memo-note-popover");
+                popover.set_autohide(true);
+                popover.set_position(gtk::PositionType::Left);
                 popover.set_pointing_to(Some(rect));
                 return (popover, true);
             }
@@ -38625,6 +38759,214 @@ impl MailPage {
         popover.popup();
     }
 
+    fn show_agenda_memo_hover_preview(
+        canvas: &gtk::DrawingArea,
+        rect: gdk::Rectangle,
+        memo: &crate::services::calendar_store_service::MemoRecord,
+        page_weak: glib::WeakRef<MailPage>,
+    ) {
+        let Some(page) = page_weak.upgrade() else { return; };
+        if canvas.root().is_none() {
+            return;
+        }
+        let popover = {
+            let existing = page.imp().active_memo_hover_popover.borrow().clone();
+            if let Some(pop) = existing {
+                if pop.parent().as_ref() == Some(canvas.upcast_ref()) {
+                    pop
+                } else {
+                    pop.popdown();
+                    if pop.parent().is_some() {
+                        pop.unparent();
+                    }
+                    let new_pop = gtk::Popover::builder()
+                        .autohide(false)
+                        .can_target(false)
+                        .focusable(false)
+                        .has_arrow(true)
+                        .position(gtk::PositionType::Left)
+                        .css_classes(vec!["calendar-details-popover", "memo-note-popover"])
+                        .build();
+                    new_pop.set_parent(canvas);
+                    page.imp().active_memo_hover_popover.replace(Some(new_pop.clone()));
+                    new_pop
+                }
+            } else {
+                let new_pop = gtk::Popover::builder()
+                    .autohide(false)
+                    .can_target(false)
+                    .focusable(false)
+                    .has_arrow(true)
+                    .position(gtk::PositionType::Left)
+                    .css_classes(vec!["calendar-details-popover", "memo-note-popover"])
+                    .build();
+                new_pop.set_parent(canvas);
+                page.imp().active_memo_hover_popover.replace(Some(new_pop.clone()));
+                new_pop
+            }
+        };
+        popover.set_pointing_to(Some(&rect));
+
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .margin_start(4)
+            .margin_end(4)
+            .margin_top(2)
+            .margin_bottom(2)
+            .width_request(256)
+            .can_target(false)
+            .build();
+
+        let header_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .valign(gtk::Align::Center)
+            .can_target(false)
+            .build();
+
+        let is_team = crate::services::calendar_store_service::memo_is_team_shared(memo);
+        let scope_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .valign(gtk::Align::Center)
+            .can_target(false)
+            .css_classes(vec![
+                "mail-memo-scope-badge",
+                if is_team { "is-team" } else { "is-private" },
+            ])
+            .build();
+        let scope_icon = gtk::Image::builder()
+            .icon_name(if is_team {
+                "system-users-symbolic"
+            } else {
+                "channel-secure-symbolic"
+            })
+            .pixel_size(11)
+            .valign(gtk::Align::Center)
+            .build();
+        let scope_text = if is_team {
+            if !memo.source_display_name.trim().is_empty()
+                && memo.source_uid != "local-calendar"
+                && !memo.source_display_name.eq_ignore_ascii_case("local")
+            {
+                format!("{} · {}", gettext("Team"), memo.source_display_name.trim())
+            } else {
+                gettext("Team")
+            }
+        } else {
+            gettext("Private")
+        };
+        let scope_lbl = gtk::Label::builder()
+            .label(&scope_text)
+            .valign(gtk::Align::Center)
+            .build();
+        scope_row.append(&scope_icon);
+        scope_row.append(&scope_lbl);
+        header_row.append(&scope_row);
+
+        let header_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        header_spacer.set_hexpand(true);
+        header_row.append(&header_spacer);
+
+        let formatted_date = {
+            use chrono::Timelike;
+            let raw = memo.updated.trim();
+            if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M") {
+                let today = chrono::Local::now().date_naive();
+                if ndt.date() == today {
+                    format!("{}, {}", gettext("Today"), ndt.format("%H:%M"))
+                } else if Some(ndt.date()) == today.pred_opt() {
+                    format!("{}, {}", gettext("Yesterday"), ndt.format("%H:%M"))
+                } else if let Ok(gdt) = glib::DateTime::from_local(
+                    ndt.date().year(),
+                    ndt.date().month() as i32,
+                    ndt.date().day() as i32,
+                    ndt.time().hour() as i32,
+                    ndt.time().minute() as i32,
+                    0.0,
+                ) {
+                    gdt.format("%x, %H:%M")
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|_| ndt.format("%d.%m.%Y, %H:%M").to_string())
+                } else {
+                    ndt.format("%d.%m.%Y, %H:%M").to_string()
+                }
+            } else {
+                raw.to_string()
+            }
+        };
+        if !formatted_date.is_empty() {
+            let date_lbl = gtk::Label::builder()
+                .label(&formatted_date)
+                .valign(gtk::Align::Center)
+                .css_classes(vec!["memo-note-popover-date"])
+                .build();
+            header_row.append(&date_lbl);
+        }
+        content.append(&header_row);
+
+        let default_title = gettext("(Untitled)");
+        let note_body = if !memo.description.trim().is_empty() {
+            memo.description.trim()
+        } else if !memo.summary.trim().is_empty() {
+            memo.summary.trim()
+        } else {
+            &default_title
+        };
+
+        let body_label = gtk::Label::builder()
+            .label(note_body)
+            .wrap(true)
+            .wrap_mode(pango::WrapMode::WordChar)
+            .xalign(0.0)
+            .selectable(false)
+            .can_target(false)
+            .css_classes(vec!["memo-note-popover-body"])
+            .max_width_chars(38)
+            .lines(10)
+            .ellipsize(pango::EllipsizeMode::End)
+            .margin_top(2)
+            .margin_bottom(2)
+            .build();
+        content.append(&body_label);
+
+        if crate::services::calendar_store_service::memo_linked_mid(&memo.component).is_some()
+            && !memo.summary.trim().is_empty()
+            && memo.summary.trim() != note_body
+        {
+            let mail_context_row = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(6)
+                .valign(gtk::Align::Center)
+                .can_target(false)
+                .css_classes(vec!["memo-note-linked-mail-pill"])
+                .build();
+            mail_context_row.append(
+                &gtk::Image::builder()
+                    .icon_name("mail-read-symbolic")
+                    .pixel_size(12)
+                    .build(),
+            );
+            let mail_lbl = gtk::Label::builder()
+                .label(memo.summary.trim())
+                .xalign(0.0)
+                .hexpand(true)
+                .ellipsize(pango::EllipsizeMode::End)
+                .max_width_chars(35)
+                .selectable(false)
+                .can_target(false)
+                .build();
+            mail_context_row.append(&mail_lbl);
+            content.append(&mail_context_row);
+        }
+
+        popover.set_child(Some(&content));
+        if !popover.is_visible() {
+            popover.popup();
+        }
+    }
+
     fn show_agenda_memo_popover(
         canvas: &gtk::DrawingArea,
         rect: gdk::Rectangle,
@@ -38635,6 +38977,7 @@ impl MailPage {
         if canvas.root().is_none() {
             return;
         }
+        page.dismiss_memo_hover_preview();
         let (popover, _is_reused) = page.get_or_create_agenda_popover(canvas, &rect);
         popover.add_css_class("memo-note-popover");
 
@@ -39095,7 +39438,25 @@ impl MailPage {
             subj.trim().to_string()
         };
         let now_display = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
-        let editing_target = self.imp().mail_memo_editing_target.borrow_mut().take();
+        let editing_target = self
+            .imp()
+            .mail_memo_editing_target
+            .borrow_mut()
+            .take()
+            .or_else(|| {
+                self.imp()
+                    .agenda_cached_memos
+                    .borrow()
+                    .iter()
+                    .find(|m| {
+                        crate::services::calendar_store_service::memo_linked_mid(&m.component)
+                            .as_deref()
+                            == Some(mid_uri.as_str())
+                            && crate::services::calendar_store_service::memo_is_team_shared(m)
+                                == is_team
+                    })
+                    .map(|m| (m.source_uid.clone(), m.uid.clone()))
+            });
 
         if let Some((orig_source_uid, orig_uid)) = editing_target {
             let mut updated_comp_opt = None;
@@ -39245,7 +39606,7 @@ impl MailPage {
         };
 
         let target_mid = Self::message_memo_link_uri(msg);
-        let matching_memos: Vec<crate::services::calendar_store_service::MemoRecord> = self
+        let mut matching_memos: Vec<crate::services::calendar_store_service::MemoRecord> = self
             .imp()
             .agenda_cached_memos
             .borrow()
@@ -39256,6 +39617,9 @@ impl MailPage {
             })
             .cloned()
             .collect();
+        matching_memos.sort_by_key(|m| {
+            crate::services::calendar_store_service::memo_is_team_shared(m)
+        });
 
         let has_memos = !matching_memos.is_empty();
         if let Some(btn) = self.imp().modern_memo_button.borrow().as_ref() {
@@ -39274,11 +39638,26 @@ impl MailPage {
         }
 
         if !has_memos {
+            banner_list.remove_css_class("is-multi-memo-card");
             banner_list.set_visible(false);
             return;
         }
 
-        for memo in matching_memos {
+        let is_multi = matching_memos.len() > 1;
+        if is_multi {
+            banner_list.add_css_class("is-multi-memo-card");
+            banner_list.set_spacing(0);
+        } else {
+            banner_list.remove_css_class("is-multi-memo-card");
+            banner_list.set_spacing(6);
+        }
+
+        for (idx, memo) in matching_memos.into_iter().enumerate() {
+            if idx > 0 && is_multi {
+                let div = gtk::Separator::new(gtk::Orientation::Horizontal);
+                div.add_css_class("mail-memo-combined-divider");
+                banner_list.append(&div);
+            }
             let row = gtk::Box::builder()
                 .orientation(gtk::Orientation::Horizontal)
                 .spacing(8)

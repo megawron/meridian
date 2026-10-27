@@ -6516,7 +6516,7 @@ fn create_attachment_chip(
 
     let lbl = gtk::Label::builder()
         .label(&attachment.filename)
-        .ellipsize(gtk::pango::EllipsizeMode::Middle)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
         .max_width_chars(26)
         .css_classes(vec!["attachment-chip-label"])
         .valign(gtk::Align::Center)
@@ -6665,7 +6665,7 @@ fn create_attachment_card(
 
     let lbl_name = gtk::Label::builder()
         .label(&attachment.filename)
-        .ellipsize(gtk::pango::EllipsizeMode::Middle)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
         .lines(2)
         .wrap(true)
         .wrap_mode(gtk::pango::WrapMode::WordChar)
@@ -6828,7 +6828,7 @@ fn create_attachment_list_row(
 
     let lbl_name = gtk::Label::builder()
         .label(&attachment.filename)
-        .ellipsize(gtk::pango::EllipsizeMode::Middle)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
         .single_line_mode(true)
         .css_classes(vec!["attachment-list-label"])
         .hexpand(true)

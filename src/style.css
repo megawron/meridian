@@ -4215,7 +4215,6 @@ button.month-bar-chip.span-end {
 .calendar-agenda-canvas,
 .calendar-year-canvas,
 .taskpad-canvas,
-.memopad-canvas,
 .tasks-table-canvas,
 .memos-table-canvas {
   background: @view_bg_color;
@@ -6398,6 +6397,28 @@ popover.image-options-popover button.flat:hover {
   overflow: hidden;
 }
 
+.mail-memo-banner-list.is-multi-memo-card {
+  background-color: alpha(@warning_bg_color, 0.16);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.mail-memo-banner-list.is-multi-memo-card .mail-memo-banner-row {
+  background-color: transparent;
+  border-radius: 0;
+}
+
+.mail-memo-banner-list.is-multi-memo-card .mail-memo-scope-badge {
+  border-radius: 0;
+  min-width: 68px;
+}
+
+separator.mail-memo-combined-divider {
+  background-color: alpha(@warning_bg_color, 0.22);
+  min-height: 1px;
+  margin: 0;
+}
+
 .mail-memo-banner-icon {
   color: shade(@warning_bg_color, 0.68);
 }
@@ -6496,41 +6517,88 @@ button.mail-memo-delete-btn:hover,
   color: shade(@warning_bg_color, 0.72);
 }
 
-.memos-sidebar-section {
-  background-color: alpha(@warning_bg_color, 0.06);
-  border-radius: 8px;
+.memopad-canvas,
+.memos-sidebar-section,
+.memos-panel-scroll,
+.memos-panel-scroll > viewport,
+.meridian-sidebar-drawer .memos-sidebar-section,
+.meridian-sidebar-drawer scrolledwindow.memos-panel-scroll,
+.meridian-sidebar-drawer scrolledwindow.memos-panel-scroll > viewport,
+.calendar-sidebar .memos-sidebar-section,
+.calendar-sidebar scrolledwindow.memos-panel-scroll,
+.calendar-sidebar scrolledwindow.memos-panel-scroll > viewport,
+.memos-detached-window,
+.memos-detached-host {
+  background: #fcf9ec;
+  background-color: #fcf9ec;
+  border-radius: 0;
+}
+
+.memos-detached-host {
+  padding: 8px 4px 6px 4px;
+}
+
+headerbar.memos-detached-headerbar,
+.memos-detached-window headerbar {
+  background: #f6ebb8;
+  background-color: #f6ebb8;
+  color: shade(@warning_bg_color, 0.42);
+  border-bottom: 1px solid alpha(@warning_bg_color, 0.22);
+  box-shadow: none;
+}
+
+headerbar.memos-detached-headerbar .title,
+headerbar.memos-detached-headerbar button,
+.memos-sidebar-section .memos-section-header .heading,
+.memos-sidebar-section .memos-section-header .sidebar-drawer-total,
+.memos-sidebar-section .memos-section-header button {
+  color: shade(@warning_bg_color, 0.44);
 }
 
 popover.memo-note-popover > contents,
 popover.calendar-details-popover.memo-note-popover > contents,
 .popover.memo-note-popover > contents {
-  background-color: #fdf6d6;
-  border: 1px solid alpha(@warning_bg_color, 0.30);
+  background-color: #fffdf4;
+  border: none;
   border-radius: 12px;
-  box-shadow: 0 1px 3px 1px rgba(0, 0, 6, 0.07),
-              0 2px 6px 2px rgba(0, 0, 6, 0.03);
+  box-shadow: 0 4px 14px rgba(0, 0, 6, 0.12),
+              0 1px 4px rgba(0, 0, 6, 0.06);
   padding: 10px 12px;
 }
 
 popover.memo-note-popover > arrow,
 popover.calendar-details-popover.memo-note-popover > arrow,
 .popover.memo-note-popover > arrow {
-  background-color: #fdf6d6;
-  border-color: alpha(@warning_bg_color, 0.30);
+  background-color: #fffdf4;
+  border-color: alpha(@warning_bg_color, 0.45);
 }
 
 .memo-note-popover-date {
   font-size: 0.72rem;
   font-weight: 500;
-  color: shade(@warning_bg_color, 0.60);
-  opacity: 0.80;
+  color: shade(@warning_bg_color, 0.56);
+  opacity: 0.85;
 }
 
 .memo-note-popover-body {
   font-size: 0.94rem;
-  font-weight: 500;
-  color: shade(@warning_bg_color, 0.42);
+  font-weight: 600;
+  color: shade(@warning_bg_color, 0.36);
   line-height: 1.40;
+}
+
+.memo-note-linked-mail-pill {
+  background-color: alpha(@warning_bg_color, 0.14);
+  border-radius: 7px;
+  padding: 4px 8px;
+  color: shade(@warning_bg_color, 0.52);
+  font-size: 0.76rem;
+  font-weight: 500;
+}
+
+.memo-note-linked-mail-pill label {
+  font-size: 0.76rem;
+  font-weight: 500;
 }
 
 .memo-note-linked-mail-btn,
@@ -6557,9 +6625,18 @@ button.memo-note-linked-mail-btn:hover {
 
 @media (prefers-color-scheme: dark) {
   .mail-memo-banner-row,
-  .mail-memo-editor-bar {
+  .mail-memo-editor-bar,
+  .mail-memo-banner-list.is-multi-memo-card {
     background-color: alpha(@warning_bg_color, 0.20);
     box-shadow: none;
+  }
+
+  .mail-memo-banner-list.is-multi-memo-card .mail-memo-banner-row {
+    background-color: transparent;
+  }
+
+  separator.mail-memo-combined-divider {
+    background-color: alpha(@warning_bg_color, 0.28);
   }
 
   .mail-memo-banner-icon {
@@ -6614,15 +6691,50 @@ button.memo-note-linked-mail-btn:hover {
     color: lighter(@warning_color);
   }
 
-  .memos-sidebar-section {
-    background-color: alpha(@warning_bg_color, 0.06);
+  .memopad-canvas,
+  .memos-sidebar-section,
+  .memos-panel-scroll,
+  .memos-panel-scroll > viewport,
+  .meridian-sidebar-drawer .memos-sidebar-section,
+  .meridian-sidebar-drawer scrolledwindow.memos-panel-scroll,
+  .meridian-sidebar-drawer scrolledwindow.memos-panel-scroll > viewport,
+  .calendar-sidebar .memos-sidebar-section,
+  .calendar-sidebar scrolledwindow.memos-panel-scroll,
+  .calendar-sidebar scrolledwindow.memos-panel-scroll > viewport,
+  .memos-detached-window,
+  .memos-detached-host {
+    background: #1c1912;
+    background-color: #1c1912;
+    border-radius: 0;
+  }
+
+  headerbar.memos-detached-headerbar,
+  .memos-detached-window headerbar {
+    background: #282213;
+    background-color: #282213;
+    color: #fef08a;
+    border-bottom: 1px solid alpha(@warning_bg_color, 0.24);
+    box-shadow: none;
+  }
+
+  headerbar.memos-detached-headerbar .title,
+  headerbar.memos-detached-headerbar button,
+  .memos-sidebar-section .memos-section-header .heading,
+  .memos-sidebar-section .memos-section-header .sidebar-drawer-total,
+  .memos-sidebar-section .memos-section-header button {
+    color: #fef08a;
   }
 
   popover.memo-note-popover > contents,
   popover.calendar-details-popover.memo-note-popover > contents,
   .popover.memo-note-popover > contents {
     background-color: #2c2412;
-    border-color: alpha(@warning_bg_color, 0.38);
+    border: none;
+  }
+
+  .memo-note-linked-mail-pill {
+    background-color: alpha(@warning_bg_color, 0.18);
+    color: lighter(@warning_color);
   }
 
   popover.memo-note-popover > arrow,

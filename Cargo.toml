@@ -37,3 +37,4 @@ regex = "1.11"
 
 [profile.dev]
 debug = 1
+incremental = false

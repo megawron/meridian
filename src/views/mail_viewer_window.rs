@@ -1592,7 +1592,7 @@ impl MailViewerWindow {
 
                 let lbl_name = gtk::Label::builder()
                     .label(&att.filename)
-                    .ellipsize(gtk::pango::EllipsizeMode::Middle)
+                    .ellipsize(gtk::pango::EllipsizeMode::End)
                     .css_classes(vec!["attachment-list-label"])
                     .hexpand(true)
                     .xalign(0.0)
@@ -1903,7 +1903,7 @@ impl MailViewerWindow {
 
         let lbl_name = gtk::Label::builder()
             .label(&att.filename)
-            .ellipsize(gtk::pango::EllipsizeMode::Middle)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
             .max_width_chars(28)
             .css_classes(vec!["attachment-card-name"])
             .xalign(0.0)
@@ -2039,7 +2039,7 @@ impl MailViewerWindow {
 
         let lbl = gtk::Label::builder()
             .label(&att.filename)
-            .ellipsize(gtk::pango::EllipsizeMode::Middle)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
             .max_width_chars(max_chars)
             .css_classes(vec!["attachment-chip-label"])
             .valign(gtk::Align::Center)

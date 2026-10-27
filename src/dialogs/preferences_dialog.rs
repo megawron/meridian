@@ -7002,7 +7002,7 @@ fn configure_folder_combo_row(row: &adw::ComboRow) {
             .build();
         let sub_lbl = gtk::Label::builder()
             .xalign(0.0)
-            .ellipsize(gtk::pango::EllipsizeMode::Middle)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
             .css_classes(vec!["caption", "dim-label"])
             .build();
         vbox.append(&title_lbl);
@@ -8933,7 +8933,7 @@ fn smime_file_row(
         })
         .hexpand(true)
         .halign(gtk::Align::End)
-        .ellipsize(gtk::pango::EllipsizeMode::Middle)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
         .max_width_chars(36)
         .build();
     row.add_suffix(&path_label);
@@ -9015,7 +9015,7 @@ fn smime_files_row(
         })
         .hexpand(true)
         .halign(gtk::Align::End)
-        .ellipsize(gtk::pango::EllipsizeMode::Middle)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
         .max_width_chars(36)
         .build();
     row.add_suffix(&path_label);

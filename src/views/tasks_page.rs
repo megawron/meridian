@@ -14742,7 +14742,7 @@ fn present_loaded_task_source_properties(
         .label(task_source_custom_file_label(
             properties.custom_file_uri.as_deref(),
         ))
-        .ellipsize(gtk::pango::EllipsizeMode::Middle)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
         .hexpand(true)
         .halign(gtk::Align::Start)
         .build();
