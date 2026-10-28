@@ -7,7 +7,7 @@
 // - Dynamic Task list with checkable boxes, priority chips, and due dates
 // - "+ New Task" task creation dialog connection
 
-use chrono::{Duration, Local, NaiveDate, NaiveDateTime, Utc};
+use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, Utc};
 use gtk::{gio, glib};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -7608,6 +7608,8 @@ impl TasksPage {
 
         let toolbar_view = adw::ToolbarView::new();
         let header_bar = adw::HeaderBar::new();
+        header_bar.set_show_start_title_buttons(false);
+        header_bar.set_show_end_title_buttons(false);
         let cancel_button = gtk::Button::with_label(&gettext("Cancel"));
         header_bar.pack_start(&cancel_button);
         let save_button = gtk::Button::builder()
@@ -7623,7 +7625,7 @@ impl TasksPage {
             .margin_start(20)
             .margin_end(20)
             .margin_top(16)
-            .margin_bottom(20)
+            .margin_bottom(24)
             .build();
 
         let source_model = gtk::StringList::new(&[&gettext("Loading task lists…")]);
@@ -7655,56 +7657,242 @@ impl TasksPage {
                 save_button_for_selection.set_sensitive(writable);
             }
         });
-        let details = adw::PreferencesGroup::builder().title(&gettext("Details")).build();
-        details.add(&source_row);
 
+        let attach_task_date_picker = |entry_row: &adw::EntryRow, with_quick_buttons: bool| {
+            let popover = gtk::Popover::builder().has_arrow(true).build();
+            let pop_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(6)
+                .margin_start(8)
+                .margin_end(8)
+                .margin_top(8)
+                .margin_bottom(8)
+                .build();
+            if with_quick_buttons {
+                let quick_box = gtk::Box::builder()
+                    .orientation(gtk::Orientation::Horizontal)
+                    .spacing(4)
+                    .homogeneous(true)
+                    .build();
+                for (label, days_offset) in [
+                    (gettext("Today"), Some(0i64)),
+                    (gettext("Tomorrow"), Some(1i64)),
+                    ("+7d".to_string(), Some(7i64)),
+                ] {
+                    let q_btn = gtk::Button::builder()
+                        .label(&label)
+                        .css_classes(vec!["flat"])
+                        .build();
+                    let entry_weak = entry_row.downgrade();
+                    let pop_weak = popover.downgrade();
+                    q_btn.connect_clicked(move |_| {
+                        if let Some(offset) = days_offset {
+                            let target = Local::now().date_naive() + chrono::Duration::days(offset);
+                            if let Some(row) = entry_weak.upgrade() {
+                                row.set_text(&target.format("%Y-%m-%d").to_string());
+                            }
+                        }
+                        if let Some(pop) = pop_weak.upgrade() {
+                            pop.popdown();
+                        }
+                    });
+                    quick_box.append(&q_btn);
+                }
+                pop_box.append(&quick_box);
+            }
+            let cal = gtk::Calendar::new();
+            let clear_btn = gtk::Button::builder()
+                .label(&gettext("Clear"))
+                .css_classes(vec!["flat"])
+                .build();
+            pop_box.append(&cal);
+            pop_box.append(&clear_btn);
+            popover.set_child(Some(&pop_box));
+
+            let btn = gtk::MenuButton::builder()
+                .icon_name("x-office-calendar-symbolic")
+                .tooltip_text(&gettext("Choose Date"))
+                .css_classes(vec!["flat", "circular"])
+                .valign(gtk::Align::Center)
+                .popover(&popover)
+                .build();
+            entry_row.add_suffix(&btn);
+
+            let is_syncing = Rc::new(Cell::new(false));
+            let is_nav_click = Rc::new(Cell::new(false));
+            let cal_weak_click = cal.downgrade();
+            let nav_flag_click = Rc::clone(&is_nav_click);
+            let click_gesture = gtk::GestureClick::new();
+            click_gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+            click_gesture.connect_pressed(move |_, _, x, y| {
+                let mut clicked_header_btn = false;
+                if let Some(cal_widget) = cal_weak_click.upgrade() {
+                    let mut cur = cal_widget.pick(x, y, gtk::PickFlags::DEFAULT);
+                    while let Some(w) = cur {
+                        if w == *cal_widget.upcast_ref::<gtk::Widget>() {
+                            break;
+                        }
+                        if w.downcast_ref::<gtk::Button>().is_some() {
+                            clicked_header_btn = true;
+                            break;
+                        }
+                        cur = w.parent();
+                    }
+                }
+                nav_flag_click.set(clicked_header_btn);
+            });
+            cal.add_controller(click_gesture);
+
+            let entry_weak_open = entry_row.downgrade();
+            let cal_weak_open = cal.downgrade();
+            let is_syncing_open = Rc::clone(&is_syncing);
+            popover.connect_show(move |_| {
+                if let (Some(row), Some(cal_w)) = (entry_weak_open.upgrade(), cal_weak_open.upgrade()) {
+                    let text = row.text();
+                    let date_part = text.trim().split('T').next().unwrap_or("");
+                    if let Ok(parsed) = NaiveDate::parse_from_str(date_part, "%Y-%m-%d")
+                        .or_else(|_| NaiveDate::parse_from_str(date_part, "%Y%m%d"))
+                    {
+                        if let Ok(dt) = glib::DateTime::new(
+                            &glib::TimeZone::local(),
+                            parsed.year(),
+                            parsed.month() as i32,
+                            parsed.day() as i32,
+                            0,
+                            0,
+                            0.0,
+                        ) {
+                            is_syncing_open.set(true);
+                            cal_w.select_day(&dt);
+                            is_syncing_open.set(false);
+                        }
+                    }
+                }
+            });
+
+            let entry_weak_sel = entry_row.downgrade();
+            let popover_weak_sel = popover.downgrade();
+            let is_syncing_sel = Rc::clone(&is_syncing);
+            let nav_flag_sel = Rc::clone(&is_nav_click);
+            cal.connect_day_selected(move |c| {
+                if is_syncing_sel.get() || nav_flag_sel.replace(false) {
+                    return;
+                }
+                let dt = c.date();
+                if let Some(row) = entry_weak_sel.upgrade() {
+                    row.set_text(&format!(
+                        "{:04}-{:02}-{:02}",
+                        dt.year(),
+                        dt.month(),
+                        dt.day_of_month()
+                    ));
+                }
+                if let Some(pop) = popover_weak_sel.upgrade() {
+                    pop.popdown();
+                }
+            });
+
+            let entry_weak_clear = entry_row.downgrade();
+            let popover_weak_clear = popover.downgrade();
+            clear_btn.connect_clicked(move |_| {
+                if let Some(row) = entry_weak_clear.upgrade() {
+                    row.set_text("");
+                }
+                if let Some(pop) = popover_weak_clear.upgrade() {
+                    pop.popdown();
+                }
+            });
+        };
+
+        // Group 1: Primary Task Fields (Simple & Focused like GNOME Endeavour / Errands)
+        let details = adw::PreferencesGroup::new();
         let title_entry = adw::EntryRow::builder().title(&gettext("Title")).build();
         details.add(&title_entry);
-        let dtstart_entry = adw::EntryRow::builder()
-            .title(&gettext("Start (YYYY-MM-DD, optional)"))
-            .build();
-        dtstart_entry.set_tooltip_text(Some(&gettext(
-            "New values are date-only. Imported date-time values remain unchanged unless edited.",
-        )));
-        details.add(&dtstart_entry);
+        details.add(&source_row);
+
         let due_entry = adw::EntryRow::builder()
-            .title(&gettext("Due (YYYY-MM-DD, optional)"))
+            .title(&gettext("Due Date"))
             .build();
         due_entry.set_tooltip_text(Some(&gettext(
             "New values are date-only. Imported date-time values remain unchanged unless edited.",
         )));
+        attach_task_date_picker(&due_entry, true);
         details.add(&due_entry);
-        let completed_entry = adw::EntryRow::builder()
-            .title(&gettext("Completed (YYYY-MM-DD, optional)"))
-            .build();
-        completed_entry.set_tooltip_text(Some(&gettext(
-            "A completion date is only permitted for Completed status and must not be in the future.",
-        )));
-        details.add(&completed_entry);
-        let recurrence_entry = adw::EntryRow::builder()
-            .title(&gettext("Recurrence (RRULE, optional)"))
-            .build();
-        recurrence_entry.set_tooltip_text(Some(&gettext("e.g. FREQ=WEEKLY;BYDAY=MO;COUNT=10")));
-        details.add(&recurrence_entry);
-        let rdate_entry = adw::EntryRow::builder()
-            .title(&gettext("Additional Due Dates (RDATE, comma-separated)"))
-            .build();
-        rdate_entry.set_tooltip_text(Some(&gettext("e.g. 20260812,20260819")));
-        details.add(&rdate_entry);
-        let exdate_entry = adw::EntryRow::builder()
-            .title(&gettext("Exceptions (EXDATE, comma-separated)"))
-            .build();
-        exdate_entry.set_tooltip_text(Some(&gettext("e.g. 20260815,20260822")));
-        details.add(&exdate_entry);
 
-        let priority_row = adw::ActionRow::builder()
-            .title(&gettext("Priority (1 = high, 0 = normal)"))
-            .build();
         let priority_spin = gtk::SpinButton::with_range(0.0, 9.0, 1.0);
         priority_spin.set_numeric(true);
         priority_spin.set_value(0.0);
-        priority_row.add_suffix(&priority_spin);
-        details.add(&priority_row);
+        let priority_combo = adw::ComboRow::builder()
+            .title(&gettext("Priority"))
+            .model(&gtk::StringList::new(&[
+                &gettext("None"),
+                &gettext("High"),
+                &gettext("Medium"),
+                &gettext("Low"),
+            ]))
+            .build();
+        {
+            let priority_spin_for_combo = priority_spin.clone();
+            let priority_syncing = Rc::new(Cell::new(false));
+            let syncing_for_combo = Rc::clone(&priority_syncing);
+            priority_combo.connect_selected_notify(move |combo| {
+                if syncing_for_combo.get() {
+                    return;
+                }
+                syncing_for_combo.set(true);
+                let val = match combo.selected() {
+                    1 => 1.0,
+                    2 => 5.0,
+                    3 => 9.0,
+                    _ => 0.0,
+                };
+                priority_spin_for_combo.set_value(val);
+                syncing_for_combo.set(false);
+            });
+            let priority_combo_for_spin = priority_combo.clone();
+            let syncing_for_spin = Rc::clone(&priority_syncing);
+            priority_spin.connect_value_changed(move |spin| {
+                if syncing_for_spin.get() {
+                    return;
+                }
+                syncing_for_spin.set(true);
+                let p = spin.value().round() as u8;
+                let idx = match p {
+                    0 => 0,
+                    1..=4 => 1,
+                    5 => 2,
+                    _ => 3,
+                };
+                priority_combo_for_spin.set_selected(idx);
+                syncing_for_spin.set(false);
+            });
+        }
+        details.add(&priority_combo);
+        content_box.append(&details);
+
+        // Group 2: Notes / Description
+        let description_group = adw::PreferencesGroup::builder()
+            .title(&gettext("Description"))
+            .build();
+        let description_view = gtk::TextView::builder()
+            .wrap_mode(gtk::WrapMode::WordChar)
+            .height_request(100)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(8)
+            .margin_bottom(8)
+            .build();
+        description_group.add(&description_view);
+        content_box.append(&description_group);
+
+        // Group 3: Progressive Enhancement (Expandable rows for Status, Schedule, Recurrence & Attachments)
+        let advanced_group = adw::PreferencesGroup::new();
+
+        let schedule_expander = adw::ExpanderRow::builder()
+            .title(&gettext("Status & Schedule"))
+            .subtitle(&gettext("Progress, start date, and completion date"))
+            .show_enable_switch(false)
+            .build();
 
         let status_row = adw::ComboRow::builder()
             .title(&crate::i18n::gettext("Status"))
@@ -7715,20 +7903,175 @@ impl TasksPage {
                 &crate::i18n::gettext("Cancelled"),
             ]))
             .build();
-        details.add(&status_row);
-        let percent_row = adw::SpinRow::with_range(0.0, 100.0, 1.0);
-        percent_row.set_title(&gettext("Progress (Percent)"));
+        schedule_expander.add_row(&status_row);
+
+        let percent_row = adw::SpinRow::with_range(0.0, 100.0, 5.0);
+        percent_row.set_title(&gettext("Progress (%)"));
         percent_row.set_digits(0);
-        percent_row.set_snap_to_ticks(true);
-        details.add(&percent_row);
+        percent_row.set_snap_to_ticks(false);
+        schedule_expander.add_row(&percent_row);
+
+        let dtstart_entry = adw::EntryRow::builder()
+            .title(&gettext("Start Date"))
+            .build();
+        dtstart_entry.set_tooltip_text(Some(&gettext(
+            "New values are date-only. Imported date-time values remain unchanged unless edited.",
+        )));
+        attach_task_date_picker(&dtstart_entry, true);
+        schedule_expander.add_row(&dtstart_entry);
+
+        let completed_entry = adw::EntryRow::builder()
+            .title(&gettext("Completed Date"))
+            .build();
+        completed_entry.set_tooltip_text(Some(&gettext(
+            "A completion date is only permitted for Completed status and must not be in the future.",
+        )));
+        attach_task_date_picker(&completed_entry, true);
+        schedule_expander.add_row(&completed_entry);
+
+        advanced_group.add(&schedule_expander);
+
+        let recurrence_expander = adw::ExpanderRow::builder()
+            .title(&gettext("Recurrence & Reminders"))
+            .subtitle(&gettext("Repeat rules and notifications"))
+            .show_enable_switch(false)
+            .build();
+
+        let recurrence_entry = adw::EntryRow::builder()
+            .title(&gettext("Recurrence Rule (RRULE)"))
+            .build();
+        recurrence_entry.set_tooltip_text(Some(&gettext("e.g. FREQ=WEEKLY;BYDAY=MO;COUNT=10")));
+
+        let recurrence_preset_row = adw::ComboRow::builder()
+            .title(&gettext("Repeat"))
+            .model(&gtk::StringList::new(&[
+                &gettext("Does not repeat"),
+                &gettext("Daily"),
+                &gettext("Weekly"),
+                &gettext("Monthly"),
+                &gettext("Yearly"),
+                &gettext("Custom…"),
+            ]))
+            .build();
+        recurrence_expander.add_row(&recurrence_preset_row);
+        recurrence_entry.set_visible(false);
+        recurrence_expander.add_row(&recurrence_entry);
+
+        let rdate_entry = adw::EntryRow::builder()
+            .title(&gettext("Additional Due Dates (RDATE)"))
+            .build();
+        rdate_entry.set_tooltip_text(Some(&gettext("e.g. 20260812,20260819")));
+        rdate_entry.set_visible(false);
+        recurrence_expander.add_row(&rdate_entry);
+
+        let exdate_entry = adw::EntryRow::builder()
+            .title(&gettext("Exception Dates (EXDATE)"))
+            .build();
+        exdate_entry.set_tooltip_text(Some(&gettext("e.g. 20260815,20260822")));
+        exdate_entry.set_visible(false);
+        recurrence_expander.add_row(&exdate_entry);
+
+        {
+            let rrule_syncing = Rc::new(Cell::new(false));
+            let rrule_for_preset = recurrence_entry.clone();
+            let rdate_for_preset = rdate_entry.clone();
+            let exdate_for_preset = exdate_entry.clone();
+            let syncing_for_preset = Rc::clone(&rrule_syncing);
+            recurrence_preset_row.connect_selected_notify(move |combo| {
+                if syncing_for_preset.get() {
+                    return;
+                }
+                syncing_for_preset.set(true);
+                let sel = combo.selected();
+                match sel {
+                    0 => {
+                        rrule_for_preset.set_text("");
+                        rrule_for_preset.set_visible(false);
+                    }
+                    1 => {
+                        rrule_for_preset.set_text("FREQ=DAILY");
+                        rrule_for_preset.set_visible(false);
+                    }
+                    2 => {
+                        rrule_for_preset.set_text("FREQ=WEEKLY");
+                        rrule_for_preset.set_visible(false);
+                    }
+                    3 => {
+                        rrule_for_preset.set_text("FREQ=MONTHLY");
+                        rrule_for_preset.set_visible(false);
+                    }
+                    4 => {
+                        rrule_for_preset.set_text("FREQ=YEARLY");
+                        rrule_for_preset.set_visible(false);
+                    }
+                    _ => {
+                        rrule_for_preset.set_visible(true);
+                        rdate_for_preset.set_visible(true);
+                        exdate_for_preset.set_visible(true);
+                    }
+                }
+                syncing_for_preset.set(false);
+            });
+
+            let preset_for_rrule = recurrence_preset_row.clone();
+            let rrule_vis = recurrence_entry.clone();
+            let syncing_for_rrule = Rc::clone(&rrule_syncing);
+            recurrence_entry.connect_changed(move |entry| {
+                if syncing_for_rrule.get() {
+                    return;
+                }
+                syncing_for_rrule.set(true);
+                let val = entry.text().trim().to_ascii_uppercase();
+                let idx = match val.as_str() {
+                    "" => 0,
+                    "FREQ=DAILY" => 1,
+                    "FREQ=WEEKLY" => 2,
+                    "FREQ=MONTHLY" => 3,
+                    "FREQ=YEARLY" => 4,
+                    _ => {
+                        rrule_vis.set_visible(true);
+                        5
+                    }
+                };
+                preset_for_rrule.set_selected(idx);
+                syncing_for_rrule.set(false);
+            });
+        }
+
+        let alarm_editor = AlarmEditor::new(
+            (!initial_component.trim().is_empty()).then_some(initial_component.as_str()),
+            &initial_draft.summary,
+        );
+        let alarm_dirty_gesture = gtk::GestureClick::new();
+        let dirty_for_alarm = Rc::clone(&dirty);
+        let dialog_state_for_alarm = Rc::clone(&dialog_state);
+        alarm_dirty_gesture.connect_pressed(move |_, _, _, _| {
+            dirty_for_alarm.set(true);
+            dialog_state_for_alarm.set(TaskEditorDialogState::Dirty);
+        });
+        alarm_editor.widget().add_controller(alarm_dirty_gesture);
+        let alarm_row = adw::PreferencesRow::builder()
+            .activatable(false)
+            .child(alarm_editor.widget())
+            .build();
+        recurrence_expander.add_row(&alarm_row);
+
+        advanced_group.add(&recurrence_expander);
+
+        let extras_expander = adw::ExpanderRow::builder()
+            .title(&gettext("Categories & Attachments"))
+            .subtitle(&gettext("Tags and linked files"))
+            .show_enable_switch(false)
+            .build();
 
         let categories_entry = adw::EntryRow::builder()
             .title(&gettext("Categories (Comma-separated)"))
             .build();
-        details.add(&categories_entry);
+        extras_expander.add_row(&categories_entry);
+
         let attachment_view = gtk::TextView::builder()
             .wrap_mode(gtk::WrapMode::None)
-            .height_request(72)
+            .height_request(64)
             .margin_start(12)
             .margin_end(12)
             .margin_top(6)
@@ -7738,8 +8081,8 @@ impl TasksPage {
         let attachment_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .min_content_height(72)
-            .max_content_height(160)
+            .min_content_height(64)
+            .max_content_height(140)
             .build();
         attachment_scroll.set_child(Some(&attachment_view));
         let attachment_picker = gtk::Button::builder()
@@ -7757,7 +8100,7 @@ impl TasksPage {
             .margin_top(6)
             .build();
         let attachment_title = gtk::Label::builder()
-            .label(&gettext("Attachments (one URI or full ATTACH line per line)"))
+            .label(&gettext("Attachments"))
             .halign(gtk::Align::Start)
             .hexpand(true)
             .build();
@@ -7768,21 +8111,14 @@ impl TasksPage {
             .build();
         attachment_box.append(&attachment_header);
         attachment_box.append(&attachment_scroll);
-        details.add(&attachment_box);
-        let alarm_editor = AlarmEditor::new(
-            (!initial_component.trim().is_empty()).then_some(initial_component.as_str()),
-            &initial_draft.summary,
-        );
-        let alarm_dirty_gesture = gtk::GestureClick::new();
-        let dirty_for_alarm = Rc::clone(&dirty);
-        let dialog_state_for_alarm = Rc::clone(&dialog_state);
-        alarm_dirty_gesture.connect_pressed(move |_, _, _, _| {
-            dirty_for_alarm.set(true);
-            dialog_state_for_alarm.set(TaskEditorDialogState::Dirty);
-        });
-        alarm_editor.widget().add_controller(alarm_dirty_gesture);
-        details.add(alarm_editor.widget());
-        content_box.append(&details);
+        let attachment_row = adw::PreferencesRow::builder()
+            .activatable(false)
+            .child(&attachment_box)
+            .build();
+        extras_expander.add_row(&attachment_row);
+
+        advanced_group.add(&extras_expander);
+        content_box.append(&advanced_group);
 
         let attachment_buffer_for_picker = attachment_buffer.clone();
         attachment_picker.connect_clicked(move |button| {
@@ -7822,20 +8158,6 @@ impl TasksPage {
             });
         });
 
-        let description_group = adw::PreferencesGroup::builder()
-            .title(&gettext("Description"))
-            .build();
-        let description_view = gtk::TextView::builder()
-            .wrap_mode(gtk::WrapMode::WordChar)
-            .height_request(120)
-            .margin_start(12)
-            .margin_end(12)
-            .margin_top(8)
-            .margin_bottom(8)
-            .build();
-        description_group.add(&description_view);
-        content_box.append(&description_group);
-
         let scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
@@ -7870,6 +8192,32 @@ impl TasksPage {
         description_view
             .buffer()
             .set_text(&initial_draft.description);
+
+        // Auto-expand sections that have populated values when editing a task
+        if !initial_draft.dtstart.input.trim().is_empty()
+            || !initial_completed.trim().is_empty()
+            || task_status_index(&initial_component) != 0
+            || initial_percent > 0
+        {
+            schedule_expander.set_expanded(true);
+        }
+        if !initial_draft.rdates.trim().is_empty() || !initial_draft.exdates.trim().is_empty() {
+            rdate_entry.set_visible(true);
+            exdate_entry.set_visible(true);
+            recurrence_entry.set_visible(true);
+        }
+        if !initial_draft.recurrence.trim().is_empty()
+            || !initial_draft.rdates.trim().is_empty()
+            || !initial_draft.exdates.trim().is_empty()
+            || !alarm_editor.alarms().is_empty()
+        {
+            recurrence_expander.set_expanded(true);
+        }
+        if !initial_draft.categories.trim().is_empty()
+            || !initial_draft.attachments.trim().is_empty()
+        {
+            extras_expander.set_expanded(true);
+        }
         if initial_draft.unsupported_status.is_some() || initial_draft.unsupported_percent.is_some()
         {
             let mut imported = Vec::new();

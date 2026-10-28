@@ -4705,6 +4705,8 @@ impl MemosPage {
 
         let toolbar_view = adw::ToolbarView::new();
         let header_bar = adw::HeaderBar::new();
+        header_bar.set_show_start_title_buttons(false);
+        header_bar.set_show_end_title_buttons(false);
         let cancel_button = gtk::Button::with_label(&crate::i18n::gettext("Cancel"));
         header_bar.pack_start(&cancel_button);
         let save_button = gtk::Button::builder()

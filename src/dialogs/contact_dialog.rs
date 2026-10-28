@@ -46,11 +46,18 @@ mod imp {
             static PROPERTIES: OnceLock<Vec<glib::ParamSpec>> = OnceLock::new();
             PROPERTIES.get_or_init(|| {
                 vec![
-                    glib::ParamSpecString::builder("edit-vcard").build(),
-                    glib::ParamSpecString::builder("edit-uid").build(),
-                    glib::ParamSpecString::builder("edit-source-uid").build(),
+                    glib::ParamSpecString::builder("edit-vcard")
+                        .construct()
+                        .build(),
+                    glib::ParamSpecString::builder("edit-uid")
+                        .construct()
+                        .build(),
+                    glib::ParamSpecString::builder("edit-source-uid")
+                        .construct()
+                        .build(),
                     glib::ParamSpecBoolean::builder("list-mode")
                         .default_value(false)
+                        .construct()
                         .build(),
                 ]
             })
@@ -146,6 +153,19 @@ impl ContactDialog {
         let toolbar_view = adw::ToolbarView::new();
 
         let header_bar = adw::HeaderBar::new();
+        header_bar.set_show_start_title_buttons(false);
+        header_bar.set_show_end_title_buttons(false);
+        let btn_cancel = gtk::Button::builder()
+            .label("Abbrechen")
+            .build();
+        let dialog_weak_for_cancel = self.downgrade();
+        btn_cancel.connect_clicked(move |_| {
+            if let Some(dialog) = dialog_weak_for_cancel.upgrade() {
+                dialog.close();
+            }
+        });
+        header_bar.pack_start(&btn_cancel);
+
         let btn_save = gtk::Button::builder()
             .label("Speichern")
             .css_classes(vec!["suggested-action"])
@@ -164,7 +184,7 @@ impl ContactDialog {
             .margin_start(20)
             .margin_end(20)
             .margin_top(16)
-            .margin_bottom(20)
+            .margin_bottom(24)
             .build();
 
         // Header Avatar & Name
@@ -172,50 +192,85 @@ impl ContactDialog {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(16)
             .halign(gtk::Align::Center)
-            .margin_bottom(8)
+            .margin_bottom(4)
             .build();
 
         let avatar = adw::Avatar::builder()
-            .size(64)
+            .size(72)
             .text("Neuer Kontakt")
             .show_initials(true)
             .build();
         name_box.append(&avatar);
-
         content_box.append(&name_box);
 
-        // Group 1: General Info
-        let group_general = adw::PreferencesGroup::builder()
-            .title("Persönliche Angaben")
-            .build();
+        // Group 1: General Info (Clean & Focused like GNOME Contacts)
+        let group_general = adw::PreferencesGroup::new();
 
         let row_name = adw::EntryRow::builder().title("Vollständiger Name").build();
+        let name_details_toggle = gtk::ToggleButton::builder()
+            .icon_name("pan-down-symbolic")
+            .tooltip_text("Strukturierte Namensfelder ein-/ausblenden")
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .build();
+        row_name.add_suffix(&name_details_toggle);
         group_general.add(&row_name);
 
-        let row_family_name = adw::EntryRow::builder().title("Nachname (N)").build();
-        group_general.add(&row_family_name);
-
-        let row_given_name = adw::EntryRow::builder().title("Vorname (N)").build();
+        let row_given_name = adw::EntryRow::builder().title("Vorname").build();
+        row_given_name.set_visible(false);
         group_general.add(&row_given_name);
 
+        let row_family_name = adw::EntryRow::builder().title("Nachname").build();
+        row_family_name.set_visible(false);
+        group_general.add(&row_family_name);
+
         let row_additional_name = adw::EntryRow::builder()
-            .title("Weitere Vornamen (N)")
+            .title("Weitere Vornamen")
             .build();
+        row_additional_name.set_visible(false);
         group_general.add(&row_additional_name);
 
-        let row_name_prefix = adw::EntryRow::builder().title("Namenspräfix (N)").build();
+        let row_name_prefix = adw::EntryRow::builder().title("Namenspräfix").build();
+        row_name_prefix.set_visible(false);
         group_general.add(&row_name_prefix);
 
-        let row_name_suffix = adw::EntryRow::builder().title("Namenssuffix (N)").build();
+        let row_name_suffix = adw::EntryRow::builder().title("Namenssuffix").build();
+        row_name_suffix.set_visible(false);
         group_general.add(&row_name_suffix);
 
-        let row_org = adw::EntryRow::builder()
-            .title("Firma / Organisation")
-            .build();
-        group_general.add(&row_org);
+        {
+            let row_given_name = row_given_name.clone();
+            let row_family_name = row_family_name.clone();
+            let row_additional_name = row_additional_name.clone();
+            let row_name_prefix = row_name_prefix.clone();
+            let row_name_suffix = row_name_suffix.clone();
+            name_details_toggle.connect_toggled(move |btn| {
+                let show = btn.is_active();
+                btn.set_icon_name(if show {
+                    "pan-up-symbolic"
+                } else {
+                    "pan-down-symbolic"
+                });
+                row_given_name.set_visible(show);
+                row_family_name.set_visible(show);
+                row_additional_name.set_visible(show);
+                row_name_prefix.set_visible(show);
+                row_name_suffix.set_visible(show);
+            });
+        }
 
-        let row_title = adw::EntryRow::builder().title("Position / Titel").build();
-        group_general.add(&row_title);
+        {
+            let avatar = avatar.clone();
+            row_name.connect_changed(move |entry| {
+                let text = entry.text();
+                let trimmed = text.trim();
+                avatar.set_text(Some(if trimmed.is_empty() {
+                    "Neuer Kontakt"
+                } else {
+                    trimmed
+                }));
+            });
+        }
 
         let source_model = gtk::StringList::new(&["Adressbücher werden geladen…"]);
         let source_uids = Rc::new(RefCell::new(Vec::<String>::new()));
@@ -225,30 +280,103 @@ impl ContactDialog {
             .build();
         source_row.set_sensitive(edit_uid.is_none());
         group_general.add(&source_row);
+
+        let row_org = adw::EntryRow::builder()
+            .title("Firma / Organisation")
+            .build();
+        group_general.add(&row_org);
+
+        let row_title = adw::EntryRow::builder().title("Position / Titel").build();
+        group_general.add(&row_title);
+
         content_box.append(&group_general);
 
-        // Group 2: Contact Methods
+        // Group 2: Contact Methods (Progressive Email & Phone rows)
         let group_contact = adw::PreferencesGroup::builder()
             .title("Kontaktdaten")
             .build();
 
         let row_email1 = adw::EntryRow::builder().title("E-Mail (Privat)").build();
+        row_email1.set_input_purpose(gtk::InputPurpose::Email);
+        let btn_add_email = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text("Weitere E-Mail-Adresse hinzufügen")
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .build();
+        row_email1.add_suffix(&btn_add_email);
         group_contact.add(&row_email1);
 
         let row_email2 = adw::EntryRow::builder().title("E-Mail (Arbeit)").build();
+        row_email2.set_input_purpose(gtk::InputPurpose::Email);
+        row_email2.set_visible(false);
         group_contact.add(&row_email2);
 
         let row_email3 = adw::EntryRow::builder().title("E-Mail (Weitere)").build();
+        row_email3.set_input_purpose(gtk::InputPurpose::Email);
+        row_email3.set_visible(false);
         group_contact.add(&row_email3);
 
+        {
+            let row_email2 = row_email2.clone();
+            let row_email3 = row_email3.clone();
+            btn_add_email.connect_clicked(move |btn| {
+                if !row_email2.is_visible() {
+                    row_email2.set_visible(true);
+                    row_email2.grab_focus();
+                    if row_email3.is_visible() {
+                        btn.set_visible(false);
+                    }
+                } else if !row_email3.is_visible() {
+                    row_email3.set_visible(true);
+                    row_email3.grab_focus();
+                    btn.set_visible(false);
+                }
+            });
+        }
+
         let row_phone = adw::EntryRow::builder().title("Telefon (Mobil)").build();
+        row_phone.set_input_purpose(gtk::InputPurpose::Phone);
+        let btn_add_phone = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text("Weitere Telefonnummer hinzufügen")
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .build();
+        row_phone.add_suffix(&btn_add_phone);
         group_contact.add(&row_phone);
 
         let row_phone_work = adw::EntryRow::builder().title("Telefon (Arbeit)").build();
+        row_phone_work.set_input_purpose(gtk::InputPurpose::Phone);
+        row_phone_work.set_visible(false);
         group_contact.add(&row_phone_work);
 
         let row_phone_home = adw::EntryRow::builder().title("Telefon (Privat)").build();
+        row_phone_home.set_input_purpose(gtk::InputPurpose::Phone);
+        row_phone_home.set_visible(false);
         group_contact.add(&row_phone_home);
+
+        let phones_revealed = Rc::new(Cell::new(0u8));
+        {
+            let row_phone_work = row_phone_work.clone();
+            let row_phone_home = row_phone_home.clone();
+            let phones_revealed = Rc::clone(&phones_revealed);
+            btn_add_phone.connect_clicked(move |btn| {
+                if !row_phone_work.is_visible() {
+                    phones_revealed.set(phones_revealed.get().max(1));
+                    row_phone_work.set_visible(true);
+                    row_phone_work.grab_focus();
+                    if row_phone_home.is_visible() {
+                        btn.set_visible(false);
+                    }
+                } else if !row_phone_home.is_visible() {
+                    phones_revealed.set(2);
+                    row_phone_home.set_visible(true);
+                    row_phone_home.grab_focus();
+                    btn.set_visible(false);
+                }
+            });
+        }
 
         let row_sip = adw::EntryRow::builder()
             .title("SIP- / VoIP-Adresse")
@@ -257,111 +385,154 @@ impl ContactDialog {
 
         content_box.append(&group_contact);
 
-        // Group 3: Address & Notes
+        // Group 3: Primary Extras (Address, Note, Website, Birthday)
         let group_extra = adw::PreferencesGroup::builder()
-            .title("Adresse & Notizen")
+            .title("Weitere Angaben")
             .build();
 
         let row_address = adw::EntryRow::builder().title("Postadresse").build();
+        let btn_add_address = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text("Weitere Adresse hinzufügen")
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .build();
+        row_address.add_suffix(&btn_add_address);
         group_extra.add(&row_address);
 
         let row_address_work = adw::EntryRow::builder()
             .title("Geschäftsadresse")
             .build();
+        row_address_work.set_visible(false);
         group_extra.add(&row_address_work);
 
         let row_address_other = adw::EntryRow::builder()
             .title("Weitere Adresse")
             .build();
+        row_address_other.set_visible(false);
         group_extra.add(&row_address_other);
 
-        let row_note = adw::EntryRow::builder().title("Notiz").build();
-        group_extra.add(&row_note);
+        let addresses_revealed = Rc::new(Cell::new(0u8));
+        {
+            let row_address_work = row_address_work.clone();
+            let row_address_other = row_address_other.clone();
+            let addresses_revealed = Rc::clone(&addresses_revealed);
+            btn_add_address.connect_clicked(move |btn| {
+                if !row_address_work.is_visible() {
+                    addresses_revealed.set(addresses_revealed.get().max(1));
+                    row_address_work.set_visible(true);
+                    row_address_work.grab_focus();
+                    if row_address_other.is_visible() {
+                        btn.set_visible(false);
+                    }
+                } else if !row_address_other.is_visible() {
+                    addresses_revealed.set(2);
+                    row_address_other.set_visible(true);
+                    row_address_other.grab_focus();
+                    btn.set_visible(false);
+                }
+            });
+        }
 
-        let row_url = adw::EntryRow::builder().title("Website").build();
+        let row_url = adw::EntryRow::builder().title("Webseite").build();
+        row_url.set_input_purpose(gtk::InputPurpose::Url);
         group_extra.add(&row_url);
-
-        let row_nickname = adw::EntryRow::builder().title("Spitzname").build();
-        group_extra.add(&row_nickname);
 
         let row_birthday = adw::EntryRow::builder()
             .title("Geburtstag (YYYY-MM-DD)")
             .build();
+        attach_entry_row_date_picker(&row_birthday);
         group_extra.add(&row_birthday);
 
-        let row_categories = adw::EntryRow::builder()
-            .title("Kategorien (durch Komma getrennt)")
+        let row_note = adw::EntryRow::builder().title("Notiz").build();
+        group_extra.add(&row_note);
+
+        // Progressive Enhancement: Expandable row for secondary & advanced fields
+        let expander_more = adw::ExpanderRow::builder()
+            .title("Mehr Details")
+            .subtitle("Spitzname, Jahrestag, Kategorien, Messenger und erweiterte Felder")
+            .show_enable_switch(false)
             .build();
-        group_extra.add(&row_categories);
+
+        let row_nickname = adw::EntryRow::builder().title("Spitzname").build();
+        expander_more.add_row(&row_nickname);
 
         let row_anniversary = adw::EntryRow::builder()
             .title("Jahrestag (YYYY-MM-DD)")
             .build();
-        group_extra.add(&row_anniversary);
+        attach_entry_row_date_picker(&row_anniversary);
+        expander_more.add_row(&row_anniversary);
 
-        let row_role = adw::EntryRow::builder().title("Rolle").build();
-        group_extra.add(&row_role);
-
-        let row_gender = adw::EntryRow::builder().title("Geschlecht").build();
-        group_extra.add(&row_gender);
-
-        let row_timezone = adw::EntryRow::builder().title("Zeitzone").build();
-        group_extra.add(&row_timezone);
-
-        let row_geo = adw::EntryRow::builder()
-            .title("Geoposition (Breite;Länge)")
+        let row_categories = adw::EntryRow::builder()
+            .title("Kategorien (durch Komma getrennt)")
             .build();
-        group_extra.add(&row_geo);
+        expander_more.add_row(&row_categories);
 
         let row_impp = adw::EntryRow::builder()
-            .title("Chat/IMPP (Komma getrennt)")
+            .title("Instant Messaging (IMPP)")
             .build();
-        group_extra.add(&row_impp);
+        expander_more.add_row(&row_impp);
+
+        let row_role = adw::EntryRow::builder().title("Rolle").build();
+        expander_more.add_row(&row_role);
+
+        let row_evolution_manager = adw::EntryRow::builder().title("Vorgesetzter").build();
+        expander_more.add_row(&row_evolution_manager);
+
+        let row_evolution_assistant = adw::EntryRow::builder().title("Assistenz").build();
+        expander_more.add_row(&row_evolution_assistant);
+
+        let row_evolution_spouse = adw::EntryRow::builder().title("Partner/in").build();
+        expander_more.add_row(&row_evolution_spouse);
 
         let row_related = adw::EntryRow::builder()
             .title("Verwandte Kontakte (Komma getrennt)")
             .build();
-        group_extra.add(&row_related);
+        expander_more.add_row(&row_related);
+
+        let row_gender = adw::EntryRow::builder().title("Geschlecht").build();
+        expander_more.add_row(&row_gender);
+
+        let row_timezone = adw::EntryRow::builder().title("Zeitzone").build();
+        expander_more.add_row(&row_timezone);
+
+        let row_geo = adw::EntryRow::builder()
+            .title("Geoposition (Breite;Länge)")
+            .build();
+        expander_more.add_row(&row_geo);
 
         let row_photo = adw::EntryRow::builder()
             .title("Foto (URI oder Base64)")
             .build();
         row_photo.set_input_purpose(gtk::InputPurpose::Url);
-        group_extra.add(&row_photo);
+        expander_more.add_row(&row_photo);
+
+        let row_evolution_blog_url = adw::EntryRow::builder().title("Blog-URL").build();
+        row_evolution_blog_url.set_input_purpose(gtk::InputPurpose::Url);
+        expander_more.add_row(&row_evolution_blog_url);
+
+        let row_evolution_video_url = adw::EntryRow::builder().title("Video-URL").build();
+        row_evolution_video_url.set_input_purpose(gtk::InputPurpose::Url);
+        expander_more.add_row(&row_evolution_video_url);
+
+        let row_evolution_file_as = adw::EntryRow::builder()
+            .title("Sortier-/Anzeigename")
+            .build();
+        expander_more.add_row(&row_evolution_file_as);
+
+        let row_evolution_wants_html = adw::SwitchRow::builder()
+            .title("HTML-Mail bevorzugen")
+            .subtitle("Nachrichten an diesen Kontakt bevorzugt als HTML senden")
+            .build();
+        expander_more.add_row(&row_evolution_wants_html);
 
         let row_certs = adw::EntryRow::builder()
             .title("S/MIME-Zertifikat")
             .build();
-        group_extra.add(&row_certs);
+        expander_more.add_row(&row_certs);
 
-        // Evolution-specific address-book properties. They are kept in the
-        // vCard even when a provider does not expose them as first-class
-        // fields, and can be edited explicitly on the portable path.
-        let group_evolution = adw::PreferencesGroup::builder()
-            .title("Evolution-Felder")
-            .description("Zusätzliche Eigenschaften des Evolution-Adressbuchs")
-            .build();
-        let row_evolution_file_as = adw::EntryRow::builder()
-            .title("Sortier-/Anzeigename")
-            .build();
-        group_evolution.add(&row_evolution_file_as);
-        let row_evolution_manager = adw::EntryRow::builder().title("Vorgesetzter").build();
-        group_evolution.add(&row_evolution_manager);
-        let row_evolution_assistant = adw::EntryRow::builder().title("Assistenz").build();
-        group_evolution.add(&row_evolution_assistant);
-        let row_evolution_spouse = adw::EntryRow::builder().title("Partner/in").build();
-        group_evolution.add(&row_evolution_spouse);
-        let row_evolution_blog_url = adw::EntryRow::builder().title("Blog-URL").build();
-        row_evolution_blog_url.set_input_purpose(gtk::InputPurpose::Url);
-        group_evolution.add(&row_evolution_blog_url);
-        let row_evolution_video_url = adw::EntryRow::builder().title("Video-URL").build();
-        row_evolution_video_url.set_input_purpose(gtk::InputPurpose::Url);
-        group_evolution.add(&row_evolution_video_url);
-        let row_evolution_wants_html = adw::SwitchRow::builder()
-            .title("HTML-Mail an diesen Kontakt")
-            .subtitle("Evolution-Präferenz X-EVOLUTION-WANTS-HTML")
-            .build();
-        group_evolution.add(&row_evolution_wants_html);
+        group_extra.add(&expander_more);
+
         let row_evolution_list = adw::SwitchRow::builder()
             .title("Mailingliste")
             .subtitle("Kontakt als Liste behandeln")
@@ -377,11 +548,20 @@ impl ContactDialog {
         if let Some(vcard) = edit_vcard.as_deref() {
             if let Some(contact) = VCardContact::parse_vcard_string(vcard) {
                 row_name.set_text(&contact.fn_name);
+                if !contact.fn_name.trim().is_empty() {
+                    avatar.set_text(Some(contact.fn_name.trim()));
+                }
                 row_family_name.set_text(&contact.name.family);
                 row_given_name.set_text(&contact.name.given);
                 row_additional_name.set_text(&contact.name.additional);
                 row_name_prefix.set_text(&contact.name.prefix);
                 row_name_suffix.set_text(&contact.name.suffix);
+                if !contact.name.additional.trim().is_empty()
+                    || !contact.name.prefix.trim().is_empty()
+                    || !contact.name.suffix.trim().is_empty()
+                {
+                    name_details_toggle.set_active(true);
+                }
                 row_org.set_text(&contact.org);
                 row_title.set_text(&contact.title);
                 row_email1.set_text(&contact.email);
@@ -544,18 +724,68 @@ impl ContactDialog {
             }
         }
 
+        // Auto-reveal populated secondary email/phone/address rows and expanders
+        if !row_email2.text().trim().is_empty() {
+            row_email2.set_visible(true);
+        }
+        if !row_email3.text().trim().is_empty() {
+            row_email2.set_visible(true);
+            row_email3.set_visible(true);
+            btn_add_email.set_visible(false);
+        }
+        if !row_phone_work.text().trim().is_empty() {
+            phones_revealed.set(phones_revealed.get().max(1));
+        }
+        if !row_phone_home.text().trim().is_empty() {
+            phones_revealed.set(2);
+        }
+        if !row_address_work.text().trim().is_empty() {
+            addresses_revealed.set(addresses_revealed.get().max(1));
+        }
+        if !row_address_other.text().trim().is_empty() {
+            addresses_revealed.set(2);
+        }
+        if [
+            &row_nickname,
+            &row_anniversary,
+            &row_categories,
+            &row_impp,
+            &row_role,
+            &row_evolution_manager,
+            &row_evolution_assistant,
+            &row_evolution_spouse,
+            &row_related,
+            &row_gender,
+            &row_timezone,
+            &row_geo,
+            &row_photo,
+            &row_evolution_blog_url,
+            &row_evolution_video_url,
+            &row_evolution_file_as,
+            &row_certs,
+        ]
+        .iter()
+        .any(|row| !row.text().trim().is_empty())
+            || row_evolution_wants_html.is_active()
+        {
+            expander_more.set_expanded(true);
+        }
+
         content_box.append(&group_extra);
-        content_box.append(&group_evolution);
 
         let update_section_visibility: Rc<dyn Fn(&AppSettings)> = {
             let row_phone = row_phone.clone();
             let row_phone_work = row_phone_work.clone();
             let row_phone_home = row_phone_home.clone();
+            let btn_add_phone = btn_add_phone.clone();
+            let phones_revealed = Rc::clone(&phones_revealed);
             let row_sip = row_sip.clone();
             let row_impp = row_impp.clone();
             let row_address = row_address.clone();
             let row_address_work = row_address_work.clone();
             let row_address_other = row_address_other.clone();
+            let btn_add_address = btn_add_address.clone();
+            let addresses_revealed = Rc::clone(&addresses_revealed);
             let row_url = row_url.clone();
             let row_evolution_blog_url = row_evolution_blog_url.clone();
             let row_evolution_video_url = row_evolution_video_url.clone();
@@ -579,13 +809,17 @@ impl ContactDialog {
 
             Rc::new(move |settings: &AppSettings| {
                 // 1. Phone
-                let has_phone = !row_phone.text().trim().is_empty()
-                    || !row_phone_work.text().trim().is_empty()
-                    || !row_phone_home.text().trim().is_empty();
+                let has_phone1 = !row_phone.text().trim().is_empty();
+                let has_phone_work = !row_phone_work.text().trim().is_empty();
+                let has_phone_home = !row_phone_home.text().trim().is_empty();
+                let has_phone = has_phone1 || has_phone_work || has_phone_home;
                 let show_phone = settings.contact_editor_show_phone() || has_phone;
                 row_phone.set_visible(show_phone);
-                row_phone_work.set_visible(show_phone);
-                row_phone_home.set_visible(show_phone);
+                let show_work_phone = show_phone && (has_phone_work || phones_revealed.get() >= 1);
+                let show_home_phone = show_phone && (has_phone_home || phones_revealed.get() >= 2);
+                row_phone_work.set_visible(show_work_phone);
+                row_phone_home.set_visible(show_home_phone);
+                btn_add_phone.set_visible(show_phone && !(show_work_phone && show_home_phone));
 
                 // 2. SIP
                 let has_sip = !row_sip.text().trim().is_empty();
@@ -597,15 +831,24 @@ impl ContactDialog {
 
                 // 4. Home Address
                 let has_home = !row_address.text().trim().is_empty();
-                row_address.set_visible(settings.contact_editor_show_home_address() || has_home);
+                let show_home_addr = settings.contact_editor_show_home_address() || has_home;
+                row_address.set_visible(show_home_addr);
 
                 // 5. Work Address
                 let has_work = !row_address_work.text().trim().is_empty();
-                row_address_work.set_visible(settings.contact_editor_show_work_address() || has_work);
+                let show_work_addr = (settings.contact_editor_show_work_address()
+                    && addresses_revealed.get() >= 1)
+                    || has_work;
+                row_address_work.set_visible(show_work_addr);
 
                 // 6. Other Address
                 let has_other = !row_address_other.text().trim().is_empty();
-                row_address_other.set_visible(settings.contact_editor_show_other_address() || has_other);
+                let show_other_addr = (settings.contact_editor_show_other_address()
+                    && addresses_revealed.get() >= 2)
+                    || has_other;
+                row_address_other.set_visible(show_other_addr);
+                btn_add_address
+                    .set_visible(show_home_addr && !(show_work_addr && show_other_addr));
 
                 // 7. Web
                 let has_web = !row_url.text().trim().is_empty()
@@ -682,10 +925,27 @@ impl ContactDialog {
                 "contact-editor-show-notes",
                 "contact-editor-show-certs",
             ];
-            for key in SECTION_KEYS {
+                for key in SECTION_KEYS {
                 let updater = Rc::clone(&update_section_visibility);
+                let phones_revealed_for_setting = Rc::clone(&phones_revealed);
+                let addresses_revealed_for_setting = Rc::clone(&addresses_revealed);
+                let key_name = (*key).to_string();
                 settings.connect_changed(Some(key), move |_, _| {
                     if let Some(settings) = AppSettings::try_new() {
+                        if key_name == "contact-editor-show-phone"
+                            && settings.contact_editor_show_phone()
+                        {
+                            phones_revealed_for_setting.set(2);
+                        } else if key_name == "contact-editor-show-work-address"
+                            && settings.contact_editor_show_work_address()
+                        {
+                            addresses_revealed_for_setting
+                                .set(addresses_revealed_for_setting.get().max(1));
+                        } else if key_name == "contact-editor-show-other-address"
+                            && settings.contact_editor_show_other_address()
+                        {
+                            addresses_revealed_for_setting.set(2);
+                        }
                         updater(&settings);
                     }
                 });
@@ -921,6 +1181,18 @@ impl ContactDialog {
 
         let toolbar_view = adw::ToolbarView::new();
         let header_bar = adw::HeaderBar::new();
+        header_bar.set_show_start_title_buttons(false);
+        header_bar.set_show_end_title_buttons(false);
+        let cancel_button = gtk::Button::builder()
+            .label("Abbrechen")
+            .build();
+        let dialog_weak_for_cancel = self.downgrade();
+        cancel_button.connect_clicked(move |_| {
+            if let Some(dialog) = dialog_weak_for_cancel.upgrade() {
+                dialog.close();
+            }
+        });
+        header_bar.pack_start(&cancel_button);
         let save_button = gtk::Button::builder()
             .label("Speichern")
             .css_classes(vec!["suggested-action"])
@@ -1430,6 +1702,118 @@ impl ContactDialog {
             }
         });
     }
+}
+
+fn attach_entry_row_date_picker(entry_row: &adw::EntryRow) {
+    let popover = gtk::Popover::builder().has_arrow(true).build();
+    let pop_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(6)
+        .margin_start(6)
+        .margin_end(6)
+        .margin_top(6)
+        .margin_bottom(6)
+        .build();
+    let cal = gtk::Calendar::new();
+    let clear_btn = gtk::Button::builder()
+        .label("Datum löschen")
+        .css_classes(vec!["flat"])
+        .build();
+    pop_box.append(&cal);
+    pop_box.append(&clear_btn);
+    popover.set_child(Some(&pop_box));
+
+    let btn = gtk::MenuButton::builder()
+        .icon_name("x-office-calendar-symbolic")
+        .tooltip_text("Datum im Kalender auswählen")
+        .css_classes(vec!["flat", "circular"])
+        .valign(gtk::Align::Center)
+        .popover(&popover)
+        .build();
+    entry_row.add_suffix(&btn);
+
+    let is_syncing = Rc::new(Cell::new(false));
+    let is_nav_click = Rc::new(Cell::new(false));
+    let cal_weak_click = cal.downgrade();
+    let nav_flag_click = Rc::clone(&is_nav_click);
+    let click_gesture = gtk::GestureClick::new();
+    click_gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+    click_gesture.connect_pressed(move |_, _, x, y| {
+        let mut clicked_header_btn = false;
+        if let Some(cal_widget) = cal_weak_click.upgrade() {
+            let mut cur = cal_widget.pick(x, y, gtk::PickFlags::DEFAULT);
+            while let Some(w) = cur {
+                if w == *cal_widget.upcast_ref::<gtk::Widget>() {
+                    break;
+                }
+                if w.downcast_ref::<gtk::Button>().is_some() {
+                    clicked_header_btn = true;
+                    break;
+                }
+                cur = w.parent();
+            }
+        }
+        nav_flag_click.set(clicked_header_btn);
+    });
+    cal.add_controller(click_gesture);
+
+    let entry_weak_open = entry_row.downgrade();
+    let cal_weak_open = cal.downgrade();
+    let is_syncing_open = Rc::clone(&is_syncing);
+    popover.connect_show(move |_| {
+        if let (Some(row), Some(cal_w)) = (entry_weak_open.upgrade(), cal_weak_open.upgrade()) {
+            let text = row.text();
+            let parts: Vec<&str> = text.trim().split('-').collect();
+            if parts.len() == 3 {
+                if let (Ok(y), Ok(m), Ok(d)) = (
+                    parts[0].parse::<i32>(),
+                    parts[1].parse::<i32>(),
+                    parts[2].parse::<i32>(),
+                ) {
+                    if let Ok(dt) =
+                        glib::DateTime::new(&glib::TimeZone::local(), y, m, d, 0, 0, 0.0)
+                    {
+                        is_syncing_open.set(true);
+                        cal_w.select_day(&dt);
+                        is_syncing_open.set(false);
+                    }
+                }
+            }
+        }
+    });
+
+    let entry_weak_sel = entry_row.downgrade();
+    let popover_weak_sel = popover.downgrade();
+    let is_syncing_sel = Rc::clone(&is_syncing);
+    let nav_flag_sel = Rc::clone(&is_nav_click);
+    cal.connect_day_selected(move |c| {
+        if is_syncing_sel.get() || nav_flag_sel.replace(false) {
+            return;
+        }
+        let dt = c.date();
+        if let Some(row) = entry_weak_sel.upgrade() {
+            row.set_text(&format!(
+                "{:04}-{:02}-{:02}",
+                dt.year(),
+                dt.month(),
+                dt.day_of_month()
+            ));
+        }
+        if let Some(pop) = popover_weak_sel.upgrade() {
+            pop.popdown();
+        }
+    });
+
+    let entry_weak_clear = entry_row.downgrade();
+    let popover_weak_clear = popover.downgrade();
+    clear_btn.connect_clicked(move |_| {
+        if let Some(row) = entry_weak_clear.upgrade() {
+            row.set_text("");
+        }
+        if let Some(pop) = popover_weak_clear.upgrade() {
+            pop.popdown();
+        }
+    });
 }
 
 fn refresh_list_member_rows(
@@ -2334,10 +2718,16 @@ mod tests {
                     return Some(row);
                 }
             }
+            if let Some(dialog) = w.downcast_ref::<adw::Dialog>() {
+                if let Some(c) = dialog.child() {
+                    queue.push(c);
+                }
+            }
             let mut child = w.first_child();
             while let Some(c) = child {
-                child = c.next_sibling();
+                let next = c.next_sibling();
                 queue.push(c);
+                child = next;
             }
         }
         None
