@@ -1093,17 +1093,17 @@ impl ComposeDialog {
         ));
         header_bar.pack_start(&btn_attach);
 
-        let composer_html = AppSettings::try_new()
-            .map(|settings| settings.composer_html())
-            .unwrap_or(true);
+        let show_format_toolbar = AppSettings::try_new()
+            .map(|s| s.composer_show_format_toolbar())
+            .unwrap_or(false);
         let btn_format = gtk::ToggleButton::builder()
             .icon_name("format-text-underline-symbolic")
             .tooltip_text(&crate::i18n::gettext("Toggle formatting (Ctrl+Shift+F)"))
             .css_classes(vec!["flat"])
-            .active(composer_html)
-            .visible(false)
+            .active(show_format_toolbar)
             .build();
         set_accessible_label(&btn_format, &crate::i18n::gettext("Formatting"));
+        header_bar.pack_start(&btn_format);
         self.imp().format_button.replace(Some(btn_format.clone()));
 
         let btn_discard = gtk::Button::builder()
@@ -1189,8 +1189,9 @@ impl ComposeDialog {
         let btn_plain_text = gtk::ToggleButton::builder()
             .icon_name("text-x-generic-symbolic")
             .tooltip_text("Nur-Text-Modus beim Verfassen")
-            .active(!composer_html)
+            .active(false)
             .css_classes(vec!["flat"])
+            .visible(false)
             .build();
 
         let header_mode_switcher = gtk::Box::builder()
@@ -1198,12 +1199,12 @@ impl ComposeDialog {
             .spacing(0)
             .css_classes(vec!["linked", "composer-mode-switcher"])
             .valign(gtk::Align::Center)
-            .visible(true)
+            .visible(false)
             .build();
         let header_btn_html = gtk::ToggleButton::builder()
             .label("HTML")
             .tooltip_text("HTML-Format (Formatierter Text)")
-            .active(composer_html)
+            .active(true)
             .css_classes(vec!["caption-heading"])
             .build();
         set_accessible_label(&header_btn_html, "HTML");
@@ -1211,13 +1212,12 @@ impl ComposeDialog {
             .label("TXT")
             .tooltip_text("Nur-Text-Format (Plain Text)")
             .group(&header_btn_html)
-            .active(!composer_html)
+            .active(false)
             .css_classes(vec!["caption-heading"])
             .build();
         set_accessible_label(&header_btn_txt, "TXT");
         header_mode_switcher.append(&header_btn_html);
         header_mode_switcher.append(&header_btn_txt);
-        header_bar.pack_start(&header_mode_switcher);
 
         {
             let btn_plain_for_html = btn_plain_text.clone();
@@ -1727,9 +1727,7 @@ impl ComposeDialog {
         html_editor.set_plain_text_mode(initial_plain);
         html_editor.set_vexpand(true);
         btn_format.set_sensitive(!initial_plain);
-        btn_format.set_active(!initial_plain);
-        header_mode_switcher.set_visible(true);
-        html_editor.set_format_toolbar_visible(!initial_plain);
+        html_editor.set_format_toolbar_visible(!initial_plain && btn_format.is_active());
 
         let plain_for_fmt = btn_plain_text.clone();
         btn_format.connect_toggled(glib::clone!(
@@ -1894,9 +1892,8 @@ impl ComposeDialog {
                 header_txt_for_mode.set_active(is_plain);
             }
             btn_format_for_mode.set_sensitive(!is_plain);
-            btn_format_for_mode.set_active(!is_plain);
-            header_mode_switcher_for_mode.set_visible(true);
-            editor_for_composer_mode.set_format_toolbar_visible(!is_plain);
+            header_mode_switcher_for_mode.set_visible(false);
+            editor_for_composer_mode.set_format_toolbar_visible(!is_plain && btn_format_for_mode.is_active());
             editor_for_composer_mode.set_plain_text_mode(is_plain);
             let suppress_persistence = dialog_for_composer_mode
                 .upgrade()
@@ -3442,7 +3439,9 @@ impl ComposeDialog {
                 let matched_sig = local_profiles
                     .iter()
                     .find(|p| {
-                        p.id == source.uid || p.email.eq_ignore_ascii_case(&source.display_name)
+                        p.id == source.uid
+                            || p.id == format!("eds:{}", source.uid)
+                            || p.email.eq_ignore_ascii_case(&source.display_name)
                     })
                     .and_then(|p| p.signature_id.clone());
 
@@ -5195,12 +5194,16 @@ impl ComposeDialog {
         let target_idx = if let Some(sig_id) = identity
             .signature_id
             .as_deref()
-            .filter(|s| !s.trim().is_empty())
+            .filter(|s| !s.trim().is_empty() && *s != "default")
         {
-            choices
-                .iter()
-                .position(|c| c.id.as_deref() == Some(sig_id))
-                .unwrap_or(if choices.len() > 1 { 1 } else { 0 })
+            if sig_id == "none" {
+                0
+            } else {
+                choices
+                    .iter()
+                    .position(|c| c.id.as_deref() == Some(sig_id))
+                    .unwrap_or(if choices.len() > 1 { 1 } else { 0 })
+            }
         } else if let Some(active_id) = SignatureStore::default().active_id() {
             choices
                 .iter()
@@ -9968,7 +9971,7 @@ mod tests {
         let Some(settings) = AppSettings::try_new() else {
             return;
         };
-        settings.set_composer_html(false);
+        settings.set_composer_show_format_toolbar(false);
 
         let dialog = ComposeDialog::new();
         assert!(dialog.html_editor().is_some());
@@ -9993,18 +9996,18 @@ mod tests {
         assert_eq!(dialog.imp().row_cc_widgets.borrow().len(), 2);
         assert_eq!(dialog.imp().row_bcc_widgets.borrow().len(), 2);
 
-        // Test HTML mode automatically enables format toolbar, and TXT mode disables it
-        settings.set_composer_html(true);
+        // Test persisted format toolbar visibility on startup
+        settings.set_composer_show_format_toolbar(true);
         let dialog_with_toolbar = ComposeDialog::new();
         let editor_with_toolbar = dialog_with_toolbar.html_editor().unwrap();
         assert!(editor_with_toolbar.is_format_toolbar_visible());
-        if let Some(btn_plain) = dialog_with_toolbar.imp().plain_text_button.borrow().as_ref() {
-            btn_plain.set_active(true);
+        if let Some(btn_fmt) = dialog_with_toolbar.imp().format_button.borrow().as_ref() {
+            btn_fmt.set_active(false);
             assert!(!editor_with_toolbar.is_format_toolbar_visible());
-            btn_plain.set_active(false);
+            btn_fmt.set_active(true);
             assert!(editor_with_toolbar.is_format_toolbar_visible());
         }
-        settings.set_composer_html(true);
+        settings.set_composer_show_format_toolbar(false);
 
         // Test forward style defaults
         settings.set_composer_forward_style("inline");

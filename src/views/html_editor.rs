@@ -1150,9 +1150,10 @@ impl HtmlEditor {
         );
     }
 
-    /// Read the representation that should be persisted or sent.  Plain-text
-    /// mode uses `innerText` so line breaks are not accidentally serialized as
-    /// WebKit markup, while rich mode retains the sanitized DOM HTML.
+    /// Read the representation that should be persisted or sent.
+    /// Automatically sends plain text (`plain_text: true`) when no rich HTML
+    /// formatting, links, lists, quotes, or images were used in the message;
+    /// otherwise retains the full HTML representation (`plain_text: false`).
     pub fn read_content<F>(&self, callback: F)
     where
         F: FnOnce(Result<EditorContent, glib::Error>) + 'static,
@@ -1164,11 +1165,18 @@ impl HtmlEditor {
             )));
             return;
         };
-        let plain_text = self.plain_text_mode();
-        let expression = if plain_text {
-            "document.body.innerText"
+        let force_plain_text = self.plain_text_mode();
+        let expression = if force_plain_text {
+            "JSON.stringify({ body: document.body.innerText, plain_text: true })"
         } else {
-            "document.body.innerHTML"
+            r#"(() => {
+                const richSelector = 'b, strong, i, em, u, s, strike, del, font, a[href], img, ul, ol, li, blockquote, h1, h2, h3, h4, h5, h6, hr, pre, code, table, sup, sub, [style*="color"], [style*="font-"], [style*="text-align"], [style*="background"]';
+                const hasFormatting = document.body.querySelector(richSelector) !== null;
+                return JSON.stringify({
+                    body: hasFormatting ? document.body.innerHTML : document.body.innerText,
+                    plain_text: !hasFormatting
+                });
+            })()"#
         };
         web_view.evaluate_javascript(
             expression,
@@ -1176,9 +1184,25 @@ impl HtmlEditor {
             None,
             None::<&gio::Cancellable>,
             move |result| {
-                callback(result.map(|value| EditorContent {
-                    body: value.to_str().to_string(),
-                    plain_text,
+                callback(result.map(|value| {
+                    let raw = value.to_str();
+                    if let Ok(parsed) = serde_json::from_str::< serde_json::Value >(&raw) {
+                        let body = parsed
+                            .get("body")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let plain_text = parsed
+                            .get("plain_text")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(force_plain_text);
+                        EditorContent { body, plain_text }
+                    } else {
+                        EditorContent {
+                            body: raw.to_string(),
+                            plain_text: force_plain_text,
+                        }
+                    }
                 }))
             },
         );
