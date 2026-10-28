@@ -1670,14 +1670,7 @@ impl HtmlEditor {
 
         let toolbar_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         toolbar_row.append(&toolbar_scroll);
-        toolbar_row.append(
-            &gtk::Separator::builder()
-                .orientation(gtk::Orientation::Vertical)
-                .margin_top(4)
-                .margin_bottom(14)
-                .build(),
-        );
-        toolbar_row.append(&mode_switcher);
+        let _ = &mode_switcher;
 
         let toolbar_container = gtk::Box::new(gtk::Orientation::Vertical, 0);
         toolbar_container.append(&toolbar_row);
