@@ -273,7 +273,8 @@ fn collect_source_files(dir: &Path, index: &mut HashMap<String, RawSourceInfo>) 
     }
 }
 
-/// Recursively find all `cache.db` and `contacts.db` files in the given directory.
+/// Recursively find all `cache.db` and `contacts.db` files in the given directory,
+/// skipping any `trash` subdirectories where deleted address books are moved.
 fn collect_db_files(dir: &Path, db_paths: &mut Vec<(PathBuf, bool)>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -281,6 +282,13 @@ fn collect_db_files(dir: &Path, db_paths: &mut Vec<(PathBuf, bool)>) {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
+            if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.eq_ignore_ascii_case("trash"))
+            {
+                continue;
+            }
             collect_db_files(&path, db_paths);
         } else if path.is_file() {
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
@@ -303,19 +311,6 @@ pub fn discover_address_book_dbs() -> Vec<AddressBookDbTarget> {
 
     let source_index = build_source_index(&home);
 
-    // Find any Google account display name in the source index for CardDAV fallback
-    let google_account_name = source_index
-        .iter()
-        .find(|(_, info)| {
-            info.backend_name.as_deref() == Some("google")
-                || info
-                    .display_name
-                    .as_deref()
-                    .is_some_and(|name| name.contains("@gmail.com"))
-        })
-        .and_then(|(_, info)| info.display_name.clone())
-        .unwrap_or_else(|| "Google".to_string());
-
     let mut db_candidates = Vec::new();
 
     // 1. Host EDS cache & local databases
@@ -325,15 +320,17 @@ pub fn discover_address_book_dbs() -> Vec<AddressBookDbTarget> {
         &mut db_candidates,
     );
 
-    // 2. Flatpak Evolution cache & data databases (including trash/ where Google contacts live)
-    collect_db_files(
-        &home.join(".var/app/org.gnome.Evolution/cache/evolution/addressbook"),
-        &mut db_candidates,
-    );
-    collect_db_files(
-        &home.join(".var/app/org.gnome.Evolution/data/evolution/addressbook"),
-        &mut db_candidates,
-    );
+    // 2. Flatpak Evolution cache & data databases (only when no host EDS caches exist)
+    if db_candidates.is_empty() {
+        collect_db_files(
+            &home.join(".var/app/org.gnome.Evolution/cache/evolution/addressbook"),
+            &mut db_candidates,
+        );
+        collect_db_files(
+            &home.join(".var/app/org.gnome.Evolution/data/evolution/addressbook"),
+            &mut db_candidates,
+        );
+    }
 
     let mut candidate_map: HashMap<(String, String), (AddressBookDbTarget, usize)> = HashMap::new();
     let mut seen_uids = HashSet::new();
@@ -346,12 +343,24 @@ pub fn discover_address_book_dbs() -> Vec<AddressBookDbTarget> {
             continue;
         };
 
-        // If parent is literally named "trash", look at the grandparent
-        let source_uid = if source_uid_raw == "trash" {
+        if source_uid_raw.eq_ignore_ascii_case("trash")
+            || db_path.components().any(|c| {
+                c.as_os_str()
+                    .to_str()
+                    .is_some_and(|s| s.eq_ignore_ascii_case("trash"))
+            })
+        {
             continue;
-        } else {
-            source_uid_raw.to_string()
-        };
+        }
+        let source_uid = source_uid_raw.to_string();
+
+        // Check if this source is enabled for AddressBook in EDS / GOA
+        if !crate::services::eds_service::is_source_enabled_for_service(
+            &source_uid,
+            crate::services::eds_service::EdsSourceKind::AddressBook,
+        ) {
+            continue;
+        }
 
         // Open database and check contact count
         let Some(db) = SqliteDb::open(&db_path) else {
@@ -370,7 +379,16 @@ pub fn discover_address_book_dbs() -> Vec<AddressBookDbTarget> {
 
         // Resolve display name and parent name
         let raw_info = source_index.get(&source_uid);
-        let mut display_name = raw_info
+        if let Some(parent_uid) = raw_info.and_then(|i| i.parent_uid.as_deref()) {
+            if !crate::services::eds_service::is_parent_service_enabled(
+                parent_uid,
+                crate::services::eds_service::EdsSourceKind::AddressBook,
+            ) {
+                continue;
+            }
+        }
+
+        let display_name = raw_info
             .and_then(|i| i.display_name.clone().or_else(|| i.identity.clone()))
             .unwrap_or_else(|| {
                 if source_uid == "system" || source_uid == "system-address-book" {
@@ -396,23 +414,22 @@ pub fn discover_address_book_dbs() -> Vec<AddressBookDbTarget> {
             }
         }
 
-        let mut backend_name = raw_info.and_then(|i| i.backend_name.clone());
-
-        // Special handling for Google CardDAV cache (e.g. 565995fe...)
-        let is_google = source_uid.starts_with("5659")
-            || raw_info.and_then(|i| i.backend_name.as_deref()) == Some("google")
-            || raw_info.and_then(|i| i.user.as_deref()).is_some_and(|u| u.contains("@gmail.com"))
-            || parent_name.as_deref().is_some_and(|p| p.contains("@gmail.com"));
-
-        if is_google {
-            if parent_name.is_none() {
-                parent_name = Some(google_account_name.clone());
-            }
-            if display_name == "Kontakte" {
-                display_name = "Kontakte".to_string();
-            }
-            backend_name = Some("google".to_string());
+        let parent_str = parent_name.as_deref().unwrap_or("");
+        if crate::services::eds_service::is_shared_or_delegate_mailbox(parent_str)
+            || crate::services::eds_service::is_shared_or_delegate_mailbox(&display_name)
+            || crate::services::eds_service::is_goa_identity_service_enabled(
+                parent_str,
+                crate::services::eds_service::EdsSourceKind::AddressBook,
+            ) == Some(false)
+            || crate::services::eds_service::is_goa_identity_service_enabled(
+                &display_name,
+                crate::services::eds_service::EdsSourceKind::AddressBook,
+            ) == Some(false)
+        {
+            continue;
         }
+
+        let backend_name = raw_info.and_then(|i| i.backend_name.clone());
 
         let target = AddressBookDbTarget {
             db_path,

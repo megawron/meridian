@@ -1132,7 +1132,7 @@ impl VCardContact {
                         list_members.push(parse_email_list_member(property, raw_value));
                     }
                 }
-                "ORG" => org = value,
+                "ORG" => org = format_org_value(raw_value),
                 "TITLE" => title = value,
                 "TEL" => {
                     if tel.is_empty() {
@@ -1676,6 +1676,15 @@ fn append_address_properties(
         };
         lines.push(format!("{property}:{value}"));
     }
+}
+
+fn format_org_value(raw_value: &str) -> String {
+    split_structured_value(raw_value)
+        .into_iter()
+        .map(|component| component.trim().to_string())
+        .filter(|component| !component.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn format_address_value(raw_value: &str) -> String {

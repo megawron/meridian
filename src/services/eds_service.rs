@@ -462,6 +462,66 @@ pub async fn list_mail_sources() -> Result<Vec<EdsSource>, EdsServiceError> {
     Ok(sources)
 }
 
+fn find_source_file_on_disk(uid: &str) -> Option<std::path::PathBuf> {
+    let clean = uid.strip_suffix("-mail").unwrap_or(uid);
+    let native_config_dir = glib::user_config_dir().join("evolution/sources");
+    let native_cache_dir = glib::user_cache_dir().join("evolution/sources");
+    let has_native_sources = std::fs::read_dir(&native_config_dir)
+        .ok()
+        .is_some_and(|entries| {
+            entries
+                .flatten()
+                .any(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("source"))
+        });
+
+    for name in [uid, clean] {
+        let direct = native_config_dir.join(format!("{name}.source"));
+        if direct.is_file() {
+            return Some(direct);
+        }
+        if let Ok(entries) = std::fs::read_dir(&native_cache_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    let nested = p.join(format!("{name}.source"));
+                    if nested.is_file() {
+                        return Some(nested);
+                    }
+                } else if p.file_name().and_then(|n| n.to_str()) == Some(&format!("{name}.source")) {
+                    return Some(p);
+                }
+            }
+        }
+        let sys = std::path::PathBuf::from("/usr/share/evolution-data-server/sources")
+            .join(format!("{name}.source"));
+        if sys.is_file() {
+            return Some(sys);
+        }
+        if !has_native_sources {
+            let fp_config = glib::home_dir()
+                .join(".var/app/org.gnome.Evolution/config/evolution/sources")
+                .join(format!("{name}.source"));
+            if fp_config.is_file() {
+                return Some(fp_config);
+            }
+            let fp_cache_root =
+                glib::home_dir().join(".var/app/org.gnome.Evolution/cache/evolution/sources");
+            if let Ok(entries) = std::fs::read_dir(&fp_cache_root) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_dir() {
+                        let nested = p.join(format!("{name}.source"));
+                        if nested.is_file() {
+                            return Some(nested);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 fn resolve_source_name_from_disk(uid: &str) -> Option<String> {
     for profile in crate::services::account_config_service::AccountConfigStore::default().load() {
         if profile.id == uid {
@@ -474,35 +534,22 @@ fn resolve_source_name_from_disk(uid: &str) -> Option<String> {
         }
     }
 
-    let mut candidate_paths = Vec::new();
-    candidate_paths.push(
-        glib::user_config_dir()
-            .join("evolution/sources")
-            .join(format!("{uid}.source")),
-    );
-    candidate_paths.push(
-        std::path::PathBuf::from("/usr/share/evolution-data-server/sources")
-            .join(format!("{uid}.source")),
-    );
-
-    for path in candidate_paths {
-        if path.exists() {
-            let kf = KeyFile::new();
-            if kf.load_from_file(&path, KeyFileFlags::NONE).is_ok() {
-                if let Ok(dn) = kf.locale_string("Data Source", "DisplayName", None) {
-                    if !dn.trim().is_empty() {
-                        return Some(dn.to_string());
-                    }
+    if let Some(path) = find_source_file_on_disk(uid) {
+        let kf = KeyFile::new();
+        if kf.load_from_file(&path, KeyFileFlags::NONE).is_ok() {
+            if let Ok(dn) = kf.locale_string("Data Source", "DisplayName", None) {
+                if !dn.trim().is_empty() {
+                    return Some(dn.to_string());
                 }
-                if let Ok(dn) = kf.string("Data Source", "DisplayName") {
-                    if !dn.trim().is_empty() {
-                        return Some(dn.to_string());
-                    }
+            }
+            if let Ok(dn) = kf.string("Data Source", "DisplayName") {
+                if !dn.trim().is_empty() {
+                    return Some(dn.to_string());
                 }
-                if let Ok(identity) = kf.string("Collection", "Identity") {
-                    if !identity.trim().is_empty() {
-                        return Some(identity.to_string());
-                    }
+            }
+            if let Ok(identity) = kf.string("Collection", "Identity") {
+                if !identity.trim().is_empty() {
+                    return Some(identity.to_string());
                 }
             }
         }
@@ -511,35 +558,22 @@ fn resolve_source_name_from_disk(uid: &str) -> Option<String> {
 }
 
 pub fn resolve_source_color_from_disk(uid: &str) -> Option<String> {
-    let mut candidate_paths = Vec::new();
-    candidate_paths.push(
-        glib::user_config_dir()
-            .join("evolution/sources")
-            .join(format!("{uid}.source")),
-    );
-    candidate_paths.push(
-        std::path::PathBuf::from("/usr/share/evolution-data-server/sources")
-            .join(format!("{uid}.source")),
-    );
-
-    for path in candidate_paths {
-        if path.exists() {
-            let kf = KeyFile::new();
-            if kf.load_from_file(&path, KeyFileFlags::NONE).is_ok() {
-                if let Ok(color) = kf.string("Calendar", "Color") {
-                    if !color.trim().is_empty() {
-                        return Some(color.to_string());
-                    }
+    if let Some(path) = find_source_file_on_disk(uid) {
+        let kf = KeyFile::new();
+        if kf.load_from_file(&path, KeyFileFlags::NONE).is_ok() {
+            if let Ok(color) = kf.string("Calendar", "Color") {
+                if !color.trim().is_empty() {
+                    return Some(color.to_string());
                 }
-                if let Ok(color) = kf.string("Task List", "Color") {
-                    if !color.trim().is_empty() {
-                        return Some(color.to_string());
-                    }
+            }
+            if let Ok(color) = kf.string("Task List", "Color") {
+                if !color.trim().is_empty() {
+                    return Some(color.to_string());
                 }
-                if let Ok(color) = kf.string("WebDAV Backend", "Color") {
-                    if !color.trim().is_empty() {
-                        return Some(color.to_string());
-                    }
+            }
+            if let Ok(color) = kf.string("WebDAV Backend", "Color") {
+                if !color.trim().is_empty() {
+                    return Some(color.to_string());
                 }
             }
         }
@@ -769,36 +803,89 @@ fn is_goa_account_service_enabled(account_id: &str, kind: EdsSourceKind) -> Opti
     None
 }
 
+/// Check `~/.config/goa-1.0/accounts.conf` by account Identity or PresentationIdentity (e.g. email address).
+pub fn is_goa_identity_service_enabled(identity: &str, kind: EdsSourceKind) -> Option<bool> {
+    let identity = identity.trim();
+    if identity.is_empty() {
+        return None;
+    }
+    let goa_conf = glib::user_config_dir().join("goa-1.0/accounts.conf");
+    if !goa_conf.is_file() {
+        return None;
+    }
+    let kf = KeyFile::new();
+    if kf.load_from_file(&goa_conf, KeyFileFlags::NONE).is_err() {
+        return None;
+    }
+    let groups = kf.groups();
+    let (enabled_key, disabled_key) = match kind {
+        EdsSourceKind::Mail => ("MailEnabled", "MailDisabled"),
+        EdsSourceKind::Calendar => ("CalendarEnabled", "CalendarDisabled"),
+        EdsSourceKind::AddressBook => ("ContactsEnabled", "ContactsDisabled"),
+    };
+    for group in groups {
+        let g = group.as_str();
+        if !g.starts_with("Account ") {
+            continue;
+        }
+        let matches_id = kf
+            .string(g, "Identity")
+            .ok()
+            .is_some_and(|v| v.trim().eq_ignore_ascii_case(identity))
+            || kf
+                .string(g, "PresentationIdentity")
+                .ok()
+                .is_some_and(|v| v.trim().eq_ignore_ascii_case(identity));
+        if matches_id {
+            if kf.boolean(g, "Disabled").unwrap_or(false)
+                || kf.boolean(g, "IsTemporary").unwrap_or(false)
+            {
+                return Some(false);
+            }
+            if let Ok(disabled) = kf.boolean(g, disabled_key) {
+                if disabled {
+                    return Some(false);
+                }
+            }
+            if let Ok(enabled) = kf.boolean(g, enabled_key) {
+                return Some(enabled);
+            }
+        }
+    }
+    None
+}
+
 /// Check whether a parent source / collection has enabled a specific groupware service (Mail, Calendar, Contacts).
 pub fn is_parent_service_enabled(parent_uid: &str, kind: EdsSourceKind) -> bool {
-    let dirs = [
-        glib::user_config_dir().join("evolution/sources"),
-        glib::home_dir().join(".var/app/org.gnome.Evolution/config/evolution/sources"),
-    ];
-    for dir in &dirs {
-        let path = dir.join(format!("{parent_uid}.source"));
-        if path.is_file() {
-            let kf = KeyFile::new();
-            if kf.load_from_file(&path, KeyFileFlags::NONE).is_ok() {
-                if !kf.boolean("Data Source", "Enabled").unwrap_or(true) {
-                    return false;
-                }
-                if kf.has_group("GNOME Online Accounts") {
-                    if let Ok(account_id) = kf.string("GNOME Online Accounts", "AccountId") {
-                        if is_goa_account_service_enabled(account_id.trim(), kind) == Some(false) {
-                            return false;
-                        }
+    if let Some(path) = find_source_file_on_disk(parent_uid) {
+        let kf = KeyFile::new();
+        if kf.load_from_file(&path, KeyFileFlags::NONE).is_ok() {
+            if !kf.boolean("Data Source", "Enabled").unwrap_or(true) {
+                return false;
+            }
+            if kf.has_group("GNOME Online Accounts") {
+                if let Ok(account_id) = kf.string("GNOME Online Accounts", "AccountId") {
+                    if is_goa_account_service_enabled(account_id.trim(), kind) == Some(false) {
+                        return false;
                     }
                 }
-                if kf.has_group("Collection") {
-                    return match kind {
-                        EdsSourceKind::Mail => kf.boolean("Collection", "MailEnabled").unwrap_or(true),
-                        EdsSourceKind::Calendar => kf.boolean("Collection", "CalendarEnabled").unwrap_or(true),
-                        EdsSourceKind::AddressBook => kf.boolean("Collection", "ContactsEnabled").unwrap_or(true),
-                    };
-                }
-                return true;
             }
+            if let Ok(identity) = kf
+                .string("Collection", "Identity")
+                .or_else(|_| kf.string("Data Source", "DisplayName"))
+            {
+                if is_goa_identity_service_enabled(identity.trim(), kind) == Some(false) {
+                    return false;
+                }
+            }
+            if kf.has_group("Collection") {
+                return match kind {
+                    EdsSourceKind::Mail => kf.boolean("Collection", "MailEnabled").unwrap_or(true),
+                    EdsSourceKind::Calendar => kf.boolean("Collection", "CalendarEnabled").unwrap_or(true),
+                    EdsSourceKind::AddressBook => kf.boolean("Collection", "ContactsEnabled").unwrap_or(true),
+                };
+            }
+            return true;
         }
     }
     let collections = load_configured_account_collections();
@@ -817,61 +904,74 @@ pub fn is_parent_service_enabled(parent_uid: &str, kind: EdsSourceKind) -> bool 
 
 /// Check whether a source UID (standalone, child, or collection) is enabled for a specific service.
 pub fn is_source_enabled_for_service(source_uid: &str, kind: EdsSourceKind) -> bool {
-    let clean = source_uid.strip_suffix("-mail").unwrap_or(source_uid);
-    let native_dir = glib::user_config_dir().join("evolution/sources");
-    let has_native_sources = std::fs::read_dir(&native_dir)
-        .ok()
-        .is_some_and(|entries| {
-            entries
-                .flatten()
-                .any(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("source"))
-        });
-    let dirs = [
-        native_dir,
-        glib::home_dir().join(".var/app/org.gnome.Evolution/config/evolution/sources"),
-    ];
-    let mut found = false;
-    for (idx, dir) in dirs.iter().enumerate() {
-        if idx > 0 && has_native_sources {
-            continue;
+    let clean = source_uid
+        .strip_suffix("-mail")
+        .or_else(|| source_uid.strip_prefix("account-contacts-"))
+        .or_else(|| source_uid.strip_prefix("account-calendar-"))
+        .or_else(|| source_uid.strip_prefix("account-tasks-"))
+        .or_else(|| source_uid.strip_prefix("account-memos-"))
+        .or_else(|| source_uid.strip_prefix("col-calendar-"))
+        .or_else(|| source_uid.strip_prefix("col-tasks-"))
+        .or_else(|| source_uid.strip_prefix("col-memos-"))
+        .unwrap_or(source_uid);
+
+    if let Some(goa_id) = clean
+        .strip_prefix("goa-contacts-")
+        .or_else(|| clean.strip_prefix("goa-cal-"))
+        .or_else(|| clean.strip_prefix("goa-"))
+    {
+        if is_goa_account_service_enabled(goa_id, kind) == Some(false) {
+            return false;
         }
-        for name in [source_uid, clean] {
-            let path = dir.join(format!("{name}.source"));
-            if path.is_file() {
-                found = true;
-                let kf = KeyFile::new();
-                if kf.load_from_file(&path, KeyFileFlags::NONE).is_ok() {
-                    if !kf.boolean("Data Source", "Enabled").unwrap_or(true) {
+    }
+
+    for candidate in [source_uid, clean] {
+        if let Some(path) = find_source_file_on_disk(candidate) {
+            let kf = KeyFile::new();
+            if kf.load_from_file(&path, KeyFileFlags::NONE).is_ok() {
+                if !kf.boolean("Data Source", "Enabled").unwrap_or(true) {
+                    return false;
+                }
+                if kf.has_group("GNOME Online Accounts") {
+                    if let Ok(account_id) = kf.string("GNOME Online Accounts", "AccountId") {
+                        if is_goa_account_service_enabled(account_id.trim(), kind) == Some(false) {
+                            return false;
+                        }
+                    }
+                }
+                for (grp, key) in [
+                    ("Collection", "Identity"),
+                    ("Authentication", "User"),
+                    ("WebDAV Backend", "EmailAddress"),
+                    ("Data Source", "DisplayName"),
+                ] {
+                    if let Ok(val) = kf.string(grp, key) {
+                        if is_goa_identity_service_enabled(val.trim(), kind) == Some(false) {
+                            return false;
+                        }
+                    }
+                }
+                if kf.has_group("Collection") {
+                    let service_enabled = match kind {
+                        EdsSourceKind::Mail => kf.boolean("Collection", "MailEnabled").unwrap_or(true),
+                        EdsSourceKind::Calendar => kf.boolean("Collection", "CalendarEnabled").unwrap_or(true),
+                        EdsSourceKind::AddressBook => kf.boolean("Collection", "ContactsEnabled").unwrap_or(true),
+                    };
+                    if !service_enabled {
                         return false;
                     }
-                    if kf.has_group("GNOME Online Accounts") {
-                        if let Ok(account_id) = kf.string("GNOME Online Accounts", "AccountId") {
-                            if is_goa_account_service_enabled(account_id.trim(), kind) == Some(false) {
-                                return false;
-                            }
-                        }
-                    }
-                    if kf.has_group("Collection") {
-                        let service_enabled = match kind {
-                            EdsSourceKind::Mail => kf.boolean("Collection", "MailEnabled").unwrap_or(true),
-                            EdsSourceKind::Calendar => kf.boolean("Collection", "CalendarEnabled").unwrap_or(true),
-                            EdsSourceKind::AddressBook => kf.boolean("Collection", "ContactsEnabled").unwrap_or(true),
-                        };
-                        if !service_enabled {
-                            return false;
-                        }
-                    }
-                    if let Ok(parent) = kf.string("Data Source", "Parent") {
-                        let parent = parent.trim();
-                        if !parent.is_empty() && !is_parent_service_enabled(parent, kind) {
-                            return false;
-                        }
-                    }
-                    return true;
                 }
+                if let Ok(parent) = kf.string("Data Source", "Parent") {
+                    let parent = parent.trim();
+                    if !parent.is_empty() && !is_parent_service_enabled(parent, kind) {
+                        return false;
+                    }
+                }
+                return true;
             }
         }
     }
+
     let profiles = crate::services::account_config_service::AccountConfigStore::default().load_cached();
     if let Some(profile) = profiles.iter().find(|p| {
         p.id == source_uid
@@ -883,7 +983,14 @@ pub fn is_source_enabled_for_service(source_uid: &str, kind: EdsSourceKind) -> b
     }) {
         return profile.enabled;
     }
-    !found
+
+    // If clean looks like an orphaned 40-char hex EDS source UID that has no .source file on disk,
+    // treat it as deleted/disabled so trashed caches are never resurrected.
+    if clean.len() == 40 && clean.chars().all(|c| c.is_ascii_hexdigit()) {
+        return false;
+    }
+
+    true
 }
 
 /// Canonical display name for the local computer account group across all sidebars.
@@ -1473,11 +1580,16 @@ pub async fn list_address_book_sources() -> Result<Vec<EdsSource>, EdsServiceErr
 
     // Filter out disabled sources and shared/delegate mailboxes which do not have address books
     sources.retain(|s| {
-        if !s.enabled {
+        if !s.enabled || !is_source_enabled_for_service(&s.uid, EdsSourceKind::AddressBook) {
             return false;
         }
         let parent = s.parent_name.as_deref().unwrap_or("");
         let fm = s.foreign_mail.as_deref().unwrap_or("");
+        if is_goa_identity_service_enabled(parent, EdsSourceKind::AddressBook) == Some(false)
+            || is_goa_identity_service_enabled(&s.display_name, EdsSourceKind::AddressBook) == Some(false)
+        {
+            return false;
+        }
         !is_shared_or_delegate_mailbox(parent)
             && !is_shared_or_delegate_mailbox(fm)
             && !is_shared_or_delegate_mailbox(&s.uid)
@@ -1493,6 +1605,11 @@ pub async fn list_address_book_sources() -> Result<Vec<EdsSource>, EdsServiceErr
             }
         }
     }
+
+    sources.retain(|s| {
+        let parent = s.parent_name.as_deref().unwrap_or("");
+        is_goa_identity_service_enabled(parent, EdsSourceKind::AddressBook) != Some(false)
+    });
 
     if let Ok(goa_contacts) = get_goa_contacts_accounts().await {
         for goa in goa_contacts {
@@ -1605,7 +1722,14 @@ pub async fn list_address_book_sources() -> Result<Vec<EdsSource>, EdsServiceErr
 /// never treated as authoritative for mutations or message/calendar data.
 pub async fn discover_sources(kind: EdsSourceKind) -> EdsSourceDiscovery {
     let cache = EdsSourceCache::new();
-    let cached = cache.load_with_status(kind);
+    let mut cached = cache.load_with_status(kind);
+    cached.sources.retain(|s| {
+        s.enabled
+            && is_source_enabled_for_service(&s.uid, kind)
+            && is_goa_identity_service_enabled(s.parent_name.as_deref().unwrap_or(""), kind)
+                != Some(false)
+            && is_goa_identity_service_enabled(&s.display_name, kind) != Some(false)
+    });
     let now = current_unix_seconds();
     if let Some(remaining) = recovery_retry_remaining(&cached.recovery, now) {
         return discovery_from_cache(

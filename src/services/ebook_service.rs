@@ -651,6 +651,37 @@ fn load_contacts_prefer_eds_fresh() -> EBookLoadResult {
         }
     };
 
+    contacts.retain(|c| {
+        if c.source_uid == "local-addressbook" {
+            return true;
+        }
+        if !crate::services::eds_service::is_source_enabled_for_service(
+            &c.source_uid,
+            crate::services::eds_service::EdsSourceKind::AddressBook,
+        ) {
+            return false;
+        }
+        let parent = crate::services::eds_service::resolve_source_parent_name(&c.source_uid);
+        if crate::services::eds_service::is_shared_or_delegate_mailbox(&parent)
+            || crate::services::eds_service::is_shared_or_delegate_mailbox(&c.source_display_name)
+            || crate::services::eds_service::is_shared_or_delegate_mailbox(&c.source_uid)
+        {
+            return false;
+        }
+        if crate::services::eds_service::is_goa_identity_service_enabled(
+            &parent,
+            crate::services::eds_service::EdsSourceKind::AddressBook,
+        ) == Some(false)
+            || crate::services::eds_service::is_goa_identity_service_enabled(
+                &c.source_display_name,
+                crate::services::eds_service::EdsSourceKind::AddressBook,
+            ) == Some(false)
+        {
+            return false;
+        }
+        true
+    });
+
     // Augment with SQLite cached contacts (e.g. from Flatpak or offline caches)
     let sqlite_contacts = crate::services::evolution_contact_cache::load_contacts_from_evolution_sqlite_cache();
     let mut known_uids: std::collections::HashSet<String> = contacts.iter().map(|c| c.uid.clone()).collect();

@@ -4505,12 +4505,23 @@ button.month-bar-chip.span-end {
   margin: 0;
 }
 
-/* Contact Compact View Row Badge */
+/* Contact Compact View Row Badge & Category Chip */
 .contact-row-badge {
   background-color: alpha(currentColor, 0.08);
   border-radius: 6px;
-  padding: 1px 6px;
+  padding: 2px 7px;
   font-size: 11px;
+  font-weight: 500;
+}
+
+.contact-category-chip {
+  background-color: alpha(@accent_bg_color, 0.16);
+  color: @accent_color;
+  border: 1px solid alpha(@accent_bg_color, 0.32);
+  border-radius: 9999px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 /* Event Dialog — GNOME Evolution & Lookout Appointment Layout */
@@ -4975,7 +4986,7 @@ paned.year-view-paned > separator {
 }
 
 .contacts-table-canvas {
-  background-color: transparent;
+  background-color: @view_bg_color;
 }
 
 .contacts-table-canvas:focus-visible {
@@ -4986,7 +4997,7 @@ paned.year-view-paned > separator {
 
 /* ── Contacts Simple List & Map Preview ────────────────────────────── */
 .contact-simple-list-scroll {
-  background-color: transparent;
+  background-color: @view_bg_color;
 }
 
 .contact-map-frame {
@@ -6993,8 +7004,21 @@ button.task-inspector-due-pill {
   border-radius: 8px;
 }
 
+.contacts-header-scroll scrollbar.horizontal,
+.contacts-header-scroll scrollbar.horizontal contents,
+.contacts-header-scroll scrollbar.horizontal trough,
+.contacts-header-scroll scrollbar.horizontal slider {
+  min-height: 0;
+  min-width: 0;
+  opacity: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
 
-
-
+.contact-detail-pane {
+  background-color: @view_bg_color;
+  border-left: 1px solid alpha(@borders, 0.45);
+}
 
 

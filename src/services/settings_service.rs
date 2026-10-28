@@ -5130,18 +5130,27 @@ impl AppSettings {
     }
 
     fn set_boolean(&self, key: &str, value: bool) {
+        if !self.settings.settings_schema().is_some_and(|s| s.has_key(key)) {
+            return;
+        }
         if let Err(error) = self.settings.set_boolean(key, value) {
             tracing::warn!(key, %error, "Could not persist application setting");
         }
     }
 
     fn set_int(&self, key: &str, value: i32) {
+        if !self.settings.settings_schema().is_some_and(|s| s.has_key(key)) {
+            return;
+        }
         if let Err(error) = self.settings.set_int(key, value) {
             tracing::warn!(key, %error, "Could not persist application setting");
         }
     }
 
     fn set_string(&self, key: &str, value: &str) {
+        if !self.settings.settings_schema().is_some_and(|s| s.has_key(key)) {
+            return;
+        }
         if let Err(error) = self.settings.set_string(key, value) {
             tracing::warn!(key, %error, "Could not persist application setting");
         }
