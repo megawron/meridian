@@ -556,6 +556,54 @@ impl MailMessageObject {
         self.imp().html_body.borrow().clone()
     }
 
+    pub fn inline_images(&self) -> Vec<crate::services::inline_content_service::InlineImage> {
+        let attachments = self.attachments();
+        let mut inline_images = Vec::new();
+        for attachment in &attachments {
+            if attachment.content.is_empty() {
+                continue;
+            }
+            if !attachment.filename.is_empty() {
+                inline_images.push(crate::services::inline_content_service::InlineImage::new(
+                    attachment.filename.clone(),
+                    attachment.mime_type.clone(),
+                    attachment.content.clone(),
+                ));
+            }
+            if let Some(content_id) = attachment.content_id.as_ref() {
+                if let Some((local_part, _)) = content_id.trim_matches(['<', '>']).split_once('@') {
+                    if !local_part.is_empty() {
+                        inline_images.push(
+                            crate::services::inline_content_service::InlineImage::new(
+                                local_part.to_string(),
+                                attachment.mime_type.clone(),
+                                attachment.content.clone(),
+                            ),
+                        );
+                    }
+                }
+                inline_images.push(crate::services::inline_content_service::InlineImage::new(
+                    content_id.clone(),
+                    attachment.mime_type.clone(),
+                    attachment.content.clone(),
+                ));
+            }
+        }
+        inline_images
+    }
+
+    pub fn resolved_html_body(&self) -> String {
+        let html = self.html_body();
+        if html.is_empty() {
+            return html;
+        }
+        let inline_images = self.inline_images();
+        if inline_images.is_empty() {
+            return html;
+        }
+        crate::services::inline_content_service::resolve_cid_images(&html, &inline_images)
+    }
+
     /// Return the body text prepared by a non-GTK worker.
     ///
     /// Filtering and in-message search must never turn a selected GObject's

@@ -35,7 +35,6 @@ use crate::services::ecal_service::{ECalComponentType, ECalService};
 use crate::services::eds_service::{self, EdsSourceDiscovery, EdsSourceKind, EdsSourceOrigin};
 use crate::services::eds_source_cache_service::EdsSourceCache;
 use crate::services::html_sanitizer::html_to_plain_text;
-use crate::services::inline_content_service::InlineImage;
 use crate::services::itip_service::{
     ItipInvitation, ItipMethod, ItipReplyStatus, build_reply_component, normalize_attendee_address,
     parse_invitation,
@@ -4716,18 +4715,7 @@ pub(crate) fn print_snapshot_from(message: &MailMessageObject) -> MailPrintSnaps
             size_formatted: attachment.size_formatted.clone(),
         })
         .collect::<Vec<_>>();
-    let inline_images = message_attachments
-        .iter()
-        .filter_map(|attachment| {
-            attachment.content_id.clone().map(|content_id| {
-                InlineImage::new(
-                    content_id,
-                    attachment.mime_type.clone(),
-                    attachment.content.clone(),
-                )
-            })
-        })
-        .collect::<Vec<_>>();
+    let inline_images = message.inline_images();
 
     MailPrintSnapshot {
         message_key: message.id(),
@@ -7012,11 +7000,49 @@ pub(crate) fn parse_mail_sidebar_layout(raw: &str) -> Vec<MailSidebarPanelSpec> 
 }
 
 pub(crate) fn format_mail_sidebar_layout(specs: &[MailSidebarPanelSpec]) -> String {
-    specs
+    format_mail_sidebar_layout_with_heights(specs, None, None)
+}
+
+pub(crate) fn format_mail_sidebar_layout_with_heights(
+    specs: &[MailSidebarPanelSpec],
+    vpane_bottom: Option<i32>,
+    inner_bottom: Option<i32>,
+) -> String {
+    let mut parts: Vec<String> = specs
         .iter()
         .map(|s| format!("{}:{}", s.id.as_str(), s.mode.as_str()))
-        .collect::<Vec<_>>()
-        .join(",")
+        .collect();
+    if let Some(b) = vpane_bottom.filter(|&v| v >= 60) {
+        parts.push(format!("vpane_bottom:{b}"));
+    }
+    if let Some(ib) = inner_bottom.filter(|&v| v >= 60) {
+        parts.push(format!("inner_bottom:{ib}"));
+    }
+    parts.join(",")
+}
+
+pub(crate) fn parse_mail_sidebar_manual_heights(raw: &str) -> (Option<i32>, Option<i32>) {
+    let mut vpane_bottom = None;
+    let mut inner_bottom = None;
+    for part in raw.split(',') {
+        let mut iter = part.split(':');
+        let Some(k) = iter.next() else { continue };
+        let Some(v) = iter.next() else { continue };
+        if k.trim() == "vpane_bottom" {
+            if let Ok(px) = v.trim().parse::<i32>() {
+                if (60..=1600).contains(&px) {
+                    vpane_bottom = Some(px);
+                }
+            }
+        } else if k.trim() == "inner_bottom" {
+            if let Ok(px) = v.trim().parse::<i32>() {
+                if (60..=1600).contains(&px) {
+                    inner_bottom = Some(px);
+                }
+            }
+        }
+    }
+    (vpane_bottom, inner_bottom)
 }
 
 // ─── GObject Subclass ───────────────────────────────────────────────────────
@@ -7318,6 +7344,11 @@ mod imp {
             RefCell<HashMap<super::MailSidebarPanelId, (gtk::Window, gtk::Box)>>,
         pub mail_sidebar_saved_vpane_pos: Cell<i32>,
         pub mail_sidebar_saved_inner_vpane_pos: Cell<i32>,
+        pub mail_sidebar_manual_bottom_h: Cell<Option<i32>>,
+        pub mail_sidebar_manual_inner_bottom_h: Cell<Option<i32>>,
+        pub mail_sidebar_vpane_dragging: Cell<bool>,
+        pub mail_sidebar_inner_vpane_dragging: Cell<bool>,
+        pub mail_sidebar_last_vpane_h: Cell<i32>,
         pub syncing_mail_sidebar_vpane: Cell<bool>,
         pub agenda_canvas_cached_data: RefCell<Option<(Vec<crate::services::calendar_store_service::CalendarEventRecord>, Vec<crate::services::calendar_store_service::TaskRecord>)>>,
         pub(crate) agenda_canvas_grouped_data: RefCell<Option<AgendaGroupedData>>,
@@ -10870,6 +10901,7 @@ impl MailPage {
         let Some(message) = self.selected_message() else {
             return false;
         };
+        Self::ensure_message_hydrated_for_compose(&message);
         let sender = sender_header(&message);
         let dialog = crate::dialogs::ComposeDialog::reply_to_message_with_style(
             &sender,
@@ -10878,7 +10910,7 @@ impl MailPage {
             &message.recipient_cc(),
             &message.date_str(),
             &message.subject(),
-            &message.html_body(),
+            &message.resolved_html_body(),
             &style,
         );
         if let Some(location) = message.backend_location() {
@@ -10928,6 +10960,7 @@ impl MailPage {
         let Some(message) = self.selected_message() else {
             return false;
         };
+        Self::ensure_message_hydrated_for_compose(&message);
         let sender = sender_header(&message);
         let dialog = crate::dialogs::ComposeDialog::reply_all_message_with_style(
             &sender,
@@ -10936,7 +10969,7 @@ impl MailPage {
             &message.recipient_cc(),
             &message.date_str(),
             &message.subject(),
-            &message.html_body(),
+            &message.resolved_html_body(),
             &style,
         );
         if let Some(location) = message.backend_location() {
@@ -10976,6 +11009,7 @@ impl MailPage {
         let style = AppSettings::try_new()
             .map(|s| s.composer_reply_style())
             .unwrap_or_else(|| "quoted".to_string());
+        Self::ensure_message_hydrated_for_compose(&message);
         let dialog = crate::dialogs::ComposeDialog::reply_to_message_with_style(
             &sender_header(&message),
             &recipient,
@@ -10983,7 +11017,7 @@ impl MailPage {
             &message.recipient_cc(),
             &message.date_str(),
             &message.subject(),
-            &message.html_body(),
+            &message.resolved_html_body(),
             &style,
         );
         if let Some(location) = message.backend_location() {
@@ -11125,6 +11159,8 @@ impl MailPage {
                 3 => "none",
                 _ => return,
             };
+            Self::ensure_message_hydrated_for_compose(&message);
+            let resolved_html = message.resolved_html_body();
             let sender = sender_header(&message);
             let composer = match recipient_choice {
                 AlternativeReplyRecipient::Sender => {
@@ -11135,7 +11171,7 @@ impl MailPage {
                         &message.recipient_cc(),
                         &message.date_str(),
                         &message.subject(),
-                        &message.html_body(),
+                        &resolved_html,
                         style,
                     )
                 }
@@ -11151,7 +11187,7 @@ impl MailPage {
                         &message.recipient_cc(),
                         &message.date_str(),
                         &message.subject(),
-                        &message.html_body(),
+                        &resolved_html,
                         style,
                     )
                 }
@@ -11163,7 +11199,7 @@ impl MailPage {
                         &message.recipient_cc(),
                         &message.date_str(),
                         &message.subject(),
-                        &message.html_body(),
+                        &resolved_html,
                         style,
                     )
                 }
@@ -11188,17 +11224,46 @@ impl MailPage {
         }
     }
 
+    fn ensure_message_hydrated_for_compose(message: &MailMessageObject) {
+        if !message.is_preview_only() && !message.html_body().is_empty() {
+            return;
+        }
+        if let Some(location) = message.backend_location()
+            && let Some(raw) = camel_mail_service::try_load_cached_raw_message(&location)
+            && raw.len() <= 4 * 1024 * 1024
+        {
+            let cancellation = AtomicBool::new(false);
+            if let Ok((parsed, searchable)) = prepare_loaded_message_body(
+                &message.id(),
+                &message.folder_id(),
+                &raw,
+                message.is_unread(),
+                &cancellation,
+            ) {
+                message.set_raw_headers(parsed.raw_headers);
+                message.set_raw_mime(parsed.raw_mime);
+                message.replace_rendered_content(
+                    parsed.html_body,
+                    parsed.preview_snippet,
+                    parsed.attachments,
+                    Some(searchable),
+                );
+            }
+        }
+    }
+
     pub fn forward_inline_selected(&self) -> bool {
         let Some(message) = self.selected_message() else {
             return false;
         };
+        Self::ensure_message_hydrated_for_compose(&message);
         let dialog = crate::dialogs::ComposeDialog::forward_inline_message(
             &message.subject(),
             &sender_header(&message),
             &message.recipient_to(),
             &message.recipient_cc(),
             &message.date_str(),
-            &message.html_body(),
+            &message.resolved_html_body(),
         );
         let msg_for_fwd = message.clone();
         let page_weak = self.downgrade();
@@ -11219,13 +11284,14 @@ impl MailPage {
         let Some(message) = self.selected_message() else {
             return false;
         };
+        Self::ensure_message_hydrated_for_compose(&message);
         let dialog = crate::dialogs::ComposeDialog::forward_quoted_message(
             &message.subject(),
             &sender_header(&message),
             &message.recipient_to(),
             &message.recipient_cc(),
             &message.date_str(),
-            &message.html_body(),
+            &message.resolved_html_body(),
         );
         let msg_for_fwd = message.clone();
         let page_weak = self.downgrade();
@@ -11391,6 +11457,7 @@ impl MailPage {
         let Some(message) = self.selected_message() else {
             return false;
         };
+        Self::ensure_message_hydrated_for_compose(&message);
         let attachments = message
             .attachments()
             .into_iter()
@@ -11415,7 +11482,7 @@ impl MailPage {
             &message.recipient_cc(),
             &message.recipient_bcc(),
             &message.subject(),
-            &message.html_body(),
+            &message.resolved_html_body(),
             attachments,
         );
         self.present_composer(dialog)
@@ -32952,18 +33019,7 @@ impl MailPage {
         mail_viewer.set_suppressed_by_itip(has_itip && itip_banner.is_some());
         mail_viewer.set_visible(!has_itip);
 
-        let inline_images = attachments
-            .iter()
-            .filter_map(|attachment| {
-                attachment.content_id.as_ref().map(|content_id| {
-                    InlineImage::new(
-                        content_id.clone(),
-                        attachment.mime_type.clone(),
-                        attachment.content.clone(),
-                    )
-                })
-            })
-            .collect::<Vec<_>>();
+        let inline_images = message.inline_images();
         let html_body = message.html_body();
         let sender = sender_header(message);
         mail_viewer.set_current_sender(Some(&sender));
@@ -35521,9 +35577,24 @@ impl MailPage {
             .iter()
             .any(|s| s.id == MailSidebarPanelId::Tasks && s.mode != SidebarPanelMode::Off);
         if let Some(settings) = AppSettings::try_new() {
-            settings.set_mail_sidebar_layout(&format_mail_sidebar_layout(&specs));
+            let formatted = format_mail_sidebar_layout_with_heights(
+                &specs,
+                self.imp().mail_sidebar_manual_bottom_h.get(),
+                self.imp().mail_sidebar_manual_inner_bottom_h.get(),
+            );
+            settings.set_mail_sidebar_layout(&formatted);
             settings.set_agenda_show_tasks(show_tasks);
         }
+    }
+
+    pub(crate) fn reset_mail_sidebar_vpane_auto_fit(&self) {
+        self.imp().mail_sidebar_manual_bottom_h.set(None);
+        self.imp().mail_sidebar_manual_inner_bottom_h.set(None);
+        self.imp().mail_sidebar_vpane_dragging.set(false);
+        self.imp().mail_sidebar_inner_vpane_dragging.set(false);
+        self.persist_mail_sidebar_panel_specs();
+        self.sync_mail_sidebar_vpane_layout();
+        self.rebuild_mail_sidebar_options_popover();
     }
 
     pub(crate) fn set_mail_sidebar_panel_mode(
@@ -35789,6 +35860,55 @@ impl MailPage {
 
             opt_box.append(&row);
         }
+
+        let sep = gtk::Separator::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .margin_top(4)
+            .margin_bottom(2)
+            .build();
+        opt_box.append(&sep);
+
+        let is_auto = self.imp().mail_sidebar_manual_bottom_h.get().is_none()
+            && self.imp().mail_sidebar_manual_inner_bottom_h.get().is_none();
+        let auto_btn = gtk::Button::builder()
+            .css_classes(vec!["flat"])
+            .tooltip_text(&gettext(
+                "Automatically fit section heights to their content (or double-click a divider line)",
+            ))
+            .build();
+        let auto_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+        let auto_lbl = gtk::Label::builder()
+            .label(&gettext("Auto-fit section heights"))
+            .xalign(0.0)
+            .hexpand(true)
+            .css_classes(vec!["caption"])
+            .build();
+        let status_lbl = gtk::Label::builder()
+            .label(&if is_auto {
+                gettext("Active")
+            } else {
+                gettext("Reset")
+            })
+            .css_classes(if is_auto {
+                vec!["caption", "dim-label"]
+            } else {
+                vec!["caption", "accent"]
+            })
+            .build();
+        auto_row.append(&auto_lbl);
+        auto_row.append(&status_lbl);
+        auto_btn.set_child(Some(&auto_row));
+        auto_btn.set_sensitive(!is_auto);
+        let page_weak_auto = self.downgrade();
+        auto_btn.connect_clicked(move |_| {
+            if let Some(page) = page_weak_auto.upgrade() {
+                page.reset_mail_sidebar_vpane_auto_fit();
+            }
+        });
+        opt_box.append(&auto_btn);
     }
 
     fn populate_mail_sidebar_tab_switcher(
@@ -36311,6 +36431,8 @@ impl MailPage {
         }
 
         self.imp().syncing_mail_sidebar_vpane.set(true);
+        self.imp().mail_sidebar_vpane_dragging.set(false);
+        self.imp().mail_sidebar_inner_vpane_dragging.set(false);
 
         detach_widget_from_parent(&agenda_box);
         detach_widget_from_parent(&tasks_box);
@@ -36322,13 +36444,64 @@ impl MailPage {
         todo_inner_vpaned.set_shrink_start_child(false);
         todo_inner_vpaned.set_shrink_end_child(false);
 
+        let compute_compact_box_height = |w: &gtk::Widget, avail_h: i32| -> Option<i32> {
+            let max_auto = if avail_h > 320 {
+                (avail_h * 36 / 100).max(148)
+            } else {
+                172
+            };
+            if w == memos_box.upcast_ref::<gtk::Widget>() {
+                let items_h = self
+                    .imp()
+                    .agenda_memos_layout
+                    .borrow()
+                    .as_ref()
+                    .map(|l| {
+                        if l.items.is_empty() {
+                            42
+                        } else {
+                            l.total_height.ceil() as i32
+                        }
+                    })
+                    .unwrap_or_else(|| {
+                        let count = self.imp().agenda_cached_memos.borrow().len() as i32;
+                        if count == 0 {
+                            42
+                        } else {
+                            count * 34 + 6
+                        }
+                    });
+                return Some((46 + items_h).clamp(84, max_auto));
+            }
+            if w == tasks_box.upcast_ref::<gtk::Widget>() {
+                if tasks_stack.child_by_name("agenda").is_some() {
+                    return None;
+                }
+                let items_h = if self.imp().agenda_tasks_canvas_items.borrow().is_empty() {
+                    42
+                } else {
+                    self.imp()
+                        .agenda_tasks_canvas
+                        .borrow()
+                        .as_ref()
+                        .map(|c| c.content_height().max(42))
+                        .unwrap_or(76)
+                };
+                return Some((46 + items_h).clamp(84, max_auto));
+            }
+            None
+        };
+
         let apply_two_pane_accordion =
             |paned: &gtk::Paned,
              top: &gtk::Widget,
              top_exp: bool,
              bottom: &gtk::Widget,
              bottom_exp: bool,
-             saved_pos: i32| {
+             saved_pos: i32,
+             manual_bottom_opt: Option<i32>,
+             top_desired_opt: Option<i32>,
+             bottom_desired_opt: Option<i32>| {
                 paned.set_start_child(Some(top));
                 paned.set_end_child(Some(bottom));
                 top.set_vexpand(true);
@@ -36336,15 +36509,44 @@ impl MailPage {
                 bottom.set_vexpand(true);
                 bottom.set_valign(gtk::Align::Fill);
                 if top_exp && bottom_exp {
-                    paned.set_resize_start_child(true);
-                    paned.set_resize_end_child(true);
                     let total_h = paned.height();
-                    let clamped_pos = if total_h > 320 {
-                        saved_pos.clamp(120, (total_h - 210).max(140))
+                    if let Some(manual_bh) = manual_bottom_opt {
+                        paned.set_resize_start_child(true);
+                        paned.set_resize_end_child(false);
+                        let pos = if total_h > 220 {
+                            (total_h - manual_bh).clamp(96, (total_h - 76).max(96))
+                        } else {
+                            saved_pos.max(120)
+                        };
+                        paned.set_position(pos);
+                    } else if let Some(bh) = bottom_desired_opt {
+                        paned.set_resize_start_child(true);
+                        paned.set_resize_end_child(false);
+                        let pos = if total_h > 220 {
+                            (total_h - bh).clamp(110, (total_h - 76).max(110))
+                        } else {
+                            520
+                        };
+                        paned.set_position(pos);
+                    } else if let Some(th) = top_desired_opt {
+                        paned.set_resize_start_child(false);
+                        paned.set_resize_end_child(true);
+                        let pos = if total_h > 220 {
+                            th.clamp(84, (total_h - 110).max(84))
+                        } else {
+                            th.clamp(84, 220)
+                        };
+                        paned.set_position(pos);
                     } else {
-                        saved_pos.clamp(120, 320)
-                    };
-                    paned.set_position(clamped_pos);
+                        paned.set_resize_start_child(true);
+                        paned.set_resize_end_child(true);
+                        let clamped_pos = if total_h > 320 {
+                            saved_pos.clamp(120, (total_h - 160).max(140))
+                        } else {
+                            saved_pos.max(160)
+                        };
+                        paned.set_position(clamped_pos);
+                    }
                 } else if !top_exp && bottom_exp {
                     paned.set_resize_start_child(false);
                     paned.set_resize_end_child(true);
@@ -36360,6 +36562,11 @@ impl MailPage {
                 }
             };
 
+        let outer_h = todo_vpaned.height();
+        if outer_h > 220 {
+            self.imp().mail_sidebar_last_vpane_h.set(outer_h);
+        }
+
         match ordered_containers.len() {
             1 => {
                 let (ref bx0, _, _exp0) = ordered_containers[0];
@@ -36374,6 +36581,9 @@ impl MailPage {
                 let (ref bx0, _, exp0) = ordered_containers[0];
                 let (ref bx1, _, exp1) = ordered_containers[1];
                 let saved = self.imp().mail_sidebar_saved_vpane_pos.get();
+                let manual_bh = self.imp().mail_sidebar_manual_bottom_h.get();
+                let top_des = compute_compact_box_height(bx0.upcast_ref(), outer_h);
+                let bot_des = compute_compact_box_height(bx1.upcast_ref(), outer_h);
                 apply_two_pane_accordion(
                     &todo_vpaned,
                     bx0.upcast_ref(),
@@ -36381,31 +36591,20 @@ impl MailPage {
                     bx1.upcast_ref(),
                     exp1,
                     saved,
+                    manual_bh,
+                    top_des,
+                    bot_des,
                 );
-                let vpaned_weak = todo_vpaned.downgrade();
-                let page_weak = self.downgrade();
-                glib::idle_add_local_once(move || {
-                    if let (Some(paned), Some(page)) = (vpaned_weak.upgrade(), page_weak.upgrade()) {
-                        if paned.resizes_start_child() && paned.resizes_end_child() {
-                            let h = paned.height();
-                            if h > 320 {
-                                let max_pos = (h - 210).max(140);
-                                if paned.position() > max_pos {
-                                    page.imp().syncing_mail_sidebar_vpane.set(true);
-                                    paned.set_position(max_pos);
-                                    page.imp().mail_sidebar_saved_vpane_pos.set(max_pos);
-                                    page.imp().syncing_mail_sidebar_vpane.set(false);
-                                }
-                            }
-                        }
-                    }
-                });
             }
             3 => {
                 let (ref bx0, _, exp0) = ordered_containers[0];
                 let (ref bx1, _, exp1) = ordered_containers[1];
                 let (ref bx2, _, exp2) = ordered_containers[2];
+                let inner_h = todo_inner_vpaned.height().max(outer_h / 2);
+                let d1 = compute_compact_box_height(bx1.upcast_ref(), inner_h);
+                let d2 = compute_compact_box_height(bx2.upcast_ref(), inner_h);
                 let inner_saved = self.imp().mail_sidebar_saved_inner_vpane_pos.get();
+                let inner_manual_bh = self.imp().mail_sidebar_manual_inner_bottom_h.get();
                 apply_two_pane_accordion(
                     &todo_inner_vpaned,
                     bx1.upcast_ref(),
@@ -36413,8 +36612,26 @@ impl MailPage {
                     bx2.upcast_ref(),
                     exp2,
                     inner_saved,
+                    inner_manual_bh,
+                    d1,
+                    d2,
                 );
                 let outer_saved = self.imp().mail_sidebar_saved_vpane_pos.get();
+                let outer_manual_bh = self.imp().mail_sidebar_manual_bottom_h.get();
+                let top_des = compute_compact_box_height(bx0.upcast_ref(), outer_h);
+                let combined_inner_des = match (exp1, exp2, d1, d2) {
+                    (true, true, Some(h1), Some(h2)) => {
+                        let cap = if outer_h > 360 {
+                            (outer_h * 52 / 100).max(210)
+                        } else {
+                            260
+                        };
+                        Some((h1 + h2 + 6).min(cap))
+                    }
+                    (true, false, Some(h1), _) => Some(h1 + 36),
+                    (false, true, _, Some(h2)) => Some(h2 + 36),
+                    _ => None,
+                };
                 apply_two_pane_accordion(
                     &todo_vpaned,
                     bx0.upcast_ref(),
@@ -36422,25 +36639,10 @@ impl MailPage {
                     todo_inner_vpaned.upcast_ref(),
                     exp1 || exp2,
                     outer_saved,
+                    outer_manual_bh,
+                    top_des,
+                    combined_inner_des,
                 );
-                let inner_weak = todo_inner_vpaned.downgrade();
-                let page_weak = self.downgrade();
-                glib::idle_add_local_once(move || {
-                    if let (Some(paned), Some(page)) = (inner_weak.upgrade(), page_weak.upgrade()) {
-                        if paned.resizes_start_child() && paned.resizes_end_child() {
-                            let h = paned.height();
-                            if h > 280 {
-                                let max_pos = (h - 170).max(120);
-                                if paned.position() > max_pos {
-                                    page.imp().syncing_mail_sidebar_vpane.set(true);
-                                    paned.set_position(max_pos);
-                                    page.imp().mail_sidebar_saved_inner_vpane_pos.set(max_pos);
-                                    page.imp().syncing_mail_sidebar_vpane.set(false);
-                                }
-                            }
-                        }
-                    }
-                });
             }
             _ => {}
         }
@@ -36458,20 +36660,31 @@ impl MailPage {
 
         let initial_vpos = AppSettings::try_new()
             .map(|s| s.mail_todo_vpane_position())
-            .unwrap_or(280)
-            .clamp(120, 380);
+            .unwrap_or(520)
+            .clamp(100, 1600);
         let initial_inner_vpos = AppSettings::try_new()
             .map(|s| s.mail_todo_inner_vpane_position())
             .unwrap_or(220)
-            .clamp(120, 320);
-        let initial_specs = AppSettings::try_new()
-            .map(|s| parse_mail_sidebar_layout(&s.mail_sidebar_layout()))
-            .unwrap_or_else(default_mail_sidebar_panel_specs);
+            .clamp(80, 1200);
+        let raw_layout = AppSettings::try_new()
+            .map(|s| s.mail_sidebar_layout())
+            .unwrap_or_default();
+        let initial_specs = if raw_layout.is_empty() {
+            default_mail_sidebar_panel_specs()
+        } else {
+            parse_mail_sidebar_layout(&raw_layout)
+        };
+        let (manual_bottom_h, manual_inner_bottom_h) =
+            parse_mail_sidebar_manual_heights(&raw_layout);
 
         self.imp().mail_sidebar_saved_vpane_pos.set(initial_vpos);
         self.imp()
             .mail_sidebar_saved_inner_vpane_pos
             .set(initial_inner_vpos);
+        self.imp().mail_sidebar_manual_bottom_h.set(manual_bottom_h);
+        self.imp()
+            .mail_sidebar_manual_inner_bottom_h
+            .set(manual_inner_bottom_h);
         self.imp().mail_sidebar_panel_specs.replace(initial_specs);
 
         let todo_vpaned = gtk::Paned::builder()
@@ -36493,17 +36706,109 @@ impl MailPage {
             .agenda_inner_vpaned
             .replace(Some(todo_inner_vpaned.clone()));
 
+        let vpane_click = gtk::GestureClick::builder()
+            .button(1)
+            .propagation_phase(gtk::PropagationPhase::Capture)
+            .build();
+        let page_weak_vclick = self.downgrade();
+        let vpaned_for_click = todo_vpaned.clone();
+        vpane_click.connect_pressed(move |gesture, n_press, _x, y| {
+            let Some(page) = page_weak_vclick.upgrade() else { return };
+            let h = vpaned_for_click.height();
+            let pos = vpaned_for_click.position();
+            let on_handle = h > 160
+                && pos > 24
+                && pos < h - 24
+                && vpaned_for_click.start_child().is_some()
+                && vpaned_for_click.end_child().is_some()
+                && (y - pos as f64).abs() <= 16.0;
+            if on_handle {
+                if n_press == 2 {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    page.reset_mail_sidebar_vpane_auto_fit();
+                } else {
+                    page.imp().mail_sidebar_vpane_dragging.set(true);
+                }
+            } else {
+                page.imp().mail_sidebar_vpane_dragging.set(false);
+            }
+        });
+        let page_weak_vrel = self.downgrade();
+        vpane_click.connect_released(move |_, _, _, _| {
+            if let Some(page) = page_weak_vrel.upgrade() {
+                if page.imp().mail_sidebar_vpane_dragging.replace(false) {
+                    page.rebuild_mail_sidebar_options_popover();
+                }
+            }
+        });
+        todo_vpaned.add_controller(vpane_click);
+
+        let vpane_motion = gtk::EventControllerMotion::new();
+        let page_weak_vleave = self.downgrade();
+        vpane_motion.connect_leave(move |_| {
+            if let Some(page) = page_weak_vleave.upgrade() {
+                if page.imp().mail_sidebar_vpane_dragging.replace(false) {
+                    page.rebuild_mail_sidebar_options_popover();
+                }
+            }
+        });
+        todo_vpaned.add_controller(vpane_motion);
+
+        let inner_click = gtk::GestureClick::builder()
+            .button(1)
+            .propagation_phase(gtk::PropagationPhase::Capture)
+            .build();
+        let page_weak_iclick = self.downgrade();
+        let inner_for_click = todo_inner_vpaned.clone();
+        inner_click.connect_pressed(move |gesture, n_press, _x, y| {
+            let Some(page) = page_weak_iclick.upgrade() else { return };
+            let h = inner_for_click.height();
+            let pos = inner_for_click.position();
+            let on_handle = h > 140
+                && pos > 24
+                && pos < h - 24
+                && inner_for_click.start_child().is_some()
+                && inner_for_click.end_child().is_some()
+                && (y - pos as f64).abs() <= 16.0;
+            if on_handle {
+                if n_press == 2 {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    page.reset_mail_sidebar_vpane_auto_fit();
+                } else {
+                    page.imp().mail_sidebar_inner_vpane_dragging.set(true);
+                }
+            } else {
+                page.imp().mail_sidebar_inner_vpane_dragging.set(false);
+            }
+        });
+        let page_weak_irel = self.downgrade();
+        inner_click.connect_released(move |_, _, _, _| {
+            if let Some(page) = page_weak_irel.upgrade() {
+                if page.imp().mail_sidebar_inner_vpane_dragging.replace(false) {
+                    page.rebuild_mail_sidebar_options_popover();
+                }
+            }
+        });
+        todo_inner_vpaned.add_controller(inner_click);
+
+        let inner_motion = gtk::EventControllerMotion::new();
+        let page_weak_ileave = self.downgrade();
+        inner_motion.connect_leave(move |_| {
+            if let Some(page) = page_weak_ileave.upgrade() {
+                if page.imp().mail_sidebar_inner_vpane_dragging.replace(false) {
+                    page.rebuild_mail_sidebar_options_popover();
+                }
+            }
+        });
+        todo_inner_vpaned.add_controller(inner_motion);
+
         let page_weak_vpane = self.downgrade();
         todo_vpaned.connect_position_notify(move |paned| {
             let Some(page) = page_weak_vpane.upgrade() else { return };
             if page.imp().syncing_mail_sidebar_vpane.get() {
                 return;
             }
-            if paned.resizes_start_child()
-                && paned.resizes_end_child()
-                && paned.start_child().is_some()
-                && paned.end_child().is_some()
-            {
+            if paned.start_child().is_some() && paned.end_child().is_some() {
                 if let Some(start) = paned.start_child() {
                     if start.valign() != gtk::Align::Fill || !start.vexpands() {
                         start.set_vexpand(true);
@@ -36516,13 +36821,19 @@ impl MailPage {
                         end.set_valign(gtk::Align::Fill);
                     }
                 }
+                if !page.imp().mail_sidebar_vpane_dragging.get() {
+                    return;
+                }
                 let pos = paned.position();
                 let h = paned.height();
-                if pos > 60 && (h == 0 || pos <= h - 120) {
+                if h > 220 && pos >= 84 && pos <= h - 76 {
+                    let bottom_h = (h - pos).max(76);
                     page.imp().mail_sidebar_saved_vpane_pos.set(pos);
+                    page.imp().mail_sidebar_manual_bottom_h.set(Some(bottom_h));
                     if let Some(settings) = AppSettings::try_new() {
                         settings.set_mail_todo_vpane_position(pos);
                     }
+                    page.persist_mail_sidebar_panel_specs();
                 }
             }
         });
@@ -36533,11 +36844,7 @@ impl MailPage {
             if page.imp().syncing_mail_sidebar_vpane.get() {
                 return;
             }
-            if paned.resizes_start_child()
-                && paned.resizes_end_child()
-                && paned.start_child().is_some()
-                && paned.end_child().is_some()
-            {
+            if paned.start_child().is_some() && paned.end_child().is_some() {
                 if let Some(start) = paned.start_child() {
                     if start.valign() != gtk::Align::Fill || !start.vexpands() {
                         start.set_vexpand(true);
@@ -36550,13 +36857,21 @@ impl MailPage {
                         end.set_valign(gtk::Align::Fill);
                     }
                 }
+                if !page.imp().mail_sidebar_inner_vpane_dragging.get() {
+                    return;
+                }
                 let pos = paned.position();
                 let h = paned.height();
-                if pos > 60 && (h == 0 || pos <= h - 120) {
+                if h > 180 && pos >= 76 && pos <= h - 72 {
+                    let bottom_h = (h - pos).max(72);
                     page.imp().mail_sidebar_saved_inner_vpane_pos.set(pos);
+                    page.imp()
+                        .mail_sidebar_manual_inner_bottom_h
+                        .set(Some(bottom_h));
                     if let Some(settings) = AppSettings::try_new() {
                         settings.set_mail_todo_inner_vpane_position(pos);
                     }
+                    page.persist_mail_sidebar_panel_specs();
                 }
             }
         });
@@ -36754,6 +37069,29 @@ impl MailPage {
             .build();
         set_accessible_label(&agenda_canvas, "Agenda Events Canvas");
         self.imp().agenda_canvas.replace(Some(agenda_canvas.clone()));
+
+        let page_for_agenda_resize = self.downgrade();
+        agenda_canvas.connect_resize(move |_canvas, _, _| {
+            if let Some(page) = page_for_agenda_resize.upgrade() {
+                if let Some(vpaned) = page.imp().agenda_vpaned.borrow().as_ref() {
+                    let h = vpaned.height();
+                    let last_h = page.imp().mail_sidebar_last_vpane_h.get();
+                    if h > 220 && (last_h <= 220 || (h - last_h).abs() > 24) {
+                        page.imp().mail_sidebar_last_vpane_h.set(h);
+                        let page_weak = page.downgrade();
+                        glib::idle_add_local_once(move || {
+                            if let Some(p) = page_weak.upgrade() {
+                                if !p.imp().mail_sidebar_vpane_dragging.get()
+                                    && !p.imp().mail_sidebar_inner_vpane_dragging.get()
+                                {
+                                    p.sync_mail_sidebar_vpane_layout();
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+        });
 
         let page_for_draw = self.downgrade();
         agenda_canvas.set_draw_func(move |_canvas, cr, width, _height| {
@@ -37387,7 +37725,7 @@ impl MailPage {
             .vexpand(true)
             .hexpand(true)
             .valign(gtk::Align::Fill)
-            .min_content_height(110)
+            .min_content_height(48)
             .css_classes(vec!["memos-panel-scroll"])
             .build();
         self.imp()
@@ -37398,7 +37736,7 @@ impl MailPage {
             .hexpand(true)
             .vexpand(true)
             .valign(gtk::Align::Fill)
-            .content_height(120)
+            .content_height(52)
             .css_classes(vec!["memopad-canvas"])
             .build();
         set_accessible_label(&agenda_memos_canvas, "Agenda Memos Canvas");
@@ -37406,8 +37744,28 @@ impl MailPage {
             .agenda_memos_canvas
             .replace(Some(agenda_memos_canvas.clone()));
 
-        agenda_memos_canvas.connect_resize(|canvas, _, _| {
+        let page_for_memos_resize = self.downgrade();
+        agenda_memos_canvas.connect_resize(move |canvas, _, _| {
             canvas.queue_draw();
+            if let Some(page) = page_for_memos_resize.upgrade() {
+                if let Some(vpaned) = page.imp().agenda_vpaned.borrow().as_ref() {
+                    let h = vpaned.height();
+                    let last_h = page.imp().mail_sidebar_last_vpane_h.get();
+                    if h > 220 && (last_h <= 220 || (h - last_h).abs() > 24) {
+                        page.imp().mail_sidebar_last_vpane_h.set(h);
+                        let page_weak = page.downgrade();
+                        glib::idle_add_local_once(move || {
+                            if let Some(p) = page_weak.upgrade() {
+                                if !p.imp().mail_sidebar_vpane_dragging.get()
+                                    && !p.imp().mail_sidebar_inner_vpane_dragging.get()
+                                {
+                                    p.sync_mail_sidebar_vpane_layout();
+                                }
+                            }
+                        });
+                    }
+                }
+            }
         });
 
         let page_for_memos_draw = self.downgrade();
@@ -37967,10 +38325,15 @@ impl MailPage {
             if let Some(badge) = self.imp().agenda_memos_count_badge.borrow().as_ref() {
                 badge.set_label(&memo_count_str);
             }
-            let h = (memo_layout.total_height.ceil() as i32).max(60);
+            let h = (memo_layout.total_height.ceil() as i32).max(42);
             self.imp().agenda_memos_layout.replace(Some(memo_layout));
             memos_canvas.set_content_height(h);
             memos_canvas.queue_draw();
+        }
+        if !self.imp().mail_sidebar_vpane_dragging.get()
+            && !self.imp().mail_sidebar_inner_vpane_dragging.get()
+        {
+            self.sync_mail_sidebar_vpane_layout();
         }
         self.sync_linked_memo_index();
         let selected = self.selected_message();

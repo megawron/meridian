@@ -1518,11 +1518,49 @@ pub(crate) fn parse_sidebar_layout(raw: &str) -> Vec<SidebarPanelSpec> {
 }
 
 pub(crate) fn format_sidebar_layout(specs: &[SidebarPanelSpec]) -> String {
-    specs
+    format_sidebar_layout_with_heights(specs, None, None)
+}
+
+pub(crate) fn format_sidebar_layout_with_heights(
+    specs: &[SidebarPanelSpec],
+    vpane_bottom: Option<i32>,
+    inner_bottom: Option<i32>,
+) -> String {
+    let mut parts: Vec<String> = specs
         .iter()
         .map(|s| format!("{}:{}", s.id.as_str(), s.mode.as_str()))
-        .collect::<Vec<_>>()
-        .join(",")
+        .collect();
+    if let Some(b) = vpane_bottom.filter(|&v| v >= 60) {
+        parts.push(format!("vpane_bottom:{b}"));
+    }
+    if let Some(ib) = inner_bottom.filter(|&v| v >= 60) {
+        parts.push(format!("inner_bottom:{ib}"));
+    }
+    parts.join(",")
+}
+
+pub(crate) fn parse_sidebar_manual_heights(raw: &str) -> (Option<i32>, Option<i32>) {
+    let mut vpane_bottom = None;
+    let mut inner_bottom = None;
+    for part in raw.split(',') {
+        let mut iter = part.split(':');
+        let Some(k) = iter.next() else { continue };
+        let Some(v) = iter.next() else { continue };
+        if k.trim() == "vpane_bottom" {
+            if let Ok(px) = v.trim().parse::<i32>() {
+                if (60..=1600).contains(&px) {
+                    vpane_bottom = Some(px);
+                }
+            }
+        } else if k.trim() == "inner_bottom" {
+            if let Ok(px) = v.trim().parse::<i32>() {
+                if (60..=1600).contains(&px) {
+                    inner_bottom = Some(px);
+                }
+            }
+        }
+    }
+    (vpane_bottom, inner_bottom)
 }
 
 pub(crate) fn detach_widget_from_parent(widget: &impl IsA<gtk::Widget>) {
@@ -1727,6 +1765,11 @@ mod imp {
         pub sidebar_details_on_top: Cell<bool>,
         pub sidebar_saved_vpane_pos: Cell<i32>,
         pub sidebar_saved_inner_vpane_pos: Cell<i32>,
+        pub sidebar_manual_bottom_h: Cell<Option<i32>>,
+        pub sidebar_manual_inner_bottom_h: Cell<Option<i32>>,
+        pub sidebar_vpane_dragging: Cell<bool>,
+        pub sidebar_inner_vpane_dragging: Cell<bool>,
+        pub sidebar_last_vpane_h: Cell<i32>,
         pub syncing_sidebar_vpane: Cell<bool>,
         pub tag_vpaned: RefCell<Option<gtk::Paned>>,
         pub tag_inner_vpaned: RefCell<Option<gtk::Paned>>,
@@ -1943,6 +1986,11 @@ mod imp {
                 sidebar_details_on_top: Cell::new(true),
                 sidebar_saved_vpane_pos: Cell::new(320),
                 sidebar_saved_inner_vpane_pos: Cell::new(240),
+                sidebar_manual_bottom_h: Cell::new(None),
+                sidebar_manual_inner_bottom_h: Cell::new(None),
+                sidebar_vpane_dragging: Cell::new(false),
+                sidebar_inner_vpane_dragging: Cell::new(false),
+                sidebar_last_vpane_h: Cell::new(0),
                 syncing_sidebar_vpane: Cell::new(false),
                 tag_vpaned: RefCell::new(None),
                 tag_inner_vpaned: RefCell::new(None),
@@ -2594,10 +2642,25 @@ impl CalendarPage {
         self.imp().sidebar_details_on_top.set(details_idx < tasks_idx);
 
         if let Some(settings) = AppSettings::try_new() {
-            settings.set_calendar_sidebar_layout(&format_sidebar_layout(&specs));
+            let formatted = format_sidebar_layout_with_heights(
+                &specs,
+                self.imp().sidebar_manual_bottom_h.get(),
+                self.imp().sidebar_manual_inner_bottom_h.get(),
+            );
+            settings.set_calendar_sidebar_layout(&formatted);
             settings.set_calendar_sidebar_show_memos(show_memos);
             settings.set_calendar_sidebar_details_on_top(details_idx < tasks_idx);
         }
+    }
+
+    pub(crate) fn reset_sidebar_vpane_auto_fit(&self) {
+        self.imp().sidebar_manual_bottom_h.set(None);
+        self.imp().sidebar_manual_inner_bottom_h.set(None);
+        self.imp().sidebar_vpane_dragging.set(false);
+        self.imp().sidebar_inner_vpane_dragging.set(false);
+        self.persist_sidebar_panel_specs();
+        self.sync_sidebar_vpane_layout();
+        self.rebuild_sidebar_options_popover();
     }
 
     pub(crate) fn set_sidebar_panel_mode(&self, panel: SidebarPanelId, mode: SidebarPanelMode) {
@@ -2849,6 +2912,55 @@ impl CalendarPage {
 
             opt_box.append(&row);
         }
+
+        let sep = gtk::Separator::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .margin_top(4)
+            .margin_bottom(2)
+            .build();
+        opt_box.append(&sep);
+
+        let is_auto = self.imp().sidebar_manual_bottom_h.get().is_none()
+            && self.imp().sidebar_manual_inner_bottom_h.get().is_none();
+        let auto_btn = gtk::Button::builder()
+            .css_classes(vec!["flat"])
+            .tooltip_text(&gettext(
+                "Automatically fit section heights to their content (or double-click a divider line)",
+            ))
+            .build();
+        let auto_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+        let auto_lbl = gtk::Label::builder()
+            .label(&gettext("Auto-fit section heights"))
+            .xalign(0.0)
+            .hexpand(true)
+            .css_classes(vec!["caption"])
+            .build();
+        let status_lbl = gtk::Label::builder()
+            .label(&if is_auto {
+                gettext("Active")
+            } else {
+                gettext("Reset")
+            })
+            .css_classes(if is_auto {
+                vec!["caption", "dim-label"]
+            } else {
+                vec!["caption", "accent"]
+            })
+            .build();
+        auto_row.append(&auto_lbl);
+        auto_row.append(&status_lbl);
+        auto_btn.set_child(Some(&auto_row));
+        auto_btn.set_sensitive(!is_auto);
+        let page_weak_auto = self.downgrade();
+        auto_btn.connect_clicked(move |_| {
+            if let Some(page) = page_weak_auto.upgrade() {
+                page.reset_sidebar_vpane_auto_fit();
+            }
+        });
+        opt_box.append(&auto_btn);
     }
 
     fn populate_sidebar_tab_switcher(
@@ -3421,6 +3533,8 @@ impl CalendarPage {
         }
 
         self.imp().syncing_sidebar_vpane.set(true);
+        self.imp().sidebar_vpane_dragging.set(false);
+        self.imp().sidebar_inner_vpane_dragging.set(false);
 
         detach_widget_from_parent(&taskpad_box);
         detach_widget_from_parent(&sidebar_lower_box);
@@ -3432,13 +3546,81 @@ impl CalendarPage {
         tag_inner_vpaned.set_shrink_start_child(false);
         tag_inner_vpaned.set_shrink_end_child(false);
 
+        let compute_compact_box_height = |w: &gtk::Widget, avail_h: i32| -> Option<i32> {
+            let max_auto = if avail_h > 320 {
+                (avail_h * 38 / 100).max(148)
+            } else {
+                172
+            };
+            if w == memopad_section_box.upcast_ref::<gtk::Widget>() {
+                let items_h = self
+                    .imp()
+                    .memopad_layout
+                    .borrow()
+                    .as_ref()
+                    .map(|l| {
+                        if l.items.is_empty() {
+                            42
+                        } else {
+                            l.total_height.ceil() as i32
+                        }
+                    })
+                    .unwrap_or(52);
+                return Some((46 + items_h).clamp(84, max_auto));
+            }
+            if w == taskpad_box.upcast_ref::<gtk::Widget>() {
+                if taskpad_stack.child_by_name("details").is_some() {
+                    return None;
+                }
+                let tasks_h = self
+                    .imp()
+                    .taskpad_layout
+                    .borrow()
+                    .as_ref()
+                    .map(|l| {
+                        if l.items.is_empty() {
+                            42
+                        } else {
+                            l.total_height.ceil() as i32
+                        }
+                    })
+                    .unwrap_or(68);
+                let memos_h = if taskpad_stack.child_by_name("memos").is_some() {
+                    self.imp()
+                        .memopad_layout
+                        .borrow()
+                        .as_ref()
+                        .map(|l| {
+                            if l.items.is_empty() {
+                                42
+                            } else {
+                                l.total_height.ceil() as i32
+                            }
+                        })
+                        .unwrap_or(42)
+                } else {
+                    0
+                };
+                let items_h = if taskpad_stack.visible_child_name().as_deref() == Some("memos") {
+                    memos_h.max(42)
+                } else {
+                    tasks_h
+                };
+                return Some((46 + items_h).clamp(84, max_auto));
+            }
+            None
+        };
+
         let apply_two_pane_accordion =
             |paned: &gtk::Paned,
              top: &gtk::Widget,
              top_exp: bool,
              bottom: &gtk::Widget,
              bottom_exp: bool,
-             saved_pos: i32| {
+             saved_pos: i32,
+             manual_bottom_opt: Option<i32>,
+             top_desired_opt: Option<i32>,
+             bottom_desired_opt: Option<i32>| {
                 paned.set_start_child(Some(top));
                 paned.set_end_child(Some(bottom));
                 top.set_vexpand(true);
@@ -3446,15 +3628,44 @@ impl CalendarPage {
                 bottom.set_vexpand(true);
                 bottom.set_valign(gtk::Align::Fill);
                 if top_exp && bottom_exp {
-                    paned.set_resize_start_child(true);
-                    paned.set_resize_end_child(true);
                     let total_h = paned.height();
-                    let clamped_pos = if total_h > 300 {
-                        saved_pos.clamp(108, (total_h - 180).max(120))
+                    if let Some(manual_bh) = manual_bottom_opt {
+                        paned.set_resize_start_child(true);
+                        paned.set_resize_end_child(false);
+                        let pos = if total_h > 220 {
+                            (total_h - manual_bh).clamp(96, (total_h - 76).max(96))
+                        } else {
+                            saved_pos.max(116)
+                        };
+                        paned.set_position(pos);
+                    } else if let Some(bh) = bottom_desired_opt {
+                        paned.set_resize_start_child(true);
+                        paned.set_resize_end_child(false);
+                        let pos = if total_h > 220 {
+                            (total_h - bh).clamp(108, (total_h - 76).max(108))
+                        } else {
+                            480
+                        };
+                        paned.set_position(pos);
+                    } else if let Some(th) = top_desired_opt {
+                        paned.set_resize_start_child(false);
+                        paned.set_resize_end_child(true);
+                        let pos = if total_h > 220 {
+                            th.clamp(84, (total_h - 108).max(84))
+                        } else {
+                            th.clamp(84, 220)
+                        };
+                        paned.set_position(pos);
                     } else {
-                        saved_pos.clamp(108, 320)
-                    };
-                    paned.set_position(clamped_pos);
+                        paned.set_resize_start_child(true);
+                        paned.set_resize_end_child(true);
+                        let clamped_pos = if total_h > 300 {
+                            saved_pos.clamp(108, (total_h - 160).max(120))
+                        } else {
+                            saved_pos.max(150)
+                        };
+                        paned.set_position(clamped_pos);
+                    }
                 } else if !top_exp && bottom_exp {
                     paned.set_resize_start_child(false);
                     paned.set_resize_end_child(true);
@@ -3470,6 +3681,11 @@ impl CalendarPage {
                 }
             };
 
+        let outer_h = tag_vpaned.height();
+        if outer_h > 220 {
+            self.imp().sidebar_last_vpane_h.set(outer_h);
+        }
+
         match ordered_containers.len() {
             1 => {
                 let (ref bx0, _, _exp0) = ordered_containers[0];
@@ -3484,6 +3700,9 @@ impl CalendarPage {
                 let (ref bx0, _, exp0) = ordered_containers[0];
                 let (ref bx1, _, exp1) = ordered_containers[1];
                 let saved = self.imp().sidebar_saved_vpane_pos.get();
+                let manual_bh = self.imp().sidebar_manual_bottom_h.get();
+                let top_des = compute_compact_box_height(bx0.upcast_ref(), outer_h);
+                let bot_des = compute_compact_box_height(bx1.upcast_ref(), outer_h);
                 apply_two_pane_accordion(
                     &tag_vpaned,
                     bx0.upcast_ref(),
@@ -3491,31 +3710,20 @@ impl CalendarPage {
                     bx1.upcast_ref(),
                     exp1,
                     saved,
+                    manual_bh,
+                    top_des,
+                    bot_des,
                 );
-                let vpaned_weak = tag_vpaned.downgrade();
-                let page_weak = self.downgrade();
-                glib::idle_add_local_once(move || {
-                    if let (Some(paned), Some(page)) = (vpaned_weak.upgrade(), page_weak.upgrade()) {
-                        if paned.resizes_start_child() && paned.resizes_end_child() {
-                            let h = paned.height();
-                            if h > 300 {
-                                let max_pos = (h - 180).max(120);
-                                if paned.position() > max_pos {
-                                    page.imp().syncing_sidebar_vpane.set(true);
-                                    paned.set_position(max_pos);
-                                    page.imp().sidebar_saved_vpane_pos.set(max_pos);
-                                    page.imp().syncing_sidebar_vpane.set(false);
-                                }
-                            }
-                        }
-                    }
-                });
             }
             3 => {
                 let (ref bx0, _, exp0) = ordered_containers[0];
                 let (ref bx1, _, exp1) = ordered_containers[1];
                 let (ref bx2, _, exp2) = ordered_containers[2];
+                let inner_h = tag_inner_vpaned.height().max(outer_h / 2);
+                let d1 = compute_compact_box_height(bx1.upcast_ref(), inner_h);
+                let d2 = compute_compact_box_height(bx2.upcast_ref(), inner_h);
                 let inner_saved = self.imp().sidebar_saved_inner_vpane_pos.get();
+                let inner_manual_bh = self.imp().sidebar_manual_inner_bottom_h.get();
                 apply_two_pane_accordion(
                     &tag_inner_vpaned,
                     bx1.upcast_ref(),
@@ -3523,8 +3731,26 @@ impl CalendarPage {
                     bx2.upcast_ref(),
                     exp2,
                     inner_saved,
+                    inner_manual_bh,
+                    d1,
+                    d2,
                 );
                 let outer_saved = self.imp().sidebar_saved_vpane_pos.get();
+                let outer_manual_bh = self.imp().sidebar_manual_bottom_h.get();
+                let top_des = compute_compact_box_height(bx0.upcast_ref(), outer_h);
+                let combined_inner_des = match (exp1, exp2, d1, d2) {
+                    (true, true, Some(h1), Some(h2)) => {
+                        let cap = if outer_h > 360 {
+                            (outer_h * 52 / 100).max(210)
+                        } else {
+                            260
+                        };
+                        Some((h1 + h2 + 6).min(cap))
+                    }
+                    (true, false, Some(h1), _) => Some(h1 + 36),
+                    (false, true, _, Some(h2)) => Some(h2 + 36),
+                    _ => None,
+                };
                 apply_two_pane_accordion(
                     &tag_vpaned,
                     bx0.upcast_ref(),
@@ -3532,25 +3758,10 @@ impl CalendarPage {
                     tag_inner_vpaned.upcast_ref(),
                     exp1 || exp2,
                     outer_saved,
+                    outer_manual_bh,
+                    top_des,
+                    combined_inner_des,
                 );
-                let inner_weak = tag_inner_vpaned.downgrade();
-                let page_weak = self.downgrade();
-                glib::idle_add_local_once(move || {
-                    if let (Some(paned), Some(page)) = (inner_weak.upgrade(), page_weak.upgrade()) {
-                        if paned.resizes_start_child() && paned.resizes_end_child() {
-                            let h = paned.height();
-                            if h > 260 {
-                                let max_pos = (h - 150).max(108);
-                                if paned.position() > max_pos {
-                                    page.imp().syncing_sidebar_vpane.set(true);
-                                    paned.set_position(max_pos);
-                                    page.imp().sidebar_saved_inner_vpane_pos.set(max_pos);
-                                    page.imp().syncing_sidebar_vpane.set(false);
-                                }
-                            }
-                        }
-                    }
-                });
             }
             _ => {}
         }
@@ -10586,10 +10797,20 @@ impl CalendarPage {
                 .position(|s| s.id == SidebarPanelId::Tasks)
                 .unwrap_or(0);
 
+        let raw_sidebar_layout = AppSettings::try_new()
+            .map(|s| s.calendar_sidebar_layout())
+            .unwrap_or_default();
+        let (manual_bottom_h, manual_inner_bottom_h) =
+            parse_sidebar_manual_heights(&raw_sidebar_layout);
+
         self.imp().sidebar_saved_vpane_pos.set(tag_vpane_initial_pos);
         self.imp()
             .sidebar_saved_inner_vpane_pos
             .set(tag_inner_initial_pos);
+        self.imp().sidebar_manual_bottom_h.set(manual_bottom_h);
+        self.imp()
+            .sidebar_manual_inner_bottom_h
+            .set(manual_inner_bottom_h);
         self.imp().sidebar_show_memos.set(initial_show_memos);
         self.imp().sidebar_details_on_top.set(initial_details_on_top);
         self.imp().sidebar_panel_specs.replace(initial_specs);
@@ -10602,17 +10823,109 @@ impl CalendarPage {
             .tag_inner_vpaned
             .replace(Some(tag_inner_vpaned.clone()));
 
+        let vpane_click = gtk::GestureClick::builder()
+            .button(1)
+            .propagation_phase(gtk::PropagationPhase::Capture)
+            .build();
+        let page_weak_vclick = self.downgrade();
+        let vpaned_for_click = tag_vpaned.clone();
+        vpane_click.connect_pressed(move |gesture, n_press, _x, y| {
+            let Some(page) = page_weak_vclick.upgrade() else { return };
+            let h = vpaned_for_click.height();
+            let pos = vpaned_for_click.position();
+            let on_handle = h > 160
+                && pos > 24
+                && pos < h - 24
+                && vpaned_for_click.start_child().is_some()
+                && vpaned_for_click.end_child().is_some()
+                && (y - pos as f64).abs() <= 16.0;
+            if on_handle {
+                if n_press == 2 {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    page.reset_sidebar_vpane_auto_fit();
+                } else {
+                    page.imp().sidebar_vpane_dragging.set(true);
+                }
+            } else {
+                page.imp().sidebar_vpane_dragging.set(false);
+            }
+        });
+        let page_weak_vrel = self.downgrade();
+        vpane_click.connect_released(move |_, _, _, _| {
+            if let Some(page) = page_weak_vrel.upgrade() {
+                if page.imp().sidebar_vpane_dragging.replace(false) {
+                    page.rebuild_sidebar_options_popover();
+                }
+            }
+        });
+        tag_vpaned.add_controller(vpane_click);
+
+        let vpane_motion = gtk::EventControllerMotion::new();
+        let page_weak_vleave = self.downgrade();
+        vpane_motion.connect_leave(move |_| {
+            if let Some(page) = page_weak_vleave.upgrade() {
+                if page.imp().sidebar_vpane_dragging.replace(false) {
+                    page.rebuild_sidebar_options_popover();
+                }
+            }
+        });
+        tag_vpaned.add_controller(vpane_motion);
+
+        let inner_click = gtk::GestureClick::builder()
+            .button(1)
+            .propagation_phase(gtk::PropagationPhase::Capture)
+            .build();
+        let page_weak_iclick = self.downgrade();
+        let inner_for_click = tag_inner_vpaned.clone();
+        inner_click.connect_pressed(move |gesture, n_press, _x, y| {
+            let Some(page) = page_weak_iclick.upgrade() else { return };
+            let h = inner_for_click.height();
+            let pos = inner_for_click.position();
+            let on_handle = h > 140
+                && pos > 24
+                && pos < h - 24
+                && inner_for_click.start_child().is_some()
+                && inner_for_click.end_child().is_some()
+                && (y - pos as f64).abs() <= 16.0;
+            if on_handle {
+                if n_press == 2 {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    page.reset_sidebar_vpane_auto_fit();
+                } else {
+                    page.imp().sidebar_inner_vpane_dragging.set(true);
+                }
+            } else {
+                page.imp().sidebar_inner_vpane_dragging.set(false);
+            }
+        });
+        let page_weak_irel = self.downgrade();
+        inner_click.connect_released(move |_, _, _, _| {
+            if let Some(page) = page_weak_irel.upgrade() {
+                if page.imp().sidebar_inner_vpane_dragging.replace(false) {
+                    page.rebuild_sidebar_options_popover();
+                }
+            }
+        });
+        tag_inner_vpaned.add_controller(inner_click);
+
+        let inner_motion = gtk::EventControllerMotion::new();
+        let page_weak_ileave = self.downgrade();
+        inner_motion.connect_leave(move |_| {
+            if let Some(page) = page_weak_ileave.upgrade() {
+                if page.imp().sidebar_inner_vpane_dragging.replace(false) {
+                    page.rebuild_sidebar_options_popover();
+                }
+            }
+        });
+        tag_inner_vpaned.add_controller(inner_motion);
+
         let page_weak_vpane = self.downgrade();
         tag_vpaned.connect_position_notify(move |paned| {
             let Some(page) = page_weak_vpane.upgrade() else { return };
             if page.imp().syncing_sidebar_vpane.get() {
                 return;
             }
-            if paned.resizes_start_child()
-                && paned.resizes_end_child()
-                && paned.start_child().is_some()
-                && paned.end_child().is_some()
-            {
+            if paned.start_child().is_some() && paned.end_child().is_some() {
                 if let Some(start) = paned.start_child() {
                     if start.valign() != gtk::Align::Fill || !start.vexpands() {
                         start.set_vexpand(true);
@@ -10625,13 +10938,19 @@ impl CalendarPage {
                         end.set_valign(gtk::Align::Fill);
                     }
                 }
+                if !page.imp().sidebar_vpane_dragging.get() {
+                    return;
+                }
                 let pos = paned.position();
                 let h = paned.height();
-                if pos >= 96 && (h == 0 || pos <= h - 120) {
+                if h > 220 && pos >= 84 && pos <= h - 76 {
+                    let bottom_h = (h - pos).max(76);
                     page.imp().sidebar_saved_vpane_pos.set(pos);
+                    page.imp().sidebar_manual_bottom_h.set(Some(bottom_h));
                     if let Some(settings) = AppSettings::try_new() {
                         settings.set_calendar_tag_vpane_position(pos);
                     }
+                    page.persist_sidebar_panel_specs();
                 }
             }
         });
@@ -10642,11 +10961,7 @@ impl CalendarPage {
             if page.imp().syncing_sidebar_vpane.get() {
                 return;
             }
-            if paned.resizes_start_child()
-                && paned.resizes_end_child()
-                && paned.start_child().is_some()
-                && paned.end_child().is_some()
-            {
+            if paned.start_child().is_some() && paned.end_child().is_some() {
                 if let Some(start) = paned.start_child() {
                     if start.valign() != gtk::Align::Fill || !start.vexpands() {
                         start.set_vexpand(true);
@@ -10659,13 +10974,19 @@ impl CalendarPage {
                         end.set_valign(gtk::Align::Fill);
                     }
                 }
+                if !page.imp().sidebar_inner_vpane_dragging.get() {
+                    return;
+                }
                 let pos = paned.position();
                 let h = paned.height();
-                if pos >= 96 && (h == 0 || pos <= h - 120) {
+                if h > 180 && pos >= 76 && pos <= h - 72 {
+                    let bottom_h = (h - pos).max(72);
                     page.imp().sidebar_saved_inner_vpane_pos.set(pos);
+                    page.imp().sidebar_manual_inner_bottom_h.set(Some(bottom_h));
                     if let Some(settings) = AppSettings::try_new() {
                         settings.set_calendar_tag_inner_vpane_position(pos);
                     }
+                    page.persist_sidebar_panel_specs();
                 }
             }
         });
@@ -11005,12 +11326,35 @@ impl CalendarPage {
         });
         taskpad_canvas.add_controller(key_controller);
 
+        let page_for_taskpad_resize = self.downgrade();
+        taskpad_canvas.connect_resize(move |_canvas, _, _| {
+            if let Some(page) = page_for_taskpad_resize.upgrade() {
+                if let Some(vpaned) = page.imp().tag_vpaned.borrow().as_ref() {
+                    let h = vpaned.height();
+                    let last_h = page.imp().sidebar_last_vpane_h.get();
+                    if h > 220 && (last_h <= 220 || (h - last_h).abs() > 24) {
+                        page.imp().sidebar_last_vpane_h.set(h);
+                        let page_weak = page.downgrade();
+                        glib::idle_add_local_once(move || {
+                            if let Some(p) = page_weak.upgrade() {
+                                if !p.imp().sidebar_vpane_dragging.get()
+                                    && !p.imp().sidebar_inner_vpane_dragging.get()
+                                {
+                                    p.sync_sidebar_vpane_layout();
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+        });
+
         let taskpad_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_height(false)
             .propagate_natural_width(false)
-            .min_content_height(80)
+            .min_content_height(52)
             .vexpand(true)
             .child(&taskpad_canvas)
             .build();
@@ -11346,11 +11690,34 @@ impl CalendarPage {
         });
         memopad_canvas.add_controller(memo_key_controller);
 
+        let page_for_memopad_resize = self.downgrade();
+        memopad_canvas.connect_resize(move |_canvas, _, _| {
+            if let Some(page) = page_for_memopad_resize.upgrade() {
+                if let Some(vpaned) = page.imp().tag_vpaned.borrow().as_ref() {
+                    let h = vpaned.height();
+                    let last_h = page.imp().sidebar_last_vpane_h.get();
+                    if h > 220 && (last_h <= 220 || (h - last_h).abs() > 24) {
+                        page.imp().sidebar_last_vpane_h.set(h);
+                        let page_weak = page.downgrade();
+                        glib::idle_add_local_once(move || {
+                            if let Some(p) = page_weak.upgrade() {
+                                if !p.imp().sidebar_vpane_dragging.get()
+                                    && !p.imp().sidebar_inner_vpane_dragging.get()
+                                {
+                                    p.sync_sidebar_vpane_layout();
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+        });
+
         let memopad_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_height(false)
-            .min_content_height(80)
+            .min_content_height(52)
             .vexpand(true)
             .child(&memopad_canvas)
             .build();
@@ -12823,6 +13190,11 @@ impl CalendarPage {
             };
             state.set_label(&empty_label);
         }
+        if !self.imp().sidebar_vpane_dragging.get()
+            && !self.imp().sidebar_inner_vpane_dragging.get()
+        {
+            self.sync_sidebar_vpane_layout();
+        }
     }
 
     pub(crate) fn refresh_memopad(&self) {
@@ -12913,6 +13285,11 @@ impl CalendarPage {
                 gettext("No memos match the filter")
             };
             state.set_label(&empty_label);
+        }
+        if !self.imp().sidebar_vpane_dragging.get()
+            && !self.imp().sidebar_inner_vpane_dragging.get()
+        {
+            self.sync_sidebar_vpane_layout();
         }
     }
 

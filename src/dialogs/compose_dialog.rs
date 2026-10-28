@@ -1623,7 +1623,6 @@ impl ComposeDialog {
             let b_encrypt = btn_encrypt.clone();
             let b_priority = btn_priority.clone();
             let b_receipt = btn_request_read_receipt.clone();
-            let b_plain = btn_plain_text.clone();
 
             std::rc::Rc::new(move || {
                 while let Some(child) = badges_box.first_child() {
@@ -1702,16 +1701,6 @@ impl ComposeDialog {
                     );
                     count += 1;
                 }
-                if b_plain.is_active() {
-                    add_badge(
-                        &badges_box,
-                        "text-x-generic-symbolic",
-                        "Nur-Text",
-                        "Zu HTML wechseln",
-                        &b_plain,
-                    );
-                    count += 1;
-                }
 
                 badges_box.set_visible(count > 0);
             })
@@ -1733,28 +1722,29 @@ impl ComposeDialog {
             let u = update_options_badges.clone();
             btn_request_read_receipt.connect_toggled(move |_| u());
         }
-        {
-            let u = update_options_badges.clone();
-            btn_plain_text.connect_toggled(move |_| u());
-        }
         update_options_badges();
 
         // Rich WebKitGTK 6.0 WYSIWYG HTML Editor
         let html_editor = crate::views::HtmlEditor::new();
-        html_editor.set_plain_text_mode(btn_plain_text.is_active());
+        let initial_plain = btn_plain_text.is_active();
+        html_editor.set_plain_text_mode(initial_plain);
         html_editor.set_vexpand(true);
-        if btn_format.is_active() {
+        btn_format.set_sensitive(!initial_plain);
+        header_mode_switcher.set_visible(initial_plain || !btn_format.is_active());
+        if btn_format.is_active() && !initial_plain {
             html_editor.set_format_toolbar_visible(true);
         }
 
         let header_mode_for_fmt = header_mode_switcher.clone();
+        let plain_for_fmt = btn_plain_text.clone();
         btn_format.connect_toggled(glib::clone!(
             #[weak(rename_to = dialog)]
             self,
             move |btn| {
-                header_mode_for_fmt.set_visible(!btn.is_active());
+                let is_plain = plain_for_fmt.is_active();
+                header_mode_for_fmt.set_visible(is_plain || !btn.is_active());
                 if let Some(editor) = dialog.imp().html_editor.borrow().as_ref() {
-                    editor.set_format_toolbar_visible(btn.is_active());
+                    editor.set_format_toolbar_visible(!is_plain && btn.is_active());
                 }
                 if !dialog.imp().suppress_setting_persistence.get() && btn.is_sensitive() {
                     if let Some(settings) = AppSettings::try_new() {
@@ -1899,6 +1889,8 @@ impl ComposeDialog {
         let dialog_for_composer_mode = self.downgrade();
         let header_html_for_mode = header_btn_html.clone();
         let header_txt_for_mode = header_btn_txt.clone();
+        let btn_format_for_mode = btn_format.clone();
+        let header_mode_switcher_for_mode = header_mode_switcher.clone();
         btn_plain_text.connect_toggled(move |button| {
             let is_plain = button.is_active();
             if header_html_for_mode.is_active() != (!is_plain) {
@@ -1907,6 +1899,9 @@ impl ComposeDialog {
             if header_txt_for_mode.is_active() != is_plain {
                 header_txt_for_mode.set_active(is_plain);
             }
+            btn_format_for_mode.set_sensitive(!is_plain);
+            header_mode_switcher_for_mode.set_visible(is_plain || !btn_format_for_mode.is_active());
+            editor_for_composer_mode.set_format_toolbar_visible(!is_plain && btn_format_for_mode.is_active());
             editor_for_composer_mode.set_plain_text_mode(is_plain);
             let suppress_persistence = dialog_for_composer_mode
                 .upgrade()
@@ -7394,7 +7389,7 @@ pub(crate) fn prepare_quote_html(original_html: &str) -> String {
     }
 
     let body_content = strip_outer_html_scaffolding(trimmed);
-    let sanitized = crate::services::html_sanitizer::sanitize_html(&body_content);
+    let sanitized = crate::services::html_sanitizer::sanitize_html_with_options(&body_content, true);
     let sanitized_trimmed = sanitized.trim();
     if sanitized_trimmed.is_empty() {
         return String::new();

@@ -160,7 +160,7 @@ fn is_uri_attribute_context(input: &str, start: usize) -> bool {
         attribute_end[attribute_start..]
             .to_ascii_lowercase()
             .as_str(),
-        "src" | "xlink:href"
+        "src" | "xlink:href" | "background" | "srcset"
     )
 }
 
@@ -207,7 +207,15 @@ fn normalized_image_mime_type(value: &str) -> Option<String> {
         .to_ascii_lowercase();
     matches!(
         mime_type.as_str(),
-        "image/bmp" | "image/gif" | "image/jpeg" | "image/png" | "image/webp" | "image/x-icon"
+        "image/avif"
+            | "image/apng"
+            | "image/bmp"
+            | "image/gif"
+            | "image/jpeg"
+            | "image/png"
+            | "image/webp"
+            | "image/x-icon"
+            | "image/vnd.microsoft.icon"
     )
     .then_some(mime_type)
 }

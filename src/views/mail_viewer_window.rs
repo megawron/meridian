@@ -2492,7 +2492,7 @@ impl MailViewerWindow {
             &message.recipient_cc(),
             &message.date_str(),
             &message.subject(),
-            &message.html_body(),
+            &message.resolved_html_body(),
             &style,
         );
         composer.set_transient_for(Some(self));
@@ -2513,7 +2513,7 @@ impl MailViewerWindow {
             &message.recipient_cc(),
             &message.date_str(),
             &message.subject(),
-            &message.html_body(),
+            &message.resolved_html_body(),
             &style,
         );
         composer.set_transient_for(Some(self));
@@ -2526,6 +2526,7 @@ impl MailViewerWindow {
         let style = AppSettings::try_new()
             .map(|s| s.composer_forward_style())
             .unwrap_or_else(|| "inline".to_string());
+        let resolved_html = message.resolved_html_body();
 
         let composer = if style == "quoted" {
             crate::dialogs::ComposeDialog::forward_quoted_message(
@@ -2534,7 +2535,7 @@ impl MailViewerWindow {
                 &message.recipient_to(),
                 &message.recipient_cc(),
                 &message.date_str(),
-                &message.html_body(),
+                &resolved_html,
             )
         } else {
             crate::dialogs::ComposeDialog::forward_inline_message(
@@ -2543,7 +2544,7 @@ impl MailViewerWindow {
                 &message.recipient_to(),
                 &message.recipient_cc(),
                 &message.date_str(),
-                &message.html_body(),
+                &resolved_html,
             )
         };
         composer.set_transient_for(Some(self));

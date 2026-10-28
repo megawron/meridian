@@ -3654,7 +3654,7 @@ impl TasksPage {
     /// active, so both entry points preserve one creation workflow.
     pub fn present_new_task(&self) {
         if let Some(button) = self.imp().new_task_button.borrow().as_ref() {
-            button.activate();
+            button.emit_clicked();
         }
     }
 
@@ -5641,7 +5641,7 @@ impl TasksPage {
                         | gtk::gdk::ModifierType::META_MASK,
                 )
             {
-                print_list_for_keys.activate();
+                print_list_for_keys.emit_clicked();
                 return glib::Propagation::Stop;
             }
             let action = match key {
@@ -5654,7 +5654,7 @@ impl TasksPage {
                 _ => None,
             };
             if let Some(action) = action.filter(|action| action.is_sensitive()) {
-                action.activate();
+                action.emit_clicked();
                 glib::Propagation::Stop
             } else {
                 glib::Propagation::Proceed
@@ -13528,7 +13528,7 @@ fn append_task_row(
         let edit_button_for_menu = edit_button_for_context.clone();
         edit.connect_clicked(move |_| {
             popover_for_edit.popdown();
-            edit_button_for_menu.activate();
+            edit_button_for_menu.emit_clicked();
         });
         menu_box.append(&edit);
 
@@ -13547,7 +13547,7 @@ fn append_task_row(
         let check_for_menu = check_for_context.clone();
         toggle.connect_clicked(move |_| {
             popover_for_toggle.popdown();
-            check_for_menu.activate();
+            check_for_menu.set_active(!check_for_menu.is_active());
         });
         menu_box.append(&toggle);
 
@@ -13560,7 +13560,7 @@ fn append_task_row(
         let export_button_for_menu = export_button_for_context.clone();
         export.connect_clicked(move |_| {
             popover_for_export.popdown();
-            export_button_for_menu.activate();
+            export_button_for_menu.emit_clicked();
         });
         menu_box.append(&export);
 
@@ -13575,7 +13575,7 @@ fn append_task_row(
         let delete_button_for_menu = delete_button_for_context.clone();
         delete.connect_clicked(move |_| {
             popover_for_delete.popdown();
-            delete_button_for_menu.activate();
+            delete_button_for_menu.emit_clicked();
         });
         menu_box.append(&delete);
 

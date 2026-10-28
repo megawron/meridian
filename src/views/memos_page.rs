@@ -688,7 +688,7 @@ impl MemosPage {
     /// Trigger the page-local memo editor from the shared Evolution toolbar.
     pub fn present_new_memo(&self) {
         if let Some(button) = self.imp().new_memo_button.borrow().as_ref() {
-            button.activate();
+            button.emit_clicked();
         }
     }
 
@@ -3259,7 +3259,7 @@ impl MemosPage {
                 }
             };
             cut_payload_for_cut.replace(Some(payload));
-            delete_for_cut.activate();
+            delete_for_cut.emit_clicked();
         });
 
         let memo_list_for_select_all = memo_list.clone();
@@ -3568,7 +3568,7 @@ impl MemosPage {
             let save_button_for_menu = save_memo_btn_for_context.clone();
             save.connect_clicked(move |_| {
                 popover_for_save.popdown();
-                save_button_for_menu.activate();
+                save_button_for_menu.emit_clicked();
             });
             menu_box.append(&save);
 
@@ -3581,7 +3581,7 @@ impl MemosPage {
             let export_button_for_menu = export_memo_btn_for_context.clone();
             export.connect_clicked(move |_| {
                 popover_for_export.popdown();
-                export_button_for_menu.activate();
+                export_button_for_menu.emit_clicked();
             });
             menu_box.append(&export);
 
@@ -3596,7 +3596,7 @@ impl MemosPage {
             let delete_button_for_menu = delete_memo_btn_for_context.clone();
             delete.connect_clicked(move |_| {
                 popover_for_delete.popdown();
-                delete_button_for_menu.activate();
+                delete_button_for_menu.emit_clicked();
             });
             menu_box.append(&delete);
 
@@ -3637,7 +3637,7 @@ impl MemosPage {
                 return glib::Propagation::Stop;
             }
             if control && (key == gtk::gdk::Key::p || key == gtk::gdk::Key::P) {
-                print_for_key.activate();
+                print_for_key.emit_clicked();
                 return glib::Propagation::Stop;
             }
             if control && (key == gtk::gdk::Key::m || key == gtk::gdk::Key::M) {
@@ -3645,35 +3645,35 @@ impl MemosPage {
                 return glib::Propagation::Stop;
             }
             if control && (key == gtk::gdk::Key::s || key == gtk::gdk::Key::S) {
-                save_memo_btn_for_key.activate();
+                save_memo_btn_for_key.emit_clicked();
                 return glib::Propagation::Stop;
             }
             if control && (key == gtk::gdk::Key::n || key == gtk::gdk::Key::N) {
-                btn_add_memo_for_key.activate();
+                btn_add_memo_for_key.emit_clicked();
                 return glib::Propagation::Stop;
             }
             if control && (key == gtk::gdk::Key::a || key == gtk::gdk::Key::A) {
-                select_all_for_key.activate();
+                select_all_for_key.emit_clicked();
                 return glib::Propagation::Stop;
             }
             if control && (key == gtk::gdk::Key::c || key == gtk::gdk::Key::C) {
-                copy_for_key.activate();
+                copy_for_key.emit_clicked();
                 return glib::Propagation::Stop;
             }
             if control && (key == gtk::gdk::Key::x || key == gtk::gdk::Key::X) {
-                cut_for_key.activate();
+                cut_for_key.emit_clicked();
                 return glib::Propagation::Stop;
             }
             if control && (key == gtk::gdk::Key::v || key == gtk::gdk::Key::V) {
-                paste_for_key.activate();
+                paste_for_key.emit_clicked();
                 return glib::Propagation::Stop;
             }
             if key == gtk::gdk::Key::Delete {
-                delete_for_key.activate();
+                delete_for_key.emit_clicked();
                 return glib::Propagation::Stop;
             }
             if key == gtk::gdk::Key::Return {
-                open_for_key.activate();
+                open_for_key.emit_clicked();
                 return glib::Propagation::Stop;
             }
             glib::Propagation::Proceed
@@ -3700,7 +3700,7 @@ impl MemosPage {
                 return glib::Propagation::Stop;
             }
             if control && (key == gtk::gdk::Key::p || key == gtk::gdk::Key::P) {
-                print_for_page.activate();
+                print_for_page.emit_clicked();
                 return glib::Propagation::Stop;
             }
             if control && (key == gtk::gdk::Key::m || key == gtk::gdk::Key::M) {
@@ -3708,11 +3708,11 @@ impl MemosPage {
                 return glib::Propagation::Stop;
             }
             if control && (key == gtk::gdk::Key::s || key == gtk::gdk::Key::S) {
-                save_memo_btn_for_page.activate();
+                save_memo_btn_for_page.emit_clicked();
                 return glib::Propagation::Stop;
             }
             if control && (key == gtk::gdk::Key::n || key == gtk::gdk::Key::N) {
-                btn_add_memo_for_page.activate();
+                btn_add_memo_for_page.emit_clicked();
                 return glib::Propagation::Stop;
             }
             glib::Propagation::Proceed
@@ -3740,7 +3740,7 @@ impl MemosPage {
             let control = modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
                 || modifiers.contains(gtk::gdk::ModifierType::META_MASK);
             if control && (key == gtk::gdk::Key::s || key == gtk::gdk::Key::S) {
-                save_memo_btn_for_text.activate();
+                save_memo_btn_for_text.emit_clicked();
                 return glib::Propagation::Stop;
             }
             glib::Propagation::Proceed
@@ -3877,7 +3877,7 @@ impl MemosPage {
                 canvas_clone.grab_focus();
 
                 if n_press == 2 {
-                    open_memo_btn_for_click.activate();
+                    open_memo_btn_for_click.emit_clicked();
                 } else if n_press == 1 {
                     let current_event = gesture.current_event();
                     let state = current_event.as_ref().map(|e| e.modifier_state()).unwrap_or(gdk::ModifierType::empty());
@@ -4017,7 +4017,7 @@ impl MemosPage {
                 let save_btn = save_btn_for_ctx.clone();
                 save.connect_clicked(move |_| {
                     pop_save.popdown();
-                    save_btn.activate();
+                    save_btn.emit_clicked();
                 });
                 menu_box.append(&save);
 
@@ -4030,7 +4030,7 @@ impl MemosPage {
                 let exp_btn = export_btn_for_ctx.clone();
                 export.connect_clicked(move |_| {
                     pop_exp.popdown();
-                    exp_btn.activate();
+                    exp_btn.emit_clicked();
                 });
                 menu_box.append(&export);
 
@@ -4045,7 +4045,7 @@ impl MemosPage {
                 let del_btn = delete_btn_for_ctx.clone();
                 delete.connect_clicked(move |_| {
                     pop_del.popdown();
-                    del_btn.activate();
+                    del_btn.emit_clicked();
                 });
                 menu_box.append(&delete);
 
@@ -4127,35 +4127,35 @@ impl MemosPage {
                     return glib::Propagation::Stop;
                 }
                 if control && (keyval == gdk::Key::s || keyval == gdk::Key::S) {
-                    save_btn_for_key.activate();
+                    save_btn_for_key.emit_clicked();
                     return glib::Propagation::Stop;
                 }
                 if control && (keyval == gdk::Key::n || keyval == gdk::Key::N) {
-                    btn_add_memo_for_key.activate();
+                    btn_add_memo_for_key.emit_clicked();
                     return glib::Propagation::Stop;
                 }
                 if control && (keyval == gdk::Key::a || keyval == gdk::Key::A) {
-                    select_all_btn_for_key.activate();
+                    select_all_btn_for_key.emit_clicked();
                     return glib::Propagation::Stop;
                 }
                 if control && (keyval == gdk::Key::c || keyval == gdk::Key::C) {
-                    copy_btn_for_key.activate();
+                    copy_btn_for_key.emit_clicked();
                     return glib::Propagation::Stop;
                 }
                 if control && (keyval == gdk::Key::x || keyval == gdk::Key::X) {
-                    cut_btn_for_key.activate();
+                    cut_btn_for_key.emit_clicked();
                     return glib::Propagation::Stop;
                 }
                 if control && (keyval == gdk::Key::v || keyval == gdk::Key::V) {
-                    paste_btn_for_key.activate();
+                    paste_btn_for_key.emit_clicked();
                     return glib::Propagation::Stop;
                 }
                 if keyval == gdk::Key::Delete {
-                    delete_btn_for_key.activate();
+                    delete_btn_for_key.emit_clicked();
                     return glib::Propagation::Stop;
                 }
                 if keyval == gdk::Key::Return {
-                    open_btn_for_key.activate();
+                    open_btn_for_key.emit_clicked();
                     return glib::Propagation::Stop;
                 }
 
