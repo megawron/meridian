@@ -33,39 +33,24 @@ impl PluginsDialog {
 
         let toolbar = adw::ToolbarView::new();
         let header = adw::HeaderBar::new();
-
-        let close_btn = gtk::Button::builder().label(&gettext("Close")).build();
-        let dlg_close = dialog.downgrade();
-        close_btn.connect_clicked(move |_| {
-            if let Some(w) = dlg_close.upgrade() {
-                w.close();
-            }
-        });
-        header.pack_end(&close_btn);
         toolbar.add_top_bar(&header);
 
-        let scrolled = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .vexpand(true)
+        let search_clamp = adw::Clamp::builder()
+            .maximum_size(600)
+            .margin_start(16)
+            .margin_end(16)
+            .margin_top(6)
+            .margin_bottom(6)
             .build();
-
-        let pref_page = adw::PreferencesPage::new();
-
-        let search_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        search_box.set_margin_start(16);
-        search_box.set_margin_end(16);
-        search_box.set_margin_top(12);
-        search_box.set_margin_bottom(8);
 
         let search_entry = gtk::SearchEntry::builder()
             .placeholder_text(&gettext("Filter plugins…"))
             .hexpand(true)
             .build();
-        search_box.append(&search_entry);
+        search_clamp.set_child(Some(&search_entry));
+        toolbar.add_top_bar(&search_clamp);
 
-        let main_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        main_box.append(&search_box);
+        let pref_page = adw::PreferencesPage::new();
 
         let all_plugins = PluginManager::all_plugins();
         let app_settings_rc = Rc::new(app_settings);
@@ -160,9 +145,7 @@ impl PluginsDialog {
             }
         });
 
-        scrolled.set_child(Some(&pref_page));
-        main_box.append(&scrolled);
-        toolbar.set_content(Some(&main_box));
+        toolbar.set_content(Some(&pref_page));
         dialog.set_child(Some(&toolbar));
 
         Self {
@@ -200,15 +183,6 @@ fn present_plugin_config_dialog<P: IsA<gtk::Widget>>(
 
     let toolbar = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
-
-    let close_btn = gtk::Button::builder().label(&gettext("Done")).build();
-    let dlg_close = dialog.downgrade();
-    close_btn.connect_clicked(move |_| {
-        if let Some(w) = dlg_close.upgrade() {
-            w.close();
-        }
-    });
-    header.pack_end(&close_btn);
     toolbar.add_top_bar(&header);
 
     let pref_page = adw::PreferencesPage::new();
@@ -392,13 +366,7 @@ fn present_plugin_config_dialog<P: IsA<gtk::Widget>>(
         }
     }
 
-    let scrolled = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .vscrollbar_policy(gtk::PolicyType::Automatic)
-        .child(&pref_page)
-        .build();
-
-    toolbar.set_content(Some(&scrolled));
+    toolbar.set_content(Some(&pref_page));
     dialog.set_child(Some(&toolbar));
     dialog.present(Some(parent));
 }

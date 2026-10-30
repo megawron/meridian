@@ -262,7 +262,7 @@ fn append_condition_editor(
     let field_model = gtk::StringList::new(&field_slices);
     let field = gtk::DropDown::new(Some(field_model), None::<&gtk::Expression>);
     field.set_selected(filter_field_index(condition.field));
-    field.set_width_request(150);
+    field.set_width_request(135);
     let operator_labels = [
         gettext("contains"),
         gettext("does not contain"),
@@ -278,12 +278,25 @@ fn append_condition_editor(
     let operator_model = gtk::StringList::new(&operator_slices);
     let operator = gtk::DropDown::new(Some(operator_model), None::<&gtk::Expression>);
     operator.set_selected(filter_operator_index(condition.operator));
-    operator.set_width_request(135);
+    operator.set_width_request(125);
+    let initial_placeholder = if condition.field == FilterField::Header {
+        gettext("Header: Value")
+    } else {
+        gettext("Value…")
+    };
     let value = gtk::Entry::builder()
-        .placeholder_text(&gettext("Search term or header name"))
+        .placeholder_text(&initial_placeholder)
         .hexpand(true)
         .build();
     value.set_text(&condition.value);
+    let value_for_field = value.clone();
+    field.connect_selected_notify(move |dropdown| {
+        let placeholder = match dropdown.selected() {
+            4 => gettext("Header: Value"),
+            _ => gettext("Value…"),
+        };
+        value_for_field.set_placeholder_text(Some(&placeholder));
+    });
     let remove = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
         .tooltip_text(&gettext("Remove condition"))
@@ -482,7 +495,21 @@ impl FilterEditorDialog {
             .and_then(|raw| serde_json::from_str::<MailFilterRule>(raw).ok());
         let toolbar_view = adw::ToolbarView::new();
 
-        let header_bar = adw::HeaderBar::new();
+        let header_bar = adw::HeaderBar::builder()
+            .show_start_title_buttons(false)
+            .show_end_title_buttons(false)
+            .build();
+        let btn_cancel = gtk::Button::builder()
+            .label(&gettext("Cancel"))
+            .build();
+        let dialog_for_cancel = self.downgrade();
+        btn_cancel.connect_clicked(move |_| {
+            if let Some(dialog) = dialog_for_cancel.upgrade() {
+                dialog.close();
+            }
+        });
+        header_bar.pack_start(&btn_cancel);
+
         let btn_save = gtk::Button::builder()
             .label(&gettext("Save"))
             .css_classes(vec!["suggested-action"])
@@ -512,20 +539,18 @@ impl FilterEditorDialog {
         let row_rulename = adw::EntryRow::builder()
             .title(&gettext("Rule Name"))
             .build();
-        row_rulename.add_prefix(&gtk::Image::from_icon_name("view-sort-ascending-symbolic"));
         group_general.add(&row_rulename);
 
         let scope_options = [
-            gettext("Incoming Mail (Automatic upon arrival)"),
-            gettext("Outgoing Mail (When sending)"),
-            gettext("Manual Execution"),
+            gettext("Incoming Mail"),
+            gettext("Outgoing Mail"),
+            gettext("Manual Only"),
         ];
         let scope_slices: Vec<&str> = scope_options.iter().map(|s| s.as_str()).collect();
         let row_scope = adw::ComboRow::builder()
             .title(&gettext("Apply When"))
             .model(&gtk::StringList::new(&scope_slices))
             .build();
-        row_scope.add_prefix(&gtk::Image::from_icon_name("system-run-symbolic"));
         if let Some(rule) = edit_rule.as_ref() {
             row_scope.set_selected(match rule.scope {
                 FilterScope::Incoming => 0,
@@ -619,9 +644,7 @@ impl FilterEditorDialog {
             gettext("Any condition matches (OR)"),
         ];
         let match_mode_slices: Vec<&str> = match_mode_options.iter().map(|s| s.as_str()).collect();
-        let group_cond = adw::PreferencesGroup::builder()
-            .description(&gettext("Whether all conditions must match or at least one (OR)."))
-            .build();
+        let group_cond = adw::PreferencesGroup::new();
         let row_match_mode = adw::ComboRow::builder()
             .title(&gettext("Condition Logic"))
             .model(&gtk::StringList::new(&match_mode_slices))

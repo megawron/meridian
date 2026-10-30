@@ -110,75 +110,14 @@ impl CalendarPurgeDialog {
 
     fn build_ui(&self) {
         self.set_title("Vergangene Termine löschen");
-        self.set_content_width(460);
-        self.set_content_height(360);
+        self.set_content_width(480);
+        self.set_content_height(340);
 
         let toolbar = adw::ToolbarView::new();
-        toolbar.add_top_bar(&adw::HeaderBar::new());
+        let header = adw::HeaderBar::new();
+        header.set_show_start_title_buttons(false);
+        header.set_show_end_title_buttons(false);
 
-        let main_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(16)
-            .margin_start(20)
-            .margin_end(20)
-            .margin_top(16)
-            .margin_bottom(20)
-            .build();
-        main_box.append(
-            &gtk::Image::builder()
-                .icon_name("user-trash-symbolic")
-                .pixel_size(48)
-                .css_classes(vec!["warning", "dim-label"])
-                .halign(gtk::Align::Center)
-                .build(),
-        );
-        main_box.append(
-            &gtk::Label::builder()
-                .label("Vergangene Termine bereinigen")
-                .css_classes(vec!["title-2"])
-                .halign(gtk::Align::Center)
-                .build(),
-        );
-        main_box.append(
-            &gtk::Label::builder()
-                .label("Diese Aktion löscht endgültig alte Einzeltermine aus dem app-eigenen lokalen Kalender. Synchronisierte Kalender und Terminserien werden in diesem portablen Pfad nicht verändert.")
-                .wrap(true)
-                .justify(gtk::Justification::Center)
-                .css_classes(vec!["dim-label"])
-                .halign(gtk::Align::Center)
-                .build(),
-        );
-
-        let days = gtk::SpinButton::with_range(0.0, 1000.0, 1.0);
-        days.set_value(60.0);
-        let days_row = adw::ActionRow::builder()
-            .title("Termine löschen, die älter sind als")
-            .subtitle("Tage")
-            .build();
-        let days_icon = gtk::Image::builder()
-            .icon_name("preferences-system-time-symbolic")
-            .valign(gtk::Align::Center)
-            .build();
-        days_row.add_prefix(&days_icon);
-        days_row.add_suffix(&days);
-        let group = adw::PreferencesGroup::new();
-        group.add(&days_row);
-        main_box.append(&group);
-
-        let status = gtk::Label::builder()
-            .halign(gtk::Align::Start)
-            .wrap(true)
-            .css_classes(vec!["dim-label"])
-            .build();
-        main_box.append(&status);
-        self.imp().status.replace(Some(status));
-
-        let buttons = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(12)
-            .halign(gtk::Align::End)
-            .margin_top(8)
-            .build();
         let cancel = gtk::Button::with_label(&gettext("Cancel"));
         cancel.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
@@ -195,8 +134,18 @@ impl CalendarPurgeDialog {
                 }
             }
         ));
-        buttons.append(&cancel);
+        header.pack_start(&cancel);
         self.imp().cancel_button.replace(Some(cancel));
+
+        let days_row = adw::SpinRow::with_range(0.0, 1000.0, 1.0);
+        days_row.set_title("Termine löschen, die älter sind als");
+        days_row.set_subtitle("Tage");
+        days_row.set_value(60.0);
+        let days_icon = gtk::Image::builder()
+            .icon_name("preferences-system-time-symbolic")
+            .valign(gtk::Align::Center)
+            .build();
+        days_row.add_prefix(&days_icon);
 
         let purge = gtk::Button::builder()
             .label(&gettext("Permanently Delete"))
@@ -206,9 +155,9 @@ impl CalendarPurgeDialog {
             #[weak(rename_to = dialog)]
             self,
             #[weak]
-            days,
+            days_row,
             move |_| {
-                let Some(cutoff) = purge_cutoff(Local::now().timestamp(), days.value_as_int())
+                let Some(cutoff) = purge_cutoff(Local::now().timestamp(), days_row.value() as i32)
                 else {
                     dialog.set_status("Der gewählte Zeitraum ist ungültig", true);
                     return;
@@ -216,9 +165,26 @@ impl CalendarPurgeDialog {
                 dialog.execute_purge(cutoff);
             }
         ));
-        buttons.append(&purge);
+        header.pack_end(&purge);
         self.imp().purge_button.replace(Some(purge));
-        main_box.append(&buttons);
+        toolbar.add_top_bar(&header);
+
+        let page = adw::PreferencesPage::new();
+        let group = adw::PreferencesGroup::builder()
+            .title("Vergangene Termine bereinigen")
+            .description("Diese Aktion löscht endgültig alte Einzeltermine aus dem app-eigenen lokalen Kalender. Synchronisierte Kalender und Terminserien werden in diesem portablen Pfad nicht verändert.")
+            .build();
+        group.add(&days_row);
+
+        let status = gtk::Label::builder()
+            .halign(gtk::Align::Start)
+            .wrap(true)
+            .margin_top(8)
+            .css_classes(vec!["dim-label"])
+            .build();
+        group.add(&status);
+        self.imp().status.replace(Some(status));
+        page.add(&group);
 
         self.connect_close_attempt(|dialog| {
             if !dialog.imp().running.get() {
@@ -232,7 +198,7 @@ impl CalendarPurgeDialog {
             dialog.set_status("Bereinigung wird abgebrochen …", false);
         });
 
-        toolbar.set_content(Some(&main_box));
+        toolbar.set_content(Some(&page));
         self.set_child(Some(&toolbar));
     }
 

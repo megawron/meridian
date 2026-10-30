@@ -27,10 +27,9 @@ mod imp {
     pub struct ImportDialog {
         pub selected_file: RefCell<Option<PathBuf>>,
         pub file_label: RefCell<Option<gtk::Label>>,
-        pub target_dropdown: RefCell<Option<gtk::DropDown>>,
-        pub policy_dropdown: RefCell<Option<gtk::DropDown>>,
+        pub target_combo: RefCell<Option<adw::ComboRow>>,
+        pub policy_combo: RefCell<Option<adw::ComboRow>>,
         pub preview_row: RefCell<Option<adw::ActionRow>>,
-        pub policy_row: RefCell<Option<adw::ActionRow>>,
     }
 
     #[glib::object_subclass]
@@ -64,48 +63,42 @@ impl ImportDialog {
 
     fn build_ui(&self) {
         self.set_title("Daten importieren");
-        self.set_content_width(540);
-        self.set_content_height(480);
+        self.set_content_width(520);
+        self.set_content_height(420);
 
         let toolbar = adw::ToolbarView::new();
-        let header = adw::HeaderBar::new();
+        let header = adw::HeaderBar::builder()
+            .show_start_title_buttons(false)
+            .show_end_title_buttons(false)
+            .build();
+
+        let cancel_btn = gtk::Button::builder().label(&gettext("Cancel")).build();
+        let dialog_for_cancel = self.downgrade();
+        cancel_btn.connect_clicked(move |_| {
+            if let Some(dialog) = dialog_for_cancel.upgrade() {
+                dialog.close();
+            }
+        });
+        header.pack_start(&cancel_btn);
+
+        let import_btn = gtk::Button::builder()
+            .label(&gettext("Import"))
+            .css_classes(vec!["suggested-action"])
+            .build();
+        let dialog_for_import = self.downgrade();
+        import_btn.connect_clicked(move |_| {
+            if let Some(dialog) = dialog_for_import.upgrade() {
+                dialog.execute_import();
+            }
+        });
+        header.pack_end(&import_btn);
         toolbar.add_top_bar(&header);
 
-        let main_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(16)
-            .margin_start(20)
-            .margin_end(20)
-            .margin_top(16)
-            .margin_bottom(20)
-            .build();
-
-        let icon = gtk::Image::builder()
-            .icon_name("document-open-symbolic")
-            .pixel_size(48)
-            .css_classes(vec!["accent"])
-            .halign(gtk::Align::Center)
-            .build();
-        main_box.append(&icon);
-
-        let title = gtk::Label::builder()
-            .label("Meridian Import-Assistent")
-            .css_classes(vec!["title-2"])
-            .halign(gtk::Align::Center)
-            .build();
-        main_box.append(&title);
-
-        let desc = gtk::Label::builder()
-            .label("Wählen Sie eine iCalendar- (.ics, .vcs), Kontakt- (.vcf, .csv, .ldif) oder Mail-Datei (.mbox / .eml), um Daten in Ihren Kalender, Ihre Aufgaben, Notizen, Kontakte oder Mailbox zu importieren.")
-            .wrap(true)
-            .justify(gtk::Justification::Center)
-            .css_classes(vec!["dim-label"])
-            .halign(gtk::Align::Center)
-            .build();
-        main_box.append(&desc);
+        let page = adw::PreferencesPage::new();
 
         let group = adw::PreferencesGroup::builder()
             .title("Quelldatei und Ziel")
+            .description("Wählen Sie eine iCalendar- (.ics, .vcs), Kontakt- (.vcf, .csv, .ldif) oder Mail-Datei (.mbox / .eml) für den Import aus.")
             .build();
 
         let file_row = adw::ActionRow::builder()
@@ -188,77 +181,44 @@ impl ImportDialog {
         group.add(&preview_row);
         *self.imp().preview_row.borrow_mut() = Some(preview_row);
 
-        let target_dropdown = gtk::DropDown::from_strings(&[
-            "Kalender / Termine (.ics, .vcs)",
-            "Aufgaben / Tasks (.ics, .vcs)",
-            "Memos / Notizen (.ics, .vcs)",
-            "Kontakte / Adressbuch (.vcf, .csv, .ldif)",
-            "E-Mail / Posteingang (.mbox / .eml)",
-        ]);
-        target_dropdown.set_valign(gtk::Align::Center);
-        let target_row = adw::ActionRow::builder().title("Zielkomponente").build();
+        let target_combo = adw::ComboRow::builder()
+            .title("Zielkomponente")
+            .model(&gtk::StringList::new(&[
+                "Kalender / Termine (.ics, .vcs)",
+                "Aufgaben / Tasks (.ics, .vcs)",
+                "Memos / Notizen (.ics, .vcs)",
+                "Kontakte / Adressbuch (.vcf, .csv, .ldif)",
+                "E-Mail / Posteingang (.mbox / .eml)",
+            ]))
+            .build();
         let icon_target = gtk::Image::builder()
             .icon_name("folder-symbolic")
             .valign(gtk::Align::Center)
             .build();
-        target_row.add_prefix(&icon_target);
-        target_row.add_suffix(&target_dropdown);
-        group.add(&target_row);
-        *self.imp().target_dropdown.borrow_mut() = Some(target_dropdown);
+        target_combo.add_prefix(&icon_target);
+        group.add(&target_combo);
+        *self.imp().target_combo.borrow_mut() = Some(target_combo);
 
-        let policy_dropdown = gtk::DropDown::from_strings(&[
-            "Beide behalten (neue Kennung vergeben)",
-            "Bestehende Einträge überschreiben",
-            "Bereits vorhandene Einträge überspringen",
-        ]);
-        policy_dropdown.set_valign(gtk::Align::Center);
-        let policy_row = adw::ActionRow::builder()
+        let policy_combo = adw::ComboRow::builder()
             .title("Duplikat-Behandlung")
+            .model(&gtk::StringList::new(&[
+                "Beide behalten (neue Kennung vergeben)",
+                "Bestehende Einträge überschreiben",
+                "Bereits vorhandene Einträge überspringen",
+            ]))
             .visible(false)
             .build();
         let icon_policy = gtk::Image::builder()
             .icon_name("edit-copy-symbolic")
             .valign(gtk::Align::Center)
             .build();
-        policy_row.add_prefix(&icon_policy);
-        policy_row.add_suffix(&policy_dropdown);
-        group.add(&policy_row);
-        *self.imp().policy_dropdown.borrow_mut() = Some(policy_dropdown);
-        *self.imp().policy_row.borrow_mut() = Some(policy_row);
+        policy_combo.add_prefix(&icon_policy);
+        group.add(&policy_combo);
+        *self.imp().policy_combo.borrow_mut() = Some(policy_combo);
 
-        main_box.append(&group);
+        page.add(&group);
 
-        // Buttons
-        let button_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(12)
-            .halign(gtk::Align::End)
-            .margin_top(8)
-            .build();
-
-        let cancel_btn = gtk::Button::builder().label(&gettext("Cancel")).build();
-        let dialog_for_cancel = self.downgrade();
-        cancel_btn.connect_clicked(move |_| {
-            if let Some(dialog) = dialog_for_cancel.upgrade() {
-                dialog.close();
-            }
-        });
-        button_box.append(&cancel_btn);
-
-        let import_btn = gtk::Button::builder()
-            .label(&gettext("Import"))
-            .css_classes(vec!["suggested-action"])
-            .build();
-        let dialog_for_import = self.downgrade();
-        import_btn.connect_clicked(move |_| {
-            if let Some(dialog) = dialog_for_import.upgrade() {
-                dialog.execute_import();
-            }
-        });
-        button_box.append(&import_btn);
-        main_box.append(&button_box);
-
-        toolbar.set_content(Some(&main_box));
+        toolbar.set_content(Some(&page));
         self.set_child(Some(&toolbar));
     }
 
@@ -274,20 +234,20 @@ impl ImportDialog {
         let is_ical = ext == "ics" || ext == "vcs";
         let is_contact = contact_fmt != ContactImportFormat::Unknown;
 
-        if let Some(dropdown) = self.imp().target_dropdown.borrow().as_ref() {
+        if let Some(combo) = self.imp().target_combo.borrow().as_ref() {
             if is_contact {
-                dropdown.set_selected(3);
+                combo.set_selected(3);
             } else {
                 match ext.as_str() {
-                    "mbox" | "eml" => dropdown.set_selected(4),
-                    "ics" | "vcs" => dropdown.set_selected(0),
+                    "mbox" | "eml" => combo.set_selected(4),
+                    "ics" | "vcs" => combo.set_selected(0),
                     _ => {}
                 }
             }
         }
 
-        if let Some(policy_row) = self.imp().policy_row.borrow().as_ref() {
-            policy_row.set_visible(is_ical || is_contact);
+        if let Some(policy_combo) = self.imp().policy_combo.borrow().as_ref() {
+            policy_combo.set_visible(is_ical || is_contact);
         }
 
         if let Some(preview_row) = self.imp().preview_row.borrow().as_ref() {
@@ -329,14 +289,14 @@ impl ImportDialog {
         };
         let target_idx = self
             .imp()
-            .target_dropdown
+            .target_combo
             .borrow()
             .as_ref()
             .map(|d| d.selected())
             .unwrap_or(0);
         let policy_idx = self
             .imp()
-            .policy_dropdown
+            .policy_combo
             .borrow()
             .as_ref()
             .map(|d| d.selected())

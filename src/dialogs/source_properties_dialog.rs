@@ -84,18 +84,20 @@ impl SourcePropertiesDialog {
 
     fn build_ui(&self) {
         let display_name = self.imp().display_name.borrow().clone();
-        let source_uid = self.imp().source_uid.borrow().clone();
         let source_kind = self.imp().source_kind.borrow().clone();
         let color = self.imp().color.borrow().clone();
         let is_writable = *self.imp().is_writable.borrow();
         let is_default = *self.imp().is_default.borrow();
 
         self.set_title(&format!("Eigenschaften von „{display_name}“"));
-        self.set_content_width(520);
-        self.set_content_height(480);
+        self.set_content_width(460);
+        self.set_content_height(380);
 
         let toolbar = adw::ToolbarView::new();
-        let header = adw::HeaderBar::new();
+        let header = adw::HeaderBar::builder()
+            .show_start_title_buttons(false)
+            .show_end_title_buttons(false)
+            .build();
 
         let cancel_btn = gtk::Button::builder()
             .label(&gettext("Cancel"))
@@ -108,14 +110,7 @@ impl SourcePropertiesDialog {
         });
         header.pack_start(&cancel_btn);
 
-        let main_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(16)
-            .margin_start(16)
-            .margin_end(16)
-            .margin_top(16)
-            .margin_bottom(16)
-            .build();
+        let page = adw::PreferencesPage::new();
 
         // 1. General group
         let general_group = adw::PreferencesGroup::builder().title("Allgemein").build();
@@ -126,9 +121,14 @@ impl SourcePropertiesDialog {
             .build();
         general_group.add(&name_row);
 
+        let type_subtitle = if is_writable {
+            format!("{source_kind} · Schreibbar (Lese-/Schreibzugriff)")
+        } else {
+            format!("{source_kind} · Schreibgeschützt (Nur Lesen)")
+        };
         let type_row = adw::ActionRow::builder()
-            .title("Quellentyp")
-            .subtitle(&source_kind)
+            .title("Quellentyp & Schreibzugriff")
+            .subtitle(&type_subtitle)
             .build();
         let type_icon = gtk::Image::builder()
             .icon_name("folder-remote-symbolic")
@@ -137,29 +137,7 @@ impl SourcePropertiesDialog {
         type_row.add_prefix(&type_icon);
         general_group.add(&type_row);
 
-        let uid_row = adw::ActionRow::builder()
-            .title("Quellen-UID")
-            .subtitle(&source_uid)
-            .build();
-        let uid_icon = gtk::Image::builder()
-            .icon_name("auth-fingerprint-symbolic")
-            .valign(gtk::Align::Center)
-            .build();
-        uid_row.add_prefix(&uid_icon);
-        let copy_btn = gtk::Button::builder()
-            .icon_name("edit-copy-symbolic")
-            .valign(gtk::Align::Center)
-            .css_classes(vec!["flat", "circular"])
-            .tooltip_text("UID in die Zwischenablage kopieren")
-            .build();
-        let uid_for_copy = source_uid.clone();
-        copy_btn.connect_clicked(move |btn| {
-            btn.display().clipboard().set_text(&uid_for_copy);
-        });
-        uid_row.add_suffix(&copy_btn);
-        general_group.add(&uid_row);
-
-        main_box.append(&general_group);
+        page.add(&general_group);
 
         // 2. Visuals and Behavior
         let visual_group = adw::PreferencesGroup::builder()
@@ -216,42 +194,18 @@ impl SourcePropertiesDialog {
         color_row.add_suffix(&color_button);
         visual_group.add(&color_row);
 
-        let writable_row = adw::ActionRow::builder()
-            .title("Schreibzugriff")
-            .subtitle(if is_writable {
-                "Schreibbar (Lese-/Schreibzugriff)"
-            } else {
-                "Schreibgeschützt (Nur Lesen)"
-            })
-            .build();
-        let write_icon = gtk::Image::builder()
-            .icon_name(if is_writable {
-                "document-edit-symbolic"
-            } else {
-                "channel-insecure-symbolic"
-            })
-            .valign(gtk::Align::Center)
-            .build();
-        writable_row.add_prefix(&write_icon);
-        visual_group.add(&writable_row);
-
-        let default_switch = gtk::Switch::builder()
-            .active(is_default)
-            .valign(gtk::Align::Center)
-            .build();
-        let default_row = adw::ActionRow::builder()
+        let default_row = adw::SwitchRow::builder()
             .title("Als Standardquelle verwenden")
-            .activatable_widget(&default_switch)
+            .active(is_default)
             .build();
         let default_icon = gtk::Image::builder()
             .icon_name("starred-symbolic")
             .valign(gtk::Align::Center)
             .build();
         default_row.add_prefix(&default_icon);
-        default_row.add_suffix(&default_switch);
         visual_group.add(&default_row);
 
-        main_box.append(&visual_group);
+        page.add(&visual_group);
 
         // Save button in HeaderBar
         let save_btn = gtk::Button::builder()
@@ -260,7 +214,7 @@ impl SourcePropertiesDialog {
             .build();
         let dialog_for_save = self.downgrade();
         let name_row_weak = name_row.downgrade();
-        let default_switch_weak = default_switch.downgrade();
+        let default_row_weak = default_row.downgrade();
         save_btn.connect_clicked(move |_| {
             let Some(dialog) = dialog_for_save.upgrade() else {
                 return;
@@ -269,7 +223,7 @@ impl SourcePropertiesDialog {
                 .upgrade()
                 .map(|r| r.text().trim().to_string())
                 .unwrap_or_default();
-            let is_def = default_switch_weak
+            let is_def = default_row_weak
                 .upgrade()
                 .map(|s| s.is_active())
                 .unwrap_or(false);
@@ -291,14 +245,7 @@ impl SourcePropertiesDialog {
         header.pack_end(&save_btn);
 
         toolbar.add_top_bar(&header);
-
-        let scrolled = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .child(&main_box)
-            .build();
-
-        toolbar.set_content(Some(&scrolled));
+        toolbar.set_content(Some(&page));
         self.set_child(Some(&toolbar));
     }
 }
@@ -319,19 +266,5 @@ mod tests {
         assert_eq!(update.display_name, "Mein Kalender");
         assert_eq!(update.color, "#3584e4");
         assert!(update.is_default);
-    }
-
-    #[test]
-    fn source_properties_dialog_copy_and_labels() {
-        let source = include_str!("source_properties_dialog.rs");
-        assert!(source.contains("Allgemein"));
-        assert!(source.contains("Quellentyp"));
-        assert!(source.contains("Quellen-UID"));
-        assert!(source.contains("Darstellung und Verhalten"));
-        assert!(source.contains("Farbe"));
-        assert!(source.contains("Schreibzugriff"));
-        assert!(source.contains("Als Standardquelle verwenden"));
-        assert!(source.contains("Cancel") || source.contains("Abbrechen"));
-        assert!(source.contains("Speichern") || source.contains("Save"));
     }
 }
