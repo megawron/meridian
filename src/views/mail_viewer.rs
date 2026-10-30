@@ -1056,11 +1056,10 @@ impl MailViewer {
             .map(|sender| {
                 let email = extract_email_address(sender);
                 !email.is_empty()
-                    && self
-                        .imp()
-                        .remote_content_allowed_senders
-                        .borrow()
-                        .contains(&email)
+                    && crate::services::mail_metadata_service::sender_matches_allowlist(
+                        &self.imp().remote_content_allowed_senders.borrow(),
+                        &email,
+                    )
             })
             .unwrap_or(false);
         let per_message_remote_images = message_id

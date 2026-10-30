@@ -699,7 +699,7 @@ impl RemoteContentStore {
             );
             return false;
         }
-        file.allowed_senders.contains(&sender)
+        sender_matches_allowlist(&file.allowed_senders, &sender)
     }
 
     /// Load the approval set once for a long-lived viewer. The viewer updates
@@ -709,8 +709,16 @@ impl RemoteContentStore {
         self.load_file().allowed_message_ids
     }
 
-    pub(crate) fn allowed_senders(&self) -> HashSet<String> {
+    pub fn allowed_senders(&self) -> HashSet<String> {
         self.load_file().allowed_senders
+    }
+
+    pub fn allow_sender(&self, sender: &str) -> io::Result<()> {
+        self.set_sender_allowed(sender, true)
+    }
+
+    pub fn remove_allowed_sender(&self, sender: &str) -> io::Result<()> {
+        self.set_sender_allowed(sender, false)
     }
 
     pub fn set_allowed(&self, message_id: &str, allowed: bool) -> io::Result<()> {
@@ -781,6 +789,22 @@ impl RemoteContentStore {
             .filter(|file| file.version == REMOTE_CONTENT_VERSION)
             .unwrap_or_else(empty_remote_content_file)
     }
+}
+
+/// Returns whether `email` is covered by the remote-content allowlist, either
+/// as an exact address or via its domain (`example.com` or `@example.com`).
+pub fn sender_matches_allowlist(allowed: &HashSet<String>, email: &str) -> bool {
+    let email = email.trim().to_lowercase();
+    if email.is_empty() {
+        return false;
+    }
+    if allowed.contains(&email) {
+        return true;
+    }
+    email.rsplit_once('@').is_some_and(|(_, domain)| {
+        !domain.is_empty()
+            && (allowed.contains(domain) || allowed.contains(&format!("@{domain}")))
+    })
 }
 
 fn empty_remote_content_file() -> RemoteContentFile {
