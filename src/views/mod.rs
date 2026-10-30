@@ -12,6 +12,7 @@ mod mail_page;
 mod mail_viewer;
 mod mail_viewer_window;
 mod memos_page;
+pub mod rich_text_field;
 mod tasks_page;
 
 pub(crate) use context_menu::*;
@@ -24,6 +25,7 @@ pub use contacts_page::ContactsPage;
 pub(crate) use contacts_page::ContactTableColumn;
 pub use html_editor::EditorContent;
 pub use html_editor::HtmlEditor;
+pub use rich_text_field::RichTextField;
 pub use itip_banner::ItipBanner;
 pub use mail_page::MailPage;
 pub(crate) use mail_page::MailDrillDownLevel;

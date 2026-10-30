@@ -61,6 +61,17 @@ mod imp {
     }
 
     #[derive(Default, Clone)]
+    pub struct ContentChangedCallbackList(
+        pub Vec<std::rc::Rc<dyn Fn(&str, &str) + 'static>>,
+    );
+
+    impl std::fmt::Debug for ContentChangedCallbackList {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "ContentChangedCallbackList({} callbacks)", self.0.len())
+        }
+    }
+
+    #[derive(Default, Clone)]
     pub struct DragInternalCallbackList(
         pub Vec<std::rc::Rc<dyn Fn(bool) + 'static>>,
     );
@@ -77,8 +88,13 @@ mod imp {
         pub web_context: RefCell<Option<webkit6::WebContext>>,
         pub format_toolbar: RefCell<Option<gtk::Box>>,
         pub format_toolbar_revealer: RefCell<Option<gtk::Revealer>>,
+        pub mode_switcher: RefCell<Option<gtk::Box>>,
         pub mode_html_btn: RefCell<Option<gtk::ToggleButton>>,
         pub mode_txt_btn: RefCell<Option<gtk::ToggleButton>>,
+        pub web_view_scroll: RefCell<Option<gtk::ScrolledWindow>>,
+        pub toolbar_scroll: RefCell<Option<gtk::ScrolledWindow>>,
+        pub top_bar: RefCell<Option<gtk::Box>>,
+        pub canvas_card_mode: Cell<bool>,
         pub plain_text_mode: Cell<bool>,
         pub plain_text_mode_callbacks: RefCell<DragInternalCallbackList>,
         pub web_view_ready: Cell<bool>,
@@ -92,6 +108,7 @@ mod imp {
         pub drag_internal_callbacks: RefCell<DragInternalCallbackList>,
         pub image_convert_callbacks: RefCell<ImageConvertCallbackList>,
         pub active_image_popover: RefCell<Option<gtk::Popover>>,
+        pub content_changed_callbacks: RefCell<ContentChangedCallbackList>,
     }
 
     #[glib::object_subclass]
@@ -517,7 +534,7 @@ impl HtmlEditor {
         let header_icon = gtk::Image::from_icon_name("insert-image-symbolic");
         header_icon.set_pixel_size(16);
         let header_label = gtk::Label::builder()
-            .label(&gettext("Inline-Bild"))
+            .label(&gettext("Inline Image"))
             .css_classes(vec!["heading"])
             .xalign(0.0)
             .build();
@@ -527,7 +544,7 @@ impl HtmlEditor {
 
         // 1. Alignment section
         let align_label = gtk::Label::builder()
-            .label(&gettext("Anordnung"))
+            .label(&gettext("Alignment"))
             .css_classes(vec!["dim-label", "caption"])
             .xalign(0.0)
             .build();
@@ -538,19 +555,19 @@ impl HtmlEditor {
 
         let btn_align_left = gtk::Button::builder()
             .icon_name("format-justify-left-symbolic")
-            .tooltip_text(&gettext("Linksbündig"))
+            .tooltip_text(&gettext("Align Left"))
             .build();
         let btn_align_center = gtk::Button::builder()
             .icon_name("format-justify-center-symbolic")
-            .tooltip_text(&gettext("Zentriert"))
+            .tooltip_text(&gettext("Center"))
             .build();
         let btn_align_right = gtk::Button::builder()
             .icon_name("format-justify-right-symbolic")
-            .tooltip_text(&gettext("Rechtsbündig"))
+            .tooltip_text(&gettext("Align Right"))
             .build();
         let btn_align_wrap = gtk::Button::builder()
             .icon_name("format-text-direction-ltr-symbolic")
-            .tooltip_text(&gettext("Textumfluss links"))
+            .tooltip_text(&gettext("Wrap Left"))
             .build();
 
         match payload.align.as_str() {
@@ -636,7 +653,7 @@ impl HtmlEditor {
 
         // 2. Size section
         let size_label = gtk::Label::builder()
-            .label(&gettext("Größe"))
+            .label(&gettext("Size"))
             .css_classes(vec!["dim-label", "caption"])
             .xalign(0.0)
             .build();
@@ -647,19 +664,19 @@ impl HtmlEditor {
 
         let btn_size_25 = gtk::Button::builder()
             .label("25%")
-            .tooltip_text(&gettext("Klein (25%)"))
+            .tooltip_text(&gettext("Small (25%)"))
             .build();
         let btn_size_50 = gtk::Button::builder()
             .label("50%")
-            .tooltip_text(&gettext("Mittel (50%)"))
+            .tooltip_text(&gettext("Medium (50%)"))
             .build();
         let btn_size_100 = gtk::Button::builder()
             .label("100%")
-            .tooltip_text(&gettext("Groß (100%)"))
+            .tooltip_text(&gettext("Original (100%)"))
             .build();
         let btn_size_orig = gtk::Button::builder()
             .label(&gettext("Original"))
-            .tooltip_text(&gettext("Originalgröße"))
+            .tooltip_text(&gettext("Original Size"))
             .build();
 
         match payload.size.as_str() {
@@ -772,8 +789,8 @@ impl HtmlEditor {
         // Convert to attachment
         let btn_convert = make_action_btn(
             "mail-attachment-symbolic",
-            &gettext("In Anhang umwandeln"),
-            &gettext("Entfernt das Bild aus dem Text und hängt es als Datei an"),
+            &gettext("Convert to Attachment"),
+            &gettext("Removes the image from the message body and attaches it as a file"),
             false,
         );
         let editor_weak = self.downgrade();
@@ -792,8 +809,8 @@ impl HtmlEditor {
         // Also attach
         let btn_attach_also = make_action_btn(
             "list-add-symbolic",
-            &gettext("Auch als Anhang anhängen"),
-            &gettext("Behält das Bild im Text und hängt es zusätzlich als Datei an"),
+            &gettext("Also Attach as File"),
+            &gettext("Keeps the image in the message body and additionally attaches it as a file"),
             false,
         );
         let editor_weak = self.downgrade();
@@ -814,8 +831,8 @@ impl HtmlEditor {
         // Copy image
         let btn_copy = make_action_btn(
             "edit-copy-symbolic",
-            &gettext("Bild kopieren"),
-            &gettext("Kopiert das Bild in die Zwischenablage"),
+            &gettext("Copy Image"),
+            &gettext("Copies the image to the clipboard"),
             false,
         );
         let editor_weak = self.downgrade();
@@ -834,8 +851,8 @@ impl HtmlEditor {
         // Save image as
         let btn_save = make_action_btn(
             "document-save-as-symbolic",
-            &gettext("Bild speichern unter…"),
-            &gettext("Speichert das Bild auf der Festplatte"),
+            &gettext("Save Image As…"),
+            &gettext("Saves the image to disk"),
             false,
         );
         let editor_weak = self.downgrade();
@@ -856,8 +873,8 @@ impl HtmlEditor {
         // Remove image
         let btn_remove = make_action_btn(
             "user-trash-symbolic",
-            &gettext("Bild entfernen"),
-            &gettext("Löscht das Bild aus der E-Mail"),
+            &gettext("Remove Image"),
+            &gettext("Deletes the image from the email"),
             true,
         );
         let editor_weak = self.downgrade();
@@ -1022,7 +1039,7 @@ impl HtmlEditor {
                     };
                     if let Some((bytes, _, filename)) = parse_image_data_uri_or_path(&data.src, &data.alt) {
                         let file_dialog = gtk::FileDialog::builder()
-                            .title(&gettext("Bild speichern unter…"))
+                            .title(&gettext("Save Image As…"))
                             .initial_name(&filename)
                             .modal(true)
                             .build();
@@ -1217,10 +1234,10 @@ impl HtmlEditor {
         };
         let script = if self.plain_text_mode() {
             format!(
-                "document.body.innerHTML = {encoded}; document.body.textContent = document.body.innerText;"
+                "document.body.innerHTML = {encoded}; document.body.textContent = document.body.innerText; if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();"
             )
         } else {
-            format!("document.body.innerHTML = {encoded};")
+            format!("document.body.innerHTML = {encoded}; if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();")
         };
         self.evaluate_or_queue(script);
     }
@@ -1230,7 +1247,9 @@ impl HtmlEditor {
         let Ok(encoded) = serde_json::to_string(text) else {
             return;
         };
-        self.evaluate_or_queue(format!("document.body.textContent = {encoded};"));
+        self.evaluate_or_queue(format!(
+            "document.body.textContent = {encoded}; if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();"
+        ));
     }
 
     /// Insert sanitized HTML at the current selection without replacing the
@@ -1405,6 +1424,180 @@ impl HtmlEditor {
         new_state
     }
 
+    pub fn is_toolbar_scrollable(&self) -> bool {
+        if let Some(toolbar_scroll) = self.imp().toolbar_scroll.borrow().as_ref() {
+            toolbar_scroll.parent().is_some()
+        } else {
+            false
+        }
+    }
+
+    pub fn set_toolbar_scrollable(&self, scrollable: bool) {
+        let Some(toolbar) = self.imp().format_toolbar.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(toolbar_scroll) = self.imp().toolbar_scroll.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(revealer) = self.imp().format_toolbar_revealer.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(container) = revealer.child().and_downcast::<gtk::Box>() else {
+            return;
+        };
+
+        if scrollable {
+            if toolbar.parent().as_ref() == Some(container.upcast_ref()) {
+                container.remove(&toolbar);
+                toolbar_scroll.set_child(Some(&toolbar));
+                container.append(&toolbar_scroll);
+            }
+        } else {
+            if toolbar_scroll.parent().as_ref() == Some(container.upcast_ref()) {
+                toolbar_scroll.set_child(None::<&gtk::Widget>);
+                container.remove(&toolbar_scroll);
+                container.append(&toolbar);
+            }
+        }
+    }
+
+    pub fn is_html_mode(&self) -> bool {
+        !self.plain_text_mode()
+    }
+
+    pub fn set_html_mode(&self, html_mode: bool) {
+        self.set_plain_text_mode(!html_mode);
+    }
+
+    pub fn format_toggle_button(&self) -> gtk::ToggleButton {
+        self.imp()
+            .mode_html_btn
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("mode_html_btn must be initialized")
+    }
+
+    pub fn mode_switcher(&self) -> gtk::Box {
+        self.imp()
+            .mode_switcher
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("mode_switcher must be initialized")
+    }
+
+    pub fn top_bar(&self) -> Option<gtk::Box> {
+        self.imp().top_bar.borrow().clone()
+    }
+
+    pub fn prepend_top_bar_widget(&self, widget: &impl IsA<gtk::Widget>) {
+        if let Some(top_bar) = self.imp().top_bar.borrow().as_ref() {
+            top_bar.prepend(widget);
+        }
+    }
+
+    pub fn prepend_toolbar_widget(&self, widget: &impl IsA<gtk::Widget>) {
+        self.prepend_top_bar_widget(widget);
+    }
+
+    pub fn set_canvas_min_height(&self, min_height: i32) {
+        if let Some(scroll) = self.imp().web_view_scroll.borrow().as_ref() {
+            scroll.set_min_content_height(min_height);
+        }
+    }
+
+    pub fn connect_content_changed<F: Fn(&str, &str) + 'static>(&self, callback: F) {
+        self.imp()
+            .content_changed_callbacks
+            .borrow_mut()
+            .0
+            .push(std::rc::Rc::new(callback));
+    }
+
+    fn handle_content_changed_script_message(&self, raw: &str) {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw) {
+            let html = parsed.get("html").and_then(|v| v.as_str()).unwrap_or("");
+            let text = parsed.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            let callbacks = self.imp().content_changed_callbacks.borrow().0.clone();
+            for cb in callbacks {
+                cb(html, text);
+            }
+        }
+    }
+
+    pub fn set_canvas_card_mode(&self, enabled: bool) {
+        self.imp().canvas_card_mode.set(enabled);
+        if let Some(scroll) = self.imp().web_view_scroll.borrow().as_ref() {
+            if enabled {
+                scroll.add_css_class("card");
+                scroll.add_css_class("view");
+                scroll.set_overflow(gtk::Overflow::Hidden);
+                scroll.set_margin_top(6);
+            } else {
+                scroll.remove_css_class("card");
+                scroll.remove_css_class("view");
+                scroll.set_overflow(gtk::Overflow::Visible);
+                scroll.set_margin_top(0);
+            }
+        }
+        if let Some(tb) = self.imp().format_toolbar.borrow().as_ref() {
+            if enabled {
+                tb.set_margin_start(0);
+                tb.set_margin_end(0);
+                tb.set_margin_top(0);
+                tb.set_margin_bottom(2);
+            } else {
+                tb.set_margin_start(16);
+                tb.set_margin_end(8);
+                tb.set_margin_top(0);
+                tb.set_margin_bottom(10);
+            }
+        }
+        if let Some(ts) = self.imp().toolbar_scroll.borrow().as_ref() {
+            if enabled {
+                ts.set_propagate_natural_width(true);
+            } else {
+                ts.set_propagate_natural_width(false);
+            }
+        }
+        if let Some(top_bar) = self.imp().top_bar.borrow().as_ref() {
+            if enabled {
+                top_bar.set_halign(gtk::Align::Start);
+                top_bar.set_hexpand(false);
+            } else {
+                top_bar.set_halign(gtk::Align::Fill);
+                top_bar.set_hexpand(true);
+            }
+        }
+        if let Some(revealer) = self.imp().format_toolbar_revealer.borrow().as_ref() {
+            if enabled {
+                revealer.set_halign(gtk::Align::Start);
+                revealer.set_hexpand(false);
+            } else {
+                revealer.set_halign(gtk::Align::Fill);
+                revealer.set_hexpand(true);
+            }
+        }
+        if let Some(ms) = self.imp().mode_switcher.borrow().as_ref() {
+            if enabled {
+                ms.set_margin_start(6);
+                ms.set_margin_end(0);
+                ms.set_margin_top(0);
+                ms.set_margin_bottom(2);
+            } else {
+                ms.set_margin_start(8);
+                ms.set_margin_end(16);
+                ms.set_margin_top(0);
+                ms.set_margin_bottom(10);
+            }
+        }
+    }
+
+    pub fn canvas_card_mode(&self) -> bool {
+        self.imp().canvas_card_mode.get()
+    }
+
     pub fn clear_selection(&self) {
         self.evaluate_or_queue(
             "const sel = window.getSelection(); if (sel && !sel.isCollapsed) { sel.collapseToStart(); }".to_string(),
@@ -1498,18 +1691,18 @@ impl HtmlEditor {
         set_accessible_label(&dropdown_format, &gettext("Paragraph format"));
 
         let font_size_labels = [
-            gettext("Standardgröße"),
-            gettext("10 px (Sehr klein)"),
-            gettext("12 px (Klein)"),
-            gettext("14 px (Normal)"),
-            gettext("16 px (Mittel)"),
-            gettext("18 px (Groß)"),
-            gettext("24 px (Sehr groß)"),
-            gettext("32 px (Riesig)"),
+            "Size",
+            "10 px",
+            "12 px",
+            "14 px",
+            "16 px",
+            "18 px",
+            "24 px",
+            "32 px",
         ];
-        let font_size_strs: Vec<&str> = font_size_labels.iter().map(|s| s.as_str()).collect();
-        let dropdown_font_size = gtk::DropDown::from_strings(&font_size_strs);
+        let dropdown_font_size = gtk::DropDown::from_strings(&font_size_labels);
         dropdown_font_size.set_valign(gtk::Align::Center);
+        dropdown_font_size.set_tooltip_text(Some(&gettext("Font Size")));
         set_accessible_label(&dropdown_font_size, &gettext("Font size"));
 
         let btn_list = gtk::Button::builder()
@@ -1642,6 +1835,8 @@ impl HtmlEditor {
             .child(&toolbar)
             .build();
 
+        self.imp().toolbar_scroll.replace(Some(toolbar_scroll.clone()));
+
         let mode_switcher = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(0)
@@ -1650,11 +1845,12 @@ impl HtmlEditor {
             .margin_start(8)
             .margin_end(16)
             .margin_bottom(10)
+            .visible(false)
             .build();
 
         let btn_mode_html = gtk::ToggleButton::builder()
             .label("HTML")
-            .tooltip_text(&gettext("HTML-Format (Formatierter Text)"))
+            .tooltip_text(&gettext("Rich Text (HTML)"))
             .active(true)
             .css_classes(vec!["caption-heading"])
             .build();
@@ -1662,7 +1858,7 @@ impl HtmlEditor {
 
         let btn_mode_txt = gtk::ToggleButton::builder()
             .label("TXT")
-            .tooltip_text(&gettext("Nur-Text-Format (Plain Text)"))
+            .tooltip_text(&gettext("Plain Text"))
             .group(&btn_mode_html)
             .active(false)
             .css_classes(vec!["caption-heading"])
@@ -1672,6 +1868,7 @@ impl HtmlEditor {
         mode_switcher.append(&btn_mode_html);
         mode_switcher.append(&btn_mode_txt);
 
+        self.imp().mode_switcher.replace(Some(mode_switcher.clone()));
         self.imp().mode_html_btn.replace(Some(btn_mode_html.clone()));
         self.imp().mode_txt_btn.replace(Some(btn_mode_txt.clone()));
 
@@ -1683,6 +1880,12 @@ impl HtmlEditor {
                 }
             }
         });
+        let mode_switcher_weak = mode_switcher.downgrade();
+        btn_mode_html.connect_notify_local(Some("visible"), move |btn, _| {
+            if let Some(s) = mode_switcher_weak.upgrade() {
+                s.set_visible(btn.is_visible());
+            }
+        });
         let editor_weak_txt = self.downgrade();
         btn_mode_txt.connect_toggled(move |btn| {
             if btn.is_active() {
@@ -1692,12 +1895,8 @@ impl HtmlEditor {
             }
         });
 
-        let toolbar_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        toolbar_row.append(&toolbar_scroll);
-        let _ = &mode_switcher;
-
         let toolbar_container = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        toolbar_container.append(&toolbar_row);
+        toolbar_container.append(&toolbar_scroll);
 
         let toolbar_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideDown)
@@ -1710,7 +1909,18 @@ impl HtmlEditor {
             .format_toolbar_revealer
             .replace(Some(toolbar_revealer.clone()));
 
-        vbox.append(&toolbar_revealer);
+        let top_bar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .halign(gtk::Align::Fill)
+            .hexpand(true)
+            .build();
+        top_bar.append(&toolbar_revealer);
+        top_bar.append(&mode_switcher);
+
+        self.imp().top_bar.replace(Some(top_bar.clone()));
+
+        vbox.append(&top_bar);
 
         // WebKit6 WebView Canvas
         let web_context = webkit6::WebContext::new();
@@ -1763,6 +1973,25 @@ impl HtmlEditor {
         let user_content_manager = webkit6::UserContentManager::new();
         user_content_manager.register_script_message_handler("meridianDrag", None);
         user_content_manager.register_script_message_handler("meridianImageMenu", None);
+        user_content_manager.register_script_message_handler("meridianContentChanged", None);
+
+        let editor_weak_for_content_changed = self.downgrade();
+        user_content_manager.connect_local(
+            "script-message-received::meridianContentChanged",
+            false,
+            move |values| {
+                if let Some(editor) = editor_weak_for_content_changed.upgrade() {
+                    if let Some(js_val) = values
+                        .get(1)
+                        .and_then(|v| v.get::<javascriptcore6::Value>().ok())
+                    {
+                        let raw = js_val.to_str();
+                        editor.handle_content_changed_script_message(&raw);
+                    }
+                }
+                None
+            },
+        );
 
         let editor_weak_for_drag = self.downgrade();
         user_content_manager.connect_local(
@@ -1862,7 +2091,7 @@ impl HtmlEditor {
                 "document.addEventListener('mouseover', function(e) {{",
                 "    const link = e.target.closest('a');",
                 "    if (link && link.href && !link.title) {{",
-                "        link.title = link.href + ' (Strg+Klick zum Öffnen)';",
+                "        link.title = link.href + ' (Ctrl+Click to open)';",
                 "    }}",
                 "}});",
                 "document.addEventListener('click', function(e) {{",
@@ -2554,6 +2783,18 @@ impl HtmlEditor {
                 "window.addEventListener('mouseleave', function(e) {{ hideCaret(); }});",
                 "document.addEventListener('mouseleave', function(e) {{ hideCaret(); }});",
                 "window.addEventListener('scroll', function() {{ hideCaret(); }}, true);",
+                "function notifyMeridianContentChanged() {{",
+                "    try {{",
+                "        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.meridianContentChanged) {{",
+                "            window.webkit.messageHandlers.meridianContentChanged.postMessage(JSON.stringify({{",
+                "                html: document.body.innerHTML,",
+                "                text: document.body.innerText",
+                "            }}));",
+                "        }}",
+                "    }} catch(err) {{}}",
+                "}};",
+                "window.notifyMeridianContentChanged = notifyMeridianContentChanged;",
+                "document.addEventListener('input', notifyMeridianContentChanged);",
                 "</script></head><body contenteditable='true'><p><br></p></body></html>"
             ),
             font_family, font_size
@@ -2678,6 +2919,10 @@ impl HtmlEditor {
             .vexpand(true)
             .css_classes(vec!["composer-editor-scrolled"])
             .build();
+
+        self.imp()
+            .web_view_scroll
+            .replace(Some(web_view_scroll.clone()));
 
         vbox.append(&web_view_scroll);
         vbox.set_parent(self);
@@ -3161,7 +3406,7 @@ pub fn parse_image_data_uri_or_path(src: &str, alt: &str) -> Option<(Vec<u8>, St
         } else if !alt_clean.is_empty() {
             format!("{alt_clean}.{ext}")
         } else {
-            format!("bild_{}.{ext}", &glib::uuid_string_random()[..6])
+            format!("image_{}.{ext}", &glib::uuid_string_random()[..6])
         };
         Some((bytes, mime.to_string(), filename))
     } else if let Some(_path_str) = src.strip_prefix("file://") {
@@ -3184,7 +3429,7 @@ pub fn parse_image_data_uri_or_path(src: &str, alt: &str) -> Option<(Vec<u8>, St
         let filename = path
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("bild.png")
+            .unwrap_or("image.png")
             .to_string();
         Some((bytes, mime.to_string(), filename))
     } else {
