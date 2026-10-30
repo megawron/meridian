@@ -6365,21 +6365,15 @@ popover.image-options-popover button.flat:hover {
 }
 
 /* ── Settings Window & Sidebar (Libadwaita / Hylki Parity) ──────────────── */
-.settings-side-heading {
-  padding: 10px 12px 3px 12px;
-  min-height: 22px;
+list.navigation-sidebar.settings-side {
+  padding: 4px 6px;
 }
 
-.settings-side-heading:first-child {
-  padding-top: 4px;
-}
-
-.settings-side > row {
-  min-height: 31px;
-  padding-top: 1px;
-  padding-bottom: 1px;
-  margin-top: 1px;
-  margin-bottom: 1px;
+list.navigation-sidebar.settings-side > row {
+  min-height: 36px;
+  border-radius: 9px;
+  margin: 1px 6px;
+  padding: 0 2px;
 }
 
 .settings-search-hit {
