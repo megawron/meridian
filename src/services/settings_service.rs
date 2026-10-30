@@ -90,6 +90,7 @@ pub const DEFAULT_MAIL_HEADER_ACTIONS: &[&str] = &[
     "reply",
     "reply-all",
     "forward",
+    "memo",
     "unread",
     "delete",
 ];
@@ -101,6 +102,7 @@ pub const DEFAULT_MAIL_HEADER_LEFT_ACTIONS: &[&str] = &[
 ];
 
 pub const DEFAULT_MAIL_HEADER_RIGHT_ACTIONS: &[&str] = &[
+    "memo",
     "unread",
     "delete",
 ];
@@ -111,6 +113,7 @@ pub const ALL_MAIL_HEADER_ACTIONS: &[&str] = &[
     "forward",
     "archive",
     "move",
+    "memo",
     "unread",
     "star",
     "follow-up",
@@ -152,7 +155,7 @@ pub fn parse_mail_header_action_groups(value: &str) -> (Vec<String>, Vec<String>
                 .collect(),
         );
     }
-    if let Some((left_raw, right_raw)) = trimmed.split_once('|') {
+    let (left, mut right) = if let Some((left_raw, right_raw)) = trimmed.split_once('|') {
         let mut seen = HashSet::new();
         let left: Vec<String> = left_raw
             .split(',')
@@ -168,25 +171,36 @@ pub fn parse_mail_header_action_groups(value: &str) -> (Vec<String>, Vec<String>
             .filter(|id| seen.insert((*id).to_string()))
             .map(str::to_string)
             .collect();
-        return (left, right);
-    }
-    let mut seen = HashSet::new();
-    let mut left = Vec::new();
-    let mut right = Vec::new();
-    for id in trimmed
-        .split(',')
-        .map(str::trim)
-        .filter(|id| ALL_MAIL_HEADER_ACTIONS.contains(id))
-    {
-        if !seen.insert(id.to_string()) {
-            continue;
+        (left, right)
+    } else {
+        let mut seen = HashSet::new();
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        for id in trimmed
+            .split(',')
+            .map(str::trim)
+            .filter(|id| ALL_MAIL_HEADER_ACTIONS.contains(id))
+        {
+            if !seen.insert(id.to_string()) {
+                continue;
+            }
+            if matches!(id, "reply" | "reply-all" | "forward") {
+                left.push(id.to_string());
+            } else {
+                right.push(id.to_string());
+            }
         }
-        if matches!(id, "reply" | "reply-all" | "forward") {
-            left.push(id.to_string());
-        } else {
-            right.push(id.to_string());
-        }
+        (left, right)
+    };
+
+    // Stored settings saved prior to introducing the configurable "memo" action lacked
+    // "memo" anywhere in their groups. To avoid silently losing the memo button for users
+    // upgrading from an earlier version, insert "memo" at the start of the right group
+    // when "memo" is missing from both groups.
+    if !left.iter().any(|id| id == "memo") && !right.iter().any(|id| id == "memo") {
+        right.insert(0, "memo".to_string());
     }
+
     (left, right)
 }
 
@@ -2247,6 +2261,15 @@ impl AppSettings {
 
     pub fn set_composer_signature_outline(&self, value: bool) {
         self.set_boolean("composer-signature-outline", value);
+    }
+
+    /// Custom text inserted as signature separator (defaults to `-- `).
+    pub fn signature_separator_text(&self) -> String {
+        self.settings.string("signature-separator-text").to_string()
+    }
+
+    pub fn set_signature_separator_text(&self, value: &str) {
+        self.set_string("signature-separator-text", value);
     }
 
     pub fn mail_font_family(&self) -> String {
@@ -7262,6 +7285,42 @@ mod tests {
         // Back to 5 explicitly
         settings.set_calendar_month_view_rows(5);
         assert_eq!(settings.calendar_month_view_rows(), 5);
+    }
+
+    #[test]
+    fn test_mail_header_action_groups_memo_migration_and_defaults() {
+        assert!(super::ALL_MAIL_HEADER_ACTIONS.contains(&"memo"));
+        assert_eq!(super::DEFAULT_MAIL_HEADER_RIGHT_ACTIONS.first().copied(), Some("memo"));
+
+        // Defaults on empty string
+        let (left, right) = super::parse_mail_header_action_groups("");
+        assert_eq!(left, vec!["reply", "reply-all", "forward"]);
+        assert_eq!(right, vec!["memo", "unread", "delete"]);
+
+        // Explicit "none" returns empty groups
+        let (left, right) = super::parse_mail_header_action_groups("none");
+        assert!(left.is_empty());
+        assert!(right.is_empty());
+
+        // Legacy stored value with pipe lacking "memo" inserts "memo" at start of right group
+        let (left, right) = super::parse_mail_header_action_groups("reply,reply-all,forward|unread,delete");
+        assert_eq!(left, vec!["reply", "reply-all", "forward"]);
+        assert_eq!(right, vec!["memo", "unread", "delete"]);
+
+        // Stored value with "memo" in right group already is not duplicated
+        let (left, right) = super::parse_mail_header_action_groups("reply,reply-all,forward|memo,unread,delete");
+        assert_eq!(left, vec!["reply", "reply-all", "forward"]);
+        assert_eq!(right, vec!["memo", "unread", "delete"]);
+
+        // Stored value with "memo" in left group is respected and not inserted into right group
+        let (left, right) = super::parse_mail_header_action_groups("memo,reply,forward|unread,delete");
+        assert_eq!(left, vec!["memo", "reply", "forward"]);
+        assert_eq!(right, vec!["unread", "delete"]);
+
+        // Legacy comma-separated format without pipe
+        let (left, right) = super::parse_mail_header_action_groups("reply,unread,delete");
+        assert_eq!(left, vec!["reply"]);
+        assert_eq!(right, vec!["memo", "unread", "delete"]);
     }
 }
 

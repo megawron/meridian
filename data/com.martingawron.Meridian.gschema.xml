@@ -149,7 +149,7 @@
       <summary>Units for birthday and anniversary reminder, minutes, hours or days</summary>
     </key>
     <key name="hide-completed-tasks" type="b">
-      <default>false</default>
+      <default>true</default>
       <summary>Whether to hide completed tasks in the tasks view</summary>
     </key>
     <key name="hide-completed-tasks-units" type="s">
@@ -378,6 +378,14 @@
     <key name="composer-signature-outline" type="b">
       <default>true</default>
       <summary>Prepend signature dash separator (-- ) before signature text</summary>
+    </key>
+    <key name="signature-separator" type="b">
+      <default>true</default>
+      <summary>Insert signature separator line</summary>
+    </key>
+    <key name="signature-separator-text" type="s">
+      <default>'-- '</default>
+      <summary>Custom signature separator string</summary>
     </key>
     <key name="composer-track-recent-recipients" type="b">
       <default>true</default>

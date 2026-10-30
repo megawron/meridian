@@ -4225,7 +4225,11 @@ impl ComposeDialog {
                     } else {
                         html_escape(sig_text.trim_end()).replace('\n', "<br>")
                     };
-                    dialog.insert_html_fragment(&format!("<p><br></p><p>--<br>{}</p>", html));
+                    dialog.insert_html_fragment(&format!(
+                        "<p><br></p><p>{}{}</p>",
+                        signature_delimiter_html(),
+                        html
+                    ));
                 }
             });
             group.add_action(&sig_action);
@@ -7590,15 +7594,19 @@ fn format_quoted_body(quoted: &str, style: &str) -> String {
     }
 }
 
-fn signature_delimiter_html() -> &'static str {
-    let outline = AppSettings::try_new()
-        .map(|s| s.composer_signature_outline())
-        .unwrap_or(true);
-    if outline {
-        "--<br>"
-    } else {
-        ""
+/// Returns the signature separator as HTML (e.g. `--<br>`), honoring the
+/// user's customizable separator text, or an empty string when disabled.
+fn signature_delimiter_html() -> String {
+    let Some(settings) = AppSettings::try_new() else {
+        return "--<br>".to_string();
+    };
+    if !settings.composer_signature_outline() {
+        return String::new();
     }
+    let text = settings.signature_separator_text();
+    let text = text.trim_end();
+    let text = if text.is_empty() { "--" } else { text };
+    format!("{}<br>", html_escape(text))
 }
 
 fn load_signature_choices() -> Vec<SignatureChoice> {
