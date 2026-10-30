@@ -581,6 +581,237 @@ pub fn resolve_source_color_from_disk(uid: &str) -> Option<String> {
     None
 }
 
+/// Checks whether an EDS source (or its parent collection source) is managed by
+/// GNOME Online Accounts, returning `(goa_account_id, collection_backend)`.
+pub fn resolve_goa_account_info(uid: &str) -> Option<(String, String)> {
+    let check_file =
+        |candidate_uid: &str| -> Option<(Option<String>, Option<String>, Option<String>)> {
+            let path = find_source_file_on_disk(candidate_uid)?;
+            let kf = KeyFile::new();
+            kf.load_from_file(&path, KeyFileFlags::NONE).ok()?;
+            let goa_id = if kf.has_group("GNOME Online Accounts") {
+                Some(
+                    kf.string("GNOME Online Accounts", "AccountId")
+                        .ok()
+                        .map(|s| s.trim().to_string())
+                        .unwrap_or_default(),
+                )
+            } else {
+                None
+            };
+            let collection_backend = kf
+                .string("Collection", "BackendName")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let parent = kf
+                .string("Data Source", "Parent")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            Some((goa_id, collection_backend, parent))
+        };
+
+    if let Some((goa_id, backend, parent)) = check_file(uid) {
+        if let Some(id) = goa_id {
+            return Some((id, backend.unwrap_or_default()));
+        }
+        if let Some(parent_uid) = parent {
+            if let Some((Some(parent_goa_id), parent_backend, _)) = check_file(&parent_uid) {
+                return Some((
+                    parent_goa_id,
+                    parent_backend.or(backend).unwrap_or_default(),
+                ));
+            }
+        }
+    }
+
+    let lower = uid.to_ascii_lowercase();
+    if lower.starts_with("goa-") || lower.starts_with("goa_") {
+        let clean = uid[4..].trim_end_matches("-mail").to_string();
+        return Some((clean, String::new()));
+    }
+    None
+}
+
+/// Helper to read a boolean `*Disabled` property from `org.gnome.OnlineAccounts.Account` over D-Bus.
+fn read_goa_dbus_disabled_prop(
+    bus: &gtk::gio::DBusConnection,
+    object_path: &str,
+    prop_name: &str,
+) -> Option<bool> {
+    let params = glib::Variant::tuple_from_iter([
+        glib::Variant::from("org.gnome.OnlineAccounts.Account"),
+        glib::Variant::from(prop_name),
+    ]);
+    let reply = bus
+        .call_sync(
+            Some("org.gnome.OnlineAccounts"),
+            object_path,
+            "org.freedesktop.DBus.Properties",
+            "Get",
+            Some(&params),
+            None,
+            gtk::gio::DBusCallFlags::NONE,
+            1500,
+            gtk::gio::Cancellable::NONE,
+        )
+        .ok()?;
+    let inner = reply.child_value(0);
+    let unboxed = inner.as_variant().unwrap_or(inner);
+    unboxed.get::<bool>()
+}
+
+/// Returns `(mail_enabled, calendar_enabled, contacts_enabled)` for a GOA/EDS account.
+pub fn get_goa_account_services_state(uid_or_account_id: &str) -> (bool, bool, bool) {
+    let clean = uid_or_account_id.strip_prefix("eds:").unwrap_or(uid_or_account_id);
+    let account_id = if clean.starts_with("account_") {
+        clean.to_string()
+    } else if let Some((id, _)) = resolve_goa_account_info(clean) {
+        id
+    } else {
+        String::new()
+    };
+    if !account_id.is_empty() {
+        let object_path = format!("/org/gnome/OnlineAccounts/Accounts/{account_id}");
+        if let Ok(bus) =
+            gtk::gio::bus_get_sync(gtk::gio::BusType::Session, gtk::gio::Cancellable::NONE)
+        {
+            let mail_live = read_goa_dbus_disabled_prop(&bus, &object_path, "MailDisabled")
+                .map(|disabled| !disabled);
+            let cal_live = read_goa_dbus_disabled_prop(&bus, &object_path, "CalendarDisabled")
+                .map(|disabled| !disabled);
+            let con_live = read_goa_dbus_disabled_prop(&bus, &object_path, "ContactsDisabled")
+                .map(|disabled| !disabled);
+            if mail_live.is_some() || cal_live.is_some() || con_live.is_some() {
+                return (
+                    mail_live.unwrap_or_else(|| {
+                        is_goa_account_service_enabled(&account_id, EdsSourceKind::Mail)
+                            .unwrap_or(true)
+                    }),
+                    cal_live.unwrap_or_else(|| {
+                        is_goa_account_service_enabled(&account_id, EdsSourceKind::Calendar)
+                            .unwrap_or(true)
+                    }),
+                    con_live.unwrap_or_else(|| {
+                        is_goa_account_service_enabled(&account_id, EdsSourceKind::AddressBook)
+                            .unwrap_or(true)
+                    }),
+                );
+            }
+        }
+
+        let mail = is_goa_account_service_enabled(&account_id, EdsSourceKind::Mail).unwrap_or(true);
+        let cal =
+            is_goa_account_service_enabled(&account_id, EdsSourceKind::Calendar).unwrap_or(true);
+        let contacts =
+            is_goa_account_service_enabled(&account_id, EdsSourceKind::AddressBook).unwrap_or(true);
+        return (mail, cal, contacts);
+    }
+    (true, true, true)
+}
+
+/// Toggles Mail, Calendar, or Contacts synchronization on a GNOME Online Account
+/// via D-Bus (`org.gnome.OnlineAccounts.Account`), `accounts.conf`, and EDS collection `.source`.
+pub fn set_goa_account_service_enabled(uid_or_account_id: &str, kind: EdsSourceKind, enabled: bool) {
+    let clean = uid_or_account_id.strip_prefix("eds:").unwrap_or(uid_or_account_id);
+    let account_id = if clean.starts_with("account_") {
+        clean.to_string()
+    } else if let Some((id, _)) = resolve_goa_account_info(clean) {
+        id
+    } else {
+        String::new()
+    };
+
+    let (enabled_key, disabled_key) = match kind {
+        EdsSourceKind::Mail => ("MailEnabled", "MailDisabled"),
+        EdsSourceKind::Calendar => ("CalendarEnabled", "CalendarDisabled"),
+        EdsSourceKind::AddressBook => ("ContactsEnabled", "ContactsDisabled"),
+    };
+
+    if !account_id.is_empty() {
+        // 1. Live D-Bus update to org.gnome.OnlineAccounts
+        if let Ok(bus) = gtk::gio::bus_get_sync(gtk::gio::BusType::Session, gtk::gio::Cancellable::NONE) {
+            let object_path = format!("/org/gnome/OnlineAccounts/Accounts/{account_id}");
+            let disabled_variant = glib::Variant::from(!enabled);
+            let params = glib::Variant::tuple_from_iter([
+                glib::Variant::from("org.gnome.OnlineAccounts.Account"),
+                glib::Variant::from(disabled_key),
+                glib::Variant::from_variant(&disabled_variant),
+            ]);
+            let _ = bus.call_sync(
+                Some("org.gnome.OnlineAccounts"),
+                &object_path,
+                "org.freedesktop.DBus.Properties",
+                "Set",
+                Some(&params),
+                None,
+                gtk::gio::DBusCallFlags::NONE,
+                2000,
+                gtk::gio::Cancellable::NONE,
+            );
+        }
+
+        // 2. Ensure ~/.config/goa-1.0/accounts.conf reflects the state immediately
+        let goa_conf = glib::user_config_dir().join("goa-1.0/accounts.conf");
+        if goa_conf.is_file() {
+            let kf = KeyFile::new();
+            if kf.load_from_file(&goa_conf, KeyFileFlags::KEEP_COMMENTS | KeyFileFlags::KEEP_TRANSLATIONS).is_ok() {
+                let group = format!("Account {account_id}");
+                if kf.has_group(&group) {
+                    kf.set_boolean(&group, enabled_key, enabled);
+                    if enabled {
+                        let _ = kf.remove_key(&group, disabled_key);
+                    } else {
+                        kf.set_boolean(&group, disabled_key, true);
+                    }
+                    let _ = kf.save_to_file(&goa_conf);
+                }
+            }
+        }
+    }
+
+    // 3. Also update EDS collection .source file if present
+    if let Some(path) = find_source_file_on_disk(clean) {
+        let kf = KeyFile::new();
+        if kf.load_from_file(&path, KeyFileFlags::KEEP_COMMENTS | KeyFileFlags::KEEP_TRANSLATIONS).is_ok() {
+            if kf.has_group("Collection") {
+                kf.set_boolean("Collection", enabled_key, enabled);
+                let _ = kf.save_to_file(&path);
+            } else if let Ok(parent_uid) = kf.string("Data Source", "Parent") {
+                if let Some(parent_path) = find_source_file_on_disk(parent_uid.trim()) {
+                    let pkf = KeyFile::new();
+                    if pkf.load_from_file(&parent_path, KeyFileFlags::KEEP_COMMENTS | KeyFileFlags::KEEP_TRANSLATIONS).is_ok() {
+                        if pkf.has_group("Collection") {
+                            pkf.set_boolean("Collection", enabled_key, enabled);
+                            let _ = pkf.save_to_file(&parent_path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    invalidate_account_collections_cache();
+}
+
+/// Checks whether `gnome-control-center` is installed on the system so GOA UI can be opened.
+pub fn is_gnome_online_accounts_available() -> bool {
+    glib::find_program_in_path("gnome-control-center").is_some()
+}
+
+/// Opens the GNOME Online Accounts settings panel, passing `XDG_CURRENT_DESKTOP=GNOME`
+/// so `gnome-control-center` works reliably even on non-GNOME desktops (Hyprland, Sway, KDE, etc.).
+pub fn open_gnome_online_accounts(account_id: Option<&str>) {
+    let mut cmd = std::process::Command::new("gnome-control-center");
+    cmd.env("XDG_CURRENT_DESKTOP", "GNOME");
+    cmd.arg("online-accounts");
+    if let Some(id) = account_id.map(str::trim).filter(|s| !s.is_empty()) {
+        cmd.arg(id);
+    }
+    let _ = cmd.spawn();
+}
+
 /// Configured account collection (e.g. Google, EWS, IMAP/SMTP) that may contain
 /// calendar, task, memo, and mail resources.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
