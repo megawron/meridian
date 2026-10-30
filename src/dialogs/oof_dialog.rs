@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// OutOfOfficeDialog — Abwesenheitsnotiz & Auto-Responder Dialog (Exchange EWS / IMAP).
+// OutOfOfficeDialog — Out of Office & Auto-Responder Dialog (Exchange EWS / IMAP).
 //
 // Features:
-// - Status Toggle (Abwesenheitsnotiz aktivieren/deaktivieren)
-// - Zeitbereich (Start- & Enddatum)
-// - Nachrichten für interne & externe Absender
+// - Status Toggle (Enable/disable automatic replies)
+// - Time Range (Start & end date)
+// - Messages for internal & external senders via RichTextField
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
+use std::cell::Cell;
+use std::rc::Rc;
 use std::thread;
 
 use crate::i18n::gettext;
@@ -17,6 +19,7 @@ use crate::services::AppSettings;
 use crate::services::account_config_service::{AccountConfigStore, AccountProtocol};
 use crate::services::exchange_service::ExchangeService;
 use crate::services::out_of_office_service::{OutOfOfficeSettings, OutOfOfficeStore};
+use crate::views::rich_text_field::{RichTextField, is_html_content};
 
 mod imp {
     use super::*;
@@ -34,7 +37,11 @@ mod imp {
     impl ObjectImpl for OutOfOfficeDialog {
         fn constructed(&self) {
             self.parent_constructed();
-            self.obj().build_ui();
+            let obj = self.obj();
+            obj.set_content_width(640);
+            obj.set_content_height(560);
+            obj.set_follows_content_size(false);
+            obj.build_ui();
         }
     }
 
@@ -52,15 +59,34 @@ impl OutOfOfficeDialog {
     pub fn new() -> Self {
         glib::Object::builder()
             .property("title", gettext("Out of Office (Auto-Responder)"))
-            .property("content-width", 600)
-            .property("content-height", 520)
+            .property("content-width", 640)
+            .property("content-height", 560)
+            .property("follows-content-size", false)
             .build()
     }
 
     fn build_ui(&self) {
         let toolbar_view = adw::ToolbarView::new();
 
-        let header_bar = adw::HeaderBar::new();
+        let header_bar = adw::HeaderBar::builder()
+            .show_start_title_buttons(false)
+            .show_end_title_buttons(false)
+            .build();
+
+        let title_widget = adw::WindowTitle::new(&gettext("Out of Office (Auto-Responder)"), "");
+        header_bar.set_title_widget(Some(&title_widget));
+
+        let btn_cancel = gtk::Button::builder()
+            .label(&gettext("Cancel"))
+            .build();
+        let dialog_for_cancel = self.downgrade();
+        btn_cancel.connect_clicked(move |_| {
+            if let Some(dialog) = dialog_for_cancel.upgrade() {
+                dialog.close();
+            }
+        });
+        header_bar.pack_start(&btn_cancel);
+
         let btn_save = gtk::Button::builder()
             .label(&gettext("Save"))
             .css_classes(vec!["suggested-action"])
@@ -68,173 +94,148 @@ impl OutOfOfficeDialog {
         header_bar.pack_end(&btn_save);
         toolbar_view.add_top_bar(&header_bar);
 
-        let content_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .build();
-
-        let content_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(16)
-            .margin_start(20)
-            .margin_end(20)
-            .margin_top(16)
-            .margin_bottom(20)
-            .build();
+        let page = adw::PreferencesPage::new();
 
         let graph_service = graph_service_for_configured_account();
-        let backend_state_text = if graph_service.is_some() {
-            gettext("Microsoft Graph: Loading server status…")
-        } else {
-            gettext("Local configuration; server connection manages synchronization")
-        };
-        let backend_state = gtk::Label::builder()
-            .label(&backend_state_text)
-            .css_classes(vec!["caption", "dim-label"])
-            .halign(gtk::Align::Start)
-            .wrap(true)
-            .build();
-        content_box.append(&backend_state);
-
-        // Status Group
-        let group_status = adw::PreferencesGroup::builder()
-            .title(&gettext("Status & Schedule"))
-            .build();
-
-        let enabled_subtitle = if graph_service.is_some() {
-            gettext("Server status is synchronized via Microsoft Graph")
-        } else {
-            gettext("Configuration saved locally; server delivery configured per account")
-        };
-        let row_enabled = adw::SwitchRow::builder()
-            .title(&gettext("Automatic replies"))
-            .subtitle(&enabled_subtitle)
-            .active(false)
-            .build();
-        row_enabled.add_prefix(&gtk::Image::from_icon_name("mail-send-symbolic"));
-        group_status.add(&row_enabled);
-
-        let row_schedule = adw::SwitchRow::builder()
-            .title(&gettext("Send replies only during this period"))
-            .active(true)
-            .build();
-        row_schedule.add_prefix(&gtk::Image::from_icon_name("x-office-calendar-symbolic"));
-        group_status.add(&row_schedule);
-
-        let row_start = adw::EntryRow::builder()
-            .title(&gettext("Start date (YYYY-MM-DD, optional)"))
-            .build();
-        row_start.add_prefix(&gtk::Image::from_icon_name("preferences-system-time-symbolic"));
-        group_status.add(&row_start);
-
-        let row_end = adw::EntryRow::builder()
-            .title(&gettext("End date (YYYY-MM-DD, optional)"))
-            .build();
-        row_end.add_prefix(&gtk::Image::from_icon_name("preferences-system-time-symbolic"));
-        group_status.add(&row_end);
-
         let saved_settings = OutOfOfficeStore::default().load();
-        row_enabled.set_active(saved_settings.enabled);
-        row_schedule.set_active(saved_settings.use_schedule);
+
+        // Group 1: Untitled
+        let group_schedule = adw::PreferencesGroup::new();
+
+        let row_enabled = adw::SwitchRow::builder()
+            .title(&gettext("Send Automatic Replies"))
+            .active(saved_settings.enabled)
+            .build();
+        group_schedule.add(&row_enabled);
+
+        let expander_schedule = adw::ExpanderRow::builder()
+            .title(&gettext("Only During a Time Range"))
+            .show_enable_switch(true)
+            .enable_expansion(saved_settings.use_schedule)
+            .build();
+
+        let (action_start, row_start) = create_date_picker_row(&gettext("Start Date"), None);
+        expander_schedule.add_row(&action_start);
+
+        let (action_end, row_end) = create_date_picker_row(&gettext("End Date"), None);
+        expander_schedule.add_row(&action_end);
+
         row_start.set_text(&saved_settings.start_date);
         row_end.set_text(&saved_settings.end_date);
 
-        content_box.append(&group_status);
+        let is_sched_enabled = saved_settings.use_schedule;
+        action_start.set_sensitive(is_sched_enabled);
+        action_end.set_sensitive(is_sched_enabled);
+        row_start.set_sensitive(is_sched_enabled);
+        row_end.set_sensitive(is_sched_enabled);
 
-        // Internal Message
+        let action_start_for_schedule = action_start.clone();
+        let action_end_for_schedule = action_end.clone();
+        let row_start_for_schedule = row_start.clone();
+        let row_end_for_schedule = row_end.clone();
+        expander_schedule.connect_enable_expansion_notify(move |row| {
+            let active = row.enables_expansion();
+            action_start_for_schedule.set_sensitive(active);
+            action_end_for_schedule.set_sensitive(active);
+            row_start_for_schedule.set_sensitive(active);
+            row_end_for_schedule.set_sensitive(active);
+        });
+
+        group_schedule.add(&expander_schedule);
+        page.add(&group_schedule);
+
+        // Group 2: Inside My Organization
         let group_internal = adw::PreferencesGroup::builder()
             .title(&gettext("Inside My Organization"))
             .build();
 
-        let text_internal = gtk::TextView::builder()
-            .wrap_mode(gtk::WrapMode::WordChar)
-            .margin_start(12)
-            .margin_end(12)
-            .margin_top(8)
-            .margin_bottom(8)
-            .height_request(80)
-            .build();
-        group_internal.add(&text_internal);
-        content_box.append(&group_internal);
+        let rich_internal = RichTextField::new(false, 140);
+        group_internal.add(&rich_internal);
+        page.add(&group_internal);
 
-        // External Message
+        // Group 3: Outside My Organization
         let group_external = adw::PreferencesGroup::builder()
             .title(&gettext("Outside My Organization"))
             .build();
 
-        let text_external = gtk::TextView::builder()
-            .wrap_mode(gtk::WrapMode::WordChar)
-            .margin_start(12)
-            .margin_end(12)
-            .margin_top(8)
-            .margin_bottom(8)
-            .height_request(80)
-            .build();
-        group_external.add(&text_external);
-        content_box.append(&group_external);
+        let rich_external = RichTextField::new(false, 140);
+        group_external.add(&rich_external);
+        page.add(&group_external);
 
-        text_internal
-            .buffer()
-            .set_text(&saved_settings.internal_message);
-        text_external
-            .buffer()
-            .set_text(&saved_settings.external_message);
-        row_start.set_sensitive(saved_settings.use_schedule);
-        row_end.set_sensitive(saved_settings.use_schedule);
-        let row_start_for_schedule = row_start.clone();
-        let row_end_for_schedule = row_end.clone();
-        row_schedule.connect_active_notify(move |row| {
-            row_start_for_schedule.set_sensitive(row.is_active());
-            row_end_for_schedule.set_sensitive(row.is_active());
+        // Sensitivity: Groups 2 and 3 become insensitive while the main switch is off
+        group_internal.set_sensitive(saved_settings.enabled);
+        group_external.set_sensitive(saved_settings.enabled);
+
+        let group_internal_for_toggle = group_internal.clone();
+        let group_external_for_toggle = group_external.clone();
+        row_enabled.connect_active_notify(move |row| {
+            let active = row.is_active();
+            group_internal_for_toggle.set_sensitive(active);
+            group_external_for_toggle.set_sensitive(active);
         });
+
+        // Load initial messages
+        if is_html_content(&saved_settings.internal_message) {
+            rich_internal.set_html(&saved_settings.internal_message);
+        } else {
+            rich_internal.set_plain_text(&saved_settings.internal_message);
+        }
+
+        if is_html_content(&saved_settings.external_message) {
+            rich_external.set_html(&saved_settings.external_message);
+        } else {
+            rich_external.set_plain_text(&saved_settings.external_message);
+        }
 
         if let Some(service) = graph_service.clone() {
             load_graph_settings(
                 self,
                 service,
                 &row_enabled,
-                &row_schedule,
+                &expander_schedule,
                 &row_start,
                 &row_end,
-                &text_internal.buffer(),
-                &text_external.buffer(),
-                &backend_state,
+                &rich_internal,
+                &rich_external,
             );
         }
 
         let dialog_for_save = self.clone();
         let row_enabled_for_save = row_enabled.clone();
-        let row_schedule_for_save = row_schedule.clone();
+        let expander_schedule_for_save = expander_schedule.clone();
         let row_start_for_save = row_start.clone();
         let row_end_for_save = row_end.clone();
-        let internal_buffer_for_save = text_internal.buffer();
-        let external_buffer_for_save = text_external.buffer();
+        let rich_internal_for_save = rich_internal.clone();
+        let rich_external_for_save = rich_external.clone();
         let graph_service_for_save = graph_service.clone();
         let save_button_for_save = btn_save.clone();
-        let backend_state_for_save = backend_state.clone();
+
         btn_save.connect_clicked(move |_| {
-            let internal_message = internal_buffer_for_save.text(
-                &internal_buffer_for_save.start_iter(),
-                &internal_buffer_for_save.end_iter(),
-                false,
-            );
-            let external_message = external_buffer_for_save.text(
-                &external_buffer_for_save.start_iter(),
-                &external_buffer_for_save.end_iter(),
-                false,
-            );
+            let internal_message = if rich_internal_for_save.plain_text().trim().is_empty() {
+                String::new()
+            } else {
+                rich_internal_for_save.html()
+            };
+            let external_message = if rich_external_for_save.plain_text().trim().is_empty() {
+                String::new()
+            } else {
+                rich_external_for_save.html()
+            };
+
             let settings = OutOfOfficeSettings {
                 enabled: row_enabled_for_save.is_active(),
-                use_schedule: row_schedule_for_save.is_active(),
+                use_schedule: expander_schedule_for_save.enables_expansion(),
                 start_date: row_start_for_save.text().trim().to_string(),
                 end_date: row_end_for_save.text().trim().to_string(),
-                internal_message: internal_message.to_string(),
-                external_message: external_message.to_string(),
+                internal_message,
+                external_message,
             };
+
             if let Err(error) = settings.validate() {
                 show_dialog_toast(&dialog_for_save, &error);
                 return;
             }
+
             match OutOfOfficeStore::default().save(&settings) {
                 Ok(()) => {
                     let Some(service) = graph_service_for_save.clone() else {
@@ -247,11 +248,9 @@ impl OutOfOfficeDialog {
                     };
 
                     save_button_for_save.set_sensitive(false);
-                    backend_state_for_save.set_label(&gettext("Microsoft Graph: Saving server status…"));
                     let settings_for_server = settings.clone();
                     let dialog_weak = dialog_for_save.downgrade();
                     let save_button = save_button_for_save.clone();
-                    let backend_state = backend_state_for_save.clone();
                     let (sender, receiver) = async_channel::bounded(1);
                     thread::spawn(move || {
                         let result = service.set_out_of_office_sync(&settings_for_server);
@@ -276,14 +275,12 @@ impl OutOfOfficeDialog {
                                 dialog.close();
                             }
                             Ok(Err(error)) => {
-                                backend_state.set_label(&gettext("Microsoft Graph: Server could not be updated"));
                                 show_dialog_toast(
                                     &dialog,
                                     &format!("{}: {error}", gettext("Saved locally, server update failed")),
                                 );
                             }
                             Err(error) => {
-                                backend_state.set_label(&gettext("Microsoft Graph: Server could not be updated"));
                                 show_dialog_toast(
                                     &dialog,
                                     &format!("{}: {error}", gettext("Server update cancelled")),
@@ -299,8 +296,7 @@ impl OutOfOfficeDialog {
             }
         });
 
-        content_scroll.set_child(Some(&content_box));
-        toolbar_view.set_content(Some(&content_scroll));
+        toolbar_view.set_content(Some(&page));
         self.set_child(Some(&toolbar_view));
     }
 }
@@ -328,21 +324,19 @@ fn load_graph_settings(
     dialog: &OutOfOfficeDialog,
     service: ExchangeService,
     row_enabled: &adw::SwitchRow,
-    row_schedule: &adw::SwitchRow,
+    expander_schedule: &adw::ExpanderRow,
     row_start: &adw::EntryRow,
     row_end: &adw::EntryRow,
-    internal_buffer: &gtk::TextBuffer,
-    external_buffer: &gtk::TextBuffer,
-    backend_state: &gtk::Label,
+    rich_internal: &RichTextField,
+    rich_external: &RichTextField,
 ) {
     let dialog_weak = dialog.downgrade();
     let row_enabled = row_enabled.clone();
-    let row_schedule = row_schedule.clone();
+    let expander_schedule = expander_schedule.clone();
     let row_start = row_start.clone();
     let row_end = row_end.clone();
-    let internal_buffer = internal_buffer.clone();
-    let external_buffer = external_buffer.clone();
-    let backend_state = backend_state.clone();
+    let rich_internal = rich_internal.clone();
+    let rich_external = rich_external.clone();
     let (sender, receiver) = async_channel::bounded(1);
     thread::spawn(move || {
         let result = service.get_out_of_office_sync();
@@ -350,33 +344,217 @@ fn load_graph_settings(
     });
     glib::spawn_future_local(async move {
         let result = receiver.recv().await;
-        let Some(_dialog) = dialog_weak.upgrade() else {
+        let Some(dialog) = dialog_weak.upgrade() else {
             return;
         };
         match result {
             Ok(Ok(settings)) => {
                 row_enabled.set_active(settings.enabled);
-                row_schedule.set_active(settings.use_schedule);
+                expander_schedule.set_enable_expansion(settings.use_schedule);
                 row_start.set_text(&settings.start_date);
                 row_end.set_text(&settings.end_date);
-                internal_buffer.set_text(&settings.internal_message);
-                external_buffer.set_text(&settings.external_message);
-                backend_state.set_label(&gettext("Microsoft Graph: Server status loaded"));
+                if is_html_content(&settings.internal_message) {
+                    rich_internal.set_html(&settings.internal_message);
+                } else {
+                    rich_internal.set_plain_text(&settings.internal_message);
+                }
+                if is_html_content(&settings.external_message) {
+                    rich_external.set_html(&settings.external_message);
+                } else {
+                    rich_external.set_plain_text(&settings.external_message);
+                }
+                show_dialog_toast(&dialog, &gettext("Microsoft Graph: Server status loaded"));
             }
             Ok(Err(error)) => {
-                backend_state.set_label(
-                    &gettext("Microsoft Graph: Server status unavailable; local values retained"),
-                );
                 tracing::warn!(%error, "Could not load Graph out-of-office settings");
             }
             Err(error) => {
-                backend_state.set_label(
-                    &gettext("Microsoft Graph: Server status unavailable; local values retained"),
-                );
                 tracing::warn!(%error, "Graph out-of-office load was cancelled");
             }
         }
     });
+}
+
+fn parse_iso_date(iso: &str) -> Option<(i32, i32, i32)> {
+    let parts: Vec<&str> = iso.trim().split('-').collect();
+    if parts.len() == 3 {
+        let year: i32 = parts[0].parse().ok()?;
+        let month: i32 = parts[1].parse().ok()?;
+        let day: i32 = parts[2].parse().ok()?;
+        if (1..=12).contains(&month) && (1..=31).contains(&day) {
+            return Some((year, month, day));
+        }
+    }
+    None
+}
+
+fn create_date_picker_row(
+    title: &str,
+    initial_iso: Option<&str>,
+) -> (adw::ActionRow, adw::EntryRow) {
+    let iso_entry = adw::EntryRow::new();
+
+    let action_row = adw::ActionRow::builder()
+        .title(title)
+        .activatable(false)
+        .build();
+
+    let suffix_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .valign(gtk::Align::Center)
+        .build();
+
+    let menu_button = gtk::MenuButton::builder()
+        .css_classes(vec!["flat"])
+        .valign(gtk::Align::Center)
+        .build();
+
+    let btn_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .build();
+    let btn_label = gtk::Label::builder()
+        .label(&gettext("Select date…"))
+        .css_classes(vec!["dim-label"])
+        .build();
+    btn_box.append(&btn_label);
+    menu_button.set_child(Some(&btn_box));
+
+    let btn_clear = gtk::Button::builder()
+        .icon_name("edit-clear-symbolic")
+        .tooltip_text(&gettext("Clear date"))
+        .css_classes(vec!["flat", "circular"])
+        .valign(gtk::Align::Center)
+        .visible(false)
+        .build();
+
+    let popover = gtk::Popover::new();
+    let popover_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(8)
+        .margin_top(8)
+        .margin_bottom(8)
+        .margin_start(8)
+        .margin_end(8)
+        .build();
+
+    let calendar = gtk::Calendar::new();
+    popover_box.append(&calendar);
+
+    let popover_btn_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .homogeneous(true)
+        .build();
+
+    let btn_today = gtk::Button::builder()
+        .label(&gettext("Today"))
+        .css_classes(vec!["flat"])
+        .build();
+
+    let btn_popover_clear = gtk::Button::builder()
+        .label(&gettext("Clear"))
+        .css_classes(vec!["flat"])
+        .build();
+
+    popover_btn_box.append(&btn_today);
+    popover_btn_box.append(&btn_popover_clear);
+    popover_box.append(&popover_btn_box);
+    popover.set_child(Some(&popover_box));
+    menu_button.set_popover(Some(&popover));
+
+    suffix_box.append(&menu_button);
+    suffix_box.append(&btn_clear);
+    action_row.add_suffix(&suffix_box);
+
+    let is_updating = Rc::new(Cell::new(false));
+
+    let update_ui_from_iso = {
+        let btn_label = btn_label.clone();
+        let btn_clear = btn_clear.clone();
+        let calendar = calendar.clone();
+        move |iso: &str| {
+            if let Some((year, month, day)) = parse_iso_date(iso) {
+                btn_label.set_text(&format!("{:02}.{:02}.{:04}", day, month, year));
+                btn_label.remove_css_class("dim-label");
+                btn_clear.set_visible(true);
+                let tz = glib::TimeZone::local();
+                if let Ok(dt) = glib::DateTime::new(&tz, year, month, day, 0, 0, 0.0) {
+                    calendar.select_day(&dt);
+                }
+            } else {
+                btn_label.set_text(&gettext("Select date…"));
+                btn_label.add_css_class("dim-label");
+                btn_clear.set_visible(false);
+            }
+        }
+    };
+
+    {
+        let iso_entry = iso_entry.clone();
+        let popover = popover.clone();
+        let is_updating = is_updating.clone();
+        calendar.connect_day_selected(move |cal| {
+            if is_updating.get() {
+                return;
+            }
+            let dt = cal.date();
+            let formatted = format!("{:04}-{:02}-{:02}", dt.year(), dt.month(), dt.day_of_month());
+            is_updating.set(true);
+            iso_entry.set_text(&formatted);
+            is_updating.set(false);
+            popover.popdown();
+        });
+    }
+
+    {
+        let update_ui = update_ui_from_iso.clone();
+        let is_updating = is_updating.clone();
+        iso_entry.connect_changed(move |entry| {
+            if is_updating.get() {
+                return;
+            }
+            is_updating.set(true);
+            update_ui(&entry.text());
+            is_updating.set(false);
+        });
+    }
+
+    {
+        let iso_entry = iso_entry.clone();
+        btn_clear.connect_clicked(move |_| {
+            iso_entry.set_text("");
+        });
+    }
+
+    {
+        let iso_entry = iso_entry.clone();
+        let popover = popover.clone();
+        btn_today.connect_clicked(move |_| {
+            if let Ok(now) = glib::DateTime::now_local() {
+                let formatted = format!("{:04}-{:02}-{:02}", now.year(), now.month(), now.day_of_month());
+                iso_entry.set_text(&formatted);
+            }
+            popover.popdown();
+        });
+    }
+
+    {
+        let iso_entry = iso_entry.clone();
+        let popover = popover.clone();
+        btn_popover_clear.connect_clicked(move |_| {
+            iso_entry.set_text("");
+            popover.popdown();
+        });
+    }
+
+    if let Some(iso) = initial_iso {
+        iso_entry.set_text(iso);
+        update_ui_from_iso(iso);
+    }
+
+    (action_row, iso_entry)
 }
 
 fn show_dialog_toast(dialog: &OutOfOfficeDialog, message: &str) {
@@ -391,5 +569,33 @@ fn show_dialog_toast(dialog: &OutOfOfficeDialog, message: &str) {
 impl Default for OutOfOfficeDialog {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_oof_dialog_creation_and_properties() {
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let dialog = OutOfOfficeDialog::new();
+        assert_eq!(dialog.content_width(), 640);
+        assert_eq!(dialog.content_height(), 560);
+        assert!(!dialog.follows_content_size());
+    }
+
+    #[test]
+    fn test_parse_iso_date() {
+        assert_eq!(parse_iso_date("2026-10-29"), Some((2026, 10, 29)));
+        assert_eq!(parse_iso_date("invalid"), None);
+        assert_eq!(parse_iso_date("2026-13-01"), None);
+        assert_eq!(parse_iso_date("2026-00-01"), None);
     }
 }
