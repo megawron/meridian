@@ -32,6 +32,9 @@ struct ManagerState {
     list_personal: gtk::ListBox,
     list_contact: gtk::ListBox,
     list_authority: gtk::ListBox,
+    stack_personal: gtk::Stack,
+    stack_contact: gtk::Stack,
+    stack_authority: gtk::Stack,
     btn_details: gtk::Button,
     btn_trust: gtk::Button,
     btn_export: gtk::Button,
@@ -50,8 +53,8 @@ impl CertificateManagerDialog {
     pub fn new<W: IsA<gtk::Widget>>(parent: Option<&W>) -> Self {
         let dialog = adw::Dialog::builder()
             .title(&gettext("Certificate Management"))
-            .content_width(780)
-            .content_height(600)
+            .content_width(720)
+            .content_height(480)
             .build();
 
         let stored_parent = RefCell::new(parent.map(|p| p.upcast_ref::<gtk::Widget>().clone()));
@@ -61,17 +64,22 @@ impl CertificateManagerDialog {
 
         // ── HeaderBar with ViewSwitcher & Search ──────────────────────────────
         let header_bar = adw::HeaderBar::new();
+        header_bar.set_margin_start(0);
+        header_bar.set_margin_end(0);
+        header_bar.set_margin_top(0);
+        header_bar.set_margin_bottom(0);
+
+        let btn_add_header = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text(&gettext("Import Certificate…"))
+            .build();
+        header_bar.pack_start(&btn_add_header);
 
         let search_toggle = gtk::ToggleButton::builder()
             .icon_name("system-search-symbolic")
             .tooltip_text(&gettext("Search certificates (Ctrl+F)"))
             .build();
         header_bar.pack_start(&search_toggle);
-
-        let btn_close = gtk::Button::builder()
-            .label(&gettext("Close"))
-            .build();
-        header_bar.pack_end(&btn_close);
 
         // View Stack with 3 Categories
         let view_stack = adw::ViewStack::builder()
@@ -100,36 +108,27 @@ impl CertificateManagerDialog {
         search_bar.connect_entry(&search_entry);
         toolbar_view.add_top_bar(&search_bar);
 
-        // ── Tab 1: Your Certificates (Personal) ────────────────────────────────
-        let (tab_personal, list_personal) = create_category_tab(
-            &gettext("Certificates for personal identification, email signing, and decrypting incoming messages.")
-        );
-        let page_personal = view_stack.add_titled(&tab_personal, Some("personal"), &gettext("Your Certificates"));
-        page_personal.set_icon_name(Some("credentials-symbolic"));
+        // ── Tab 1: Personal ──────────────────────────────────────────────────
+        let (tab_personal, list_personal, stack_personal) = create_category_tab();
+        let page_personal = view_stack.add_titled(&tab_personal, Some("personal"), &gettext("Personal"));
+        page_personal.set_icon_name(Some("security-high-symbolic"));
 
-        // ── Tab 2: Contacts ────────────────────────────────────────
-        let (tab_contact, list_contact) = create_category_tab(
-            &gettext("Certificates of contacts and recipients for encrypting outgoing messages.")
-        );
-        let page_contact = view_stack.add_titled(&tab_contact, Some("contacts"), &gettext("Contacts"));
+        // ── Tab 2: People ────────────────────────────────────────────────────
+        let (tab_contact, list_contact, stack_contact) = create_category_tab();
+        let page_contact = view_stack.add_titled(&tab_contact, Some("contacts"), &gettext("People"));
         page_contact.set_icon_name(Some("avatar-default-symbolic"));
 
-        // ── Tab 3: Authorities ───────────────────────
-        let (tab_authority, list_authority) = create_category_tab(
-            &gettext("Certificate Authorities (CAs) trusted to verify website and email certificates.")
-        );
+        // ── Tab 3: Authorities ───────────────────────────────────────────────
+        let (tab_authority, list_authority, stack_authority) = create_category_tab();
         let page_authority = view_stack.add_titled(&tab_authority, Some("authorities"), &gettext("Authorities"));
-        page_authority.set_icon_name(Some("security-high-symbolic"));
+        page_authority.set_icon_name(Some("channel-secure-symbolic"));
 
         // ── Bottom Action Bar ─────────────────────────────────────────────────
         let action_bar = gtk::ActionBar::new();
-
-        let btn_import = gtk::Button::builder()
-            .label(&gettext("Import…"))
-            .icon_name("document-open-symbolic")
-            .tooltip_text(&gettext("Import certificate or PKCS#12 bundle"))
-            .build();
-        action_bar.pack_start(&btn_import);
+        action_bar.set_margin_start(0);
+        action_bar.set_margin_end(0);
+        action_bar.set_margin_top(0);
+        action_bar.set_margin_bottom(0);
 
         let btn_export = gtk::Button::builder()
             .label(&gettext("Export…"))
@@ -178,6 +177,9 @@ impl CertificateManagerDialog {
             list_personal: list_personal.clone(),
             list_contact: list_contact.clone(),
             list_authority: list_authority.clone(),
+            stack_personal,
+            stack_contact,
+            stack_authority,
             btn_details: btn_details.clone(),
             btn_trust: btn_trust.clone(),
             btn_export: btn_export.clone(),
@@ -187,13 +189,6 @@ impl CertificateManagerDialog {
         }));
 
         // ── Wire Signals ──────────────────────────────────────────────────────
-        let dialog_weak = dialog.downgrade();
-        btn_close.connect_clicked(move |_| {
-            if let Some(dlg) = dialog_weak.upgrade() {
-                dlg.close();
-            }
-        });
-
         // ViewStack page change listener
         let state_for_page = Rc::clone(&state);
         view_stack.connect_visible_child_name_notify(move |stack| {
@@ -238,9 +233,9 @@ impl CertificateManagerDialog {
             delete_selected_certificate(&state_for_delete);
         });
 
-        // Action: Import
+        // Action: Import (HeaderBar + button)
         let state_for_import = Rc::clone(&state);
-        btn_import.connect_clicked(move |_| {
+        btn_add_header.connect_clicked(move |_| {
             import_certificate_file(&state_for_import);
         });
 
@@ -293,39 +288,54 @@ impl CertificateManagerDialog {
 // Category Tab Builder & Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn create_category_tab(description: &str) -> (gtk::ScrolledWindow, gtk::ListBox) {
+fn create_category_tab() -> (gtk::Stack, gtk::ListBox, gtk::Stack) {
+    let stack = gtk::Stack::builder()
+        .vexpand(true)
+        .hexpand(true)
+        .transition_type(gtk::StackTransitionType::Crossfade)
+        .build();
+
     let scrolled = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
         .vexpand(true)
+        .hexpand(true)
         .build();
 
     let content_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(12)
-        .margin_start(18)
-        .margin_end(18)
-        .margin_top(14)
-        .margin_bottom(18)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(12)
+        .margin_bottom(12)
+        .vexpand(true)
+        .hexpand(true)
         .build();
-
-    let desc_label = gtk::Label::builder()
-        .label(description)
-        .xalign(0.0)
-        .wrap(true)
-        .css_classes(vec!["dim-label", "caption"])
-        .build();
-    content_box.append(&desc_label);
 
     let list_box = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::Single)
         .css_classes(vec!["boxed-list"])
         .vexpand(true)
+        .hexpand(true)
         .build();
     content_box.append(&list_box);
 
     scrolled.set_child(Some(&content_box));
-    (scrolled, list_box)
+
+    let empty_page = adw::StatusPage::builder()
+        .title(&gettext("No Certificates"))
+        .css_classes(vec!["compact"])
+        .vexpand(true)
+        .hexpand(true)
+        .valign(gtk::Align::Center)
+        .build();
+
+    stack.add_named(&scrolled, Some("list"));
+    stack.add_named(&empty_page, Some("empty"));
+    stack.set_visible_child_name("empty");
+
+    (stack.clone(), list_box, stack)
 }
 
 fn setup_list_signals(list: &gtk::ListBox, _category: CertCategory, state: &Rc<RefCell<ManagerState>>) {
@@ -366,18 +376,33 @@ fn reload_all_lists(state: &Rc<RefCell<ManagerState>>) {
     let contact_certs = CertificateService::list_certificates(CertCategory::Contact);
     let authority_certs = CertificateService::list_certificates(CertCategory::Authority);
 
+    let (list_personal, list_contact, list_authority, stack_personal, stack_contact, stack_authority) = {
+        let s = state.borrow();
+        (
+            s.list_personal.clone(),
+            s.list_contact.clone(),
+            s.list_authority.clone(),
+            s.stack_personal.clone(),
+            s.stack_contact.clone(),
+            s.stack_authority.clone(),
+        )
+    };
+
+    populate_list_box(&stack_personal, &list_personal, &personal_certs, &query, CertCategory::Personal, state);
+    populate_list_box(&stack_contact, &list_contact, &contact_certs, &query, CertCategory::Contact, state);
+    populate_list_box(&stack_authority, &list_authority, &authority_certs, &query, CertCategory::Authority, state);
+
     let s = state.borrow();
-    populate_list_box(&s.list_personal, &personal_certs, &query, CertCategory::Personal);
-    populate_list_box(&s.list_contact, &contact_certs, &query, CertCategory::Contact);
-    populate_list_box(&s.list_authority, &authority_certs, &query, CertCategory::Authority);
     update_action_sensitivity(&s);
 }
 
 fn populate_list_box(
+    stack: &gtk::Stack,
     list: &gtk::ListBox,
     certs: &[CertificateRecord],
     query: &str,
     category: CertCategory,
+    _state: &Rc<RefCell<ManagerState>>,
 ) {
     while let Some(child) = list.first_child() {
         list.remove(&child);
@@ -399,25 +424,11 @@ fn populate_list_box(
         .collect();
 
     if filtered.is_empty() {
-        let (title, subtitle) = if query.is_empty() {
-            (
-                gettext("No certificates available in this category"),
-                gettext("Click “Import…” to add certificates."),
-            )
-        } else {
-            (
-                gettext("No certificates match the search query"),
-                gettext("Check the search query or clear the input."),
-            )
-        };
-        let placeholder = adw::ActionRow::builder()
-            .title(&title)
-            .subtitle(&subtitle)
-            .build();
-        placeholder.set_sensitive(false);
-        list.append(&placeholder);
+        stack.set_visible_child_name("empty");
         return;
     }
+
+    stack.set_visible_child_name("list");
 
     for cert in filtered {
         let row = adw::ActionRow::builder()
@@ -425,19 +436,36 @@ fn populate_list_box(
             .activatable(true)
             .build();
 
-        // Subtitle: Email + Issuer
-        let subtitle = if !cert.subject_email.is_empty() {
-            format!("{} · {}: {}", cert.subject_email, gettext("Issued by"), cert.issuer_cn)
-        } else {
-            format!("{}: {}", gettext("Issued by"), cert.issuer_cn)
-        };
-        row.set_subtitle(&subtitle);
+        // Subtitle: Email + Issuer (avoiding redundant display name or self-issued repetition)
+        let mut subtitle_parts = Vec::new();
+        if !cert.subject_email.is_empty()
+            && !cert.subject_email.eq_ignore_ascii_case(&cert.display_name)
+        {
+            subtitle_parts.push(cert.subject_email.clone());
+        }
+
+        if !cert.issuer_cn.is_empty() {
+            let is_self_issued = cert.issuer_cn.eq_ignore_ascii_case(&cert.display_name)
+                || cert.issuer_cn.eq_ignore_ascii_case(&cert.subject_cn);
+
+            if !is_self_issued {
+                subtitle_parts.push(format!("{}: {}", gettext("Issued by"), cert.issuer_cn));
+            } else if category == CertCategory::Authority {
+                subtitle_parts.push(gettext("Root Certificate Authority"));
+            } else if category == CertCategory::Personal {
+                subtitle_parts.push(gettext("Self-signed"));
+            }
+        }
+
+        if !subtitle_parts.is_empty() {
+            row.set_subtitle(&subtitle_parts.join(" · "));
+        }
 
         // Leading Icon based on category
         let icon_name = match category {
-            CertCategory::Personal => "credentials-symbolic",
+            CertCategory::Personal => "security-high-symbolic",
             CertCategory::Contact => "avatar-default-symbolic",
-            CertCategory::Authority => "security-high-symbolic",
+            CertCategory::Authority => "channel-secure-symbolic",
         };
         row.add_prefix(&gtk::Image::from_icon_name(icon_name));
 
@@ -970,13 +998,19 @@ impl CertificateTrustDialog {
         let dialog = adw::Dialog::builder()
             .title(&gettext("Edit Certificate Trust"))
             .content_width(540)
-            .content_height(520)
+            .content_height(480)
             .build();
 
         let stored_parent = RefCell::new(None);
 
         let toolbar_view = adw::ToolbarView::new();
         let header_bar = adw::HeaderBar::new();
+
+        let title_widget = adw::WindowTitle::builder()
+            .title(&gettext("Certificate Trust"))
+            .subtitle(&cert.display_name)
+            .build();
+        header_bar.set_title_widget(Some(&title_widget));
 
         let btn_cancel = gtk::Button::builder().label(&gettext("Cancel")).build();
         let btn_save = gtk::Button::builder()
@@ -989,19 +1023,6 @@ impl CertificateTrustDialog {
         toolbar_view.add_top_bar(&header_bar);
 
         let page = adw::PreferencesPage::new();
-
-        // Info Banner
-        let group_info = adw::PreferencesGroup::builder()
-            .title(&gettext("Certificate"))
-            .description(&format!(
-                "{}: “{}” ({}: {}).",
-                gettext("Edit trust rules for"),
-                cert.display_name,
-                gettext("Issuer"),
-                cert.issuer_cn
-            ))
-            .build();
-        page.add(&group_info);
 
         // Trust Level Combo
         let group_level = adw::PreferencesGroup::builder()
@@ -1023,7 +1044,6 @@ impl CertificateTrustDialog {
         let model = gtk::StringList::new(&trust_items);
         let combo_trust = adw::ComboRow::builder()
             .title(&gettext("Trust"))
-            .subtitle(&gettext("Determines how the certificate is evaluated in cryptographic checks"))
             .model(&model)
             .build();
 
@@ -1042,26 +1062,22 @@ impl CertificateTrustDialog {
         // Purpose Toggles (CA Usage)
         let group_purposes = adw::PreferencesGroup::builder()
             .title(&gettext("Key Purposes"))
-            .description(&gettext("Specify the applications for which this certificate authority is trusted:"))
             .build();
 
         let switch_ssl = adw::SwitchRow::builder()
             .title(&gettext("Websites (SSL/TLS)"))
-            .subtitle(&gettext("Trust this CA to identify websites"))
             .active(cert.key_usage_flags.server_auth)
             .build();
         group_purposes.add(&switch_ssl);
 
         let switch_email = adw::SwitchRow::builder()
             .title(&gettext("Email Users (S/MIME)"))
-            .subtitle(&gettext("Trust this CA to identify email users"))
             .active(cert.key_usage_flags.email_protection)
             .build();
         group_purposes.add(&switch_email);
 
         let switch_code = adw::SwitchRow::builder()
             .title(&gettext("Software Developers (Code Signing)"))
-            .subtitle(&gettext("Trust this CA to identify software developers"))
             .active(cert.key_usage_flags.code_signing)
             .build();
         group_purposes.add(&switch_code);
@@ -1137,13 +1153,19 @@ impl PassphrasePromptDialog {
         let dialog = adw::Dialog::builder()
             .title(&gettext("Passphrase Required"))
             .content_width(440)
-            .content_height(260)
+            .content_height(240)
             .build();
 
         let stored_parent = RefCell::new(None);
 
         let toolbar_view = adw::ToolbarView::new();
         let header_bar = adw::HeaderBar::new();
+
+        let title_widget = adw::WindowTitle::builder()
+            .title(&gettext("Passphrase Required"))
+            .subtitle(filename)
+            .build();
+        header_bar.set_title_widget(Some(&title_widget));
 
         let btn_cancel = gtk::Button::builder().label(&gettext("Cancel")).build();
         let btn_unlock = gtk::Button::builder()
@@ -1158,11 +1180,6 @@ impl PassphrasePromptDialog {
         let page = adw::PreferencesPage::new();
         let group = adw::PreferencesGroup::builder()
             .title(&gettext("Unlock PKCS#12 Bundle"))
-            .description(&format!(
-                "{}: “{filename}”. {}:",
-                gettext("The file is protected by a passphrase"),
-                gettext("Please enter the password to import it")
-            ))
             .build();
 
         let row_pass = adw::PasswordEntryRow::builder()
@@ -1231,7 +1248,7 @@ impl PassphrasePromptDialog {
         let dialog = adw::Dialog::builder()
             .title(&gettext("Protect Certificate Export"))
             .content_width(440)
-            .content_height(320)
+            .content_height(280)
             .build();
 
         let stored_parent = RefCell::new(None);
@@ -1252,7 +1269,6 @@ impl PassphrasePromptDialog {
         let page = adw::PreferencesPage::new();
         let group = adw::PreferencesGroup::builder()
             .title(&gettext("Set PKCS#12 Passphrase"))
-            .description(&gettext("Set a password to encrypt the private key and certificate in the exported archive:"))
             .build();
 
         let row_pass1 = adw::PasswordEntryRow::builder()
@@ -1323,5 +1339,95 @@ impl PassphrasePromptDialog {
 
     pub fn present(&self) {
         self.dialog.present(self.stored_parent.borrow().as_ref());
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::window::{gtk_test_main_context, GTK_TEST_MUTEX};
+
+    #[test]
+    fn test_certificate_manager_dialog_metrics_and_tabs() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+
+        let mgr = CertificateManagerDialog::new(None::<&gtk::Widget>);
+        assert_eq!(mgr.dialog().content_width(), 720);
+        assert_eq!(mgr.dialog().content_height(), 480);
+
+        let s = mgr.state.borrow();
+        assert_eq!(s.active_category, CertCategory::Personal);
+        assert!(s.selected_id.is_none());
+        assert!(!s.btn_details.is_sensitive());
+        assert!(!s.btn_trust.is_sensitive());
+        assert!(!s.btn_export.is_sensitive());
+        assert!(!s.btn_delete.is_sensitive());
+        assert_eq!(s.stack_personal.visible_child_name().as_deref(), Some("empty"));
+    }
+
+    #[test]
+    fn test_certificate_trust_dialog_no_explanatory_text() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+
+        let cert = CertificateRecord {
+            id: "test-trust-id".to_string(),
+            display_name: "Test Trust Cert".to_string(),
+            category: CertCategory::Personal,
+            cert_type: CertType::Smime,
+            subject_cn: "Trust CN".to_string(),
+            subject_email: "trust@example.com".to_string(),
+            subject_org: "Meridian".to_string(),
+            subject_ou: String::new(),
+            issuer_cn: "Trust CA".to_string(),
+            issuer_org: "Meridian CA".to_string(),
+            serial_hex: "02".to_string(),
+            not_before: "2026-01-01".to_string(),
+            not_after: "2027-01-01".to_string(),
+            is_expired: false,
+            sha256_fingerprint: "11:22:33".to_string(),
+            key_usage: Vec::new(),
+            key_usage_flags: Default::default(),
+            trust_level: TrustLevel::Trusted,
+            raw_pem: String::new(),
+            cert_path: None,
+            private_key_path: None,
+            has_private_key: true,
+        };
+
+        let trust_dialog = CertificateTrustDialog::new(&cert, |_, _, _, _| {});
+        assert_eq!(trust_dialog.dialog().content_width(), 540);
+        assert_eq!(trust_dialog.dialog().content_height(), 480);
+    }
+
+    #[test]
+    fn test_passphrase_prompt_dialogs() {
+        let _gtk_lock = GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = gtk_test_main_context() else {
+            return;
+        };
+
+        let import_dlg = PassphrasePromptDialog::new_for_import(Path::new("test.p12"), |_| Ok(()));
+        assert_eq!(import_dlg.dialog().content_width(), 440);
+        assert_eq!(import_dlg.dialog().content_height(), 240);
+
+        let export_dlg = PassphrasePromptDialog::new_for_export(|_| Ok(()));
+        assert_eq!(export_dlg.dialog().content_width(), 440);
+        assert_eq!(export_dlg.dialog().content_height(), 280);
     }
 }
