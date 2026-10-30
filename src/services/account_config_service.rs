@@ -44,6 +44,7 @@ impl AccountProtocol {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "AccountProfileRaw")]
 pub struct AccountProfile {
     pub id: String,
     pub display_name: String,
@@ -119,6 +120,135 @@ pub struct AccountProfile {
     pub is_shared_mailbox: bool,
     #[serde(default)]
     pub parent_account_id: Option<String>,
+    #[serde(default)]
+    pub follow_global_sync: bool,
+}
+
+#[derive(Deserialize)]
+struct AccountProfileRaw {
+    pub id: String,
+    pub display_name: String,
+    pub email: String,
+    pub protocol: AccountProtocol,
+    pub imap_host: String,
+    pub smtp_host: String,
+    #[serde(default)]
+    pub oab_url: String,
+    pub tls_mode: String,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default = "default_imap_port")]
+    pub imap_port: u16,
+    #[serde(default = "default_smtp_port")]
+    pub smtp_port: u16,
+    #[serde(default)]
+    pub auth_method: String,
+    #[serde(default)]
+    pub reply_to: String,
+    #[serde(default)]
+    pub organization: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub inbox_folder: String,
+    #[serde(default)]
+    pub drafts_folder: String,
+    #[serde(default)]
+    pub sent_folder: String,
+    #[serde(default)]
+    pub archive_folder: String,
+    #[serde(default)]
+    pub trash_folder: String,
+    #[serde(default)]
+    pub junk_folder: String,
+    pub enabled: bool,
+    #[serde(default)]
+    pub signature_id: Option<String>,
+    #[serde(default = "default_check_interval")]
+    pub check_interval_minutes: u32,
+    #[serde(default = "default_true")]
+    pub auto_check_enabled: bool,
+    #[serde(default)]
+    pub check_all_folders: bool,
+    #[serde(default)]
+    pub expunge_on_exit: bool,
+    #[serde(default)]
+    pub pgp_key_id: String,
+    #[serde(default)]
+    pub pgp_always_sign: bool,
+    #[serde(default)]
+    pub pgp_always_encrypt: bool,
+    #[serde(default)]
+    pub smime_sign_cert: String,
+    #[serde(default)]
+    pub smime_encrypt_cert: String,
+    #[serde(default)]
+    pub default_cc: String,
+    #[serde(default)]
+    pub default_bcc: String,
+    #[serde(default = "default_true")]
+    pub prefer_html: bool,
+    #[serde(default)]
+    pub open_mailbox_other_user: bool,
+    #[serde(default)]
+    pub foreign_mailbox: String,
+    #[serde(default)]
+    pub is_shared_mailbox: bool,
+    #[serde(default)]
+    pub parent_account_id: Option<String>,
+    #[serde(default)]
+    pub follow_global_sync: Option<bool>,
+}
+
+impl From<AccountProfileRaw> for AccountProfile {
+    fn from(raw: AccountProfileRaw) -> Self {
+        let follow_global_sync = match raw.follow_global_sync {
+            Some(v) => v,
+            None => raw.check_interval_minutes == default_check_interval(),
+        };
+        AccountProfile {
+            id: raw.id,
+            display_name: raw.display_name,
+            email: raw.email,
+            protocol: raw.protocol,
+            imap_host: raw.imap_host,
+            smtp_host: raw.smtp_host,
+            oab_url: raw.oab_url,
+            tls_mode: raw.tls_mode,
+            username: raw.username,
+            imap_port: raw.imap_port,
+            smtp_port: raw.smtp_port,
+            auth_method: raw.auth_method,
+            reply_to: raw.reply_to,
+            organization: raw.organization,
+            aliases: raw.aliases,
+            inbox_folder: raw.inbox_folder,
+            drafts_folder: raw.drafts_folder,
+            sent_folder: raw.sent_folder,
+            archive_folder: raw.archive_folder,
+            trash_folder: raw.trash_folder,
+            junk_folder: raw.junk_folder,
+            enabled: raw.enabled,
+            signature_id: raw.signature_id,
+            check_interval_minutes: raw.check_interval_minutes,
+            auto_check_enabled: raw.auto_check_enabled,
+            check_all_folders: raw.check_all_folders,
+            expunge_on_exit: raw.expunge_on_exit,
+            pgp_key_id: raw.pgp_key_id,
+            pgp_always_sign: raw.pgp_always_sign,
+            pgp_always_encrypt: raw.pgp_always_encrypt,
+            smime_sign_cert: raw.smime_sign_cert,
+            smime_encrypt_cert: raw.smime_encrypt_cert,
+            default_cc: raw.default_cc,
+            default_bcc: raw.default_bcc,
+            prefer_html: raw.prefer_html,
+            open_mailbox_other_user: raw.open_mailbox_other_user,
+            foreign_mailbox: raw.foreign_mailbox,
+            is_shared_mailbox: raw.is_shared_mailbox,
+            parent_account_id: raw.parent_account_id,
+            follow_global_sync,
+        }
+    }
 }
 
 impl Default for AccountProfile {
@@ -163,6 +293,7 @@ impl Default for AccountProfile {
             foreign_mailbox: String::new(),
             is_shared_mailbox: false,
             parent_account_id: None,
+            follow_global_sync: true,
         }
     }
 }
@@ -805,6 +936,68 @@ pub fn query_exchange_auth_methods(host_or_url: &str) -> Result<Vec<String>, Str
     Ok(ordered)
 }
 
+/// Detects local Active Directory domain if joined (e.g. "CORPDOM").
+pub fn detect_ad_domain() -> Option<String> {
+    if let Ok(content) = fs::read_to_string("/etc/krb5.conf") {
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("default_realm") {
+                let realm = rest.trim().trim_start_matches('=').trim();
+                if !realm.is_empty() && realm != "EXAMPLE.COM" {
+                    let netbios = realm.split('.').next().unwrap_or(realm);
+                    return Some(netbios.to_uppercase());
+                }
+            }
+        }
+    }
+    if let Ok(content) = fs::read_to_string("/etc/resolv.conf") {
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("search ") || trimmed.starts_with("domain ") {
+                let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    let domain = parts[1];
+                    let netbios = domain.split('.').next().unwrap_or(domain);
+                    if !netbios.is_empty() && netbios != "local" {
+                        return Some(netbios.to_uppercase());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Formats a username for Active Directory Exchange login:
+/// If it already contains a backslash (e.g. `DOMAIN\user`), returns it.
+/// If it is an email address or bare username, and an AD domain is detected, returns `DOMAIN\user`.
+pub fn format_exchange_domain_user(raw_user: &str, raw_email: &str) -> String {
+    let raw = raw_user.trim();
+    if raw.contains('\\') {
+        return raw.to_string();
+    }
+    let username = if raw.is_empty() || raw.contains('@') {
+        if !raw.is_empty() {
+            raw.split('@').next().unwrap_or(raw).trim().to_string()
+        } else if !raw_email.trim().is_empty() {
+            raw_email.trim().split('@').next().unwrap_or("").trim().to_string()
+        } else {
+            std::env::var("USER").unwrap_or_default()
+        }
+    } else {
+        raw.to_string()
+    };
+    if username.is_empty() {
+        return String::new();
+    }
+
+    if let Some(domain) = detect_ad_domain() {
+        format!("{domain}\\{username}")
+    } else {
+        username
+    }
+}
+
 /// Returns the path to the EDS sources configuration directory.
 pub fn eds_sources_dir() -> PathBuf {
     if let Ok(custom) = std::env::var("MERIDIAN_SOURCES_DIR").or_else(|_| std::env::var("EVOLUTION_SOURCES_DIR")) {
@@ -814,6 +1007,163 @@ pub fn eds_sources_dir() -> PathBuf {
         }
     }
     gtk::glib::user_config_dir().join("evolution").join("sources")
+}
+
+/// Reads Exchange (EWS) connection parameters `(host_url, oab_url, auth_method, username)`
+/// from an EDS `.source` file (and its `Parent` collection `.source` file if applicable).
+pub fn read_eds_ews_connection_info(source_uid_or_email: &str) -> Option<(String, String, String, String)> {
+    let clean_uid = source_uid_or_email
+        .trim()
+        .strip_prefix("eds:")
+        .unwrap_or(source_uid_or_email.trim());
+    if clean_uid.is_empty() {
+        return None;
+    }
+
+    let sources_dir = eds_sources_dir();
+
+    let extract_from_keyfile = |kf: &gtk::glib::KeyFile| -> Option<(String, String, String, String)> {
+        let host_url = kf
+            .string("Ews Backend", "Hosturl")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                kf.string("Authentication", "Host")
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .map(|h| {
+                        if h.starts_with("http://") || h.starts_with("https://") {
+                            h
+                        } else {
+                            format!("https://{h}/EWS/Exchange.asmx")
+                        }
+                    })
+            })?;
+
+        let oab_url = kf
+            .string("Ews Backend", "Oaburl")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+
+        let raw_method = kf
+            .string("Authentication", "Method")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        let auth_method = if raw_method.eq_ignore_ascii_case("ntlm")
+            || raw_method.to_ascii_lowercase().contains("ntlm")
+        {
+            "NTLM".to_string()
+        } else if raw_method.to_ascii_lowercase().contains("oauth") {
+            "OAuth2".to_string()
+        } else if raw_method.to_ascii_lowercase().contains("gssapi")
+            || raw_method.to_ascii_lowercase().contains("kerberos")
+        {
+            "Kerberos".to_string()
+        } else if raw_method.to_ascii_lowercase().contains("plain")
+            || raw_method.to_ascii_lowercase().contains("basic")
+        {
+            "Basic".to_string()
+        } else {
+            "NTLM".to_string()
+        };
+
+        let email = kf
+            .string("Ews Backend", "Email")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                kf.string("GNOME Online Accounts", "Address")
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            })
+            .unwrap_or_default();
+
+        let user = kf
+            .string("Authentication", "User")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(email);
+
+        Some((host_url, oab_url, auth_method, user))
+    };
+
+    let direct_path = sources_dir.join(format!("{clean_uid}.source"));
+    if direct_path.exists() {
+        let kf = gtk::glib::KeyFile::new();
+        if kf.load_from_file(&direct_path, gtk::glib::KeyFileFlags::NONE).is_ok() {
+            if let Some(info) = extract_from_keyfile(&kf) {
+                return Some(info);
+            }
+            if let Ok(parent_uid) = kf.string("Data Source", "Parent") {
+                let parent_uid = parent_uid.trim();
+                if !parent_uid.is_empty() {
+                    let parent_path = sources_dir.join(format!("{parent_uid}.source"));
+                    let parent_kf = gtk::glib::KeyFile::new();
+                    if parent_kf
+                        .load_from_file(&parent_path, gtk::glib::KeyFileFlags::NONE)
+                        .is_ok()
+                    {
+                        if let Some(info) = extract_from_keyfile(&parent_kf) {
+                            return Some(info);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: scan EWS collection sources matching email or domain
+    if let Ok(entries) = fs::read_dir(&sources_dir) {
+        let target_domain = clean_uid.split('@').nth(1).unwrap_or("");
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("source") {
+                continue;
+            }
+            let kf = gtk::glib::KeyFile::new();
+            if kf.load_from_file(&path, gtk::glib::KeyFileFlags::NONE).is_ok() {
+                let is_ews = kf
+                    .string("Collection", "BackendName")
+                    .ok()
+                    .is_some_and(|b| b.trim().eq_ignore_ascii_case("ews"))
+                    || kf.has_group("Ews Backend");
+                if !is_ews {
+                    continue;
+                }
+                let ews_email = kf
+                    .string("Ews Backend", "Email")
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_default();
+                let display_name = kf
+                    .string("Data Source", "DisplayName")
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_default();
+                let matches = ews_email.eq_ignore_ascii_case(clean_uid)
+                    || display_name.eq_ignore_ascii_case(clean_uid)
+                    || (!target_domain.is_empty()
+                        && ews_email
+                            .split('@')
+                            .nth(1)
+                            .is_some_and(|d| d.eq_ignore_ascii_case(target_domain)));
+                if matches {
+                    if let Some(info) = extract_from_keyfile(&kf) {
+                        return Some(info);
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// Remove all `.source` files associated with an AccountProfile from the EDS sources directory.
@@ -827,6 +1177,17 @@ pub fn remove_eds_sources_for_profile(profile: &AccountProfile) {
     let _ = fs::remove_file(sources_dir.join(format!("{mail_uid}.source")));
     let _ = fs::remove_file(sources_dir.join(format!("{identity_uid}.source")));
     let _ = fs::remove_file(sources_dir.join(format!("{transport_uid}.source")));
+}
+
+pub(crate) fn effective_sync_interval_minutes(profile: &AccountProfile) -> u32 {
+    if profile.follow_global_sync {
+        crate::services::AppSettings::try_new()
+            .map(|s| s.mail_sync_interval_seconds() / 60)
+            .unwrap_or(10)
+            .max(1)
+    } else {
+        profile.check_interval_minutes.max(1)
+    }
 }
 
 /// Returns the authoritative mail source UID recognized by EDS and Camel.
@@ -959,7 +1320,7 @@ pub fn sync_profile_to_eds(
                 enabled = profile.enabled,
                 parent_uid = parent_uid,
                 identity_uid = identity_uid,
-                interval = profile.check_interval_minutes.max(1),
+                interval = effective_sync_interval_minutes(profile),
                 foreign_mail_block = foreign_mail_block,
             );
 
@@ -992,7 +1353,7 @@ pub fn sync_profile_to_eds(
 
             let enabled_str = if profile.enabled { "true" } else { "false" };
             let check_all_str = if profile.check_all_folders { "true" } else { "false" };
-            let interval_str = profile.check_interval_minutes.max(1).to_string();
+            let interval_str = effective_sync_interval_minutes(profile).to_string();
 
             files_changed |= write_or_update_source_file(
                 &parent_path,
@@ -1095,7 +1456,7 @@ pub fn sync_profile_to_eds(
                 parent_uid = parent_uid,
                 backend = backend,
                 identity_uid = identity_uid,
-                interval = profile.check_interval_minutes.max(1),
+                interval = effective_sync_interval_minutes(profile),
             );
 
             let identity_ini = format!(
@@ -1133,7 +1494,7 @@ pub fn sync_profile_to_eds(
             let transport_path = sources_dir.join(format!("{}.source", transport_uid));
 
             let enabled_str = if profile.enabled { "true" } else { "false" };
-            let interval_str = profile.check_interval_minutes.max(1).to_string();
+            let interval_str = effective_sync_interval_minutes(profile).to_string();
             let port_str = profile.imap_port.to_string();
             let smtp_port_str = profile.smtp_port.to_string();
 
@@ -1710,5 +2071,76 @@ mod tests {
 
         // Always remove test-generated .source files from the system
         remove_eds_sources_for_profile(&profile);
+    }
+
+    #[test]
+    fn test_follow_global_sync_normalization() {
+        // Case 1: Legacy profile missing follow_global_sync, check_interval_minutes == 10 (default)
+        // -> Should normalize follow_global_sync to true
+        let json_default_interval = serde_json::json!({
+            "id": "acc-1",
+            "display_name": "Acc 1",
+            "email": "acc1@example.com",
+            "protocol": "ImapSmtp",
+            "imap_host": "imap.example.com",
+            "smtp_host": "smtp.example.com",
+            "tls_mode": "tls",
+            "enabled": true,
+            "check_interval_minutes": 10
+        });
+        let prof1: AccountProfile = serde_json::from_value(json_default_interval).unwrap();
+        assert!(prof1.follow_global_sync);
+
+        // Case 2: Legacy profile missing follow_global_sync, check_interval_minutes != 10 (explicit override)
+        // -> Should keep explicit override, follow_global_sync = false
+        let json_override_interval = serde_json::json!({
+            "id": "acc-2",
+            "display_name": "Acc 2",
+            "email": "acc2@example.com",
+            "protocol": "ImapSmtp",
+            "imap_host": "imap.example.com",
+            "smtp_host": "smtp.example.com",
+            "tls_mode": "tls",
+            "enabled": true,
+            "check_interval_minutes": 30
+        });
+        let prof2: AccountProfile = serde_json::from_value(json_override_interval).unwrap();
+        assert!(!prof2.follow_global_sync);
+
+        // Case 3: Profile explicitly specifies follow_global_sync: false (even with interval 10)
+        let json_explicit_false = serde_json::json!({
+            "id": "acc-3",
+            "display_name": "Acc 3",
+            "email": "acc3@example.com",
+            "protocol": "ImapSmtp",
+            "imap_host": "imap.example.com",
+            "smtp_host": "smtp.example.com",
+            "tls_mode": "tls",
+            "enabled": true,
+            "check_interval_minutes": 10,
+            "follow_global_sync": false
+        });
+        let prof3: AccountProfile = serde_json::from_value(json_explicit_false).unwrap();
+        assert!(!prof3.follow_global_sync);
+
+        // Case 4: Profile explicitly specifies follow_global_sync: true (even with interval 30)
+        let json_explicit_true = serde_json::json!({
+            "id": "acc-4",
+            "display_name": "Acc 4",
+            "email": "acc4@example.com",
+            "protocol": "ImapSmtp",
+            "imap_host": "imap.example.com",
+            "smtp_host": "smtp.example.com",
+            "tls_mode": "tls",
+            "enabled": true,
+            "check_interval_minutes": 30,
+            "follow_global_sync": true
+        });
+        let prof4: AccountProfile = serde_json::from_value(json_explicit_true).unwrap();
+        assert!(prof4.follow_global_sync);
+
+        // Case 5: New default profile has follow_global_sync == true
+        let prof5 = AccountProfile::default();
+        assert!(prof5.follow_global_sync);
     }
 }
