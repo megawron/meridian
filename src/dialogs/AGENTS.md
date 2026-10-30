@@ -77,17 +77,20 @@ and updates to the service/settings APIs.
 - Source properties dialog (`SourcePropertiesDialog`) enables editing display names,
   color selection using native GTK4 `ColorDialogButton` with live preview dot and hex
   subtitle synchronization, and default-source toggling with confirmation callbacks.
-- Account setup dialog (`AccountSetupDialog`) and mail preferences (`PreferencesDialog`)
-  expose per-account custom configuration matching upstream Evolution: structured into
-  5 native libadwaita tabs (`AdwViewStack`, `AdwViewSwitcher`, `AdwPreferencesPage`,
-  and responsive `Breakpoint` with `AdwViewSwitcherBar` at narrow widths):
-  1. Identität (account type/protocol, user info, signature selection from `SignatureStore`),
-  2. Empfangen (incoming server, port, TLS mode, auth credentials, sync interval, all folders, expunge),
-  3. Versenden (outgoing SMTP host, port, security info),
-  4. Standardordner (special folder mapping, composing defaults: HTML preference, default CC/BCC),
-  5. Sicherheit (OpenPGP key ID, sign/encrypt defaults, S/MIME certificates).
-  Preferences dialog allows direct editing of local and EDS accounts with active configuration
-  chips and badges. Validation failures focus and navigate directly to the relevant tab.
+- **Navigation & Container Architecture (GNOME HIG Decision Matrix)**:
+  Follow this strict hierarchy to avoid double header bars, conflicting navigation buttons (`<`, `Cancel`, `Save`, `×`), or stretched forms:
+  1. **Standalone Top-Level Window (`adw::Window` / `present_standalone` with `modal: false`)**:
+     Use when the user needs to keep the main Meridian window interactive in parallel (e.g., `PreferencesDialog`, `ComposeDialog`, `EventDialog`). Settings inside `PreferencesDialog` are *instant-apply* (changes persist immediately to `GSettings` without a Save button) and therefore use a standard window close button (`×`).
+  2. **Popup / Sheet Dialog (`adw::Dialog::present(Some(parent))`)**:
+     Use whenever opening a **transactional unit** that requires explicit confirmation (`Cancel` on the left, `Save` / `Add` on the right) or validation before persisting, or when a self-contained narrow form (440–480px) is launched from a wide split view (980px). Never embed a transactional `Cancel`/`Save` dialog inline inside an instant-apply `PreferencesDialog` stack, as that creates stacked header bars and conflicting `<` / `Cancel` / `Save` / `×` controls. Examples: `AccountSetupDialog`, `FilterEditorDialog`, `SourcePropertiesDialog`, `adw::AlertDialog`.
+  3. **Horizontal Sliding Subpage (`adw::NavigationView` + `adw::NavigationPage`)**:
+     Use for hierarchical drill-down **within the same transactional or instant-apply context**, triggered by an `adw::ActionRow` with a `go-next-symbolic` (`>`) suffix when a sub-area contains **4 or more controls** or its own `AdwPreferencesGroup`s. The subpage slides horizontally over the current view and displays a single `<` back button in the existing header bar (never a second header bar or a second `Cancel`/`Save` pair). Examples: `Server Settings >` and `Synchronization >` inside `AccountSetupDialog`.
+  4. **Inline Accordion (`adw::ExpanderRow`)**:
+     Use only for **1 to 3 optional or rarely changed fields** that belong directly to the parent row without changing the navigation level (e.g., `Aliases & Reply-To` under Identity). Never nest `AdwExpanderRow`s or place whole multi-group forms inside an expander.
+  5. **Contextual Popover (`gtk::Popover` / `adw::ComboRow`)**:
+     Use for quick, single-value selections or lightweight contextual controls anchored to a specific button or row (e.g., protocol/auth dropdowns, color pickers, column profile popovers, recipient autocompletion).
+- Account setup dialog (`AccountSetupDialog`) and mail preferences (`PreferencesDialog`):
+  `PreferencesDialog` runs as a standalone non-modal window (`present_standalone`, 980×720) with instant-apply settings. Clicking an account or adding a new account opens `AccountSetupDialog` as a compact, transactional popup sheet (`adw::Dialog::present(Some(self))`, 440×520 for GOA accounts, 480×580 for local/shared accounts) with a single header bar (`Cancel` / `Save`). Inside `AccountSetupDialog`, the main page shows core identity and status controls (with an `AdwExpanderRow` for `Aliases & Reply-To`), while complex configurations slide horizontally via `adw::NavigationView` into dedicated `adw::NavigationPage` subpages (`Server Settings` and `Synchronization`, hidden for GOA accounts). Validation failures navigate directly to the relevant subpage (`nav_view.push_by_tag("server")`).
 - Mail preferences (`PreferencesDialog`) provide dedicated sub-pages for "Farben & Labels"
   (ordered label list with color dots, Add/Edit dialogs with GTK4 `ColorDialogButton`,
   reordering, deletion with confirmation, and reset to defaults) and "Junk-Mail-Optionen"

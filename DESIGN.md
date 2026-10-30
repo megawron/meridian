@@ -113,3 +113,25 @@ All context menus across the entire application (Mail, Calendar, Tasks, Memos, C
 | **Destructive Actions** | Add `.destructive-action` class for delete/remove operations |
 | **Hierarchy** | Strictly single-level (flat). Never use submenus in context menus. |
 | **Menu Icons** | **No icons for verbs/actions** (*Reply*, *Forward*, *Delete*, *Edit*). Icons are reserved for nouns/objects only (`16px` symbolic, `6px` spacing). |
+
+---
+
+## 8. Settings & Popups
+
+Meridian follows GNOME Settings (`gnome-control-center`) and Hylki principles: **simple, non-overwhelming, yet powerful**. Progressive enhancement is strictly applied: main pages show only what 90% of users need, while power-user options reside one level deeper in sliding subpages.
+
+| # | Rule | Description |
+|---|---|---|
+| **R1** | **No icons in settings rows** | Prefix icons are permitted exclusively in *object lists* (accounts with provider logos, label color dots, category colors). Navigation rows, action rows, and switch rows must not have icons. |
+| **R2** | **No explanatory subtitles** | A subtitle is only permitted when it displays *dynamic data* (e.g., account email address). Explanatory prose is never allowed; row titles must be self-explanatory. |
+| **R3** | **Control type follows content** | 2 states → `AdwSwitchRow`. 2–3 short, equivalent options (layout/style) → Segmented toggle (linked `ToggleButton`s) in row suffix. ≥ 4 or long options → `AdwComboRow`. Numeric value → `AdwSpinRow`. Text input → `AdwEntryRow`. |
+| **R4** | **No switch-plus-dependent pairs** | A switch that merely enables or unlocks a secondary setting must be merged into it (e.g., a combo row with a "Never" / "Off" option) or implemented as an `AdwExpanderRow` with `show-enable-switch`. |
+| **R5** | **Slide subpages for power-user options** | When a category has ≥ 4 power-user settings, they move to a sliding subpage. Navigation rows reside in an **untitled group at the page bottom**, containing only title + `go-next-symbolic` and an optional dim status value (e.g. "3 active"). |
+| **R6** | **Dedicated dialog popups (`adw::Dialog`)** | Popups are reserved strictly for transactional editors with *Cancel/Save* semantics (account, signature, out-of-office note, filter rule, label). All popups follow the same template: `ToolbarView` + `HeaderBar` (Cancel on start, Title, Save as `suggested-action` on end), contents in `AdwPreferencesPage`, fixed sizing (**small 460×560** or **large 640×560**), and `follows-content-size = false`. Rows opening a popup end with an ellipsis ("…") and have no chevron. |
+| **R7** | **Unified rich-text component** | The signature editor and out-of-office dialog (and future text templates) share the same `RichTextField` component (formatting toolbar + card with `HtmlEditor`). Bare `gtk::TextView` rectangles are prohibited. |
+| **R8** | **Pages fit without scrolling** | Main settings pages must fit without vertical scrolling inside the default window dimensions (860×620): at most 3 groups, and at most ~8 rows per group. Overflow moves into subpages. |
+| **R9** | **Stable dimensions** | Page stack uses `hhomogeneous = true`, all `ScrolledWindow`s enable overlay scrolling (`overlay-scrolling = true`), and content resides in standard `AdwClamp` containers — ensuring zero horizontal shifting when switching pages or when scrollbars appear. |
+| **R10** | **No miniature Cairo drawings/wireframes** | Style and layout selections must use textual segmented toggle rows rather than schematic wireframes or Cairo-drawn preview cards. |
+| **R11** | **Single source of truth (no duplicate settings)** | Every setting lives in exactly one place across the UI (e.g., mark-read actions, desktop notifications, per-account signatures are never duplicated). |
+| **R12** | **Concise noun group titles & clean sidebar** | Group titles are short singular or plural nouns ("Notifications", "Layout"), never long "X & Y and Z" chains. Sidebar omits text section headers; blocks are separated cleanly via `ListBox::set_header_func` with `gtk::Separator` (no empty or selectable placeholder rows). |
+
