@@ -358,6 +358,10 @@ impl MeridianApplication {
                 "layout-sidebar-right-symbolic.svg",
                 include_str!("../data/icons/hicolor/scalable/actions/layout-sidebar-right-symbolic.svg"),
             ),
+            (
+                "external-link-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/external-link-symbolic.svg"),
+            ),
         ];
 
         for (filename, content) in icons {
