@@ -267,6 +267,22 @@ fn prepare_settings_schema(manifest_dir: &Path, out_dir: &Path) {
             .arg(parent_dir)
             .status();
     }
+    // Also keep the user's XDG schema directory (`~/.local/share/glib-2.0/schemas`)
+    // updated during local `cargo build` / `cargo run` so external tools like
+    // `dconf-editor` and `gsettings` always see the latest Meridian schema.
+    let user_data_dir = env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")));
+    if let Some(data_dir) = user_data_dir {
+        let user_schema_dir = data_dir.join("glib-2.0/schemas");
+        if fs::create_dir_all(&user_schema_dir).is_ok()
+            && fs::copy(&source, user_schema_dir.join(schema_name)).is_ok()
+        {
+            let _ = Command::new("glib-compile-schemas")
+                .arg(&user_schema_dir)
+                .status();
+        }
+    }
     if status.is_ok_and(|status| status.success()) {
         println!(
             "cargo:rustc-env=MERIDIAN_SCHEMA_DIR={}",
