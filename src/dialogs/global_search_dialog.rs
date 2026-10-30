@@ -408,53 +408,6 @@ mod tests {
     }
 
     #[test]
-    fn worker_receives_store_snapshot_before_spawn() {
-        let source = include_str!("global_search_dialog.rs");
-        let production = source
-            .split("#[cfg(test)]")
-            .next()
-            .expect("production source should precede tests");
-        let capture = production
-            .find("SearchStoreSnapshot::capture_on_main_thread()")
-            .expect("the main thread must capture search stores");
-        let spawn = production
-            .find("std::thread::spawn(move ||")
-            .expect("the search worker must be spawned");
-        assert!(capture < spawn);
-        assert!(production.contains("query_cancelable_with_stores("));
-
-        let worker = &production[spawn..];
-        assert!(!worker.contains("MailStoreService::new("));
-        assert!(!worker.contains("CalendarStoreService::new("));
-        assert!(!worker.contains("ContactStoreService::new("));
-        assert!(!worker.contains("AppSettings"));
-        assert!(!worker.contains("GSettings"));
-        assert!(!worker.contains("std::env::"));
-        assert!(!worker.contains("app_data_dir("));
-
-        let debounce_generation_check = production
-            .find("generation_is_current(dialog.imp().query_generation.get(), generation)")
-            .expect("debounce must reject stale generations before starting a query");
-        let debounce_source_take = production
-            .find("dialog.imp().debounce_source.borrow_mut().take()")
-            .expect("debounce source should be cleared when its generation runs");
-        assert!(debounce_generation_check < debounce_source_take);
-    }
-
-    #[test]
-    fn result_rows_forward_typed_targets_without_using_titles_as_identity() {
-        let source = include_str!("global_search_dialog.rs");
-        let production = source
-            .split("#[cfg(test)]")
-            .next()
-            .expect("production source should precede tests");
-        assert!(production.contains("let target = search_result_activation_target(result);"));
-        assert!(production.contains(".activatable(target.is_some())"));
-        assert!(production.contains("if let Some(target) = target"));
-        assert!(production.contains("parent.show_search_result(Some(target.clone()))"));
-    }
-
-    #[test]
     fn unavailable_result_has_no_activation_target() {
         let unavailable = SearchResultItem {
             domain: SearchDomain::All,

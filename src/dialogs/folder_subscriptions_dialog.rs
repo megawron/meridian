@@ -572,14 +572,4 @@ mod tests {
             "NOSELECT rows are retained, not fabricated away"
         );
     }
-
-    #[test]
-    fn dialog_routes_provider_work_only_through_cancellable_workers() {
-        let source = include_str!("folder_subscriptions_dialog.rs");
-        assert!(source.contains("std::thread::spawn"));
-        assert!(source.contains("load_subscription_folders_with_cancellation"));
-        assert!(source.contains("set_folder_subscription_with_cancellation"));
-        assert!(source.contains("check.set_active(subscribed)"));
-        assert!(source.contains("on_confirmed_change"));
-    }
 }

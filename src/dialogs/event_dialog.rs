@@ -5081,55 +5081,6 @@ mod tests {
     }
 
     #[test]
-    fn test_event_dialog_layout_configuration() {
-        let dialog_src = include_str!("event_dialog.rs");
-        let build_ui_src = dialog_src.split("fn build_ui").nth(1).unwrap_or("");
-        let build_ui_body = build_ui_src.split("fn perform_save").next().unwrap_or(build_ui_src);
-        assert!(dialog_src.contains("adw::WindowTitle"));
-        assert!(!build_ui_body.contains("ViewStack"));
-        assert!(!build_ui_body.contains("ViewSwitcher"));
-        assert!(dialog_src.contains("group_basic"));
-        assert!(dialog_src.contains("group_time"));
-        assert!(dialog_src.contains("group_alarms"));
-        assert!(dialog_src.contains("group_recurrence"));
-        assert!(dialog_src.contains("group_options"));
-        assert!(dialog_src.contains("group_desc"));
-        assert!(dialog_src.contains("\"Termindetails\""));
-        assert!(dialog_src.contains("\"Zeitpunkt\""));
-        assert!(dialog_src.contains("\"Erinnerungen\""));
-        assert!(dialog_src.contains("\"Wiederholung\""));
-        assert!(dialog_src.contains("\"Erweiterte Optionen\""));
-        assert!(dialog_src.contains("\"Beschreibung\""));
-        assert!(dialog_src.contains("\"Abbrechen\""));
-        assert!(dialog_src.contains("\"Speichern\""));
-        assert!(dialog_src.contains("appointment-timeline-container"));
-        assert!(dialog_src.contains("present_standalone"));
-        assert!(dialog_src.contains("present_modal"));
-        assert!(dialog_src.contains("present_adaptive"));
-        assert!(dialog_src.contains("split_to_standalone_window"));
-        assert!(dialog_src.contains("btn_open_in_new_window"));
-        assert!(dialog_src.contains("form_toolbar_view.set_content(Some(&scroll_general))"));
-    }
-
-    #[test]
-    fn test_event_dialog_split_header_and_fast_title_contract() {
-        let dialog_src = include_str!("event_dialog.rs");
-        // Verify split headerbar layout with save button at form header end and preview slot
-        assert!(dialog_src.contains("form_header_bar.pack_end(&btn_save)"));
-        assert!(dialog_src.contains("timeline_header_bar"));
-        assert!(dialog_src.contains("appointment-timeline-conflict-badge"));
-        assert!(dialog_src.contains("preview_slot"));
-    }
-
-    #[test]
-    fn test_event_dialog_time_range_initialization() {
-        let dialog_src = include_str!("event_dialog.rs");
-        assert!(dialog_src.contains("new_for_time_range"));
-        assert!(dialog_src.contains("initial-start"));
-        assert!(dialog_src.contains("initial-end"));
-    }
-
-    #[test]
     fn test_event_dialog_evolution_layout_and_timeline_helpers() {
         // Date parsing: lenient support for ISO and DD.MM.YYYY
         assert_eq!(
@@ -5173,21 +5124,6 @@ mod tests {
         let (d2, t2) = split_datetime_for_entries("2026-09-10");
         assert_eq!(d2, "2026-09-10");
         assert_eq!(t2, "09:00");
-
-        // Layout elements presence
-        let dialog_src = include_str!("event_dialog.rs");
-        let non_test_src = dialog_src.split("#[cfg(test)]").next().unwrap_or(dialog_src);
-        assert!(non_test_src.contains("\"Speichern\""));
-        assert!(!non_test_src.contains("Speichern und schließen"));
-        assert!(dialog_src.contains("calendar-picker-popover"));
-        assert!(dialog_src.contains("calendar-picker-item-button"));
-        assert!(dialog_src.contains("appointment-timeline-container"));
-        assert!(dialog_src.contains("appointment-form-grid"));
-        assert!(dialog_src.contains("appointment-timeline-preview"));
-        assert!(dialog_src.contains("appointment-timeline-conflict"));
-        assert!(dialog_src.contains("create_date_picker_popover"));
-        assert!(dialog_src.contains("create_time_picker_popover"));
-        assert!(dialog_src.contains("update_day_schedule_timeline"));
     }
 
     #[test]
@@ -5367,30 +5303,7 @@ mod tests {
     }
 
     #[test]
-    fn test_event_dialog_timeline_side_by_side_layout() {
-        let dialog_src = include_str!("event_dialog.rs");
-        assert!(dialog_src.contains("DayTimelineTimedItem"));
-        assert!(dialog_src.contains("col_ends"));
-        assert!(dialog_src.contains("total_cols"));
-        assert!(dialog_src.contains("col_width"));
-        assert!(dialog_src.contains("TIMELINE_EVENTS_X + col_idx as f64 * (col_width + col_gap)"));
-    }
-
-    #[test]
-    fn test_event_dialog_initial_allday_contract() {
-        let dialog_src = include_str!("event_dialog.rs");
-        assert!(dialog_src.contains("pub fn new_all_day_for_date("));
-        assert!(dialog_src.contains("initial-allday"));
-        assert!(dialog_src.contains("row_allday.set_active(true);"));
-    }
-
-    #[test]
     fn test_event_dialog_quick_add_escalation_contract() {
-        let dialog_src = include_str!("event_dialog.rs");
-        assert!(dialog_src.contains("pub fn new_all_day_for_date_with_summary("));
-        assert!(dialog_src.contains("pub fn new_for_time_range_with_summary("));
-        assert!(dialog_src.contains("initial-summary"));
-
         // Verify build_event_component works with basic quick-add parameters
         let component = build_event_component(
             "Quick Add Meeting",

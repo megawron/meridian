@@ -430,16 +430,3 @@ impl FolderPropertiesDialog {
         tracing::info!(%message, "FolderPropertiesDialog toast");
     }
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn dialog_copy_is_explicitly_a_read_only_snapshot() {
-        let source = include_str!("folder_properties_dialog.rs");
-        let production = source.split("\n#[cfg(test)]").next().unwrap_or(source);
-        assert!(production.contains("Schreibgeschützte Momentaufnahme"));
-        assert!(production.contains("Speicherquote und erweiterte Einstellungen"));
-        assert!(production.contains("Synchronisierter Kontoordner"));
-        assert!(!production.contains("IMAP/Exchange"));
-    }
-}

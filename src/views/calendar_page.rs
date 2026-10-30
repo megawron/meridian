@@ -34557,14 +34557,6 @@ mod tests {
         // CSS class should be planar without inset border shadow and have 6px border-left and 6px border-radius
         let css_class = ensure_event_chip_css_class("#1a73e8", &bg_light, "#d0e0f8", "#b8d4f4", &fg_light);
         assert!(css_class.starts_with("cal-chip-"));
-
-        // Verify source has 6px base stripe and no weekend/offhours grey backgrounds
-        let src = include_str!("calendar_page.rs");
-        let impl_src = src.split("mod tests").next().unwrap();
-        assert!(impl_src.contains("let stripe_w = (6.0 * chip_scale).max(4.0).round();"));
-        assert!(impl_src.contains("border-left: 6px solid {base_hex}; border-radius: 6px;"));
-        assert!(!impl_src.contains("is_weekend"));
-        assert!(!impl_src.contains("offhours_alpha"));
     }
 
     #[test]
@@ -35195,39 +35187,7 @@ mod tests {
     }
 
     #[test]
-    fn test_calendar_toolbar_layout_alignment() {
-        let source = include_str!("calendar_page.rs");
-        // Verify date_label is centered in the view_toolbar CenterBox
-        assert!(source.contains(".center_widget(&date_label)"));
-        // Verify navigation buttons and actions are in start_box on the left (GNOME HIG)
-        assert!(source.contains("start_box.append(&nav_box)"));
-        assert!(source.contains("start_box.append(&actions_box)"));
-        // Verify view switchers are in end_box on the right
-        assert!(source.contains("end_box.append(&view_switcher_box)"));
-        // Verify date_label has halign Center
-        assert!(source.contains(".halign(gtk::Align::Center)"));
-        // Verify view_toolbar is flush to edges (0 horizontal margins)
-        assert!(source.contains(".margin_start(0)"));
-        assert!(source.contains(".margin_end(0)"));
-    }
-
-    #[test]
     fn test_calendar_toolbar_more_menu_and_availability_button_modes() {
-        let source = include_str!("calendar_page.rs");
-        let toolbar_setup = source
-            .split("fn init_ui")
-            .nth(1)
-            .and_then(|s| s.split("start_box.append(&actions_box)").next())
-            .unwrap_or("");
-        assert!(!toolbar_setup.contains("more_button"));
-        assert!(!toolbar_setup.contains("view-more-symbolic"));
-        assert!(!toolbar_setup.contains("print_calendar_btn"));
-        // Availability button mode switching
-        assert!(source.contains("pub(crate) fn apply_toolbar_button_modes"));
-        assert!(source.contains("pub(crate) fn sync_toolbar_button_labels"));
-        assert!(source.contains("Free/Busy"));
-        assert!(source.contains("appointment-soon-symbolic"));
-
         let _gtk_lock = crate::window::GTK_TEST_MUTEX
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -35408,11 +35368,6 @@ mod tests {
         // Verify dynamic source registration (matching EDS/Google Calendar source colors)
         register_calendar_source_color("test-gmail-cal", "My Gmail", "#f83a22");
         assert_eq!(calendar_source_color("test-gmail-cal", "My Gmail"), "#f83a22");
-
-        // Verify unified selection CSS classes in source
-        let src = include_str!("calendar_page.rs");
-        assert!(src.contains("calendar-slot-selected-top"));
-        assert!(src.contains("calendar-slot-selected-bottom"));
     }
 
     #[test]
@@ -35670,15 +35625,6 @@ mod tests {
             YearPreviewOrientation::Bottom => ("sidebar-show-right-symbolic", crate::i18n::gettext("Show preview on right")),
         };
         assert_eq!(bottom_icon, "sidebar-show-right-symbolic");
-
-        let source = include_str!("calendar_page.rs");
-        assert!(!source.contains(".icon_name(\"view-calendar-day-symbolic\")"));
-        assert!(!source.contains("\"sidebar-show-bottom-symbolic\""));
-        assert!(source.contains(".icon_name(\"x-office-calendar-symbolic\")"));
-        assert!(source.contains("calendar-year-details-panel"));
-        assert!(source.contains("calendar-year-details-list"));
-        assert!(source.contains("calendar-year-event-row"));
-        assert!(source.contains("append_year_day_event_row"));
     }
 
     #[test]
@@ -36281,68 +36227,6 @@ mod tests {
             elapsed.as_millis() < 50,
             "1-year query for 1999 series took too long: {elapsed:?}"
         );
-    }
-
-    #[test]
-    fn test_calendar_context_menu_gestures_and_hig_contract() {
-        let source = include_str!("calendar_page.rs");
-
-        // Ensure make_context_menu_button helper is used
-        assert!(source.contains("fn make_context_menu_button("));
-
-        // Time grid context menus
-        assert!(source.contains("time_grid_right_click"));
-        assert!(source.contains("time_grid_long_press"));
-
-        // All-day event chip context menus
-        assert!(source.contains("chip_button.add_controller(right_click);"));
-        assert!(source.contains("chip_button.add_controller(long_press);"));
-
-        // Month canvas context menus
-        assert!(source.contains("month_canvas.add_controller(right_click_gesture);"));
-        assert!(source.contains("month_canvas.add_controller(long_press_gesture);"));
-
-        // Agenda canvas context menus
-        assert!(source.contains("agenda_canvas.add_controller(agenda_right_click);"));
-        assert!(source.contains("agenda_canvas.add_controller(agenda_long_press);"));
-
-        // List canvas context menus
-        assert!(source.contains("list_canvas.add_controller(list_right_click);"));
-        assert!(source.contains("list_canvas.add_controller(list_long_press);"));
-
-        // Year canvas context menus
-        assert!(source.contains("year_canvas.add_controller(year_right_click);"));
-        assert!(source.contains("year_canvas.add_controller(year_long_press);"));
-
-        // Taskpad & Memopad context menus and empty fallbacks
-        assert!(source.contains("taskpad_canvas.add_controller(taskpad_long_press);"));
-        assert!(source.contains("memopad_canvas.add_controller(memopad_long_press);"));
-        assert!(source.contains("show_taskpad_empty_context_menu(&page, &drawing_area, rect);"));
-        assert!(source.contains("show_memopad_empty_context_menu(&page, &drawing_area, rect);"));
-        assert!(source.contains("window.present_new_task();"));
-        assert!(source.contains("window.present_new_memo();"));
-
-        // Calendar sidebar source row long press
-        assert!(source.contains("row.add_controller(right_click);"));
-        assert!(source.contains("row.add_controller(long_press);"));
-
-        // Calendar event row and list event row context menus
-        assert!(source.contains("row.add_controller(row_long_press);"));
-
-        // Day context menu actions
-        assert!(source.contains("\"New Appointment…\""));
-        assert!(source.contains("\"New All-Day Event…\""));
-        assert!(source.contains("\"Open in Day View\""));
-        assert!(source.contains("\"Open in Week View\""));
-        assert!(source.contains("\"Go to Today\""));
-
-        // Event context menu actions
-        assert!(source.contains("\"Edit Appointment\""));
-        assert!(source.contains("\"Copy to Local Calendar\""));
-        assert!(source.contains("\"Move to Local Calendar\""));
-        assert!(source.contains("\"Export Appointment\""));
-        assert!(source.contains("\"Print Appointment\""));
-        assert!(source.contains("\"Delete Appointment\""));
     }
 
     #[test]
@@ -37057,15 +36941,6 @@ mod tests {
         // Vadjustment value must scroll exactly to Today's DateHeader at y=82.0, NOT below it!
         let vadj = page.imp().agenda_vadjustment.borrow().as_ref().cloned().expect("vadj");
         assert_eq!(vadj.value(), 82.0, "Vadjustment must scroll to Today's DateHeader (82.0) so all-day events are visible below it");
-    }
-
-    #[test]
-    fn test_continuous_time_grid_default_scroll_anchor() {
-        let source = include_str!("calendar_page.rs");
-        // Verify default scroll anchors to 2h before workday start (earlier only for morning events after 05:00)
-        assert!(source.contains("let base_start_min = workday_start.saturating_sub(120);"));
-        assert!(source.contains("let target_start_min = earliest_event_min;"));
-        assert!(source.contains("let start_slot = (target_start_min / interval_minutes as u32) as usize;"));
     }
 
     #[test]

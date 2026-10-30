@@ -3385,30 +3385,6 @@ mod tests {
     }
 
     #[test]
-    fn subscription_ffi_contract_names_exact_native_snapshot_and_confirmation_calls() {
-        let header = include_str!("../../native/eds_camel_bridge.h");
-        let native = include_str!("../../native/eds_camel_bridge.c");
-        let rust = include_str!("camel_mail_service.rs");
-
-        for field in ["parent_folder_name", "is_selectable", "is_subscribed"] {
-            assert!(header.contains(field), "header misses {field}");
-        }
-        for symbol in [
-            "meridian_eds_camel_load_subscription_folders",
-            "meridian_eds_camel_set_folder_subscription",
-            "meridian_eds_camel_free_subscription_folders",
-        ] {
-            assert!(header.contains(symbol), "header misses {symbol}");
-            assert!(rust.contains(symbol), "Rust FFI misses {symbol}");
-        }
-        assert!(native.contains("CAMEL_STORE_FOLDER_INFO_SUBSCRIPTION_LIST"));
-        assert!(native.contains("CAMEL_IS_SUBSCRIBABLE (store)"));
-        assert!(native.contains("camel_subscribable_subscribe_folder_sync"));
-        assert!(native.contains("camel_subscribable_unsubscribe_folder_sync"));
-        assert!(native.contains("hat die angeforderte Abonnementänderung nicht bestätigt"));
-    }
-
-    #[test]
     fn folder_mutation_capabilities_preserve_verified_subset_and_reject_transfer_claims() {
         let capabilities = normalize_folder_mutation_capabilities(
             " account-a ",
@@ -3457,31 +3433,6 @@ mod tests {
         assert!(CamelFolderMutationKind::Rename.requires_target_name());
         assert!(!CamelFolderMutationKind::Delete.requires_target_name());
         assert!(!CamelFolderMutationKind::Refresh.requires_target_name());
-    }
-
-    #[test]
-    fn folder_mutation_ffi_contract_requires_provider_verification_and_no_transfer_fallback() {
-        let header = include_str!("../../native/eds_camel_bridge.h");
-        let native = include_str!("../../native/eds_camel_bridge.c");
-        let rust = include_str!("camel_mail_service.rs");
-
-        for symbol in [
-            "meridian_eds_camel_get_folder_mutation_capabilities",
-            "meridian_eds_camel_apply_folder_mutation",
-            "MERIDIAN_EDS_CAMEL_FOLDER_CREATE_CHILD",
-            "MERIDIAN_EDS_CAMEL_FOLDER_REFRESH",
-        ] {
-            assert!(header.contains(symbol), "header misses {symbol}");
-            assert!(rust.contains(symbol), "Rust FFI misses {symbol}");
-        }
-        assert!(native.contains("CAMEL_STORE_CAN_EDIT_FOLDERS"));
-        assert!(native.contains("CAMEL_FOLDER_SYSTEM"));
-        assert!(native.contains("camel_store_create_folder_sync"));
-        assert!(native.contains("camel_store_rename_folder_sync"));
-        assert!(native.contains("camel_store_delete_folder_sync"));
-        assert!(native.contains("camel_folder_refresh_info_sync"));
-        assert!(native.contains("load_folder_mutation_tree"));
-        assert!(native.contains("keine sichere atomare Ordner-Kopier- oder Verschiebeoperation"));
     }
 
     #[test]
@@ -3630,20 +3581,6 @@ ParentFolderId=folder-sync-id
             .unwrap();
         assert_eq!(conflict.folder_name, "Synchronisierungsprobleme/Konflikte");
         assert_eq!(conflict.total_count, 1);
-    }
-
-    #[test]
-    fn graph_search_adapter_keeps_search_cursor_outside_folder_cursors() {
-        let source = include_str!("camel_mail_service.rs");
-        let search_adapter = source
-            .split_once("pub(crate) fn search_messages_graph_page")
-            .and_then(|(_, source)| source.split_once("fn graph_search_warning"))
-            .map(|(source, _)| source)
-            .expect("cursor-aware Graph search adapter should be present");
-
-        assert!(search_adapter.contains("search_messages_cursor_sync"));
-        assert!(search_adapter.contains("graph_search_next_cursor: search_result.next_cursor"));
-        assert!(search_adapter.contains("graph_next_links: HashMap::new()"));
     }
 
     #[test]

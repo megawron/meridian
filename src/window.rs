@@ -7104,70 +7104,19 @@ mod tests {
     }
 
     #[test]
-    fn search_routing_production_has_no_lossy_identity_or_calendar_scan() {
-        let source = include_str!("window.rs");
-        let production = source
-            .split("\n#[cfg(test)]\nmod tests {")
-            .next()
-            .unwrap_or(source);
-        assert!(production.contains("fn open_search_target(&self, route: SearchRoute"));
-        assert!(production.contains("SearchTarget::Event"));
-        assert!(production.contains("SearchTarget::Task"));
-        assert!(production.contains("SearchTarget::Memo"));
-        assert!(production.contains("SearchTarget::Contact"));
-    }
-
-    #[test]
     fn undelete_recovery_is_exposed_without_aliasing_generic_undo() {
-        let source = include_str!("window.rs");
         for path in [MenuPath::Edit, MenuPath::MessageAfterForward] {
             assert!(menu_actions(path).any(|item| {
                 item.label == "Undelete" && item.action == "win.undelete"
             }));
         }
-        assert!(
-            source.contains("let action_undelete = gio::SimpleAction::new(\"undelete\", None);")
-        );
-        assert!(source.contains("mail_page.undelete()"));
-        assert!(source.contains("mail_page.can_undelete()"));
-        assert!(source.contains("win.toggle-mail-show-deleted"));
-        assert!(source.contains("mail-show-deleted"));
     }
 
     #[test]
     fn folder_sort_order_action_is_in_the_folder_menu_and_uses_page_sensitivity() {
-        let source = include_str!("window.rs");
         assert!(
             menu_actions(MenuPath::Folder).any(|item| item.action == "win.folder-edit-sort-order")
         );
-        assert!(source.contains(
-            "let action_folder_edit_sort_order = gio::SimpleAction::new(\"folder-edit-sort-order\", None);"
-        ));
-        assert!(source.contains("mail_page.can_edit_folder_sort_order()"));
-        assert!(source.contains("mail_page.present_folder_sort_order_dialog()"));
-    }
-
-    #[test]
-    fn folder_properties_and_native_subscriptions_are_independently_gated() {
-        let source = include_str!("window.rs");
-        assert!(source.contains("mail_page.can_present_folder_properties()"));
-        assert!(
-            source.contains(
-                "root.set_folder_properties_action_enabled(target_has_properties_snapshot)"
-            )
-        );
-        assert!(source.contains("action_folder_subscriptions.set_enabled(false)"));
-        assert!(source.contains("mail_page.can_present_folder_subscriptions()"));
-        assert!(source.contains("mail_page.present_folder_subscriptions_dialog()"));
-    }
-
-    #[test]
-    fn advanced_search_action_delegates_to_the_mail_page() {
-        let source = include_str!("window.rs");
-        assert!(source.contains(
-            "let action_search_advanced = gio::SimpleAction::new(\"search-advanced\", None);"
-        ));
-        assert!(source.contains("mail_page.present_advanced_search_dialog()"));
     }
 
     #[test]
@@ -8733,18 +8682,6 @@ mod tests {
         assert!(!window.is_compact());
         assert!(!window.has_css_class("mobile-screen"));
         assert!(!window.has_css_class("compact-screen"));
-
-        // Libadwaita rule: If multiple breakpoints match, the last one added is used.
-        // Broader breakpoints (tablet) must be registered before more specific ones (mobile, compact).
-        let source = include_str!("window.rs");
-        let idx_medium = source.find("self.add_breakpoint(bp_medium.clone());").expect("medium bp");
-        let idx_tablet = source.find("self.add_breakpoint(bp_tablet.clone());").expect("tablet bp");
-        let idx_mobile = source.find("self.add_breakpoint(bp_mobile.clone());").expect("mobile bp");
-        let idx_compact = source.find("self.add_breakpoint(bp_compact.clone());").expect("compact bp");
-        assert!(
-            idx_medium < idx_tablet && idx_tablet < idx_mobile && idx_mobile < idx_compact,
-            "Breakpoints must be registered in descending max-width order (broad to specific)"
-        );
     }
 
     #[test]

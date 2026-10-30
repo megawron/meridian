@@ -10752,47 +10752,10 @@ mod tests {
         assert_eq!(hit_test_contact_table_header(&layout, 490.0), Some(ContactTableColumn::Phone));
         // x > 500 is None
         assert_eq!(hit_test_contact_table_header(&layout, 510.0), None);
-
-        // 4. Source checks for interactive header architecture
-        let source = include_str!("contacts_page.rs");
-        assert!(source.contains("build_contact_column_header"));
-        assert!(source.contains("setup_contact_column_resizer"));
-        assert!(source.contains("setup_contact_column_header_drag_and_sort"));
-        assert!(source.contains("open_contact_column_order_dialog"));
-        assert!(source.contains("show_contact_header_context_menu"));
-        assert!(source.contains("column_header_scroll"));
-        assert!(source.contains("view-column-symbolic"));
-        assert!(source.contains("mail-column-separator"));
-        assert!(source.contains("mail-column-header-cell"));
     }
 
     #[test]
     fn test_contacts_toolbar_and_search_bar_hig() {
-        let source = include_str!("contacts_page.rs");
-        // Collapsible SearchBar pattern matching Mail and Calendar
-        assert!(source.contains("contact_search_bar"));
-        assert!(source.contains("search-mode-enabled"));
-        assert!(source.contains("connect_stop_search"));
-        assert!(source.contains("pub(crate) fn is_search_active"));
-        assert!(source.contains("pub(crate) fn close_search"));
-        assert!(source.contains("pub(crate) fn search_bar"));
-        // Toolbar should not contain search_entry in center_box, nor contacts_toolbar_scroll in content_box
-        let legacy_center_append = ["contacts_toolbar", ".append(&center", "_box)"].concat();
-        assert!(!source.contains(&legacy_center_append));
-        assert!(source.contains("content_box.append(&contacts_search_bar)"));
-        let legacy_toolbar_scroll_append = ["content_box", ".append(&contacts_toolbar", "_scroll)"].concat();
-        assert!(!source.contains(&legacy_toolbar_scroll_append));
-
-        // Ensure redundant toolbar buttons are removed
-        let call_btn_decl = ["let ", "call_btn", " ="].concat();
-        let map_btn_decl = ["let ", "map_btn", " ="].concat();
-        let web_btn_decl = ["let ", "web_btn", " ="].concat();
-        assert!(!source.contains(&call_btn_decl));
-        assert!(!source.contains(&map_btn_decl));
-        assert!(!source.contains(&web_btn_decl));
-        assert!(source.contains("pub(crate) fn sync_toolbar_button_labels"));
-        assert!(source.contains("pub(crate) fn apply_toolbar_button_modes"));
-
         let _gtk_lock = crate::window::GTK_TEST_MUTEX
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());

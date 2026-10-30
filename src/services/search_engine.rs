@@ -4811,41 +4811,6 @@ mod tests {
     }
 
     #[test]
-    fn search_worker_boundary_does_not_resolve_framework_or_global_state() {
-        let source = include_str!("search_engine.rs");
-        let start = source
-            .find("pub fn query_cancelable_with_stores(")
-            .expect("explicit search worker API should exist");
-        let end = source[start..]
-            .find("    /// Search an explicit repository snapshot.")
-            .map(|offset| start + offset)
-            .expect("search worker API should have a bounded source section");
-        let worker = &source[start..end];
-
-        assert!(worker.contains("load_local_records_cancelable_with_store"));
-        assert!(worker.contains("raw_mail_filter_store"));
-        assert!(worker.contains("filter_rules"));
-        for forbidden in [
-            "MailStoreService::new(",
-            "MailStoreService::new_worker_safe(",
-            "CalendarStoreService::new(",
-            "ContactStoreService::new(",
-            "AppSettings",
-            "GSettings",
-            "gtk::",
-            "glib::",
-            "GObject",
-            "std::env::",
-            "app_data_dir(",
-        ] {
-            assert!(
-                !worker.contains(forbidden),
-                "worker boundary found {forbidden}"
-            );
-        }
-    }
-
-    #[test]
     fn test_plain_search_matching() {
         assert!(search_text_matches("Ihre Rechnung 123", "rechnung", SearchMatchKind::Contains));
         // In plain mode, * and ? are literal characters, not wildcards

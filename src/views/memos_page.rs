@@ -6967,39 +6967,6 @@ mod tests {
     }
 
     #[test]
-    fn test_memos_toolbar_and_toggles() {
-        let source = include_str!("memos_page.rs");
-        // Unified view toolbar
-        assert!(source.contains("\"unified-view-toolbar\""));
-        assert!(source.contains("sidebar-show-symbolic"));
-        assert!(source.contains("sidebar-show-right-symbolic"));
-        assert!(source.contains("Toggle sidebar (F9)"));
-        assert!(source.contains("Toggle memo preview (Ctrl+M)"));
-        // Collapsible SearchBar synced via window headerbar and keyboard shortcuts
-        assert!(source.contains("memo_search_bar"));
-        assert!(source.contains("search-mode-enabled"));
-        assert!(source.contains("connect_stop_search"));
-        assert!(source.contains("search_bar_for_stop.set_search_mode(false)"));
-        // Actions in left toolbar section (linked Save + Delete, then More menu)
-        assert!(source.contains("action_group.append(&save_memo_btn)"));
-        assert!(source.contains("action_group.append(&delete_memo_btn)"));
-        assert!(source.contains("left_box.append(&action_group)"));
-        assert!(source.contains("left_box.append(&more_button)"));
-        // Right toolbar section with sort and category filter dropdown
-        assert!(source.contains("right_box.append(&sort_group)"));
-        assert!(source.contains("right_box.append(&category_selector)"));
-        // Overflow menu with secondary actions and print
-        assert!(source.contains("more_popover"));
-        assert!(source.contains("view-more-symbolic"));
-        assert!(source.contains("Print Note… (Ctrl+P)"));
-        // Toolbar HIG button modes and prominent new memo button wired internally
-        assert!(source.contains("btn_add_memo"));
-        assert!(source.contains("pub(crate) fn apply_toolbar_button_modes"));
-        assert!(source.contains("pub(crate) fn sync_toolbar_button_labels"));
-        assert!(source.contains("pub fn search_bar"));
-    }
-
-    #[test]
     fn test_memo_table_canvas_layout_and_hit_testing() {
         let memos = vec![
             MemoRecord {

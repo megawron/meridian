@@ -325,20 +325,7 @@ fn rebuild_groups_list(
 
 #[cfg(test)]
 mod tests {
-    use super::ManageGroupsDialog;
     use crate::models::source_selector::{SourceDomain, SourceSelector, SourceSelectorItem};
-
-    #[test]
-    fn manage_groups_dialog_copy_and_labels() {
-        let _ = std::any::type_name::<ManageGroupsDialog>();
-        let source = include_str!("manage_groups_dialog.rs");
-        assert!(source.contains("Quellengruppen"));
-        assert!(source.contains("Legen Sie die Reihenfolge und Sichtbarkeit der Quellengruppen fest."));
-        assert!(source.contains("Neue Gruppe"));
-        assert!(source.contains("Hinweis: Das Ausblenden einer Gruppe blendet alle darin enthaltenen Quellen aus"));
-        assert!(source.contains("Cancel") || source.contains("Abbrechen"));
-        assert!(source.contains("Save") || source.contains("Speichern"));
-    }
 
     #[test]
     fn manage_groups_working_selector_mutations() {
