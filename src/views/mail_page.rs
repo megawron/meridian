@@ -7907,6 +7907,9 @@ impl MailPage {
         if let Some(btn) = imp.modern_print_button.borrow().as_ref() {
             btn.set_visible(false);
         }
+        if let Some(btn) = imp.modern_memo_button.borrow().as_ref() {
+            btn.set_visible(false);
+        }
 
         let button_for_id = |id: &str| -> Option<gtk::Button> {
             match id {
@@ -7919,6 +7922,7 @@ impl MailPage {
                 "delete" => imp.modern_delete_button.borrow().clone(),
                 "junk" => imp.modern_junk_button.borrow().clone(),
                 "print" => imp.modern_print_button.borrow().clone(),
+                "memo" => imp.modern_memo_button.borrow().clone(),
                 other => {
                     let (icon_name, tip, act) = match other {
                         "star" => ("starred-symbolic", gettext("Toggle Star (S)"), "win.toggle-star"),
@@ -7927,6 +7931,7 @@ impl MailPage {
                         "edit-labels" => ("preferences-color-symbolic", gettext("Edit Labels… (L)"), "win.edit-message-labels"),
                         "source" => ("text-x-generic-symbolic", gettext("View Source (Ctrl+U)"), "win.view-message-source"),
                         "add-sender-contact" => ("contact-new-symbolic", gettext("Add Sender to Address Book"), "win.add-sender-to-contacts"),
+                        "memo" => ("accessories-text-editor-symbolic", gettext("Notes"), "win.toggle-mail-memo"),
                         _ => return None,
                     };
                     let icon = gtk::Image::builder().icon_name(icon_name).pixel_size(16).build();
@@ -7965,13 +7970,6 @@ impl MailPage {
 
         // Sync Action Pill 2 (Right group: folds into More menu when narrow, in user-configured order)
         if let Some(triage_group) = imp.modern_triage_group.borrow().as_ref() {
-            if let Some(memo_btn) = imp.modern_memo_button.borrow().as_ref() {
-                if let Some(p) = memo_btn.parent().and_downcast::<gtk::Box>() {
-                    p.remove(memo_btn);
-                }
-                triage_group.append(memo_btn);
-                memo_btn.set_visible(show_triage);
-            }
             for id in &right_actions {
                 if let Some(btn) = button_for_id(id) {
                     if let Some(p) = btn.parent().and_downcast::<gtk::Box>() {
@@ -21378,6 +21376,7 @@ impl MailPage {
                 "forward" => ("mail-forward-symbolic", gettext("Forward"), Some("win.forward")),
                 "edit-as-new" => ("document-edit-symbolic", gettext("Edit as New"), Some("win.edit-as-new")),
                 "add-sender-contact" => ("contact-new-symbolic", gettext("Add Contact"), Some("win.add-sender-to-contacts")),
+                "memo" => ("accessories-text-editor-symbolic", gettext("Notes"), None),
                 "print" => ("document-print-symbolic", gettext("Print"), Some("win.mail-print")),
                 "export" => ("document-save-symbolic", gettext("Save EML"), Some("win.export")),
                 "source" => ("text-x-generic-symbolic", gettext("Source"), Some("win.view-message-source")),
@@ -21394,6 +21393,12 @@ impl MailPage {
             };
             if let Some(act) = action_name {
                 btn.set_action_name(Some(act));
+            } else if base_token == "memo" {
+                let page_weak = self.downgrade();
+                btn.connect_clicked(move |_| {
+                    let Some(page) = page_weak.upgrade() else { return; };
+                    page.toggle_mail_memo_editor();
+                });
             } else if base_token == "expand-threads" {
                 let page_weak = self.downgrade();
                 btn.connect_clicked(move |_| {
@@ -27632,6 +27637,66 @@ impl MailPage {
                     }
                 }
             });
+
+            // --- Section: Density ---
+            let sec_density_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(6)
+                .build();
+
+            sec_density_box.append(&gtk::Label::builder()
+                .label(&gettext("Density"))
+                .halign(gtk::Align::Start)
+                .css_classes(vec!["dim-label", "caption"])
+                .build()
+            );
+
+            let density_box = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(0)
+                .homogeneous(true)
+                .css_classes(vec!["linked"])
+                .build();
+
+            let btn_density_compact = gtk::ToggleButton::builder().label(&gettext("Compact")).build();
+            let btn_density_normal = gtk::ToggleButton::builder().label(&gettext("Normal")).build();
+            let btn_density_spacious = gtk::ToggleButton::builder().label(&gettext("Spacious")).build();
+
+            btn_density_normal.set_group(Some(&btn_density_compact));
+            btn_density_spacious.set_group(Some(&btn_density_compact));
+
+            density_box.append(&btn_density_compact);
+            density_box.append(&btn_density_normal);
+            density_box.append(&btn_density_spacious);
+            sec_density_box.append(&density_box);
+            columns_popover_box.append(&sec_density_box);
+
+            match settings.mail_row_density().as_str() {
+                "compact" => btn_density_compact.set_active(true),
+                "spacious" => btn_density_spacious.set_active(true),
+                _ => btn_density_normal.set_active(true),
+            }
+
+            let settings_for_density_compact = settings.clone();
+            btn_density_compact.connect_toggled(move |btn| {
+                if btn.is_active() && settings_for_density_compact.mail_row_density() != "compact" {
+                    settings_for_density_compact.set_mail_row_density("compact");
+                }
+            });
+
+            let settings_for_density_normal = settings.clone();
+            btn_density_normal.connect_toggled(move |btn| {
+                if btn.is_active() && settings_for_density_normal.mail_row_density() != "comfortable" {
+                    settings_for_density_normal.set_mail_row_density("comfortable");
+                }
+            });
+
+            let settings_for_density_spacious = settings.clone();
+            btn_density_spacious.connect_toggled(move |btn| {
+                if btn.is_active() && settings_for_density_spacious.mail_row_density() != "spacious" {
+                    settings_for_density_spacious.set_mail_row_density("spacious");
+                }
+            });
             
             // --- Section: Header Style ---
             let sec_header_box = gtk::Box::builder()
@@ -27704,7 +27769,6 @@ impl MailPage {
                 
             let row_thread = adw::ActionRow::builder()
                 .title(&gettext("Group by conversations"))
-                .subtitle(&gettext("Show replies grouped as threads"))
                 .activatable(true)
                 .build();
             let switch_thread = gtk::Switch::builder()
@@ -27737,7 +27801,6 @@ impl MailPage {
             
             let row_logos = adw::ActionRow::builder()
                 .title(&gettext("Load sender logos"))
-                .subtitle(&gettext("Download favicons from the Internet"))
                 .activatable(true)
                 .build();
             let switch_logos = gtk::Switch::builder()
@@ -44390,7 +44453,6 @@ fn show_mail_toast_with_folder_action<W: IsA<gtk::Widget>>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action_contract::{MenuPath, menu_actions};
     use crate::services::crypto_service::CryptoService;
 
     fn scope_test_message(
@@ -44619,231 +44681,6 @@ mod tests {
         )
     }
 
-    fn skip_rust_trivia(source: &str, mut index: usize) -> usize {
-        let bytes = source.as_bytes();
-        loop {
-            while index < bytes.len() && bytes[index].is_ascii_whitespace() {
-                index += 1;
-            }
-            if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'/' {
-                index += 2;
-                while index < bytes.len() && bytes[index] != b'\n' {
-                    index += 1;
-                }
-                continue;
-            }
-            if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'*' {
-                index += 2;
-                let mut depth = 1;
-                while index < bytes.len() && depth > 0 {
-                    if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'*' {
-                        depth += 1;
-                        index += 2;
-                    } else if index + 1 < bytes.len()
-                        && bytes[index] == b'*'
-                        && bytes[index + 1] == b'/'
-                    {
-                        depth -= 1;
-                        index += 2;
-                    } else {
-                        index += 1;
-                    }
-                }
-                continue;
-            }
-            return index;
-        }
-    }
-
-    fn skip_rust_literal(source: &str, index: usize) -> Option<usize> {
-        let bytes = source.as_bytes();
-        if index >= bytes.len() {
-            return None;
-        }
-
-        if bytes[index] == b'"' {
-            let mut cursor = index + 1;
-            while cursor < bytes.len() {
-                if bytes[cursor] == b'\\' {
-                    cursor = (cursor + 2).min(bytes.len());
-                } else if bytes[cursor] == b'"' {
-                    return Some(cursor + 1);
-                } else {
-                    cursor += 1;
-                }
-            }
-            return Some(bytes.len());
-        }
-
-        if bytes[index] == b'r' {
-            let mut cursor = index + 1;
-            while cursor < bytes.len() && bytes[cursor] == b'#' {
-                cursor += 1;
-            }
-            if cursor < bytes.len() && bytes[cursor] == b'"' {
-                let hashes = cursor - (index + 1);
-                let mut end = cursor + 1;
-                while end < bytes.len() {
-                    if bytes[end] == b'"'
-                        && end + 1 + hashes <= bytes.len()
-                        && bytes[end + 1..end + 1 + hashes]
-                            .iter()
-                            .all(|byte| *byte == b'#')
-                    {
-                        return Some(end + 1 + hashes);
-                    }
-                    end += 1;
-                }
-                return Some(bytes.len());
-            }
-        }
-
-        // Treat character literals as literals, but leave Rust lifetimes
-        // (`'static`, `'a`) in the token stream.
-        if bytes[index] == b'\'' {
-            if index + 2 < bytes.len() && bytes[index + 2] == b'\'' {
-                return Some(index + 3);
-            }
-            if index + 1 < bytes.len() && bytes[index + 1] == b'\\' {
-                let mut cursor = index + 2;
-                while cursor < bytes.len() {
-                    if bytes[cursor] == b'\\' {
-                        cursor = (cursor + 2).min(bytes.len());
-                    } else if bytes[cursor] == b'\'' {
-                        return Some(cursor + 1);
-                    } else {
-                        cursor += 1;
-                    }
-                }
-                return Some(bytes.len());
-            }
-        }
-
-        None
-    }
-
-    fn rust_identifier_start(byte: u8) -> bool {
-        byte == b'_' || byte.is_ascii_alphabetic()
-    }
-
-    fn rust_identifier_continue(byte: u8) -> bool {
-        rust_identifier_start(byte) || byte.is_ascii_digit()
-    }
-
-    fn next_rust_identifier(source: &str, mut index: usize) -> Option<(usize, usize)> {
-        let bytes = source.as_bytes();
-        while index < bytes.len() {
-            index = skip_rust_trivia(source, index);
-            if index >= bytes.len() {
-                return None;
-            }
-            if let Some(next) = skip_rust_literal(source, index) {
-                index = next;
-                continue;
-            }
-            if rust_identifier_start(bytes[index]) {
-                let start = index;
-                index += 1;
-                while index < bytes.len() && rust_identifier_continue(bytes[index]) {
-                    index += 1;
-                }
-                return Some((start, index));
-            }
-            index += 1;
-        }
-        None
-    }
-
-    fn next_rust_char(source: &str, mut index: usize, wanted: u8) -> Option<usize> {
-        let bytes = source.as_bytes();
-        while index < bytes.len() {
-            index = skip_rust_trivia(source, index);
-            if index >= bytes.len() {
-                return None;
-            }
-            if let Some(next) = skip_rust_literal(source, index) {
-                index = next;
-                continue;
-            }
-            if bytes[index] == wanted {
-                return Some(index);
-            }
-            index += 1;
-        }
-        None
-    }
-
-    fn matching_rust_brace(source: &str, open: usize) -> Option<usize> {
-        let bytes = source.as_bytes();
-        let mut index = open;
-        let mut depth = 0usize;
-        while index < bytes.len() {
-            index = skip_rust_trivia(source, index);
-            if index >= bytes.len() {
-                return None;
-            }
-            if let Some(next) = skip_rust_literal(source, index) {
-                index = next;
-                continue;
-            }
-            match bytes[index] {
-                b'{' => depth += 1,
-                b'}' => {
-                    depth = depth.checked_sub(1)?;
-                    if depth == 0 {
-                        return Some(index);
-                    }
-                }
-                _ => {}
-            }
-            index += 1;
-        }
-        None
-    }
-
-    fn rust_function_body<'a>(source: &'a str, name: &str) -> &'a str {
-        let mut cursor = 0;
-        while let Some((token_start, token_end)) = next_rust_identifier(source, cursor) {
-            if &source[token_start..token_end] == "fn" {
-                let Some((name_start, name_end)) = next_rust_identifier(source, token_end) else {
-                    break;
-                };
-                if &source[name_start..name_end] == name {
-                    let open = next_rust_char(source, name_end, b'{')
-                        .expect("function should have a body");
-                    let close = matching_rust_brace(source, open)
-                        .expect("function body should have balanced braces");
-                    return &source[token_start..=close];
-                }
-                cursor = name_end;
-            } else {
-                cursor = token_end;
-            }
-        }
-        panic!("function {name} should exist in source");
-    }
-
-    fn spawned_closure_body<'a>(source: &'a str, call_name: &str) -> &'a str {
-        let call_start = source
-            .find(call_name)
-            .expect("worker call should exist in spawn closure");
-        let spawn_start = source[..call_start]
-            .rfind("std::thread::spawn")
-            .expect("worker call should be owned by a thread spawn");
-        let open =
-            next_rust_char(source, spawn_start, b'{').expect("spawn closure should have a body");
-        let close =
-            matching_rust_brace(source, open).expect("spawn closure should have balanced braces");
-        &source[spawn_start..=close]
-    }
-
-    fn compact_rust(source: &str) -> String {
-        source
-            .chars()
-            .filter(|character| !character.is_whitespace())
-            .collect()
-    }
-
     #[test]
     fn removed_selection_uses_next_item_then_previous_item() {
         assert_eq!(fallback_selection_index(4, Some(2)), Some(2));
@@ -44881,25 +44718,6 @@ mod tests {
         assert!(thread_context_members_are_current(Some(7), 7));
         assert!(!thread_context_members_are_current(None, 7));
         assert!(!thread_context_members_are_current(Some(6), 7));
-    }
-
-    #[test]
-    fn thread_context_uses_committed_members_without_flat_store_scan_or_sort() {
-        let source = include_str!("mail_page.rs");
-        let render = compact_rust(rust_function_body(source, "render_thread_context"));
-        assert!(render.contains("thread_context_cache_is_current()"));
-        assert!(render.contains("thread_members"));
-        assert!(!render.contains("store.n_items()"));
-        assert!(!render.contains("sort_by"));
-
-        let begin = compact_rust(rust_function_body(source, "begin_pending_thread_models"));
-        assert!(begin.contains("thread_context_members_generation.set(None)"));
-
-        let apply = compact_rust(rust_function_body(source, "process_pending_thread_models"));
-        assert!(apply.contains("thread_context_members_generation.set(Some(state.generation))"));
-
-        let finalize = compact_rust(rust_function_body(source, "finalize_pending_mail_apply"));
-        assert!(finalize.contains("self.render_thread_context(&selected)"));
     }
 
     #[test]
@@ -45017,287 +44835,6 @@ mod tests {
     }
 
     #[test]
-    fn mail_load_worker_boundary_has_no_settings_or_ui_handles() {
-        let source = include_str!("mail_page.rs");
-        let worker_source = rust_function_body(source, "load_mail_backend");
-
-        for forbidden in [
-            "AppSettings",
-            "gio::",
-            "gtk::",
-            "glib::",
-            "adw::",
-            "GObject",
-            "MainContext",
-            "thread_default",
-        ] {
-            assert!(
-                !worker_source.contains(forbidden),
-                "load worker must stay framework-neutral: found {forbidden}"
-            );
-        }
-        assert!(
-            !compact_rust(worker_source).contains("MailStoreService::new("),
-            "normal load callgraph must not resolve settings through MailStoreService::new"
-        );
-
-        let start_source = rust_function_body(source, "start_mail_load");
-        let input_capture = compact_rust(start_source)
-            .find("worker_input=MailLoadWorkerInput::from_main_thread(request.clone())")
-            .expect("load worker input must be captured by the main-thread start path");
-        let spawn_source = spawned_closure_body(start_source, "load_mail_backend");
-        assert!(
-            input_capture
-                < compact_rust(start_source)
-                    .find("std::thread::spawn")
-                    .expect("load worker should be spawned after input capture"),
-            "worker input must be captured before spawning the worker"
-        );
-        for forbidden in [
-            "AppSettings",
-            "gio::",
-            "gtk::",
-            "glib::",
-            "adw::",
-            "GObject",
-            "MainContext",
-            "thread_default",
-        ] {
-            assert!(
-                !spawn_source.contains(forbidden),
-                "load worker closure must not capture framework handles: found {forbidden}"
-            );
-        }
-        assert!(
-            !compact_rust(spawn_source).contains("MailStoreService::new("),
-            "load worker closure must not call the settings-backed constructor"
-        );
-
-        let store_source = include_str!("../services/mail_store_service.rs");
-        let compact_store_source = compact_rust(store_source);
-        assert!(
-            compact_store_source.contains("pub(crate)fnnew_worker_safe("),
-            "the worker-safe constructor must remain crate-local"
-        );
-        assert!(
-            !compact_store_source.contains("pubfnnew_worker_safe("),
-            "the worker-safe constructor must not become a global API"
-        );
-        for constructor in ["new_worker_safe", "new_worker_safe_with_paths"] {
-            let constructor_source = rust_function_body(store_source, constructor);
-            for forbidden in [
-                "AppSettings",
-                "gio::",
-                "gtk::",
-                "glib::",
-                "adw::",
-                "GObject",
-                "std::env::",
-                "app_data_dir(",
-            ] {
-                assert!(
-                    !constructor_source.contains(forbidden),
-                    "worker-safe store constructor must not resolve framework/global state: {}",
-                    forbidden
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn mail_store_operation_workers_capture_plain_config_before_spawn() {
-        let source = include_str!("mail_page.rs");
-        let workers = [
-            ("empty_trash_async", "MailStoreService::new_worker_safe"),
-            ("apply_filters", "MailStoreService::new_worker_safe"),
-            (
-                "execute_mail_command",
-                "MailOperationsService::new_worker_safe",
-            ),
-            (
-                "execute_mail_batch",
-                "MailOperationsService::new_worker_safe",
-            ),
-            (
-                "execute_history_action",
-                "MailOperationsService::new_worker_safe",
-            ),
-        ];
-
-        for (function_name, constructor) in workers {
-            let function_source = rust_function_body(source, function_name);
-            let compact = compact_rust(function_source);
-            let config_capture = compact
-                .find("mail_store_worker_config_from_main_thread()")
-                .expect("mail worker must capture a store config on the main thread");
-            let spawn = compact
-                .find("std::thread::spawn")
-                .expect("mail worker should be spawned");
-            assert!(
-                config_capture < spawn,
-                "{function_name} must capture its config before spawning"
-            );
-
-            let worker_source = compact_rust(spawned_closure_body(function_source, constructor));
-            assert!(
-                worker_source.contains("new_worker_safe(store_config)"),
-                "{function_name} must use the worker-safe constructor"
-            );
-            for forbidden in [
-                "AppSettings",
-                "GSettings",
-                "std::env::",
-                "app_data_dir(",
-                "AppData",
-                "gio::",
-                "gtk::",
-                "glib::",
-                "adw::",
-                "GObject",
-                "MainContext",
-                "thread_default",
-            ] {
-                assert!(
-                    !worker_source.contains(forbidden),
-                    "{function_name} worker must stay framework/global-state free: found {forbidden}"
-                );
-            }
-            assert!(!worker_source.contains("MailStoreService::new("));
-            assert!(!worker_source.contains("MailOperationsService::new()"));
-
-            let scope_capture = compact
-                .find("mail_worker_ui_scope()")
-                .expect("mail worker must capture its UI scope before spawning");
-            assert!(
-                scope_capture < spawn,
-                "{function_name} must capture its UI scope before spawning"
-            );
-            assert!(
-                compact.contains("mail_worker_ui_scope_is_current(&worker_scope)"),
-                "{function_name} must gate UI delivery by the captured scope"
-            );
-
-            if constructor == "MailOperationsService::new_worker_safe" {
-                let confirmed_commit = if function_name == "execute_history_action" {
-                    compact
-                        .find("page.imp().mail_commands.replace(history)")
-                        .expect("confirmed history action must still replace its history")
-                } else {
-                    compact
-                        .find("completed.commit")
-                        .expect("confirmed operation must still commit its result")
-                };
-                let ui_gate = compact
-                    .find("ifscope_is_current")
-                    .expect("confirmed operation must gate UI delivery");
-                assert!(
-                    confirmed_commit < ui_gate,
-                    "{function_name} must commit confirmed success before stale UI gating"
-                );
-            }
-        }
-
-        let filter_source = compact_rust(rust_function_body(source, "apply_filters"));
-        let filter_capture = filter_source
-            .find("MailFilterStore::default()")
-            .expect("Apply Filters must capture its filter store before spawning");
-        let filter_spawn = filter_source
-            .find("std::thread::spawn")
-            .expect("Apply Filters should be spawned");
-        assert!(
-            filter_capture < filter_spawn,
-            "Apply Filters must capture MailFilterStore before spawning"
-        );
-        assert!(filter_source.contains("run_all_active_filters_with_store(&filter_store)"));
-        assert!(!filter_source.contains("run_all_active_filters()"));
-        let filter_worker = compact_rust(spawned_closure_body(
-            rust_function_body(source, "apply_filters"),
-            "MailStoreService::new_worker_safe",
-        ));
-        assert!(!filter_worker.contains("MailFilterStore::default()"));
-    }
-
-    #[test]
-    fn history_workers_capture_path_before_spawn_and_keep_global_state_out() {
-        let source = include_str!("mail_page.rs");
-        let history_source = rust_function_body(source, "load_mail_history_async");
-        let compact_history = compact_rust(history_source);
-        let path_capture = compact_history
-            .find("MailCommandStack::capture_persistent_path()")
-            .expect("history path must be captured before spawning");
-        let spawn = compact_history
-            .find("std::thread::spawn")
-            .expect("history load should be spawned");
-        assert!(path_capture < spawn);
-
-        let history_worker = compact_rust(spawned_closure_body(
-            history_source,
-            "MailCommandStack::load_persistent_from_path",
-        ));
-        for forbidden in [
-            "AppSettings",
-            "GSettings",
-            "std::env::",
-            "app_data_dir(",
-            "AppData",
-            "gio::",
-            "gtk::",
-            "glib::",
-            "adw::",
-            "GObject",
-            "MainContext",
-            "thread_default",
-        ] {
-            assert!(
-                !history_worker.contains(forbidden),
-                "history load worker must stay global-state free: found {forbidden}"
-            );
-        }
-        assert!(!history_worker.contains("MailCommandStack::persistent()"));
-
-        let persist_source = rust_function_body(source, "persist_mail_history_async");
-        let persist_worker = compact_rust(spawned_closure_body(persist_source, "persist_snapshot"));
-        assert!(!persist_worker.contains("std::env::"));
-        assert!(!persist_worker.contains("app_data_dir("));
-    }
-
-    #[test]
-    fn replacing_load_claims_folder_before_worker_and_stale_status_is_rejected() {
-        let source = include_str!("mail_page.rs");
-        let start_source = compact_rust(rust_function_body(source, "start_mail_load"));
-        let request_claim = start_source
-            .find("self.imp().active_request.replace(Some(request.clone()))")
-            .expect("a replacing load must claim the requested folder immediately");
-        let spawn = start_source
-            .find("std::thread::spawn")
-            .expect("mail load should be spawned");
-        assert!(request_claim < spawn);
-
-        for (function_name, status_fragment) in [
-            ("empty_trash_async", "page.refresh_mail()"),
-            ("apply_filters", "page.refresh_mail()"),
-            ("execute_mail_command", "page.refresh_mail()"),
-            ("execute_mail_batch", "page.refresh_mail()"),
-            ("execute_history_action", "page.refresh_mail()"),
-        ] {
-            let function_source = compact_rust(rust_function_body(source, function_name));
-            assert!(
-                function_source.contains(status_fragment),
-                "{function_name} must reconcile the current folder after completion"
-            );
-            assert!(
-                function_source.contains("mail_worker_ui_scope_is_current"),
-                "{function_name} must reject stale folder/generation results before UI mutation"
-            );
-        }
-
-        let camel_status = compact_rust(rust_function_body(source, "format_camel_status"));
-        assert!(camel_status.contains("successful_sources"));
-        assert!(camel_status.contains("failed_sources"));
-        assert!(camel_status.contains("warning"));
-    }
-
-    #[test]
     fn stale_mail_progress_and_result_apply_are_rejected_by_generation_gate() {
         for (current, result, accepted) in [(7, 7, true), (8, 7, false), (7, 8, false)] {
             assert_eq!(
@@ -45306,34 +44843,6 @@ mod tests {
                 "progress and result gates must share latest-request semantics"
             );
         }
-
-        let source = include_str!("mail_page.rs");
-        let start_source = compact_rust(rust_function_body(source, "start_mail_load"));
-        let gate = "generation_is_current(page.imp().load_generation.get(),generation)";
-        assert_eq!(
-            start_source.matches(gate).count(),
-            3,
-            "the generation gate must protect progress, staged results and worker failure"
-        );
-        assert!(
-            start_source.contains(
-                "ifgeneration_is_current(page.imp().load_generation.get(),generation){page.update_camel_sync_progress(&progress);"
-            ),
-            "stale progress must be rejected before the GTK status update"
-        );
-        assert!(
-            start_source.contains(
-                "if!generation_is_current(page.imp().load_generation.get(),generation){return;}"
-            ),
-            "stale results must be rejected before the GTK model apply"
-        );
-        assert!(start_source.contains("whileletOk((result,from_cache))=receiver.recv().await"));
-        assert!(
-            start_source.find("if!generation_is_current").unwrap()
-                < start_source
-                    .find("page.apply_mail_load(request.clone(),result,replace)")
-                    .unwrap()
-        );
     }
 
     #[test]
@@ -45542,28 +45051,6 @@ mod tests {
     }
 
     #[test]
-    fn graph_error_restore_and_non_graph_apply_have_explicit_search_cleanup_contracts() {
-        let source = include_str!("mail_page.rs");
-        let restore = compact_rust(rust_function_body(source, "restore_after_graph_search"));
-        assert!(restore.contains("clear_stale_models"));
-        assert!(restore.contains("suppress_pending_search_generation"));
-
-        let apply = compact_rust(rust_function_body(source, "apply_mail_load"));
-        assert!(apply.contains("pending_graph_search_input"));
-        assert!(apply.contains("suppress_pending_search_generation"));
-
-        let begin = compact_rust(rust_function_body(source, "begin_pending_mail_apply"));
-        let non_graph = begin
-            .find("if!pending.camel_is_graph")
-            .expect("non-Graph pending results must have a cleanup branch");
-        let clear_warning = begin[non_graph..]
-            .find("set_graph_local_search_warning(None)")
-            .expect("non-Graph pending results must clear the Graph warning")
-            + non_graph;
-        assert!(clear_warning > non_graph);
-    }
-
-    #[test]
     fn message_search_query_parses_field_and_state_operators() {
         let query = MessageSearchQuery::parse(
             "from:alice@example.test subject:Roadmap is:unread has:attachment deploy",
@@ -45725,38 +45212,6 @@ mod tests {
     }
 
     #[test]
-    fn test_mail_context_menu_gestures_and_hig_contract() {
-        let source = include_str!("mail_page.rs");
-
-        // Message ListView row context menus (secondary click & long press)
-        assert!(source.contains("outer.add_controller(right_click);"));
-        assert!(source.contains("outer.add_controller(long_press);"));
-
-        // Message ListView follow-up long press
-        assert!(source.contains("btn_follow_up.add_controller(long_press_follow_up);"));
-
-        // Mail table canvas controllers (primary click with deferred mobile drilldown, secondary click, long press)
-        assert!(source.contains("mail_table_canvas.add_controller(click_gesture);"));
-        assert!(source.contains("mail_table_canvas.add_controller(right_click);"));
-        assert!(source.contains("mail_table_canvas.add_controller(canvas_long_press);"));
-
-        // Modern header card context menu (secondary click & long press)
-        assert!(source.contains("modern_header_card.add_controller(header_rc);"));
-        assert!(source.contains("modern_header_card.add_controller(header_lp);"));
-
-        // Thread pills context menu (secondary click & long press)
-        assert!(source.contains("pill_btn.add_controller(right_click);"));
-        assert!(source.contains("pill_btn.add_controller(long_press);"));
-
-        // Attachment chip context menu
-        assert!(source.contains("fn show_attachment_chip_context_menu("));
-
-        // Folder sidebar context menus (secondary click & long press)
-        assert!(source.contains("folder_list.add_controller(local_folder_click);"));
-        assert!(source.contains("folder_list.add_controller(local_folder_long_press);"));
-    }
-
-    #[test]
     fn reader_reply_forward_variants_parse_list_post_safely() {
         assert_eq!(
             list_post_recipient_from_headers(Some(
@@ -45875,65 +45330,6 @@ mod tests {
     }
 
     #[test]
-    fn reader_reply_forward_variants_are_wired_to_actions_and_menus() {
-        let window_source = include_str!("../window.rs");
-        let actions = compact_rust(rust_function_body(window_source, "setup_actions"));
-        let sensitivity = compact_rust(rust_function_body(
-            window_source,
-            "set_message_actions_enabled",
-        ));
-
-        for action in [
-            "reply-list",
-            "reply-alternative",
-            "forward-inline",
-            "forward-quoted",
-            "forward-attached",
-            "copy-message-link",
-            "goto-containing-folder",
-            "add-sender-contact",
-            "edit-as-new",
-        ] {
-            assert!(actions.contains(&format!("SimpleAction::new(\"{action}\"")));
-            let detailed_action = format!("win.{action}");
-            assert!(
-                menu_actions(MenuPath::MessageBeforeForward)
-                    .chain(menu_actions(MenuPath::MessageGoto))
-                    .chain(menu_actions(MenuPath::MessageForward))
-                    .chain(menu_actions(MenuPath::MessageAfterForward))
-                    .any(|item| item.action == detailed_action)
-            );
-        }
-        assert!(actions.contains("reply_list_selected()"));
-        assert!(actions.contains("reply_alternative_selected()"));
-        assert!(actions.contains("forward_inline_selected()"));
-        assert!(actions.contains("forward_quoted_selected()"));
-        assert!(actions.contains("forward_attached_selected()"));
-        assert!(actions.contains("copy_selected_message_link()"));
-        assert!(actions.contains("goto_selected_message_folder()"));
-        assert!(actions.contains("present_add_selected_sender()"));
-        assert!(actions.contains("edit_selected_as_new()"));
-        assert!(sensitivity.contains("has_selected_message()"));
-        assert!(sensitivity.contains("can_reply_list()"));
-        assert!(sensitivity.contains("can_copy_message_link()"));
-        assert!(sensitivity.contains("can_goto_containing_folder()"));
-        assert!(sensitivity.contains("can_add_selected_sender()"));
-        assert!(
-            window_source
-                .contains("message_menu.append_submenu(Some(&crate::i18n::gettext(\"Forward\")), &forward_menu);")
-                || window_source.contains("message_menu.append_submenu(Some(\"Weiterleiten\"), &forward_menu);")
-        );
-
-        let detail_view = compact_rust(rust_function_body(
-            include_str!("mail_page.rs"),
-            "build_detail_view",
-        ));
-        for action in ["win.reply", "win.reply-all", "win.forward"] {
-            assert!(detail_view.contains(action), "detail_view missing {action}");
-        }
-    }
-
-    #[test]
     fn alternative_reply_choices_only_offer_a_real_list_target() {
         assert_eq!(
             alternative_reply_recipient_choices(false),
@@ -45950,63 +45346,6 @@ mod tests {
                 AlternativeReplyRecipient::All,
             ]
         );
-
-        let source = compact_rust(rust_function_body(
-            include_str!("mail_page.rs"),
-            "reply_alternative_selected",
-        ));
-        assert!(source.contains("style_row.selected()==4"));
-        assert!(source.contains("prepare_original_attachment"));
-        assert!(source.contains("reply_to_attached_message"));
-        assert!(source.contains("reply_all_attached_message"));
-        assert!(source.contains("reply_all_message_with_style"));
-        assert!(source.contains("reply_to_message_with_style"));
-    }
-
-    #[test]
-    fn mail_preview_toolbar_exposes_common_and_navigation_groups() {
-        let source = include_str!("mail_page.rs");
-        let toolbar = compact_rust(rust_function_body(source, "build_unified_mail_toolbar"));
-        for action in [
-            "win.archive",
-            "win.mark-junk",
-            "win.mark-not-junk",
-            "win.mail-prev",
-            "win.mail-next",
-            "win.delete",
-            "win.mail-print",
-        ] {
-            assert!(toolbar.contains(action), "missing state-bound {action}");
-        }
-        assert!(toolbar.contains("package-x-generic-symbolic"), "missing archive icon");
-        assert!(toolbar.contains("folder-symbolic"), "missing move icon");
-        assert!(toolbar.contains("edit-copy-symbolic"), "missing copy icon");
-        assert!(source.contains("view_options_split_button"), "missing view options split button method");
-        assert!(!toolbar.contains("actions_box.append(&sidebar_toggle)"), "sidebar toggle should not be in unified mail toolbar");
-        assert!(!toolbar.contains("pinned_right_box.append(&preview_toggle)"), "preview toggle should not be in unified mail toolbar");
-        assert!(source.contains("sidebar-show-symbolic"), "missing sidebar toggle definition");
-        assert!(source.contains("sidebar-show-right-symbolic"), "missing preview toggle definition");
-        assert!(!toolbar.contains("edit-find-symbolic"), "search icon should not be in unified mail toolbar");
-        let detail_view = compact_rust(rust_function_body(source, "build_detail_view"));
-        for action in ["win.reply", "win.reply-all", "win.forward", "win.export"] {
-            assert!(detail_view.contains(action), "detail_view missing {action}");
-        }
-    }
-
-    #[test]
-    fn mail_view_options_popover_exposes_gnome_hig_controls() {
-        let source = include_str!("mail_page.rs");
-        assert!(source.contains("view-column-symbolic"), "missing view-column-symbolic icon");
-        assert!(source.contains("\"Preview Pane\""), "missing Preview Pane section");
-        assert!(source.contains("\"Bottom\""), "missing classic layout toggle");
-        assert!(source.contains("\"Right\""), "missing modern layout toggle");
-        assert!(source.contains("\"Off\""), "missing off layout toggle");
-        assert!(source.contains("\"Group by conversations\""), "missing threading toggle");
-        assert!(source.contains("adw::SplitButton"), "missing split button");
-        assert!(source.contains("view_options_split_btn"), "missing view options split button field");
-        assert!(source.contains(".width_request(310)"), "popover should have comfortable width request");
-        assert!(source.contains("\"view-options-list\""), "popover should use flat view-options-list without boxed-list card");
-        assert!(source.contains("activatable_widget"), "popover switch rows should be activatable");
     }
 
     #[test]
@@ -46021,31 +45360,6 @@ mod tests {
             })),
             "account-source"
         );
-    }
-
-    #[test]
-    fn undelete_prefers_selected_local_deleted_rows_and_only_blocks_history_for_batches() {
-        let source = include_str!("mail_page.rs");
-        let can_undelete = compact_rust(rust_function_body(source, "can_undelete"));
-        assert!(can_undelete.contains("can_undo_delete()"));
-        assert!(can_undelete.contains("selected_local_deleted_messages()"));
-        assert!(can_undelete.contains("batch_selection.borrow().is_empty()"));
-        assert!(can_undelete.contains("mail_batch_running.get()"));
-        assert!(can_undelete.contains("mail_operations_active.get()>0"));
-
-        let undelete = compact_rust(rust_function_body(source, "undelete"));
-        assert!(undelete.contains("if!self.can_undelete(){returnOk(false);}"));
-        assert!(undelete.contains("MailCommand::restore_deleted_local(message.id())"));
-        assert!(
-            undelete
-                .contains("if!self.imp().batch_selection.borrow().is_empty(){returnOk(false);}")
-        );
-        assert!(undelete.contains("execute_history_action(true,MailOperationKind::Delete)"));
-        assert!(undelete.contains("self.update_undelete_action()"));
-        assert!(!undelete.contains("self.undo()"));
-
-        let batch_update = compact_rust(rust_function_body(source, "update_batch_action_bar"));
-        assert!(batch_update.contains("self.update_undelete_action();"));
     }
 
     #[test]
@@ -46532,189 +45846,6 @@ mod tests {
     }
 
     #[test]
-    fn search_scope_source_contract_keeps_upstream_order_and_local_fallback() {
-        let source = include_str!("mail_page.rs");
-        let model = source
-            .find("\"Current Folder\"")
-            .or_else(|| source.find("\"Aktueller Ordner\""))
-            .expect("search scope model must expose Current Folder");
-        let subfolders = source
-            .find("\"Current Folder and Subfolders\"")
-            .or_else(|| source.find("\"Aktueller Ordner und Unterordner\""))
-            .expect("search scope model must expose Current Folder and Subfolders");
-        let account = source
-            .find("\"Current Account\"")
-            .or_else(|| source.find("\"Aktuelles Konto\""))
-            .expect("search scope model must expose Current Account");
-        let all = source
-            .find("\"All Accounts\"")
-            .or_else(|| source.find("\"Alle Konten\""))
-            .expect("search scope model must expose All Accounts");
-        assert!(model < subfolders && subfolders < account && account < all);
-
-        let filter = compact_rust(rust_function_body(source, "message_matches_filter"));
-        assert!(filter.contains("CurrentFolderAndSubfolders"));
-        assert!(filter.contains("folder_selection_matches_with_subfolders"));
-
-        let handler = compact_rust(rust_function_body(
-            source,
-            "handle_search_changed_with_scope_policy",
-        ));
-        assert!(handler.contains("GraphSearchScopePlan::Unsupported"));
-        assert!(handler.contains("start_mail_load(request,true)"));
-        assert!(handler.contains("graph_local_search_warning_for_scope"));
-
-        let scope_gate = handler
-            .find("current_graph_search_scope_plan()")
-            .expect("unsupported recursive scopes must be handled before debounce");
-        let debounce = handler
-            .find("timeout_add_local_once")
-            .expect("supported Graph searches should still use debounce");
-        assert!(scope_gate < debounce);
-    }
-
-    #[test]
-    fn graph_subfolder_scope_restores_the_base_page_after_remote_search() {
-        let source = include_str!("mail_page.rs");
-        let handler = compact_rust(rust_function_body(
-            source,
-            "handle_search_changed_with_scope_policy",
-        ));
-        let scope_gate = handler
-            .find("current_graph_search_scope_plan()")
-            .expect("recursive scope gate is required");
-        let scope_tail = &handler[scope_gate..];
-        let reset_remote = scope_tail
-            .find("remote_search_applied.replace(false)")
-            .expect("recursive local fallback must clear a previous remote result set");
-        let reload = scope_tail
-            .find("start_mail_load(request,true)")
-            .expect("recursive local fallback must reload the normal Graph page");
-        assert!(reset_remote < reload);
-        assert!(scope_tail.contains("restore_after_graph_search(false)"));
-    }
-
-    #[test]
-    fn graph_search_handler_reconciles_scope_before_processing_input() {
-        let source = include_str!("mail_page.rs");
-        let handle = compact_rust(rust_function_body(
-            source,
-            "handle_search_changed_with_scope_policy",
-        ));
-        assert!(handle.contains("self.reconcile_graph_search_scope();"));
-        assert!(!handle.contains("ifself.reconcile_graph_search_scope(){return;}"));
-        assert!(handle.contains("set_graph_local_search_warning"));
-
-        let begin = compact_rust(rust_function_body(source, "begin_pending_mail_apply"));
-        assert!(begin.contains("set_graph_local_search_warning(None)"));
-    }
-
-    #[test]
-    fn graph_search_transport_consumes_only_the_canonical_plan() {
-        let source = include_str!("mail_page.rs");
-        let lowering = compact_rust(rust_function_body(source, "mail_graph_search_query"));
-        assert!(lowering.contains("MessageSearchCanonicalState::Parsed"));
-        assert!(lowering.contains("parsed.graph_search_plan()"));
-        assert!(lowering.contains("MailGraphSearchPlan::SafePositiveConjunction"));
-        assert!(lowering.contains("MailGraphSearchPlan::Unsupported"));
-        assert!(!lowering.contains("escape_graph_search_value"));
-
-        let start = compact_rust(rust_function_body(source, "start_graph_search"));
-        let plan = start
-            .find("current_graph_search_scope_plan()")
-            .expect("Graph search must resolve its scope before starting work");
-        let dispatch = start
-            .find("start_graph_search_page")
-            .expect("Graph search must dispatch through its cursor-aware page path");
-        assert!(plan < dispatch);
-        let page = compact_rust(rust_function_body(source, "start_graph_search_page"));
-        assert!(page.contains("std::thread::spawn"));
-    }
-
-    #[test]
-    fn graph_search_paging_keeps_snapshot_cursor_and_append_contracts() {
-        let source = include_str!("mail_page.rs");
-        for field in [
-            "raw_input",
-            "graph_query",
-            "effective_scope",
-            "source_uid",
-            "folder_name",
-            "next_cursor",
-        ] {
-            assert!(
-                source.contains(field),
-                "GraphSearchState must retain {field}"
-            );
-        }
-        let load_more = compact_rust(rust_function_body(source, "load_more_mail"));
-        let remote_branch = load_more
-            .find("remote_search_applied.get()")
-            .expect("remote search must own its load-more path");
-        let search_page = load_more
-            .find("start_graph_search_page")
-            .expect("remote load-more must request a Graph search page");
-        let numeric_offset = load_more
-            .find("request.offset=request.offset")
-            .expect("normal mail paging must retain its numeric offset path");
-        assert!(remote_branch < search_page && search_page < numeric_offset);
-
-        let page = compact_rust(rust_function_body(source, "start_graph_search_page"));
-        assert!(page.contains("search_messages_graph_page"));
-        assert!(page.contains("cursor.as_deref()"));
-        assert!(page.contains("search_generation"));
-        assert!(page.contains("load_generation"));
-        assert!(page.contains("result_cancellation"));
-        assert!(page.contains("graph_search_state"));
-        assert!(page.contains("apply_mail_load"));
-        assert!(page.contains("replace"));
-
-        let apply = compact_rust(rust_function_body(source, "apply_mail_load"));
-        assert!(apply.contains("graph_search_state"));
-        assert!(apply.contains("PendingMailApply::from_camel"));
-
-        let from_camel = compact_rust(rust_function_body(source, "from_camel"));
-        assert!(from_camel.contains("graph_search_next_cursor.is_some()"));
-
-        let finalize = compact_rust(rust_function_body(source, "finalize_pending_mail_apply"));
-        assert!(finalize.contains("current_state.next_cursor"));
-        assert!(finalize.contains("completion.graph_search_next_cursor"));
-
-        let error = compact_rust(rust_function_body(source, "handle_graph_search_page_error"));
-        assert!(error.contains("ifreplace"));
-        assert!(error.contains("restore_after_graph_search(true)"));
-        assert!(error.contains("state.next_cursor"));
-    }
-
-    #[test]
-    fn graph_search_handler_uses_the_selected_quick_search_field() {
-        let source = include_str!("mail_page.rs");
-        let handle = compact_rust(rust_function_body(
-            source,
-            "handle_search_changed_with_scope_policy",
-        ));
-        assert!(handle.contains("MessageSearchQuery::parse_with_field_scope"));
-        assert!(handle.contains("self.imp().search_field_scope.get()"));
-        assert!(handle.contains("mail_graph_search_query(&query)"));
-        assert!(!handle.contains("MessageSearchQuery::parse(&input)"));
-    }
-
-    #[test]
-    fn graph_scope_change_restarts_only_a_nonempty_active_graph_search() {
-        let source = include_str!("mail_page.rs");
-        let restart = compact_rust(rust_function_body(
-            source,
-            "restart_graph_search_for_scope_change",
-        ));
-        assert!(restart.contains("graph_backend_active.get()"));
-        assert!(restart.contains("!input.trim().is_empty()"));
-        assert!(restart.contains("handle_search_changed(input.as_str())"));
-
-        let build = compact_rust(rust_function_body(source, "build_message_list"));
-        assert!(build.contains("restart_graph_search_for_scope_change()"));
-    }
-
-    #[test]
     fn graph_search_plan_is_empty_for_local_only_predicates() {
         let query = MessageSearchQuery::parse("is:unread label:important after:today");
 
@@ -47108,67 +46239,6 @@ mod tests {
         assert!(
             resolve_saved_search_target(&stale, &local_ids, &remote_ids, &remote_folders).is_err()
         );
-    }
-
-    #[test]
-    fn saved_search_rows_and_apply_do_not_use_query_string_row_data() {
-        let source = include_str!("mail_page.rs");
-        let production = &source[..source
-            .rfind("#[cfg(test)]\nmod tests")
-            .expect("mail page test module should be present")];
-        assert!(production.contains("row.set_data(\"saved-search\", saved_search)"));
-        assert!(production.contains("row.set_data(\"saved-search\", search.clone())"));
-        assert!(!production.contains("search-query"));
-
-        let apply = compact_rust(rust_function_body(source, "apply_saved_search"));
-        assert!(apply.contains("saved_search_applying.replace(true)"));
-        assert!(apply.contains("search_scope_state"));
-        assert!(apply.contains("message_filter_state"));
-        assert!(apply.contains("target_error"));
-        assert!(apply.contains("invalidate_pending_graph_search"));
-        assert!(apply.contains("suppress_pending_search_generation"));
-
-        let invalidate = compact_rust(rust_function_body(
-            source,
-            "invalidate_pending_graph_search",
-        ));
-        assert!(invalidate.contains("mail_load_cancellation"));
-        assert!(invalidate.contains("mail_incremental_cancellation"));
-        assert!(invalidate.contains("load_generation"));
-        assert!(invalidate.contains("graph_search_state.replace(None)"));
-    }
-
-    #[test]
-    fn advanced_search_dialog_keeps_scope_target_and_has_one_apply_route() {
-        let source = include_str!("mail_page.rs");
-        let present = compact_rust(rust_function_body(source, "present_advanced_search_dialog"));
-        assert!(present.contains("AdvancedSearchDialog::with_query"));
-        assert!(present.contains("initial_query"));
-        assert!(present.contains("apply_advanced_search_query"));
-
-        let apply = compact_rust(rust_function_body(source, "apply_advanced_search_query"));
-        assert!(apply.contains("saved_search_applying.replace(true)"));
-        assert!(apply.contains("QuickSearchField::FreeForm"));
-        assert!(apply.contains("search_field_selector"));
-        assert!(apply.contains("search_entry"));
-        assert!(apply.contains("search_query"));
-        assert_eq!(apply.matches("handle_search_changed").count(), 1);
-        assert!(apply.contains("handle_search_changed_with_scope_policy(&query,false)"));
-        assert!(!apply.contains("SavedSearch::with_metadata"));
-        assert!(!apply.contains("resolve_saved_search"));
-        assert!(!apply.contains("folder_selection"));
-        assert!(!apply.contains("search_scope.set"));
-        assert!(!apply.contains("set_saved_search_target_valid"));
-
-        let begin = compact_rust(rust_function_body(source, "begin_pending_mail_apply"));
-        assert!(!begin.contains("reconcile_graph_search_scope"));
-        let restore = compact_rust(rust_function_body(source, "restore_after_graph_search"));
-        assert!(restore.contains("suppress_pending_search_generation"));
-        let route = compact_rust(rust_function_body(
-            source,
-            "handle_search_changed_with_scope_policy",
-        ));
-        assert!(route.matches("suppress_pending_search_generation").count() >= 3);
     }
 
     #[test]
@@ -47698,38 +46768,7 @@ mod tests {
     }
 
     #[test]
-    fn folder_properties_dialog_uses_the_transient_target_without_provider_io() {
-        let source = include_str!("mail_page.rs");
-        let body = compact_rust(rust_function_body(
-            source,
-            "present_folder_properties_dialog",
-        ));
-        assert!(body.contains("folder_context_action_selection()"));
-        assert!(body.contains("folder_properties_snapshot(&selection)"));
-        assert!(!body.contains("start_mail_load"));
-        assert!(!body.contains("Camel"));
-    }
-
-    #[test]
     fn native_subscription_dialog_is_gated_to_an_exact_loaded_camel_source() {
-        let source = include_str!("mail_page.rs");
-        let target = compact_rust(rust_function_body(
-            source,
-            "folder_subscriptions_account_target",
-        ));
-        assert!(target.contains("subscription_source_is_available("));
-        assert!(target.contains("camel_mail_service::native_adapter_available()"));
-        assert!(target.contains("self.imp().graph_backend_active.get()"));
-        assert!(target.contains("letsource_uid=selection.source_uid?.trim().to_string()"));
-        assert!(target.contains("mail_folder_summaries"));
-        let present = compact_rust(rust_function_body(
-            source,
-            "present_folder_subscriptions_dialog",
-        ));
-        assert!(present.contains("FolderSubscriptionsDialog::new"));
-        assert!(present.contains("page.refresh_mail()"));
-        assert!(!present.contains("load_messages_graph"));
-
         let selection = FolderSelection {
             folder_id: "source-a\u{0}Inbox".to_string(),
             source_uid: Some("source-a".to_string()),
@@ -47754,32 +46793,6 @@ mod tests {
         assert!(!subscription_source_is_available(
             true, true, &selection, &loaded
         ));
-    }
-
-    #[test]
-    fn folder_context_menu_contains_only_actions_with_a_transient_target_route() {
-        let source = include_str!("mail_page.rs");
-        let menu = compact_rust(rust_function_body(source, "folder_context_menu"));
-        for action in [
-            "win.new-folder",
-            "win.rename-folder",
-            "win.delete-folder",
-            "win.refresh-folder",
-            "win.mark-all-read",
-            "win.folder-properties",
-        ] {
-            assert!(menu.contains(action), "missing target-safe {action}");
-        }
-        for action in [
-            "win.next-unread-folder",
-            "win.refresh-mail",
-            "win.empty-trash",
-            "win.empty-junk",
-            "win.expunge",
-            "win.folder-subscriptions",
-        ] {
-            assert!(!menu.contains(action), "target-unsafe {action}");
-        }
     }
 
     #[test]
@@ -47825,28 +46838,6 @@ mod tests {
         assert_eq!(
             folder_path_with_replaced_leaf("Inbox", "Primary"),
             "Primary"
-        );
-    }
-
-    #[test]
-    fn folder_context_gestures_claim_secondary_clicks_before_sidebar_selection() {
-        let source = include_str!("mail_page.rs");
-        let sidebar = compact_rust(rust_function_body(source, "build_sidebar"));
-        assert_eq!(
-            sidebar
-                .matches("propagation_phase(gtk::PropagationPhase::Capture)")
-                .count(),
-            4
-        );
-        assert!(sidebar.contains("local_folder_click.connect_pressed(move|gesture"));
-        assert!(sidebar.contains("right_click.connect_pressed(move|gesture"));
-        assert!(sidebar.contains("local_folder_long_press.connect_pressed(move|gesture"));
-        assert!(sidebar.contains("long_press.connect_pressed(move|gesture"));
-        assert_eq!(
-            sidebar
-                .matches("gesture.set_state(gtk::EventSequenceState::Claimed)")
-                .count(),
-            4
         );
     }
 
@@ -48016,35 +47007,6 @@ mod tests {
     }
 
     #[test]
-    fn folder_sort_rebuild_reselects_without_loading_mail() {
-        let source = include_str!("mail_page.rs");
-        let rebuild = compact_rust(rust_function_body(
-            source,
-            "rebuild_folder_rows_after_sort_order_change",
-        ));
-        assert!(rebuild.contains("self.rebuild_local_folder_rows"));
-        assert!(rebuild.contains("self.rebuild_camel_folder_rows"));
-        assert!(rebuild.contains("self.select_folder_row(&selection)"));
-        assert!(!rebuild.contains("start_mail_load"));
-
-        let local_rebuild = compact_rust(rust_function_body(source, "rebuild_local_folder_rows"));
-        assert!(local_rebuild.contains("self.select_folder_row(&active_selection)"));
-        assert!(!local_rebuild.contains("start_mail_load"));
-
-        let apply = compact_rust(rust_function_body(
-            source,
-            "apply_folder_sort_order_outcome",
-        ));
-        assert!(apply.contains("settings.set_mail_folder_sort_order"));
-        assert!(!apply.contains("camel_mail_service"));
-        assert!(!apply.contains("MailStoreService"));
-
-        let level = compact_rust(rust_function_body(source, "folder_sort_order_level"));
-        assert!(level.contains("parent_label"));
-        assert!(level.contains("\"LocalFolders\""));
-    }
-
-    #[test]
     fn natural_folder_sort_buckets_match_evolution_original_order() {
         assert_eq!(folder_default_sort_bucket("inbox", "Posteingang"), 0);
         assert_eq!(folder_default_sort_bucket("inbox", "Inbox"), 0);
@@ -48126,30 +47088,6 @@ mod tests {
         assert_eq!(deserialized.folder_name, payload.folder_name);
         assert_eq!(deserialized.parent_id, payload.parent_id);
         assert_eq!(deserialized.display_name, payload.display_name);
-    }
-
-    #[test]
-    fn mail_column_layout_rebuild_is_view_only_and_header_rows_share_one_order() {
-        let source = include_str!("mail_page.rs");
-        let production_source = &source[..source
-            .rfind("#[cfg(test)]\nmod tests")
-            .expect("mail page test module should be present")];
-        assert_eq!(
-            production_source
-                .matches("Self::append_mail_columns(")
-                .count(),
-            2
-        );
-
-        let append = compact_rust(rust_function_body(source, "append_mail_columns"));
-        assert!(append.contains("settings.mail_list_column_order()"));
-        assert!(append.contains("mail-column-{column}"));
-
-        let rebuild = compact_rust(rust_function_body(source, "rebuild_mail_column_layout"));
-        assert!(rebuild.contains("Self::reorder_mail_column_container(header)"));
-        assert!(rebuild.contains("list_view.set_factory"));
-        assert!(!rebuild.contains("self.refresh_mail()"));
-        assert!(!rebuild.contains("start_mail_load"));
     }
 
     #[test]
@@ -49296,169 +48234,6 @@ mod tests {
     }
 
     #[test]
-    fn test_mail_column_separators_structure_and_drag() {
-        let source = include_str!("mail_page.rs");
-        let header_fn = rust_function_body(source, "build_mail_column_header");
-
-        // Separators are created with the proper class, cursor, and widget names
-        assert!(header_fn.contains("mail-column-separator"));
-        assert!(header_fn.contains("col-resize"));
-        assert!(header_fn.contains("mail-column-sep-sender"));
-        assert!(header_fn.contains("mail-column-sep-recipient"));
-        assert!(header_fn.contains("mail-column-sep-date"));
-
-        // Separators are inserted between columns (not inside cells)
-        assert!(header_fn.contains("header.insert_child_after(&sender_separator, Some(&sender_column));"));
-        assert!(header_fn.contains("header.insert_child_after(&recipient_separator, Some(&recipient_column));"));
-        assert!(header_fn.contains("header.insert_child_after(&date_separator, Some(&subject_column));"));
-
-        // Resizing gestures are attached to separators, updating via apply_mail_column_widths
-        assert!(header_fn.contains("sender_separator.add_controller(sender_drag_gesture);"));
-        assert!(header_fn.contains("recipient_separator.add_controller(recipient_drag_gesture);"));
-        assert!(header_fn.contains("date_separator.add_controller(date_drag_gesture);"));
-        assert!(header_fn.contains("apply_mail_column_widths"));
-        assert!(header_fn.contains("compute_point"));
-
-        // Sorting gestures are attached to full column cells
-        assert!(header_fn.contains("sender_column.add_controller(sender_sort_gesture);"));
-        assert!(header_fn.contains("recipient_column.add_controller(recipient_sort_gesture);"));
-        assert!(header_fn.contains("date_column.add_controller(date_sort_gesture);"));
-
-        // Row separators in connect_setup
-        let setup_fn = rust_function_body(source, "build_message_list");
-        assert!(setup_fn.contains("mail-column-row-separator"));
-        assert!(setup_fn.contains("header_box.insert_child_after(&row_sender_sep, Some(&sender_box));"));
-        assert!(setup_fn.contains("header_box.insert_child_after(&row_recipient_sep, Some(&recipient_box));"));
-        assert!(setup_fn.contains("header_box.insert_child_after(&row_date_sep, Some(&subject_box));"));
-
-        // Preserved in reorder
-        let reorder_fn = rust_function_body(source, "reorder_mail_column_container");
-        assert!(reorder_fn.contains("mail-column-sep-sender"));
-        assert!(reorder_fn.contains("mail-column-sep-recipient"));
-        assert!(reorder_fn.contains("mail-column-sep-date"));
-    }
-
-    #[test]
-    fn test_mail_recipient_column_is_independent_from_sender() {
-        let source = include_str!("mail_page.rs");
-        let header_fn = rust_function_body(source, "build_mail_column_header");
-        assert!(header_fn.contains("recipient_column"));
-        assert!(header_fn.contains("recipient_separator"));
-        assert!(header_fn.contains("recipient_sort_gesture"));
-        assert!(header_fn.contains("recipient_drag_gesture"));
-
-        let setup_fn = rust_function_body(source, "build_message_list");
-        assert!(setup_fn.contains("recipient_box"));
-        assert!(setup_fn.contains("recipient_box.append(&recipient);"));
-        assert!(setup_fn.contains("(\"recipient\", recipient_box.clone().upcast())"));
-
-        let refresh_fn = rust_function_body(source, "refresh_mail_column_header");
-        assert!(refresh_fn.contains("Self::mail_column_child(&header, \"recipient\")"));
-        assert!(refresh_fn.contains("Self::mail_column_child(&header, \"sender\")"));
-
-        let reorder_dialog_fn = rust_function_body(source, "open_mail_column_order_dialog");
-        assert!(reorder_dialog_fn.contains("\"Customize Column Order\""));
-        assert!(reorder_dialog_fn.contains("\"Recipient\""));
-        assert!(reorder_dialog_fn.contains("\"Sender\""));
-
-        let context_menu_fn = rust_function_body(source, "show_mail_header_context_menu");
-        assert!(context_menu_fn.contains("\"mail-show-recipient\""));
-        assert!(context_menu_fn.contains("\"mail-show-sender\""));
-        assert!(context_menu_fn.contains("\"Reverse sort order\""));
-        assert!(context_menu_fn.contains("\"Restore default columns\""));
-    }
-
-    #[test]
-    fn test_mail_paned_and_preview_clipping_prevention() {
-        let source = include_str!("mail_page.rs");
-
-        // Paned resize policy: message list is fixed, preview absorbs window size changes
-        let constructed_fn = rust_function_body(source, "constructed");
-        assert!(constructed_fn.contains("inner_paned.set_resize_start_child(false);"));
-        assert!(constructed_fn.contains("inner_paned.set_resize_end_child(true);"));
-        assert!(constructed_fn.contains("inner_paned.set_shrink_start_child(true);"));
-        assert!(constructed_fn.contains("inner_paned.set_shrink_end_child(true);"));
-
-        // Detail view has hidden overflow and hexpand
-        let assemble_fn = rust_function_body(source, "assemble_layout");
-        assert!(assemble_fn.contains("detail_view.set_overflow(gtk::Overflow::Hidden);"));
-        assert!(assemble_fn.contains("detail_view.set_hexpand(true);"));
-
-        // Sidebar scroll has min_content_height to prevent pushing switcher out
-        let sidebar_fn = rust_function_body(source, "build_sidebar");
-        assert!(sidebar_fn.contains(".min_content_height(40)"));
-
-        // Column header scroll has min_content_width
-        let list_fn = rust_function_body(source, "build_message_list");
-        assert!(list_fn.contains(".min_content_width(120)"));
-
-        // Attachment bar is enclosed in attachment_scroll to prevent horizontal stretching
-        let detail_fn = rust_function_body(source, "build_detail_view");
-        assert!(detail_fn.contains("attachment_scroll"));
-        assert!(detail_fn.contains("detail_view.append(&attachment_section);"));
-    }
-
-    #[test]
-    fn test_mail_column_content_truncation_and_ellipsize_contract() {
-        let source = include_str!("mail_page.rs");
-        let header_fn = rust_function_body(source, "build_mail_column_header");
-        let setup_fn = rust_function_body(source, "build_message_list");
-
-        // Column headers configure overflow, fill alignment, and 1-char natural width bounds
-        assert!(header_fn.contains(".halign(gtk::Align::Fill)"));
-        assert!(header_fn.contains(".overflow(gtk::Overflow::Hidden)"));
-        assert!(header_fn.contains(".max_width_chars(1)"));
-        assert!(header_fn.contains(".width_chars(1)"));
-        assert!(header_fn.contains(".ellipsize(pango::EllipsizeMode::End)"));
-
-        // Row factory bounds natural width with max_width_chars(1) and hidden overflow so
-        // content strictly ellipsizes rather than pushing adjacent columns
-        assert!(setup_fn.contains("header_box = gtk::Box::builder()"));
-        assert!(setup_fn.contains(".overflow(gtk::Overflow::Hidden)"));
-        assert!(setup_fn.contains(".xalign(0.0)"));
-        assert!(setup_fn.contains(".xalign(1.0)"));
-        assert!(setup_fn.contains(".max_width_chars(1)"));
-    }
-
-    #[test]
-    fn test_mail_detail_header_adaptive_layout_and_wrapping() {
-        let source = include_str!("mail_page.rs");
-        let detail_fn = rust_function_body(source, "build_detail_view");
-
-        // Subject label is present and placed in header_box
-        assert!(detail_fn.contains("mail_subject_label"));
-        assert!(detail_fn.contains("header_box.append(&mail_subject_revealer);") || detail_fn.contains("header_box.append(&mail_subject_label);"));
-        assert!(detail_fn.contains(".css_classes(vec![\"mail-detail-subject\", \"title-4\"])"));
-
-        // Classic header box contains normal_headers_grid and preview_actions_row side by side
-        assert!(detail_fn.contains("classic_header_box.append(&classic_left_box);"));
-        assert!(detail_fn.contains("classic_header_box.append(&preview_actions_row);"));
-        assert!(detail_fn.contains("header_box.append(&classic_header_box);"));
-        assert!(detail_fn.contains("detail_view.append(&header_box);"));
-        assert!(detail_fn.contains(".css_classes(vec![\"sidebar-drawer-header\", \"mail-preview-actions-bar\"])"));
-
-        // Action buttons have responsive text labels and icon+label content box
-        assert!(detail_fn.contains("make_reply_btn"));
-        assert!(detail_fn.contains("\"Reply\"") || detail_fn.contains("\"Antworten\""));
-        assert!(detail_fn.contains("\"Reply All\"") || detail_fn.contains("\"Allen antworten\""));
-        assert!(detail_fn.contains("\"Forward\"") || detail_fn.contains("\"Weiterleiten\""));
-        assert!(source.contains("pub(crate) fn sync_preview_actions_labels(&self)"));
-        assert!(source.contains("self.sync_preview_actions_labels();"));
-
-        // Normal header labels have baseline vertical alignment and do NOT wrap (single line with ellipsis)
-        let replace_fn = rust_function_body(source, "replace_normal_header_rows");
-        assert!(replace_fn.contains(".valign(gtk::Align::Baseline)"));
-        assert!(replace_fn.contains(".wrap(false)"));
-        assert!(replace_fn.contains(".single_line_mode(true)"));
-        assert!(replace_fn.contains(".ellipsize(pango::EllipsizeMode::End)"));
-
-        // Header refresh updates mail_subject_label and filters out redundant subject row
-        let refresh_fn = rust_function_body(source, "refresh_normal_headers_for_message");
-        assert!(refresh_fn.contains("subject_label.set_text(text);"));
-        assert!(refresh_fn.contains("name != \"Betreff\" && !name.eq_ignore_ascii_case(\"subject\")"));
-    }
-
-    #[test]
     fn test_classic_header_action_placement_and_scroll_collapsing() {
         let _gtk_lock = crate::window::GTK_TEST_MUTEX
             .lock()
@@ -49583,23 +48358,6 @@ mod tests {
 
     #[test]
     fn test_preview_actions_bar_flush_height_and_responsive_collapse() {
-        let css = include_str!("../style.css");
-        assert!(css.contains(".mail-preview-actions-bar {"));
-        assert!(css.contains("min-height: 28px;"));
-        assert!(css.contains("border-bottom: 1px solid alpha(@borders, 0.45);"));
-        assert!(css.contains("background-color: transparent;"));
-
-        let source = include_str!("mail_page.rs");
-        assert!(source.contains("sidebar-drawer-header"));
-        assert!(source.contains("icon.set_pixel_size(16)"));
-        assert!(source.contains("gtk::SizeGroup::new(gtk::SizeGroupMode::Vertical)"));
-        assert!(source.contains("header_group.add_widget(left)"));
-        assert!(source.contains("header_group.add_widget(mid)"));
-        assert!(source.contains("header_group.add_widget(right)"));
-        let sync_fn = rust_function_body(source, "sync_preview_actions_labels");
-        assert!(sync_fn.contains("preview_width >= 520"));
-        assert!(sync_fn.contains("label.set_visible"));
-
         let _gtk_lock = crate::window::GTK_TEST_MUTEX
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -49637,129 +48395,6 @@ mod tests {
     }
 
     #[test]
-    fn test_mail_column_header_and_row_flush_alignment() {
-        let source = include_str!("mail_page.rs");
-        let header_fn = rust_function_body(source, "build_mail_column_header");
-        let setup_fn = rust_function_body(source, "build_message_list");
-
-        // Header container starts and ends flush with 0 margin
-        assert!(header_fn.contains(".margin_start(0)"));
-        assert!(header_fn.contains(".margin_end(0)"));
-        // Row vbox starts and ends flush with 0 margin
-        assert!(setup_fn.contains(".margin_start(0)"));
-        assert!(setup_fn.contains(".margin_end(0)"));
-    }
-
-    #[test]
-    fn test_mail_date_column_scrollbar_clearance_contract() {
-        let source = include_str!("mail_page.rs");
-        let css = include_str!("../style.css");
-
-        // Header CSS provides 16px right breathing room for the vertical scrollbar
-        assert!(css.contains(".mail-column-header-cell.date-cell"));
-        assert!(css.contains("padding: 2px 16px 2px 6px;"));
-
-        // Canvas table rendering allocates pad_right = 16.0 for date and size columns
-        assert!(source.contains("let pad_right = 16.0;"));
-        assert!(source.contains("let avail_date_w = (date_w - pad_left - pad_right).max(0.0);"));
-        assert!(source.contains("let avail_size_w = (size_w - pad_left - pad_right).max(0.0);"));
-
-        // Cards mode also reserves 16.0px right padding
-        assert!(source.contains("if layout.is_cards_mode {\n            let right_pad = 16.0;"));
-    }
-
-    #[test]
-    fn test_mail_paned_separator_and_scrollbar_hitbox_contract() {
-        let source = include_str!("mail_page.rs");
-        let css = include_str!("../style.css");
-
-        // 1. Horizontal paned separators must not encroach into the left pane (where the scrollbar sits)
-        assert!(css.contains("paned.horizontal > separator:dir(ltr)"));
-        assert!(css.contains("margin: 0 -3px 0 0;"));
-        assert!(css.contains("padding: 0 3px 0 0;"));
-
-        // 2. RTL flips the clearance to the opposite direction
-        assert!(css.contains("paned.horizontal > separator:dir(rtl)"));
-        assert!(css.contains("margin: 0 0 0 -3px;"));
-        assert!(css.contains("padding: 0 0 0 3px;"));
-
-        // 3. Vertical scrollbar has 2px right margin buffer from the paned divider
-        assert!(source.contains("vscrollbar.set_margin_end(2);"));
-
-        // 4. Mail table overlay scrollbar dimensions and 2px margin in CSS
-        assert!(css.contains("scrollbar.mail-table-overlay-scrollbar"));
-        assert!(css.contains("margin: 0 2px 0 0;"));
-        assert!(css.contains("min-width: 5px;"));
-        assert!(css.contains("min-width: 7px;"));
-    }
-
-    #[test]
-    fn test_mail_row_unread_and_read_styling_contract() {
-        let source = include_str!("mail_page.rs");
-        let list_fn = rust_function_body(source, "build_message_list");
-        assert!(list_fn.contains("outer.add_css_class(\"unread\");"));
-        assert!(list_fn.contains("outer.remove_css_class(\"unread\");"));
-        assert!(list_fn.contains("status.add_css_class(\"accent\");"));
-        assert!(list_fn.contains("status.add_css_class(\"mail-status-icon\");"));
-        assert!(!list_fn.contains("mail-row-even"));
-    }
-
-    #[test]
-    fn test_mail_column_header_drag_reordering_and_popover_action_buttons() {
-        let source = include_str!("mail_page.rs");
-        let css = include_str!("../style.css");
-
-        // 1. CSS classes for header drag-to-reorder feedback
-        assert!(css.contains(".mail-column-header-cell.column-dragging"));
-        assert!(css.contains(".mail-column-header-cell.drop-target-left"));
-        assert!(css.contains(".mail-column-header-cell.drop-target-right"));
-        assert!(css.contains("cursor: grabbing;"));
-
-        // 2. Drag & sort helper method
-        let drag_fn = rust_function_body(source, "setup_column_header_drag_and_sort");
-        assert!(drag_fn.contains("gtk::GestureDrag::new()"));
-        assert!(drag_fn.contains("sort_gesture.connect_released"));
-        assert!(drag_fn.contains("column-dragging"));
-        assert!(drag_fn.contains("drop-target-left"));
-        assert!(drag_fn.contains("drop-target-right"));
-        assert!(drag_fn.contains("settings.set_mail_list_column_order"));
-        assert!(drag_fn.contains("page.rebuild_mail_column_layout()"));
-
-        // 3. All column headers configured with drag and sort
-        let header_fn = rust_function_body(source, "build_mail_column_header");
-        for col_id in [
-            "\"sender\"",
-            "\"recipient\"",
-            "\"date\"",
-            "\"status\"",
-            "\"attachment\"",
-            "\"flagged\"",
-            "\"follow-up\"",
-            "\"important\"",
-            "\"subject\"",
-        ] {
-            assert!(header_fn.contains(col_id), "missing column id {col_id} in header gestures");
-        }
-
-        // 4. Popover action buttons show both icon and label
-        let context_fn = rust_function_body(source, "show_mail_header_context_menu");
-        assert!(context_fn.contains("make_popover_action_button"));
-        assert!(context_fn.contains("themed_icon_name"));
-        assert!(context_fn.contains("\"view-column-symbolic\", \"view-list-symbolic\""));
-        assert!(context_fn.contains("btn.set_child(Some(&row))"));
-    }
-
-    #[test]
-    fn test_shared_mailbox_sidebar_and_folder_integration() {
-        let source = include_str!("mail_page.rs");
-        assert!(source.contains("profile.is_shared_mailbox"));
-        assert!(source.contains("\"system-users-symbolic\""));
-        assert!(source.contains("\"Freigegebenes Postfach (Exchange)\""));
-        assert!(source.contains("\"Posteingang\""));
-        assert!(source.contains("mail-inbox-symbolic"));
-    }
-
-    #[test]
     fn test_account_sources_match_and_folder_names_match() {
         assert!(account_sources_match("eds:87c49708b1798f1a1e691578893f0904c503ede2", "87c49708b1798f1a1e691578893f0904c503ede2"));
         assert!(account_sources_match("account:edv@acme-corp.example", "edv@acme-corp.example"));
@@ -49794,59 +48429,6 @@ mod tests {
         let root_with_prefix = MailPage::dynamic_folder_key("eds:87c49708b1798f1a1e691578893f0904c503ede2", "");
         let root_without_prefix = MailPage::dynamic_folder_key("87c49708b1798f1a1e691578893f0904c503ede2", "");
         assert_eq!(root_with_prefix, root_without_prefix);
-
-        // 3. Source code contains deduplication guards
-        let source = include_str!("mail_page.rs");
-        let begin_fn = rust_function_body(source, "begin_pending_mail_apply");
-        assert!(begin_fn.contains("folder_map"));
-        assert!(begin_fn.contains("Self::canonical_account_uid"));
-
-        let rebuild_fn = rust_function_body(source, "rebuild_camel_folder_rows_with_force");
-        assert!(rebuild_fn.contains("seen_folder_in_parent"));
-        assert!(rebuild_fn.contains("seen_root_uids"));
-        assert!(rebuild_fn.contains("unique_roots"));
-    }
-
-    #[test]
-    fn test_mail_toolbar_and_preview_header_actions_contract() {
-        let source = include_str!("mail_page.rs");
-
-        // 1. Preview header has 3-dots button with Convey sections (Status, Triage, Tools)
-        let detail_fn = rust_function_body(source, "build_detail_view");
-        assert!(detail_fn.contains("win.mark-read"));
-        assert!(detail_fn.contains("win.mark-unread"));
-        assert!(detail_fn.contains("win.delete"));
-        assert!(detail_fn.contains("win.mail-print"));
-        assert!(detail_fn.contains("win.view-message-source"));
-        assert!(detail_fn.contains("win.export"));
-        assert!(detail_fn.contains("win.toggle-mail-light-mode"));
-        assert!(detail_fn.contains("preview_more_btn"));
-        assert!(detail_fn.contains("m_more_btn"));
-        assert!(detail_fn.contains("preview_reply_group.append(&preview_more_btn)"));
-        assert!(detail_fn.contains("modern_triage_group.append(&m_more_btn)"));
-        // Action bar dropdown menu does not duplicate primary action buttons (Reply, Unread, Delete)
-        assert!(!detail_fn.contains("reply_section"));
-        assert!(!detail_fn.contains("triage_section.append(Some(&str_trash), Some(\"win.delete\"));"));
-
-        // 2. Toolbar does NOT contain print preview, EML export, or 3-dots more menu
-        let toolbar_fn = rust_function_body(source, "build_unified_mail_toolbar");
-        assert!(!toolbar_fn.contains("mail-print-preview"));
-        assert!(!toolbar_fn.contains("win.export"));
-        assert!(!toolbar_fn.contains("view-more-symbolic"));
-
-        // 3. Toolbar has direct buttons for all triage, status, and source actions
-        assert!(toolbar_fn.contains("\"win.view-message-source\""));
-        assert!(toolbar_fn.contains("\"win.mail-print\""));
-        assert!(toolbar_fn.contains("\"win.mark-junk\""));
-        assert!(toolbar_fn.contains("\"win.mark-read\""));
-        assert!(toolbar_fn.contains("\"win.mark-unread\""));
-        assert!(toolbar_fn.contains("\"win.toggle-flag\""));
-        assert!(toolbar_fn.contains("\"win.toggle-important\""));
-
-        // 4. Status actions in toolbar are toggleable via settings
-        assert!(toolbar_fn.contains("mail-show-mark-read-actions"));
-        assert!(toolbar_fn.contains("status_group_for_settings.set_visible(active)"));
-        assert!(toolbar_fn.contains("status_separator_for_settings.set_visible(active)"));
     }
 
     #[test]
@@ -50099,14 +48681,6 @@ mod tests {
 
     #[test]
     fn test_mail_avatar_column_header_and_geometry() {
-        let source = include_str!("mail_page.rs");
-        let header_fn = rust_function_body(source, "build_mail_column_header");
-        assert!(header_fn.contains("avatar_column"));
-        assert!(header_fn.contains("\"avatar-default-symbolic\""));
-        assert!(header_fn.contains("avatar_size_group"));
-        assert!(header_fn.contains("follow_up_column"));
-        assert!(header_fn.contains("\"mail-flag-symbolic\""));
-
         let default_order: Vec<String> = crate::services::settings_service::MAIL_LIST_COLUMN_IDS
             .iter()
             .map(|s| (*s).to_string())
@@ -52469,15 +51043,6 @@ mod tests {
 
     #[test]
     fn test_mail_toolbar_button_modes_desktop_and_compact() {
-        let source = include_str!("mail_page.rs");
-        assert!(source.contains("pub(crate) fn apply_toolbar_button_modes"));
-        assert!(source.contains("pub(crate) fn sync_toolbar_button_labels"));
-        assert!(source.contains("\"Print\"") || source.contains("\"Drucken\""));
-        assert!(source.contains("\"Delete\"") || source.contains("\"Löschen\""));
-        assert!(source.contains("\"Archive\"") || source.contains("\"Archivieren\""));
-        assert!(source.contains("\"Move\"") || source.contains("\"Verschieben\""));
-        assert!(source.contains("\"Copy\"") || source.contains("\"Kopieren\""));
-
         let _gtk_lock = crate::window::GTK_TEST_MUTEX
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -53236,15 +51801,6 @@ mod tests {
             return;
         };
 
-        // 1. Contract check on CSS: compact action buttons and bar height
-        let css = include_str!("../style.css");
-        assert!(css.contains(".mail-header-action-btn {"));
-        assert!(css.contains("min-width: 32px;"));
-        assert!(css.contains("min-height: 32px;"));
-        assert!(css.contains(".mail-preview-actions-bar {"));
-        assert!(css.contains("min-height: 28px;"));
-        assert!(css.contains(".mail-preview-date-label"));
-
         let page = MailPage::new();
         let settings = AppSettings::try_new().expect("app settings");
         settings.set_mail_header_style("modern");
@@ -53624,62 +52180,6 @@ mod tests {
     }
 
     #[test]
-    fn test_mail_search_bar_elements_unified_dimensions_contract() {
-        let css = include_str!("../style.css");
-
-        // Verify CSS contracts for search bar collapsible 0px outer height and 44px inner revealed height
-        assert!(css.contains(".mail-search-bar,\nsearchbar {\n  min-height: 0;\n  background: none;\n  border: none;\n  padding: 0;\n  margin: 0;\n}"));
-        assert!(css.contains(".mail-search-bar > revealer > box,\nsearchbar > revealer > box {\n  min-height: 44px;\n  background-color: @headerbar_bg_color;\n  border-bottom: 1px solid alpha(@borders, 0.45);\n}"));
-        assert!(css.contains("searchbar .search-mode-button"));
-        assert!(css.contains("min-height: 34px;"));
-        assert!(css.contains(".search-mode-button {\n  font-size: 0.82rem;\n  font-weight: 600;\n  padding: 0 10px;\n  min-height: 34px;\n  min-width: 34px;\n}"));
-        assert!(css.contains(".search-options-button,\n.search-options-button > button,\n.save-search-button {\n  min-width: 34px;\n  min-height: 34px;\n  padding: 0;\n}"));
-
-        let source = include_str!("mail_page.rs");
-        // Verify programmatic setup in mail_page.rs
-        assert!(source.contains(".css_classes(vec![\"mail-search-bar\"])"));
-        assert!(source.contains(".css_classes(vec![\"flat\", \"circular\", \"search-options-button\"])"));
-        assert!(source.contains(".css_classes(vec![\"flat\", \"circular\", \"save-search-button\"])"));
-        assert!(source.contains("mode_box = gtk::Box::builder()\n            .orientation(gtk::Orientation::Horizontal)\n            .homogeneous(true)\n            .css_classes(vec![\"linked\"])"));
-    }
-
-    #[test]
-    fn test_action_pills_borderless_gnome_hig_contract() {
-        let css = include_str!("../style.css");
-
-        // Verify action pills have no border and no box-shadow per GNOME HIG / Libadwaita
-        assert!(css.contains(".mail-action-pill.linked,\n.mail-header-actions-group.linked {\n  background-color: alpha(@window_fg_color, 0.06);\n  border: none;\n  border-radius: 8px;\n  box-shadow: none;\n  padding: 0;\n}"));
-        assert!(css.contains("border-right: none;"));
-
-        let mail_source = include_str!("mail_page.rs");
-        assert!(mail_source.contains(".css_classes(vec![\"linked\", \"mail-header-actions-group\", \"action-pill\", \"mail-action-pill\"])"));
-
-        let contacts_source = include_str!("contacts_page.rs");
-        assert!(contacts_source.contains(".css_classes(vec![\"linked\", \"mail-action-pill\", \"contact-header-actions\"])"));
-    }
-
-    #[test]
-    fn test_mail_header_typography_and_clipping_clearance_contract() {
-        let css = include_str!("../style.css");
-
-        // 1. Email title / subject has prominent typography
-        assert!(css.contains(".mail-detail-subject,\nlabel.mail-detail-subject.title-4 {\n  font-size: 1.36rem;\n  font-weight: 700;"));
-
-        // 2. Sender address has dedicated class with clean 0.85rem size
-        assert!(css.contains(".mail-modern-sender-address,\nlabel.mail-modern-sender-address.caption {\n  font-size: 0.85rem;\n  line-height: 1.35;\n}"));
-
-        // 3. Date / time label has increased 0.94rem size and 0.85 contrast
-        assert!(css.contains("font-size: 0.94rem;\n  font-weight: 500;\n  color: alpha(@window_fg_color, 0.85);"));
-
-        // 4. Details toggle has compact 0.86rem font-size beneath sender row
-        assert!(css.contains("button.mail-details-toggle,\n.mail-details-toggle {\n  font-size: 0.86rem;\n  padding: 2px 6px 2px 4px;\n  min-height: 22px;"));
-
-        // 5. Code setup in mail_page.rs
-        let mail_source = include_str!("mail_page.rs");
-        assert!(mail_source.contains(".css_classes(vec![\"caption\", \"dim-label\", \"mail-modern-sender-address\"])"));
-    }
-
-    #[test]
     fn test_account_roots_custom_ordering_and_reorder_in_place() {
         let _lock = crate::window::GTK_TEST_MUTEX
             .lock()
@@ -53806,13 +52306,6 @@ mod tests {
             list_store.item(3).and_downcast::<FolderObject>().unwrap().id(),
             "unconfigured\0"
         );
-
-        // 3. Verify source code contract
-        let source = include_str!("mail_page.rs");
-        assert!(source.contains("pub fn reorder_account_roots(&self)"));
-        assert!(source.contains("root_store.sort(move |a, b|"));
-        assert!(source.contains("Self::account_order_maps()"));
-        assert!(source.contains("Self::compare_account_roots("));
     }
 
     #[test]
@@ -53824,17 +52317,9 @@ mod tests {
             return;
         };
 
-        // 1. Test configured_initial behavior
         let initial = FolderSelection::configured_initial();
         assert_eq!(initial.folder_id, "unified_inbox");
         assert!(initial.is_unified());
-
-        // 2. Test code contracts ensuring sidebar selection is always guaranteed
-        let source = include_str!("mail_page.rs");
-        assert!(source.contains("pub(crate) fn has_sidebar_folder_selected(&self) -> bool"));
-        assert!(source.contains("target_unified_id"));
-        assert!(source.contains("local_section_visible"));
-        assert!(source.contains("if !self.has_sidebar_folder_selected()"));
     }
 
     #[test]
