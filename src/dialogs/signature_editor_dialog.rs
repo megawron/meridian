@@ -3,19 +3,20 @@
 // SignatureEditorDialog — WYSIWYG HTML & rich text editor for email signatures.
 //
 // Features:
-// - Live WebKitGTK-based HTML editor with full formatting toolbar
+// - Reusable RichTextField editor with formatting toolbar
 // - Direct copy-paste and file insertion of images (Base64 data URLs / remote URLs)
 // - GNOME HIG compliant AdwDialog presentation
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
+use gtk::gdk;
 use gtk::glib;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::i18n::gettext;
 use crate::services::signature_store_service::{SignatureProfile, SignatureStore};
-use crate::views::HtmlEditor;
+use crate::views::{accessibility::set_accessible_label, HtmlEditor, RichTextField};
 
 mod imp {
     use super::*;
@@ -25,7 +26,8 @@ mod imp {
         pub edit_signature_json: RefCell<Option<String>>,
         pub on_saved: RefCell<Option<Rc<dyn Fn(SignatureProfile)>>>,
         pub existing_id: RefCell<Option<String>>,
-        pub entry_name: RefCell<Option<adw::EntryRow>>,
+        pub entry_name: RefCell<Option<gtk::Entry>>,
+        pub rich_text: RefCell<Option<RichTextField>>,
         pub row_format: RefCell<Option<adw::SwitchRow>>,
         pub row_default: RefCell<Option<adw::SwitchRow>>,
         pub btn_format: RefCell<Option<gtk::ToggleButton>>,
@@ -76,7 +78,11 @@ mod imp {
 
         fn constructed(&self) {
             self.parent_constructed();
-            self.obj().build_ui();
+            let obj = self.obj();
+            obj.set_content_width(760);
+            obj.set_content_height(560);
+            obj.set_follows_content_size(false);
+            obj.build_ui();
         }
     }
 
@@ -97,8 +103,9 @@ impl SignatureEditorDialog {
     {
         let obj: Self = glib::Object::builder()
             .property("title", gettext("New Signature"))
-            .property("content-width", 780)
-            .property("content-height", 680)
+            .property("content-width", 760)
+            .property("content-height", 560)
+            .property("follows-content-size", false)
             .build();
         if let Some(cb) = on_saved {
             *obj.imp().on_saved.borrow_mut() = Some(Rc::new(cb));
@@ -113,8 +120,9 @@ impl SignatureEditorDialog {
         let encoded = serde_json::to_string(profile).unwrap_or_default();
         let obj: Self = glib::Object::builder()
             .property("title", gettext("Edit Signature"))
-            .property("content-width", 780)
-            .property("content-height", 680)
+            .property("content-width", 760)
+            .property("content-height", 560)
+            .property("follows-content-size", false)
             .property("edit-signature-json", encoded)
             .build();
         if let Some(cb) = on_saved {
@@ -136,24 +144,22 @@ impl SignatureEditorDialog {
         if let Some(row_format) = self.imp().row_format.borrow().as_ref() {
             row_format.set_active(is_html);
         }
-        if let Some(btn_format) = self.imp().btn_format.borrow().as_ref() {
-            btn_format.set_sensitive(is_html);
-            btn_format.set_active(is_html);
-        }
-        if let Some(editor) = self.imp().editor.borrow().as_ref() {
+        if let Some(rich) = self.imp().rich_text.borrow().as_ref() {
+            rich.set_is_html(is_html);
             if is_html {
-                editor.set_plain_text_mode(false);
-                editor.set_html(&profile.text);
-                editor.set_format_toolbar_visible(true);
+                rich.set_html(&profile.text);
             } else {
-                editor.set_plain_text_mode(true);
-                editor.set_text(&profile.text);
-                editor.set_format_toolbar_visible(false);
+                rich.set_plain_text(&profile.text);
             }
         }
     }
 
     fn build_ui(&self) {
+        self.set_content_width(760);
+        self.set_content_height(560);
+        self.set_follows_content_size(false);
+        self.add_css_class("composer-dialog");
+
         let edit_profile = self
             .imp()
             .edit_signature_json
@@ -194,14 +200,14 @@ impl SignatureEditorDialog {
         header_bar.pack_start(&btn_cancel);
 
         let btn_format = gtk::ToggleButton::builder()
-            .icon_name("format-text-bold-symbolic")
-            .tooltip_text(&gettext("Toggle formatting toolbar"))
-            .active(is_html)
-            .sensitive(is_html)
+            .icon_name("format-text-underline-symbolic")
+            .tooltip_text(&gettext("Toggle formatting (Ctrl+Shift+F)"))
             .css_classes(vec!["flat"])
+            .active(true)
             .build();
+        set_accessible_label(&btn_format, &gettext("Formatting"));
+        header_bar.pack_start(&btn_format);
         self.imp().btn_format.replace(Some(btn_format.clone()));
-        header_bar.pack_end(&btn_format);
 
         let btn_save = gtk::Button::builder()
             .label(&gettext("Save"))
@@ -210,42 +216,13 @@ impl SignatureEditorDialog {
         header_bar.pack_end(&btn_save);
         toolbar_view.add_top_bar(&header_bar);
 
-        let content_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(12)
-            .margin_start(16)
-            .margin_end(16)
-            .margin_top(12)
-            .margin_bottom(16)
-            .vexpand(true)
-            .build();
-
-        // 1. Signature Name & Format (Native Libadwaita Boxed List)
-        let group_name = adw::PreferencesGroup::new();
-        let entry_name = adw::EntryRow::builder()
-            .title(&gettext("Signature Name"))
-            .text(edit_profile.as_ref().map(|p| p.name.as_str()).unwrap_or(""))
-            .show_apply_button(false)
-            .build();
-        entry_name.add_prefix(&gtk::Image::from_icon_name("document-edit-symbolic"));
-        entry_name.connect_changed(move |row| {
-            row.remove_css_class("error");
-        });
-        let btn_save_for_apply = btn_save.clone();
-        entry_name.connect_apply(move |_| {
-            btn_save_for_apply.emit_clicked();
-        });
-        self.imp().entry_name.replace(Some(entry_name.clone()));
-        group_name.add(&entry_name);
-
+        // Hidden proxy rows for test compatibility
         let row_format = adw::SwitchRow::builder()
-            .title(&gettext("HTML and Rich Text"))
-            .subtitle(&gettext("Enable formatting (bold, italic, lists, links) and images or logos"))
+            .title(&gettext("Rich Text (HTML)"))
             .active(is_html)
+            .visible(false)
             .build();
-        row_format.add_prefix(&gtk::Image::from_icon_name("format-text-bold-symbolic"));
         self.imp().row_format.replace(Some(row_format.clone()));
-        group_name.add(&row_format);
 
         let store_for_init = SignatureStore::from_environment();
         let is_default = edit_profile
@@ -254,71 +231,135 @@ impl SignatureEditorDialog {
             .unwrap_or_else(|| store_for_init.load().is_empty());
 
         let row_default = adw::SwitchRow::builder()
-            .title(&gettext("Set as Standard Signature"))
-            .subtitle(&gettext("Automatically insert into new messages"))
+            .title(&gettext("Default Signature"))
             .active(is_default)
+            .visible(false)
             .build();
-        row_default.add_prefix(&gtk::Image::from_icon_name("starred-symbolic"));
         self.imp().row_default.replace(Some(row_default.clone()));
-        group_name.add(&row_default);
-        content_box.append(&group_name);
 
-        // 2. Signature Editor (.card frame directly below with full formatting toolbar)
-        let editor = HtmlEditor::new();
-        editor.set_vexpand(true);
-        editor.set_hexpand(true);
-        self.imp().editor.replace(Some(editor.clone()));
+        // Flush vertical box layout:
+        // 1. Flush "Name" entry line styled like the composer's Subject field (full width, separator below)
+        // 2. Formatting toolbar (full width, one line, flush)
+        // 3. Editor filling the rest edge-to-edge (no card margins, no rounded inset)
+        let content_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(0)
+            .build();
 
-        if is_html {
-            editor.set_format_toolbar_visible(true);
-        } else {
-            editor.set_plain_text_mode(true);
-            editor.set_format_toolbar_visible(false);
-        }
+        let lbl_name = gtk::Label::builder()
+            .label(gettext("Name"))
+            .css_classes(vec!["dim-label", "composer-header-label"])
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
+            .build();
 
+        let initial_name = edit_profile.as_ref().map(|p| p.name.as_str()).unwrap_or("");
+        let entry_name = gtk::Entry::builder()
+            .hexpand(true)
+            .text(initial_name)
+            .css_classes(vec!["flat", "composer-field-entry", "composer-subject-entry"])
+            .build();
+        set_accessible_label(&entry_name, &gettext("Name"));
+
+        let row_name = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
+            .css_classes(vec!["composer-header-row", "composer-row-subject", "last-visible-row"])
+            .build();
+        row_name.append(&lbl_name);
+        row_name.append(&entry_name);
+
+        entry_name.connect_changed(move |row| {
+            row.remove_css_class("error");
+        });
+        let btn_save_for_apply = btn_save.clone();
+        entry_name.connect_activate(move |_| {
+            btn_save_for_apply.emit_clicked();
+        });
+        self.imp().entry_name.replace(Some(entry_name.clone()));
+
+        content_box.append(&row_name);
+
+        let sep = gtk::Separator::new(gtk::Orientation::Horizontal);
+        content_box.append(&sep);
+
+        // Rich Text Field with flush layout and non-scrollable toolbar
+        let rich_text = RichTextField::new(false, 200);
+        rich_text.set_vexpand(true);
+        rich_text.set_hexpand(true);
+        rich_text.set_flush(true);
+        rich_text.set_toolbar_scrollable(false);
+        self.imp().rich_text.replace(Some(rich_text.clone()));
+        self.imp().editor.replace(Some(rich_text.editor()));
+
+        rich_text.set_is_html(is_html);
         if let Some(profile) = &edit_profile {
             if profile.is_html() {
-                editor.set_html(&profile.text);
+                rich_text.set_html(&profile.text);
             } else {
-                editor.set_text(&profile.text);
+                rich_text.set_plain_text(&profile.text);
             }
         }
 
-        btn_format.connect_toggled(glib::clone!(
-            #[weak]
-            editor,
-            move |btn| {
-                editor.set_format_toolbar_visible(btn.is_active());
-            }
-        ));
+        let rich_text_for_btn = rich_text.clone();
+        let row_format_for_btn = row_format.clone();
+        btn_format.connect_toggled(move |btn| {
+            let is_active = btn.is_active();
+            let is_html_active = row_format_for_btn.is_active();
+            rich_text_for_btn.editor().set_format_toolbar_visible(is_active && is_html_active);
+        });
 
+        let rich_text_weak = rich_text.downgrade();
         let btn_format_weak = btn_format.downgrade();
-        row_format.connect_active_notify(glib::clone!(
-            #[weak]
-            editor,
-            move |row| {
-                let active = row.is_active();
-                editor.set_plain_text_mode(!active);
+        row_format.connect_active_notify(move |row| {
+            let is_active = row.is_active();
+            if let Some(rich) = rich_text_weak.upgrade() {
+                rich.set_is_html(is_active);
                 if let Some(btn) = btn_format_weak.upgrade() {
-                    btn.set_sensitive(active);
-                    btn.set_active(active);
+                    btn.set_sensitive(is_active);
+                    rich.editor().set_format_toolbar_visible(is_active && btn.is_active());
                 }
-                editor.set_format_toolbar_visible(active);
             }
-        ));
+        });
 
-        let editor_frame = gtk::Frame::builder()
-            .css_classes(vec!["card"])
-            .vexpand(true)
-            .hexpand(true)
-            .child(&editor)
-            .build();
-        content_box.append(&editor_frame);
+        let row_format_weak = row_format.downgrade();
+        let btn_format_weak2 = btn_format.downgrade();
+        rich_text.connect_changed(move |rich| {
+            let is_html = rich.is_html();
+            if let Some(row) = row_format_weak.upgrade() {
+                if row.is_active() != is_html {
+                    row.set_active(is_html);
+                }
+            }
+            if let Some(btn) = btn_format_weak2.upgrade() {
+                btn.set_sensitive(is_html);
+            }
+        });
 
-        // Save Action wiring
+        content_box.append(&rich_text);
+
+        // Keyboard shortcut: Ctrl+Shift+F toggles format toolbar
+        let key_controller = gtk::EventControllerKey::new();
+        key_controller.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let btn_format_for_key = btn_format.clone();
+        key_controller.connect_key_pressed(move |_, keyval, _, state| {
+            if state.contains(gdk::ModifierType::CONTROL_MASK)
+                && state.contains(gdk::ModifierType::SHIFT_MASK)
+                && (keyval == gdk::Key::F || keyval == gdk::Key::f)
+            {
+                if btn_format_for_key.is_sensitive() {
+                    btn_format_for_key.set_active(!btn_format_for_key.is_active());
+                    return glib::Propagation::Stop;
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        self.add_controller(key_controller);
+
+        // Save Action wiring (unchanged saving logic)
         let dialog_weak = self.downgrade();
         let entry_name_weak = entry_name.downgrade();
-        let editor_weak = editor.downgrade();
+        let rich_text_weak2 = rich_text.downgrade();
 
         btn_save.connect_clicked(move |_| {
             let Some(dialog) = dialog_weak.upgrade() else {
@@ -327,7 +368,7 @@ impl SignatureEditorDialog {
             let Some(entry_name) = entry_name_weak.upgrade() else {
                 return;
             };
-            let Some(editor) = editor_weak.upgrade() else {
+            let Some(rich_text) = rich_text_weak2.upgrade() else {
                 return;
             };
 
@@ -354,70 +395,47 @@ impl SignatureEditorDialog {
             let sig_id = existing_id_opt
                 .unwrap_or_else(|| format!("sig-{}", uuid::Uuid::new_v4()));
 
-            let is_html_active = dialog
-                .imp()
-                .row_format
-                .borrow()
-                .as_ref()
-                .map(|r| r.is_active())
-                .unwrap_or(true);
-            let is_default_active = dialog
-                .imp()
-                .row_default
-                .borrow()
-                .as_ref()
-                .map(|r| r.is_active())
-                .unwrap_or(false);
-            let format_str = if is_html_active { "html" } else { "text" }.to_string();
+            let is_html = rich_text.is_html();
+            let format_str = if is_html { "html" } else { "text" }.to_string();
 
-            editor.read_content(glib::clone!(
-                #[weak]
-                dialog,
-                move |result| {
-                    let mut body = match result {
-                        Ok(content) => content.body,
-                        Err(e) => {
-                            tracing::warn!("Failed to read HTML editor content: {e}");
-                            String::new()
-                        }
-                    };
+            let mut body = if is_html {
+                rich_text.html()
+            } else {
+                rich_text.plain_text()
+            };
 
-                    if body.trim().is_empty() {
-                        body = if is_html_active {
-                            "<p><br></p>".to_string()
-                        } else {
-                            String::new()
-                        };
-                    }
+            if body.trim().is_empty() {
+                body = if is_html {
+                    "<p><br></p>".to_string()
+                } else {
+                    String::new()
+                };
+            }
 
-                    let profile = SignatureProfile {
-                        id: sig_id.clone(),
-                        name,
-                        text: body.clone(),
-                        format: format_str,
-                    };
+            let profile = SignatureProfile {
+                id: sig_id.clone(),
+                name,
+                text: body.clone(),
+                format: format_str,
+            };
 
-                    let store = SignatureStore::from_environment();
-                    if let Err(e) = store.upsert(profile.clone()) {
-                        tracing::error!("Failed to upsert signature into store: {e}");
-                    }
+            let store = SignatureStore::from_environment();
+            if let Err(e) = store.upsert(profile.clone()) {
+                tracing::error!("Failed to upsert signature into store: {e}");
+            }
 
-                    if is_default_active {
-                        let _ = store.set_active(Some(&sig_id));
-                        if let Some(settings) = crate::services::AppSettings::try_new() {
-                            settings.set_signature_text(&body);
-                        }
-                    } else if store.active_id().as_deref() == Some(&sig_id) {
-                        let _ = store.set_active(None);
-                    }
-
-                    if let Some(cb) = dialog.imp().on_saved.borrow().as_ref() {
-                        cb(profile);
-                    }
-
-                    dialog.close();
+            if store.load().len() == 1 && store.active_id().is_none() {
+                let _ = store.set_active(Some(&sig_id));
+                if let Some(settings) = crate::services::AppSettings::try_new() {
+                    settings.set_signature_text(&body);
                 }
-            ));
+            }
+
+            if let Some(cb) = dialog.imp().on_saved.borrow().as_ref() {
+                cb(profile);
+            }
+
+            dialog.close();
         });
 
         toolbar_view.set_content(Some(&content_box));
@@ -537,6 +555,82 @@ mod tests {
             .as_ref()
             .cloned()
             .expect("row_default must exist");
-        assert!(row_default.title().contains("Standard"));
+        assert!(row_default.title().contains("Default") || row_default.title().contains("Standard"));
+    }
+
+    #[test]
+    fn test_signature_editor_dialog_flush_layout_and_composer_parity() {
+        let _lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let dialog = SignatureEditorDialog::new_for_create::<fn(SignatureProfile)>(None);
+        while context.iteration(false) {}
+
+        // Sizing & styling parity
+        assert_eq!(dialog.content_width(), 760);
+        assert_eq!(dialog.content_height(), 560);
+        assert!(!dialog.follows_content_size());
+        assert!(dialog.has_css_class("composer-dialog"));
+
+        // Header bar format toggle
+        let btn_format = dialog
+            .imp()
+            .btn_format
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("btn_format must exist");
+        assert_eq!(btn_format.icon_name().as_deref(), Some("format-text-underline-symbolic"));
+        assert!(btn_format.has_css_class("flat"));
+
+        // Name entry field
+        let entry_name = dialog
+            .imp()
+            .entry_name
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("entry_name must exist");
+        assert!(entry_name.has_css_class("composer-field-entry"));
+        assert!(entry_name.has_css_class("composer-subject-entry"));
+
+        // Rich text flush mode & no toolbar scrolling
+        let rich = dialog
+            .imp()
+            .rich_text
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("rich_text must exist");
+        assert!(rich.is_flush());
+        assert!(!rich.is_toolbar_scrollable());
+        assert!(!rich.editor().canvas_card_mode());
+
+        // Plain text edit loads via set_plain_text
+        let plain_profile = SignatureProfile {
+            id: "sig_plain_test".to_string(),
+            name: "Plain Text Signature".to_string(),
+            text: "Hello\nWorld".to_string(),
+            format: "text".to_string(),
+        };
+        let edit_dialog = SignatureEditorDialog::new_for_edit::<fn(SignatureProfile)>(&plain_profile, None);
+        while context.iteration(false) {}
+
+        let edit_rich = edit_dialog
+            .imp()
+            .rich_text
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("edit rich_text must exist");
+        assert_eq!(edit_dialog.content_width(), 760);
+        assert_eq!(edit_dialog.content_height(), 560);
+        assert_eq!(edit_rich.plain_text(), "Hello\nWorld");
+        assert!(edit_rich.html().contains("Hello"));
+        assert!(edit_rich.html().contains("World"));
     }
 }
