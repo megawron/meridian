@@ -3756,6 +3756,11 @@ table, td, th {
 h1, h2, h3, h4, h5, h6 {
   line-height: 1.25 !important;
 }
+p.MsoNormal, li.MsoNormal, div.MsoNormal, blockquote p {
+  margin-top: 0;
+  margin-bottom: 0;
+  line-height: 1.15;
+}
 img, video, iframe, canvas, svg {
   max-width: 100%;
 }

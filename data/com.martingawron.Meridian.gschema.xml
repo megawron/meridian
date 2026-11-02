@@ -372,7 +372,7 @@
       <summary>Default forward style (attached, inline, or quoted)</summary>
     </key>
     <key name="composer-top-signature" type="b">
-      <default>false</default>
+      <default>true</default>
       <summary>Insert signature above quoted text when replying</summary>
     </key>
     <key name="composer-signature-outline" type="b">

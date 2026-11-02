@@ -240,6 +240,7 @@ mod imp {
         pub composer_action_group: RefCell<Option<gio::SimpleActionGroup>>,
         pub dirty_revision: Cell<u64>,
         pub saved_revision: Cell<u64>,
+        pub backend_draft_saved: Cell<bool>,
         pub user_typed_in_editor: Cell<bool>,
         pub suppress_dirty_tracking: Cell<bool>,
         pub suppress_setting_persistence: Cell<bool>,
@@ -2672,7 +2673,7 @@ impl ComposeDialog {
                 .borrow()
                 .as_ref()
                 .map(|s| s.composer_top_signature())
-                .unwrap_or(false);
+                .unwrap_or(true);
             let markup = format_signature_markup(&choice.html);
             if let Some(editor) = dialog.imp().html_editor.borrow().as_ref() {
                 editor.replace_or_insert_signature(&markup, top_signature);
@@ -3339,6 +3340,7 @@ impl ComposeDialog {
                                         if completion.local_draft_deleted {
                                             dialog.imp().local_draft_persisted.set(false);
                                         }
+                                        dialog.notify_mail_page_drafts_changed();
                                         let mut message = if completion.sent_message_saved {
                                             "E-Mail gesendet; Kopie in Gesendet gespeichert"
                                         } else {
@@ -3775,12 +3777,6 @@ impl ComposeDialog {
                                     dialog.imp().local_draft_persisted.set(true);
                                     dialog.imp().persisted_draft.replace(Some(saved_draft));
                                     dialog.mark_saved();
-                                    if dialog.imp().close_after_save.replace(false) {
-                                        dialog.show_toast("Entwurf gespeichert");
-                                        dialog.imp().close_confirmed.set(true);
-                                        dialog.set_can_close(true);
-                                        dialog.close();
-                                    }
                                 }
                                 DraftWorkerEvent::Cancelled => {
                                     dialog.imp().close_after_save.set(false);
@@ -3792,6 +3788,8 @@ impl ComposeDialog {
                                 }
                                 DraftWorkerEvent::Finished(result) => {
                                     dialog.finish_operation(operation_id);
+                                    dialog.imp().backend_draft_saved.set(true);
+                                    dialog.notify_mail_page_drafts_changed();
                                     match result {
                                         Ok(true) => {
                                             if dialog.imp().close_after_save.replace(false) {
@@ -3816,10 +3814,17 @@ impl ComposeDialog {
                                             }
                                         }
                                         Err(error) => {
-                                            dialog.imp().close_after_save.set(false);
-                                            dialog.show_toast(&format!(
-                                                "{error}; Inhalt bleibt geöffnet"
-                                            ));
+                                            if dialog.imp().close_after_save.replace(false) {
+                                                tracing::warn!(%error, "Backend draft sync failed on close; local draft saved");
+                                                dialog.show_toast("Entwurf gespeichert");
+                                                dialog.imp().close_confirmed.set(true);
+                                                dialog.set_can_close(true);
+                                                dialog.close();
+                                            } else {
+                                                dialog.show_toast(&format!(
+                                                    "{error}; Inhalt bleibt geöffnet"
+                                                ));
+                                            }
                                         }
                                     }
                                     return;
@@ -4334,12 +4339,21 @@ impl ComposeDialog {
         }
         let revision = self.imp().dirty_revision.get().wrapping_add(1);
         self.imp().dirty_revision.set(revision);
+        self.imp().backend_draft_saved.set(false);
     }
 
     fn mark_saved(&self) {
         self.imp()
             .saved_revision
             .set(self.imp().dirty_revision.get());
+    }
+
+    fn notify_mail_page_drafts_changed(&self) {
+        if let Some(window) = crate::window::find_meridian_window(self) {
+            if let Some(mail_page) = window.mail_page() {
+                mail_page.refresh_mail();
+            }
+        }
     }
 
     fn has_user_content(&self) -> bool {
@@ -4407,7 +4421,9 @@ impl ComposeDialog {
             let _ = DraftStoreService::default().delete(&draft_id);
         }
         self.imp().local_draft_persisted.set(false);
+        self.imp().backend_draft_saved.set(false);
         self.imp().user_typed_in_editor.set(false);
+        self.notify_mail_page_drafts_changed();
         self.imp().close_confirmed.set(true);
         self.set_can_close(true);
         self.close();
@@ -4432,8 +4448,10 @@ impl ComposeDialog {
             self.imp().close_after_save.set(true);
             return true;
         }
+        let needs_save = self.is_dirty()
+            || (self.imp().local_draft_persisted.get() && !self.imp().backend_draft_saved.get());
         match close_request_decision(
-            self.is_dirty(),
+            needs_save,
             self.imp().operation.get(),
         ) {
             CloseRequestDecision::Allow => {
@@ -5257,11 +5275,11 @@ impl ComposeDialog {
                 let signature = format_signature_markup(&choice.html);
                 let top_signature = AppSettings::try_new()
                     .map(|s| s.composer_top_signature())
-                    .unwrap_or(false);
+                    .unwrap_or(true);
                 let initial_html = if top_signature {
-                    format!("{signature}<p><br></p>")
+                    format!("<p><br></p><p><br></p>{signature}<p><br></p>")
                 } else {
-                    format!("<p><br></p>{signature}")
+                    format!("<p><br></p><p><br></p>{signature}")
                 };
                 if let Some(editor) = self.imp().html_editor.borrow().as_ref() {
                     editor.set_html(&initial_html);
@@ -5462,16 +5480,19 @@ impl ComposeDialog {
                     Ok(Ok(saved_draft)) => {
                         dialog.imp().local_draft_persisted.set(true);
                         dialog.imp().persisted_draft.replace(Some(saved_draft));
-                        if dialog.imp().dirty_revision.get() == revision {
-                            dialog.mark_saved();
-                        }
+                        let _ = revision;
                         dialog.imp().autosave_error_shown.set(false);
+                        dialog.notify_mail_page_drafts_changed();
                         tracing::debug!("Local draft autosaved");
-                        if dialog.imp().close_after_save.replace(false) {
-                            dialog.show_toast("Entwurf gespeichert");
-                            dialog.imp().close_confirmed.set(true);
-                            dialog.set_can_close(true);
-                            dialog.close();
+                        if dialog.imp().close_after_save.get() {
+                            if let Some(button) = dialog.imp().save_draft_button.borrow().as_ref() {
+                                button.emit_clicked();
+                            } else if dialog.imp().close_after_save.replace(false) {
+                                dialog.show_toast("Entwurf gespeichert");
+                                dialog.imp().close_confirmed.set(true);
+                                dialog.set_can_close(true);
+                                dialog.close();
+                            }
                         }
                     }
                     Ok(Err(error)) => {
@@ -7406,7 +7427,15 @@ pub(crate) fn prepare_quote_html(original_html: &str) -> String {
         return signature_plain_text_to_html(sanitized_trimmed);
     }
 
-    sanitized_trimmed.to_string()
+    sanitized_trimmed
+        .replace(
+            "<p class=\"MsoNormal\">",
+            "<p class=\"MsoNormal\" style=\"margin: 0; line-height: 1.15;\">",
+        )
+        .replace(
+            "<p class=\"MsoNormal\" style=\"",
+            "<p class=\"MsoNormal\" style=\"margin: 0; line-height: 1.15; ",
+        )
 }
 
 fn reply_body_html_with_style(
@@ -7424,7 +7453,7 @@ fn reply_body_html_with_style(
     };
     let top_signature = AppSettings::try_new()
         .map(|s| s.composer_top_signature())
-        .unwrap_or(false);
+        .unwrap_or(true);
     let (prefix, suffix) = if top_signature {
         (signature_prefix_html(), String::new())
     } else {
@@ -7513,7 +7542,7 @@ fn forward_body_html_with_style(
     };
     let top_signature = AppSettings::try_new()
         .map(|s| s.composer_top_signature())
-        .unwrap_or(false);
+        .unwrap_or(true);
     let (prefix, suffix) = if top_signature {
         (signature_prefix_html(), String::new())
     } else {
@@ -7705,9 +7734,12 @@ fn signature_body_html() -> String {
 fn signature_prefix_html() -> String {
     let signature = default_signature_html();
     if signature.is_empty() {
-        "<p><br></p>".to_string()
+        "<p><br></p><p><br></p>".to_string()
     } else {
-        format!("{}<p><br></p>", format_signature_markup(&signature))
+        format!(
+            "<p><br></p><p><br></p>{}<p><br></p>",
+            format_signature_markup(&signature)
+        )
     }
 }
 

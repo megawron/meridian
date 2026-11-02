@@ -550,7 +550,7 @@ fn default_composer_forward_style() -> String {
 }
 
 fn default_composer_top_signature() -> bool {
-    false
+    true
 }
 
 fn default_composer_signature_outline() -> bool {

@@ -6732,7 +6732,7 @@ mod tests {
         assert!(settings.composer_inline_spelling());
         assert_eq!(settings.composer_reply_style(), "quoted");
         assert_eq!(settings.composer_forward_style(), "attached");
-        assert!(!settings.composer_top_signature());
+        assert!(settings.composer_top_signature());
         assert!(settings.composer_signature_outline());
 
         // 2. Setters & Roundtrip
@@ -6754,8 +6754,8 @@ mod tests {
         assert_eq!(settings.composer_reply_style(), "inline");
         settings.set_composer_forward_style("quoted");
         assert_eq!(settings.composer_forward_style(), "quoted");
-        settings.set_composer_top_signature(true);
-        assert!(settings.composer_top_signature());
+        settings.set_composer_top_signature(false);
+        assert!(!settings.composer_top_signature());
         settings.set_composer_signature_outline(false);
         assert!(!settings.composer_signature_outline());
 
@@ -6791,7 +6791,7 @@ mod tests {
         assert!(reset.composer_prompt_empty_subject());
         assert_eq!(reset.composer_reply_style(), "quoted");
         assert_eq!(reset.composer_forward_style(), "attached");
-        assert!(!reset.composer_top_signature());
+        assert!(reset.composer_top_signature());
         assert!(reset.composer_signature_outline());
     }
 

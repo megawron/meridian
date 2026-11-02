@@ -11507,7 +11507,21 @@ impl MailPage {
         let Some(message) = self.selected_message() else {
             return false;
         };
-        Self::ensure_message_hydrated_for_compose(&message);
+        self.edit_message_as_new(&message)
+    }
+
+    pub(crate) fn edit_message_as_new(&self, message: &MailMessageObject) -> bool {
+        if let Some(draft_id) = message.id().strip_prefix("draft-store:") {
+            if let Some(draft) = DraftStoreService::default()
+                .load()
+                .into_iter()
+                .find(|d| d.id == draft_id)
+            {
+                let dialog = crate::dialogs::ComposeDialog::from_draft(&draft);
+                return self.present_composer(dialog);
+            }
+        }
+        Self::ensure_message_hydrated_for_compose(message);
         let attachments = message
             .attachments()
             .into_iter()
@@ -12101,6 +12115,10 @@ impl MailPage {
     }
 
     pub(crate) fn open_standalone_message_viewer(&self, message: &MailMessageObject) {
+        if message.id().starts_with("draft-store:") {
+            let _ = self.edit_message_as_new(message);
+            return;
+        }
         let key = message_source_window_key(message);
         if let Some(existing) = self.imp().standalone_viewers.borrow().get(&key) {
             existing.present();
@@ -13752,6 +13770,11 @@ impl MailPage {
     }
 
     pub fn delete_message(&self, message: &MailMessageObject) -> Result<bool, MailOperationError> {
+        if let Some(draft_id) = message.id().strip_prefix("draft-store:") {
+            let _ = DraftStoreService::default().delete(draft_id);
+            self.optimistically_remove_messages(std::slice::from_ref(message));
+            return Ok(true);
+        }
         let result = match message.backend_location() {
             Some(location) => {
                 self.execute_mail_command(MailCommand::delete(message.id(), location))
@@ -13775,7 +13798,23 @@ impl MailPage {
         if messages.len() == 1 {
             return self.delete_message(&messages[0]);
         }
-        let commands = messages
+        let mut draft_store_msgs = Vec::new();
+        let mut regular_msgs = Vec::new();
+        for message in messages {
+            if let Some(draft_id) = message.id().strip_prefix("draft-store:") {
+                let _ = DraftStoreService::default().delete(draft_id);
+                draft_store_msgs.push(message);
+            } else {
+                regular_msgs.push(message);
+            }
+        }
+        if !draft_store_msgs.is_empty() {
+            self.optimistically_remove_messages(&draft_store_msgs);
+        }
+        if regular_msgs.is_empty() {
+            return Ok(!draft_store_msgs.is_empty());
+        }
+        let commands = regular_msgs
             .iter()
             .map(|message| match message.backend_location() {
                 Some(location) => MailCommand::delete(message.id(), location),
@@ -13784,9 +13823,9 @@ impl MailPage {
             .collect::<Vec<_>>();
         let count = self.execute_mail_batch(commands, &gettext("Delete messages"))?;
         if count > 0 {
-            self.optimistically_remove_messages(&messages);
+            self.optimistically_remove_messages(&regular_msgs);
         }
-        Ok(count > 0)
+        Ok(count > 0 || !draft_store_msgs.is_empty())
     }
 
     /// Increase zoom level in the message viewer.
@@ -42476,6 +42515,113 @@ impl MailPage {
                     _ => {}
                 }
             }
+            // Supplement with persisted DraftStoreService drafts so drafts saved in the composer
+            // are always visible in the Drafts ("Entwürfe") folder even before/without backend sync.
+            if req_offset == 0
+                && req_folder_name
+                    .as_deref()
+                    .is_none_or(|fname| folder_names_match(fname, "drafts"))
+            {
+                let persisted_drafts = DraftStoreService::default().load();
+                let meaningful_drafts: Vec<DraftMessage> = persisted_drafts
+                    .into_iter()
+                    .filter(|d| {
+                        draft_store_message_has_meaningful_content(d)
+                            && req_source_uid.as_deref().is_none_or(|src| {
+                                d.source_uid.trim().is_empty()
+                                    || account_sources_match(&d.source_uid, src)
+                            })
+                    })
+                    .collect();
+                if !meaningful_drafts.is_empty() {
+                    match &mut result {
+                        MailPageLoadResult::Camel {
+                            camel,
+                            searchable_body_texts,
+                        }
+                        | MailPageLoadResult::Combined {
+                            camel,
+                            searchable_body_texts,
+                            ..
+                        } => {
+                            let default_drafts_folder = req_folder_name
+                                .as_deref()
+                                .filter(|fname| folder_names_match(fname, "drafts"))
+                                .map(str::to_string)
+                                .or_else(|| {
+                                    camel
+                                        .folders
+                                        .iter()
+                                        .find(|f| folder_names_match(&f.folder_name, "drafts"))
+                                        .map(|f| f.folder_name.clone())
+                                })
+                                .unwrap_or_else(|| "Drafts".to_string());
+                            for draft in meaningful_drafts {
+                                let draft_msg_id = format!("draft-store:{}", draft.id);
+                                let already_present = camel.messages.iter().any(|m| {
+                                    m.id == draft_msg_id
+                                        || ((m.folder_id.eq_ignore_ascii_case("drafts")
+                                            || folder_names_match(&m.folder_name, "drafts"))
+                                            && !draft.subject.trim().is_empty()
+                                            && m.subject.trim() == draft.subject.trim()
+                                            && m.recipient_to.trim() == draft.to.trim())
+                                });
+                                if !already_present {
+                                    let folder_for_draft = camel
+                                        .folders
+                                        .iter()
+                                        .find(|f| {
+                                            account_sources_match(&f.source_uid, &draft.source_uid)
+                                                && folder_names_match(&f.folder_name, "drafts")
+                                        })
+                                        .map(|f| f.folder_name.as_str())
+                                        .unwrap_or(&default_drafts_folder);
+                                    let parsed = draft_message_to_parsed_mail(
+                                        &draft,
+                                        req_source_uid.as_deref(),
+                                        folder_for_draft,
+                                    );
+                                    searchable_body_texts
+                                        .entry(parsed_mail_identity(&parsed))
+                                        .or_insert_with(|| {
+                                            Arc::<str>::from(parsed.preview_snippet.to_lowercase())
+                                        });
+                                    camel.messages.push(parsed);
+                                }
+                            }
+                            crate::services::mail_store_service::assign_thread_metadata(
+                                &mut camel.messages,
+                            );
+                        }
+                        MailPageLoadResult::Local {
+                            messages: local_messages,
+                            searchable_body_texts,
+                            ..
+                        } => {
+                            for draft in meaningful_drafts {
+                                let draft_msg_id = format!("draft-store:{}", draft.id);
+                                if !local_messages.iter().any(|m| m.id == draft_msg_id) {
+                                    let parsed = draft_message_to_parsed_mail(
+                                        &draft,
+                                        req_source_uid.as_deref(),
+                                        "Drafts",
+                                    );
+                                    searchable_body_texts
+                                        .entry(parsed_mail_identity(&parsed))
+                                        .or_insert_with(|| {
+                                            Arc::<str>::from(parsed.preview_snippet.to_lowercase())
+                                        });
+                                    local_messages.push(parsed);
+                                }
+                            }
+                            crate::services::mail_store_service::assign_thread_metadata(
+                                local_messages,
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }
             tracing::debug!(
                 elapsed_ms = started.elapsed().as_millis() as u64,
                 "Mail load worker completed"
@@ -44889,6 +45035,104 @@ fn save_itip_reply_draft(
         .save(draft)
         .map_err(|error| format!("{error}"))?;
     Ok(draft_id)
+}
+
+fn plain_text_from_draft_html(body: &str) -> String {
+    let mut in_tag = false;
+    let mut text = String::with_capacity(body.len());
+    for ch in body.chars() {
+        if ch == '<' {
+            in_tag = true;
+        } else if ch == '>' {
+            in_tag = false;
+            text.push(' ');
+        } else if !in_tag {
+            text.push(ch);
+        }
+    }
+    text.replace("&nbsp;", " ")
+        .replace("&#160;", " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn draft_store_message_has_meaningful_content(draft: &DraftMessage) -> bool {
+    if !draft.subject.trim().is_empty() || !draft.attachments.is_empty() {
+        return true;
+    }
+    !plain_text_from_draft_html(&draft.html_body).trim().is_empty()
+}
+
+fn draft_message_to_parsed_mail(
+    draft: &DraftMessage,
+    fallback_source_uid: Option<&str>,
+    folder_name: &str,
+) -> ParsedMail {
+    let id = format!("draft-store:{}", draft.id);
+    let effective_source = if !draft.source_uid.trim().is_empty() {
+        Some(draft.source_uid.trim().to_string())
+    } else {
+        fallback_source_uid.map(str::to_string)
+    };
+    let backend_location = effective_source.map(|source_uid| MailBackendLocation {
+        source_uid,
+        folder_name: folder_name.to_string(),
+        message_uid: id.clone(),
+        message_id: Some(format!("<draft-{}@meridian.local>", draft.id)),
+    });
+    let snippet: String = plain_text_from_draft_html(&draft.html_body)
+        .chars()
+        .take(160)
+        .collect();
+    let subject = if draft.subject.trim().is_empty() {
+        gettext("(No subject)")
+    } else {
+        draft.subject.clone()
+    };
+    let html_body = if draft.plain_text {
+        format!(
+            "<pre style=\"white-space: pre-wrap; font-family: inherit;\">{}</pre>",
+            glib::markup_escape_text(&draft.html_body)
+        )
+    } else {
+        draft.html_body.clone()
+    };
+    ParsedMail {
+        id: id.clone(),
+        folder_id: "drafts".to_string(),
+        folder_name: folder_name.to_string(),
+        backend_location,
+        sender_name: String::new(),
+        sender_email: draft.from.clone(),
+        recipient_to: draft.to.clone(),
+        recipient_cc: draft.cc.clone(),
+        recipient_bcc: draft.bcc.clone(),
+        reply_to: draft.reply_to.clone(),
+        subject,
+        message_id: Some(format!("<draft-{}@meridian.local>", draft.id)),
+        in_reply_to: Vec::new(),
+        references: Vec::new(),
+        thread_id: id,
+        thread_size: 1,
+        thread_position: 0,
+        date_str: draft.updated_at.clone(),
+        message_size: draft.html_body.len(),
+        preview_snippet: snippet,
+        html_body,
+        raw_headers: None,
+        raw_mime: None,
+        is_unread: false,
+        is_flagged: false,
+        is_important: false,
+        is_replied: false,
+        is_forwarded: false,
+        follow_up_state: MailFollowUpState::None,
+        follow_up: MailFollowUpMetadata::default(),
+        labels: Vec::new(),
+        attachments: Vec::new(),
+        is_preview_only: false,
+    }
 }
 
 fn show_mail_toast_for_widget<W: IsA<gtk::Widget>>(widget: &W, message: &str) {

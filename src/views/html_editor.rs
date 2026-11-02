@@ -1232,12 +1232,13 @@ impl HtmlEditor {
         let Ok(encoded) = serde_json::to_string(html) else {
             return;
         };
+        let caret_js = "try { const first = document.body.firstElementChild || document.body.firstChild; if (first) { const range = document.createRange(); range.setStart(first, 0); range.collapse(true); const sel = window.getSelection(); if (sel) { sel.removeAllRanges(); sel.addRange(range); } } } catch (e) {}";
         let script = if self.plain_text_mode() {
             format!(
-                "document.body.innerHTML = {encoded}; document.body.textContent = document.body.innerText; if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();"
+                "document.body.innerHTML = {encoded}; document.body.textContent = document.body.innerText; {caret_js} if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();"
             )
         } else {
-            format!("document.body.innerHTML = {encoded}; if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();")
+            format!("document.body.innerHTML = {encoded}; {caret_js} if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();")
         };
         self.evaluate_or_queue(script);
     }
@@ -1300,13 +1301,51 @@ impl HtmlEditor {
         el.replaceWith(newSig);
     }} else {{
         if ({top_signature}) {{
-            document.body.prepend(newSig);
+            const quote = document.querySelector('blockquote');
+            if (quote) {{
+                const prev = quote.previousElementSibling;
+                const target = (prev && prev.tagName === 'P' && !prev.previousElementSibling) ? prev : quote;
+                target.parentNode.insertBefore(newSig, target);
+                const gap = document.createElement('p');
+                gap.innerHTML = '<br>';
+                target.parentNode.insertBefore(gap, target);
+            }} else {{
+                document.body.prepend(newSig);
+            }}
         }} else {{
             const br = document.createElement('p');
             br.innerHTML = '<br>';
             document.body.appendChild(br);
             document.body.appendChild(newSig);
         }}
+    }}
+    if ({top_signature}) {{
+        let emptyBefore = 0;
+        let curr = newSig.previousElementSibling;
+        while (curr) {{
+            emptyBefore++;
+            curr = curr.previousElementSibling;
+        }}
+        while (emptyBefore < 2) {{
+            const p = document.createElement('p');
+            p.innerHTML = '<br>';
+            newSig.parentNode.insertBefore(p, document.body.firstChild);
+            emptyBefore++;
+        }}
+        try {{
+            const first = document.body.firstElementChild || document.body.firstChild;
+            if (first) {{
+                const range = document.createRange();
+                range.setStart(first, 0);
+                range.collapse(true);
+                const sel = window.getSelection();
+                if (sel) {{
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                }}
+            }}
+            document.body.focus();
+        }} catch (e) {{}}
     }}
 }})();"#
         );
@@ -2080,7 +2119,9 @@ impl HtmlEditor {
         let initial_html = format!(
             concat!(
                 "<!DOCTYPE html><html><head><style>",
-                "html, body {{ font-family: {}; font-size: {}px; line-height: 1.5; color: #222; margin: 12px; background-color: transparent; }}",
+                "html, body {{ font-family: {}; font-size: {}px; line-height: 1.35; color: #222; margin: 12px; background-color: transparent; }}",
+                "p {{ margin: 0; }}",
+                "p.MsoNormal, li.MsoNormal, div.MsoNormal, blockquote p {{ margin: 0; line-height: 1.15; }}",
                 "img {{ max-width: 100%; height: auto; cursor: grab; -webkit-user-drag: element; }}",
                 "img:active {{ cursor: grabbing; }}",
                 "a {{ color: #1a73e8; text-decoration: underline; cursor: pointer; }}",
