@@ -4973,16 +4973,17 @@ pub(crate) fn replace_formatted_header_rows(grid: &gtk::Grid, fields: &[(String,
         grid.remove(&child);
     }
     grid.set_hexpand(true);
+    let expanded_cfg = crate::services::settings_service::ExpandedHeadersConfig::load();
     let mut ordered: Vec<&(String, String)> = fields
         .iter()
         .filter(|(name, _)| {
             !matches!(
                 name.trim().to_ascii_lowercase().as_str(),
                 "from" | "to" | "von" | "an"
-            )
+            ) && expanded_cfg.is_header_visible(name)
         })
         .collect();
-    ordered.sort_by_key(|(name, _)| header_priority_rank(name));
+    ordered.sort_by_key(|(name, _)| (expanded_cfg.sort_rank(name), header_priority_rank(name)));
     for (row, (name, value)) in ordered.into_iter().enumerate() {
         let full_name = format!("{name}:");
         let name_lbl = gtk::Label::builder()
@@ -7168,6 +7169,7 @@ mod imp {
         pub modern_load_remote_images_label: RefCell<Option<gtk::Label>>,
         pub view_options_split_btn: RefCell<Option<adw::SplitButton>>,
         pub filter_options_btn: RefCell<Option<gtk::MenuButton>>,
+        pub detail_header_box: RefCell<Option<gtk::Box>>,
         pub header_separator: RefCell<Option<gtk::Separator>>,
         pub all_headers_generation: Cell<u64>,
         pub all_headers_cancellation: RefCell<Option<Arc<AtomicBool>>>,
@@ -7772,7 +7774,7 @@ impl MailPage {
             // When returning to desktop, restore saved paned position if needed
             let saved_sb_pos = AppSettings::try_new()
                 .map(|s| s.mail_sidebar_position())
-                .unwrap_or(260)
+                .unwrap_or(240)
                 .clamp(crate::window::MIN_SIDEBAR_WIDTH, crate::window::MAX_SIDEBAR_WIDTH);
             if imp.outer_paned.position() < 180 {
                 imp.outer_paned.set_position(saved_sb_pos);
@@ -8547,7 +8549,7 @@ impl MailPage {
         if visible {
             let saved_position = AppSettings::try_new()
                 .map(|settings| settings.mail_sidebar_position())
-                .unwrap_or(260)
+                .unwrap_or(240)
                 .clamp(crate::window::MIN_SIDEBAR_WIDTH, crate::window::MAX_SIDEBAR_WIDTH);
             if paned.position() < 180 {
                 paned.set_position(saved_position);
@@ -8648,6 +8650,12 @@ impl MailPage {
     }
 
     fn refresh_normal_headers_for_message(&self, message: Option<&MailMessageObject>) {
+        if let Some(hb) = self.imp().detail_header_box.borrow().as_ref() {
+            hb.set_visible(message.is_some());
+        }
+        if let Some(viewer) = self.imp().mail_viewer.borrow().as_ref() {
+            viewer.set_margin_top(if message.is_some() { 0 } else { 8 });
+        }
         let Some(grid) = self.imp().normal_headers_grid.borrow().as_ref().cloned() else {
             return;
         };
@@ -8839,6 +8847,42 @@ impl MailPage {
                     row_box.append(&classic_toggle_btn);
                     grid.attach(&row_box, 1, last_row, 1, 1);
                 }
+            }
+
+            if message.raw_headers().is_none()
+                && let Some(location) = message.backend_location()
+            {
+                let (sender, receiver) = async_channel::bounded(1);
+                let requested_location = location.clone();
+                std::thread::spawn(move || {
+                    let cancelled = Arc::new(AtomicBool::new(false));
+                    if let Ok(source) =
+                        camel_mail_service::load_raw_message(&requested_location, &cancelled)
+                    {
+                        let headers = rfc822_header_block(&source);
+                        if !headers.is_empty() {
+                            let _ = sender.send_blocking(headers.to_vec());
+                        }
+                    }
+                });
+                let page_weak = self.downgrade();
+                glib::spawn_future_local(async move {
+                    let Ok(headers) = receiver.recv().await else {
+                        return;
+                    };
+                    let Some(page) = page_weak.upgrade() else {
+                        return;
+                    };
+                    let Some(selected) = page.selected_message() else {
+                        return;
+                    };
+                    if selected.backend_location().as_ref() == Some(&location)
+                        && selected.raw_headers().is_none()
+                    {
+                        selected.set_raw_headers(Some(headers));
+                        page.refresh_normal_headers_for_message(Some(&selected));
+                    }
+                });
             }
         }
     }
@@ -30128,7 +30172,9 @@ impl MailPage {
             .margin_end(8)
             .margin_top(8)
             .margin_bottom(6)
+            .visible(false)
             .build();
+        self.imp().detail_header_box.replace(Some(header_box.clone()));
 
         let meta_grid = gtk::Grid::builder()
             .row_spacing(0)
@@ -32275,6 +32321,7 @@ impl MailPage {
             .replace(Some(mail_memo_editor_revealer.clone()));
         mail_memo_section.append(&mail_memo_editor_revealer);
 
+        mail_viewer.set_margin_top(8);
         detail_view.append(&header_box);
         detail_view.append(&header_separator);
         detail_view.append(&mail_memo_section);
@@ -32584,9 +32631,15 @@ impl MailPage {
                         }
                     }
                     if let Some(page) = page_for_read.upgrade() {
-                        page.refresh_normal_headers_for_message(Some(&msg));
-                        page.refresh_all_headers_for_message(Some(&msg));
-                        page.render_thread_context(&msg);
+                        if msg.is_preview_only() {
+                            page.refresh_normal_headers_for_message(None);
+                            page.refresh_all_headers_for_message(None);
+                            page.hide_thread_context();
+                        } else {
+                            page.refresh_normal_headers_for_message(Some(&msg));
+                            page.refresh_all_headers_for_message(Some(&msg));
+                            page.render_thread_context(&msg);
+                        }
                     }
 
                     let raw_mime = msg.raw_mime();
@@ -34650,15 +34703,21 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
             .unwrap_or(true);
         let sidebar_position = AppSettings::try_new()
             .map(|settings| settings.mail_sidebar_position())
-            .unwrap_or(260)
+            .unwrap_or(240)
             .clamp(crate::window::MIN_SIDEBAR_WIDTH, crate::window::MAX_SIDEBAR_WIDTH);
         sidebar.set_visible(sidebar_visible);
         imp.outer_paned.set_position(sidebar_position);
-        if let Some(settings) = AppSettings::try_new() {
+        {
+            let settings_opt = AppSettings::try_new();
             let page_weak_for_pos = self.downgrade();
             imp.outer_paned.connect_position_notify(move |paned| {
                 if let Some(page) = page_weak_for_pos.upgrade() {
                     if page.imp().sidebar_animating.get() || !page.is_sidebar_visible() {
+                        return;
+                    }
+                }
+                if let Some(win) = crate::window::find_meridian_window(paned) {
+                    if win.is_sidebar_animating() {
                         return;
                     }
                 }
@@ -34675,8 +34734,10 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
                 if let Some(win) = crate::window::find_meridian_window(paned) {
                     win.set_sidebar_position_sync(clamped);
                 }
-                if settings.mail_sidebar_position() != clamped {
-                    settings.set_mail_sidebar_position(clamped);
+                if let Some(settings) = settings_opt.as_ref() {
+                    if settings.mail_sidebar_position() != clamped {
+                        settings.set_mail_sidebar_position(clamped);
+                    }
                 }
                 if let Some(page) = page_weak_for_pos.upgrade() {
                     page.sync_preview_actions_labels();

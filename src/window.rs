@@ -66,6 +66,7 @@ mod imp {
         pub calendar_year_view_options_button: RefCell<Option<adw::SplitButton>>,
         pub mail_filter_options_button: RefCell<Option<gtk::MenuButton>>,
         pub sidebar_visible: Cell<bool>,
+        pub sidebar_animating: Cell<bool>,
         pub sidebar_animation: RefCell<Option<adw::TimedAnimation>>,
         pub search_button: RefCell<Option<gtk::ToggleButton>>,
         pub compose_button: RefCell<Option<gtk::Button>>,
@@ -1717,8 +1718,13 @@ impl MeridianWindow {
         }
     }
 
+    pub fn is_sidebar_animating(&self) -> bool {
+        self.imp().sidebar_animating.get()
+    }
+
     pub fn toggle_sidebar_animated(&self, show: bool) {
         self.imp().sidebar_visible.set(show);
+        self.imp().sidebar_animating.set(true);
         if let Some(settings) = AppSettings::try_new() {
             if settings.mail_show_sidebar() != show {
                 settings.set_mail_show_sidebar(show);
@@ -1744,6 +1750,7 @@ impl MeridianWindow {
             if let Some(res_btn) = self.imp().restore_sidebar_button.borrow().as_ref() {
                 res_btn.set_visible(false);
             }
+            self.imp().sidebar_animating.set(false);
             if is_mail {
                 if let Some(mail) = self.mail_page() {
                     mail.imp().sidebar_animating.set(false);
@@ -1763,6 +1770,7 @@ impl MeridianWindow {
                 if let Some(c) = self.contacts_page() { c.set_sidebar_visible(show); }
                 if let Some(t) = self.tasks_page() { t.set_sidebar_visible(show); }
                 if let Some(m) = self.memos_page() { m.set_sidebar_visible(show); }
+                self.imp().sidebar_animating.set(false);
                 if is_mail {
                     if let Some(mail) = self.mail_page() {
                         mail.imp().sidebar_animating.set(false);
@@ -1804,13 +1812,14 @@ impl MeridianWindow {
                 start.set_visible(true);
             }
             if !self.imp().is_mobile.get() {
+                let show_buttons_immediately = from_pos >= 170.0;
                 if let Some(sb_h) = self.imp().sidebar_header.borrow().as_ref() {
                     sb_h.set_visible(true);
-                    sb_h.set_show_start_title_buttons(true);
+                    sb_h.set_show_start_title_buttons(show_buttons_immediately);
                     sb_h.set_size_request(from_pos as i32, -1);
                 }
                 if let Some(hb) = self.imp().header_bar.borrow().as_ref() {
-                    hb.set_show_start_title_buttons(false);
+                    hb.set_show_start_title_buttons(!show_buttons_immediately);
                 }
             } else {
                 if let Some(sb_h) = self.imp().sidebar_header.borrow().as_ref() {
@@ -1847,8 +1856,8 @@ impl MeridianWindow {
                 btn.set_visible(false);
             }
             if let Some(sb_h) = self.imp().sidebar_header.borrow().as_ref() {
-                sb_h.set_visible(false);
-                sb_h.set_size_request(0, -1);
+                sb_h.set_visible(true);
+                sb_h.set_size_request(from_pos as i32, -1);
                 sb_h.set_show_start_title_buttons(false);
             }
             if let Some(res_btn) = self.imp().restore_sidebar_button.borrow().as_ref() {
@@ -1875,6 +1884,18 @@ impl MeridianWindow {
                     }
                 }
                 if show && pos >= 170 {
+                    if !win.imp().is_mobile.get() {
+                        if let Some(sb_h) = win.imp().sidebar_header.borrow().as_ref() {
+                            if !sb_h.shows_start_title_buttons() {
+                                sb_h.set_show_start_title_buttons(true);
+                            }
+                        }
+                        if let Some(hb) = win.imp().header_bar.borrow().as_ref() {
+                            if hb.shows_start_title_buttons() {
+                                hb.set_show_start_title_buttons(false);
+                            }
+                        }
+                    }
                     if let Some(title) = win.imp().sidebar_title.borrow().as_ref() {
                         if !title.is_visible() {
                             title.set_visible(true);
@@ -1914,6 +1935,7 @@ impl MeridianWindow {
             }
             if let Some(win) = win_weak_done.upgrade() {
                 win.imp().sidebar_animation.borrow_mut().take();
+                win.imp().sidebar_animating.set(false);
                 if is_mail {
                     if let Some(mail) = win.mail_page() {
                         mail.imp().sidebar_animating.set(false);
@@ -1949,12 +1971,19 @@ impl MeridianWindow {
                     if !win.imp().is_mobile.get() {
                         if let Some(sb_h) = win.imp().sidebar_header.borrow().as_ref() {
                             sb_h.set_visible(true);
+                            sb_h.set_show_start_title_buttons(true);
                             sb_h.set_size_request(target_pos, -1);
+                        }
+                        if let Some(hb) = win.imp().header_bar.borrow().as_ref() {
+                            hb.set_show_start_title_buttons(false);
                         }
                     } else {
                         if let Some(sb_h) = win.imp().sidebar_header.borrow().as_ref() {
                             sb_h.set_visible(false);
                             sb_h.set_size_request(0, -1);
+                        }
+                        if let Some(hb) = win.imp().header_bar.borrow().as_ref() {
+                            hb.set_show_start_title_buttons(true);
                         }
                     }
                     if let Some(res_btn) = win.imp().restore_sidebar_button.borrow().as_ref() {
@@ -1989,6 +2018,7 @@ impl MeridianWindow {
                             paned.set_position(target_pos);
                         }
                     }
+                    win.imp().sidebar_animating.set(false);
                     if is_mail {
                         if let Some(mail) = win.mail_page() {
                             mail.imp().sidebar_animating.set(false);
@@ -2334,6 +2364,7 @@ impl MeridianWindow {
             let new_state = !revealer.reveals_child();
             if new_state {
                 revealer.set_visible(true);
+                self.set_statusbar_visible(true);
             }
             revealer.set_reveal_child(new_state);
             if let Some(settings) = AppSettings::try_new() {
@@ -2347,6 +2378,7 @@ impl MeridianWindow {
         if let Some(revealer) = self.imp().debug_revealer.borrow().as_ref() {
             if open {
                 revealer.set_visible(true);
+                self.set_statusbar_visible(true);
             }
             revealer.set_reveal_child(open);
             if let Some(settings) = AppSettings::try_new() {
@@ -3610,10 +3642,10 @@ impl MeridianWindow {
         // immediately instead of leaving its placeholder visible.
         ensure_module_loaded(&active_view);
 
-        if let Some(settings) = AppSettings::try_new() {
-            let pos = settings.mail_sidebar_position().clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
-            sync_sidebar_position(pos);
+        let initial_sidebar_pos = self.sidebar_position_for_view(&active_view);
+        sync_sidebar_position(initial_sidebar_pos);
 
+        if let Some(settings) = AppSettings::try_new() {
             let sync_sidebar_position_for_settings = Rc::clone(&sync_sidebar_position);
             settings.connect_changed(Some("mail-sidebar-position"), move |settings, _| {
                 let pos = settings.int("mail-sidebar-position").clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
@@ -4138,11 +4170,22 @@ impl MeridianWindow {
             let enabled = settings.debug_console_enabled();
             debug_revealer.set_visible(enabled);
             debug_revealer.set_reveal_child(enabled);
+            if enabled {
+                statusbar_box.set_visible(true);
+                settings.set_mail_show_statusbar(true);
+            }
             let debug_revealer_for_setting = debug_revealer.clone();
-            settings.connect_changed(Some("debug-console-enabled"), move |settings, _| {
-                let enabled = settings.boolean("debug-console-enabled");
+            let statusbar_for_debug = statusbar_box.clone();
+            let keep_settings_alive = settings.clone();
+            settings.connect_changed(Some("debug-console-enabled"), move |s, _| {
+                let _keep = &keep_settings_alive;
+                let enabled = s.boolean("debug-console-enabled");
                 if enabled {
                     debug_revealer_for_setting.set_visible(true);
+                    statusbar_for_debug.set_visible(true);
+                    if !s.boolean("mail-show-statusbar") {
+                        let _ = s.set_boolean("mail-show-statusbar", true);
+                    }
                 }
                 debug_revealer_for_setting.set_reveal_child(enabled);
             });

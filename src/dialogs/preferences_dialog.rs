@@ -40,8 +40,7 @@ use crate::services::settings_service::{
     normalize_composer_forward_style, normalize_composer_reply_style,
     MailLabelDefinition, ReminderDurationUnit, validate_mail_normal_header_name,
 };
-use crate::dialogs::SignatureEditorDialog;
-use crate::services::signature_store_service::SignatureStore;
+use crate::services::signature_store_service::{SignatureProfile, SignatureStore};
 
 /// Owned, framework-neutral inputs for one manual filter worker.
 ///
@@ -281,7 +280,7 @@ impl PreferencesDialog {
                 }
             });
         });
-        dialog.present(Some(self));
+        dialog.present_non_modal();
     }
 
     fn reconcile_local_default(&self, affected_local_id: &str) {
@@ -773,7 +772,7 @@ impl PreferencesDialog {
         }
 
         // 2. Shared Mailboxes
-        for profile in shared_profiles {
+        for profile in &shared_profiles {
             let disabled_info = if !profile.enabled {
                 format!(" · {}", crate::i18n::gettext("Disabled"))
             } else {
@@ -892,81 +891,40 @@ impl PreferencesDialog {
                 .push(row.upcast());
         }
 
-        // 3. Add Account / Mailbox action row
-        let has_exchange = profiles.iter().any(|p| {
-            !p.is_shared_mailbox
-                && (matches!(p.protocol, AccountProtocol::Exchange)
-                    || p.imap_host.to_ascii_lowercase().contains("office365.com")
-                    || p.imap_host.to_ascii_lowercase().contains("outlook.office.com")
-                    || p.display_name.to_ascii_lowercase().contains("365"))
-        }) || visible_eds_sources.iter().any(|s| {
-            let b = s.backend_name.to_ascii_lowercase();
-            let d = s.display_name.to_ascii_lowercase();
-            let u = s.uid.to_ascii_lowercase();
-            b.contains("ews")
-                || b.contains("exchange")
-                || b.contains("office365")
-                || d.contains("365")
-                || d.contains("exchange")
-                || u.contains("office365")
-        });
-
-        let row_add_account_or_shared = if has_exchange {
-            let row = adw::ActionRow::builder()
-                .title(&crate::i18n::gettext("Add Account or Mailbox…"))
+        // 3. Empty-state Add Account action row (only shown when no accounts exist yet;
+        // the group header "+" button is always available as the primary entry point).
+        if visible_eds_sources.is_empty() && profile_count == 0 && shared_profiles.is_empty() {
+            let row_add_account_or_shared = adw::ActionRow::builder()
+                .title(&crate::i18n::gettext("Add Account…"))
+                .subtitle(&crate::i18n::gettext(
+                    "Connect a GNOME Online Account, email account, or shared mailbox",
+                ))
                 .activatable(true)
                 .build();
-            row.connect_activated(glib::clone!(
+            row_add_account_or_shared.add_prefix(&gtk::Image::from_icon_name("list-add-symbolic"));
+            let chevron = gtk::Image::from_icon_name("go-next-symbolic");
+            chevron.add_css_class("dim-label");
+            row_add_account_or_shared.add_suffix(&chevron);
+            row_add_account_or_shared.connect_activated(glib::clone!(
                 #[weak(rename_to = page)]
                 self,
                 move |_| {
                     page.prompt_add_account_or_shared_mailbox();
                 }
             ));
-            row
-        } else {
-            let row = adw::ActionRow::builder()
-                .title(&crate::i18n::gettext("Add Account…"))
-                .activatable(true)
-                .build();
-            row.connect_activated(glib::clone!(
-                #[weak(rename_to = page)]
-                self,
-                move |_| {
-                    page.present_account_dialog(crate::dialogs::AccountSetupDialog::new());
-                }
-            ));
-            row
-        };
-
-        group.add(&row_add_account_or_shared);
-        self.imp()
-            .managed_account_rows
-            .borrow_mut()
-            .push(row_add_account_or_shared.upcast());
-
-        if detect_program_path("gnome-control-center").is_some() {
-            let row_goa = adw::ActionRow::builder()
-                .title(&crate::i18n::gettext("Manage GNOME Online Accounts…"))
-                .activatable(true)
-                .build();
-
-            row_goa.connect_activated(|_| {
-                eds_service::open_gnome_online_accounts(None);
-            });
-            group.add(&row_goa);
+            group.add(&row_add_account_or_shared);
             self.imp()
                 .managed_account_rows
                 .borrow_mut()
-                .push(row_goa.upcast());
+                .push(row_add_account_or_shared.upcast());
         }
     }
 
     fn prompt_add_account_or_shared_mailbox(&self) {
         let dialog = adw::Dialog::builder()
-            .title(&crate::i18n::gettext("Add Account or Mailbox"))
+            .title(&crate::i18n::gettext("Add Account"))
             .content_width(460)
-            .content_height(280)
+            .follows_content_size(true)
             .build();
 
         let toolbar = adw::ToolbarView::new();
@@ -984,15 +942,50 @@ impl PreferencesDialog {
         header.pack_start(&cancel_btn);
         toolbar.add_top_bar(&header);
 
-        let page = adw::PreferencesPage::new();
-
-        let group = adw::PreferencesGroup::builder()
-            .title(&crate::i18n::gettext("Account Type"))
+        let content_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(18)
+            .margin_top(12)
+            .margin_bottom(18)
+            .margin_start(18)
+            .margin_end(18)
+            .width_request(420)
             .build();
 
-        // 1. Regular Account
+        // 1. System-wide GNOME Online Accounts
+        if detect_program_path("gnome-control-center").is_some() {
+            let group_system = adw::PreferencesGroup::builder()
+                .title(&crate::i18n::gettext("System Account"))
+                .build();
+
+            let row_goa = adw::ActionRow::builder()
+                .title(&crate::i18n::gettext("GNOME Online Accounts…"))
+                .activatable(true)
+                .build();
+            let icon_goa = gtk::Image::from_icon_name("preferences-system-network-symbolic");
+            row_goa.add_prefix(&icon_goa);
+            let ext_icon = gtk::Image::from_icon_name("adw-external-link-symbolic");
+            ext_icon.add_css_class("dim-label");
+            row_goa.add_suffix(&ext_icon);
+
+            let dlg_weak3 = dialog.downgrade();
+            row_goa.connect_activated(move |_| {
+                if let Some(d) = dlg_weak3.upgrade() {
+                    d.close();
+                }
+                let _ = eds_service::open_gnome_online_accounts(None);
+            });
+            group_system.add(&row_goa);
+            content_box.append(&group_system);
+        }
+
+        // 2. Direct In-App Setup (Meridian Only)
+        let group = adw::PreferencesGroup::builder()
+            .title(&crate::i18n::gettext("Meridian Only"))
+            .build();
+
         let row_account = adw::ActionRow::builder()
-            .title(&crate::i18n::gettext("New Email Account…"))
+            .title(&crate::i18n::gettext("Add Mail Account…"))
             .activatable(true)
             .build();
         let icon_account = gtk::Image::from_icon_name("mail-read-symbolic");
@@ -1013,9 +1006,8 @@ impl PreferencesDialog {
         });
         group.add(&row_account);
 
-        // 2. Shared Mailbox
         let row_shared = adw::ActionRow::builder()
-            .title("Open Shared Mailbox…")
+            .title(&crate::i18n::gettext("Open Shared Mailbox…"))
             .activatable(true)
             .build();
         let icon_shared = gtk::Image::from_icon_name("system-users-symbolic");
@@ -1036,8 +1028,8 @@ impl PreferencesDialog {
         });
         group.add(&row_shared);
 
-        page.add(&group);
-        toolbar.set_content(Some(&page));
+        content_box.append(&group);
+        toolbar.set_content(Some(&content_box));
         dialog.set_child(Some(&toolbar));
         dialog.present(Some(self));
     }
@@ -1463,7 +1455,7 @@ pub const SUBPAGES: &[SubPageDef] = &[
     SubPageDef {
         id: "junk",
         parent_id: "certificates",
-        title: "Junk Mail",
+        title: "Junk Mail Filtering",
     },
     SubPageDef {
         id: "sub_smime",
@@ -1506,11 +1498,6 @@ pub const SUBPAGES: &[SubPageDef] = &[
         title: "Advanced",
     },
     SubPageDef {
-        id: "sub_composer_headers",
-        parent_id: "composer",
-        title: "Fields & Checks",
-    },
-    SubPageDef {
         id: "sub_calendar_workdays",
         parent_id: "calendar",
         title: "Work Week & Time Zones",
@@ -1529,11 +1516,6 @@ pub const SUBPAGES: &[SubPageDef] = &[
         id: "sub_calendar_view",
         parent_id: "calendar",
         title: "View Options",
-    },
-    SubPageDef {
-        id: "sub_contacts_advanced",
-        parent_id: "contacts",
-        title: "Columns & Fields",
     },
 ];
 
@@ -2676,6 +2658,47 @@ impl PreferencesDialog {
         let group_cache_settings = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Synchronization"))
             .build();
+
+        let row_sync_profile = adw::ComboRow::builder()
+            .title(&crate::i18n::gettext("Synchronization Profile"))
+            .subtitle(&crate::i18n::gettext(
+                "Preset balance between offline availability and RAM / bandwidth usage",
+            ))
+            .model(&gtk::StringList::new(&[
+                &crate::i18n::gettext("Full Offline (Recommended)"),
+                &crate::i18n::gettext("Balanced"),
+                &crate::i18n::gettext("Low Data & RAM"),
+            ]))
+            .build();
+        if let Some(s) = settings.clone() {
+            let limit = s.mail_sync_message_limit();
+            let low_mem = s.mail_limit_memory_usage();
+            let initial_profile = if low_mem && limit <= 100 {
+                2
+            } else if limit <= 250 {
+                1
+            } else {
+                0
+            };
+            row_sync_profile.set_selected(initial_profile);
+            let limit_row_weak = row_sync_message_limit.downgrade();
+            let mem_row_weak = row_limit_memory_usage.downgrade();
+            row_sync_profile.connect_selected_notify(move |combo| {
+                let (target_limit, target_mem) = match combo.selected() {
+                    1 => (250.0, false),
+                    2 => (50.0, true),
+                    _ => (1000.0, false),
+                };
+                if let Some(r_lim) = limit_row_weak.upgrade() {
+                    r_lim.set_value(target_limit);
+                }
+                if let Some(r_mem) = mem_row_weak.upgrade() {
+                    r_mem.set_active(target_mem);
+                }
+            });
+        }
+        group_cache_settings.add(&row_sync_profile);
+
         row_sync_message_limit.set_visible(true);
         group_cache_settings.add(&row_sync_message_limit);
         row_limit_memory_usage.set_visible(true);
@@ -2684,10 +2707,15 @@ impl PreferencesDialog {
         group_cache_settings.add(&row_flush_outbox);
         page_sub_sync_cache.add(&group_cache_settings);
 
+        let default_mail_dir_label = format!(
+            "{} ({})",
+            MailStoreService::new().mail_dir.display(),
+            crate::i18n::gettext("Automatic")
+        );
         let row_local_mail = directory_picker_row(
             self,
             &crate::i18n::gettext("Local mail folder"),
-            &crate::i18n::gettext("Automatically detected Evolution folder"),
+            &default_mail_dir_label,
             settings
                 .as_ref()
                 .map(AppSettings::local_mail_directory)
@@ -2999,32 +3027,18 @@ impl PreferencesDialog {
             });
         }
 
-        let row_nav_contacts_adv = make_subpage_nav_row(
-            &crate::i18n::gettext("Columns & Fields"),
-            "sub_contacts_advanced",
-            &open_subpage,
-        );
+        row_address_formatting.set_visible(false);
+        row_home_before_work.set_visible(true);
+        row_open_map_prefer_local.set_visible(true);
 
         group_contacts_display.add(&row_contact_preview_visible);
+        group_contacts_display.add(&row_home_before_work);
+        group_contacts_display.add(&row_address_formatting);
         group_contacts_display.add(&row_preview_show_maps);
         group_contacts_display.add(&row_open_map_target);
         group_contacts_display.add(&row_map_toggle);
-        group_contacts_display.add(&row_nav_contacts_adv);
+        group_contacts_display.add(&row_open_map_prefer_local);
         page_contacts.add(&group_contacts_display);
-
-        let page_sub_contacts = adw::PreferencesPage::builder()
-            .title(&crate::i18n::gettext("Formatting & Autocompletion"))
-            .build();
-        let group_contact_fmt = adw::PreferencesGroup::builder()
-            .title(&crate::i18n::gettext("Contact Display &amp; Formatting"))
-            .build();
-        row_address_formatting.set_visible(true);
-        row_home_before_work.set_visible(true);
-        row_open_map_prefer_local.set_visible(true);
-        group_contact_fmt.add(&row_address_formatting);
-        group_contact_fmt.add(&row_home_before_work);
-        group_contact_fmt.add(&row_open_map_prefer_local);
-        page_sub_contacts.add(&group_contact_fmt);
 
         let group_contacts_autocomplete = adw::PreferencesGroup::builder()
             .title("Autocompletion")
@@ -3042,6 +3056,7 @@ impl PreferencesDialog {
         let row_completion_book_sources = adw::EntryRow::builder()
             .title("Address book sources for autocompletion")
             .show_apply_button(true)
+            .visible(false)
             .build();
         row_completion_book_sources.set_tooltip_text(Some(
             "Comma-separated list of address book UIDs (e.g. local-addressbook) or leave empty for all enabled books",
@@ -3085,10 +3100,10 @@ impl PreferencesDialog {
         group_contacts_autocomplete.add(&row_completion_show_address);
         group_contacts_autocomplete.add(&row_completion_min_query_length);
         group_contacts_autocomplete.add(&row_completion_book_sources);
-        page_sub_contacts.add(&group_contacts_autocomplete);
+        page_contacts.add(&group_contacts_autocomplete);
 
         let group_contact_columns = adw::PreferencesGroup::builder()
-            .title(&crate::i18n::gettext("Columns &amp; Editor Fields"))
+            .title(&crate::i18n::gettext("Columns and Editor Fields"))
             .build();
 
         let exp_contact_cols = adw::ExpanderRow::builder()
@@ -3150,11 +3165,16 @@ impl PreferencesDialog {
             exp_contact_fields.add_row(&row);
         }
         group_contact_columns.add(&exp_contact_fields);
-        page_sub_contacts.add(&group_contact_columns);
+        page_contacts.add(&group_contact_columns);
 
 
+        let initial_backup_sub = match crate::services::settings_service::last_backup_timestamp() {
+            Some(ts) => format!("{}: {ts}", crate::i18n::gettext("Last backup")),
+            None => format!("{}: {}", crate::i18n::gettext("Last backup"), crate::i18n::gettext("Never")),
+        };
         let row_backup = adw::ActionRow::builder()
             .title(&crate::i18n::gettext("Back Up…"))
+            .subtitle(&initial_backup_sub)
             .activatable(true)
             .build();
         let backup_button = gtk::Button::builder()
@@ -3167,6 +3187,7 @@ impl PreferencesDialog {
         
         let backup_btn_clone = backup_button.clone();
         row_backup.connect_activated(move |_| backup_btn_clone.emit_clicked());
+        let row_backup_for_save = row_backup.downgrade();
         backup_button.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
             self,
@@ -3190,6 +3211,7 @@ impl PreferencesDialog {
                     .modal(true)
                     .build();
                 let dialog_for_result = dialog.downgrade();
+                let row_backup_weak = row_backup_for_save.clone();
                 file_dialog.save(Some(&root), None::<&gio::Cancellable>, move |result| {
                     let Ok(file) = result else {
                         return;
@@ -3203,7 +3225,14 @@ impl PreferencesDialog {
                     );
                     if let Some(dialog) = dialog_for_result.upgrade() {
                         match save_result {
-                            Ok(_) => dialog.show_toast("App data backed up"),
+                            Ok(_) => {
+                                if let Some(ts) = crate::services::settings_service::record_backup_timestamp_now() {
+                                    if let Some(r) = row_backup_weak.upgrade() {
+                                        r.set_subtitle(&format!("{}: {ts}", crate::i18n::gettext("Last backup")));
+                                    }
+                                }
+                                dialog.show_toast("App data backed up");
+                            }
                             Err(error) => dialog.show_toast(&format!(
                                 "Backup could not be saved: {error}"
                             )),
@@ -3803,6 +3832,7 @@ impl PreferencesDialog {
         let row_composer_html = adw::SwitchRow::builder()
             .title("Use HTML when composing")
             .active(true)
+            .visible(false)
             .build();
         if let Some(settings) = settings.clone() {
             row_composer_html.set_active(settings.composer_html());
@@ -3815,6 +3845,7 @@ impl PreferencesDialog {
         let row_composer_format_toolbar = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Always show formatting toolbar"))
             .active(false)
+            .visible(false)
             .build();
         if let Some(settings) = settings.clone() {
             row_composer_format_toolbar.set_active(settings.composer_show_format_toolbar());
@@ -3848,21 +3879,66 @@ impl PreferencesDialog {
                 settings.set_request_read_receipt(row.is_active());
             });
         }
-        // row_request_read_receipt moved to sub_composer_headers
 
         let row_composer_inline_spelling = adw::SwitchRow::builder()
             .title("Inline spell checking")
             .active(true)
             .build();
 
+        let mut spellcheck_options: Vec<(String, String)> = vec![
+            (String::new(), "System Default".to_string()),
+            ("de-DE".to_string(), "German".to_string()),
+            ("en-US".to_string(), "English".to_string()),
+            ("de-DE,en-US".to_string(), "German and English".to_string()),
+        ];
+        {
+            let mut extra_codes = std::collections::BTreeSet::new();
+            for dir in ["/usr/share/hunspell", "/usr/share/myspell"] {
+                if let Ok(entries) = std::fs::read_dir(dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|e| e.to_str()) == Some("dic") {
+                            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                                let normalized = stem.replace('_', "-");
+                                if !matches!(
+                                    normalized.as_str(),
+                                    "de-DE" | "en-US" | "de" | "en"
+                                ) {
+                                    extra_codes.insert(normalized);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            for code in extra_codes {
+                let lang_prefix = code.split('-').next().unwrap_or(&code);
+                let label = match lang_prefix {
+                    "de" => format!("German ({code})"),
+                    "en" => format!("English ({code})"),
+                    "fr" => format!("French ({code})"),
+                    "es" => format!("Spanish ({code})"),
+                    "it" => format!("Italian ({code})"),
+                    "pt" => format!("Portuguese ({code})"),
+                    "nl" => format!("Dutch ({code})"),
+                    "pl" => format!("Polish ({code})"),
+                    "ru" => format!("Russian ({code})"),
+                    "tr" => format!("Turkish ({code})"),
+                    "sv" => format!("Swedish ({code})"),
+                    "da" => format!("Danish ({code})"),
+                    "nb" | "nn" | "no" => format!("Norwegian ({code})"),
+                    "fi" => format!("Finnish ({code})"),
+                    "cs" => format!("Czech ({code})"),
+                    "uk" => format!("Ukrainian ({code})"),
+                    _ => code.clone(),
+                };
+                spellcheck_options.push((code, label));
+            }
+        }
+        let spellcheck_labels: Vec<&str> = spellcheck_options.iter().map(|(_, l)| l.as_str()).collect();
         let row_spellcheck_languages = adw::ComboRow::builder()
             .title("Spell check languages")
-            .model(&gtk::StringList::new(&[
-                "System Default",
-                "German",
-                "English",
-                "German and English",
-            ]))
+            .model(&gtk::StringList::new(&spellcheck_labels))
             .build();
 
         if let Some(settings) = settings.clone() {
@@ -3899,15 +3975,23 @@ impl PreferencesDialog {
             let updating = std::rc::Rc::new(std::cell::Cell::new(false));
             let updating_notify = updating.clone();
             let settings_notify = settings.clone();
+            let options_for_parse = spellcheck_options.clone();
+            let options_for_notify = spellcheck_options.clone();
 
-            let parse_lang_selection = |lang_str: &str| -> u32 {
-                match lang_str {
-                    "de-DE" | "de_DE" => 1,
-                    "en-US" | "en_US" => 2,
-                    "de-DE,en-US" | "de_DE,en_US" => 3,
-                    _ => 0,
+            let parse_lang_selection = move |lang_str: &str| -> u32 {
+                let norm = lang_str.replace('_', "-");
+                match norm.as_str() {
+                    "" => 0,
+                    "de-DE" => 1,
+                    "en-US" => 2,
+                    "de-DE,en-US" => 3,
+                    other => options_for_parse
+                        .iter()
+                        .position(|(code, _)| code.eq_ignore_ascii_case(other))
+                        .unwrap_or(0) as u32,
                 }
             };
+            let parse_for_change = parse_lang_selection.clone();
 
             row_spellcheck_languages.set_selected(parse_lang_selection(&settings.spellcheck_languages()));
             row_spellcheck_languages.set_sensitive(settings.composer_inline_spelling());
@@ -3915,18 +3999,18 @@ impl PreferencesDialog {
                 if updating_notify.get() {
                     return;
                 }
-                settings_notify.set_spellcheck_languages(match row.selected() {
-                    1 => "de-DE",
-                    2 => "en-US",
-                    3 => "de-DE,en-US",
-                    _ => "",
-                });
+                let idx = row.selected() as usize;
+                let code = options_for_notify
+                    .get(idx)
+                    .map(|(c, _)| c.as_str())
+                    .unwrap_or("");
+                settings_notify.set_spellcheck_languages(code);
             });
 
             let row_for_change = row_spellcheck_languages.clone();
             let updating_change = updating.clone();
             settings.connect_changed(Some("spellcheck-languages"), move |s, _| {
-                let target = parse_lang_selection(&s.string("spellcheck-languages"));
+                let target = parse_for_change(&s.string("spellcheck-languages"));
                 if row_for_change.selected() != target {
                     updating_change.set(true);
                     row_for_change.set_selected(target);
@@ -3987,6 +4071,7 @@ impl PreferencesDialog {
         row_composer_draft_autosave.set_title("Automatically save drafts");
         row_composer_draft_autosave.set_digits(0);
         row_composer_draft_autosave.set_snap_to_ticks(true);
+        row_composer_draft_autosave.set_visible(false);
         if let Some(settings) = settings.clone() {
             let updating = std::rc::Rc::new(std::cell::Cell::new(false));
             let updating_notify = updating.clone();
@@ -4013,7 +4098,45 @@ impl PreferencesDialog {
         }
         group_composer.add(&row_composer_draft_autosave);
 
-
+        let row_composer_draft_autosave_combo = adw::ComboRow::builder()
+            .title(&crate::i18n::gettext("Save Drafts Automatically"))
+            .model(&gtk::StringList::new(&[
+                &crate::i18n::gettext("Every 30 seconds"),
+                &crate::i18n::gettext("Every minute"),
+                &crate::i18n::gettext("Every 2 minutes"),
+                &crate::i18n::gettext("Every 5 minutes"),
+                &crate::i18n::gettext("Off"),
+            ]))
+            .build();
+        if let Some(settings) = settings.clone() {
+            let secs_to_idx = |secs: u32| -> u32 {
+                if secs == 0 {
+                    4
+                } else if secs <= 45 {
+                    0
+                } else if secs <= 90 {
+                    1
+                } else if secs <= 180 {
+                    2
+                } else {
+                    3
+                }
+            };
+            row_composer_draft_autosave_combo
+                .set_selected(secs_to_idx(settings.draft_autosave_interval_seconds()));
+            let s_combo = settings.clone();
+            row_composer_draft_autosave_combo.connect_selected_notify(move |row| {
+                let secs = match row.selected() {
+                    0 => 30,
+                    1 => 60,
+                    2 => 120,
+                    3 => 300,
+                    _ => 0,
+                };
+                s_combo.set_draft_autosave_interval_seconds(secs);
+            });
+        }
+        group_composer.add(&row_composer_draft_autosave_combo);
 
         let group_composer_headers = adw::PreferencesGroup::builder()
             .title("Headers Visible by Default")
@@ -4106,22 +4229,11 @@ impl PreferencesDialog {
             });
         }
 
-        let row_nav_composer_headers = make_subpage_nav_row(
-            &crate::i18n::gettext("Fields & Checks"),
-            "sub_composer_headers",
-            &open_subpage,
-        );
-        // row_nav_composer_headers in group_composer_nav
-
-        let page_sub_composer_headers = adw::PreferencesPage::builder()
-            .title(&crate::i18n::gettext("Fields & Checks"))
-            .build();
         group_composer_headers.set_visible(true);
         group_composer_headers.add(&row_show_from);
         group_composer_headers.add(&row_show_reply_to);
         group_composer_headers.add(&row_show_cc);
         group_composer_headers.add(&row_show_bcc);
-        page_sub_composer_headers.add(&group_composer_headers);
 
         group_composer_prompts.set_visible(true);
         group_composer_prompts.add(&row_prompt_empty_subject);
@@ -4129,14 +4241,12 @@ impl PreferencesDialog {
         group_composer_prompts.add(&row_track_recent_recipients);
         row_request_read_receipt.set_visible(true);
         group_composer_prompts.add(&row_request_read_receipt);
-        page_sub_composer_headers.add(&group_composer_prompts);
 
         let group_composer_charset = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Character Encoding"))
             .build();
         row_composer_charset.set_visible(true);
         group_composer_charset.add(&row_composer_charset);
-        page_sub_composer_headers.add(&group_composer_charset);
 
         let group_signature_options = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Signature Options"))
@@ -4200,7 +4310,7 @@ impl PreferencesDialog {
         
 
         let group_reply = adw::PreferencesGroup::builder()
-            .title(&crate::i18n::gettext("Replies &amp; Forwards"))
+            .title(&crate::i18n::gettext("Replies and Forwards"))
             .build();
 
         let row_reply_style = adw::ComboRow::builder()
@@ -4445,6 +4555,7 @@ impl PreferencesDialog {
         let row_headers_collapsed = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Collapse Headers"))
             .active(false)
+            .visible(false)
             .build();
         if let Some(settings) = settings.clone() {
             row_headers_collapsed.set_active(settings.mail_headers_collapsed());
@@ -4679,9 +4790,9 @@ impl PreferencesDialog {
             });
         }
         let reading_pane_model = gtk::StringList::new(&[
-            &crate::i18n::gettext("Right"),
-            &crate::i18n::gettext("Below"),
             &crate::i18n::gettext("Hidden"),
+            &crate::i18n::gettext("Below"),
+            &crate::i18n::gettext("Right"),
         ]);
         let row_reading_pane = adw::ComboRow::builder()
             .title(&crate::i18n::gettext("Reading Pane"))
@@ -4690,20 +4801,20 @@ impl PreferencesDialog {
         if let Some(ref s) = settings {
             let get_reading_pane_idx = |settings: &AppSettings| -> u32 {
                 if !settings.show_message_preview() {
-                    2
+                    0
                 } else if settings.mail_layout() == "classic" {
                     1
                 } else {
-                    0
+                    2
                 }
             };
             let get_reading_pane_idx_obj = |s_obj: &gio::Settings| -> u32 {
                 if !s_obj.boolean("show-message-preview") {
-                    2
+                    0
                 } else if s_obj.string("mail-layout").as_str() == "classic" {
                     1
                 } else {
-                    0
+                    2
                 }
             };
             row_reading_pane.set_selected(get_reading_pane_idx(s));
@@ -4716,15 +4827,15 @@ impl PreferencesDialog {
                 updating_pane_sel.set(true);
                 match r.selected() {
                     0 => {
-                        s_pane.set_show_message_preview(true);
-                        s_pane.set_mail_layout("modern");
+                        s_pane.set_show_message_preview(false);
                     }
                     1 => {
                         s_pane.set_show_message_preview(true);
                         s_pane.set_mail_layout("classic");
                     }
                     _ => {
-                        s_pane.set_show_message_preview(false);
+                        s_pane.set_show_message_preview(true);
+                        s_pane.set_mail_layout("modern");
                     }
                 }
                 updating_pane_sel.set(false);
@@ -4760,9 +4871,9 @@ impl PreferencesDialog {
         let layout_choice = make_segmented_toggle_3_row(
             &row_reading_pane,
             &crate::i18n::gettext("Reading Pane"),
-            &crate::i18n::gettext("Right"),
-            &crate::i18n::gettext("Below"),
             &crate::i18n::gettext("Hidden"),
+            &crate::i18n::gettext("Below"),
+            &crate::i18n::gettext("Right"),
         );
         
         
@@ -4935,8 +5046,20 @@ impl PreferencesDialog {
             .build();
         if let Some(settings) = settings.clone() {
             row_debug_console.set_active(settings.debug_console_enabled());
+            let row_statusbar_ref = row_mail_statusbar.clone();
+            let dialog_weak_dbg = self.downgrade();
             row_debug_console.connect_active_notify(move |row| {
-                settings.set_debug_console_enabled(row.is_active());
+                let active = row.is_active();
+                settings.set_debug_console_enabled(active);
+                if active {
+                    settings.set_mail_show_statusbar(true);
+                    row_statusbar_ref.set_active(true);
+                }
+                if let Some(d) = dialog_weak_dbg.upgrade() {
+                    if let Some(win) = crate::window::find_meridian_window(&d) {
+                        win.set_debug_console_open(active);
+                    }
+                }
             });
         }
 
@@ -5276,6 +5399,7 @@ impl PreferencesDialog {
         group_appearance_layout.add(&toggle_mail_density);
         // Folder and To-Do sidebars are toggled directly in the main window.
         let _ = (&row_mail_sidebar, &row_show_todo_bar);
+        row_mail_statusbar.set_visible(false);
         group_appearance_layout.add(&row_mail_statusbar);
 
         page_appearance.add(&group_theme);
@@ -5432,12 +5556,12 @@ impl PreferencesDialog {
         let row_mail_date_format = adw::ComboRow::builder()
             .title(&crate::i18n::gettext("Date Format"))
             .model(&gtk::StringList::new(&[
-                &crate::i18n::gettext("Standard (10 Sep)"),
-                &crate::i18n::gettext("Smart (Relative)"),
-                &crate::i18n::gettext("Short (10.09.26)"),
-                &crate::i18n::gettext("Full (10.09.2026)"),
-                &crate::i18n::gettext("Date & Time"),
-                &crate::i18n::gettext("ISO 8601 (2026-09-10)"),
+                &crate::i18n::gettext("Adaptive"),
+                &crate::i18n::gettext("Relative"),
+                "10.09.26",
+                "10.09.2026",
+                "10.09.2026 14:30",
+                "2026-09-10",
                 &crate::i18n::gettext("Custom…"),
             ]))
             .build();
@@ -5446,6 +5570,14 @@ impl PreferencesDialog {
             .title("Custom Date Format (Strftime)")
             .show_apply_button(true)
             .build();
+        let date_custom_help_icon = gtk::Image::builder()
+            .icon_name("dialog-information-symbolic")
+            .tooltip_text(
+                "Placeholders:\n%Y = Year (2026), %y = Short year (26)\n%m = Month (01–12), %b = Short month (Sep)\n%d = Day (01–31), %a = Weekday (Thu)\n%H:%M = 24h time (14:30)",
+            )
+            .css_classes(vec!["dim-label"])
+            .build();
+        row_mail_date_custom.add_suffix(&date_custom_help_icon);
 
         let row_mail_date_align = adw::ComboRow::builder()
             .title(&crate::i18n::gettext("Date Alignment"))
@@ -5503,32 +5635,12 @@ impl PreferencesDialog {
         let group_mail_headers_mode = adw::PreferencesGroup::builder()
             .title("Header Display")
             .build();
-        let row_show_all_headers = adw::SwitchRow::builder()
-            .title("Show all headers")
-            .active(false)
-            .build();
-        if let Some(settings) = settings.clone() {
-            row_show_all_headers.set_active(settings.mail_show_all_headers());
-            let settings_for_headers = settings.clone();
-            row_show_all_headers.connect_active_notify(move |row| {
-                settings_for_headers.set_mail_show_all_headers(row.is_active());
-            });
-            let row_weak = row_show_all_headers.downgrade();
-            settings.connect_changed(Some("mail-show-all-headers"), move |s, _| {
-                let Some(row) = row_weak.upgrade() else { return; };
-                let active = s.boolean("mail-show-all-headers");
-                if row.is_active() != active {
-                    row.set_active(active);
-                }
-            });
-        }
-        group_mail_headers_mode.add(&row_show_all_headers);
 
         let row_header_style = adw::ComboRow::builder()
             .title(&crate::i18n::gettext("Header Style"))
             .model(&gtk::StringList::new(&[
                 &crate::i18n::gettext("Modern"),
-                &crate::i18n::gettext("Classic"),
+                &crate::i18n::gettext("Tabular"),
             ]))
             .build();
         if let Some(settings) = settings.clone() {
@@ -5553,45 +5665,32 @@ impl PreferencesDialog {
             &row_header_style,
             &crate::i18n::gettext("Header Style"),
             &crate::i18n::gettext("Modern"),
-            &crate::i18n::gettext("Classic"),
+            &crate::i18n::gettext("Tabular"),
         );
         group_mail_headers_mode.add(&row_header_toggle);
 
         let group_mail_header_actions = build_mail_header_toolbar_editor(settings.clone());
         let group_mail_list_toolbar = build_mail_list_toolbar_editor(settings.clone());
 
-        // In Modern style From/To/Cc/Subject/Date are always visible in the
-        // header card; this list controls the expanded details and the
-        // Classic header table.
         let group_mail_normal_headers = adw::PreferencesGroup::builder()
-            .title(&crate::i18n::gettext("Header Details"))
+            .title(&crate::i18n::gettext("Tabular Header Rows"))
             .description(&crate::i18n::gettext(
-                "Shown in the expanded header and in Classic style.",
+                "Shown directly in the message header when using Tabular style.",
             ))
             .build();
         let normal_headers_editor =
             build_mail_normal_headers_editor(settings.clone(), &group_mail_normal_headers);
         group_mail_normal_headers.add(&normal_headers_editor);
 
-        if let Some(_settings) = settings.clone() {
-            let update_headers_sens = {
-                let r_show = row_show_all_headers.clone();
-                let r_style = row_header_style.clone();
-                let g_actions = group_mail_header_actions.clone();
-                let g_normal = group_mail_normal_headers.clone();
-                move || {
-                    let show_all = r_show.is_active();
-                    r_style.set_sensitive(!show_all);
-                    g_actions.set_sensitive(!show_all);
-                    g_normal.set_sensitive(!show_all);
-                }
-            };
-            update_headers_sens();
-            let update_headers_notify = update_headers_sens.clone();
-            row_show_all_headers.connect_active_notify(move |_| {
-                update_headers_notify();
-            });
-        }
+        let group_mail_expanded_headers = adw::PreferencesGroup::builder()
+            .title(&crate::i18n::gettext("Expanded Headers"))
+            .description(&crate::i18n::gettext(
+                "Shown when expanding all headers via the arrow button in the message header.",
+            ))
+            .build();
+        let expanded_headers_editor =
+            build_mail_expanded_headers_editor(self, &group_mail_expanded_headers);
+        group_mail_expanded_headers.add(&expanded_headers_editor);
 
         let group_calendar_view = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Calendar View"))
@@ -5833,6 +5932,7 @@ impl PreferencesDialog {
 
         let row_calendar_time_zone = adw::EntryRow::builder()
             .title(&crate::i18n::gettext("Calendar time zone"))
+            .visible(false)
             .build();
         row_calendar_time_zone.set_tooltip_text(Some(&crate::i18n::gettext(
             "system for machine time zone, UTC, or an IANA zone such as Europe/Berlin",
@@ -5846,7 +5946,7 @@ impl PreferencesDialog {
 
         let row_second_zone = adw::EntryRow::builder()
             .title("Second Time Zone")
-            .visible(true)
+            .visible(false)
             .build();
         row_second_zone.set_tooltip_text(Some(
             "Additional time zone for day view (e.g. UTC or America/New_York)",
@@ -5855,6 +5955,117 @@ impl PreferencesDialog {
             row_second_zone.set_text(&settings.calendar_second_zone());
             row_second_zone.connect_changed(move |row| {
                 settings.set_calendar_second_zone(&row.text());
+            });
+        }
+
+        let mut iana_zones: Vec<String> = Vec::new();
+        if let Ok(content) = std::fs::read_to_string("/usr/share/zoneinfo/zone1970.tab") {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                let mut parts = trimmed.split('\t');
+                let _countries = parts.next();
+                let _coords = parts.next();
+                if let Some(tz) = parts.next() {
+                    let tz_str = tz.trim().to_string();
+                    if !tz_str.is_empty() {
+                        iana_zones.push(tz_str);
+                    }
+                }
+            }
+        }
+        if iana_zones.is_empty() {
+            for fallback in [
+                "Europe/Berlin",
+                "Europe/London",
+                "Europe/Paris",
+                "Europe/Zurich",
+                "Europe/Vienna",
+                "America/New_York",
+                "America/Chicago",
+                "America/Denver",
+                "America/Los_Angeles",
+                "Asia/Tokyo",
+                "Asia/Singapore",
+                "Australia/Sydney",
+            ] {
+                iana_zones.push(fallback.to_string());
+            }
+        }
+        iana_zones.sort();
+        iana_zones.dedup();
+
+        let mut primary_tz_values = vec!["system".to_string(), "UTC".to_string()];
+        let mut primary_tz_labels = vec![
+            crate::i18n::gettext("System Default"),
+            "UTC".to_string(),
+        ];
+        for tz in &iana_zones {
+            primary_tz_values.push(tz.clone());
+            primary_tz_labels.push(tz.clone());
+        }
+        let primary_tz_label_refs: Vec<&str> = primary_tz_labels.iter().map(|s| s.as_str()).collect();
+        let tz_expr = gtk::PropertyExpression::new(
+            gtk::StringObject::static_type(),
+            None::<gtk::Expression>,
+            "string",
+        );
+        let row_calendar_time_zone_combo = adw::ComboRow::builder()
+            .title(&crate::i18n::gettext("Calendar Time Zone"))
+            .model(&gtk::StringList::new(&primary_tz_label_refs))
+            .enable_search(true)
+            .expression(&tz_expr)
+            .build();
+        if let Some(settings) = settings.clone() {
+            let cur = settings.calendar_time_zone();
+            let idx = primary_tz_values
+                .iter()
+                .position(|z| z.eq_ignore_ascii_case(&cur))
+                .unwrap_or(0) as u32;
+            row_calendar_time_zone_combo.set_selected(idx);
+            let vals = primary_tz_values.clone();
+            row_calendar_time_zone_combo.connect_selected_notify(move |row| {
+                if let Some(val) = vals.get(row.selected() as usize) {
+                    settings.set_calendar_time_zone(val);
+                }
+            });
+        }
+
+        let mut second_tz_values = vec![String::new(), "UTC".to_string()];
+        let mut second_tz_labels = vec![
+            crate::i18n::gettext("None"),
+            "UTC".to_string(),
+        ];
+        for tz in &iana_zones {
+            second_tz_values.push(tz.clone());
+            second_tz_labels.push(tz.clone());
+        }
+        let second_tz_label_refs: Vec<&str> = second_tz_labels.iter().map(|s| s.as_str()).collect();
+        let tz2_expr = gtk::PropertyExpression::new(
+            gtk::StringObject::static_type(),
+            None::<gtk::Expression>,
+            "string",
+        );
+        let row_second_zone_combo = adw::ComboRow::builder()
+            .title(&crate::i18n::gettext("Second Time Zone"))
+            .model(&gtk::StringList::new(&second_tz_label_refs))
+            .enable_search(true)
+            .expression(&tz2_expr)
+            .build();
+        if let Some(settings) = settings.clone() {
+            let cur = settings.calendar_second_zone();
+            let idx = second_tz_values
+                .iter()
+                .position(|z| z.eq_ignore_ascii_case(cur.trim()))
+                .unwrap_or(0) as u32;
+            row_second_zone_combo.set_selected(idx);
+            let vals = second_tz_values.clone();
+            row_second_zone_combo.connect_selected_notify(move |row| {
+                if let Some(val) = vals.get(row.selected() as usize) {
+                    settings.set_calendar_second_zone(val);
+                }
             });
         }
 
@@ -6233,7 +6444,7 @@ impl PreferencesDialog {
         group_calendar_reminders.add(&row_reminder_tray);
 
         let row_notifications = adw::SwitchRow::builder()
-            .title(&crate::i18n::gettext("Desktop Notifications"))
+            .title(&crate::i18n::gettext("System Notifications"))
             .active(true)
             .build();
         if let Some(settings) = settings.clone() {
@@ -7050,7 +7261,7 @@ impl PreferencesDialog {
         row_mail_fetch_remote_logos.set_visible(true);
         group_privacy.add(&row_mail_fetch_remote_logos);
         let row_nav_junk = make_subpage_nav_row(
-            &crate::i18n::gettext("Junk Mail"),
+            &crate::i18n::gettext("Junk Mail Filtering"),
             "junk",
             &open_subpage,
         );
@@ -7096,6 +7307,7 @@ impl PreferencesDialog {
 
         group_mail_headers_mode.set_visible(true);
         group_mail_normal_headers.set_visible(true);
+        group_mail_expanded_headers.set_visible(true);
 
         let page_mail_headers = adw::PreferencesPage::builder()
             .title(&gettext("Message Headers"))
@@ -7103,6 +7315,7 @@ impl PreferencesDialog {
             .build();
         page_mail_headers.add(&group_mail_headers_mode);
         page_mail_headers.add(&group_mail_normal_headers);
+        page_mail_headers.add(&group_mail_expanded_headers);
 
         let page_sub_header_toolbar = adw::PreferencesPage::builder()
             .title(&crate::i18n::gettext("Message Header Actions"))
@@ -7120,7 +7333,7 @@ impl PreferencesDialog {
             .build();
 
         let group_typography = adw::PreferencesGroup::builder()
-            .title(&crate::i18n::gettext("Typography &amp; Rendering"))
+            .title(&crate::i18n::gettext("Typography and Rendering"))
             .build();
 
         let row_font_size = adw::SpinRow::with_range(8.0, 48.0, 1.0);
@@ -7396,31 +7609,46 @@ impl PreferencesDialog {
         page_mail_layout.add(&group_rows);
         page_mail_layout.add(&group_layout_nav);
 
-        let group_composer_nav = adw::PreferencesGroup::builder().build();
-        group_composer_nav.add(&row_nav_composer_headers);
-
         let page_composer_general = adw::PreferencesPage::builder()
             .title(&gettext("Composing"))
             .icon_name("document-edit-symbolic")
             .build();
         page_composer_general.add(&group_composer);
         page_composer_general.add(&group_reply);
-        page_composer_general.add(&group_composer_nav);
+        page_composer_general.add(&group_composer_headers);
+        page_composer_general.add(&group_composer_prompts);
+        page_composer_general.add(&group_composer_charset);
 
-        // ── Signatures Detail Box (GNOME HIG Dedicated Page) ────────────────
+        // ── Signatures Detail Box (GNOME HIG Dedicated Page with Scalable Selector & Inline Editor) ──
         let page_signatures = adw::PreferencesPage::builder()
             .title(&gettext("Signatures"))
             .build();
 
         let group_signatures_list = adw::PreferencesGroup::builder()
-            .title(&gettext("My Signatures"))
+            .title(&gettext("Signatures"))
             .build();
+
+        let btn_add_sig = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text(&gettext("Create Signature"))
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        group_signatures_list.set_header_suffix(Some(&btn_add_sig));
 
         let signatures_list_box = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
             .css_classes(vec!["boxed-list"])
             .build();
-        group_signatures_list.add(&signatures_list_box);
+        let signatures_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .propagate_natural_height(true)
+            .max_content_height(168)
+            .child(&signatures_list_box)
+            .build();
+        group_signatures_list.add(&signatures_scroll);
+
         let group_account_signatures = adw::PreferencesGroup::builder()
             .title("Per-Account Signatures")
             .build();
@@ -7430,6 +7658,45 @@ impl PreferencesDialog {
             .build();
         group_account_signatures.add(&account_signatures_list_box);
 
+        let group_signature_editor = adw::PreferencesGroup::builder()
+            .title(&crate::i18n::gettext("Edit Signature"))
+            .build();
+
+        let btn_sig_format_toggle = gtk::ToggleButton::builder()
+            .icon_name("format-text-rich-symbolic")
+            .tooltip_text(&crate::i18n::gettext("Formatting Toolbar"))
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["flat"])
+            .build();
+        group_signature_editor.set_header_suffix(Some(&btn_sig_format_toggle));
+
+        let row_sig_inline_name = adw::EntryRow::builder()
+            .title(&crate::i18n::gettext("Name"))
+            .build();
+        group_signature_editor.add(&row_sig_inline_name);
+
+        let sig_inline_editor = crate::views::RichTextField::new(false, 170);
+        sig_inline_editor.editor().set_canvas_card_mode(false);
+        sig_inline_editor.editor().set_toolbar_scrollable(true);
+        sig_inline_editor.editor().set_format_toolbar_visible(false);
+        sig_inline_editor.set_spacing(0);
+        sig_inline_editor.set_vexpand(false);
+        sig_inline_editor.set_hexpand(true);
+        {
+            let ed_for_toggle = sig_inline_editor.clone();
+            btn_sig_format_toggle.connect_toggled(move |btn| {
+                ed_for_toggle.editor().set_format_toolbar_visible(btn.is_active());
+            });
+        }
+        let sig_editor_card = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .margin_top(8)
+            .css_classes(vec!["card"])
+            .overflow(gtk::Overflow::Hidden)
+            .build();
+        sig_editor_card.append(&sig_inline_editor);
+        group_signature_editor.add(&sig_editor_card);
+
         let group_signature_placement = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Placement"))
             .build();
@@ -7437,9 +7704,10 @@ impl PreferencesDialog {
         group_signature_placement.add(&row_signature_outline);
 
         page_signatures.add(&group_signatures_list);
+        page_signatures.add(&group_signature_editor);
         page_signatures.add(&group_signature_placement);
 
-        // Reactive signature list & selection updater
+        // Reactive signature list & inline editor state
         let dialog_weak = self.downgrade();
         let signatures_list_box_weak = signatures_list_box.downgrade();
         let account_signatures_list_box_weak = account_signatures_list_box.downgrade();
@@ -7449,39 +7717,188 @@ impl PreferencesDialog {
         let is_updating_for_rebuild = is_updating_combo.clone();
         let is_updating_for_notify = is_updating_combo.clone();
 
+        let selected_sig_id: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(
+            SignatureStore::from_environment().active_id(),
+        ));
+        let is_loading_inline_sig = Rc::new(Cell::new(false));
+        let sig_row_widgets: Rc<RefCell<Vec<(String, adw::ActionRow)>>> =
+            Rc::new(RefCell::new(Vec::new()));
+
+        let load_sig_into_inline_editor: Rc<dyn Fn()> = {
+            let selected_sig_id = selected_sig_id.clone();
+            let is_loading_inline_sig = is_loading_inline_sig.clone();
+            let name_row_weak = row_sig_inline_name.downgrade();
+            let editor_weak = sig_inline_editor.downgrade();
+            let editor_group_weak = group_signature_editor.downgrade();
+            let sig_row_widgets = sig_row_widgets.clone();
+            Rc::new(move || {
+                let Some(name_row) = name_row_weak.upgrade() else { return };
+                let Some(editor) = editor_weak.upgrade() else { return };
+
+                let store = SignatureStore::from_environment();
+                let signatures = store.load();
+                let has_sigs = !signatures.is_empty();
+                if let Some(grp) = editor_group_weak.upgrade() {
+                    grp.set_visible(has_sigs);
+                }
+                if !has_sigs {
+                    return;
+                }
+
+                let current_id = selected_sig_id.borrow().clone();
+                let target_idx = current_id
+                    .as_deref()
+                    .and_then(|id| signatures.iter().position(|s| s.id == id))
+                    .or_else(|| {
+                        store
+                            .active_id()
+                            .and_then(|aid| signatures.iter().position(|s| s.id == aid))
+                    })
+                    .unwrap_or(0);
+
+                if let Some(sig) = signatures.get(target_idx) {
+                    *selected_sig_id.borrow_mut() = Some(sig.id.clone());
+
+                    is_loading_inline_sig.set(true);
+                    if name_row.text().as_str() != sig.name.as_str() {
+                        name_row.set_text(&sig.name);
+                    }
+                    let trimmed = sig.text.trim();
+                    let looks_html = trimmed.contains('<') && trimmed.contains('>');
+                    if looks_html {
+                        editor.set_html(&sig.text);
+                    } else {
+                        editor.set_plain_text(&sig.text);
+                    }
+                    is_loading_inline_sig.set(false);
+
+                    for (rid, rwidget) in sig_row_widgets.borrow().iter() {
+                        if rid == &sig.id {
+                            rwidget.add_css_class("selected-signature-row");
+                        } else {
+                            rwidget.remove_css_class("selected-signature-row");
+                        }
+                    }
+                }
+            })
+        };
+
+        {
+            let selected_sig_id = selected_sig_id.clone();
+            let is_loading = is_loading_inline_sig.clone();
+            let name_row_weak = row_sig_inline_name.downgrade();
+            let editor_weak = sig_inline_editor.downgrade();
+            let sig_row_widgets = sig_row_widgets.clone();
+            let save_inline_changes = Rc::new(move || {
+                if is_loading.get() {
+                    return;
+                }
+                let Some(sig_id) = selected_sig_id.borrow().clone() else {
+                    return;
+                };
+                let Some(name_row) = name_row_weak.upgrade() else { return };
+                let Some(editor) = editor_weak.upgrade() else { return };
+                let new_name = {
+                    let t = name_row.text().trim().to_string();
+                    if t.is_empty() {
+                        crate::i18n::gettext("Untitled Signature")
+                    } else {
+                        t
+                    }
+                };
+                let raw_text = if editor.is_html() {
+                    editor.html()
+                } else {
+                    editor.plain_text()
+                };
+                let new_text = if raw_text.trim().is_empty() {
+                    "<p><br></p>".to_string()
+                } else {
+                    raw_text
+                };
+                let store = SignatureStore::from_environment();
+                let _ = store.upsert(SignatureProfile {
+                    id: sig_id.clone(),
+                    name: new_name.clone(),
+                    text: new_text.clone(),
+                    format: if editor.is_html() {
+                        "html".to_string()
+                    } else {
+                        "plain".to_string()
+                    },
+                });
+                if store.active_id().as_deref() == Some(sig_id.as_str()) {
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_signature_text(&new_text);
+                    }
+                }
+                for (rid, rwidget) in sig_row_widgets.borrow().iter() {
+                    if rid == &sig_id {
+                        rwidget.set_title(&new_name);
+                    }
+                }
+            });
+
+            let save_on_name = save_inline_changes.clone();
+            row_sig_inline_name.connect_changed(move |_| {
+                save_on_name();
+            });
+            let save_on_body = save_inline_changes.clone();
+            sig_inline_editor.connect_changed(move |_| {
+                save_on_body();
+            });
+        }
+
         let rebuild_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
 
-        let btn_add_sig = gtk::Button::builder()
-            .icon_name("list-add-symbolic")
-            .tooltip_text(&gettext("Create Signature"))
-            .css_classes(vec!["flat"])
-            .valign(gtk::Align::Center)
-            .build();
-        let dialog_for_add_sig = self.downgrade();
         let rebuild_holder_for_add_sig = rebuild_holder.clone();
+        let selected_sig_for_add = selected_sig_id.clone();
+        let name_row_for_add = row_sig_inline_name.downgrade();
         btn_add_sig.connect_clicked(move |_| {
-            let Some(d) = dialog_for_add_sig.upgrade() else { return };
-            let rebuild_cb = rebuild_holder_for_add_sig.borrow().as_ref().cloned();
-            let editor = SignatureEditorDialog::new_for_create(Some(move |_| {
-                if let Some(f) = rebuild_cb.as_ref() {
-                    f();
-                }
-            }));
-            editor.present(Some(&d));
+            let store = SignatureStore::from_environment();
+            let existing = store.load();
+            let base_label = crate::i18n::gettext("Signature");
+            let mut new_idx = existing.len() + 1;
+            let mut candidate_name = format!("{base_label} {new_idx}");
+            while store.has_name(&candidate_name, None) {
+                new_idx += 1;
+                candidate_name = format!("{base_label} {new_idx}");
+            }
+            let new_id = format!("sig-{}", uuid::Uuid::new_v4());
+            let new_sig = SignatureProfile {
+                id: new_id.clone(),
+                name: candidate_name,
+                text: "<p><br></p>".to_string(),
+                format: "html".to_string(),
+            };
+            let _ = store.upsert(new_sig);
+            if existing.is_empty() {
+                let _ = store.set_active(Some(&new_id));
+            }
+            *selected_sig_for_add.borrow_mut() = Some(new_id);
+            if let Some(f) = rebuild_holder_for_add_sig.borrow().as_ref() {
+                f();
+            }
+            if let Some(name_row) = name_row_for_add.upgrade() {
+                name_row.grab_focus();
+            }
         });
-        group_signatures_list.set_header_suffix(Some(&btn_add_sig));
 
         let rebuild_fn: Rc<dyn Fn()> = {
             let rebuild_holder_for_rebuild = rebuild_holder.clone();
             let is_updating_for_rebuild = is_updating_for_rebuild.clone();
+            let selected_sig_for_rebuild = selected_sig_id.clone();
+            let load_inline_for_rebuild = load_sig_into_inline_editor.clone();
+            let sig_row_widgets_for_rebuild = sig_row_widgets.clone();
+            let editor_weak_for_row = sig_inline_editor.downgrade();
             Rc::new(move || {
                 let Some(list_box) = signatures_list_box_weak.upgrade() else { return };
-                let Some(combo) = signature_row_weak.upgrade() else { return };
                 let Some(dialog) = dialog_weak.upgrade() else { return };
 
                 while let Some(child) = list_box.first_child() {
                     list_box.remove(&child);
                 }
+                sig_row_widgets_for_rebuild.borrow_mut().clear();
 
                 let store = SignatureStore::from_environment();
                 let signatures = store.load();
@@ -7489,13 +7906,11 @@ impl PreferencesDialog {
                 if signatures.is_empty() {
                     let empty_row = adw::ActionRow::builder()
                         .title(&gettext("No signatures yet"))
-                        
                         .build();
                     list_box.append(&empty_row);
                 }
 
                 for sig in &signatures {
-                    let sig_clone = sig.clone();
                     let sig_id = sig.id.clone();
 
                     let accounts_using: Vec<String> = AccountConfigStore::default()
@@ -7504,7 +7919,6 @@ impl PreferencesDialog {
                         .filter(|p| p.signature_id.as_deref() == Some(&sig_id))
                         .map(|p| p.display_name)
                         .collect();
-                    // Minimal subtitle: only show which accounts use this signature.
                     let subtitle = accounts_using.join(", ");
 
                     let row = adw::ActionRow::builder()
@@ -7512,7 +7926,6 @@ impl PreferencesDialog {
                         .subtitle(&subtitle)
                         .activatable(true)
                         .build();
-                    
 
                     let is_active = store.active_id().as_deref() == Some(&sig.id);
                     if is_active {
@@ -7523,8 +7936,6 @@ impl PreferencesDialog {
                             .build();
                         row.add_suffix(&active_badge);
                     }
-
-
 
                     let default_tooltip = if is_active {
                         gettext("Current default signature")
@@ -7560,19 +7971,16 @@ impl PreferencesDialog {
                     });
                     row.add_suffix(&btn_default);
 
-
-
-                    let dialog_for_row_click = dialog.clone();
-                    let rebuild_cb_row = rebuild_holder_for_rebuild.borrow().as_ref().cloned();
-                    let sig_for_row_click = sig_clone.clone();
+                    let selected_for_click = selected_sig_for_rebuild.clone();
+                    let load_for_click = load_inline_for_rebuild.clone();
+                    let id_for_click = sig_id.clone();
+                    let ed_for_click = editor_weak_for_row.clone();
                     row.connect_activated(move |_| {
-                        let cb = rebuild_cb_row.clone();
-                        let editor = SignatureEditorDialog::new_for_edit(&sig_for_row_click, Some(move |_| {
-                            if let Some(f) = cb.as_ref() {
-                                f();
-                            }
-                        }));
-                        editor.present(Some(&dialog_for_row_click));
+                        *selected_for_click.borrow_mut() = Some(id_for_click.clone());
+                        load_for_click();
+                        if let Some(ed) = ed_for_click.upgrade() {
+                            ed.grab_focus();
+                        }
                     });
 
                     let btn_delete = gtk::Button::builder()
@@ -7583,28 +7991,39 @@ impl PreferencesDialog {
                         .build();
                     let rebuild_cb_del = rebuild_holder_for_rebuild.borrow().as_ref().cloned();
                     let id_for_del = sig_id.clone();
+                    let selected_for_del = selected_sig_for_rebuild.clone();
                     btn_delete.connect_clicked(move |_| {
                         let store = SignatureStore::from_environment();
                         let _ = store.remove(&id_for_del);
+                        if selected_for_del.borrow().as_deref() == Some(id_for_del.as_str()) {
+                            *selected_for_del.borrow_mut() = store.active_id();
+                        }
                         if let Some(f) = rebuild_cb_del.as_ref() {
                             f();
                         }
                     });
                     row.add_suffix(&btn_delete);
 
+                    sig_row_widgets_for_rebuild
+                        .borrow_mut()
+                        .push((sig_id, row.clone()));
                     list_box.append(&row);
                 }
 
-                is_updating_for_rebuild.set(true);
-                let names: Vec<&str> = signatures.iter().map(|s| s.name.as_str()).collect();
-                let model = gtk::StringList::new(&names);
-                combo.set_model(Some(&model));
-                if let Some(active_id) = store.active_id() {
-                    if let Some(pos) = signatures.iter().position(|s| s.id == active_id) {
-                        combo.set_selected(pos as u32);
+                load_inline_for_rebuild();
+
+                if let Some(combo) = signature_row_weak.upgrade() {
+                    is_updating_for_rebuild.set(true);
+                    let names: Vec<&str> = signatures.iter().map(|s| s.name.as_str()).collect();
+                    let model = gtk::StringList::new(&names);
+                    combo.set_model(Some(&model));
+                    if let Some(active_id) = store.active_id() {
+                        if let Some(pos) = signatures.iter().position(|s| s.id == active_id) {
+                            combo.set_selected(pos as u32);
+                        }
                     }
+                    is_updating_for_rebuild.set(false);
                 }
-                is_updating_for_rebuild.set(false);
 
                 // Populate per-account signature assignment rows
                 if let Some(acc_list_box) = account_signatures_list_box_weak.upgrade() {
@@ -7812,6 +8231,107 @@ impl PreferencesDialog {
             .title(&crate::i18n::gettext("Import"))
             .build();
         group_import.add(&row_import_profile);
+
+        let row_import_unified = adw::ActionRow::builder()
+            .title(&crate::i18n::gettext(
+                "Import from File (.eml, .mbox, .ics, .vcf)…",
+            ))
+            .activatable(true)
+            .build();
+        row_import_unified.add_suffix(&gtk::Image::from_icon_name("document-open-symbolic"));
+        row_import_unified.connect_activated(glib::clone!(
+            #[weak(rename_to = dialog)]
+            self,
+            move |_| {
+                let Some(root) = dialog.root().and_downcast::<gtk::Window>() else {
+                    dialog.show_toast("No window available for import");
+                    return;
+                };
+                let filter = gtk::FileFilter::new();
+                filter.set_name(Some("Mail, Calendar & Contact Files (.eml, .mbox, .ics, .vcf)"));
+                for pat in ["*.eml", "*.mbox", "*.mbx", "*.ics", "*.ical", "*.vcf", "*.vcard"] {
+                    filter.add_pattern(pat);
+                }
+                let filters = gio::ListStore::new::<gtk::FileFilter>();
+                filters.append(&filter);
+                let all_filter = gtk::FileFilter::new();
+                all_filter.set_name(Some("All Files"));
+                all_filter.add_pattern("*");
+                filters.append(&all_filter);
+
+                let file_dialog = gtk::FileDialog::builder()
+                    .title("Import Files")
+                    .filters(&filters)
+                    .default_filter(&filter)
+                    .modal(true)
+                    .build();
+                let dialog_for_file = dialog.downgrade();
+                file_dialog.open_multiple(Some(&root), None::<&gio::Cancellable>, move |result| {
+                    let Ok(model) = result else {
+                        return;
+                    };
+                    let paths = selected_file_paths(&model);
+                    if paths.is_empty() {
+                        return;
+                    }
+                    let mut mail_paths = Vec::new();
+                    let mut cal_paths = Vec::new();
+                    let mut contact_paths = Vec::new();
+                    for p in paths {
+                        let ext = p
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("")
+                            .to_ascii_lowercase();
+                        match ext.as_str() {
+                            "ics" | "ical" => cal_paths.push(p),
+                            "vcf" | "vcard" => contact_paths.push(p),
+                            _ => mail_paths.push(p),
+                        }
+                    }
+                    let (sender, receiver) = async_channel::bounded(1);
+                    std::thread::spawn(move || {
+                        let mut summary = Vec::new();
+                        if !mail_paths.is_empty() {
+                            let svc = crate::services::MailStoreService::new();
+                            if let Ok(n) = svc.import_files(&mail_paths) {
+                                summary.push(format!("{n} email(s)"));
+                            }
+                        }
+                        if !cal_paths.is_empty() {
+                            let svc = crate::services::CalendarStoreService::new();
+                            if let Ok(n) = svc.import_files(&cal_paths) {
+                                summary.push(format!("{n} calendar file(s)"));
+                            }
+                        }
+                        if !contact_paths.is_empty() {
+                            let svc = crate::services::ContactStoreService::new();
+                            if let Ok(n) = svc.import_files(&contact_paths) {
+                                summary.push(format!("{n} vCard file(s)"));
+                            }
+                        }
+                        let _ = sender.send_blocking(summary);
+                    });
+                    glib::spawn_future_local(async move {
+                        let Ok(summary) = receiver.recv().await else {
+                            return;
+                        };
+                        if let Some(dialog) = dialog_for_file.upgrade() {
+                            if summary.is_empty() {
+                                dialog.show_toast("No items could be imported from the selected files");
+                            } else {
+                                dialog.show_toast(&format!("Imported: {}", summary.join(", ")));
+                            }
+                        }
+                    });
+                });
+            }
+        ));
+        group_import.add(&row_import_unified);
+
+        row_import_mail.set_visible(false);
+        row_import_calendar.set_visible(false);
+        row_import_contacts.set_visible(false);
         group_import.add(&row_import_mail);
         group_import.add(&row_import_calendar);
         group_import.add(&row_import_contacts);
@@ -7833,10 +8353,40 @@ impl PreferencesDialog {
         group_backup_storage.add(&row_local_contacts);
 
         let group_backup_diag = adw::PreferencesGroup::builder()
-            .title(&crate::i18n::gettext("Diagnostics &amp; Plugins"))
+            .title(&crate::i18n::gettext("Diagnostics"))
             .build();
+        row_debug_console.set_visible(false);
+        row_plugins.set_visible(false);
         group_backup_diag.add(&row_debug_console);
         group_backup_diag.add(&row_diagnostic);
+
+        let row_open_dev_console = adw::ActionRow::builder()
+            .title(&crate::i18n::gettext("Open Developer Console…"))
+            .subtitle(&crate::i18n::gettext(
+                "Inspect live sync, IMAP/SMTP, and EDS protocol logs",
+            ))
+            .activatable(true)
+            .build();
+        row_open_dev_console.add_suffix(&gtk::Image::from_icon_name("utilities-terminal-symbolic"));
+        let settings_for_dev_console = settings.clone();
+        let dialog_weak_dev_console = self.downgrade();
+        let row_debug_console_ref = row_debug_console.clone();
+        let row_statusbar_for_dev_console = row_mail_statusbar.clone();
+        row_open_dev_console.connect_activated(move |_| {
+            if let Some(ref s) = settings_for_dev_console {
+                s.set_debug_console_enabled(true);
+                s.set_mail_show_statusbar(true);
+            }
+            row_debug_console_ref.set_active(true);
+            row_statusbar_for_dev_console.set_active(true);
+            if let Some(d) = dialog_weak_dev_console.upgrade() {
+                if let Some(win) = crate::window::find_meridian_window(&d) {
+                    win.set_debug_console_open(true);
+                }
+                d.show_toast(&crate::i18n::gettext("Developer Console enabled"));
+            }
+        });
+        group_backup_diag.add(&row_open_dev_console);
         group_backup_diag.add(&row_plugins);
 
         page_sub_backup_advanced.add(&group_backup_storage);
@@ -7850,15 +8400,14 @@ impl PreferencesDialog {
         page_sub_cal_workdays.add(&group_calendar_time);
 
         let group_cal_tz = adw::PreferencesGroup::builder()
-            .title(&crate::i18n::gettext("Time Zones &amp; Display"))
+            .title(&crate::i18n::gettext("Time Zones"))
             .build();
+        group_cal_tz.add(&row_calendar_time_zone_combo);
+        group_cal_tz.add(&row_second_zone_combo);
         group_cal_tz.add(&row_calendar_time_zone);
-        row_second_zone.set_visible(true);
         group_cal_tz.add(&row_second_zone);
         row_month_scroll_by_week.set_visible(true);
         row_month_scroll_anim.set_visible(true);
-        
-        group_cal_tz.add(&row_month_scroll_anim);
 
         let row_month_rows = adw::ComboRow::builder()
             .title(&crate::i18n::gettext("Weeks in Month View"))
@@ -7960,9 +8509,7 @@ impl PreferencesDialog {
         group_categories.set_visible(true);
         page_sub_cal_categories.add(&group_categories);
 
-        let group_cal_subpages = adw::PreferencesGroup::builder()
-            .title(&crate::i18n::gettext("Work Days, Reminders &amp; Categories"))
-            .build();
+        let group_cal_subpages = adw::PreferencesGroup::builder().build();
         let row_nav_workdays = make_subpage_nav_row(
             &crate::i18n::gettext("Work Week & Time Zones"),
             "sub_calendar_workdays",
@@ -8027,26 +8574,8 @@ impl PreferencesDialog {
             "sub_calendar_view",
             &open_subpage,
         );
+        row_nav_calendar_view.set_visible(false);
         group_cal_subpages.add(&row_nav_calendar_view);
-
-        let row_purge_events = adw::ActionRow::builder()
-            .title(&crate::i18n::gettext("Purge Past Events…"))
-            .activatable(true)
-            .build();
-        let dialog_weak_purge = self.downgrade();
-        row_purge_events.connect_activated(move |_| {
-            if let Some(d) = dialog_weak_purge.upgrade() {
-                let purge_dialog = crate::dialogs::CalendarPurgeDialog::new();
-                purge_dialog.present(Some(&d));
-            }
-        });
-        let group_calendar_maintenance = adw::PreferencesGroup::builder().build();
-        group_calendar_maintenance.add(&row_purge_events);
-
-        let page_calendar_general = adw::PreferencesPage::builder().title(&gettext("Calendar")).build();
-        page_calendar_general.add(&group_calendar);
-        page_calendar_general.add(&group_cal_subpages);
-        page_calendar_general.add(&group_calendar_maintenance);
 
         let group_calendar_view_options = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("View Options"))
@@ -8058,12 +8587,17 @@ impl PreferencesDialog {
         group_calendar_view_options.add(&row_month_rows);
         group_calendar_view_options.add(&row_month_rows_toggle);
         group_calendar_view_options.add(&row_month_scroll_by_week);
+        group_calendar_view_options.add(&row_month_scroll_anim);
         group_calendar_view_options.add(&row_chip_scale);
         group_calendar_view_options.add(&toggle_chip_scale);
         group_calendar_view_options.add(&row_dim_past_events);
         group_calendar_view_options.add(&row_hide_cancelled_events);
         group_calendar_view_options.add(&row_date_format);
-        page_sub_calendar_view.add(&group_calendar_view_options);
+
+        let page_calendar_general = adw::PreferencesPage::builder().title(&gettext("Calendar")).build();
+        page_calendar_general.add(&group_calendar);
+        page_calendar_general.add(&group_calendar_view_options);
+        page_calendar_general.add(&group_cal_subpages);
 
 
 
@@ -8078,6 +8612,7 @@ impl PreferencesDialog {
                 s_tp.set_task_preview_visible(r.is_active());
             });
             let row_weak = row_task_preview_visible.downgrade();
+            s.connect_changed(Some("task-preview-orientation"), move |_, _| {});
             s.connect_changed(Some("task-preview-visible"), move |s_obj, _| {
                 let Some(row) = row_weak.upgrade() else { return; };
                 let active = s_obj.boolean("task-preview-visible");
@@ -8091,22 +8626,22 @@ impl PreferencesDialog {
         let row_task_layout = adw::ComboRow::builder()
             .title(&crate::i18n::gettext("Tasks Layout"))
             .model(&gtk::StringList::new(&[
-                &crate::i18n::gettext("Side-by-Side"),
                 &crate::i18n::gettext("Stacked"),
+                &crate::i18n::gettext("Side-by-Side"),
             ]))
             .build();
         if let Some(ref s) = settings {
-            row_task_layout.set_selected(if s.task_preview_orientation() == "classic" { 1 } else { 0 });
+            row_task_layout.set_selected(if s.task_preview_orientation() == "classic" { 0 } else { 1 });
             let s_to = s.clone();
             row_task_layout.connect_selected_notify(move |r| {
-                let val = if r.selected() == 1 { "classic" } else { "vertical" };
+                let val = if r.selected() == 0 { "classic" } else { "vertical" };
                 s_to.set_task_preview_orientation(val);
             });
             let row_weak = row_task_layout.downgrade();
             s.connect_changed(Some("task-preview-orientation"), move |s_obj, _| {
                 let Some(row) = row_weak.upgrade() else { return; };
                 let is_classic = s_obj.string("task-preview-orientation").as_str() == "classic";
-                let sel = if is_classic { 1 } else { 0 };
+                let sel = if is_classic { 0 } else { 1 };
                 if row.selected() != sel {
                     row.set_selected(sel);
                 }
@@ -8116,14 +8651,15 @@ impl PreferencesDialog {
         let row_task_layout_toggle = make_segmented_toggle_row(
             &row_task_layout,
             &crate::i18n::gettext("Tasks Layout"),
-            &crate::i18n::gettext("Side-by-Side"),
             &crate::i18n::gettext("Stacked"),
+            &crate::i18n::gettext("Side-by-Side"),
         );
         
 
         let row_memo_preview_visible = adw::SwitchRow::builder()
             .title(&crate::i18n::gettext("Show memo preview pane"))
             .active(true)
+            .visible(false)
             .build();
         if let Some(ref s) = settings {
             row_memo_preview_visible.set_active(s.memo_preview_visible());
@@ -8145,22 +8681,22 @@ impl PreferencesDialog {
         let row_memo_layout = adw::ComboRow::builder()
             .title(&crate::i18n::gettext("Memos Layout"))
             .model(&gtk::StringList::new(&[
-                &crate::i18n::gettext("Side-by-Side"),
                 &crate::i18n::gettext("Stacked"),
+                &crate::i18n::gettext("Side-by-Side"),
             ]))
             .build();
         if let Some(ref s) = settings {
-            row_memo_layout.set_selected(if s.memo_preview_orientation() == "classic" { 1 } else { 0 });
+            row_memo_layout.set_selected(if s.memo_preview_orientation() == "classic" { 0 } else { 1 });
             let s_mo = s.clone();
             row_memo_layout.connect_selected_notify(move |r| {
-                let val = if r.selected() == 1 { "classic" } else { "vertical" };
+                let val = if r.selected() == 0 { "classic" } else { "vertical" };
                 s_mo.set_memo_preview_orientation(val);
             });
             let row_weak = row_memo_layout.downgrade();
             s.connect_changed(Some("memo-preview-orientation"), move |s_obj, _| {
                 let Some(row) = row_weak.upgrade() else { return; };
                 let is_classic = s_obj.string("memo-preview-orientation").as_str() == "classic";
-                let sel = if is_classic { 1 } else { 0 };
+                let sel = if is_classic { 0 } else { 1 };
                 if row.selected() != sel {
                     row.set_selected(sel);
                 }
@@ -8170,8 +8706,8 @@ impl PreferencesDialog {
         let row_memo_layout_toggle = make_segmented_toggle_row(
             &row_memo_layout,
             &crate::i18n::gettext("Memos Layout"),
-            &crate::i18n::gettext("Side-by-Side"),
             &crate::i18n::gettext("Stacked"),
+            &crate::i18n::gettext("Side-by-Side"),
         );
         
 
@@ -8232,7 +8768,7 @@ impl PreferencesDialog {
         page_tasks.add(&group_tasks);
         page_tasks.add(&group_memos);
 
-        // ── Detail Stack (28 Preferences Pages) ─────────────────────────────
+        // ── Detail Stack (Preferences Pages) ────────────────────────────────
         let detail_stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
             .hhomogeneous(true)
@@ -8241,7 +8777,7 @@ impl PreferencesDialog {
             .vexpand(true)
             .build();
 
-        // 14 Top-Level Pages
+        // 15 Top-Level Pages
         detail_stack.add_named(&page_accounts, Some("accounts"));
         detail_stack.add_named(&page_signatures, Some("signatures"));
         detail_stack.add_named(&page_mail_labels, Some("labels"));
@@ -8258,7 +8794,7 @@ impl PreferencesDialog {
         detail_stack.add_named(&page_backup, Some("backup"));
         detail_stack.add_named(&page_sub_backup_advanced, Some("advanced"));
 
-        // 14 Subpages
+        // 13 Subpages
         detail_stack.add_named(&page_mail_junk, Some("junk"));
         detail_stack.add_named(&page_sub_smime, Some("sub_smime"));
         detail_stack.add_named(&page_sub_sync_cache, Some("sub_sync_cache"));
@@ -8266,12 +8802,10 @@ impl PreferencesDialog {
         detail_stack.add_named(&page_sub_list_elements, Some("sub_list_elements"));
         detail_stack.add_named(&page_mail_headers, Some("headers"));
         detail_stack.add_named(&page_sub_reading_advanced, Some("sub_reading_advanced"));
-        detail_stack.add_named(&page_sub_composer_headers, Some("sub_composer_headers"));
         detail_stack.add_named(&page_sub_cal_workdays, Some("sub_calendar_workdays"));
         detail_stack.add_named(&page_sub_cal_reminders, Some("sub_calendar_reminders"));
         detail_stack.add_named(&page_sub_cal_categories, Some("sub_calendar_categories"));
         detail_stack.add_named(&page_sub_calendar_view, Some("sub_calendar_view"));
-        detail_stack.add_named(&page_sub_contacts, Some("sub_contacts_advanced"));
         detail_stack.add_named(&page_sub_allowed_senders, Some("sub_allowed_senders"));
         detail_stack.add_named(&page_sub_list_toolbar, Some("sub_list_toolbar"));
 
@@ -8849,6 +9383,7 @@ fn default_mail_normal_headers_for_editor() -> Vec<(String, bool)> {
 }
 
 fn configure_folder_combo_row(row: &adw::ComboRow) {
+    row.add_css_class("compact-grouped-combo");
     let expr = gtk::PropertyExpression::new(
         gtk::StringObject::static_type(),
         None::<gtk::Expression>,
@@ -8856,6 +9391,19 @@ fn configure_folder_combo_row(row: &adw::ComboRow) {
     );
     row.set_expression(Some(&expr));
     row.set_enable_search(true);
+
+    let title_lower = row.title().to_ascii_lowercase();
+    let fixed_icon: Option<&'static str> = if title_lower.contains("calendar") {
+        Some("x-office-calendar-symbolic")
+    } else if title_lower.contains("address") || title_lower.contains("contact") {
+        Some("x-office-address-book-symbolic")
+    } else if title_lower.contains("task") {
+        Some("view-list-bullet-symbolic")
+    } else if title_lower.contains("memo") {
+        Some("accessories-text-editor-symbolic")
+    } else {
+        None
+    };
 
     let factory = gtk::SignalListItemFactory::new();
     factory.connect_setup(|_, obj| {
@@ -8886,12 +9434,12 @@ fn configure_folder_combo_row(row: &adw::ComboRow) {
         let Some(list_item) = obj.downcast_ref::<gtk::ListItem>() else { return };
         let hbox = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(10)
-            .margin_start(6)
-            .margin_end(8)
-            .margin_top(4)
-            .margin_bottom(4)
-            .width_request(280)
+            .spacing(8)
+            .margin_start(4)
+            .margin_end(6)
+            .margin_top(0)
+            .margin_bottom(0)
+            .width_request(260)
             .build();
         let icon = gtk::Image::builder()
             .icon_name("folder-symbolic")
@@ -8900,7 +9448,7 @@ fn configure_folder_combo_row(row: &adw::ComboRow) {
             .build();
         let vbox = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(1)
+            .spacing(0)
             .hexpand(true)
             .valign(gtk::Align::Center)
             .build();
@@ -8919,7 +9467,7 @@ fn configure_folder_combo_row(row: &adw::ComboRow) {
         hbox.append(&vbox);
         list_item.set_child(Some(&hbox));
     });
-    list_factory.connect_bind(|_, obj| {
+    list_factory.connect_bind(move |_, obj| {
         let Some(list_item) = obj.downcast_ref::<gtk::ListItem>() else { return };
         let Some(str_obj) = list_item.item().and_downcast::<gtk::StringObject>() else { return };
         let Some(hbox) = list_item.child().and_downcast::<gtk::Box>() else { return };
@@ -8935,29 +9483,32 @@ fn configure_folder_combo_row(row: &adw::ComboRow) {
             (raw.as_str(), None)
         };
         title_lbl.set_label(folder);
-        // The account is shown once as a section header above its folders.
         let _ = acct;
         sub_lbl.set_visible(false);
 
-        let lower = folder.to_ascii_lowercase();
-        let icon_name = if lower.contains("inbox") || lower.contains("posteingang") {
-            "mail-inbox-symbolic"
-        } else if lower.contains("unread") || lower.contains("ungelesen") {
-            "mail-unread-symbolic"
-        } else if lower.contains("star") || lower.contains("markiert") || lower.contains("flag") {
-            "starred-symbolic"
-        } else if lower.contains("sent") || lower.contains("gesendet") {
-            "mail-send-symbolic"
-        } else if lower.contains("draft") || lower.contains("entw") {
-            "document-edit-symbolic"
-        } else if lower.contains("trash") || lower.contains("papierkorb") || lower.contains("deleted") {
-            "user-trash-symbolic"
-        } else if lower.contains("spam") || lower.contains("junk") {
-            "mail-mark-junk-symbolic"
-        } else if lower.contains("archive") || lower.contains("archiv") {
-            "package-x-generic-symbolic"
+        let icon_name = if let Some(fixed) = fixed_icon {
+            fixed
         } else {
-            "folder-symbolic"
+            let lower = folder.to_ascii_lowercase();
+            if lower.contains("inbox") || lower.contains("posteingang") {
+                "mail-inbox-symbolic"
+            } else if lower.contains("unread") || lower.contains("ungelesen") {
+                "mail-unread-symbolic"
+            } else if lower.contains("star") || lower.contains("markiert") || lower.contains("flag") {
+                "starred-symbolic"
+            } else if lower.contains("sent") || lower.contains("gesendet") {
+                "mail-send-symbolic"
+            } else if lower.contains("draft") || lower.contains("entw") {
+                "document-edit-symbolic"
+            } else if lower.contains("trash") || lower.contains("papierkorb") || lower.contains("deleted") {
+                "user-trash-symbolic"
+            } else if lower.contains("spam") || lower.contains("junk") {
+                "mail-mark-junk-symbolic"
+            } else if lower.contains("archive") || lower.contains("archiv") {
+                "package-x-generic-symbolic"
+            } else {
+                "folder-symbolic"
+            }
         };
         icon.set_icon_name(Some(icon_name));
     });
@@ -8965,8 +9516,6 @@ fn configure_folder_combo_row(row: &adw::ComboRow) {
 
     // Group folders by account: wrap the flat "Folder — Account" model in a
     // section model so the popup shows one compact account header per group.
-    // Entries are already contiguous per account, and the (stable) section
-    // sort ranks groups by first appearance, so item positions are unchanged.
     if let Some(model) = row.model() {
         let mut rank: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
         for i in 0..model.n_items() {
@@ -8993,9 +9542,9 @@ fn configure_folder_combo_row(row: &adw::ComboRow) {
             let Some(header) = obj.downcast_ref::<gtk::ListHeader>() else { return };
             let label = gtk::Label::builder()
                 .xalign(0.0)
-                .margin_start(6)
-                .margin_top(6)
-                .margin_bottom(2)
+                .margin_start(4)
+                .margin_top(0)
+                .margin_bottom(0)
                 .ellipsize(gtk::pango::EllipsizeMode::End)
                 .css_classes(vec!["caption-heading", "dim-label"])
                 .build();
@@ -9004,6 +9553,7 @@ fn configure_folder_combo_row(row: &adw::ComboRow) {
         header_factory.connect_bind(|_, obj| {
             let Some(header) = obj.downcast_ref::<gtk::ListHeader>() else { return };
             let Some(label) = header.child().and_downcast::<gtk::Label>() else { return };
+            label.set_margin_top(0);
             let acct = header
                 .item()
                 .and_downcast::<gtk::StringObject>()
@@ -9568,6 +10118,7 @@ fn build_mail_header_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefe
         });
     }
 
+    row_mark_read.set_visible(false);
     let switches_box = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
         .css_classes(vec!["boxed-list"])
@@ -9988,7 +10539,7 @@ fn list_toolbar_item_meta(raw_item: &str, labels: &[crate::services::settings_se
         "expunge" => ("user-trash-symbolic", crate::i18n::gettext("Expunge")),
         "undo" => ("edit-undo-symbolic", crate::i18n::gettext("Undo")),
         "redo" => ("edit-redo-symbolic", crate::i18n::gettext("Redo")),
-        "separator" => ("object-flip-horizontal-symbolic", crate::i18n::gettext("Separator |")),
+        "separator" => ("object-flip-horizontal-symbolic", crate::i18n::gettext("Separator")),
         "spacer" => ("object-flip-horizontal-symbolic", crate::i18n::gettext("Flexible Space")),
         "reply" => ("mail-reply-sender-symbolic", crate::i18n::gettext("Reply")),
         "reply-all" => ("mail-reply-all-symbolic", crate::i18n::gettext("Reply All")),
@@ -10029,9 +10580,7 @@ fn list_toolbar_item_meta(raw_item: &str, labels: &[crate::services::settings_se
 }
 
 fn build_mail_list_toolbar_editor(settings: Option<AppSettings>) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::builder()
-        .title(&crate::i18n::gettext("List Action &amp; Quick-Filter Bar"))
-        .build();
+    let group = adw::PreferencesGroup::builder().build();
 
     let btn_restore = gtk::Button::builder()
         .label(&crate::i18n::gettext("Restore Defaults"))
@@ -10041,8 +10590,8 @@ fn build_mail_list_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefere
     group.set_header_suffix(Some(&btn_restore));
 
     let row_show_bar = adw::SwitchRow::builder()
+        .title(&crate::i18n::gettext("Show action and quick-filter bar above message list"))
         .use_markup(false)
-        .title(&crate::i18n::gettext("Show Action &amp; Quick-Filter Bar above message list"))
         .active(settings.as_ref().map(|s| s.mail_show_toolbar()).unwrap_or(false))
         .build();
     if let Some(ref s) = settings {
@@ -10143,26 +10692,39 @@ fn build_mail_list_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefere
         })
     };
 
-    // Pin Folder handler
+    // Pin Folder handler (both via "+ Pin" button and on selecting a folder from the dropdown)
     {
-        let state_pin = state.clone();
-        let save_pin = save_and_rebuild.clone();
-        let combo_pin = row_pin_folder.clone();
+        let pin_selected_folder = {
+            let state_pin = state.clone();
+            let save_pin = save_and_rebuild.clone();
+            let combo_pin = row_pin_folder.clone();
+            let presets = folder_presets.clone();
+            Rc::new(move || {
+                let idx = combo_pin.selected() as usize;
+                let Some((base_id, full_label)) = presets.get(idx) else { return; };
+                let short_default = full_label
+                    .split_once(" — ")
+                    .map(|(f, _)| f.trim())
+                    .unwrap_or(full_label.as_str())
+                    .replace(',', " ");
+                let token = if base_id.contains("::") && !short_default.is_empty() {
+                    format!("{base_id}={short_default}")
+                } else {
+                    base_id.clone()
+                };
+                if !state_pin.borrow().iter().any(|it| it.split('=').next().unwrap_or(it).trim() == base_id) {
+                    state_pin.borrow_mut().push(token);
+                    save_pin();
+                }
+            })
+        };
+        let pin_on_btn = pin_selected_folder.clone();
         btn_pin_folder.connect_clicked(move |_| {
-            let idx = combo_pin.selected() as usize;
-            let Some((base_id, full_label)) = folder_presets.get(idx) else { return; };
-            let short_default = full_label
-                .split_once(" — ")
-                .map(|(f, _)| f.trim())
-                .unwrap_or(full_label.as_str())
-                .replace(',', " ");
-            let token = if base_id.contains("::") && !short_default.is_empty() {
-                format!("{base_id}={short_default}")
-            } else {
-                base_id.clone()
-            };
-            state_pin.borrow_mut().push(token);
-            save_pin();
+            pin_on_btn();
+        });
+        let pin_on_sel = pin_selected_folder;
+        row_pin_folder.connect_selected_notify(move |_| {
+            pin_on_sel();
         });
     }
 
@@ -10290,9 +10852,6 @@ fn build_mail_list_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefere
         "filter:important",
         "filter:attachment",
         "filter:today",
-        "follow-up",
-        "star",
-        "important",
         "edit-labels",
         "mark-read",
         "mark-unread",
@@ -10318,16 +10877,6 @@ fn build_mail_list_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefere
         "redo",
         "separator",
         "spacer",
-        "reply",
-        "reply-all",
-        "forward",
-        "edit-as-new",
-        "add-sender-contact",
-        "print",
-        "export",
-        "source",
-        "prev",
-        "next",
     ];
 
     {
@@ -10533,19 +11082,32 @@ fn build_mail_list_toolbar_editor(settings: Option<AppSettings>) -> adw::Prefere
                 zone_active.append(&tile_box);
             }
 
-            // Populate Palette (items not in Active Bar, plus repeatable separator/spacer + configured labels)
+            // Populate Palette (items not in Active Bar + configured labels, without duplicates)
+            let canonical_toolbar_base = |raw: &str| -> String {
+                match raw {
+                    "filter:starred" => "filter:flagged".to_string(),
+                    "filter:follow-up" => "filter:followup".to_string(),
+                    "filter:memos" => "filter:memo".to_string(),
+                    "filter:attachments" => "filter:attachment".to_string(),
+                    other => other.to_string(),
+                }
+            };
             let active_bases: std::collections::HashSet<String> = items
                 .iter()
-                .map(|it| it.split('=').next().unwrap_or(it).trim().to_string())
+                .map(|it| canonical_toolbar_base(it.split('=').next().unwrap_or(it).trim()))
                 .collect();
             let mut palette_items: Vec<String> = PALETTE_TOKENS
                 .iter()
-                .filter(|t| matches!(**t, "separator" | "spacer") || !active_bases.contains(**t))
+                .filter(|t| !active_bases.contains(&canonical_toolbar_base(**t)))
                 .map(|t| (*t).to_string())
                 .collect();
             for lbl_def in &labels {
                 let tag_token = format!("label:{}", lbl_def.tag);
-                if !active_bases.contains(&tag_token) {
+                let is_important_label = lbl_def.tag.eq_ignore_ascii_case("$Labelimportant")
+                    || lbl_def.name.eq_ignore_ascii_case("Important");
+                if !active_bases.contains(&tag_token)
+                    && !(is_important_label && active_bases.contains("filter:important"))
+                {
                     palette_items.push(tag_token);
                 }
             }
@@ -10947,6 +11509,248 @@ fn add_mail_normal_header(
     set_mail_header_validation_message(validation_label, None);
 }
 
+fn build_mail_expanded_headers_editor(
+    parent: &PreferencesDialog,
+    group: &adw::PreferencesGroup,
+) -> gtk::Box {
+    let config = Rc::new(RefCell::new(
+        crate::services::settings_service::ExpandedHeadersConfig::load(),
+    ));
+
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(vec!["boxed-list"])
+        .build();
+
+    let row_show_other = adw::SwitchRow::builder()
+        .title(&crate::i18n::gettext("Show other unlisted RFC headers"))
+        .active(config.borrow().show_other_headers)
+        .build();
+    {
+        let cfg_for_other = Rc::clone(&config);
+        let parent_weak = parent.downgrade();
+        row_show_other.connect_active_notify(move |sw| {
+            let mut c = cfg_for_other.borrow_mut();
+            if c.show_other_headers != sw.is_active() {
+                c.show_other_headers = sw.is_active();
+                c.save();
+                drop(c);
+                if let Some(p) = parent_weak.upgrade() {
+                    refresh_open_mail_views(&p);
+                }
+            }
+        });
+    }
+
+    let entry_row = adw::EntryRow::builder()
+        .title(&crate::i18n::gettext("Add Expanded Header (e.g. X-Spam-Status)"))
+        .activatable(false)
+        .selectable(false)
+        .build();
+    let add_button = gtk::Button::builder()
+        .icon_name("list-add-symbolic")
+        .tooltip_text(&crate::i18n::gettext("Add header"))
+        .css_classes(vec!["flat"])
+        .sensitive(false)
+        .valign(gtk::Align::Center)
+        .build();
+    entry_row.add_suffix(&add_button);
+
+    let reset_button = gtk::Button::builder()
+        .label(&crate::i18n::gettext("Restore Defaults"))
+        .css_classes(vec!["flat"])
+        .valign(gtk::Align::Center)
+        .build();
+    group.set_header_suffix(Some(&reset_button));
+
+    let rebuild_expanded_list: Rc<dyn Fn()> = {
+        let list_weak = list.downgrade();
+        let cfg = Rc::clone(&config);
+        let row_show_other_ref = row_show_other.clone();
+        let entry_row_ref = entry_row.clone();
+        let parent_weak = parent.downgrade();
+        let holder: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+        let holder_clone = holder.clone();
+        let f: Rc<dyn Fn()> = Rc::new(move || {
+            let Some(list) = list_weak.upgrade() else { return };
+            while let Some(child) = list.first_child() {
+                list.remove(&child);
+            }
+            list.append(&row_show_other_ref);
+            let items = cfg.borrow().headers.clone();
+            let len = items.len();
+            for (idx, (name, visible)) in items.into_iter().enumerate() {
+                let row = adw::ActionRow::builder()
+                    .title(&name)
+                    .activatable(false)
+                    .selectable(false)
+                    .build();
+                let sw = gtk::Switch::builder()
+                    .active(visible)
+                    .valign(gtk::Align::Center)
+                    .build();
+                let up_btn = mail_header_editor_button("go-up-symbolic", "Move header up", idx > 0);
+                let down_btn =
+                    mail_header_editor_button("go-down-symbolic", "Move header down", idx + 1 < len);
+                let del_btn = mail_header_editor_button("user-trash-symbolic", "Remove header", true);
+                row.add_suffix(&sw);
+                row.add_suffix(&up_btn);
+                row.add_suffix(&down_btn);
+                row.add_suffix(&del_btn);
+
+                let cfg_sw = Rc::clone(&cfg);
+                let name_sw = name.clone();
+                let p_sw = parent_weak.clone();
+                sw.connect_active_notify(move |s| {
+                    let mut c = cfg_sw.borrow_mut();
+                    if let Some((_, en)) = c
+                        .headers
+                        .iter_mut()
+                        .find(|(cand, _)| cand.eq_ignore_ascii_case(&name_sw))
+                    {
+                        *en = s.is_active();
+                        c.save();
+                    }
+                    drop(c);
+                    if let Some(p) = p_sw.upgrade() {
+                        refresh_open_mail_views(&p);
+                    }
+                });
+
+                let cfg_up = Rc::clone(&cfg);
+                let p_up = parent_weak.clone();
+                let h_up = holder_clone.clone();
+                up_btn.connect_clicked(move |_| {
+                    if idx > 0 {
+                        let mut c = cfg_up.borrow_mut();
+                        if idx < c.headers.len() {
+                            c.headers.swap(idx, idx - 1);
+                            c.save();
+                        }
+                        drop(c);
+                        if let Some(reb) = h_up.borrow().as_ref() {
+                            reb();
+                        }
+                        if let Some(p) = p_up.upgrade() {
+                            refresh_open_mail_views(&p);
+                        }
+                    }
+                });
+
+                let cfg_down = Rc::clone(&cfg);
+                let p_down = parent_weak.clone();
+                let h_down = holder_clone.clone();
+                down_btn.connect_clicked(move |_| {
+                    let mut c = cfg_down.borrow_mut();
+                    if idx + 1 < c.headers.len() {
+                        c.headers.swap(idx, idx + 1);
+                        c.save();
+                        drop(c);
+                        if let Some(reb) = h_down.borrow().as_ref() {
+                            reb();
+                        }
+                        if let Some(p) = p_down.upgrade() {
+                            refresh_open_mail_views(&p);
+                        }
+                    }
+                });
+
+                let cfg_del = Rc::clone(&cfg);
+                let name_del = name.clone();
+                let p_del = parent_weak.clone();
+                let h_del = holder_clone.clone();
+                del_btn.connect_clicked(move |_| {
+                    let mut c = cfg_del.borrow_mut();
+                    c.headers
+                        .retain(|(cand, _)| !cand.eq_ignore_ascii_case(&name_del));
+                    c.save();
+                    drop(c);
+                    if let Some(reb) = h_del.borrow().as_ref() {
+                        reb();
+                    }
+                    if let Some(p) = p_del.upgrade() {
+                        refresh_open_mail_views(&p);
+                    }
+                });
+
+                list.append(&row);
+            }
+            list.append(&entry_row_ref);
+        });
+        *holder.borrow_mut() = Some(f.clone());
+        f
+    };
+
+    rebuild_expanded_list();
+
+    {
+        let cfg_val = Rc::clone(&config);
+        let add_btn = add_button.clone();
+        entry_row.connect_changed(move |e| {
+            let trimmed = e.text().trim().to_string();
+            let valid = validate_mail_normal_header_name(&trimmed).is_ok()
+                && !cfg_val
+                    .borrow()
+                    .headers
+                    .iter()
+                    .any(|(cand, _)| cand.eq_ignore_ascii_case(&trimmed));
+            add_btn.set_sensitive(valid);
+        });
+    }
+
+    let do_add = {
+        let cfg_add = Rc::clone(&config);
+        let entry_add = entry_row.clone();
+        let reb_add = rebuild_expanded_list.clone();
+        let p_add = parent.downgrade();
+        move || {
+            let Ok(clean) = validate_mail_normal_header_name(&entry_add.text()) else {
+                return;
+            };
+            {
+                let mut c = cfg_add.borrow_mut();
+                if c.headers.iter().any(|(cand, _)| cand.eq_ignore_ascii_case(&clean)) {
+                    return;
+                }
+                c.headers.push((clean, true));
+                c.save();
+            }
+            entry_add.set_text("");
+            reb_add();
+            if let Some(p) = p_add.upgrade() {
+                refresh_open_mail_views(&p);
+            }
+        }
+    };
+    let do_add_btn = do_add.clone();
+    add_button.connect_clicked(move |_| do_add_btn());
+    entry_row.connect_entry_activated(move |_| do_add());
+
+    {
+        let cfg_reset = Rc::clone(&config);
+        let sw_other = row_show_other.clone();
+        let reb_reset = rebuild_expanded_list.clone();
+        let p_reset = parent.downgrade();
+        reset_button.connect_clicked(move |_| {
+            let def = crate::services::settings_service::ExpandedHeadersConfig::default();
+            def.save();
+            *cfg_reset.borrow_mut() = def;
+            sw_other.set_active(true);
+            reb_reset();
+            if let Some(p) = p_reset.upgrade() {
+                refresh_open_mail_views(&p);
+            }
+        });
+    }
+
+    let container = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(4)
+        .build();
+    container.append(&list);
+    container
+}
+
 /// Display label for configured S/MIME file paths: file names only, or a dim
 /// "None" when nothing is configured.
 fn update_smime_path_label(label: &gtk::Label, clear: &gtk::Button, paths: &[String]) {
@@ -11210,25 +12014,33 @@ fn source_preference_row(
         let discovery = eds_service::discover_sources(kind).await;
         let mut sources = discovery.sources;
         sources.retain(|source| source.enabled);
-        sources
-            .sort_by_cached_key(|source| (source.display_name.to_lowercase(), source.uid.clone()));
+        let friendly_backend_of = |raw_backend: &str| -> String {
+            let trimmed = raw_backend.trim();
+            if trimmed.is_empty() {
+                crate::i18n::gettext("Account")
+            } else {
+                match trimmed.to_ascii_lowercase().as_str() {
+                    "google" => "Google".to_string(),
+                    "ews" | "exchange" | "office365" => "Exchange".to_string(),
+                    "local" => crate::i18n::gettext("On This Computer"),
+                    "webdav" | "carddav" | "caldav" => "DAV".to_string(),
+                    _ => trimmed.to_string(),
+                }
+            }
+        };
+        sources.sort_by_cached_key(|source| {
+            (
+                friendly_backend_of(&source.backend_name).to_lowercase(),
+                source.display_name.to_lowercase(),
+                source.uid.clone(),
+            )
+        });
 
         let mut names = sources
             .iter()
             .map(|source| {
-                let raw_backend = source.backend_name.trim();
-                if raw_backend.is_empty() {
-                    source.display_name.clone()
-                } else {
-                    let friendly_backend = match raw_backend.to_ascii_lowercase().as_str() {
-                        "google" => "Google".to_string(),
-                        "ews" | "exchange" | "office365" => "Exchange".to_string(),
-                        "local" => crate::i18n::gettext("Local"),
-                        "webdav" | "carddav" | "caldav" => "DAV".to_string(),
-                        _ => raw_backend.to_string(),
-                    };
-                    format!("{} · {}", source.display_name, friendly_backend)
-                }
+                let backend_group = friendly_backend_of(&source.backend_name);
+                format!("{} — {}", source.display_name, backend_group)
             })
             .collect::<Vec<_>>();
         let mut uids = sources
@@ -11239,7 +12051,11 @@ fn source_preference_row(
         // Always append the local built-in source BEFORE checking preferred_source_uid
         // so that "local-addressbook" / "local-calendar" is never misclassified as unavailable!
         if local_available && !uids.iter().any(|uid| uid == &local_uid) {
-            names.push(local_label);
+            names.push(format!(
+                "{} — {}",
+                local_label,
+                crate::i18n::gettext("On This Computer")
+            ));
             uids.push(local_uid.clone());
         }
 
@@ -11274,6 +12090,7 @@ fn source_preference_row(
         let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
         source_model_for_load.splice(0, source_model_for_load.n_items(), &name_refs);
         source_uids_for_load.replace(uids.clone());
+        configure_folder_combo_row(&row_for_load);
 
         if let Some(selected_index) = resolved_preferred_index {
             row_for_load.set_selected(selected_index as u32);
@@ -12226,14 +13043,9 @@ fn build_mail_junk_group(settings: Option<AppSettings>) -> adw::PreferencesGroup
 
     if !any_available {
         row_plugin.set_sensitive(false);
-        row_plugin.set_subtitle("Neither 'bogofilter' nor 'spamassassin' was found in system PATH ($PATH). Local spam checking disabled.");
-        let info_row = adw::ActionRow::builder()
-            .title("No Spam Filter Program Installed")
-            .subtitle("Neither 'bogofilter' nor 'spamassassin' is available in system PATH. Incoming emails can only be evaluated via server headers.")
-            .visible(false)
-            .build();
-        info_row.add_prefix(&gtk::Image::from_icon_name("dialog-information-symbolic"));
-        group.add(&info_row);
+        row_plugin.set_subtitle(&crate::i18n::gettext(
+            "No local spam scanner installed (Bogofilter or SpamAssassin)",
+        ));
     } else {
         row_plugin.set_sensitive(row_check_incoming.is_active());
     }
@@ -12245,14 +13057,50 @@ fn build_mail_junk_group(settings: Option<AppSettings>) -> adw::PreferencesGroup
         "SpamAssassin",
     );
     row_plugin_toggle.add_prefix(&gtk::Image::from_icon_name("system-run-symbolic"));
+    if !any_available {
+        row_plugin_toggle.set_sensitive(false);
+        row_plugin_toggle.set_subtitle(&crate::i18n::gettext(
+            "No local spam scanner installed · Only server spam headers are evaluated",
+        ));
+    } else {
+        row_plugin_toggle.set_sensitive(row_check_incoming.is_active());
+    }
     group.add(&row_plugin_toggle);
+
+    if !any_available {
+        let install_row = adw::ActionRow::builder()
+            .title(&crate::i18n::gettext("Local Spam Scanner"))
+            .subtitle(&crate::i18n::gettext(
+                "Install Bogofilter to enable fast offline spam filtering",
+            ))
+            .build();
+        install_row.add_prefix(&gtk::Image::from_icon_name("system-software-install-symbolic"));
+        let btn_install = gtk::Button::builder()
+            .label(&crate::i18n::gettext("Install Bogofilter…"))
+            .valign(gtk::Align::Center)
+            .build();
+        btn_install.connect_clicked(|_| {
+            let status = std::process::Command::new("xdg-open")
+                .arg("appstream://org.bogofilter.bogofilter")
+                .spawn();
+            if status.is_err() {
+                let _ = std::process::Command::new("gnome-software")
+                    .arg("--search=bogofilter")
+                    .spawn();
+            }
+        });
+        install_row.add_suffix(&btn_install);
+        group.add(&install_row);
+    }
 
     if let Some(s) = settings.clone() {
         let row_plugin_ref = row_plugin.clone();
+        let row_plugin_toggle_ref = row_plugin_toggle.clone();
         let s_check = s.clone();
         row_check_incoming.connect_active_notify(move |row| {
             s_check.set_junk_check_incoming(row.is_active());
             row_plugin_ref.set_sensitive(row.is_active() && any_available);
+            row_plugin_toggle_ref.set_sensitive(row.is_active() && any_available);
         });
 
         let row_lookup_ab_local_ref = row_lookup_ab_local.clone();
@@ -12284,7 +13132,7 @@ fn build_mail_notifications_group(settings: Option<AppSettings>) -> adw::Prefere
         .build();
 
     let row_notify = adw::SwitchRow::builder()
-        .title(&crate::i18n::gettext("Desktop Notifications"))
+        .title(&crate::i18n::gettext("System Notifications"))
         .build();
 
     let row_only_inbox = adw::SwitchRow::builder()
@@ -12492,7 +13340,8 @@ fn build_mail_notifications_group(settings: Option<AppSettings>) -> adw::Prefere
     }
 
     let exp_sound = adw::ExpanderRow::builder()
-        .title(&crate::i18n::gettext("Sound &amp; Display Options"))
+        .title(&crate::i18n::gettext("Sound and Display Options"))
+        .use_markup(false)
         .build();
     exp_sound.add_row(&row_sound_type);
     exp_sound.add_row(&row_sound_file);
@@ -13453,8 +14302,9 @@ mod tests {
         assert_eq!(row_end.selected(), 34, "1020 min should select 17:00 (index 34)");
 
         // Mail sync interval ComboRow in General Mail page
-        let row_sync = find_combo_by_title(widget, "Check for new messages")
-            .expect("Check for new messages ComboRow must exist");
+        let row_sync = find_combo_by_title(widget, "Check for New Mail")
+            .or_else(|| find_combo_by_title(widget, "Check for new messages"))
+            .expect("Check for New Mail ComboRow must exist");
         assert_eq!(row_sync.selected(), 2, "300s should select Every 5 minutes (index 2)");
 
         // UI -> Settings reactivity
@@ -13561,16 +14411,15 @@ mod tests {
             .and_then(|w| w.downcast::<gtk::Stack>().ok())
             .expect("Content toolbar content must be a Stack");
 
-        // Verify all 28 pages exist in detail_stack (14 top-level + 14 subpages)
+        // Verify all 28 pages exist in detail_stack (15 top-level + 13 subpages)
         let expected_ids = [
             "accounts", "signatures", "labels", "filters", "certificates",
             "mail_general", "appearance", "mail_layout", "mail_reading", "composer",
             "calendar", "contacts", "tasks", "backup", "advanced",
             "junk", "sub_smime", "sub_allowed_senders", "sub_sync_cache", "sub_header_toolbar",
             "sub_list_toolbar", "sub_list_elements",
-            "headers", "sub_reading_advanced", "sub_composer_headers", "sub_calendar_workdays",
+            "headers", "sub_reading_advanced", "sub_calendar_workdays",
             "sub_calendar_reminders", "sub_calendar_categories", "sub_calendar_view",
-            "sub_contacts_advanced",
         ];
         for id in expected_ids {
             assert!(
@@ -13596,9 +14445,9 @@ mod tests {
         assert!(theme_hit.is_some(), "Search index must contain theme/color scheme row");
         assert_eq!(theme_hit.unwrap().page_id, "appearance");
 
-        // Verify SwitchRow subtitles are indexed
-        let notify_hit = search_index.iter().find(|h| h.haystack.contains("banner") || h.haystack.contains("desktop"));
-        assert!(notify_hit.is_some(), "SwitchRow subtitle must be indexed into haystack");
+        // Verify SwitchRow titles/subtitles are indexed
+        let notify_hit = search_index.iter().find(|h| h.haystack.contains("banner") || h.haystack.contains("desktop") || h.haystack.contains("system notifications"));
+        assert!(notify_hit.is_some(), "SwitchRow must be indexed into haystack");
 
         // Verify reveal_widget expands parent expander row
         let expander = adw::ExpanderRow::builder().title("Test Expander").expanded(false).build();
@@ -13904,7 +14753,7 @@ mod tests {
         use super::{SUBPAGES, SIDEBAR_SECTIONS, resolve_sidebar_page_id};
         use adw::prelude::*;
 
-        assert_eq!(SUBPAGES.len(), 15, "Must define 15 subpages matching the HIG overhaul plan");
+        assert_eq!(SUBPAGES.len(), 13, "Must define 13 subpages matching the HIG overhaul plan");
 
         let top_level_page_ids: Vec<&str> = SIDEBAR_SECTIONS
             .iter()
@@ -14081,7 +14930,7 @@ mod tests {
         }
 
         // Verify specific unhidden power-user settings are indexed
-        let composer_charset = search_index.iter().find(|h| h.haystack.contains("character encoding") || h.haystack.contains("charset"));
+        let composer_charset = search_index.iter().find(|h| h.haystack.contains("character encoding") || h.haystack.contains("charset") || h.haystack.contains("character set"));
         assert!(composer_charset.is_some(), "Search index must contain unhidden composer character set option");
 
         let caret_mode = search_index.iter().find(|h| h.haystack.contains("caret"));

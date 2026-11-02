@@ -5185,6 +5185,15 @@ headerbar.sidebar-header {
   min-width: 0;
 }
 
+headerbar.sidebar-header > windowhandle,
+headerbar.sidebar-header > windowhandle > box {
+  min-width: 0;
+  padding-left: 0;
+  padding-right: 0;
+  border-bottom: none;
+  box-shadow: none;
+}
+
 headerbar.sidebar-header:backdrop {
   background-color: var(--sidebar-backdrop-color, @sidebar_backdrop_color);
   background-image: none;
@@ -5203,8 +5212,18 @@ headerbar.sidebar-header:backdrop:dir(rtl) {
   border-left: 1px solid color-mix(in srgb, var(--sidebar-fg-color, @sidebar_fg_color) 8%, var(--sidebar-backdrop-color, @sidebar_backdrop_color));
 }
 
+toolbarview > .top-bar,
+toolbarview.undershoot-top > .top-bar {
+  background-color: transparent;
+  background-image: none;
+  box-shadow: none;
+  border-bottom: none;
+}
+
 .window-header-box {
   background-color: transparent;
+  border-bottom: none;
+  box-shadow: none;
 }
 
 /* Ensure the outer top-bar windowhandle doesn't apply opacity: 0.5 over headerbars with custom backgrounds (like sidebar-header).
@@ -7014,5 +7033,25 @@ button.task-inspector-due-pill {
   background-color: @view_bg_color;
   border-left: 1px solid alpha(@borders, 0.45);
 }
+
+/* Compact grouped ComboRow popovers (Startup Folder, Default Calendar/Contacts/Tasks) */
+row.compact-grouped-combo popover listview > header {
+  padding-top: 3px;
+  padding-bottom: 1px;
+  min-height: 0;
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+row.compact-grouped-combo popover listview > header:first-child {
+  padding-top: 0;
+}
+
+row.compact-grouped-combo popover listview > row {
+  padding-top: 2px;
+  padding-bottom: 2px;
+  min-height: 22px;
+}
+
 
 

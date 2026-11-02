@@ -5400,6 +5400,122 @@ pub fn sanitize_duration_units(units: &str) -> &'static str {
     ReminderDurationUnit::from_str(units).as_str()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ExpandedHeadersConfig {
+    pub show_other_headers: bool,
+    pub headers: Vec<(String, bool)>,
+}
+
+impl Default for ExpandedHeadersConfig {
+    fn default() -> Self {
+        Self {
+            show_other_headers: true,
+            headers: Self::default_headers(),
+        }
+    }
+}
+
+impl ExpandedHeadersConfig {
+    pub fn default_headers() -> Vec<(String, bool)> {
+        vec![
+            ("Cc".to_string(), true),
+            ("Bcc".to_string(), true),
+            ("Reply-To".to_string(), true),
+            ("Subject".to_string(), true),
+            ("Date".to_string(), true),
+            ("Message-ID".to_string(), true),
+            ("In-Reply-To".to_string(), true),
+            ("References".to_string(), true),
+            ("User-Agent".to_string(), true),
+            ("X-Mailer".to_string(), true),
+            ("List-Id".to_string(), true),
+            ("Return-Path".to_string(), true),
+            ("Delivered-To".to_string(), true),
+            ("Authentication-Results".to_string(), true),
+            ("Received-SPF".to_string(), true),
+            ("DKIM-Signature".to_string(), true),
+            ("Content-Type".to_string(), true),
+            ("MIME-Version".to_string(), true),
+            ("Received".to_string(), true),
+        ]
+    }
+
+    fn config_path() -> std::path::PathBuf {
+        gtk::glib::user_config_dir()
+            .join("meridian")
+            .join("expanded-headers.json")
+    }
+
+    pub fn load() -> Self {
+        #[cfg(test)]
+        {
+            Self::default()
+        }
+        #[cfg(not(test))]
+        {
+            let path = Self::config_path();
+            std::fs::read_to_string(path)
+                .ok()
+                .and_then(|raw| serde_json::from_str(&raw).ok())
+                .unwrap_or_default()
+        }
+    }
+
+    pub fn save(&self) {
+        #[cfg(not(test))]
+        {
+            let path = Self::config_path();
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(raw) = serde_json::to_string_pretty(self) {
+                let _ = std::fs::write(path, raw);
+            }
+        }
+    }
+
+    pub fn is_header_visible(&self, name: &str) -> bool {
+        let trimmed = name.trim();
+        for (candidate, enabled) in &self.headers {
+            if candidate.eq_ignore_ascii_case(trimmed) {
+                return *enabled;
+            }
+        }
+        self.show_other_headers
+    }
+
+    pub fn sort_rank(&self, name: &str) -> usize {
+        let trimmed = name.trim();
+        self.headers
+            .iter()
+            .position(|(candidate, _)| candidate.eq_ignore_ascii_case(trimmed))
+            .unwrap_or(self.headers.len())
+    }
+}
+
+pub fn last_backup_timestamp() -> Option<String> {
+    let path = gtk::glib::user_data_dir()
+        .join("meridian")
+        .join("last-backup-timestamp.txt");
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+pub fn record_backup_timestamp_now() -> Option<String> {
+    let now = gtk::glib::DateTime::now_local().ok()?;
+    let formatted = now.format("%Y-%m-%d %H:%M").ok()?.to_string();
+    let path = gtk::glib::user_data_dir()
+        .join("meridian")
+        .join("last-backup-timestamp.txt");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, &formatted);
+    Some(formatted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
