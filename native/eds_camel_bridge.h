@@ -203,6 +203,13 @@ void meridian_eds_camel_free_folders(
     MeridianEdsCamelFolder *folders,
     size_t count);
 
+int meridian_eds_camel_sync_background_folders(
+    MeridianEdsCamelFolder **out_folders,
+    size_t *out_folder_count,
+    char **out_error,
+    MeridianEdsCamelCancellationCallback cancellation_callback,
+    void *cancellation_user_data);
+
 /*
  * Inspect one enabled EDS mail-account source.  On success,
  * `out_is_subscribable` reports whether the exact Camel store implements

@@ -10,7 +10,28 @@ Terminal=false
 Type=Application
 Categories=GNOME;GTK;Office;Email;Calendar;ContactManagement;
 Keywords=mail;email;calendar;contacts;groupware;exchange;ews;imap;
-MimeType=x-scheme-handler/mailto;message/rfc822;application/x-xpixmap;
+MimeType=x-scheme-handler/mailto;message/rfc822;text/calendar;text/x-vcalendar;application/ics;x-scheme-handler/webcal;x-scheme-handler/webcals;text/vcard;text/directory;text/x-vcard;application/x-xpixmap;
+Actions=NewMessage;OpenCalendar;OpenContacts;OpenTasks;
 StartupNotify=true
 StartupWMClass=com.martingawron.Meridian
 X-GNOME-UsesNotifications=true
+
+[Desktop Action NewMessage]
+Name=New Message
+Name[de]=Neue Nachricht
+Exec=meridian --compose
+
+[Desktop Action OpenCalendar]
+Name=Calendar
+Name[de]=Kalender
+Exec=meridian --calendar
+
+[Desktop Action OpenContacts]
+Name=Contacts
+Name[de]=Kontakte
+Exec=meridian --contacts
+
+[Desktop Action OpenTasks]
+Name=Tasks & Memos
+Name[de]=Aufgaben & Notizen
+Exec=meridian --tasks

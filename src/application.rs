@@ -203,6 +203,16 @@ mod imp {
             }
             tracing::debug!("Main window presented");
 
+            if std::env::args().any(|a| a == "--calendar" || a == "--component=calendar") {
+                window.switch_to_view("calendar");
+            } else if std::env::args().any(|a| a == "--contacts" || a == "--component=contacts") {
+                window.switch_to_view("contacts");
+            } else if std::env::args().any(|a| a == "--tasks" || a == "--component=tasks" || a == "--component=memos") {
+                window.switch_to_view("tasks");
+            } else if std::env::args().any(|a| a == "--mail" || a == "--component=mail") {
+                window.switch_to_view("mail");
+            }
+
             if std::env::args().any(|a| a == "--compose") {
                 let dialog = crate::dialogs::ComposeDialog::new();
                 dialog.present_modal(&window);
@@ -251,9 +261,9 @@ mod imp {
         fn open(&self, files: &[gio::File], hint: &str) {
             self.parent_open(files, hint);
             let app = self.obj();
-            for file in files {
-                app.route_component_uri(&file.uri().to_string(), None);
-            }
+            crate::services::account_config_service::ensure_profiles_synced_to_eds();
+            app.setup_reminder_scheduler();
+            app.handle_external_open(files);
         }
     }
 
@@ -458,39 +468,7 @@ impl MeridianApplication {
     /// Ensure desktop launcher and executable symlink exist for GNOME Shell integration.
     #[cfg(unix)]
     fn setup_desktop_integration(&self) {
-        if std::env::var("FLATPAK_ID").is_err() {
-            let data_dir = glib::user_data_dir();
-            let applications_dir = data_dir.join("applications");
-            let desktop_path = applications_dir.join(format!("{APP_ID}.desktop"));
-            let desktop_content = include_str!("../data/com.martingawron.Meridian.desktop.in");
-
-            let needs_write = match std::fs::read_to_string(&desktop_path) {
-                Ok(existing) => existing != desktop_content,
-                Err(_) => true,
-            };
-
-            if needs_write {
-                let _ = std::fs::create_dir_all(&applications_dir);
-                let _ = std::fs::write(&desktop_path, desktop_content);
-                let _ = std::process::Command::new("update-desktop-database")
-                    .arg(&applications_dir)
-                    .output();
-            }
-
-            if let Ok(exe) = std::env::current_exe() {
-                let local_bin = glib::home_dir().join(".local/bin");
-                let symlink_path = local_bin.join("meridian");
-                let should_link = match std::fs::read_link(&symlink_path) {
-                    Ok(target) => target != exe,
-                    Err(_) => !symlink_path.exists(),
-                };
-                if should_link {
-                    let _ = std::fs::create_dir_all(&local_bin);
-                    let _ = std::fs::remove_file(&symlink_path);
-                    let _ = std::os::unix::fs::symlink(&exe, &symlink_path);
-                }
-            }
-        }
+        ensure_desktop_file_installed();
     }
 
     #[cfg(not(unix))]
@@ -762,6 +740,88 @@ impl MeridianApplication {
         let window = self.main_window();
         window.present();
         window.add_toast(&adw::Toast::new(message));
+    }
+
+    fn handle_external_open(&self, files: &[gio::File]) {
+        let window = self.main_window();
+        window.present();
+
+        let mut cal_paths = Vec::new();
+        let mut vcard_paths = Vec::new();
+        let mut mail_paths = Vec::new();
+
+        for file in files {
+            let uri = file.uri().to_string();
+            let lower_uri = uri.to_ascii_lowercase();
+
+            if lower_uri.starts_with("mailto:") {
+                let raw = uri.trim_start_matches("mailto:").trim_start_matches("MAILTO:");
+                let recipient = raw.split('?').next().unwrap_or("").trim();
+                let dialog = if recipient.is_empty() {
+                    crate::dialogs::ComposeDialog::new()
+                } else {
+                    crate::dialogs::ComposeDialog::to_recipient(recipient)
+                };
+                dialog.set_transient_for(Some(&window));
+                dialog.present();
+                continue;
+            }
+
+            if lower_uri.starts_with("webcal://") || lower_uri.starts_with("webcals://") {
+                window.switch_to_view("calendar");
+                continue;
+            }
+
+            if let Some(path) = file.path() {
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                match ext.as_str() {
+                    "ics" | "ical" | "ifb" | "vcs" => {
+                        cal_paths.push(path);
+                        continue;
+                    }
+                    "vcf" | "vcard" => {
+                        vcard_paths.push(path);
+                        continue;
+                    }
+                    "eml" | "mbox" | "mbx" => {
+                        mail_paths.push(path);
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+
+            self.route_component_uri(&uri, None);
+        }
+
+        if !cal_paths.is_empty() {
+            window.switch_to_view("calendar");
+            let svc = crate::services::CalendarStoreService::new();
+            if let Ok(count) = svc.import_files(&cal_paths) {
+                window.refresh_calendar_page();
+                if count > 0 {
+                    window.add_toast(&adw::Toast::new(&gettext("Calendar file imported")));
+                }
+            }
+        }
+        if !vcard_paths.is_empty() {
+            window.switch_to_view("contacts");
+            let svc = crate::services::ContactStoreService::new();
+            let _ = svc.import_files(&vcard_paths);
+        }
+        if !mail_paths.is_empty() {
+            window.switch_to_view("mail");
+            let svc = crate::services::MailStoreService::new();
+            if let Ok(count) = svc.import_files(&mail_paths) {
+                if count > 0 {
+                    window.refresh_mail_page();
+                }
+            }
+        }
     }
 
     fn route_component_uri(&self, uri: &str, expected_kind: Option<ReminderComponentKind>) -> bool {
@@ -1059,6 +1119,111 @@ impl MeridianApplication {
             crate::dialogs::show_about_dialog(&win);
         }
     }
+}
+
+pub(crate) const DEFAULT_CALENDAR_MIME_TYPES: &[&str] = &[
+    "text/calendar",
+    "text/x-vcalendar",
+    "application/ics",
+    "x-scheme-handler/webcal",
+    "x-scheme-handler/webcals",
+];
+
+pub(crate) const DEFAULT_MAIL_MIME_TYPES: &[&str] = &[
+    "x-scheme-handler/mailto",
+    "message/rfc822",
+];
+
+#[cfg(unix)]
+pub(crate) fn ensure_desktop_file_installed() {
+    if std::env::var("FLATPAK_ID").is_err() {
+        let data_dir = glib::user_data_dir();
+        let applications_dir = data_dir.join("applications");
+        let desktop_path = applications_dir.join(format!("{APP_ID}.desktop"));
+        let desktop_content = include_str!("../data/com.martingawron.Meridian.desktop.in");
+
+        let needs_write = match std::fs::read_to_string(&desktop_path) {
+            Ok(existing) => existing != desktop_content,
+            Err(_) => true,
+        };
+
+        if needs_write {
+            let _ = std::fs::create_dir_all(&applications_dir);
+            let _ = std::fs::write(&desktop_path, desktop_content);
+            let _ = std::process::Command::new("update-desktop-database")
+                .arg(&applications_dir)
+                .output();
+        }
+
+        if let Ok(exe) = std::env::current_exe() {
+            let local_bin = glib::home_dir().join(".local/bin");
+            let symlink_path = local_bin.join("meridian");
+            let should_link = match std::fs::read_link(&symlink_path) {
+                Ok(target) => target != exe,
+                Err(_) => !symlink_path.exists(),
+            };
+            if should_link {
+                let _ = std::fs::create_dir_all(&local_bin);
+                let _ = std::fs::remove_file(&symlink_path);
+                let _ = std::os::unix::fs::symlink(&exe, &symlink_path);
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn ensure_desktop_file_installed() {}
+
+pub(crate) fn is_default_app_for_mime(mime_type: &str) -> bool {
+    let desktop_id = format!("{APP_ID}.desktop");
+    if let Some(info) = gio::AppInfo::default_for_type(mime_type, false) {
+        if let Some(id) = info.id() {
+            if id.as_str().eq_ignore_ascii_case(&desktop_id)
+                || id.as_str().eq_ignore_ascii_case(APP_ID)
+            {
+                return true;
+            }
+        }
+        if info.name().eq_ignore_ascii_case("Meridian") {
+            return true;
+        }
+    }
+    false
+}
+
+pub(crate) fn set_as_default_app_for_mimes(mime_types: &[&str]) -> bool {
+    ensure_desktop_file_installed();
+    let desktop_id = format!("{APP_ID}.desktop");
+    let mut any_ok = false;
+
+    #[cfg(unix)]
+    {
+        if let Some(app_info) = gio::DesktopAppInfo::new(&desktop_id).or_else(|| {
+            let path = glib::user_data_dir()
+                .join("applications")
+                .join(&desktop_id);
+            gio::DesktopAppInfo::from_filename(&path)
+        }) {
+            for mime in mime_types {
+                if app_info.set_as_default_for_type(mime).is_ok() {
+                    any_ok = true;
+                }
+            }
+        }
+
+        for mime in mime_types {
+            if let Ok(status) = std::process::Command::new("xdg-mime")
+                .args(["default", &desktop_id, mime])
+                .status()
+            {
+                if status.success() {
+                    any_ok = true;
+                }
+            }
+        }
+    }
+
+    any_ok
 }
 
 fn reminder_notification_id(key: &str) -> String {

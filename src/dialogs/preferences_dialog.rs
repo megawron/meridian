@@ -2054,6 +2054,64 @@ fn make_segmented_toggle_3_row(
     row
 }
 
+fn build_default_handler_row(
+    dialog: &PreferencesDialog,
+    title: &str,
+    active_subtitle: &str,
+    inactive_subtitle: &str,
+    toast_success: &str,
+    primary_mime: &'static str,
+    mime_types: &'static [&'static str],
+) -> adw::ActionRow {
+    let is_default = crate::application::is_default_app_for_mime(primary_mime);
+    let row = adw::ActionRow::builder()
+        .title(title)
+        .subtitle(if is_default {
+            active_subtitle
+        } else {
+            inactive_subtitle
+        })
+        .build();
+
+    let btn = gtk::Button::builder()
+        .label(if is_default {
+            crate::i18n::gettext("Default")
+        } else {
+            crate::i18n::gettext("Set as Default")
+        })
+        .valign(gtk::Align::Center)
+        .sensitive(!is_default)
+        .css_classes(if is_default {
+            vec!["flat"]
+        } else {
+            vec!["suggested-action"]
+        })
+        .build();
+
+    row.add_suffix(&btn);
+
+    let row_weak = row.downgrade();
+    let dialog_weak = dialog.downgrade();
+    let active_sub = active_subtitle.to_string();
+    let toast_msg = toast_success.to_string();
+    btn.connect_clicked(move |button| {
+        if crate::application::set_as_default_app_for_mimes(mime_types) {
+            button.set_label(&crate::i18n::gettext("Default"));
+            button.set_sensitive(false);
+            button.remove_css_class("suggested-action");
+            button.add_css_class("flat");
+            if let Some(r) = row_weak.upgrade() {
+                r.set_subtitle(&active_sub);
+            }
+            if let Some(d) = dialog_weak.upgrade() {
+                d.show_toast(&toast_msg);
+            }
+        }
+    });
+
+    row
+}
+
 
 impl PreferencesDialog {
     fn build_ui(&self) {
@@ -5383,6 +5441,16 @@ impl PreferencesDialog {
         let group_behavior = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Behavior"))
             .build();
+        let row_default_mail_app = build_default_handler_row(
+            self,
+            &crate::i18n::gettext("Default Email Application"),
+            &crate::i18n::gettext("Meridian is the system-wide default email application"),
+            &crate::i18n::gettext("Use Meridian for mailto: links and email files system-wide"),
+            &crate::i18n::gettext("Meridian set as default email application"),
+            "x-scheme-handler/mailto",
+            crate::application::DEFAULT_MAIL_MIME_TYPES,
+        );
+        group_behavior.add(&row_default_mail_app);
         group_behavior.add(&row_mail_default_folder);
         group_behavior.add(&row_mail_unified_inbox);
         group_behavior.add(&row_confirm_destructive);
@@ -8552,6 +8620,16 @@ impl PreferencesDialog {
         let group_calendar = adw::PreferencesGroup::builder()
             .title(&crate::i18n::gettext("Calendar"))
             .build();
+        let row_default_calendar_app = build_default_handler_row(
+            self,
+            &crate::i18n::gettext("Default Calendar Application"),
+            &crate::i18n::gettext("Meridian is the system-wide default calendar application"),
+            &crate::i18n::gettext("Use Meridian as the system-wide calendar in GNOME and for .ics files"),
+            &crate::i18n::gettext("Meridian set as default calendar application"),
+            "text/calendar",
+            crate::application::DEFAULT_CALENDAR_MIME_TYPES,
+        );
+        group_calendar.add(&row_default_calendar_app);
         group_calendar.add(&source_preference_row(
             "Default Calendar",
             "",

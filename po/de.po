@@ -8540,5 +8540,154 @@ msgstr "Weniger Kopfzeilen ▴"
 msgid "Expand or collapse all technical headers"
 msgstr "Alle technischen Kopfzeilen ein- oder ausblenden"
 
+msgid "Advanced Search"
+msgstr "Erweiterte Suche"
+
+msgid "Conditions are combined into a portable search query. Unsupported expressions are rejected before applying."
+msgstr "Bedingungen werden als portable Suchabfrage verbunden. Nicht unterstützte Ausdrücke werden vor dem Anwenden sichtbar abgewiesen."
+
+msgid "Match all conditions (AND)"
+msgstr "Alle Bedingungen (UND)"
+
+msgid "Match any condition (OR)"
+msgstr "Mindestens eine Bedingung (ODER)"
+
+msgid "Combine conditions with AND or OR"
+msgstr "Bedingungen mit UND oder ODER verbinden"
+
+msgid "Match conditions"
+msgstr "Bedingungen verbinden"
+
+msgid "All or any of the conditions"
+msgstr "Alle oder mindestens eine Bedingung"
+
+msgid "Negate entire condition group"
+msgstr "Gesamte Bedingungsgruppe verneinen"
+
+msgid "Produces not:(and:(…)) or not:(or:(…))"
+msgstr "Erzeugt not:(and:(…)) oder not:(or:(…))"
+
+msgid "Conditions"
+msgstr "Bedingungen"
+
+msgid "Add Condition"
+msgstr "Bedingung hinzufügen"
+
+msgid "Optional: and:(subject-contains:\"Project\" is:unread)"
+msgstr "Optional: and:(subject-contains:\"Projekt\" is:unread)"
+
+msgid "A custom portable query expression is validated and used directly; leave empty to use the visual condition builder."
+msgstr "Ein vorhandener portabler Ausdruck wird unverändert validiert und verwendet; zum Rule-Builder leeren."
+
+msgid "Portable Search Syntax"
+msgstr "Portable Suchsyntax"
+
+msgid "Custom expressions that cannot be represented as visual rules are edited here"
+msgstr "Exakte vorhandene Ausdrücke bleiben beim Bearbeiten erhalten"
+
+msgid "Text Field"
+msgstr "Textfeld"
+
+msgid "Condition type"
+msgstr "Art der Suchbedingung"
+
+msgid "Select search field, status, or date"
+msgstr "Suchfeld, Zustand oder Datum auswählen"
+
+msgid "Select comparison operator"
+msgstr "Vergleichsoperator auswählen"
+
+msgid "Search value"
+msgstr "Suchwert"
+
+msgid "not"
+msgstr "nicht"
+
+msgid "Negate this condition"
+msgstr "Diese Bedingung verneinen"
+
+msgid "Remove condition"
+msgstr "Bedingung entfernen"
+
+msgid "contains"
+msgstr "enthält"
+
+msgid "is"
+msgstr "ist"
+
+msgid "starts with"
+msgstr "beginnt mit"
+
+msgid "ends with"
+msgstr "endet mit"
+
+msgid "Has Attachment"
+msgstr "Anhang vorhanden"
+
+msgid "Message Date"
+msgstr "Nachrichtendatum"
+
+msgid "before"
+msgstr "vor"
+
+msgid "after"
+msgstr "nach"
+
+msgid "on"
+msgstr "am"
+
+msgid "No value required"
+msgstr "Kein Wert erforderlich"
+
+msgid "YYYY-MM-DD, today, or 7d"
+msgstr "YYYY-MM-DD, heute oder 7d"
+
+msgid "At least one search condition is required"
+msgstr "Mindestens eine Suchbedingung ist erforderlich"
+
+msgid "This condition requires a search value"
+msgstr "Diese Bedingung benötigt einen Suchwert"
+
+msgid "Search values cannot contain line breaks"
+msgstr "Suchwerte dürfen keine Zeilenumbrüche enthalten"
+
+msgid "Search query cannot be empty"
+msgstr "Die Suchabfrage darf nicht leer sein"
+
+msgid "Invalid search query"
+msgstr "Ungültige Suchabfrage"
+
+msgid "Set as Default"
+msgstr "Als Standard festlegen"
+
+msgid "Default Email Application"
+msgstr "Standard-E-Mail-Anwendung"
+
+msgid "Meridian is the system-wide default email application"
+msgstr "Meridian ist die systemweite Standard-E-Mail-Anwendung"
+
+msgid "Use Meridian for mailto: links and email files system-wide"
+msgstr "Meridian systemweit für mailto:-Links und E-Mail-Dateien verwenden"
+
+msgid "Meridian set as default email application"
+msgstr "Meridian als Standard-E-Mail-Anwendung festgelegt"
+
+msgid "Default Calendar Application"
+msgstr "Standard-Kalenderanwendung"
+
+msgid "Meridian is the system-wide default calendar application"
+msgstr "Meridian ist die systemweite Standard-Kalenderanwendung"
+
+msgid "Use Meridian as the system-wide calendar in GNOME and for .ics files"
+msgstr "Meridian systemweit als Kalender in GNOME und für .ics-Dateien verwenden"
+
+msgid "Meridian set as default calendar application"
+msgstr "Meridian als Standard-Kalenderanwendung festgelegt"
+
+msgid "Calendar file imported"
+msgstr "Kalenderdatei importiert"
+
+
+
 
 

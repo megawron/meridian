@@ -1304,6 +1304,10 @@ load_folder (LoadContext *context,
                 if (!is_foreign) {
                     should_load_messages = ((current->flags & CAMEL_FOLDER_TYPE_MASK) == CAMEL_FOLDER_TYPE_INBOX) ||
                         is_inbox_alias (current->full_name);
+                } else {
+                    const gchar *subpath = foreign_folder_subpath (current->full_name);
+                    should_load_messages = ((current->flags & CAMEL_FOLDER_TYPE_MASK) == CAMEL_FOLDER_TYPE_INBOX) ||
+                        (subpath && is_inbox_alias (subpath));
                 }
             }
         }
@@ -1333,6 +1337,9 @@ load_folder (LoadContext *context,
                                 current->full_name ? current->full_name : "",
                                 refresh_err->message);
                     g_clear_error (&refresh_err);
+                }
+                if (summary) {
+                    camel_folder_summary_save (summary, NULL);
                 }
 
                 if (summary && context->folder_count > folder_index_before) {
@@ -2427,6 +2434,231 @@ meridian_eds_camel_load_messages (const char *source_uid,
     return result;
 }
 
+static void
+sync_background_folder_tree (LoadContext *context,
+                             CamelStore *store,
+                             const gchar *source_uid,
+                             const gchar *source_display_name,
+                             CamelFolderInfo *folder_info,
+                             GCancellable *cancellable)
+{
+    CamelFolderInfo *current;
+
+    for (current = folder_info; current != NULL; current = current->next) {
+        gsize folder_index_before;
+        gboolean should_refresh_folder = FALSE;
+
+        if (load_cancelled (context))
+            return;
+
+        folder_index_before = context->folder_count;
+        append_folder (context, source_uid, source_display_name, current);
+
+        if (is_mail_folder (current) &&
+            (current->flags & CAMEL_FOLDER_NOSELECT) == 0 &&
+            (current->flags & CAMEL_FOLDER_VIRTUAL) == 0 &&
+            current->full_name && *current->full_name) {
+            gboolean is_foreign = g_str_has_prefix (current->full_name, "Foreign Folders");
+            if (!is_foreign) {
+                should_refresh_folder =
+                    ((current->flags & CAMEL_FOLDER_TYPE_MASK) == CAMEL_FOLDER_TYPE_INBOX) ||
+                    is_inbox_alias (current->full_name);
+            } else {
+                const gchar *subpath = foreign_folder_subpath (current->full_name);
+                should_refresh_folder =
+                    ((current->flags & CAMEL_FOLDER_TYPE_MASK) == CAMEL_FOLDER_TYPE_INBOX) ||
+                    (subpath && is_inbox_alias (subpath));
+            }
+
+            CamelFolder *folder = camel_store_get_folder_sync (
+                store, current->full_name, CAMEL_STORE_FOLDER_NONE,
+                cancellable, NULL);
+            if (folder) {
+                CamelFolderSummary *summary = camel_folder_get_folder_summary (folder);
+                if (!should_refresh_folder && summary) {
+                    guint32 local_unread = camel_folder_summary_get_unread_count (summary);
+                    guint32 local_total = camel_folder_summary_get_saved_count (summary);
+                    if ((current->unread >= 0 && (guint32) current->unread != local_unread) ||
+                        (current->total >= 0 && (guint32) current->total != local_total)) {
+                        should_refresh_folder = TRUE;
+                    }
+                }
+
+                if (should_refresh_folder && !load_cancelled (context)) {
+                    camel_folder_refresh_info_sync (folder, cancellable, NULL);
+                    if (summary) {
+                        camel_folder_summary_save (summary, NULL);
+                    }
+                }
+
+                if (summary && context->folder_count > folder_index_before) {
+                    MeridianEdsCamelFolder *f_rec = &context->folders[folder_index_before];
+                    guint32 saved_cnt = camel_folder_summary_get_saved_count (summary);
+                    guint32 unread_cnt = camel_folder_summary_get_unread_count (summary);
+                    if (saved_cnt > 0 || f_rec->total_count == 0)
+                        f_rec->total_count = saved_cnt;
+                    if (saved_cnt > 0 || f_rec->unread_count == 0)
+                        f_rec->unread_count = unread_cnt;
+                }
+                g_object_unref (folder);
+            }
+        }
+
+        if (current->child) {
+            sync_background_folder_tree (
+                context, store, source_uid, source_display_name,
+                current->child, cancellable);
+            if (context->cancelled)
+                return;
+        }
+    }
+}
+
+int
+meridian_eds_camel_sync_background_folders (
+    MeridianEdsCamelFolder **out_folders,
+    size_t *out_folder_count,
+    char **out_error,
+    MeridianEdsCamelCancellationCallback cancellation_callback,
+    void *cancellation_user_data)
+{
+    ESourceRegistry *registry = NULL;
+    EdsCamelSession *session = NULL;
+    GList *sources = NULL;
+    GList *link;
+    GCancellable *cancellable = NULL;
+    CancellationMonitor *cancellation_monitor = NULL;
+    LoadContext context = { 0 };
+    GError *error = NULL;
+    int result = 0;
+
+    if (out_folders)
+        *out_folders = NULL;
+    if (out_folder_count)
+        *out_folder_count = 0;
+    if (out_error)
+        *out_error = NULL;
+
+    context.cancellation_callback = cancellation_callback;
+    context.cancellation_user_data = cancellation_user_data;
+
+    camel_provider_init ();
+
+    registry = eds_camel_ref_registry (&error);
+    if (!registry) {
+        if (out_error && error)
+            *out_error = g_strdup (error->message);
+        g_clear_error (&error);
+        return 0;
+    }
+
+    session = eds_camel_ref_session (registry);
+    cancellable = g_cancellable_new ();
+    cancellation_monitor = cancellation_monitor_start (
+        cancellable, cancellation_callback, cancellation_user_data);
+    sources = e_source_registry_list_enabled (
+        registry, E_SOURCE_EXTENSION_MAIL_ACCOUNT);
+
+    for (link = sources; link != NULL; link = link->next) {
+        ESource *source = E_SOURCE (link->data);
+        ESourceBackend *backend;
+        const gchar *backend_name;
+        CamelStore *store = NULL;
+        CamelFolderInfo *folder_info = NULL;
+        GError *source_error = NULL;
+        const gchar *source_uid;
+        const gchar *display_name;
+
+        if (load_cancelled (&context))
+            break;
+
+        backend = (ESourceBackend *) e_source_get_extension (
+            source, E_SOURCE_EXTENSION_MAIL_ACCOUNT);
+        backend_name = backend
+            ? e_source_backend_get_backend_name (backend)
+            : NULL;
+        if (!backend_name || !*backend_name ||
+            g_str_equal (backend_name, "maildir") ||
+            g_str_equal (backend_name, "mbox") ||
+            g_str_equal (backend_name, "mh") ||
+            g_str_equal (backend_name, "spool") ||
+            g_str_equal (backend_name, "vfolder") ||
+            g_str_equal (backend_name, "rss"))
+            continue;
+        if (is_source_foreign_or_shared (source))
+            continue;
+
+        source_uid = e_source_get_uid (source);
+        display_name = e_source_get_display_name (source);
+        if (!source_uid || !*source_uid)
+            continue;
+
+        context.configured_sources++;
+        store = open_store_for_source (session, source, cancellable, &source_error);
+        if (!store) {
+            context.failed_sources++;
+            remember_error (&context, display_name, source_error);
+            g_clear_error (&source_error);
+            continue;
+        }
+
+        ensure_foreign_folders_for_ews_store (store, registry, cancellable);
+
+        folder_info = camel_store_get_folder_info_sync (
+            store, NULL,
+            CAMEL_STORE_FOLDER_INFO_RECURSIVE | CAMEL_STORE_FOLDER_INFO_REFRESH,
+            cancellable, &source_error);
+        if (!folder_info) {
+            g_clear_error (&source_error);
+            folder_info = camel_store_get_folder_info_sync (
+                store, NULL,
+                CAMEL_STORE_FOLDER_INFO_RECURSIVE,
+                cancellable, &source_error);
+        }
+
+        if (!folder_info) {
+            context.failed_sources++;
+            remember_error (&context, display_name, source_error);
+            g_clear_error (&source_error);
+            g_object_unref (store);
+            continue;
+        }
+
+        context.successful_sources++;
+        sync_background_folder_tree (
+            &context, store, source_uid, display_name, folder_info, cancellable);
+        camel_folder_info_free (folder_info);
+        g_object_unref (store);
+    }
+
+    load_cancelled (&context);
+
+    if (!context.cancelled &&
+        (context.successful_sources > 0 || context.configured_sources == 0)) {
+        if (out_folders)
+            *out_folders = context.folders;
+        if (out_folder_count)
+            *out_folder_count = context.folder_count;
+        context.folders = NULL;
+        context.folder_count = 0;
+        result = 1;
+    }
+
+    if (out_error && context.first_error)
+        *out_error = g_strdup (context.first_error);
+
+    g_free (context.first_error);
+    meridian_eds_camel_free_messages (context.messages, context.count);
+    meridian_eds_camel_free_folders (context.folders, context.folder_count);
+    cancellation_monitor_free (cancellation_monitor);
+    g_clear_object (&cancellable);
+    g_list_free_full (sources, g_object_unref);
+    g_clear_object (&session);
+    g_clear_object (&registry);
+
+    return result;
+}
+
 static CamelFolderInfo *
 find_folder_info_by_name (CamelFolderInfo *folder_info,
                           const gchar *folder_name)
@@ -2572,6 +2804,13 @@ meridian_eds_camel_load_messages_by_uid (
             message_info, message, cancellable);
         g_object_unref (message);
         g_object_unref (message_info);
+    }
+
+    if (folder) {
+        CamelFolderSummary *summary = camel_folder_get_folder_summary (folder);
+        if (summary) {
+            camel_folder_summary_save (summary, NULL);
+        }
     }
 
     load_cancelled (&context);
@@ -3941,6 +4180,9 @@ meridian_eds_camel_watcher_new (const char *source_uid,
             g_clear_error (&error);
             continue;
         }
+
+        ensure_foreign_folders_for_ews_store (
+            store, watcher->registry, cancellable);
 
         folder_info = camel_store_get_folder_info_sync (
             store, NULL,

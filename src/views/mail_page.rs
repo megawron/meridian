@@ -7244,6 +7244,7 @@ mod imp {
         pub mail_has_more: Cell<bool>,
         pub mail_change_pending: Cell<bool>,
         pub mail_incremental_loading: Cell<bool>,
+        pub mail_background_sync_in_flight: Cell<bool>,
         pub updating_folder_rows: Cell<bool>,
         pub mail_sync_source: RefCell<Option<glib::SourceId>>,
         pub mail_startup_source: RefCell<Option<glib::SourceId>>,
@@ -17924,6 +17925,22 @@ impl MailPage {
                         source_uid: Some(target_source_uid.clone()),
                         folder_name: Some(inbox_folder_name.clone()),
                     };
+                    if let Some(search_entry) = page.imp().search_entry.borrow().as_ref() {
+                        if !search_entry.text().is_empty() {
+                            search_entry.set_text("");
+                        }
+                    }
+                    if let Some(filter_state) = page.imp().message_filter_state.borrow().as_ref() {
+                        filter_state.set(MessageFilter::All);
+                    }
+                    if let Some(query) = page.imp().search_query.borrow().as_ref() {
+                        query.replace(MessageSearchQuery::default());
+                    }
+                    if let Some(quick_filter) = page.imp().quick_filter.borrow().as_ref() {
+                        if quick_filter.selected() != 0 {
+                            quick_filter.set_selected(0);
+                        }
+                    }
                     if let Some(current) = page.imp().folder_selection.borrow().as_ref() {
                         current.replace(folder_selection.clone());
                     }
@@ -17936,24 +17953,6 @@ impl MailPage {
                     }
                     if let Some(search_list) = page.imp().search_list.borrow().as_ref() {
                         search_list.unselect_all();
-                    }
-                    if let Some(search_entry) = page.imp().search_entry.borrow().as_ref() {
-                        search_entry.set_text("");
-                    }
-                    if let Some(filter_state) = page.imp().message_filter_state.borrow().as_ref() {
-                        filter_state.set(MessageFilter::All);
-                    }
-                    if let Some(query) = page.imp().search_query.borrow().as_ref() {
-                        query.replace(MessageSearchQuery::default());
-                    }
-                    if let Some(quick_filter) = page.imp().quick_filter.borrow().as_ref() {
-                        quick_filter.set_selected(0);
-                    }
-                    if let Some(filter) = page.imp().message_filter.borrow().as_ref() {
-                        filter.changed(gtk::FilterChange::Different);
-                    }
-                    if let Some(filter) = page.imp().thread_filter.borrow().as_ref() {
-                        filter.changed(gtk::FilterChange::Different);
                     }
                     page.start_mail_load(
                         MailLoadRequest {
@@ -18014,6 +18013,22 @@ impl MailPage {
             if already_same && (page.imp().mail_loading.get() || page.imp().mail_incremental_loading.get()) {
                 return;
             }
+            if let Some(search_entry) = page.imp().search_entry.borrow().as_ref() {
+                if !search_entry.text().is_empty() {
+                    search_entry.set_text("");
+                }
+            }
+            if let Some(filter_state) = page.imp().message_filter_state.borrow().as_ref() {
+                filter_state.set(MessageFilter::All);
+            }
+            if let Some(query) = page.imp().search_query.borrow().as_ref() {
+                query.replace(MessageSearchQuery::default());
+            }
+            if let Some(quick_filter) = page.imp().quick_filter.borrow().as_ref() {
+                if quick_filter.selected() != 0 {
+                    quick_filter.set_selected(0);
+                }
+            }
             if let Some(current) = page.imp().folder_selection.borrow().as_ref() {
                 current.replace(folder_selection.clone());
             }
@@ -18029,24 +18044,6 @@ impl MailPage {
             }
             if let Some(search_list) = page.imp().search_list.borrow().as_ref() {
                 search_list.unselect_all();
-            }
-            if let Some(search_entry) = page.imp().search_entry.borrow().as_ref() {
-                search_entry.set_text("");
-            }
-            if let Some(filter_state) = page.imp().message_filter_state.borrow().as_ref() {
-                filter_state.set(MessageFilter::All);
-            }
-            if let Some(query) = page.imp().search_query.borrow().as_ref() {
-                query.replace(MessageSearchQuery::default());
-            }
-            if let Some(quick_filter) = page.imp().quick_filter.borrow().as_ref() {
-                quick_filter.set_selected(0);
-            }
-            if let Some(filter) = page.imp().message_filter.borrow().as_ref() {
-                filter.changed(gtk::FilterChange::Different);
-            }
-            if let Some(filter) = page.imp().thread_filter.borrow().as_ref() {
-                filter.changed(gtk::FilterChange::Different);
             }
             if let Some(root) = page.root().and_downcast::<crate::window::MeridianWindow>() {
                 root.update_folder_sort_order_action_for_current_view();
@@ -20274,6 +20271,32 @@ impl MailPage {
         } else {
             None
         };
+
+        if target_unified_id.is_none() && !local_section_visible {
+            if let Some(dynamic_selection) = self.imp().dynamic_folder_selection.borrow().as_ref() {
+                if let Some(row) = dynamic_selection.selected_item().and_downcast::<gtk::TreeListRow>() {
+                    if !(row.depth() == 0 && selection.folder_name.is_some()) {
+                        if let Some(folder) = row.item().and_downcast::<FolderObject>() {
+                            let current = FolderSelection {
+                                folder_id: folder.id(),
+                                source_uid: folder.source_uid(),
+                                folder_name: folder
+                                    .folder_name()
+                                    .filter(|folder_name| !folder_name.trim().is_empty()),
+                            };
+                            let already_selected = current == *selection
+                                || (selection.source_uid.is_some()
+                                    && selection.source_uid == current.source_uid
+                                    && selection.folder_name == current.folder_name);
+                            if already_selected {
+                                self.update_drawer_header_with_selection(selection, None);
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         if let Some(unified_list) = self.imp().unified_folder_list.borrow().as_ref() {
             if let Some(ref target_id) = target_unified_id {
@@ -29980,12 +30003,19 @@ impl MailPage {
             let selection = Self::folder_row_data(row)
                 .map(|data| data.selection())
                 .unwrap_or_default();
-            folder_selection_for_rows.replace(selection.clone());
+            if let Some(search_entry) = page.imp().search_entry.borrow().as_ref() {
+                if !search_entry.text().is_empty() {
+                    search_entry.set_text("");
+                }
+            }
             message_filter_for_rows.set(MessageFilter::All);
             query_for_folder.replace(MessageSearchQuery::default());
             if let Some(quick_filter) = page.imp().quick_filter.borrow().as_ref() {
-                quick_filter.set_selected(0);
+                if quick_filter.selected() != 0 {
+                    quick_filter.set_selected(0);
+                }
             }
+            folder_selection_for_rows.replace(selection.clone());
             page.update_drawer_header_with_selection(&selection, None);
             if let Some(root) = page.root().and_downcast::<crate::window::MeridianWindow>() {
                 root.update_folder_sort_order_action_for_current_view();
@@ -29999,11 +30029,6 @@ impl MailPage {
             if let Some(dynamic_selection) = page.imp().dynamic_folder_selection.borrow().as_ref() {
                 dynamic_selection.set_selected(gtk::INVALID_LIST_POSITION);
             }
-            if let Some(search_entry) = page.imp().search_entry.borrow().as_ref() {
-                search_entry.set_text("");
-            }
-            custom_filter_for_rows.changed(gtk::FilterChange::Different);
-            thread_filter_for_rows.changed(gtk::FilterChange::Different);
 
             if selection.is_remote() {
                 page.start_mail_load(
@@ -30028,6 +30053,8 @@ impl MailPage {
                 if needs_all_mail_reload {
                     page.start_mail_load(MailLoadRequest::initial(), true);
                 } else {
+                    custom_filter_for_rows.changed(gtk::FilterChange::Different);
+                    thread_filter_for_rows.changed(gtk::FilterChange::Different);
                     let anchor = page.anchor_for_folder(&selection);
                     page.select_message_after_reload(&anchor);
                 }
@@ -30111,12 +30138,19 @@ impl MailPage {
                 .unwrap_or_else(|| "unified_inbox".to_string());
 
                 let selection = FolderSelection::from_folder_id(&folder_id);
-                folder_selection_for_unified.replace(selection.clone());
+                if let Some(search_entry) = page.imp().search_entry.borrow().as_ref() {
+                    if !search_entry.text().is_empty() {
+                        search_entry.set_text("");
+                    }
+                }
                 message_filter_for_unified.set(MessageFilter::All);
                 query_for_unified.replace(MessageSearchQuery::default());
                 if let Some(quick_filter) = page.imp().quick_filter.borrow().as_ref() {
-                    quick_filter.set_selected(0);
+                    if quick_filter.selected() != 0 {
+                        quick_filter.set_selected(0);
+                    }
                 }
+                folder_selection_for_unified.replace(selection.clone());
                 page.update_drawer_header_with_selection(&selection, None);
                 if let Some(root) = page.root().and_downcast::<crate::window::MeridianWindow>() {
                     root.update_folder_sort_order_action_for_current_view();
@@ -30128,12 +30162,6 @@ impl MailPage {
                 if let Some(dynamic_selection) = page.imp().dynamic_folder_selection.borrow().as_ref() {
                     dynamic_selection.set_selected(gtk::INVALID_LIST_POSITION);
                 }
-                if let Some(search_entry) = page.imp().search_entry.borrow().as_ref() {
-                    search_entry.set_text("");
-                }
-                custom_filter_for_unified.changed(gtk::FilterChange::Different);
-                thread_filter_for_unified.changed(gtk::FilterChange::Different);
-                page.queue_mail_table_draw();
 
                 let needs_all_mail_reload = page
                     .imp()
@@ -30146,6 +30174,8 @@ impl MailPage {
                 if needs_all_mail_reload {
                     page.start_mail_load(MailLoadRequest::initial(), true);
                 } else {
+                    custom_filter_for_unified.changed(gtk::FilterChange::Different);
+                    thread_filter_for_unified.changed(gtk::FilterChange::Different);
                     let anchor = page.anchor_for_folder(&selection);
                     page.select_message_after_reload(&anchor);
                     page.queue_mail_table_draw();
@@ -41123,22 +41153,135 @@ impl MailPage {
         if interval == 0 {
             return;
         }
-        let effective_interval = interval.max(60);
+        let effective_interval = interval.min(30).max(15);
 
         let page = self.downgrade();
         let source = glib::timeout_add_seconds_local(effective_interval, move || {
             let Some(page) = page.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            if !page.imp().mail_loading.get() {
-                page.refresh_mail();
-            }
+            page.start_background_folder_sync();
             if AppSettings::try_new().map(|s| s.flush_outbox()).unwrap_or(false) {
                 page.flush_outbox_if_needed();
             }
             glib::ControlFlow::Continue
         });
         self.imp().mail_sync_source.replace(Some(source));
+    }
+
+    fn start_background_folder_sync(&self) {
+        if self.imp().mail_loading.get()
+            || self.imp().mail_incremental_loading.get()
+            || self.imp().mail_background_sync_in_flight.get()
+            || self.imp().mail_operations_active.get() > 0
+        {
+            return;
+        }
+        if AppSettings::try_new().map_or(false, |s| s.offline_mode()) {
+            return;
+        }
+
+        self.imp().mail_background_sync_in_flight.set(true);
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = async_channel::bounded(1);
+        let worker_cancellation = cancellation.clone();
+        std::thread::spawn(move || {
+            let result = camel_mail_service::sync_background_folders_with_cancellation(Some(
+                &worker_cancellation,
+            ));
+            let _ = sender.send_blocking(result);
+        });
+
+        let page = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result = receiver.recv().await;
+            let Some(page) = page.upgrade() else {
+                return;
+            };
+            page.imp().mail_background_sync_in_flight.set(false);
+            let Ok(Ok(updated_folders)) = result else {
+                return;
+            };
+            if updated_folders.is_empty() {
+                return;
+            }
+
+            let active_req = page.imp().active_request.borrow().clone();
+            let mut active_folder_changed = false;
+            let mut folder_set_changed = false;
+
+            let merged_folders = {
+                let existing = page.imp().mail_folder_summaries.borrow();
+                let mut folder_map =
+                    HashMap::<(String, String), camel_mail_service::CamelFolderSummary>::new();
+                for f in existing.iter() {
+                    let canon_src = Self::canonical_account_uid(&f.source_uid).to_string();
+                    folder_map.insert((canon_src, f.folder_name.clone()), f.clone());
+                }
+                for f in updated_folders {
+                    let canon_src = Self::canonical_account_uid(&f.source_uid).to_string();
+                    let key = (canon_src, f.folder_name.clone());
+                    if let Some(prev) = folder_map.get(&key) {
+                        if prev.unread_count != f.unread_count || prev.total_count != f.total_count
+                        {
+                            if let Some(ref req) = active_req {
+                                let matches_active =
+                                    match (req.source_uid.as_deref(), req.folder_name.as_deref()) {
+                                        (None, None) => {
+                                            f.folder_id.eq_ignore_ascii_case("inbox")
+                                                || folder_names_match(&f.folder_name, "INBOX")
+                                        }
+                                        (Some(req_src), None) => {
+                                            account_sources_match(req_src, &f.source_uid)
+                                                && (f.folder_id.eq_ignore_ascii_case("inbox")
+                                                    || folder_names_match(&f.folder_name, "INBOX"))
+                                        }
+                                        (None, Some(req_fld)) => {
+                                            folder_names_match(req_fld, &f.folder_name)
+                                        }
+                                        (Some(req_src), Some(req_fld)) => {
+                                            account_sources_match(req_src, &f.source_uid)
+                                                && folder_names_match(req_fld, &f.folder_name)
+                                        }
+                                    };
+                                if matches_active {
+                                    active_folder_changed = true;
+                                }
+                            }
+                        }
+                    } else {
+                        folder_set_changed = true;
+                    }
+                    folder_map.insert(key, f);
+                }
+                let mut merged: Vec<camel_mail_service::CamelFolderSummary> =
+                    folder_map.into_values().collect();
+                merged.sort_by(|a, b| {
+                    a.source_uid
+                        .cmp(&b.source_uid)
+                        .then_with(|| a.folder_name.cmp(&b.folder_name))
+                });
+                merged
+            };
+
+            page.imp()
+                .mail_folder_summaries
+                .replace(merged_folders.clone());
+            if let Some(folder_list) = page.imp().folder_list.borrow().as_ref() {
+                if folder_set_changed {
+                    page.rebuild_camel_folder_rows(folder_list, &merged_folders);
+                }
+                page.update_camel_folder_counts(folder_list, &merged_folders, None);
+            }
+            page.refresh_unread_counters();
+
+            if active_folder_changed
+                && !page.imp().mail_loading.get()
+                && !page.imp().mail_incremental_loading.get()
+            {
+                page.refresh_mail();
+            }
+        });
     }
 
     fn restart_mail_polling(&self) {
@@ -41206,6 +41349,9 @@ impl MailPage {
                                 .unwrap_or_default()
                         ));
                     }
+                }
+                if status.successful_sources > 0 {
+                    self.start_background_folder_sync();
                 }
             }
             camel_mail_service::CamelSyncEvent::Change(change) => {
@@ -41346,8 +41492,8 @@ impl MailPage {
                 let Some(location) = message.backend_location() else {
                     continue;
                 };
-                if location.source_uid == change.source_uid
-                    && location.folder_name == change.folder_name
+                if account_sources_match(&location.source_uid, &change.source_uid)
+                    && folder_names_match(&location.folder_name, &change.folder_name)
                 {
                     previous_unread.insert(location.message_uid, message.is_unread());
                 }
@@ -41539,9 +41685,19 @@ impl MailPage {
                         .borrow()
                         .as_ref()
                         .map_or(false, |req| {
-                            (req.folder_name.is_none() && req.source_uid.is_none())
-                                || (req.folder_name.as_deref() == Some(&change_for_result.folder_name)
-                                    && req.source_uid.as_deref() == Some(&change_for_result.source_uid))
+                            match (req.source_uid.as_deref(), req.folder_name.as_deref()) {
+                                (None, None) => true,
+                                (Some(req_src), None) => {
+                                    account_sources_match(req_src, &change_for_result.source_uid)
+                                }
+                                (None, Some(req_fld)) => {
+                                    folder_names_match(req_fld, &change_for_result.folder_name)
+                                }
+                                (Some(req_src), Some(req_fld)) => {
+                                    account_sources_match(req_src, &change_for_result.source_uid)
+                                        && folder_names_match(req_fld, &change_for_result.folder_name)
+                                }
+                            }
                         });
 
                     let mut structure_changed = false;
@@ -41601,18 +41757,26 @@ impl MailPage {
         unread_delta: i64,
         total_delta: i64,
     ) {
-        let mut folders = self.imp().mail_folder_summaries.borrow_mut();
-        if let Some(folder) = folders
-            .iter_mut()
-            .find(|folder| {
-                Self::canonical_account_uid(&folder.source_uid)
-                    == Self::canonical_account_uid(source_uid)
-                    && folder.folder_name == folder_name
-            })
-        {
-            folder.unread_count = apply_count_delta(folder.unread_count, unread_delta);
-            folder.total_count = apply_count_delta(folder.total_count, total_delta);
+        let updated_folders = {
+            let mut folders = self.imp().mail_folder_summaries.borrow_mut();
+            if let Some(folder) = folders
+                .iter_mut()
+                .find(|folder| {
+                    Self::canonical_account_uid(&folder.source_uid)
+                        == Self::canonical_account_uid(source_uid)
+                        && (folder.folder_name == folder_name
+                            || folder_names_match(&folder.folder_name, folder_name))
+                })
+            {
+                folder.unread_count = apply_count_delta(folder.unread_count, unread_delta);
+                folder.total_count = apply_count_delta(folder.total_count, total_delta);
+            }
+            folders.clone()
+        };
+        if let Some(folder_list) = self.imp().folder_list.borrow().as_ref() {
+            self.update_camel_folder_counts(folder_list, &updated_folders, None);
         }
+        self.refresh_unread_counters();
     }
 
     fn apply_camel_folder_deleted(&self, change: &camel_mail_service::CamelChangeEvent) {
@@ -42274,6 +42438,130 @@ impl MailPage {
         let progress_sender_for_worker = progress_sender.clone();
         let worker_input = MailLoadWorkerInput::from_main_thread(request.clone());
         let deleted_snapshot = self.imp().recently_deleted_ids.borrow().clone();
+
+        // Synchronous SQLite Fast Path on folder switch: populate the new folder's visible slice
+        // in the same event tick (< 1ms, 0 intermediate frames, no white flash).
+        const INSTANT_FOLDER_SWITCH_SQLITE_LIMIT: usize = 80;
+        let mut sync_fast_path_applied = false;
+        let mut sync_fast_path_complete = false;
+        if replace && !is_same_folder_refresh && !load_startup_cache && !worker_input.offline_mode && request.offset == 0 {
+            let page_limit = request.max_messages_per_folder.max(1) as usize;
+            let sqlite_folder_limit =
+                crate::services::evolution_summary_cache::effective_sqlite_folder_limit(page_limit);
+            let instant_limit = sqlite_folder_limit.min(INSTANT_FOLDER_SWITCH_SQLITE_LIMIT);
+            if let Some(hint) = request.source_uid.as_deref() {
+                if let Some(cache) = crate::services::evolution_summary_cache::find_evolution_account_cache(Some(hint)) {
+                    let folder_to_load = request.folder_name.as_deref().unwrap_or("");
+                    let existing_folders: Vec<camel_mail_service::CamelFolderSummary> = self
+                        .imp()
+                        .mail_folder_summaries
+                        .borrow()
+                        .iter()
+                        .filter(|f| account_sources_match(&f.source_uid, hint))
+                        .cloned()
+                        .collect();
+                    let sqlite_folders = if !existing_folders.is_empty() {
+                        existing_folders
+                    } else {
+                        crate::services::evolution_summary_cache::load_folders_from_sqlite(
+                            &cache.folders_db,
+                            &cache.source_uid,
+                            &cache.display_name,
+                        )
+                        .unwrap_or_default()
+                    };
+                    let mut sqlite_msgs = crate::services::evolution_summary_cache::load_folder_messages_from_sqlite(
+                        &cache.folders_db,
+                        hint,
+                        folder_to_load,
+                        Some(instant_limit),
+                    )
+                    .unwrap_or_default();
+                    let raw_sqlite_count = sqlite_msgs.len();
+                    if !deleted_snapshot.is_empty() {
+                        sqlite_msgs.retain(|m| !deleted_snapshot.contains(&m.id));
+                    }
+                    let known_empty_folder = !folder_to_load.is_empty()
+                        && sqlite_msgs.is_empty()
+                        && sqlite_folders.iter().any(|f| {
+                            folder_names_match(&f.folder_name, folder_to_load) && f.total_count == 0
+                        });
+                    let should_apply_sync = if !folder_to_load.is_empty() {
+                        !sqlite_msgs.is_empty() || known_empty_folder
+                    } else {
+                        !sqlite_msgs.is_empty() || !sqlite_folders.is_empty()
+                    };
+                    if should_apply_sync {
+                        let fast_load = camel_mail_service::CamelMailLoad {
+                            messages: sqlite_msgs,
+                            folders: sqlite_folders,
+                            configured_sources: 1,
+                            successful_sources: 1,
+                            failed_sources: 0,
+                            warning: Some(format!(
+                                "{} · {} …",
+                                gettext("Local database"),
+                                gettext("Synchronizing")
+                            )),
+                            is_graph: false,
+                            search_query: None,
+                            graph_next_links: HashMap::new(),
+                            graph_search_next_cursor: None,
+                        };
+                        let cached_result = prepared_camel_result(fast_load, &cancellation);
+                        self.apply_mail_load(request.clone(), cached_result, true, true);
+                        self.imp().is_same_folder_refresh.set(true);
+                        self.imp().mail_loading.set(true);
+                        self.imp().mail_backend_load_pending.set(true);
+                        sync_fast_path_applied = true;
+                        sync_fast_path_complete = raw_sqlite_count < instant_limit;
+                    }
+                }
+            } else {
+                let instant_unified_limit = page_limit.min(INSTANT_FOLDER_SWITCH_SQLITE_LIMIT);
+                let (sqlite_folders, mut sqlite_msgs, source_count) =
+                    crate::services::evolution_summary_cache::load_unified_accounts_from_sqlite(instant_unified_limit);
+                let raw_sqlite_count = sqlite_msgs.len();
+                if !deleted_snapshot.is_empty() {
+                    sqlite_msgs.retain(|m| !deleted_snapshot.contains(&m.id));
+                }
+                if !sqlite_msgs.is_empty() || !sqlite_folders.is_empty() {
+                    let source_count = source_count.max(1);
+                    let fast_load = camel_mail_service::CamelMailLoad {
+                        messages: sqlite_msgs,
+                        folders: sqlite_folders,
+                        configured_sources: source_count,
+                        successful_sources: source_count,
+                        failed_sources: 0,
+                        warning: Some(format!(
+                            "{} · {} …",
+                            gettext("Local database"),
+                            gettext("Synchronizing")
+                        )),
+                        is_graph: false,
+                        search_query: None,
+                        graph_next_links: HashMap::new(),
+                        graph_search_next_cursor: None,
+                    };
+                    let cached_result = prepared_camel_result(fast_load, &cancellation);
+                    self.apply_mail_load(request.clone(), cached_result, true, true);
+                    self.imp().is_same_folder_refresh.set(true);
+                    self.imp().mail_loading.set(true);
+                    self.imp().mail_backend_load_pending.set(true);
+                    sync_fast_path_applied = true;
+                    sync_fast_path_complete = raw_sqlite_count < instant_unified_limit;
+                }
+            }
+            if !sync_fast_path_applied {
+                if let Some(filter) = self.imp().message_filter.borrow().as_ref() {
+                    filter.changed(gtk::FilterChange::Different);
+                }
+                if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
+                    filter.changed(gtk::FilterChange::Different);
+                }
+            }
+        }
+
         std::thread::spawn(move || {
             let started = Instant::now();
             let mut sqlite_supplement: Vec<ParsedMail> = Vec::new();
@@ -42313,7 +42601,7 @@ impl MailPage {
                         }
                         sqlite_supplement = sqlite_msgs.clone();
                         sqlite_folders_supplement = sqlite_folders.clone();
-                        let should_send_fast_path = if !folder_to_load.is_empty() {
+                        let should_send_fast_path = !sync_fast_path_complete && if !folder_to_load.is_empty() {
                             !sqlite_msgs.is_empty()
                         } else {
                             !sqlite_msgs.is_empty() || !sqlite_folders.is_empty()
@@ -42345,7 +42633,7 @@ impl MailPage {
                     }
                     sqlite_supplement = sqlite_msgs.clone();
                     sqlite_folders_supplement = sqlite_folders.clone();
-                    if !sqlite_msgs.is_empty() || !sqlite_folders.is_empty() {
+                    if !sync_fast_path_complete && (!sqlite_msgs.is_empty() || !sqlite_folders.is_empty()) {
                         let source_count = source_count.max(1);
                         let fast_load = camel_mail_service::CamelMailLoad {
                             messages: sqlite_msgs,
@@ -42661,7 +42949,7 @@ impl MailPage {
                 }
                 let was_same_folder_refresh = page.imp().is_same_folder_refresh.get();
                 page.apply_mail_load(request.clone(), result, replace, from_cache);
-                if was_same_folder_refresh {
+                if was_same_folder_refresh || (replace && from_cache) {
                     page.imp().is_same_folder_refresh.set(true);
                 }
                 if !from_cache {
@@ -43577,6 +43865,8 @@ impl MailPage {
             }
         }
 
+        let mut folders_structure_changed = false;
+        let mut folders_counts_changed = false;
         if pending.result_kind == "local" {
             if self.imp().mail_folder_summaries.borrow().is_empty() {
                 if let Some(cache) = crate::services::evolution_summary_cache::find_evolution_account_cache(None) {
@@ -43587,13 +43877,16 @@ impl MailPage {
                     ).unwrap_or_default();
                     if !sqlite_folders.is_empty() {
                         self.imp().mail_folder_summaries.replace(sqlite_folders);
+                        folders_structure_changed = true;
+                        folders_counts_changed = true;
                     }
                 }
             }
             self.imp().graph_search_state.replace(None);
         } else {
+            let prev_folders = self.imp().mail_folder_summaries.borrow().clone();
             let mut folder_map = HashMap::<(String, String), camel_mail_service::CamelFolderSummary>::new();
-            for f in self.imp().mail_folder_summaries.borrow().iter() {
+            for f in &prev_folders {
                 let canon_src = Self::canonical_account_uid(&f.source_uid).to_string();
                 folder_map.insert((canon_src, f.folder_name.clone()), f.clone());
             }
@@ -43613,6 +43906,18 @@ impl MailPage {
                     .cmp(&b.source_uid)
                     .then_with(|| a.folder_name.cmp(&b.folder_name))
             });
+            folders_structure_changed = prev_folders.len() != merged_folders.len()
+                || prev_folders.iter().zip(merged_folders.iter()).any(|(a, b)| {
+                    a.source_uid != b.source_uid
+                        || a.folder_name != b.folder_name
+                        || a.display_name != b.display_name
+                        || a.folder_id != b.folder_id
+                        || a.is_selectable != b.is_selectable
+                });
+            folders_counts_changed = folders_structure_changed
+                || prev_folders.iter().zip(merged_folders.iter()).any(|(a, b)| {
+                    a.unread_count != b.unread_count || a.total_count != b.total_count
+                });
             self.imp().mail_folder_summaries.replace(merged_folders);
         }
 
@@ -43641,10 +43946,19 @@ impl MailPage {
 
             if let Some(folder_list) = self.imp().folder_list.borrow().as_ref() {
                 let all_folders = self.imp().mail_folder_summaries.borrow().clone();
-                if pending.replace {
+                let dynamic_empty = self
+                    .imp()
+                    .dynamic_folder_store
+                    .borrow()
+                    .as_ref()
+                    .map_or(true, |s| s.n_items() == 0);
+                let list_empty = folder_list.observe_children().n_items() == 0;
+                if pending.replace && (folders_structure_changed || dynamic_empty || list_empty) {
                     self.rebuild_camel_folder_rows(folder_list, &all_folders);
                 }
-                self.update_camel_folder_counts(folder_list, &all_folders, None);
+                if folders_counts_changed || dynamic_empty || list_empty {
+                    self.update_camel_folder_counts(folder_list, &all_folders, None);
+                }
             }
             if let Some(section) = self.imp().folder_section.borrow().as_ref() {
                 section.set_visible(true);
@@ -43701,10 +44015,12 @@ impl MailPage {
             "Scheduling incremental GTK mail model application"
         );
         // Apply the initial batch synchronously so the viewport is populated immediately (0 ms).
-        let done = self.process_pending_mail_apply(&mut pending);
-        if done {
-            self.finish_pending_mail_apply(&pending);
-            return;
+        let apply_budget = Instant::now();
+        while apply_budget.elapsed() < std::time::Duration::from_millis(25) {
+            if self.process_pending_mail_apply(&mut pending) {
+                self.finish_pending_mail_apply(&pending);
+                return;
+            }
         }
 
         let state = Rc::new(RefCell::new(pending));
@@ -43982,10 +44298,10 @@ impl MailPage {
             self.imp().mail_threading.get(),
             completion,
         );
-        // Complete small-to-medium folders synchronously within a 6ms frame budget
+        // Complete small-to-medium folders synchronously within a 25ms frame budget
         // so the message list updates in a single paint without any intermediate blank frame.
         let sync_budget = Instant::now();
-        while sync_budget.elapsed() < std::time::Duration::from_millis(6) {
+        while sync_budget.elapsed() < std::time::Duration::from_millis(25) {
             if self.process_pending_thread_models(&mut initial_state) {
                 self.finalize_pending_mail_apply(&initial_state.completion);
                 self.imp().is_same_folder_refresh.set(false);
@@ -44614,7 +44930,8 @@ impl MailPage {
                     .find(|folder| {
                         Self::canonical_account_uid(&folder.source_uid)
                             == Self::canonical_account_uid(source_uid)
-                            && folder.folder_name == folder_name
+                            && (folder.folder_name == folder_name
+                                || folder_names_match(&folder.folder_name, folder_name))
                     })
                     .map(|folder| (folder.unread_count, folder.total_count))
                     .unwrap_or((0, 0))

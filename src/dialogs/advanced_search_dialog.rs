@@ -17,16 +17,42 @@ use std::rc::Rc;
 use crate::i18n::gettext;
 use crate::services::search_engine::{MailSearchFieldScope, parse_mail_query};
 
-const TEXT_FIELD_LABELS: &[&str] = &[
-    "Betreff",
-    "Absender",
-    "Empfänger",
-    "Nachrichteninhalt",
-    "Alle Felder",
-];
-const TEXT_OPERATOR_LABELS: &[&str] = &["enthält", "ist", "beginnt mit", "endet mit"];
-const STATE_LABELS: &[&str] = &["Ungelesen", "Markiert", "Wichtig", "Anhang vorhanden"];
-const DATE_OPERATOR_LABELS: &[&str] = &["vor", "nach", "am"];
+fn text_field_labels() -> Vec<String> {
+    vec![
+        gettext("Subject"),
+        gettext("Sender"),
+        gettext("Recipients"),
+        gettext("Message Body"),
+        gettext("All Fields"),
+    ]
+}
+
+fn text_operator_labels() -> Vec<String> {
+    vec![
+        gettext("contains"),
+        gettext("is"),
+        gettext("starts with"),
+        gettext("ends with"),
+    ]
+}
+
+fn state_labels() -> Vec<String> {
+    vec![
+        gettext("Unread"),
+        gettext("Flagged"),
+        gettext("Important"),
+        gettext("Has Attachment"),
+    ]
+}
+
+fn date_operator_labels() -> Vec<String> {
+    vec![gettext("before"), gettext("after"), gettext("on")]
+}
+
+fn string_list_from_owned(items: &[String]) -> gtk::StringList {
+    let refs: Vec<&str> = items.iter().map(String::as_str).collect();
+    gtk::StringList::new(&refs)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RuleKind {
@@ -109,6 +135,7 @@ mod imp {
     pub struct AdvancedSearchDialog {
         pub(super) rows: RefCell<Option<Rc<RefCell<Vec<RuleRow>>>>>,
         pub(super) rows_box: RefCell<Option<gtk::Box>>,
+        pub(super) next_row_id: Rc<Cell<u64>>,
         pub(super) group: RefCell<Option<gtk::DropDown>>,
         pub(super) negate_group: RefCell<Option<gtk::CheckButton>>,
         pub(super) raw_query: RefCell<Option<gtk::Entry>>,
@@ -121,6 +148,7 @@ mod imp {
             Self {
                 rows: RefCell::new(None),
                 rows_box: RefCell::new(None),
+                next_row_id: Rc::new(Cell::new(0)),
                 group: RefCell::new(None),
                 negate_group: RefCell::new(None),
                 raw_query: RefCell::new(None),
@@ -169,7 +197,7 @@ impl AdvancedSearchDialog {
         F: Fn(String) + 'static,
     {
         let dialog: Self = glib::Object::builder()
-            .property("title", "Erweiterte Suche")
+            .property("title", gettext("Advanced Search"))
             .property("content-width", 820)
             .property("content-height", 620)
             .build();
@@ -192,7 +220,7 @@ impl AdvancedSearchDialog {
         let header = adw::HeaderBar::new();
         header.set_title_widget(Some(
             &gtk::Label::builder()
-                .label("Erweiterte Suche")
+                .label(gettext("Advanced Search"))
                 .css_classes(vec!["title-4"])
                 .build(),
         ));
@@ -208,47 +236,48 @@ impl AdvancedSearchDialog {
             .build();
 
         let intro = gtk::Label::builder()
-            .label(
-                "Bedingungen werden als portable Suchabfrage verbunden. Nicht unterstützte \
-                 Ausdrücke werden vor dem Anwenden sichtbar abgewiesen.",
-            )
+            .label(gettext(
+                "Conditions are combined into a portable search query. Unsupported \
+                 expressions are rejected before applying.",
+            ))
             .wrap(true)
             .halign(gtk::Align::Start)
             .css_classes(vec!["dim-label"])
             .build();
         content.append(&intro);
 
+        let group_items = [
+            gettext("Match all conditions (AND)"),
+            gettext("Match any condition (OR)"),
+        ];
         let group = gtk::DropDown::new(
-            Some(gtk::StringList::new(&[
-                "Alle Bedingungen (UND)",
-                "Mindestens eine Bedingung (ODER)",
-            ])),
+            Some(string_list_from_owned(&group_items)),
             None::<&gtk::Expression>,
         );
         group.set_selected(0);
-        group.set_tooltip_text(Some("Bedingungen mit UND oder ODER verbinden"));
+        group.set_tooltip_text(Some(&gettext("Combine conditions with AND or OR")));
         let group_row = adw::ActionRow::builder()
-            .title("Bedingungen verbinden")
-            .subtitle("Alle oder mindestens eine Bedingung")
+            .title(gettext("Match conditions"))
+            .subtitle(gettext("All or any of the conditions"))
             .build();
         group_row.add_suffix(&group);
         content.append(&group_row);
-        self.imp().group.replace(Some(group));
+        self.imp().group.replace(Some(group.clone()));
 
         let negate_group = gtk::CheckButton::builder()
-            .label("Gesamte Bedingungsgruppe verneinen")
+            .label(gettext("Negate entire condition group"))
             .halign(gtk::Align::Start)
             .build();
-        negate_group.set_tooltip_text(Some("Erzeugt not:(and:(…)) oder not:(or:(…))"));
+        negate_group.set_tooltip_text(Some(&gettext("Produces not:(and:(…)) or not:(or:(…))")));
         content.append(&negate_group);
-        self.imp().negate_group.replace(Some(negate_group));
+        self.imp().negate_group.replace(Some(negate_group.clone()));
 
         let rows_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(6)
             .build();
         let rows = Rc::new(RefCell::new(Vec::new()));
-        let next_row_id = Rc::new(Cell::new(0));
+        let next_row_id = Rc::clone(&self.imp().next_row_id);
         self.imp().rows.replace(Some(Rc::clone(&rows)));
         self.imp().rows_box.replace(Some(rows_box.clone()));
 
@@ -257,13 +286,13 @@ impl AdvancedSearchDialog {
             .spacing(8)
             .build();
         let rows_title = gtk::Label::builder()
-            .label("Bedingungen")
+            .label(gettext("Conditions"))
             .halign(gtk::Align::Start)
             .hexpand(true)
             .css_classes(vec!["heading"])
             .build();
         let add_row = gtk::Button::builder()
-            .label("Bedingung hinzufügen")
+            .label(gettext("Add Condition"))
             .icon_name("list-add-symbolic")
             .css_classes(vec!["flat"])
             .build();
@@ -272,27 +301,59 @@ impl AdvancedSearchDialog {
         content.append(&rows_header);
         content.append(&rows_box);
 
-        let rows_for_add = Rc::clone(&rows);
-        let rows_box_for_add = rows_box.clone();
-        let next_row_id_for_add = Rc::clone(&next_row_id);
-        add_row.connect_clicked(move |_| {
-            append_rule_row(&rows_for_add, &rows_box_for_add, &next_row_id_for_add);
-        });
-
         let raw_query = gtk::Entry::builder()
-            .placeholder_text("Optional: and:(subject-contains:\"Projekt\" is:unread)")
+            .placeholder_text(gettext(
+                "Optional: and:(subject-contains:\"Project\" is:unread)",
+            ))
             .hexpand(true)
             .build();
-        raw_query.set_tooltip_text(Some(
-            "Ein vorhandener portabler Ausdruck wird unverändert validiert und verwendet; zum Rule-Builder leeren.",
-        ));
+        raw_query.set_tooltip_text(Some(&gettext(
+            "A custom portable query expression is validated and used directly; leave empty to use the visual condition builder.",
+        )));
         let raw_row = adw::ActionRow::builder()
-            .title("Portable Suchsyntax")
-            .subtitle("Exakte vorhandene Ausdrücke bleiben beim Bearbeiten erhalten")
+            .title(gettext("Portable Search Syntax"))
+            .subtitle(gettext(
+                "Custom expressions that cannot be represented as visual rules are edited here",
+            ))
             .build();
         raw_row.add_suffix(&raw_query);
         content.append(&raw_row);
-        self.imp().raw_query.replace(Some(raw_query));
+        self.imp().raw_query.replace(Some(raw_query.clone()));
+
+        let raw_for_group = raw_query.downgrade();
+        group.connect_selected_notify(move |_| {
+            if let Some(raw) = raw_for_group.upgrade() {
+                if !raw.text().is_empty() {
+                    raw.set_text("");
+                }
+            }
+        });
+        let raw_for_negate_group = raw_query.downgrade();
+        negate_group.connect_toggled(move |_| {
+            if let Some(raw) = raw_for_negate_group.upgrade() {
+                if !raw.text().is_empty() {
+                    raw.set_text("");
+                }
+            }
+        });
+
+        let rows_for_add = Rc::clone(&rows);
+        let rows_box_for_add = rows_box.clone();
+        let next_row_id_for_add = Rc::clone(&next_row_id);
+        let raw_for_add = raw_query.downgrade();
+        add_row.connect_clicked(move |_| {
+            if let Some(raw) = raw_for_add.upgrade() {
+                if !raw.text().is_empty() {
+                    raw.set_text("");
+                }
+            }
+            append_rule_row(
+                &rows_for_add,
+                &rows_box_for_add,
+                &next_row_id_for_add,
+                raw_for_add.clone(),
+            );
+        });
 
         let status = gtk::Label::builder()
             .halign(gtk::Align::Start)
@@ -337,12 +398,58 @@ impl AdvancedSearchDialog {
         toolbar.set_content(Some(&scroll));
         self.set_child(Some(&toolbar));
 
-        append_rule_row(&rows, &rows_box, &next_row_id);
+        append_rule_row(&rows, &rows_box, &next_row_id, raw_query.downgrade());
     }
 
     fn configure_initial_query(&self, initial_query: &str) {
-        if let Some(raw_query) = self.imp().raw_query.borrow().as_ref() {
-            raw_query.set_text(initial_query.trim());
+        let trimmed = initial_query.trim();
+        if trimmed.is_empty() {
+            if let Some(raw_query) = self.imp().raw_query.borrow().as_ref() {
+                raw_query.set_text("");
+            }
+            return;
+        }
+
+        if let Some((group_kind, negate_group, parsed_rules)) = parse_visual_rules(trimmed) {
+            if let Some(group) = self.imp().group.borrow().as_ref() {
+                group.set_selected(match group_kind {
+                    GroupKind::All => 0,
+                    GroupKind::Any => 1,
+                });
+            }
+            if let Some(negate_check) = self.imp().negate_group.borrow().as_ref() {
+                negate_check.set_active(negate_group);
+            }
+            if let (Some(rows), Some(rows_box)) = (
+                self.imp().rows.borrow().as_ref().cloned(),
+                self.imp().rows_box.borrow().as_ref().cloned(),
+            ) {
+                let old_rows: Vec<RuleRow> = rows.borrow_mut().drain(..).collect();
+                for old in old_rows {
+                    rows_box.remove(&old.root);
+                }
+                let raw_weak = self
+                    .imp()
+                    .raw_query
+                    .borrow()
+                    .as_ref()
+                    .map(|r| r.downgrade())
+                    .unwrap_or_default();
+                for spec in &parsed_rules {
+                    let row = append_rule_row(
+                        &rows,
+                        &rows_box,
+                        &self.imp().next_row_id,
+                        raw_weak.clone(),
+                    );
+                    apply_rule_spec_to_row(&row, spec);
+                }
+            }
+            if let Some(raw_query) = self.imp().raw_query.borrow().as_ref() {
+                raw_query.set_text("");
+            }
+        } else if let Some(raw_query) = self.imp().raw_query.borrow().as_ref() {
+            raw_query.set_text(trimmed);
         }
     }
 
@@ -424,38 +531,40 @@ fn append_rule_row(
     rows: &Rc<RefCell<Vec<RuleRow>>>,
     rows_box: &gtk::Box,
     next_row_id: &Rc<Cell<u64>>,
-) {
+    raw_query: glib::WeakRef<gtk::Entry>,
+) -> RuleRow {
     let id = next_row_id.get();
     next_row_id.set(id.saturating_add(1));
 
+    let kind_items = [gettext("Text Field"), gettext("Status"), gettext("Date")];
     let kind = gtk::DropDown::new(
-        Some(gtk::StringList::new(&["Textfeld", "Zustand", "Datum"])),
+        Some(string_list_from_owned(&kind_items)),
         None::<&gtk::Expression>,
     );
     kind.set_selected(0);
     kind.set_width_request(110);
-    kind.set_tooltip_text(Some("Art der Suchbedingung"));
+    kind.set_tooltip_text(Some(&gettext("Condition type")));
 
     let selector = gtk::DropDown::new(None::<gtk::StringList>, None::<&gtk::Expression>);
     selector.set_width_request(150);
-    selector.set_tooltip_text(Some("Suchfeld, Zustand oder Datum auswählen"));
+    selector.set_tooltip_text(Some(&gettext("Select search field, status, or date")));
 
     let operator = gtk::DropDown::new(None::<gtk::StringList>, None::<&gtk::Expression>);
     operator.set_width_request(125);
-    operator.set_tooltip_text(Some("Vergleichsoperator auswählen"));
+    operator.set_tooltip_text(Some(&gettext("Select comparison operator")));
 
     let value = gtk::Entry::builder()
-        .placeholder_text("Suchwert")
+        .placeholder_text(gettext("Search value"))
         .hexpand(true)
         .build();
     let negate = gtk::CheckButton::builder()
-        .label("nicht")
+        .label(gettext("not"))
         .valign(gtk::Align::Center)
-        .tooltip_text("Diese Bedingung verneinen")
+        .tooltip_text(gettext("Negate this condition"))
         .build();
     let remove = gtk::Button::builder()
         .icon_name("list-remove-symbolic")
-        .tooltip_text("Bedingung entfernen")
+        .tooltip_text(gettext("Remove condition"))
         .css_classes(vec!["flat"])
         .valign(gtk::Align::Center)
         .build();
@@ -487,7 +596,13 @@ fn append_rule_row(
     let selector_for_kind = selector.downgrade();
     let operator_for_kind = operator.downgrade();
     let value_for_kind = value.downgrade();
+    let raw_for_kind = raw_query.clone();
     kind.connect_selected_notify(move |kind| {
+        if let Some(raw) = raw_for_kind.upgrade() {
+            if !raw.text().is_empty() {
+                raw.set_text("");
+            }
+        }
         let Some(selector) = selector_for_kind.upgrade() else {
             return;
         };
@@ -500,6 +615,39 @@ fn append_rule_row(
         refresh_rule_widgets(kind, &selector, &operator, &value);
     });
 
+    let raw_for_selector = raw_query.clone();
+    selector.connect_selected_notify(move |_| {
+        if let Some(raw) = raw_for_selector.upgrade() {
+            if !raw.text().is_empty() {
+                raw.set_text("");
+            }
+        }
+    });
+    let raw_for_operator = raw_query.clone();
+    operator.connect_selected_notify(move |_| {
+        if let Some(raw) = raw_for_operator.upgrade() {
+            if !raw.text().is_empty() {
+                raw.set_text("");
+            }
+        }
+    });
+    let raw_for_value = raw_query.clone();
+    value.connect_changed(move |_| {
+        if let Some(raw) = raw_for_value.upgrade() {
+            if !raw.text().is_empty() {
+                raw.set_text("");
+            }
+        }
+    });
+    let raw_for_negate = raw_query.clone();
+    negate.connect_toggled(move |_| {
+        if let Some(raw) = raw_for_negate.upgrade() {
+            if !raw.text().is_empty() {
+                raw.set_text("");
+            }
+        }
+    });
+
     let rows_for_remove = Rc::downgrade(rows);
     let rows_box_for_remove = rows_box.downgrade();
     let kind_for_remove = kind.downgrade();
@@ -507,7 +655,13 @@ fn append_rule_row(
     let operator_for_remove = operator.downgrade();
     let value_for_remove = value.downgrade();
     let negate_for_remove = negate.downgrade();
+    let raw_for_remove = raw_query;
     remove.connect_clicked(move |_| {
+        if let Some(raw) = raw_for_remove.upgrade() {
+            if !raw.text().is_empty() {
+                raw.set_text("");
+            }
+        }
         let Some(rows) = rows_for_remove.upgrade() else {
             return;
         };
@@ -553,6 +707,66 @@ fn append_rule_row(
             }
         }
     });
+
+    row
+}
+
+fn apply_rule_spec_to_row(row: &RuleRow, spec: &RuleSpec) {
+    match spec {
+        RuleSpec::Text {
+            field,
+            matcher,
+            value,
+            negated,
+        } => {
+            row.kind.set_selected(0);
+            refresh_rule_row(row);
+            row.selector.set_selected(match field {
+                TextField::Subject => 0,
+                TextField::From => 1,
+                TextField::Recipients => 2,
+                TextField::Body => 3,
+                TextField::Any => 4,
+            });
+            row.operator.set_selected(match matcher {
+                TextMatcher::Contains => 0,
+                TextMatcher::Exact => 1,
+                TextMatcher::StartsWith => 2,
+                TextMatcher::EndsWith => 3,
+            });
+            row.value.set_text(value);
+            row.negate.set_active(*negated);
+        }
+        RuleSpec::State { state, negated } => {
+            row.kind.set_selected(1);
+            refresh_rule_row(row);
+            row.selector.set_selected(match state {
+                SearchState::Unread => 0,
+                SearchState::Flagged => 1,
+                SearchState::Important => 2,
+                SearchState::Attachment => 3,
+            });
+            row.operator.set_selected(0);
+            row.value.set_text("");
+            row.negate.set_active(*negated);
+        }
+        RuleSpec::Date {
+            operator,
+            value,
+            negated,
+        } => {
+            row.kind.set_selected(2);
+            refresh_rule_row(row);
+            row.selector.set_selected(0);
+            row.operator.set_selected(match operator {
+                DateOperator::Before => 0,
+                DateOperator::After => 1,
+                DateOperator::On => 2,
+            });
+            row.value.set_text(value);
+            row.negate.set_active(*negated);
+        }
+    }
 }
 
 fn refresh_rule_row(row: &RuleRow) {
@@ -567,35 +781,37 @@ fn refresh_rule_widgets(
 ) {
     match rule_kind_from_index(kind.selected()) {
         RuleKind::Text => {
-            let fields = gtk::StringList::new(TEXT_FIELD_LABELS);
-            let operators = gtk::StringList::new(TEXT_OPERATOR_LABELS);
+            let fields = string_list_from_owned(&text_field_labels());
+            let operators = string_list_from_owned(&text_operator_labels());
             selector.set_model(Some(&fields));
             operator.set_model(Some(&operators));
             selector.set_selected(0);
             operator.set_selected(0);
             value.set_sensitive(true);
-            value.set_placeholder_text(Some("Suchwert"));
+            value.set_placeholder_text(Some(&gettext("Search value")));
         }
         RuleKind::State => {
-            let states = gtk::StringList::new(STATE_LABELS);
-            let operators = gtk::StringList::new(&["ist"]);
+            let states = string_list_from_owned(&state_labels());
+            let is_ops = [gettext("is")];
+            let operators = string_list_from_owned(&is_ops);
             selector.set_model(Some(&states));
             operator.set_model(Some(&operators));
             selector.set_selected(0);
             operator.set_selected(0);
             value.set_text("");
             value.set_sensitive(false);
-            value.set_placeholder_text(Some("Kein Wert erforderlich"));
+            value.set_placeholder_text(Some(&gettext("No value required")));
         }
         RuleKind::Date => {
-            let date = gtk::StringList::new(&["Nachrichtendatum"]);
-            let operators = gtk::StringList::new(DATE_OPERATOR_LABELS);
+            let date_fields = [gettext("Message Date")];
+            let date = string_list_from_owned(&date_fields);
+            let operators = string_list_from_owned(&date_operator_labels());
             selector.set_model(Some(&date));
             operator.set_model(Some(&operators));
             selector.set_selected(0);
             operator.set_selected(0);
             value.set_sensitive(true);
-            value.set_placeholder_text(Some("YYYY-MM-DD, heute oder 7d"));
+            value.set_placeholder_text(Some(&gettext("YYYY-MM-DD, today, or 7d")));
         }
     }
 }
@@ -667,7 +883,7 @@ fn date_operator_from_index(index: u32) -> DateOperator {
 
 fn build_query(group: GroupKind, negate_group: bool, rules: &[RuleSpec]) -> Result<String, String> {
     if rules.is_empty() {
-        return Err("Mindestens eine Suchbedingung ist erforderlich".to_string());
+        return Err(gettext("At least one search condition is required"));
     }
 
     let expressions = rules
@@ -733,13 +949,13 @@ fn negate_expression(expression: String, negated: bool) -> String {
 fn quote_query_value(value: &str) -> Result<String, String> {
     let value = value.trim();
     if value.is_empty() {
-        return Err("Diese Bedingung benötigt einen Suchwert".to_string());
+        return Err(gettext("This condition requires a search value"));
     }
     if value
         .chars()
         .any(|character| matches!(character, '\r' | '\n'))
     {
-        return Err("Suchwerte dürfen keine Zeilenumbrüche enthalten".to_string());
+        return Err(gettext("Search values cannot contain line breaks"));
     }
     Ok(format!(
         "\"{}\"",
@@ -750,14 +966,256 @@ fn quote_query_value(value: &str) -> Result<String, String> {
 fn validate_query(query: &str) -> Result<(), String> {
     let query = query.trim();
     if query.is_empty() {
-        return Err("Die Suchabfrage darf nicht leer sein".to_string());
+        return Err(gettext("Search query cannot be empty"));
     }
     let parsed = parse_mail_query(query, MailSearchFieldScope::Any)
-        .map_err(|error| format!("Ungültige Suchabfrage: {error}"))?;
+        .map_err(|error| format!("{}: {error}", gettext("Invalid search query")))?;
     if parsed.is_none() {
-        return Err("Die Suchabfrage darf nicht leer sein".to_string());
+        return Err(gettext("Search query cannot be empty"));
     }
     Ok(())
+}
+
+fn unwrap_prefix_parens<'a>(input: &'a str, prefix_with_open_paren: &str) -> Option<&'a str> {
+    let trimmed = input.trim();
+    if trimmed.len() <= prefix_with_open_paren.len() || !trimmed.ends_with(')') {
+        return None;
+    }
+    let head = trimmed.get(..prefix_with_open_paren.len())?;
+    if !head.eq_ignore_ascii_case(prefix_with_open_paren) {
+        return None;
+    }
+    // Verify that the opening parenthesis at `prefix_with_open_paren.len() - 1`
+    // closes at the very last byte of `trimmed`.
+    let after_open = &trimmed[prefix_with_open_paren.len()..];
+    let mut depth = 1usize;
+    let mut in_quotes = false;
+    let mut escaped = false;
+    for (byte_idx, ch) in after_open.char_indices() {
+        if in_quotes {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_quotes = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_quotes = true,
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    if byte_idx + ch.len_utf8() == after_open.len() {
+                        return Some(after_open[..byte_idx].trim());
+                    }
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_top_level_rule_tokens(input: &str) -> Option<Vec<&str>> {
+    let mut tokens = Vec::new();
+    let mut token_start: Option<usize> = None;
+    let mut in_quotes = false;
+    let mut escaped = false;
+    let mut paren_depth = 0usize;
+
+    for (idx, ch) in input.char_indices() {
+        if in_quotes {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_quotes = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => {
+                if token_start.is_none() {
+                    token_start = Some(idx);
+                }
+                in_quotes = true;
+            }
+            '(' => {
+                if token_start.is_none() {
+                    token_start = Some(idx);
+                }
+                paren_depth += 1;
+            }
+            ')' => {
+                if paren_depth == 0 {
+                    return None;
+                }
+                paren_depth -= 1;
+            }
+            c if c.is_whitespace() && paren_depth == 0 => {
+                if let Some(start) = token_start.take() {
+                    tokens.push(&input[start..idx]);
+                }
+            }
+            _ => {
+                if token_start.is_none() {
+                    token_start = Some(idx);
+                }
+            }
+        }
+    }
+
+    if in_quotes || paren_depth != 0 {
+        return None;
+    }
+    if let Some(start) = token_start {
+        tokens.push(&input[start..]);
+    }
+    if tokens.is_empty() {
+        return None;
+    }
+    Some(tokens)
+}
+
+fn unquote_query_value(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if raw.starts_with('"') {
+        if raw.len() < 2 || !raw.ends_with('"') {
+            return None;
+        }
+        let inner = &raw[1..raw.len() - 1];
+        let mut out = String::with_capacity(inner.len());
+        let mut escaped = false;
+        for ch in inner.chars() {
+            if escaped {
+                out.push(ch);
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                // Unescaped quote inside indicates multiple quoted segments
+                return None;
+            } else {
+                out.push(ch);
+            }
+        }
+        if escaped || out.trim().is_empty() {
+            return None;
+        }
+        Some(out)
+    } else {
+        if raw.chars().any(|c| c.is_whitespace() || c == '"' || c == '(' || c == ')') {
+            return None;
+        }
+        Some(raw.to_string())
+    }
+}
+
+fn parse_single_rule_spec(token: &str) -> Option<RuleSpec> {
+    let (negated, core) = if let Some(inner) = unwrap_prefix_parens(token, "not:(") {
+        (true, inner)
+    } else {
+        (false, token.trim())
+    };
+    let (lhs, rhs) = core.split_once(':')?;
+    let lhs_lower = lhs.trim().to_ascii_lowercase();
+    if lhs_lower == "is" {
+        let state_val = unquote_query_value(rhs)?.to_ascii_lowercase();
+        let state = match state_val.as_str() {
+            "unread" => SearchState::Unread,
+            "flagged" => SearchState::Flagged,
+            "important" => SearchState::Important,
+            "attachment" => SearchState::Attachment,
+            _ => return None,
+        };
+        return Some(RuleSpec::State { state, negated });
+    }
+
+    if let Some(operator) = match lhs_lower.as_str() {
+        "before" => Some(DateOperator::Before),
+        "after" => Some(DateOperator::After),
+        "on" => Some(DateOperator::On),
+        _ => None,
+    } {
+        let value = unquote_query_value(rhs)?;
+        return Some(RuleSpec::Date {
+            operator,
+            value,
+            negated,
+        });
+    }
+
+    let (field, suffix) = if let Some(rest) = lhs_lower.strip_prefix("subject") {
+        (TextField::Subject, rest)
+    } else if let Some(rest) = lhs_lower.strip_prefix("from") {
+        (TextField::From, rest)
+    } else if let Some(rest) = lhs_lower.strip_prefix("recipients") {
+        (TextField::Recipients, rest)
+    } else if let Some(rest) = lhs_lower.strip_prefix("body") {
+        (TextField::Body, rest)
+    } else if let Some(rest) = lhs_lower.strip_prefix("any") {
+        (TextField::Any, rest)
+    } else {
+        return None;
+    };
+
+    let matcher = match suffix {
+        "" | "-contains" => TextMatcher::Contains,
+        "-matches" => TextMatcher::Exact,
+        "-starts-with" => TextMatcher::StartsWith,
+        "-ends-with" => TextMatcher::EndsWith,
+        _ => return None,
+    };
+    let value = unquote_query_value(rhs)?;
+    Some(RuleSpec::Text {
+        field,
+        matcher,
+        value,
+        negated,
+    })
+}
+
+fn parse_visual_rules(query: &str) -> Option<(GroupKind, bool, Vec<RuleSpec>)> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    validate_query(trimmed).ok()?;
+
+    let (group, negate_group, body) = if let Some(not_inner) = unwrap_prefix_parens(trimmed, "not:(")
+    {
+        if let Some(and_body) = unwrap_prefix_parens(not_inner, "and:(") {
+            (GroupKind::All, true, and_body)
+        } else if let Some(or_body) = unwrap_prefix_parens(not_inner, "or:(") {
+            (GroupKind::Any, true, or_body)
+        } else {
+            (GroupKind::All, false, trimmed)
+        }
+    } else if let Some(and_body) = unwrap_prefix_parens(trimmed, "and:(") {
+        (GroupKind::All, false, and_body)
+    } else if let Some(or_body) = unwrap_prefix_parens(trimmed, "or:(") {
+        (GroupKind::Any, false, or_body)
+    } else {
+        (GroupKind::All, false, trimmed)
+    };
+
+    let tokens = split_top_level_rule_tokens(body)?;
+    let mut rules = Vec::with_capacity(tokens.len());
+    for token in tokens {
+        rules.push(parse_single_rule_spec(token)?);
+    }
+    if rules.is_empty() {
+        return None;
+    }
+    Some((group, negate_group, rules))
 }
 
 impl TextMatcher {
@@ -931,5 +1389,46 @@ mod tests {
         assert!(validate_query("unknown:value").is_err());
         assert!(validate_query("not:(or:(subject:one)").is_err());
         assert!(build_query(GroupKind::All, false, &[]).is_err());
+    }
+
+    #[test]
+    fn visual_rules_round_trip_losslessly() {
+        let rules = vec![
+            RuleSpec::Text {
+                field: TextField::From,
+                matcher: TextMatcher::Contains,
+                value: "Jan".to_string(),
+                negated: false,
+            },
+            RuleSpec::Text {
+                field: TextField::Subject,
+                matcher: TextMatcher::Contains,
+                value: r#"Q4 "Report" \ final"#.to_string(),
+                negated: true,
+            },
+            RuleSpec::State {
+                state: SearchState::Unread,
+                negated: false,
+            },
+            RuleSpec::Date {
+                operator: DateOperator::After,
+                value: "7d".to_string(),
+                negated: true,
+            },
+        ];
+        let query = build_query(GroupKind::All, false, &rules).expect("query should build");
+        let (parsed_group, parsed_negate, parsed_rules) =
+            parse_visual_rules(&query).expect("visual query should parse back into rules");
+        assert_eq!(parsed_group, GroupKind::All);
+        assert!(!parsed_negate);
+        assert_eq!(parsed_rules, rules);
+
+        let negated_or_query =
+            build_query(GroupKind::Any, true, &rules).expect("negated OR query should build");
+        let (parsed_group2, parsed_negate2, parsed_rules2) = parse_visual_rules(&negated_or_query)
+            .expect("negated OR query should parse back into rules");
+        assert_eq!(parsed_group2, GroupKind::Any);
+        assert!(parsed_negate2);
+        assert_eq!(parsed_rules2, rules);
     }
 }

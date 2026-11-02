@@ -61,8 +61,13 @@ fn main() -> ExitCode {
         .filter(|a| {
             !a.starts_with("--settings-preview")
                 && !a.starts_with("--preferences-preview")
+                && !a.starts_with("--component=")
                 && a != "--non-unique"
                 && a != "--compose"
+                && a != "--calendar"
+                && a != "--mail"
+                && a != "--contacts"
+                && a != "--tasks"
                 && a != "--preferences"
                 && a != "--account-setup"
                 && a != "--receiving"

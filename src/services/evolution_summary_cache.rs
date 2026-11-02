@@ -134,8 +134,26 @@ fn resolve_source_display_name(source_uid: &str, home: &Path) -> Option<String> 
     None
 }
 
+static DISCOVERED_MAIL_CACHES: std::sync::OnceLock<
+    std::sync::Mutex<Option<(std::time::Instant, Option<std::ffi::OsString>, Vec<MeridianAccountCache>)>>,
+> = std::sync::OnceLock::new();
+
 /// Discover all local mail cache directories containing `folders.db`.
 pub fn discover_meridian_mail_caches() -> Vec<MeridianAccountCache> {
+    let custom_env = std::env::var_os("MERIDIAN_CAMEL_CACHE_DIR");
+    let cache_cell = DISCOVERED_MAIL_CACHES.get_or_init(|| std::sync::Mutex::new(None));
+    if let Ok(guard) = cache_cell.lock() {
+        if let Some((ts, ref cached_env, ref cached_list)) = *guard {
+            if !cached_list.is_empty()
+                && *cached_env == custom_env
+                && ts.elapsed() < std::time::Duration::from_secs(5)
+                && cached_list.iter().all(|c| c.folders_db.is_file())
+            {
+                return cached_list.clone();
+            }
+        }
+    }
+
     let mut results = Vec::new();
     let home = match std::env::var_os("HOME") {
         Some(h) => PathBuf::from(h),
@@ -143,7 +161,7 @@ pub fn discover_meridian_mail_caches() -> Vec<MeridianAccountCache> {
     };
 
     let mut search_roots = Vec::new();
-    if let Some(custom) = std::env::var_os("MERIDIAN_CAMEL_CACHE_DIR") {
+    if let Some(ref custom) = custom_env {
         search_roots.push(PathBuf::from(custom));
     }
     search_roots.push(crate::services::app_cache_dir().join("camel"));
@@ -215,6 +233,12 @@ pub fn discover_meridian_mail_caches() -> Vec<MeridianAccountCache> {
         }
     }
 
+    if !results.is_empty() {
+        if let Ok(mut guard) = cache_cell.lock() {
+            *guard = Some((std::time::Instant::now(), custom_env, results.clone()));
+        }
+    }
+
     results
 }
 
@@ -240,7 +264,7 @@ pub fn find_meridian_account_cache(source_uid_hint: Option<&str>) -> Option<Meri
             }
 
             // 2. Lookup via AccountConfigStore (handles shared mailboxes & email/id aliases)
-            let profiles = crate::services::account_config_service::AccountConfigStore::default().load();
+            let profiles = crate::services::account_config_service::AccountConfigStore::default().load_cached();
             if let Some(profile) = profiles.iter().find(|p| {
                 p.id == hint_clean
                     || p.id.strip_prefix("eds:") == Some(hint_clean)
@@ -512,6 +536,7 @@ pub fn load_folders_from_sqlite(
                 if name.starts_with('.') || name.starts_with(".#") || name == "Foreign Folders" {
                     continue;
                 }
+                crate::services::camel_mail_service::remember_folder_names_in_memory([name.as_str()]);
 
                 let mut mapped_source_uid = source_uid.to_string();
                 let mut mapped_source_display_name = account_name.to_string();
