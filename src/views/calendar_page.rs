@@ -12293,14 +12293,25 @@ impl CalendarPage {
             });
         }
 
-        // Horizontal paned dividing calendar_stack (left) and tag_vpaned (right)
+        let calendar_main_column = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(0)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        calendar_stack.set_vexpand(true);
+        calendar_main_column.append(&view_toolbar_scroll);
+        calendar_main_column.append(&calendar_search_bar);
+        calendar_main_column.append(&calendar_stack);
+
+        // Horizontal paned dividing calendar_main_column (left) and tag_vpaned (right, full height up to window headerbar)
         let content_hpaned = gtk::Paned::builder()
             .orientation(gtk::Orientation::Horizontal)
             .wide_handle(false)
             .vexpand(true)
             .hexpand(true)
             .build();
-        content_hpaned.set_start_child(Some(&calendar_stack));
+        content_hpaned.set_start_child(Some(&calendar_main_column));
         content_hpaned.set_end_child(Some(&tag_vpaned));
         content_hpaned.set_resize_start_child(true);
         content_hpaned.set_resize_end_child(false);
@@ -12312,10 +12323,7 @@ impl CalendarPage {
             .content_hpaned
             .replace(Some(content_hpaned.clone()));
 
-        calendar_stack.set_vexpand(true);
         content_box.set_vexpand(true);
-        content_box.append(&view_toolbar_scroll);
-        content_box.append(&calendar_search_bar);
         content_box.append(&content_hpaned);
 
         self.refresh_calendar_views();
