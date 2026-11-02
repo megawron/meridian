@@ -204,7 +204,7 @@ mod imp {
             tracing::debug!("Main window presented");
 
             if std::env::args().any(|a| a == "--calendar" || a == "--component=calendar") {
-                window.switch_to_view("calendar");
+                window.focus_calendar_target(Some(chrono::Local::now().date_naive()), None, None);
             } else if std::env::args().any(|a| a == "--contacts" || a == "--component=contacts") {
                 window.switch_to_view("contacts");
             } else if std::env::args().any(|a| a == "--tasks" || a == "--component=tasks" || a == "--component=memos") {
@@ -742,17 +742,40 @@ impl MeridianApplication {
         window.add_toast(&adw::Toast::new(message));
     }
 
-    fn handle_external_open(&self, files: &[gio::File]) {
+    pub(crate) fn handle_external_open(&self, files: &[gio::File]) {
         let window = self.main_window();
         window.present();
 
         let mut cal_paths = Vec::new();
         let mut vcard_paths = Vec::new();
         let mut mail_paths = Vec::new();
+        let mut open_calendar_requested = false;
 
         for file in files {
             let uri = file.uri().to_string();
             let lower_uri = uri.to_ascii_lowercase();
+
+            if lower_uri == "meridian://open/calendar" {
+                open_calendar_requested = true;
+                continue;
+            }
+            if lower_uri == "meridian://open/contacts" {
+                window.switch_to_view("contacts");
+                continue;
+            }
+            if lower_uri == "meridian://open/tasks" {
+                window.switch_to_view("tasks");
+                continue;
+            }
+            if lower_uri == "meridian://open/mail" {
+                window.switch_to_view("mail");
+                continue;
+            }
+            if lower_uri == "meridian://open/compose" {
+                let dialog = crate::dialogs::ComposeDialog::new();
+                dialog.present_modal(&window);
+                continue;
+            }
 
             if lower_uri.starts_with("mailto:") {
                 let raw = uri.trim_start_matches("mailto:").trim_start_matches("MAILTO:");
@@ -768,7 +791,7 @@ impl MeridianApplication {
             }
 
             if lower_uri.starts_with("webcal://") || lower_uri.starts_with("webcals://") {
-                window.switch_to_view("calendar");
+                open_calendar_requested = true;
                 continue;
             }
 
@@ -799,14 +822,38 @@ impl MeridianApplication {
         }
 
         if !cal_paths.is_empty() {
-            window.switch_to_view("calendar");
-            let svc = crate::services::CalendarStoreService::new();
-            if let Ok(count) = svc.import_files(&cal_paths) {
-                window.refresh_calendar_page();
-                if count > 0 {
-                    window.add_toast(&adw::Toast::new(&gettext("Calendar file imported")));
+            let mut first_event = None;
+            let mut has_tasks = false;
+            for path in &cal_paths {
+                let parsed = crate::services::CalendarStoreService::parse_ical_file(path);
+                if first_event.is_none() {
+                    first_event = parsed.events.into_iter().next();
+                }
+                if !parsed.tasks.is_empty() {
+                    has_tasks = true;
                 }
             }
+            let svc = crate::services::CalendarStoreService::new();
+            let imported_count = svc.import_files(&cal_paths).unwrap_or(0);
+            if let Some(ev) = first_event {
+                let start_date = chrono::NaiveDate::parse_from_str(
+                    ev.start.get(..10).unwrap_or(&ev.start),
+                    "%Y-%m-%d",
+                )
+                .ok();
+                let uid = (!ev.uid.is_empty()).then(|| ev.uid.clone());
+                window.focus_calendar_target(start_date, uid, Some(ev));
+            } else if has_tasks && !open_calendar_requested {
+                window.switch_to_view("tasks");
+            } else {
+                window.focus_calendar_target(Some(chrono::Local::now().date_naive()), None, None);
+            }
+            window.refresh_calendar_page();
+            if imported_count > 0 {
+                window.add_toast(&adw::Toast::new(&gettext("Calendar file imported")));
+            }
+        } else if open_calendar_requested {
+            window.focus_calendar_target(Some(chrono::Local::now().date_naive()), None, None);
         }
         if !vcard_paths.is_empty() {
             window.switch_to_view("contacts");
@@ -1141,18 +1188,49 @@ pub(crate) fn ensure_desktop_file_installed() {
         let applications_dir = data_dir.join("applications");
         let desktop_path = applications_dir.join(format!("{APP_ID}.desktop"));
         let desktop_content = include_str!("../data/com.martingawron.Meridian.desktop.in");
+        let cal_desktop_path = applications_dir.join(format!("{APP_ID}.Calendar.desktop"));
+        let cal_desktop_content =
+            include_str!("../data/com.martingawron.Meridian.Calendar.desktop.in");
 
-        let needs_write = match std::fs::read_to_string(&desktop_path) {
+        let needs_main_write = match std::fs::read_to_string(&desktop_path) {
             Ok(existing) => existing != desktop_content,
             Err(_) => true,
         };
+        let needs_cal_write = match std::fs::read_to_string(&cal_desktop_path) {
+            Ok(existing) => existing != cal_desktop_content,
+            Err(_) => true,
+        };
 
-        if needs_write {
+        if needs_main_write || needs_cal_write {
             let _ = std::fs::create_dir_all(&applications_dir);
-            let _ = std::fs::write(&desktop_path, desktop_content);
+            if needs_main_write {
+                let _ = std::fs::write(&desktop_path, desktop_content);
+            }
+            if needs_cal_write {
+                let _ = std::fs::write(&cal_desktop_path, cal_desktop_content);
+            }
             let _ = std::process::Command::new("update-desktop-database")
                 .arg(&applications_dir)
                 .output();
+        }
+
+        let main_id = format!("{APP_ID}.desktop");
+        if let Some(info) = gio::AppInfo::default_for_type("text/calendar", false) {
+            if info
+                .id()
+                .is_some_and(|id| id.as_str().eq_ignore_ascii_case(&main_id))
+            {
+                let cal_id = format!("{APP_ID}.Calendar.desktop");
+                if let Some(cal_app_info) =
+                    gio::DesktopAppInfo::new(&cal_id).or_else(|| {
+                        gio::DesktopAppInfo::from_filename(&cal_desktop_path)
+                    })
+                {
+                    for mime in DEFAULT_CALENDAR_MIME_TYPES {
+                        let _ = cal_app_info.set_as_default_for_type(mime);
+                    }
+                }
+            }
         }
 
         if let Ok(exe) = std::env::current_exe() {
@@ -1176,9 +1254,11 @@ pub(crate) fn ensure_desktop_file_installed() {}
 
 pub(crate) fn is_default_app_for_mime(mime_type: &str) -> bool {
     let desktop_id = format!("{APP_ID}.desktop");
+    let cal_desktop_id = format!("{APP_ID}.Calendar.desktop");
     if let Some(info) = gio::AppInfo::default_for_type(mime_type, false) {
         if let Some(id) = info.id() {
             if id.as_str().eq_ignore_ascii_case(&desktop_id)
+                || id.as_str().eq_ignore_ascii_case(&cal_desktop_id)
                 || id.as_str().eq_ignore_ascii_case(APP_ID)
             {
                 return true;
@@ -1193,25 +1273,27 @@ pub(crate) fn is_default_app_for_mime(mime_type: &str) -> bool {
 
 pub(crate) fn set_as_default_app_for_mimes(mime_types: &[&str]) -> bool {
     ensure_desktop_file_installed();
-    let desktop_id = format!("{APP_ID}.desktop");
     let mut any_ok = false;
 
     #[cfg(unix)]
     {
-        if let Some(app_info) = gio::DesktopAppInfo::new(&desktop_id).or_else(|| {
-            let path = glib::user_data_dir()
-                .join("applications")
-                .join(&desktop_id);
-            gio::DesktopAppInfo::from_filename(&path)
-        }) {
-            for mime in mime_types {
+        for mime in mime_types {
+            let desktop_id = if DEFAULT_CALENDAR_MIME_TYPES.contains(mime) {
+                format!("{APP_ID}.Calendar.desktop")
+            } else {
+                format!("{APP_ID}.desktop")
+            };
+            if let Some(app_info) = gio::DesktopAppInfo::new(&desktop_id).or_else(|| {
+                let path = glib::user_data_dir()
+                    .join("applications")
+                    .join(&desktop_id);
+                gio::DesktopAppInfo::from_filename(&path)
+            }) {
                 if app_info.set_as_default_for_type(mime).is_ok() {
                     any_ok = true;
                 }
             }
-        }
 
-        for mime in mime_types {
             if let Ok(status) = std::process::Command::new("xdg-mime")
                 .args(["default", &desktop_id, mime])
                 .status()

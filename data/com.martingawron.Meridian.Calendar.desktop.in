@@ -1,0 +1,16 @@
+[Desktop Entry]
+Name=Meridian
+Comment=Calendar and Appointments
+Comment[de]=Kalender und Termine
+GenericName=Calendar
+GenericName[de]=Kalender
+Exec=meridian --calendar %U
+Icon=com.martingawron.Meridian
+Terminal=false
+Type=Application
+NoDisplay=true
+Categories=GNOME;GTK;Office;Calendar;
+MimeType=text/calendar;text/x-vcalendar;application/ics;x-scheme-handler/webcal;x-scheme-handler/webcals;
+StartupNotify=true
+StartupWMClass=com.martingawron.Meridian
+X-GNOME-UsesNotifications=true

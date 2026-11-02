@@ -664,9 +664,7 @@ impl MeridianWindow {
     }
 
     pub(crate) fn switch_to_view(&self, view_name: &str) {
-        if let Some(view_stack) = self.imp().view_stack.borrow().as_ref() {
-            view_stack.set_visible_child_name(view_name);
-        }
+        self.set_active_view(view_name);
     }
 
     fn tasks_page(&self) -> Option<TasksPage> {
@@ -697,13 +695,20 @@ impl MeridianWindow {
         }
     }
 
-    pub(crate) fn show_calendar_date(&self, date: chrono::NaiveDate) {
-        if let Some(view_stack) = self.imp().view_stack.borrow().as_ref() {
-            view_stack.set_visible_child_name("calendar");
-        }
+    pub(crate) fn focus_calendar_target(
+        &self,
+        target_date: Option<chrono::NaiveDate>,
+        target_uid: Option<String>,
+        fallback_event: Option<crate::services::calendar_store_service::CalendarEventRecord>,
+    ) {
+        self.set_active_view("calendar");
         if let Some(calendar_page) = self.calendar_page() {
-            calendar_page.navigate_to_date_contextual(date);
+            calendar_page.focus_calendar_target(target_date, target_uid, fallback_event);
         }
+    }
+
+    pub(crate) fn show_calendar_date(&self, date: chrono::NaiveDate) {
+        self.focus_calendar_target(Some(date), None, None);
     }
 
     fn contacts_page(&self) -> Option<ContactsPage> {

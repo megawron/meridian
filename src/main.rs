@@ -58,19 +58,37 @@ fn main() -> ExitCode {
     };
     let app = MeridianApplication::with_flags(flags);
     let filtered: Vec<String> = std::env::args()
-        .filter(|a| {
-            !a.starts_with("--settings-preview")
-                && !a.starts_with("--preferences-preview")
-                && !a.starts_with("--component=")
-                && a != "--non-unique"
-                && a != "--compose"
-                && a != "--calendar"
-                && a != "--mail"
-                && a != "--contacts"
-                && a != "--tasks"
-                && a != "--preferences"
-                && a != "--account-setup"
-                && a != "--receiving"
+        .enumerate()
+        .filter_map(|(idx, a)| {
+            if idx == 0 {
+                return Some(a);
+            }
+            if a == "--calendar" || a == "--component=calendar" {
+                return Some("meridian://open/calendar".to_string());
+            }
+            if a == "--contacts" || a == "--component=contacts" {
+                return Some("meridian://open/contacts".to_string());
+            }
+            if a == "--tasks" || a == "--component=tasks" || a == "--component=memos" {
+                return Some("meridian://open/tasks".to_string());
+            }
+            if a == "--mail" || a == "--component=mail" {
+                return Some("meridian://open/mail".to_string());
+            }
+            if a == "--compose" {
+                return Some("meridian://open/compose".to_string());
+            }
+            if a.starts_with("--settings-preview")
+                || a.starts_with("--preferences-preview")
+                || a.starts_with("--component=")
+                || a == "--non-unique"
+                || a == "--preferences"
+                || a == "--account-setup"
+                || a == "--receiving"
+            {
+                return None;
+            }
+            Some(a)
         })
         .collect();
     app.run_with_args(&filtered)

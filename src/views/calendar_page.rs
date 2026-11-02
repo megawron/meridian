@@ -1829,6 +1829,8 @@ mod imp {
         pub(crate) time_grid_center_ratio_cleanup_source: RefCell<Option<glib::SourceId>>,
         pub(crate) active_quick_add_popover: RefCell<Option<gtk::Popover>>,
         pub(crate) active_sidebar_hover_popover: RefCell<Option<gtk::Popover>>,
+        pub(crate) pending_focus_target:
+            RefCell<Option<(Option<NaiveDate>, Option<String>, Option<CalendarEventRecord>)>>,
     }
 
     impl Default for CalendarPage {
@@ -2055,6 +2057,7 @@ mod imp {
                 time_grid_center_ratio_cleanup_source: RefCell::new(None),
                 active_quick_add_popover: RefCell::new(None),
                 active_sidebar_hover_popover: RefCell::new(None),
+                pending_focus_target: RefCell::new(None),
             }
         }
     }
@@ -4550,6 +4553,13 @@ impl CalendarPage {
             if let Some(event) =
                 unique_event_for_legacy_identity(&records.borrow(), source_uid, uid)
             {
+                let target_date = record_display_range(&event)
+                    .or_else(|| event_display_range(&event))
+                    .map(|r| r.start);
+                if let Some(date) = target_date {
+                    self.navigate_to_date_contextual(date);
+                }
+                self.select_and_inspect_event(&event, target_date);
                 open_event_editor_for_widget(self, &event);
                 return true;
             }
@@ -4561,6 +4571,104 @@ impl CalendarPage {
             return true;
         }
         false
+    }
+
+    pub fn focus_calendar_target(
+        &self,
+        target_date: Option<NaiveDate>,
+        target_uid: Option<String>,
+        fallback_event: Option<CalendarEventRecord>,
+    ) {
+        if let Some(ref ev) = fallback_event {
+            if let Some(records) = self.imp().event_records.borrow().as_ref().cloned() {
+                let exists = records.borrow().iter().any(|existing| existing.uid == ev.uid);
+                if !exists {
+                    records.borrow_mut().push(ev.clone());
+                    self.rebuild_calendar_index_from_records();
+                    self.bump_calendar_revision();
+                }
+            }
+        }
+        self.imp()
+            .pending_focus_target
+            .replace(Some((target_date, target_uid, fallback_event)));
+        let nav_date = target_date.unwrap_or_else(|| Local::now().date_naive());
+        self.navigate_to_date_contextual(nav_date);
+        self.apply_pending_focus_target();
+    }
+
+    pub(crate) fn apply_pending_focus_target(&self) {
+        let Some((target_date, target_uid, fallback_event)) =
+            self.imp().pending_focus_target.borrow().clone()
+        else {
+            return;
+        };
+
+        if let Some(uid) = target_uid.as_deref().filter(|u| !u.is_empty()) {
+            let loaded_event = self
+                .loaded_calendar_events()
+                .into_iter()
+                .find(|ev| ev.uid == uid)
+                .or(fallback_event);
+            if let Some(event) = loaded_event {
+                let event_date = target_date
+                    .or_else(|| {
+                        record_display_range(&event)
+                            .or_else(|| event_display_range(&event))
+                            .map(|r| r.start)
+                    })
+                    .unwrap_or_else(|| Local::now().date_naive());
+                self.navigate_to_date_contextual(event_date);
+                self.select_and_inspect_event(&event, Some(event_date));
+                self.refresh_calendar_views();
+                if !self.imp().calendar_loading.get() {
+                    self.imp().pending_focus_target.replace(None);
+                }
+            }
+            return;
+        }
+
+        let date = target_date.unwrap_or_else(|| Local::now().date_naive());
+        self.navigate_to_date_contextual(date);
+
+        let now_min = (Local::now().hour() * 60 + Local::now().minute()) as u32;
+        let today_events = self
+            .events_by_date(CalendarDateRange::single(date))
+            .remove(&date)
+            .unwrap_or_default();
+
+        let chosen_today = today_events
+            .iter()
+            .filter(|ev| !ev.all_day)
+            .filter_map(|ev| {
+                let (s, e, _) = event_occurrence_times_for_date(ev, date, 30);
+                (e >= now_min).then_some(((s, e), ev.clone()))
+            })
+            .min_by_key(|(times, _)| *times)
+            .map(|(_, ev)| (date, ev))
+            .or_else(|| {
+                today_events
+                    .iter()
+                    .find(|ev| ev.all_day)
+                    .cloned()
+                    .map(|ev| (date, ev))
+            })
+            .or_else(|| today_events.last().cloned().map(|ev| (date, ev)));
+
+        let chosen = chosen_today.or_else(|| {
+            let lookahead = CalendarDateRange::from_days(date, 14);
+            self.events_by_date(lookahead)
+                .into_iter()
+                .find_map(|(d, mut evs)| (!evs.is_empty()).then(|| (d, evs.remove(0))))
+        });
+
+        if let Some((inspected_date, event)) = chosen {
+            self.select_and_inspect_event(&event, Some(inspected_date));
+            self.refresh_calendar_views();
+        }
+        if !self.imp().calendar_loading.get() {
+            self.imp().pending_focus_target.replace(None);
+        }
     }
 
     pub(crate) fn open_task_by_uid(&self, source_uid: &str, uid: &str) -> bool {
@@ -5065,6 +5173,7 @@ impl CalendarPage {
         self.refresh_calendar_category_model();
         self.refresh_calendar_views();
         self.refresh_event_list_visibility();
+        self.apply_pending_focus_target();
     }
 
     fn finish_calendar_snapshot_load(

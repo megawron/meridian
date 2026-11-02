@@ -9,11 +9,30 @@ use std::path::{Path, PathBuf};
 /// Previews a file or URI using GNOME Sushi via D-Bus (`org.gnome.NautilusPreviewer2.ShowFile`),
 /// falling back to the system's default application (`gio::AppInfo::launch_default_for_uri`).
 pub fn preview_file_or_uri(path_or_uri: &str, window_handle: Option<&str>) -> Result<(), String> {
-    let uri = if path_or_uri.starts_with("file://") || path_or_uri.contains("://") {
-        path_or_uri.to_string()
+    let file = if path_or_uri.starts_with("file://") || path_or_uri.contains("://") {
+        gio::File::for_uri(path_or_uri)
     } else {
-        gio::File::for_path(path_or_uri).uri().to_string()
+        gio::File::for_path(path_or_uri)
     };
+    if let Some(path) = file.path() {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if matches!(
+            ext.as_str(),
+            "ics" | "ical" | "ifb" | "vcs" | "vcf" | "vcard"
+        ) {
+            if let Some(app) = gio::Application::default()
+                .and_downcast::<crate::application::MeridianApplication>()
+            {
+                app.handle_external_open(&[file]);
+                return Ok(());
+            }
+        }
+    }
+    let uri = file.uri().to_string();
 
     // Attempt native GNOME Sushi Quick Look via D-Bus session
     let sushi_res = (|| -> Result<(), Box<dyn std::error::Error>> {

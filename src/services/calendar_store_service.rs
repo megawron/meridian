@@ -516,10 +516,28 @@ impl CalendarStoreService {
         self.writable
     }
 
+    pub fn parse_ical_file(path: &Path) -> CalendarSnapshot {
+        let mut snapshot = CalendarSnapshot::default();
+        if let Ok(raw) = fs::read_to_string(path) {
+            parse_ical(&raw, path, "local-calendar", "Lokaler Kalender", &mut snapshot);
+            sort_snapshot(&mut snapshot);
+        }
+        snapshot
+    }
+
     /// Copy user-selected iCalendar files into the configured local source.
     /// Existing files are never replaced, so repeating an import is safe.
     pub fn import_files(&self, files: &[PathBuf]) -> io::Result<usize> {
         fs::create_dir_all(&self.calendar_dir)?;
+        let existing_snapshot = self.load_snapshot();
+        let mut existing_uids: std::collections::HashSet<String> = existing_snapshot
+            .events
+            .iter()
+            .map(|e| e.uid.clone())
+            .chain(existing_snapshot.tasks.iter().map(|t| t.uid.clone()))
+            .chain(existing_snapshot.memos.iter().map(|m| m.uid.clone()))
+            .filter(|uid| !uid.is_empty())
+            .collect();
         let mut imported = 0;
         for source in files {
             if !source.is_file()
@@ -527,9 +545,24 @@ impl CalendarStoreService {
                     .extension()
                     .and_then(|extension| extension.to_str())
                     .is_some_and(|extension| {
-                        matches!(extension.to_ascii_lowercase().as_str(), "ics" | "vcs")
+                        matches!(
+                            extension.to_ascii_lowercase().as_str(),
+                            "ics" | "ical" | "ifb" | "vcs"
+                        )
                     })
             {
+                continue;
+            }
+            let parsed = Self::parse_ical_file(source);
+            let file_uids: Vec<String> = parsed
+                .events
+                .iter()
+                .map(|e| e.uid.clone())
+                .chain(parsed.tasks.iter().map(|t| t.uid.clone()))
+                .chain(parsed.memos.iter().map(|m| m.uid.clone()))
+                .filter(|uid| !uid.is_empty())
+                .collect();
+            if !file_uids.is_empty() && file_uids.iter().all(|uid| existing_uids.contains(uid)) {
                 continue;
             }
             let Some(file_name) = source.file_name().and_then(|name| name.to_str()) else {
@@ -537,6 +570,7 @@ impl CalendarStoreService {
             };
             let destination = unique_destination(&self.calendar_dir, file_name);
             fs::copy(source, destination)?;
+            existing_uids.extend(file_uids);
             imported += 1;
         }
         Ok(imported)

@@ -15843,6 +15843,9 @@ impl MailPage {
                     backend: "message from account to local import",
                 });
             }
+            if message.folder_id().eq_ignore_ascii_case(destination_folder) {
+                return Ok(false);
+            }
             MailCommand::move_local(
                 message.id(),
                 message.folder_id(),
@@ -15860,6 +15863,11 @@ impl MailPage {
                     operation: crate::services::mail_operations_service::MailOperationKind::Move,
                     backend: "different account",
                 });
+            }
+            if location.folder_name == destination_folder
+                || message.folder_id().eq_ignore_ascii_case(destination_folder)
+            {
+                return Ok(false);
             }
             MailCommand::move_to(message.id(), location, destination_folder.to_string())
         };
@@ -15889,7 +15897,7 @@ impl MailPage {
                 });
             }
             if message.folder_id().eq_ignore_ascii_case(destination_folder) {
-                return Ok(true);
+                return Ok(false);
             }
             MailCommand::copy_local(message.id(), destination_folder.to_string())
         } else {
@@ -17478,18 +17486,19 @@ impl MailPage {
                 row.remove_css_class("drop-after");
                 row.remove_css_class("drop-into");
 
+                let internal_drag_dir = std::env::temp_dir().join("meridian-drag");
                 let mut dropped_files = Vec::new();
                 if let Ok(file_list) = value.get::<gtk::gdk::FileList>() {
                     for file in file_list.files() {
                         if let Some(path) = file.path() {
-                            if path.is_file() {
+                            if path.is_file() && !path.starts_with(&internal_drag_dir) {
                                 dropped_files.push(path);
                             }
                         }
                     }
                 } else if let Ok(file) = value.get::<gio::File>() {
                     if let Some(path) = file.path() {
-                        if path.is_file() {
+                        if path.is_file() && !path.starts_with(&internal_drag_dir) {
                             dropped_files.push(path);
                         }
                     }
@@ -17503,7 +17512,7 @@ impl MailPage {
                             if !line.is_empty() {
                                 let f = gio::File::for_uri(line);
                                 if let Some(p) = f.path() {
-                                    if p.is_file() {
+                                    if p.is_file() && !p.starts_with(&internal_drag_dir) {
                                         dropped_files.push(p);
                                     }
                                 }
@@ -29539,15 +29548,16 @@ impl MailPage {
                     }
                 }
             };
-            if let Some(idx) = hit_idx {
-                page.imp().last_selected_mail_index.set(Some(idx as u32));
-                if !thread_sel_for_canvas_drag.is_selected(idx as u32) {
-                    page.imp().mail_selection_anchor.set(Some(idx as u32));
-                    page.imp().is_mouse_selecting.set(true);
-                    thread_sel_for_canvas_drag.select_item(idx as u32, true);
-                    page.imp().is_mouse_selecting.set(false);
-                    canvas_for_drag.queue_draw();
-                }
+            let Some(idx) = hit_idx else {
+                return None;
+            };
+            page.imp().last_selected_mail_index.set(Some(idx as u32));
+            if !thread_sel_for_canvas_drag.is_selected(idx as u32) {
+                page.imp().mail_selection_anchor.set(Some(idx as u32));
+                page.imp().is_mouse_selecting.set(true);
+                thread_sel_for_canvas_drag.select_item(idx as u32, true);
+                page.imp().is_mouse_selecting.set(false);
+                canvas_for_drag.queue_draw();
             }
             let msgs = page.selected_messages();
             if msgs.is_empty() {
@@ -29563,30 +29573,48 @@ impl MailPage {
 
         let canvas_drop_target = gtk::DropTarget::new(
             glib::Type::INVALID,
-            gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE,
+            gtk::gdk::DragAction::COPY,
         );
         canvas_drop_target.set_types(&[
             gtk::gdk::FileList::static_type(),
             gio::File::static_type(),
             glib::Type::STRING,
         ]);
+        canvas_drop_target.connect_enter(|target, _, _| {
+            if target.current_drop().is_some_and(|d| d.drag().is_some()) {
+                gtk::gdk::DragAction::empty()
+            } else {
+                gtk::gdk::DragAction::COPY
+            }
+        });
+        canvas_drop_target.connect_motion(|target, _, _| {
+            if target.current_drop().is_some_and(|d| d.drag().is_some()) {
+                gtk::gdk::DragAction::empty()
+            } else {
+                gtk::gdk::DragAction::COPY
+            }
+        });
         let page_for_canvas_drop = self.downgrade();
-        canvas_drop_target.connect_drop(move |_, value, _, _| {
+        canvas_drop_target.connect_drop(move |target, value, _, _| {
+            if target.current_drop().is_some_and(|d| d.drag().is_some()) {
+                return false;
+            }
             let Some(page) = page_for_canvas_drop.upgrade() else {
                 return false;
             };
+            let internal_drag_dir = std::env::temp_dir().join("meridian-drag");
             let mut dropped_files = Vec::new();
             if let Ok(file_list) = value.get::<gtk::gdk::FileList>() {
                 for file in file_list.files() {
                     if let Some(path) = file.path() {
-                        if path.is_file() {
+                        if path.is_file() && !path.starts_with(&internal_drag_dir) {
                             dropped_files.push(path);
                         }
                     }
                 }
             } else if let Ok(file) = value.get::<gio::File>() {
                 if let Some(path) = file.path() {
-                    if path.is_file() {
+                    if path.is_file() && !path.starts_with(&internal_drag_dir) {
                         dropped_files.push(path);
                     }
                 }
@@ -29597,7 +29625,7 @@ impl MailPage {
                         if !line.is_empty() {
                             let f = gio::File::for_uri(line);
                             if let Some(p) = f.path() {
-                                if p.is_file() {
+                                if p.is_file() && !p.starts_with(&internal_drag_dir) {
                                     dropped_files.push(p);
                                 }
                             }
@@ -33991,6 +34019,22 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
         let temp_path = temp_dir.join(&fname_open);
         if fs::write(&temp_path, cont_open.as_ref()).is_ok() {
             let uri = format!("file://{}", temp_path.to_string_lossy());
+            let ext = temp_path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if matches!(
+                ext.as_str(),
+                "ics" | "ical" | "ifb" | "vcs" | "vcf" | "vcard"
+            ) {
+                if let Some(app) = gio::Application::default()
+                    .and_downcast::<crate::application::MeridianApplication>()
+                {
+                    app.handle_external_open(&[gio::File::for_path(&temp_path)]);
+                    return;
+                }
+            }
             let _ = gio::AppInfo::launch_default_for_uri(
                 &uri,
                 None::<&gio::AppLaunchContext>,
@@ -39199,16 +39243,25 @@ impl MailPage {
             .build();
         let page_for_cal = page_weak.clone();
         let popover_weak_cal = popover.downgrade();
-        let ev_target_day = start_dt.map(|dt| dt.date());
+        let ev_target_day = start_dt.map(|dt| dt.date()).or_else(|| {
+            chrono::NaiveDate::parse_from_str(
+                event.start.get(..10).unwrap_or(&event.start),
+                "%Y-%m-%d",
+            )
+            .ok()
+        });
+        let ev_for_cal = event.clone();
         cal_btn.connect_clicked(move |_| {
             if let Some(pop) = popover_weak_cal.upgrade() {
                 pop.popdown();
             }
             if let Some(page) = page_for_cal.upgrade() {
-                if let Some(target) = ev_target_day {
-                    if let Some(root) = page.root().and_downcast::<crate::window::MeridianWindow>() {
-                        root.show_calendar_date(target);
-                    }
+                if let Some(root) = page.root().and_downcast::<crate::window::MeridianWindow>() {
+                    root.focus_calendar_target(
+                        ev_target_day,
+                        (!ev_for_cal.uid.is_empty()).then(|| ev_for_cal.uid.clone()),
+                        Some(ev_for_cal.clone()),
+                    );
                 }
             }
         });

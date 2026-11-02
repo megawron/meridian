@@ -590,6 +590,7 @@ impl ComposeDialog {
         if let Some(entry) = dialog.imp().entry_to.borrow().as_ref() {
             entry.set_text(recipient.trim());
         }
+        dialog.mark_saved();
         dialog
     }
 
@@ -654,6 +655,7 @@ impl ComposeDialog {
                 style,
             ));
         }
+        dialog.mark_saved();
         dialog
     }
 
@@ -743,6 +745,7 @@ impl ComposeDialog {
             editor.set_html(&signature_prefix_html());
         }
         dialog.add_attachment(attachment);
+        dialog.mark_saved();
         Ok(dialog)
     }
 
@@ -780,6 +783,7 @@ impl ComposeDialog {
         for attachment in attachments {
             dialog.add_attachment(attachment);
         }
+        dialog.mark_saved();
         dialog
     }
 
@@ -797,6 +801,7 @@ impl ComposeDialog {
             "message/rfc822",
             raw_message,
         )?);
+        dialog.mark_saved();
         Ok(dialog)
     }
 
@@ -824,6 +829,7 @@ impl ComposeDialog {
             "message/rfc822",
             raw_message,
         )?);
+        dialog.mark_saved();
         Ok(dialog)
     }
 
@@ -851,6 +857,7 @@ impl ComposeDialog {
                 quote_style,
             ));
         }
+        dialog.mark_saved();
         dialog
     }
 
@@ -911,6 +918,7 @@ impl ComposeDialog {
             dialog.set_row_cc_visible(true);
         }
         dialog.set_title(&format!("Allen antworten: {subject}"));
+        dialog.mark_saved();
         dialog
     }
 
@@ -3522,9 +3530,11 @@ impl ComposeDialog {
                     };
                     source_model_for_load.splice(0, source_model_for_load.n_items(), &[message]);
                 }
+                let prev_suppress = dialog.imp().suppress_dirty_tracking.replace(true);
                 dialog.imp().suppress_from_notify.set(false);
                 dialog.update_sender_dependent_controls(combo_from_for_load.selected());
                 dialog.sync_signature_for_selected_account();
+                dialog.imp().suppress_dirty_tracking.set(prev_suppress);
             } else if names.is_empty() {
                 let message = if discovery.origin == EdsSourceOrigin::Empty {
                     "Mailkonten sind nicht erreichbar"
@@ -5327,6 +5337,9 @@ impl ComposeDialog {
         if self.imp().operation.get() != ComposeOperation::Idle
             || self.imp().autosave_in_progress.get()
         {
+            return;
+        }
+        if !self.is_dirty() && !self.imp().local_draft_persisted.get() {
             return;
         }
         self.imp().autosave_in_progress.set(true);
@@ -10892,6 +10905,73 @@ mod tests {
         assert_eq!(toolbar.margin_end(), 16);
 
         dialog.close();
+        while context.iteration(false) {}
+    }
+
+    #[test]
+    fn test_reply_and_forward_not_dirty_until_user_edits() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let reply_dialog = ComposeDialog::reply_to_message(
+            "Alice <alice@example.com>",
+            "",
+            "Hello World",
+            "<p>Original body</p>",
+        );
+        while context.iteration(false) {}
+        assert!(
+            !reply_dialog.is_dirty(),
+            "Freshly opened reply dialog must not be dirty before user types"
+        );
+        assert_eq!(
+            close_request_decision(reply_dialog.is_dirty(), reply_dialog.imp().operation.get()),
+            CloseRequestDecision::Allow
+        );
+
+        let reply_all_dialog = ComposeDialog::reply_all_message(
+            "Alice <alice@example.com>",
+            "",
+            "Bob <bob@example.com>",
+            "Carol <carol@example.com>",
+            "Hello World",
+            "<p>Original body</p>",
+        );
+        while context.iteration(false) {}
+        assert!(
+            !reply_all_dialog.is_dirty(),
+            "Freshly opened reply-all dialog must not be dirty before user types"
+        );
+
+        let forward_dialog = ComposeDialog::forward_message(
+            "Hello World",
+            "Alice <alice@example.com>",
+            "Bob <bob@example.com>",
+            "",
+            "2026-11-02",
+            "<p>Original body</p>",
+        );
+        while context.iteration(false) {}
+        assert!(
+            !forward_dialog.is_dirty(),
+            "Freshly opened forward dialog must not be dirty before user types"
+        );
+
+        // Once the user edits a field or types in the editor, it becomes dirty
+        if let Some(entry) = reply_dialog.imp().entry_subject.borrow().as_ref() {
+            entry.set_text("Re: Hello World (edited)");
+        }
+        assert!(reply_dialog.is_dirty());
+        assert_eq!(
+            close_request_decision(reply_dialog.is_dirty(), reply_dialog.imp().operation.get()),
+            CloseRequestDecision::SaveAndClose
+        );
+
+        reply_dialog.close();
+        reply_all_dialog.close();
+        forward_dialog.close();
         while context.iteration(false) {}
     }
 }
