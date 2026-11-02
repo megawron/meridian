@@ -1550,8 +1550,8 @@ impl HtmlEditor {
             } else {
                 tb.set_margin_start(16);
                 tb.set_margin_end(8);
-                tb.set_margin_top(0);
-                tb.set_margin_bottom(10);
+                tb.set_margin_top(6);
+                tb.set_margin_bottom(6);
             }
         }
         if let Some(ts) = self.imp().toolbar_scroll.borrow().as_ref() {
@@ -1588,8 +1588,8 @@ impl HtmlEditor {
             } else {
                 ms.set_margin_start(8);
                 ms.set_margin_end(16);
-                ms.set_margin_top(0);
-                ms.set_margin_bottom(10);
+                ms.set_margin_top(6);
+                ms.set_margin_bottom(6);
             }
         }
     }
@@ -1638,8 +1638,8 @@ impl HtmlEditor {
             .spacing(4)
             .margin_start(16)
             .margin_end(8)
-            .margin_top(0)
-            .margin_bottom(10)
+            .margin_top(6)
+            .margin_bottom(6)
             .css_classes(vec!["composer-format-toolbar"])
             .build();
 
@@ -1844,7 +1844,8 @@ impl HtmlEditor {
             .valign(gtk::Align::Center)
             .margin_start(8)
             .margin_end(16)
-            .margin_bottom(10)
+            .margin_top(6)
+            .margin_bottom(6)
             .visible(false)
             .build();
 
