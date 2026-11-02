@@ -10077,6 +10077,12 @@ impl MailPage {
                             canvas.queue_draw();
                         }
                         if key == "mail-show-avatar" {
+                            let show_av = AppSettings::try_new()
+                                .map(|s| s.mail_show_avatar())
+                                .unwrap_or(true);
+                            page.set_mail_show_table_avatar(show_av);
+                            page.refresh_sender_avatars();
+                            page.rebuild_mail_column_layout();
                             let selected = page.selected_message();
                             page.refresh_normal_headers_for_message(selected.as_ref());
                         }
@@ -18271,11 +18277,13 @@ impl MailPage {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_width(false)
+            .propagate_natural_height(false)
             .min_content_height(40)
             .child(&sidebar_box)
             .build();
         let sidebar_content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
+            .vexpand(true)
             .css_classes(vec!["meridian-sidebar-drawer"])
             .build();
         sidebar_scroll.set_vexpand(true);
@@ -36502,10 +36510,10 @@ impl MailPage {
         detach_widget_from_parent(&memos_box);
         detach_widget_from_parent(&todo_inner_vpaned);
 
-        todo_vpaned.set_shrink_start_child(false);
-        todo_vpaned.set_shrink_end_child(false);
-        todo_inner_vpaned.set_shrink_start_child(false);
-        todo_inner_vpaned.set_shrink_end_child(false);
+        todo_vpaned.set_shrink_start_child(true);
+        todo_vpaned.set_shrink_end_child(true);
+        todo_inner_vpaned.set_shrink_start_child(true);
+        todo_inner_vpaned.set_shrink_end_child(true);
 
         let compute_compact_box_height = |w: &gtk::Widget, avail_h: i32| -> Option<i32> {
             let max_auto = if avail_h > 320 {
@@ -36588,7 +36596,7 @@ impl MailPage {
                         let pos = if total_h > 220 {
                             (total_h - bh).clamp(110, (total_h - 76).max(110))
                         } else {
-                            520
+                            160
                         };
                         paned.set_position(pos);
                     } else if let Some(th) = top_desired_opt {

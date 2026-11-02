@@ -3541,10 +3541,10 @@ impl CalendarPage {
         detach_widget_from_parent(&memopad_section_box);
         detach_widget_from_parent(&tag_inner_vpaned);
 
-        tag_vpaned.set_shrink_start_child(false);
-        tag_vpaned.set_shrink_end_child(false);
-        tag_inner_vpaned.set_shrink_start_child(false);
-        tag_inner_vpaned.set_shrink_end_child(false);
+        tag_vpaned.set_shrink_start_child(true);
+        tag_vpaned.set_shrink_end_child(true);
+        tag_inner_vpaned.set_shrink_start_child(true);
+        tag_inner_vpaned.set_shrink_end_child(true);
 
         let compute_compact_box_height = |w: &gtk::Widget, avail_h: i32| -> Option<i32> {
             let max_auto = if avail_h > 320 {
@@ -3644,7 +3644,7 @@ impl CalendarPage {
                         let pos = if total_h > 220 {
                             (total_h - bh).clamp(108, (total_h - 76).max(108))
                         } else {
-                            480
+                            160
                         };
                         paned.set_position(pos);
                     } else if let Some(th) = top_desired_opt {
@@ -6981,6 +6981,7 @@ impl CalendarPage {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_width(false)
+            .propagate_natural_height(false)
             .min_content_height(40)
             .child(&sidebar_sources_box)
             .vexpand(true)
@@ -7007,6 +7008,7 @@ impl CalendarPage {
 
         let sidebar_outer_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
+            .vexpand(true)
             .css_classes(vec!["meridian-sidebar-drawer"])
             .build();
         sidebar_outer_box.append(&drawer_header);
