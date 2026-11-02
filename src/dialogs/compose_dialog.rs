@@ -242,6 +242,7 @@ mod imp {
         pub saved_revision: Cell<u64>,
         pub backend_draft_saved: Cell<bool>,
         pub user_typed_in_editor: Cell<bool>,
+        pub focus_editor_on_open: Cell<bool>,
         pub suppress_dirty_tracking: Cell<bool>,
         pub suppress_setting_persistence: Cell<bool>,
         pub suppress_from_notify: Cell<bool>,
@@ -359,7 +360,19 @@ impl ComposeDialog {
         if let Some(btn) = self.imp().btn_open_in_new_window.borrow().as_ref() {
             btn.set_visible(true);
         }
+        if self.imp().focus_editor_on_open.get() {
+            self.apply_reply_focus();
+        }
         adw::prelude::AdwDialogExt::present(self, Some(parent));
+        if self.imp().focus_editor_on_open.get() {
+            self.apply_reply_focus();
+            let dialog_weak = self.downgrade();
+            glib::idle_add_local_once(move || {
+                if let Some(dialog) = dialog_weak.upgrade() {
+                    dialog.apply_reply_focus();
+                }
+            });
+        }
     }
 
     pub fn is_modal(&self) -> bool {
@@ -371,8 +384,43 @@ impl ComposeDialog {
         if let Some(btn) = self.imp().btn_open_in_new_window.borrow().as_ref() {
             btn.set_visible(false);
         }
+        if self.imp().focus_editor_on_open.get() {
+            self.apply_reply_focus();
+        }
         adw::prelude::AdwDialogExt::present(self, None::<&gtk::Widget>);
         self.configure_root_window();
+        if self.imp().focus_editor_on_open.get() {
+            self.apply_reply_focus();
+            let dialog_weak = self.downgrade();
+            glib::idle_add_local_once(move || {
+                if let Some(dialog) = dialog_weak.upgrade() {
+                    dialog.apply_reply_focus();
+                }
+            });
+        }
+    }
+
+    fn prepare_focus_for_reply(&self) {
+        self.imp().focus_editor_on_open.set(true);
+        self.apply_reply_focus();
+    }
+
+    fn apply_reply_focus(&self) {
+        if let Some(entry_to) = self.imp().entry_to.borrow().as_ref() {
+            clear_entry_selection(entry_to);
+        }
+        if let Some(entry_cc) = self.imp().entry_cc.borrow().as_ref() {
+            clear_entry_selection(entry_cc);
+        }
+        if let Some(entry_subject) = self.imp().entry_subject.borrow().as_ref() {
+            clear_entry_selection(entry_subject);
+        }
+        if let Some(editor) = self.imp().html_editor.borrow().as_ref() {
+            if let Some(wv) = editor.web_view() {
+                adw::prelude::AdwDialogExt::set_focus(self, Some(&wv));
+            }
+            editor.focus_start();
+        }
     }
 
     pub fn split_to_standalone_window_and_maximize(&self) {
@@ -655,6 +703,7 @@ impl ComposeDialog {
                 style,
             ));
         }
+        dialog.prepare_focus_for_reply();
         dialog.mark_saved();
         dialog
     }
@@ -918,6 +967,7 @@ impl ComposeDialog {
             dialog.set_row_cc_visible(true);
         }
         dialog.set_title(&format!("Allen antworten: {subject}"));
+        dialog.prepare_focus_for_reply();
         dialog.mark_saved();
         dialog
     }
@@ -7939,6 +7989,18 @@ fn configure_recipient_scroll_sizing(
     popover.queue_resize();
 }
 
+fn clear_entry_selection(entry: &gtk::Entry) {
+    entry.select_region(0, 0);
+    let mut child = entry.first_child();
+    while let Some(widget) = child {
+        if let Ok(text_widget) = widget.clone().downcast::<gtk::Text>() {
+            text_widget.select_region(0, 0);
+            break;
+        }
+        child = widget.next_sibling();
+    }
+}
+
 fn place_entry_cursor_at_end_unselected(entry: &gtk::Entry) {
     if !entry.has_focus() {
         entry.grab_focus_without_selecting();
@@ -10926,6 +10988,26 @@ mod tests {
             !reply_dialog.is_dirty(),
             "Freshly opened reply dialog must not be dirty before user types"
         );
+        assert!(
+            reply_dialog.imp().focus_editor_on_open.get(),
+            "Reply dialog must focus the composer editor instead of the To entry"
+        );
+        if let Some(entry_to) = reply_dialog.imp().entry_to.borrow().as_ref() {
+            assert_eq!(
+                entry_to.selection_bounds(),
+                None,
+                "To entry text must not be selected when opening a reply"
+            );
+        }
+        if let Some(editor) = reply_dialog.html_editor() {
+            assert!(editor.imp().focus_on_ready.get());
+            if let Some(wv) = editor.web_view() {
+                assert_eq!(
+                    adw::prelude::AdwDialogExt::focus(&reply_dialog).as_ref(),
+                    Some(wv.upcast_ref::<gtk::Widget>())
+                );
+            }
+        }
         assert_eq!(
             close_request_decision(reply_dialog.is_dirty(), reply_dialog.imp().operation.get()),
             CloseRequestDecision::Allow

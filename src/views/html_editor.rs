@@ -98,6 +98,7 @@ mod imp {
         pub plain_text_mode: Cell<bool>,
         pub plain_text_mode_callbacks: RefCell<DragInternalCallbackList>,
         pub web_view_ready: Cell<bool>,
+        pub focus_on_ready: Cell<bool>,
         pub pending_scripts: RefCell<Vec<String>>,
         pub spell_checking_enabled: Cell<bool>,
         pub spell_checking_languages: RefCell<Vec<String>>,
@@ -1643,6 +1644,21 @@ impl HtmlEditor {
         );
     }
 
+    pub fn web_view(&self) -> Option<webkit6::WebView> {
+        self.imp().web_view.borrow().clone()
+    }
+
+    /// Focus the editor WebView and place the caret at the beginning of the first line.
+    pub fn focus_start(&self) {
+        self.imp().focus_on_ready.set(true);
+        if let Some(web_view) = self.imp().web_view.borrow().as_ref() {
+            web_view.grab_focus();
+        }
+        self.evaluate_or_queue(
+            "try { const first = document.body.firstElementChild || document.body.firstChild; if (first) { const range = document.createRange(); range.setStart(first, 0); range.collapse(true); const sel = window.getSelection(); if (sel) { sel.removeAllRanges(); sel.addRange(range); } } document.body.focus(); window.scrollTo(0, 0); } catch (e) {}".to_string(),
+        );
+    }
+
     fn evaluate_or_queue(&self, script: String) {
         let Some(web_view) = self.imp().web_view.borrow().as_ref().cloned() else {
             return;
@@ -1662,6 +1678,16 @@ impl HtmlEditor {
         let scripts = std::mem::take(&mut *self.imp().pending_scripts.borrow_mut());
         for script in scripts {
             web_view.evaluate_javascript(&script, None, None, None::<&gio::Cancellable>, |_| {});
+        }
+        if self.imp().focus_on_ready.get() {
+            web_view.grab_focus();
+            web_view.evaluate_javascript(
+                "try { const first = document.body.firstElementChild || document.body.firstChild; if (first) { const range = document.createRange(); range.setStart(first, 0); range.collapse(true); const sel = window.getSelection(); if (sel) { sel.removeAllRanges(); sel.addRange(range); } } document.body.focus(); window.scrollTo(0, 0); } catch (e) {}",
+                None,
+                None,
+                None::<&gio::Cancellable>,
+                |_| {},
+            );
         }
     }
 
