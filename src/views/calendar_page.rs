@@ -14507,6 +14507,20 @@ impl CalendarPage {
             .margin_end(1)
             .build();
 
+        // Ensure every day column (0..days.len()) in allday_grid has an explicit 1-column
+        // hexpanding anchor attached BEFORE event chips so GtkGrid never collapses empty or
+        // multi-span-only columns while keeping event chips on top in widget z-order.
+        for col in 0..days.len() {
+            let col_anchor = gtk::Box::builder()
+                .hexpand(true)
+                .vexpand(false)
+                .height_request(0)
+                .can_target(false)
+                .focusable(false)
+                .build();
+            allday_grid.attach(&col_anchor, col as i32, 0, 1, 1);
+        }
+
         for (item, track) in spans_with_tracks {
             let range = item.range.or_else(|| event_display_range(&item.event));
             let cont_left = range.as_ref().map(|r| r.start < days[0]).unwrap_or(false);
@@ -14539,18 +14553,6 @@ impl CalendarPage {
                 item.span as i32,
                 1,
             );
-        }
-
-        // Ensure every day column (0..days.len()) in allday_grid has an explicit 1-column
-        // hexpanding anchor so GtkGrid never collapses empty or multi-span-only columns.
-        for col in 0..days.len() {
-            let col_anchor = gtk::Box::builder()
-                .hexpand(true)
-                .vexpand(false)
-                .height_request(0)
-                .can_target(false)
-                .build();
-            allday_grid.attach(&col_anchor, col as i32, 0, 1, 1);
         }
 
         days_overlay.add_overlay(&allday_grid);
@@ -27452,7 +27454,8 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
     content_box.append(&timing_lbl);
 
     // 5. Date & Time Controls
-    let all_day = crate::dialogs::event_dialog::component_property_has_date_value(&event.component, "DTSTART");
+    let all_day = event.all_day
+        || crate::dialogs::event_dialog::component_property_has_date_value(&event.component, "DTSTART");
     let start_disp = crate::services::ical_time_service::property_local_display(&event.component, "DTSTART", all_day)
         .or_else(|| ical_property(&event.component, "DTSTART").map(|s| crate::dialogs::event_dialog::format_event_datetime_for_editor(&s, all_day)))
         .unwrap_or_else(|| {
@@ -29057,13 +29060,15 @@ fn calendar_grid_event_chip(
 
         let gesture = gtk::GestureClick::new();
         gesture.set_button(1);
-        gesture.connect_released(move |gesture, n_press, x, _y| {
+        gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+        gesture.connect_pressed(move |gesture, n_press, x, _y| {
             let (Some(page), Some(widget)) = (page_weak_for_click.upgrade(), gesture.widget()) else {
                 return;
             };
             page.clear_selected_time_slot();
             page.select_and_inspect_event(&event_for_click, Some(target_day));
             if n_press == 2 {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
                 if let Some(id) = event_identity_for_click.as_ref() {
                     page.open_event_editor_for_identity(&widget, id);
                 }
@@ -29075,6 +29080,15 @@ fn calendar_grid_event_chip(
             }
         });
         chip_button.add_controller(gesture);
+
+        let page_weak_for_btn = page.downgrade();
+        let event_for_btn = event.clone();
+        chip_button.connect_clicked(move |_| {
+            if let Some(page) = page_weak_for_btn.upgrade() {
+                page.clear_selected_time_slot();
+                page.select_and_inspect_event(&event_for_btn, Some(target_day));
+            }
+        });
 
         let right_click = gtk::GestureClick::builder().button(3).build();
         let page_weak_for_rc = page.downgrade();
@@ -29204,13 +29218,15 @@ fn calendar_grid_event_chip(
 
         let gesture = gtk::GestureClick::new();
         gesture.set_button(1);
-        gesture.connect_released(move |gesture, n_press, x, y| {
+        gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+        gesture.connect_pressed(move |gesture, n_press, x, y| {
             let (Some(page), Some(widget)) = (page_weak_for_click.upgrade(), gesture.widget()) else {
                 return;
             };
             page.clear_selected_time_slot();
             page.select_and_inspect_event(&event_for_click, Some(target_day));
             if n_press == 2 {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
                 if let Some(id) = event_identity_for_click.as_ref() {
                     page.open_event_editor_for_identity(&widget, id);
                 }
@@ -29222,6 +29238,15 @@ fn calendar_grid_event_chip(
             }
         });
         chip_button.add_controller(gesture);
+
+        let page_weak_for_btn = page.downgrade();
+        let event_for_btn = event.clone();
+        chip_button.connect_clicked(move |_| {
+            if let Some(page) = page_weak_for_btn.upgrade() {
+                page.clear_selected_time_slot();
+                page.select_and_inspect_event(&event_for_btn, Some(target_day));
+            }
+        });
 
         let right_click = gtk::GestureClick::builder().button(3).build();
         let page_weak_for_rc = page.downgrade();
@@ -36628,6 +36653,26 @@ mod tests {
                 "Column {col} must have a child in allday_grid so day boundaries align"
             );
         }
+
+        // Verify clicking an all-day event chip updates the sidebar details inspector
+        let mut found_allday_chip: Option<gtk::Button> = None;
+        let mut child = allday_grid.first_child();
+        while let Some(w) = child {
+            if w.has_css_class("all-day-chip") {
+                if let Ok(btn) = w.clone().downcast::<gtk::Button>() {
+                    found_allday_chip = Some(btn);
+                    break;
+                }
+            }
+            child = w.next_sibling();
+        }
+        let chip_btn = found_allday_chip.expect("allday_grid must contain an all-day-chip button");
+        chip_btn.emit_clicked();
+        let inspected = page.imp().current_inspected_event.borrow().clone();
+        assert!(
+            inspected.is_some(),
+            "Clicking an all-day event chip must update current_inspected_event in the sidebar"
+        );
     }
 
     #[test]
