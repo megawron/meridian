@@ -2485,7 +2485,7 @@ picture.attachment-card-thumbnail {
 
 .contact-list-view {
   background-color: transparent;
-  padding: 4px 6px;
+  padding: 4px 32px 4px 6px;
   border: none;
   box-shadow: none;
   outline: none;
@@ -3749,7 +3749,7 @@ button.itip-calendar-chip-row {
 .calendar-time-grid {
   background-color: @view_bg_color;
   border-top: 1px solid alpha(@borders, 0.5);
-  border-left: 1px solid alpha(@borders, 0.5);
+  border-left: none;
 }
 
 .calendar-grid-header {
@@ -3763,6 +3763,10 @@ button.itip-calendar-chip-row {
   font-weight: 600;
 }
 
+.calendar-grid-header-cell:last-child {
+  border-right: none;
+}
+
 .calendar-grid-header-cell.today {
   background-color: transparent;
   color: @accent_color;
@@ -3770,7 +3774,7 @@ button.itip-calendar-chip-row {
 
 .calendar-month-header {
   border-top: 1px solid alpha(@borders, 0.45);
-  border-left: 1px solid alpha(@borders, 0.45);
+  border-left: none;
   border-bottom: 2px solid alpha(@borders, 0.7);
   background-color: alpha(@window_fg_color, 0.035);
   min-height: 24px;
@@ -3783,6 +3787,10 @@ button.itip-calendar-chip-row {
   font-size: 0.90rem;
   font-weight: 600;
   color: alpha(@window_fg_color, 0.85);
+}
+
+.calendar-month-header-cell:last-child {
+  border-right: none;
 }
 
 .calendar-allday-row {
@@ -3802,6 +3810,10 @@ button.itip-calendar-chip-row {
 .calendar-allday-cell {
   padding: 1px 0;
   border-right: 1px solid alpha(@borders, 0.3);
+}
+
+.calendar-allday-cell:last-child {
+  border-right: none;
 }
 
 .calendar-header-grid {
@@ -4190,7 +4202,7 @@ button.month-bar-chip.span-end {
 /* Month view continuous grid */
 .calendar-month-grid {
   border-top: 1px solid alpha(@borders, 0.45);
-  border-left: 1px solid alpha(@borders, 0.45);
+  border-left: none;
   background-color: @view_bg_color;
 }
 
@@ -4718,8 +4730,8 @@ button.month-bar-chip.span-end {
 }
 
 .calendar-year-details-panel.side-mode {
-  border-left: 1px solid alpha(@borders, 0.65);
-  border-right: 1px solid alpha(@borders, 0.65);
+  border-left: none;
+  border-right: none;
   border-top: 1px solid alpha(@borders, 0.55);
   border-bottom: none;
   min-width: 160px;
@@ -4976,7 +4988,7 @@ paned.year-view-paned > separator {
 
 /* ── Contacts Table View Canvas & Header ────────────────────────────── */
 .contacts-table-header {
-  background-color: transparent;
+  background-color: @view_bg_color;
   border-bottom: 1px solid alpha(currentColor, 0.12);
 }
 
@@ -5210,6 +5222,16 @@ headerbar.sidebar-header:dir(rtl) {
 headerbar.sidebar-header:backdrop:dir(rtl) {
   border-right: none;
   border-left: 1px solid color-mix(in srgb, var(--sidebar-fg-color, @sidebar_fg_color) 8%, var(--sidebar-backdrop-color, @sidebar_backdrop_color));
+}
+
+.window-header-box > headerbar:not(.sidebar-header) {
+  border-bottom: 1px solid color-mix(in srgb, var(--sidebar-fg-color, @sidebar_fg_color) 8%, var(--sidebar-bg-color, @sidebar_bg_color));
+  box-shadow: none;
+}
+
+.window-header-box > headerbar:not(.sidebar-header):backdrop {
+  border-bottom: 1px solid color-mix(in srgb, var(--sidebar-fg-color, @sidebar_fg_color) 8%, var(--sidebar-backdrop-color, @sidebar_backdrop_color));
+  box-shadow: none;
 }
 
 toolbarview > .top-bar,
@@ -6553,8 +6575,8 @@ button.mail-memo-delete-btn:hover,
 .calendar-sidebar scrolledwindow.memos-panel-scroll > viewport,
 .memos-detached-window,
 .memos-detached-host {
-  background: #fcf9ec;
-  background-color: #fcf9ec;
+  background: color-mix(in srgb, @warning_bg_color 9%, @window_bg_color);
+  background-color: color-mix(in srgb, @warning_bg_color 9%, @window_bg_color);
   border-radius: 0;
 }
 
@@ -6564,9 +6586,9 @@ button.mail-memo-delete-btn:hover,
 
 headerbar.memos-detached-headerbar,
 .memos-detached-window headerbar {
-  background: #f6ebb8;
-  background-color: #f6ebb8;
-  color: shade(@warning_bg_color, 0.42);
+  background: color-mix(in srgb, @warning_bg_color 18%, @window_bg_color);
+  background-color: color-mix(in srgb, @warning_bg_color 18%, @window_bg_color);
+  color: color-mix(in srgb, @warning_bg_color 55%, @window_fg_color);
   border-bottom: 1px solid alpha(@warning_bg_color, 0.22);
   box-shadow: none;
 }
@@ -6576,7 +6598,49 @@ headerbar.memos-detached-headerbar button,
 .memos-sidebar-section .memos-section-header .heading,
 .memos-sidebar-section .memos-section-header .sidebar-drawer-total,
 .memos-sidebar-section .memos-section-header button {
-  color: shade(@warning_bg_color, 0.44);
+  color: color-mix(in srgb, @warning_bg_color 55%, @window_fg_color);
+}
+
+.dark .memopad-canvas,
+.dark .memos-sidebar-section,
+.dark .memos-panel-scroll,
+.dark .memos-panel-scroll > viewport,
+.dark .meridian-sidebar-drawer .memos-sidebar-section,
+.dark .meridian-sidebar-drawer scrolledwindow.memos-panel-scroll,
+.dark .meridian-sidebar-drawer scrolledwindow.memos-panel-scroll > viewport,
+.dark .calendar-sidebar .memos-sidebar-section,
+.dark .calendar-sidebar scrolledwindow.memos-panel-scroll,
+.dark .calendar-sidebar scrolledwindow.memos-panel-scroll > viewport,
+.dark.memos-detached-window,
+.dark .memos-detached-window,
+.dark .memos-detached-host {
+  background: #1c1912;
+  background-color: #1c1912;
+  border-radius: 0;
+}
+
+.dark .memos-sidebar-section .memos-section-header {
+  background: #1c1912;
+  background-color: #1c1912;
+  border-bottom: 1px solid alpha(@warning_bg_color, 0.14);
+}
+
+.dark headerbar.memos-detached-headerbar,
+.dark.memos-detached-window headerbar,
+.dark .memos-detached-window headerbar {
+  background: #231e14;
+  background-color: #231e14;
+  color: #e5c07b;
+  border-bottom: 1px solid alpha(@warning_bg_color, 0.20);
+  box-shadow: none;
+}
+
+.dark headerbar.memos-detached-headerbar .title,
+.dark headerbar.memos-detached-headerbar button,
+.dark .memos-sidebar-section .memos-section-header .heading,
+.dark .memos-sidebar-section .memos-section-header .sidebar-drawer-total,
+.dark .memos-sidebar-section .memos-section-header button {
+  color: #e5c07b;
 }
 
 popover.memo-note-popover > contents,
@@ -6734,11 +6798,17 @@ button.memo-note-linked-mail-btn:hover {
 
   headerbar.memos-detached-headerbar,
   .memos-detached-window headerbar {
-    background: #282213;
-    background-color: #282213;
-    color: #fef08a;
-    border-bottom: 1px solid alpha(@warning_bg_color, 0.24);
+    background: #231e14;
+    background-color: #231e14;
+    color: #e5c07b;
+    border-bottom: 1px solid alpha(@warning_bg_color, 0.20);
     box-shadow: none;
+  }
+
+  .memos-sidebar-section .memos-section-header {
+    background: #1c1912;
+    background-color: #1c1912;
+    border-bottom: 1px solid alpha(@warning_bg_color, 0.14);
   }
 
   headerbar.memos-detached-headerbar .title,
@@ -6746,7 +6816,7 @@ button.memo-note-linked-mail-btn:hover {
   .memos-sidebar-section .memos-section-header .heading,
   .memos-sidebar-section .memos-section-header .sidebar-drawer-total,
   .memos-sidebar-section .memos-section-header button {
-    color: #fef08a;
+    color: #e5c07b;
   }
 
   popover.memo-note-popover > contents,
@@ -6797,8 +6867,14 @@ button.memo-note-linked-mail-btn:hover {
 
 .task-smart-filter-row {
   border-radius: 7px;
-  min-height: 28px;
+  min-height: 30px;
+  margin-top: 1px;
   margin-bottom: 1px;
+}
+
+.task-smart-filter-row label {
+  padding-top: 2px;
+  padding-bottom: 1px;
 }
 
 .task-smart-count-badge {
@@ -6917,8 +6993,16 @@ button.task-quick-submit-btn:hover {
   color: @error_color;
 }
 
+.task-workspace-card-list {
+  margin-top: 2px;
+  margin-bottom: 2px;
+  padding-top: 1px;
+}
+
 .task-workspace-row {
   transition: background-color 120ms ease;
+  padding-top: 2px;
+  padding-bottom: 2px;
 }
 
 .task-workspace-row.selected {
@@ -6928,6 +7012,14 @@ button.task-quick-submit-btn:hover {
 .task-card-title {
   font-size: 0.92rem;
   font-weight: 500;
+  padding-top: 2px;
+  padding-bottom: 1px;
+  line-height: 1.3;
+}
+
+.task-card-note-preview {
+  padding-top: 1px;
+  padding-bottom: 1px;
 }
 
 .task-card-title.task-card-title-completed {
@@ -6992,6 +7084,13 @@ button.task-quick-submit-btn:hover {
   color: @warning_color;
 }
 
+.task-check-btn {
+  padding-top: 2px;
+  padding-bottom: 2px;
+  margin-top: 1px;
+  margin-bottom: 1px;
+}
+
 .task-check-btn.task-check-high > check {
   border-color: @error_color;
 }
@@ -7013,7 +7112,17 @@ button.task-inspector-due-pill {
   background-color: alpha(currentColor, 0.07);
 }
 
-.task-inspector-notes-view {
+.task-inspector-notes-view,
+textview.task-inspector-notes-view,
+.task-inspector-notes-view > text,
+textview.task-inspector-notes-view > text,
+.task-description-view,
+textview.task-description-view,
+.task-description-view > text,
+textview.task-description-view > text {
+  background: transparent;
+  background-color: transparent;
+  color: inherit;
   border-radius: 8px;
 }
 
@@ -7031,7 +7140,7 @@ button.task-inspector-due-pill {
 
 .contact-detail-pane {
   background-color: @view_bg_color;
-  border-left: 1px solid alpha(@borders, 0.45);
+  border-left: none;
 }
 
 /* Compact grouped ComboRow popovers (Startup Folder, Default Calendar/Contacts/Tasks) */
@@ -7052,6 +7161,39 @@ row.compact-grouped-combo popover listview > row {
   padding-bottom: 2px;
   min-height: 22px;
 }
+
+/* ── Preferences Signatures Selector & Editor (Libadwaita + Outlook style) ── */
+.signature-list-card {
+  border-radius: 12px;
+}
+
+.signature-list-card list.signature-selector-list {
+  background: transparent;
+  box-shadow: none;
+  border-radius: 0;
+}
+
+list.signature-selector-list > row.selected-signature-row {
+  background-color: alpha(@accent_bg_color, 0.12);
+  box-shadow: inset 3px 0 0 0 @accent_color;
+}
+
+list.signature-selector-list > row.selected-signature-row:hover {
+  background-color: alpha(@accent_bg_color, 0.17);
+}
+
+list.signature-selector-list > row.selected-signature-row label.title {
+  font-weight: 600;
+  color: @accent_color;
+}
+
+.signature-default-pill {
+  background-color: alpha(currentColor, 0.08);
+  padding: 2px 8px;
+  border-radius: 999px;
+  margin-right: 4px;
+}
+
 
 
 

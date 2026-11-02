@@ -120,6 +120,9 @@ mod imp {
             self.sidebar_visible.set(initial_sidebar_vis);
 
             window.set_title(Some("Meridian"));
+            if adw::StyleManager::default().is_dark() {
+                window.add_css_class("dark");
+            }
             if let Some(settings) = settings.as_ref() {
                 window.set_default_size(settings.window_width(), settings.window_height());
                 if settings.is_maximized() {

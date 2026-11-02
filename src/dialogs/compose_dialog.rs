@@ -337,7 +337,7 @@ impl ComposeDialog {
     pub fn new() -> Self {
         let dialog: Self = glib::Object::builder()
             .property("title", "New Message")
-            .property("content-width", 960)
+            .property("content-width", 980)
             .property("content-height", 720)
             .build();
         dialog.apply_default_signature();
@@ -1091,7 +1091,7 @@ impl ComposeDialog {
                 *stored_id = uuid::Uuid::new_v4().to_string();
             }
         }
-        self.set_content_width(960);
+        self.set_content_width(980);
         self.set_content_height(720);
         let toolbar_view = adw::ToolbarView::new();
 
@@ -1785,6 +1785,7 @@ impl ComposeDialog {
         let initial_plain = btn_plain_text.is_active();
         html_editor.set_plain_text_mode(initial_plain);
         html_editor.set_vexpand(true);
+        html_editor.set_toolbar_scrollable(false);
         btn_format.set_sensitive(!initial_plain);
         html_editor.set_format_toolbar_visible(!initial_plain && btn_format.is_active());
 

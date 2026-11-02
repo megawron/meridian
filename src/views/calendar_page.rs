@@ -11755,6 +11755,14 @@ impl CalendarPage {
         memopad_canvas.connect_resize(|canvas, _, _| {
             canvas.queue_draw();
         });
+        {
+            let memo_canvas_weak = memopad_canvas.downgrade();
+            adw::StyleManager::default().connect_dark_notify(move |_| {
+                if let Some(canvas) = memo_canvas_weak.upgrade() {
+                    canvas.queue_draw();
+                }
+            });
+        }
 
         // Wire draw function
         let page_weak_draw_memo = self.downgrade();
@@ -14947,6 +14955,7 @@ impl CalendarPage {
             // Draw function for this day
             let page_weak_draw = self.downgrade();
             let placed_chips_draw = placed_chips_rc.clone();
+            let is_last_day_col = day_index + 1 == days.len();
             drawing_area.set_draw_func(move |_area, cr, width_i32, height_i32| {
                 let width = width_i32 as f64;
                 let height = height_i32 as f64;
@@ -15008,12 +15017,14 @@ impl CalendarPage {
                 let _ = cr.stroke();
                 cr.set_dash(&[], 0.0);
 
-                // Vertical column separator line on the right
-                cr.set_source_rgba(line_color, line_color, line_color, hour_line_alpha);
-                cr.set_line_width(1.0);
-                cr.move_to(width - 0.5, 0.0);
-                cr.line_to(width - 0.5, height);
-                let _ = cr.stroke();
+                // Vertical column separator line on the right (omit on last column to avoid doubling the paned separator)
+                if !is_last_day_col {
+                    cr.set_source_rgba(line_color, line_color, line_color, hour_line_alpha);
+                    cr.set_line_width(1.0);
+                    cr.move_to(width - 0.5, 0.0);
+                    cr.line_to(width - 0.5, height);
+                    let _ = cr.stroke();
+                }
 
                 // 3. Selection highlight
                 let mut sel_range = None;

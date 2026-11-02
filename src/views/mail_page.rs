@@ -26083,7 +26083,7 @@ impl MailPage {
                     MailFollowUpState::Completed => {
                         set_button_icon_with_fallback(
                             &btn_follow_up_clone,
-                            "emblem-ok-symbolic",
+                            "object-select-symbolic",
                             "object-select-symbolic",
                         );
                         btn_follow_up_clone.set_opacity(1.0);
@@ -26999,7 +26999,7 @@ impl MailPage {
                     MailFollowUpState::Completed => {
                         set_button_icon_with_fallback(
                             &button,
-                            "emblem-ok-symbolic",
+                            "object-select-symbolic",
                             "object-select-symbolic",
                         );
                         button.set_opacity(1.0);
@@ -39333,7 +39333,7 @@ impl MailPage {
             .build();
 
         let task_icon = gtk::Image::builder()
-            .icon_name(if task.completed { "emblem-ok-symbolic" } else { "checkbox-checked-symbolic" })
+            .icon_name(if task.completed { "object-select-symbolic" } else { "checkbox-checked-symbolic" })
             .pixel_size(16)
             .valign(gtk::Align::Center)
             .css_classes(vec![if task.completed { "success" } else { "accent" }])
@@ -39721,7 +39721,7 @@ impl MailPage {
             .build();
 
         let task_icon = gtk::Image::builder()
-            .icon_name(if task.completed { "emblem-ok-symbolic" } else { "checkbox-checked-symbolic" })
+            .icon_name(if task.completed { "object-select-symbolic" } else { "checkbox-checked-symbolic" })
             .pixel_size(14)
             .valign(gtk::Align::Center)
             .css_classes(vec![if task.completed { "success" } else { "accent" }])

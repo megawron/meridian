@@ -278,7 +278,7 @@ const TASK_FILTER_OPTIONS: [(TaskFilter, &str, &str); 16] = [
     ),
     (
         TaskFilter::WithoutCategory,
-        "tag-symbolic",
+        "user-bookmarks-symbolic",
         "Without Category",
     ),
     (
@@ -301,7 +301,7 @@ const TASK_FILTER_OPTIONS: [(TaskFilter, &str, &str); 16] = [
         "window-close-symbolic",
         "Cancelled",
     ),
-    (TaskFilter::Completed, "emblem-ok-symbolic", "Completed"),
+    (TaskFilter::Completed, "object-select-symbolic", "Completed"),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -3733,7 +3733,7 @@ impl TasksPage {
         let complete_label = crate::i18n::gettext("Completed");
         let delete_label = crate::i18n::gettext("Delete");
         let buttons: [(&RefCell<Option<gtk::Button>>, &str, &str); 2] = [
-            (&imp.task_complete_button, &complete_label, "emblem-ok-symbolic"),
+            (&imp.task_complete_button, &complete_label, "object-select-symbolic"),
             (&imp.task_delete_selection_button, &delete_label, "user-trash-symbolic"),
         ];
 
@@ -4584,7 +4584,7 @@ impl TasksPage {
             (TaskFilter::InProgress, "media-playback-start-symbolic", gettext("In Progress")),
             (TaskFilter::Uncompleted, "view-list-bullet-symbolic", gettext("Open Tasks")),
             (TaskFilter::All, "view-list-symbolic", gettext("All Tasks")),
-            (TaskFilter::Completed, "emblem-ok-symbolic", gettext("Completed")),
+            (TaskFilter::Completed, "object-select-symbolic", gettext("Completed")),
         ];
         let mut smart_badges = Vec::new();
         let initial_smart_filter = self.imp().task_filter.get();
@@ -4962,7 +4962,7 @@ impl TasksPage {
             &crate::i18n::gettext("Edit selected tasks together"),
         );
         let complete_selection_button = gtk::Button::builder()
-            .icon_name("emblem-ok-symbolic")
+            .icon_name("object-select-symbolic")
             .tooltip_text(&crate::i18n::gettext("Mark selected tasks as completed"))
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
@@ -7877,12 +7877,18 @@ impl TasksPage {
         let description_view = gtk::TextView::builder()
             .wrap_mode(gtk::WrapMode::WordChar)
             .height_request(100)
-            .margin_start(12)
-            .margin_end(12)
-            .margin_top(8)
-            .margin_bottom(8)
+            .left_margin(12)
+            .right_margin(12)
+            .top_margin(10)
+            .bottom_margin(10)
+            .css_classes(vec!["task-description-view"])
             .build();
-        description_group.add(&description_view);
+        let description_row = gtk::ListBoxRow::builder()
+            .activatable(false)
+            .selectable(false)
+            .child(&description_view)
+            .build();
+        description_group.add(&description_row);
         content_box.append(&description_group);
 
         // Group 3: Progressive Enhancement (Expandable rows for Status, Schedule, Recurrence & Attachments)
@@ -11466,7 +11472,7 @@ fn populate_task_live_inspector(
         })
         .build();
     let complete_btn_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    complete_btn_box.append(&gtk::Image::from_icon_name("emblem-ok-symbolic"));
+    complete_btn_box.append(&gtk::Image::from_icon_name("object-select-symbolic"));
     complete_btn_box.append(&gtk::Label::new(Some(&if completed {
         gettext("Completed")
     } else {
@@ -11545,7 +11551,7 @@ fn populate_task_live_inspector(
         .css_classes(vec!["task-inspector-title-entry"])
         .build();
     let save_title_btn = gtk::Button::builder()
-        .icon_name("emblem-ok-symbolic")
+        .icon_name("object-select-symbolic")
         .tooltip_text(&gettext("Save title (Enter)"))
         .visible(false)
         .css_classes(vec!["flat", "suggested-action"])
@@ -11915,7 +11921,12 @@ fn populate_task_live_inspector(
             mutate_task_item_component(&p, &t, updated);
         });
     }
-    notes_group.add(&notes_view);
+    let notes_row = gtk::ListBoxRow::builder()
+        .activatable(false)
+        .selectable(false)
+        .child(&notes_view)
+        .build();
+    notes_group.add(&notes_row);
     inspector_box.append(&notes_group);
 }
 

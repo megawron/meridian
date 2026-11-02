@@ -4312,10 +4312,12 @@ impl PreferencesDialog {
 
         let signature_store = SignatureStore::from_environment();
         let initial_signatures = signature_store.load();
-        let initial_sig_names: Vec<&str> = initial_signatures.iter().map(|s| s.name.as_str()).collect();
+        let none_sig_label = crate::i18n::gettext("None");
+        let mut initial_sig_names: Vec<&str> = vec![none_sig_label.as_str()];
+        initial_sig_names.extend(initial_signatures.iter().map(|s| s.name.as_str()));
         let signature_model = gtk::StringList::new(&initial_sig_names);
         let signature_row = adw::ComboRow::builder()
-            .title(&crate::i18n::gettext("Active Signature"))
+            .title(&crate::i18n::gettext("Default Signature"))
             .model(&signature_model)
             .build();
         if let Some(active_id) = signature_store.active_id() {
@@ -4323,10 +4325,13 @@ impl PreferencesDialog {
                 .iter()
                 .position(|signature| signature.id == active_id)
             {
-                signature_row.set_selected(index as u32);
+                signature_row.set_selected((index + 1) as u32);
+            } else {
+                signature_row.set_selected(0);
             }
+        } else {
+            signature_row.set_selected(0);
         }
-        group_signature_options.add(&signature_row);
 
         let row_top_signature = adw::SwitchRow::builder()
             .title("Insert signature above quote")
@@ -7706,16 +7711,21 @@ impl PreferencesDialog {
 
         let signatures_list_box = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
-            .css_classes(vec!["boxed-list"])
+            .css_classes(vec!["boxed-list", "signature-selector-list"])
             .build();
         let signatures_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(gtk::PolicyType::Never)
             .propagate_natural_height(true)
-            .max_content_height(168)
             .child(&signatures_list_box)
             .build();
-        group_signatures_list.add(&signatures_scroll);
+        let signatures_card_frame = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .css_classes(vec!["card", "signature-list-card"])
+            .overflow(gtk::Overflow::Hidden)
+            .build();
+        signatures_card_frame.append(&signatures_scroll);
+        group_signatures_list.add(&signatures_card_frame);
 
         let group_account_signatures = adw::PreferencesGroup::builder()
             .title("Per-Account Signatures")
@@ -7733,21 +7743,26 @@ impl PreferencesDialog {
         let btn_sig_format_toggle = gtk::ToggleButton::builder()
             .icon_name("format-text-rich-symbolic")
             .tooltip_text(&crate::i18n::gettext("Formatting Toolbar"))
+            .active(true)
             .valign(gtk::Align::Center)
             .css_classes(vec!["flat"])
             .build();
         group_signature_editor.set_header_suffix(Some(&btn_sig_format_toggle));
 
+        let editor_card_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(vec!["boxed-list"])
+            .build();
+
         let row_sig_inline_name = adw::EntryRow::builder()
             .title(&crate::i18n::gettext("Name"))
             .build();
-        group_signature_editor.add(&row_sig_inline_name);
+        editor_card_list.append(&row_sig_inline_name);
 
         let sig_inline_editor = crate::views::RichTextField::new(false, 170);
-        sig_inline_editor.editor().set_canvas_card_mode(false);
-        sig_inline_editor.editor().set_toolbar_scrollable(true);
-        sig_inline_editor.editor().set_format_toolbar_visible(false);
-        sig_inline_editor.set_spacing(0);
+        sig_inline_editor.set_flush(true);
+        sig_inline_editor.set_toolbar_scrollable(false);
+        sig_inline_editor.editor().set_format_toolbar_visible(true);
         sig_inline_editor.set_vexpand(false);
         sig_inline_editor.set_hexpand(true);
         {
@@ -7756,18 +7771,19 @@ impl PreferencesDialog {
                 ed_for_toggle.editor().set_format_toolbar_visible(btn.is_active());
             });
         }
-        let sig_editor_card = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .margin_top(8)
-            .css_classes(vec!["card"])
-            .overflow(gtk::Overflow::Hidden)
+        let sig_editor_row = gtk::ListBoxRow::builder()
+            .activatable(false)
+            .selectable(false)
+            .focusable(false)
+            .child(&sig_inline_editor)
             .build();
-        sig_editor_card.append(&sig_inline_editor);
-        group_signature_editor.add(&sig_editor_card);
+        editor_card_list.append(&sig_editor_row);
+        group_signature_editor.add(&editor_card_list);
 
         let group_signature_placement = adw::PreferencesGroup::builder()
-            .title(&crate::i18n::gettext("Placement"))
+            .title(&crate::i18n::gettext("Default Signature"))
             .build();
+        group_signature_placement.add(&signature_row);
         group_signature_placement.add(&row_top_signature);
         group_signature_placement.add(&row_signature_outline);
 
@@ -7778,6 +7794,7 @@ impl PreferencesDialog {
         // Reactive signature list & inline editor state
         let dialog_weak = self.downgrade();
         let signatures_list_box_weak = signatures_list_box.downgrade();
+        let signatures_scroll_weak = signatures_scroll.downgrade();
         let account_signatures_list_box_weak = account_signatures_list_box.downgrade();
         let signature_row_weak = signature_row.downgrade();
 
@@ -7789,7 +7806,7 @@ impl PreferencesDialog {
             SignatureStore::from_environment().active_id(),
         ));
         let is_loading_inline_sig = Rc::new(Cell::new(false));
-        let sig_row_widgets: Rc<RefCell<Vec<(String, adw::ActionRow)>>> =
+        let sig_row_widgets: Rc<RefCell<Vec<(String, adw::ActionRow, gtk::Image)>>> =
             Rc::new(RefCell::new(Vec::new()));
 
         let load_sig_into_inline_editor: Rc<dyn Fn()> = {
@@ -7840,11 +7857,13 @@ impl PreferencesDialog {
                     }
                     is_loading_inline_sig.set(false);
 
-                    for (rid, rwidget) in sig_row_widgets.borrow().iter() {
+                    for (rid, rwidget, check_icon) in sig_row_widgets.borrow().iter() {
                         if rid == &sig.id {
                             rwidget.add_css_class("selected-signature-row");
+                            check_icon.set_opacity(1.0);
                         } else {
                             rwidget.remove_css_class("selected-signature-row");
+                            check_icon.set_opacity(0.0);
                         }
                     }
                 }
@@ -7857,6 +7876,8 @@ impl PreferencesDialog {
             let name_row_weak = row_sig_inline_name.downgrade();
             let editor_weak = sig_inline_editor.downgrade();
             let sig_row_widgets = sig_row_widgets.clone();
+            let sig_combo_weak_for_save = signature_row.downgrade();
+            let is_updating_for_save = is_updating_combo.clone();
             let save_inline_changes = Rc::new(move || {
                 if is_loading.get() {
                     return;
@@ -7900,10 +7921,28 @@ impl PreferencesDialog {
                         settings.set_signature_text(&new_text);
                     }
                 }
-                for (rid, rwidget) in sig_row_widgets.borrow().iter() {
+                for (rid, rwidget, _) in sig_row_widgets.borrow().iter() {
                     if rid == &sig_id {
                         rwidget.set_title(&new_name);
                     }
+                }
+                if let Some(combo) = sig_combo_weak_for_save.upgrade() {
+                    let signatures = store.load();
+                    let none_lbl = crate::i18n::gettext("None");
+                    let mut names: Vec<&str> = vec![none_lbl.as_str()];
+                    names.extend(signatures.iter().map(|s| s.name.as_str()));
+                    is_updating_for_save.set(true);
+                    combo.set_model(Some(&gtk::StringList::new(&names)));
+                    if let Some(active_id) = store.active_id() {
+                        if let Some(pos) = signatures.iter().position(|s| s.id == active_id) {
+                            combo.set_selected((pos + 1) as u32);
+                        } else {
+                            combo.set_selected(0);
+                        }
+                    } else {
+                        combo.set_selected(0);
+                    }
+                    is_updating_for_save.set(false);
                 }
             });
 
@@ -7961,7 +8000,7 @@ impl PreferencesDialog {
             let editor_weak_for_row = sig_inline_editor.downgrade();
             Rc::new(move || {
                 let Some(list_box) = signatures_list_box_weak.upgrade() else { return };
-                let Some(dialog) = dialog_weak.upgrade() else { return };
+                let _ = dialog_weak.upgrade();
 
                 while let Some(child) = list_box.first_child() {
                     list_box.remove(&child);
@@ -7970,6 +8009,16 @@ impl PreferencesDialog {
 
                 let store = SignatureStore::from_environment();
                 let signatures = store.load();
+
+                if let Some(scroll) = signatures_scroll_weak.upgrade() {
+                    if signatures.len() > 4 {
+                        scroll.set_vscrollbar_policy(gtk::PolicyType::Automatic);
+                        scroll.set_max_content_height(216);
+                    } else {
+                        scroll.set_vscrollbar_policy(gtk::PolicyType::Never);
+                        scroll.set_max_content_height(-1);
+                    }
+                }
 
                 if signatures.is_empty() {
                     let empty_row = adw::ActionRow::builder()
@@ -7995,49 +8044,23 @@ impl PreferencesDialog {
                         .activatable(true)
                         .build();
 
+                    let check_icon = gtk::Image::builder()
+                        .icon_name("object-select-symbolic")
+                        .css_classes(vec!["accent"])
+                        .valign(gtk::Align::Center)
+                        .opacity(0.0)
+                        .build();
+                    row.add_prefix(&check_icon);
+
                     let is_active = store.active_id().as_deref() == Some(&sig.id);
                     if is_active {
                         let active_badge = gtk::Label::builder()
-                            .label(&gettext("Standard"))
-                            .css_classes(vec!["accent", "caption", "heading"])
+                            .label(&gettext("Default"))
+                            .css_classes(vec!["dim-label", "caption", "signature-default-pill"])
                             .valign(gtk::Align::Center)
                             .build();
                         row.add_suffix(&active_badge);
                     }
-
-                    let default_tooltip = if is_active {
-                        gettext("Current default signature")
-                    } else {
-                        gettext("Set as default signature")
-                    };
-                    let btn_default = gtk::Button::builder()
-                        .icon_name(if is_active {
-                            "starred-symbolic"
-                        } else {
-                            "non-starred-symbolic"
-                        })
-                        .tooltip_text(&default_tooltip)
-                        .css_classes(vec!["flat"])
-                        .valign(gtk::Align::Center)
-                        .build();
-                    let rebuild_cb_star = rebuild_holder_for_rebuild.borrow().as_ref().cloned();
-                    let id_for_star = sig_id.clone();
-                    let text_for_star = sig.text.clone();
-                    let dialog_for_star = dialog.downgrade();
-                    btn_default.connect_clicked(move |_| {
-                        let store = SignatureStore::from_environment();
-                        let _ = store.set_active(Some(&id_for_star));
-                        if let Some(settings) = AppSettings::try_new() {
-                            settings.set_signature_text(&text_for_star);
-                        }
-                        if let Some(d) = dialog_for_star.upgrade() {
-                            d.show_toast(&gettext("Default signature updated"));
-                        }
-                        if let Some(f) = rebuild_cb_star.as_ref() {
-                            f();
-                        }
-                    });
-                    row.add_suffix(&btn_default);
 
                     let selected_for_click = selected_sig_for_rebuild.clone();
                     let load_for_click = load_inline_for_rebuild.clone();
@@ -8054,7 +8077,7 @@ impl PreferencesDialog {
                     let btn_delete = gtk::Button::builder()
                         .icon_name("user-trash-symbolic")
                         .tooltip_text(&gettext("Delete signature"))
-                        .css_classes(vec!["flat", "error"])
+                        .css_classes(vec!["flat", "circular", "dim-label"])
                         .valign(gtk::Align::Center)
                         .build();
                     let rebuild_cb_del = rebuild_holder_for_rebuild.borrow().as_ref().cloned();
@@ -8074,7 +8097,7 @@ impl PreferencesDialog {
 
                     sig_row_widgets_for_rebuild
                         .borrow_mut()
-                        .push((sig_id, row.clone()));
+                        .push((sig_id, row.clone(), check_icon));
                     list_box.append(&row);
                 }
 
@@ -8082,13 +8105,19 @@ impl PreferencesDialog {
 
                 if let Some(combo) = signature_row_weak.upgrade() {
                     is_updating_for_rebuild.set(true);
-                    let names: Vec<&str> = signatures.iter().map(|s| s.name.as_str()).collect();
+                    let none_lbl = crate::i18n::gettext("None");
+                    let mut names: Vec<&str> = vec![none_lbl.as_str()];
+                    names.extend(signatures.iter().map(|s| s.name.as_str()));
                     let model = gtk::StringList::new(&names);
                     combo.set_model(Some(&model));
                     if let Some(active_id) = store.active_id() {
                         if let Some(pos) = signatures.iter().position(|s| s.id == active_id) {
-                            combo.set_selected(pos as u32);
+                            combo.set_selected((pos + 1) as u32);
+                        } else {
+                            combo.set_selected(0);
                         }
+                    } else {
+                        combo.set_selected(0);
                     }
                     is_updating_for_rebuild.set(false);
                 }
@@ -8276,7 +8305,12 @@ impl PreferencesDialog {
             let store = SignatureStore::from_environment();
             let signatures = store.load();
             let idx = combo.selected() as usize;
-            if let Some(sig) = signatures.get(idx) {
+            if idx == 0 {
+                let _ = store.set_active(None);
+                if let Some(settings) = settings_for_select.as_ref() {
+                    settings.set_signature_text("");
+                }
+            } else if let Some(sig) = signatures.get(idx - 1) {
                 let _ = store.set_active(Some(&sig.id));
                 if let Some(settings) = settings_for_select.as_ref() {
                     settings.set_signature_text(&sig.text);

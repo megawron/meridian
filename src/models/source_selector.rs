@@ -739,7 +739,7 @@ where
 
     if !is_primary {
         let btn_default = make_btn(
-            "emblem-ok-symbolic",
+            "object-select-symbolic",
             &crate::i18n::gettext("Set as Default"),
         );
         let pop_weak3 = popover.downgrade();

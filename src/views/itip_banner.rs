@@ -309,7 +309,7 @@ impl ItipBanner {
             .visible(false)
             .build();
         let conflict_icon = gtk::Image::builder()
-            .icon_name("emblem-ok-symbolic")
+            .icon_name("object-select-symbolic")
             .valign(gtk::Align::Start)
             .margin_top(2)
             .css_classes(vec!["dim-label"])
@@ -2001,7 +2001,7 @@ impl ItipBanner {
             } else {
                 gettext("confirmed")
             };
-            self.calendar_status_icon.set_icon_name(Some("emblem-ok-symbolic"));
+            self.calendar_status_icon.set_icon_name(Some("object-select-symbolic"));
             self.calendar_status_icon.remove_css_class("dim-label");
             self.calendar_status_icon.add_css_class("success");
             let base = gettext("Found the appointment in the calendar \"{}\" as {}");
@@ -3078,7 +3078,7 @@ impl ItipBanner {
             self.lbl_conflict.set_text(&conflict_msg);
             self.conflict_row.set_tooltip_text(Some(&conflicts.join("\n")));
         } else {
-            self.conflict_icon.set_icon_name(Some("emblem-ok-symbolic"));
+            self.conflict_icon.set_icon_name(Some("object-select-symbolic"));
             self.conflict_icon.remove_css_class("warning");
             self.conflict_icon.add_css_class("dim-label");
             self.lbl_conflict.remove_css_class("warning");

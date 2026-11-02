@@ -491,8 +491,9 @@ impl MeridianApplication {
     }
 
     fn apply_style_settings(&self) {
+        let style_manager = adw::StyleManager::default();
         if let Some(settings) = AppSettings::try_new() {
-            adw::StyleManager::default().set_color_scheme(settings.adw_color_scheme());
+            style_manager.set_color_scheme(settings.adw_color_scheme());
 
             settings.connect_changed(Some("color-scheme"), move |s, _| {
                 let scheme = s.string("color-scheme");
@@ -500,8 +501,29 @@ impl MeridianApplication {
                 adw::StyleManager::default().set_color_scheme(color_scheme);
             });
         } else {
-            adw::StyleManager::default().set_color_scheme(adw::ColorScheme::Default);
+            style_manager.set_color_scheme(adw::ColorScheme::Default);
         }
+
+        let sync_dark_class = |app: &Self, is_dark: bool| {
+            if let Some(gtk_settings) = gtk::Settings::default() {
+                gtk_settings.set_gtk_application_prefer_dark_theme(is_dark);
+            }
+            for window in app.windows() {
+                if is_dark {
+                    window.add_css_class("dark");
+                } else {
+                    window.remove_css_class("dark");
+                }
+            }
+        };
+        sync_dark_class(self, style_manager.is_dark());
+        style_manager.connect_dark_notify(glib::clone!(
+            #[weak(rename_to = app)]
+            self,
+            move |sm| {
+                sync_dark_class(&app, sm.is_dark());
+            }
+        ));
     }
 
     /// Register application-wide actions.

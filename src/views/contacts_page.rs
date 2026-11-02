@@ -560,6 +560,15 @@ pub(crate) fn draw_contact_table_canvas(
     let effective_width = width.max(layout.width);
     let col_count = layout.columns.len();
 
+    // Paint crisp background all the way to the right edge (including behind the alphabet bar)
+    if is_dark {
+        cr.set_source_rgb(0.118, 0.118, 0.118);
+    } else {
+        cr.set_source_rgb(1.0, 1.0, 1.0);
+    }
+    cr.rectangle(0.0, clip_y1, effective_width, (clip_y2 - clip_y1).max(height));
+    let _ = cr.fill();
+
     for row_idx in start_row..end_row {
         let Some(row) = layout.rows.get(row_idx) else { break; };
         let y = row.y.round();
@@ -598,10 +607,16 @@ pub(crate) fn draw_contact_table_canvas(
         let mut col_x = 0.0;
         for (col_idx, &(col, raw_col_w)) in layout.columns.iter().enumerate() {
             let is_last_col = col_idx + 1 == col_count;
-            let col_w = if is_last_col {
+            let full_col_w = if is_last_col {
                 (effective_width - col_x).max(raw_col_w)
             } else {
                 raw_col_w
+            };
+            // Reserve 28px on the right of the last column so content doesn't collide with the overlaid alphabet bar
+            let col_w = if is_last_col {
+                (full_col_w - 28.0).max(24.0)
+            } else {
+                full_col_w
             };
 
             match col {
@@ -741,8 +756,23 @@ pub(crate) fn draw_contact_table_canvas(
                     }
                 }
             }
-            col_x += col_w;
+            col_x += full_col_w;
         }
+    }
+}
+
+pub(crate) fn contact_table_view_icon_name() -> &'static str {
+    if let Some(display) = gdk::Display::default() {
+        let icon_theme = gtk::IconTheme::for_display(&display);
+        if icon_theme.has_icon("meridian-view-table-symbolic") {
+            "meridian-view-table-symbolic"
+        } else if icon_theme.has_icon("view-grid-symbolic") {
+            "view-grid-symbolic"
+        } else {
+            "view-column-symbolic"
+        }
+    } else {
+        "meridian-view-table-symbolic"
     }
 }
 
@@ -2317,8 +2347,11 @@ impl ContactsPage {
             match imp.current_view_mode.get() {
                 ContactViewMode::Table => {
                     if let Some(alpha) = imp.alphabet_scroll.borrow().as_ref() {
-                        if alpha.is_visible() {
-                            alpha.set_visible(false);
+                        if alpha.margin_top() != 30 {
+                            alpha.set_margin_top(30);
+                        }
+                        if !alpha.is_visible() {
+                            alpha.set_visible(true);
                         }
                     }
                     let mut pos = imp.table_vpane_pos.get().max(340);
@@ -2339,6 +2372,9 @@ impl ContactsPage {
                 }
                 ContactViewMode::Simple => {
                     if let Some(alpha) = imp.alphabet_scroll.borrow().as_ref() {
+                        if alpha.margin_top() != 4 {
+                            alpha.set_margin_top(4);
+                        }
                         if !alpha.is_visible() {
                             alpha.set_visible(true);
                         }
@@ -2436,8 +2472,8 @@ impl ContactsPage {
         };
         let mode = self.imp().current_view_mode.get();
         let (icon_name, tooltip_text) = match mode {
-            ContactViewMode::Simple => ("view-list-symbolic", crate::i18n::gettext("Compact View")),
-            ContactViewMode::Table => ("x-office-spreadsheet-symbolic", crate::i18n::gettext("Table View")),
+            ContactViewMode::Simple => ("view-list-symbolic", crate::i18n::gettext("List View")),
+            ContactViewMode::Table => (contact_table_view_icon_name(), crate::i18n::gettext("Table View")),
         };
         split_btn.set_icon_name(icon_name);
         split_btn.set_tooltip_text(Some(&tooltip_text));
@@ -3518,7 +3554,7 @@ impl ContactsPage {
             .child(&contact_list)
             .vexpand(true)
             .hexpand(true)
-            .margin_end(28)
+            .margin_end(0)
             .css_classes(vec!["contact-simple-list-scroll", "contacts-header-scroll"])
             .build();
         self.imp().simple_list_scroll.replace(Some(simple_list_scroll.clone()));
@@ -5540,13 +5576,13 @@ impl ContactsPage {
 
         let btn_simple = gtk::ToggleButton::builder()
             .icon_name("view-list-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Compact View"))
+            .tooltip_text(&crate::i18n::gettext("List View"))
             .active(true)
             .build();
-        set_accessible_label(&btn_simple, &crate::i18n::gettext("Compact View"));
+        set_accessible_label(&btn_simple, &crate::i18n::gettext("List View"));
 
         let btn_table = gtk::ToggleButton::builder()
-            .icon_name("x-office-spreadsheet-symbolic")
+            .icon_name(contact_table_view_icon_name())
             .tooltip_text(&crate::i18n::gettext("Table View"))
             .group(&btn_simple)
             .build();
@@ -5615,7 +5651,7 @@ impl ContactsPage {
         let str_view_opts = crate::i18n::gettext("View options");
         let split_btn = adw::SplitButton::builder()
             .icon_name("view-list-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Compact View"))
+            .tooltip_text(&crate::i18n::gettext("List View"))
             .dropdown_tooltip(&str_view_opts)
             .popover(&options_popover)
             .css_classes(vec!["flat"])

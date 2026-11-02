@@ -1961,13 +1961,20 @@ impl HtmlEditor {
             }
         });
 
-        let toolbar_container = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let toolbar_container = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(0)
+            .hexpand(true)
+            .halign(gtk::Align::Fill)
+            .build();
         toolbar_container.append(&toolbar_scroll);
 
         let toolbar_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideDown)
             .transition_duration(180)
             .reveal_child(false)
+            .hexpand(true)
+            .halign(gtk::Align::Fill)
             .child(&toolbar_container)
             .build();
 
@@ -2142,9 +2149,18 @@ impl HtmlEditor {
             .as_ref()
             .map(AppSettings::mail_font_size)
             .unwrap_or(14);
+        let is_dark_initial = adw::StyleManager::default().is_dark()
+            || AppSettings::try_new()
+                .map(|s| s.force_dark_mode())
+                .unwrap_or(false);
+        let html_theme_class = if is_dark_initial {
+            "meridian-dark"
+        } else {
+            "meridian-light"
+        };
         let initial_html = format!(
             concat!(
-                "<!DOCTYPE html><html><head><style>",
+                "<!DOCTYPE html><html class=\"{}\"><head><style>",
                 "html, body {{ font-family: {}; font-size: {}px; line-height: 1.35; color: #222; margin: 12px; background-color: transparent; }}",
                 "p {{ margin: 0; }}",
                 "p.MsoNormal, li.MsoNormal, div.MsoNormal, blockquote p {{ margin: 0; line-height: 1.15; }}",
@@ -2153,7 +2169,14 @@ impl HtmlEditor {
                 "a {{ color: #1a73e8; text-decoration: underline; cursor: pointer; }}",
                 "blockquote, blockquote[type=\"cite\"] {{ margin: 4px 0 4px 0.8ex; border-left: 2px solid #729fcf; padding-left: 1ex; }}",
                 "blockquote > :first-child {{ margin-top: 0; }}",
-                "@media (prefers-color-scheme: dark) {{ html, body {{ color: #eee; background-color: transparent; }} a {{ color: #78aeed; }} blockquote, blockquote[type=\"cite\"] {{ border-left-color: #3584e4; }} }}",
+                "html.meridian-dark {{ color-scheme: dark; background-color: #e1e1e1 !important; color: #111111; filter: invert(100%) hue-rotate(180deg); -webkit-filter: invert(100%) hue-rotate(180deg); }}",
+                "html.meridian-dark body {{ background-color: transparent !important; color: #111111; }}",
+                "html.meridian-dark img, html.meridian-dark video, html.meridian-dark canvas, html.meridian-dark svg {{ filter: invert(100%) hue-rotate(180deg) !important; -webkit-filter: invert(100%) hue-rotate(180deg) !important; }}",
+                "@media (prefers-color-scheme: dark) {{",
+                "  html:not(.meridian-light) {{ color-scheme: dark; background-color: #e1e1e1 !important; color: #111111; filter: invert(100%) hue-rotate(180deg); -webkit-filter: invert(100%) hue-rotate(180deg); }}",
+                "  html:not(.meridian-light) body {{ background-color: transparent !important; color: #111111; }}",
+                "  html:not(.meridian-light) img, html:not(.meridian-light) video, html:not(.meridian-light) canvas, html:not(.meridian-light) svg {{ filter: invert(100%) hue-rotate(180deg) !important; -webkit-filter: invert(100%) hue-rotate(180deg) !important; }}",
+                "}}",
                 "</style>",
                 "<script>",
                 "document.addEventListener('mouseover', function(e) {{",
@@ -2865,7 +2888,7 @@ impl HtmlEditor {
                 "document.addEventListener('input', notifyMeridianContentChanged);",
                 "</script></head><body contenteditable='true'><p><br></p></body></html>"
             ),
-            font_family, font_size
+            html_theme_class, font_family, font_size
         );
 
         let editor_weak_for_policy = self.downgrade();
@@ -2978,6 +3001,22 @@ impl HtmlEditor {
             }
         });
         web_view.load_html(&initial_html, None);
+
+        let web_view_for_theme = web_view.downgrade();
+        adw::StyleManager::default().connect_dark_notify(move |sm| {
+            if let Some(wv) = web_view_for_theme.upgrade() {
+                let is_dark = sm.is_dark()
+                    || AppSettings::try_new()
+                        .map(|s| s.force_dark_mode())
+                        .unwrap_or(false);
+                let script = if is_dark {
+                    "if (document.documentElement) { document.documentElement.classList.remove('meridian-light'); document.documentElement.classList.add('meridian-dark'); }"
+                } else {
+                    "if (document.documentElement) { document.documentElement.classList.remove('meridian-dark'); document.documentElement.classList.add('meridian-light'); }"
+                };
+                wv.evaluate_javascript(script, None, None, None::<&gio::Cancellable>, |_| {});
+            }
+        });
 
         let web_view_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
