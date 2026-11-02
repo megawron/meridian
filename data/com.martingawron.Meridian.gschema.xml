@@ -413,7 +413,7 @@
       <summary>Mark a message as read when it is viewed</summary>
     </key>
     <key name="mail-mark-seen-timeout" type="i">
-      <default>1500</default>
+      <default>0</default>
       <summary>Delay in milliseconds before automatically marking a viewed message as read</summary>
     </key>
     <key name="mail-caret-mode" type="b">
@@ -461,7 +461,7 @@
       <summary>Mark a message as read when it is selected</summary>
     </key>
     <key name="mark-read-timeout" type="i">
-      <default>1500</default>
+      <default>0</default>
       <summary>Delay in milliseconds before automatically marking a selected message as read</summary>
     </key>
     <key name="show-message-preview" type="b">

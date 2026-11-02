@@ -6214,7 +6214,7 @@ mod tests {
         assert!(!settings.use_ba_reminder());
         assert_eq!(settings.ba_reminder_interval(), 15);
         assert_eq!(settings.ba_reminder_units(), ReminderDurationUnit::Minutes);
-        assert!(!settings.hide_completed_tasks());
+        assert!(settings.hide_completed_tasks());
         assert_eq!(settings.hide_completed_tasks_value(), 1);
         assert_eq!(
             settings.hide_completed_tasks_units(),
@@ -6224,6 +6224,7 @@ mod tests {
         assert!(!settings.hide_cancelled_events());
 
         // 2. Cutoff calculation when disabled
+        settings.set_hide_completed_tasks(false);
         assert_eq!(
             settings.hide_completed_tasks_cutoff_timestamp(1_700_000_000),
             None
@@ -6339,7 +6340,7 @@ mod tests {
         assert!(!reset.use_ba_reminder());
         assert_eq!(reset.ba_reminder_interval(), 15);
         assert_eq!(reset.ba_reminder_units(), ReminderDurationUnit::Minutes);
-        assert!(!reset.hide_completed_tasks());
+        assert!(reset.hide_completed_tasks());
         assert_eq!(reset.hide_completed_tasks_value(), 1);
         assert_eq!(
             reset.hide_completed_tasks_units(),
@@ -6686,7 +6687,7 @@ mod tests {
         // 1. Defaults
         assert_eq!(settings.mail_image_loading_policy(), "never");
         assert!(settings.mail_mark_seen());
-        assert_eq!(settings.mail_mark_seen_timeout(), 1500);
+        assert_eq!(settings.mail_mark_seen_timeout(), 0);
         assert!(!settings.mail_caret_mode());
         assert!(settings.mail_magic_spacebar());
         assert!(settings.mail_citation_highlighting());
@@ -6810,7 +6811,7 @@ mod tests {
         let reset = settings_with_backend(&backend);
         assert_eq!(reset.mail_image_loading_policy(), "never");
         assert!(reset.mail_mark_seen());
-        assert_eq!(reset.mail_mark_seen_timeout(), 1500);
+        assert_eq!(reset.mail_mark_seen_timeout(), 0);
         assert!(!reset.mail_caret_mode());
         assert!(reset.mail_magic_spacebar());
         assert!(reset.mail_citation_highlighting());
@@ -6907,7 +6908,7 @@ mod tests {
         assert_eq!(settings.debug_console_enabled(), false);
         assert_eq!(settings.mail_show_mark_read_actions(), false);
         assert_eq!(settings.calendar_week_start(), "monday");
-        assert_eq!(settings.mark_read_timeout(), 1500);
+        assert_eq!(settings.mark_read_timeout(), 0);
         assert_eq!(settings.composer_html(), true);
         assert_eq!(settings.reminder_sound_enabled(), false);
         assert_eq!(settings.reminder_notify_with_tray(), true);
