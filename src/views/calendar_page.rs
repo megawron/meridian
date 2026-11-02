@@ -1828,6 +1828,7 @@ mod imp {
         pub(crate) chip_scale_save_source: RefCell<Option<glib::SourceId>>,
         pub(crate) time_grid_center_ratio_cleanup_source: RefCell<Option<glib::SourceId>>,
         pub(crate) active_quick_add_popover: RefCell<Option<gtk::Popover>>,
+        pub(crate) active_sidebar_hover_popover: RefCell<Option<gtk::Popover>>,
     }
 
     impl Default for CalendarPage {
@@ -2053,6 +2054,7 @@ mod imp {
                 chip_scale_save_source: RefCell::new(None),
                 time_grid_center_ratio_cleanup_source: RefCell::new(None),
                 active_quick_add_popover: RefCell::new(None),
+                active_sidebar_hover_popover: RefCell::new(None),
             }
         }
     }
@@ -2961,6 +2963,121 @@ impl CalendarPage {
             }
         });
         opt_box.append(&auto_btn);
+
+        let hover_chk = gtk::CheckButton::builder()
+            .label(&gettext("Hover preview"))
+            .active(crate::views::mail_page::SIDEBAR_HOVER_PREVIEW_ENABLED.load(Ordering::Relaxed))
+            .tooltip_text(&gettext("Show preview popover when hovering agenda items, tasks, or memos"))
+            .margin_top(2)
+            .build();
+        let page_weak_hover = self.downgrade();
+        hover_chk.connect_toggled(move |chk| {
+            let enabled = chk.is_active();
+            crate::views::mail_page::SIDEBAR_HOVER_PREVIEW_ENABLED.store(enabled, Ordering::Relaxed);
+            if !enabled {
+                if let Some(page) = page_weak_hover.upgrade() {
+                    page.dismiss_sidebar_hover_preview();
+                }
+            }
+        });
+        opt_box.append(&hover_chk);
+    }
+
+    pub fn dismiss_sidebar_hover_preview(&self) {
+        if let Some(popover) = self.imp().active_sidebar_hover_popover.borrow().as_ref() {
+            popover.popdown();
+        }
+    }
+
+    fn get_or_create_sidebar_hover_popover(
+        &self,
+        canvas: &gtk::DrawingArea,
+        rect: &gdk::Rectangle,
+        is_memo: bool,
+    ) -> gtk::Popover {
+        let existing = self.imp().active_sidebar_hover_popover.borrow().clone();
+        let popover = if let Some(pop) = existing {
+            if pop.parent().as_ref() == Some(canvas.upcast_ref()) {
+                if is_memo {
+                    pop.add_css_class("memo-note-popover");
+                } else {
+                    pop.remove_css_class("memo-note-popover");
+                }
+                pop
+            } else {
+                pop.popdown();
+                if pop.parent().is_some() {
+                    pop.unparent();
+                }
+                let mut classes = vec!["calendar-details-popover"];
+                if is_memo {
+                    classes.push("memo-note-popover");
+                }
+                let new_pop = gtk::Popover::builder()
+                    .autohide(false)
+                    .can_target(false)
+                    .focusable(false)
+                    .has_arrow(true)
+                    .position(gtk::PositionType::Left)
+                    .css_classes(classes)
+                    .build();
+                new_pop.set_parent(canvas);
+                self.imp().active_sidebar_hover_popover.replace(Some(new_pop.clone()));
+                new_pop
+            }
+        } else {
+            let mut classes = vec!["calendar-details-popover"];
+            if is_memo {
+                classes.push("memo-note-popover");
+            }
+            let new_pop = gtk::Popover::builder()
+                .autohide(false)
+                .can_target(false)
+                .focusable(false)
+                .has_arrow(true)
+                .position(gtk::PositionType::Left)
+                .css_classes(classes)
+                .build();
+            new_pop.set_parent(canvas);
+            self.imp().active_sidebar_hover_popover.replace(Some(new_pop.clone()));
+            new_pop
+        };
+        popover.set_pointing_to(Some(rect));
+        popover
+    }
+
+    pub(crate) fn show_sidebar_task_hover_preview(
+        &self,
+        canvas: &gtk::DrawingArea,
+        rect: gdk::Rectangle,
+        task: &crate::services::calendar_store_service::TaskRecord,
+    ) {
+        if canvas.root().is_none() {
+            return;
+        }
+        let popover = self.get_or_create_sidebar_hover_popover(canvas, &rect, false);
+        let content = crate::views::MailPage::build_task_hover_preview_content(task);
+        popover.set_child(Some(&content));
+        if !popover.is_visible() {
+            popover.popup();
+        }
+    }
+
+    pub(crate) fn show_sidebar_memo_hover_preview(
+        &self,
+        canvas: &gtk::DrawingArea,
+        rect: gdk::Rectangle,
+        memo: &crate::services::calendar_store_service::MemoRecord,
+    ) {
+        if canvas.root().is_none() {
+            return;
+        }
+        let popover = self.get_or_create_sidebar_hover_popover(canvas, &rect, true);
+        let content = crate::views::MailPage::build_memo_hover_preview_content(memo);
+        popover.set_child(Some(&content));
+        if !popover.is_visible() {
+            popover.popup();
+        }
     }
 
     fn populate_sidebar_tab_switcher(
@@ -4129,7 +4246,7 @@ impl CalendarPage {
             if visible {
                 let saved_pos = AppSettings::try_new()
                     .map(|s| s.mail_sidebar_position())
-                    .unwrap_or(260)
+                    .unwrap_or(240)
                     .clamp(crate::window::MIN_SIDEBAR_WIDTH, crate::window::MAX_SIDEBAR_WIDTH);
                 if paned.position() < 180 {
                     paned.set_position(saved_pos);
@@ -11176,6 +11293,7 @@ impl CalendarPage {
         let page_weak_click = self.downgrade();
         click_gesture.connect_pressed(move |gesture, n_press, x, y| {
             let Some(page) = page_weak_click.upgrade() else { return };
+            page.dismiss_sidebar_hover_preview();
             let Some(drawing_area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
             drawing_area.grab_focus();
             let layout_opt = page.imp().taskpad_layout.borrow().clone();
@@ -11252,6 +11370,22 @@ impl CalendarPage {
             if new_hover != *page.imp().taskpad_hovered_index.borrow() {
                 page.imp().taskpad_hovered_index.replace(new_hover);
                 drawing_area.queue_draw();
+                if let Some(idx) = new_hover {
+                    if crate::views::mail_page::SIDEBAR_HOVER_PREVIEW_ENABLED.load(Ordering::Relaxed) {
+                        if let Some(item) = layout.items.get(idx) {
+                            let width = drawing_area.width();
+                            let rect = gdk::Rectangle::new(
+                                4,
+                                (item.y as i32).max(0),
+                                (width - 8).max(10),
+                                (item.height as i32).max(10),
+                            );
+                            page.show_sidebar_task_hover_preview(&drawing_area, rect, &item.record);
+                        }
+                    }
+                } else {
+                    page.dismiss_sidebar_hover_preview();
+                }
             }
             if new_hover.is_some() {
                 drawing_area.set_cursor_from_name(Some("pointer"));
@@ -11267,6 +11401,7 @@ impl CalendarPage {
                 page.imp().taskpad_hovered_index.replace(None);
                 drawing_area.queue_draw();
             }
+            page.dismiss_sidebar_hover_preview();
             drawing_area.set_cursor_from_name(None);
         });
         taskpad_canvas.add_controller(motion);
@@ -11518,7 +11653,8 @@ impl CalendarPage {
             let Some(page) = page_weak_draw_memo.upgrade() else { return };
             let width = width_i32 as f64;
             let height = height_i32 as f64;
-            let is_dark = adw::StyleManager::default().is_dark();
+            let is_dark = adw::StyleManager::default().is_dark()
+                || AppSettings::try_new().map(|s| s.force_dark_mode()).unwrap_or(false);
             let layout_opt = page.imp().memopad_layout.borrow().clone();
             let hovered_idx = *page.imp().memopad_hovered_index.borrow();
             let selected_idx = *page.imp().memopad_selected_index.borrow();
@@ -11534,6 +11670,7 @@ impl CalendarPage {
         let page_weak_memo_click = self.downgrade();
         memo_click_gesture.connect_pressed(move |gesture, n_press, _x, y| {
             let Some(page) = page_weak_memo_click.upgrade() else { return };
+            page.dismiss_sidebar_hover_preview();
             let Some(drawing_area) = gesture.widget().and_then(|w| w.downcast::<gtk::DrawingArea>().ok()) else { return };
             drawing_area.grab_focus();
             let layout_opt = page.imp().memopad_layout.borrow().clone();
@@ -11626,6 +11763,22 @@ impl CalendarPage {
             if new_hover != *page.imp().memopad_hovered_index.borrow() {
                 page.imp().memopad_hovered_index.replace(new_hover);
                 drawing_area.queue_draw();
+                if let Some(idx) = new_hover {
+                    if crate::views::mail_page::SIDEBAR_HOVER_PREVIEW_ENABLED.load(Ordering::Relaxed) {
+                        if let Some(item) = layout.items.get(idx) {
+                            let width = drawing_area.width();
+                            let rect = gdk::Rectangle::new(
+                                6,
+                                (item.y as i32).max(0),
+                                (width - 12).max(10),
+                                (item.height as i32).max(10),
+                            );
+                            page.show_sidebar_memo_hover_preview(&drawing_area, rect, &item.record);
+                        }
+                    }
+                } else {
+                    page.dismiss_sidebar_hover_preview();
+                }
             }
             if new_hover.is_some() {
                 drawing_area.set_cursor_from_name(Some("pointer"));
@@ -11641,6 +11794,7 @@ impl CalendarPage {
                 page.imp().memopad_hovered_index.replace(None);
                 drawing_area.queue_draw();
             }
+            page.dismiss_sidebar_hover_preview();
             drawing_area.set_cursor_from_name(None);
         });
         memopad_canvas.add_controller(memo_motion);
@@ -12057,11 +12211,17 @@ impl CalendarPage {
 
         let sidebar_position = AppSettings::try_new()
             .map(|settings| settings.mail_sidebar_position())
-            .unwrap_or(260)
+            .unwrap_or(240)
             .clamp(crate::window::MIN_SIDEBAR_WIDTH, crate::window::MAX_SIDEBAR_WIDTH);
         paned.set_position(sidebar_position);
-        if let Some(settings) = AppSettings::try_new() {
+        {
+            let settings_opt = AppSettings::try_new();
             paned.connect_position_notify(move |paned| {
+                if let Some(win) = crate::window::find_meridian_window(paned) {
+                    if win.is_sidebar_animating() {
+                        return;
+                    }
+                }
                 if let Some(start) = paned.start_child() {
                     if !start.is_visible() {
                         return;
@@ -12075,8 +12235,10 @@ impl CalendarPage {
                 if let Some(win) = crate::window::find_meridian_window(paned) {
                     win.set_sidebar_position_sync(clamped);
                 }
-                if settings.mail_sidebar_position() != clamped {
-                    settings.set_mail_sidebar_position(clamped);
+                if let Some(settings) = settings_opt.as_ref() {
+                    if settings.mail_sidebar_position() != clamped {
+                        settings.set_mail_sidebar_position(clamped);
+                    }
                 }
             });
         }
@@ -14041,6 +14203,7 @@ impl CalendarPage {
         let day_groups: Vec<gtk::SizeGroup> = (0..days.len())
             .map(|_| gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal))
             .collect();
+        let equal_day_header_group = gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal);
 
         // ══════════════════════════════════════════════════════════════════════════
         // Sticky Header Grid: Day Names & Dates (Row 0) + All-Day Events (Row 1)
@@ -14112,19 +14275,27 @@ impl CalendarPage {
                 .build();
             header_cell.append(&day_name);
             header_cell.append(&day_num);
+            equal_day_header_group.add_widget(&header_cell);
             day_groups[day_index].add_widget(&header_cell);
             header_grid.attach(&header_cell, day_index as i32 + day_column_offset, 0, 1, 1);
         }
 
         // Collect unique all-day and multi-day events across the displayed days
-        let mut unique_allday: Vec<CalendarEventRecord> = Vec::new();
+        let mut unique_allday: Vec<(CalendarEventRecord, Option<CalendarDateRange>)> = Vec::new();
         let mut seen_ids: HashSet<String> = HashSet::new();
         for day in days {
             if let Some(day_events) = events_by_date.get(day) {
-                for event in day_events.iter().filter(|e| e.all_day || event_display_range(e).map(|r| r.len_days() > 1).unwrap_or(false)) {
-                    let id = format!("{}_{}_{}", event.uid, event.summary, event.start);
-                    if seen_ids.insert(id) {
-                        unique_allday.push(event.clone());
+                for event in day_events.iter() {
+                    let occ_range = event_occurrence_range_for_date(event, *day)
+                        .or_else(|| event_display_range(event));
+                    if event.all_day || occ_range.map(|r| r.len_days() > 1).unwrap_or(false) {
+                        let range_key = occ_range
+                            .map(|r| r.start.to_string())
+                            .unwrap_or_else(|| event.start.clone());
+                        let id = format!("{}_{}_{}", event.uid, event.summary, range_key);
+                        if seen_ids.insert(id) {
+                            unique_allday.push((event.clone(), occ_range));
+                        }
                     }
                 }
             }
@@ -14132,13 +14303,13 @@ impl CalendarPage {
 
         struct AlldaySpan {
             event: CalendarEventRecord,
+            range: Option<CalendarDateRange>,
             start_col: usize,
             span: usize,
         }
 
         let mut spans: Vec<AlldaySpan> = Vec::new();
-        for event in &unique_allday {
-            let range = event_display_range(event);
+        for (event, range) in &unique_allday {
             let mut start_idx = None;
             let mut end_idx = 0;
             for (idx, day) in days.iter().enumerate() {
@@ -14155,6 +14326,7 @@ impl CalendarPage {
                 if span > 0 {
                     spans.push(AlldaySpan {
                         event: event.clone(),
+                        range: *range,
                         start_col: s,
                         span,
                     });
@@ -14300,6 +14472,7 @@ impl CalendarPage {
 
         let base_days_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
+            .homogeneous(true)
             .spacing(0)
             .hexpand(true)
             .vexpand(false)
@@ -14335,7 +14508,7 @@ impl CalendarPage {
             .build();
 
         for (item, track) in spans_with_tracks {
-            let range = event_display_range(&item.event);
+            let range = item.range.or_else(|| event_display_range(&item.event));
             let cont_left = range.as_ref().map(|r| r.start < days[0]).unwrap_or(false);
             let cont_right = range.as_ref().map(|r| r.last_inclusive() > days[days.len() - 1]).unwrap_or(false);
 
@@ -14366,6 +14539,18 @@ impl CalendarPage {
                 item.span as i32,
                 1,
             );
+        }
+
+        // Ensure every day column (0..days.len()) in allday_grid has an explicit 1-column
+        // hexpanding anchor so GtkGrid never collapses empty or multi-span-only columns.
+        for col in 0..days.len() {
+            let col_anchor = gtk::Box::builder()
+                .hexpand(true)
+                .vexpand(false)
+                .height_request(0)
+                .can_target(false)
+                .build();
+            allday_grid.attach(&col_anchor, col as i32, 0, 1, 1);
         }
 
         days_overlay.add_overlay(&allday_grid);
@@ -36434,6 +36619,15 @@ mod tests {
         let chip_track1 = allday_grid.child_at(1, 1);
         assert!(chip_track0.is_some(), "Track 0 must contain event 1");
         assert!(chip_track1.is_some(), "Track 1 must contain event 2");
+
+        // Verify every day column (0..days.len()) has a 1-column anchor at row 0 so GtkGrid
+        // never collapses empty or multi-span-only columns.
+        for col in 0..days.len() {
+            assert!(
+                allday_grid.child_at(col as i32, 0).is_some(),
+                "Column {col} must have a child in allday_grid so day boundaries align"
+            );
+        }
     }
 
     #[test]

@@ -15,6 +15,8 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration as StdDuration, Instant};
 
+pub(crate) static SIDEBAR_HOVER_PREVIEW_ENABLED: AtomicBool = AtomicBool::new(true);
+
 use crate::dialogs::{
     FolderSortOrderDialog, FolderSortOrderItem, FolderSortOrderOutcome, FolderSubscriptionsDialog,
 };
@@ -36041,6 +36043,24 @@ impl MailPage {
             }
         });
         opt_box.append(&auto_btn);
+
+        let hover_chk = gtk::CheckButton::builder()
+            .label(&gettext("Hover preview"))
+            .active(SIDEBAR_HOVER_PREVIEW_ENABLED.load(Ordering::Relaxed))
+            .tooltip_text(&gettext("Show preview popover when hovering agenda items, tasks, or memos"))
+            .margin_top(2)
+            .build();
+        let page_weak_hover = self.downgrade();
+        hover_chk.connect_toggled(move |chk| {
+            let enabled = chk.is_active();
+            SIDEBAR_HOVER_PREVIEW_ENABLED.store(enabled, Ordering::Relaxed);
+            if !enabled {
+                if let Some(page) = page_weak_hover.upgrade() {
+                    page.dismiss_memo_hover_preview();
+                }
+            }
+        });
+        opt_box.append(&hover_chk);
     }
 
     fn populate_mail_sidebar_tab_switcher(
@@ -37305,15 +37325,60 @@ impl MailPage {
         let canvas_for_motion = agenda_canvas.clone();
         motion.connect_motion(move |_ctrl, x, y| {
             let Some(page) = page_for_motion.upgrade() else { return; };
-            let items = page.imp().agenda_canvas_items.borrow();
+            let items = page.imp().agenda_canvas_items.borrow().clone();
             let hovered = hit_test_agenda_canvas(&items, x, y);
             let prev = page.imp().agenda_canvas_hovered_row.get();
             if hovered != prev {
                 page.imp().agenda_canvas_hovered_row.set(hovered);
-                if hovered.is_some() {
+                if let Some(idx) = hovered {
                     canvas_for_motion.set_cursor_from_name(Some("pointer"));
+                    if SIDEBAR_HOVER_PREVIEW_ENABLED.load(Ordering::Relaxed)
+                        && !page.imp().active_agenda_popover.borrow().as_ref().is_some_and(|p| p.is_visible())
+                    {
+                        if let Some(item) = items.get(idx) {
+                            let width = canvas_for_motion.width();
+                            match item {
+                                AgendaSidebarCanvasItem::EventBar { event, y: bar_y, height: bar_h, .. } => {
+                                    let use_12h = AppSettings::try_new()
+                                        .map(|s| s.resolved_time_format() == "12h")
+                                        .unwrap_or(false);
+                                    let rect = gdk::Rectangle::new(
+                                        4,
+                                        (*bar_y as i32 + 1).max(0),
+                                        (width - 8).max(10),
+                                        (*bar_h as i32 - 2).max(10),
+                                    );
+                                    Self::show_agenda_event_hover_preview(
+                                        &canvas_for_motion,
+                                        rect,
+                                        event,
+                                        page.downgrade(),
+                                        use_12h,
+                                    );
+                                }
+                                AgendaSidebarCanvasItem::TaskRow { task, y: row_y, height: row_h, .. } => {
+                                    let rect = gdk::Rectangle::new(
+                                        4,
+                                        (*row_y as i32).max(0),
+                                        (width - 8).max(10),
+                                        (*row_h as i32).max(10),
+                                    );
+                                    Self::show_agenda_task_hover_preview(
+                                        &canvas_for_motion,
+                                        rect,
+                                        task,
+                                        page.downgrade(),
+                                    );
+                                }
+                                _ => {
+                                    page.dismiss_memo_hover_preview();
+                                }
+                            }
+                        }
+                    }
                 } else {
                     canvas_for_motion.set_cursor_from_name(None);
+                    page.dismiss_memo_hover_preview();
                 }
                 canvas_for_motion.queue_draw();
             }
@@ -37327,6 +37392,7 @@ impl MailPage {
                 canvas_for_leave.set_cursor_from_name(None);
                 canvas_for_leave.queue_draw();
             }
+            page.dismiss_memo_hover_preview();
         });
         agenda_canvas.add_controller(motion);
         let page_for_agenda_resize = self.downgrade();
@@ -37702,15 +37768,37 @@ impl MailPage {
         let canvas_for_tasks_motion = agenda_tasks_canvas.clone();
         tasks_motion.connect_motion(move |_ctrl, x, y| {
             let Some(page) = page_for_tasks_motion.upgrade() else { return; };
-            let items = page.imp().agenda_tasks_canvas_items.borrow();
+            let items = page.imp().agenda_tasks_canvas_items.borrow().clone();
             let hovered = hit_test_agenda_canvas(&items, x, y);
             let prev = page.imp().agenda_tasks_hovered_row.get();
             if hovered != prev {
                 page.imp().agenda_tasks_hovered_row.set(hovered);
-                if hovered.is_some() {
+                if let Some(idx) = hovered {
                     canvas_for_tasks_motion.set_cursor_from_name(Some("pointer"));
+                    if SIDEBAR_HOVER_PREVIEW_ENABLED.load(Ordering::Relaxed)
+                        && !page.imp().active_agenda_popover.borrow().as_ref().is_some_and(|p| p.is_visible())
+                    {
+                        if let Some(AgendaSidebarCanvasItem::TaskRow { task, y: row_y, height: row_h, .. }) = items.get(idx) {
+                            let width = canvas_for_tasks_motion.width();
+                            let rect = gdk::Rectangle::new(
+                                4,
+                                (*row_y as i32).max(0),
+                                (width - 8).max(10),
+                                (*row_h as i32).max(10),
+                            );
+                            Self::show_agenda_task_hover_preview(
+                                &canvas_for_tasks_motion,
+                                rect,
+                                task,
+                                page.downgrade(),
+                            );
+                        } else {
+                            page.dismiss_memo_hover_preview();
+                        }
+                    }
                 } else {
                     canvas_for_tasks_motion.set_cursor_from_name(None);
+                    page.dismiss_memo_hover_preview();
                 }
                 canvas_for_tasks_motion.queue_draw();
             }
@@ -37724,6 +37812,7 @@ impl MailPage {
                 canvas_for_tasks_leave.set_cursor_from_name(None);
                 canvas_for_tasks_leave.queue_draw();
             }
+            page.dismiss_memo_hover_preview();
         });
         agenda_tasks_canvas.add_controller(tasks_motion);
         let page_for_tasks_resize = self.downgrade();
@@ -38006,20 +38095,24 @@ impl MailPage {
                 page.imp().agenda_memos_hovered_row.set(hovered);
                 if let Some(idx) = hovered {
                     canvas_for_memos_motion.set_cursor_from_name(Some("pointer"));
-                    if let Some(item) = layout.items.get(idx) {
-                        let width = canvas_for_memos_motion.width();
-                        let rect = gdk::Rectangle::new(
-                            6,
-                            (item.y as i32).max(0),
-                            (width - 12).max(10),
-                            (item.height as i32).max(10),
-                        );
-                        Self::show_agenda_memo_hover_preview(
-                            &canvas_for_memos_motion,
-                            rect,
-                            &item.record,
-                            page.downgrade(),
-                        );
+                    if SIDEBAR_HOVER_PREVIEW_ENABLED.load(Ordering::Relaxed)
+                        && !page.imp().active_agenda_popover.borrow().as_ref().is_some_and(|p| p.is_visible())
+                    {
+                        if let Some(item) = layout.items.get(idx) {
+                            let width = canvas_for_memos_motion.width();
+                            let rect = gdk::Rectangle::new(
+                                6,
+                                (item.y as i32).max(0),
+                                (width - 12).max(10),
+                                (item.height as i32).max(10),
+                            );
+                            Self::show_agenda_memo_hover_preview(
+                                &canvas_for_memos_motion,
+                                rect,
+                                &item.record,
+                                page.downgrade(),
+                            );
+                        }
                     }
                 } else {
                     canvas_for_memos_motion.set_cursor_from_name(None);
@@ -39254,11 +39347,12 @@ impl MailPage {
         popover.popup();
     }
 
-    fn show_agenda_memo_hover_preview(
+    pub(crate) fn show_agenda_event_hover_preview(
         canvas: &gtk::DrawingArea,
         rect: gdk::Rectangle,
-        memo: &crate::services::calendar_store_service::MemoRecord,
+        event: &crate::services::calendar_store_service::CalendarEventRecord,
         page_weak: glib::WeakRef<MailPage>,
+        use_12h: bool,
     ) {
         let Some(page) = page_weak.upgrade() else { return; };
         if canvas.root().is_none() {
@@ -39268,6 +39362,7 @@ impl MailPage {
             let existing = page.imp().active_memo_hover_popover.borrow().clone();
             if let Some(pop) = existing {
                 if pop.parent().as_ref() == Some(canvas.upcast_ref()) {
+                    pop.remove_css_class("memo-note-popover");
                     pop
                 } else {
                     pop.popdown();
@@ -39280,7 +39375,7 @@ impl MailPage {
                         .focusable(false)
                         .has_arrow(true)
                         .position(gtk::PositionType::Left)
-                        .css_classes(vec!["calendar-details-popover", "memo-note-popover"])
+                        .css_classes(vec!["calendar-details-popover"])
                         .build();
                     new_pop.set_parent(canvas);
                     page.imp().active_memo_hover_popover.replace(Some(new_pop.clone()));
@@ -39293,7 +39388,7 @@ impl MailPage {
                     .focusable(false)
                     .has_arrow(true)
                     .position(gtk::PositionType::Left)
-                    .css_classes(vec!["calendar-details-popover", "memo-note-popover"])
+                    .css_classes(vec!["calendar-details-popover"])
                     .build();
                 new_pop.set_parent(canvas);
                 page.imp().active_memo_hover_popover.replace(Some(new_pop.clone()));
@@ -39302,6 +39397,273 @@ impl MailPage {
         };
         popover.set_pointing_to(Some(&rect));
 
+        let content = Self::build_event_hover_preview_content(event, use_12h);
+        popover.set_child(Some(&content));
+        if !popover.is_visible() {
+            popover.popup();
+        }
+    }
+
+    pub(crate) fn build_event_hover_preview_content(
+        event: &crate::services::calendar_store_service::CalendarEventRecord,
+        use_12h: bool,
+    ) -> gtk::Box {
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .margin_start(10)
+            .margin_end(10)
+            .margin_top(8)
+            .margin_bottom(8)
+            .width_request(256)
+            .can_target(false)
+            .build();
+
+        let default_title = gettext("(Untitled)");
+        let title = if event.summary.trim().is_empty() {
+            &default_title
+        } else {
+            event.summary.trim()
+        };
+
+        let header_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .valign(gtk::Align::Center)
+            .can_target(false)
+            .build();
+
+        let color_dot = gtk::DrawingArea::builder()
+            .content_width(10)
+            .content_height(10)
+            .valign(gtk::Align::Center)
+            .can_target(false)
+            .build();
+        let hex_color = crate::views::calendar_page::event_color_for_record(event);
+        color_dot.set_draw_func(move |_, cr, w, h| {
+            if let Ok(c) = gdk::RGBA::parse(&hex_color) {
+                cr.set_source_rgba(c.red() as f64, c.green() as f64, c.blue() as f64, 1.0);
+                cr.arc(w as f64 / 2.0, h as f64 / 2.0, (w.min(h) as f64) / 2.0, 0.0, std::f64::consts::TAU);
+                let _ = cr.fill();
+            }
+        });
+        header_row.append(&color_dot);
+
+        let title_label = gtk::Label::builder()
+            .label(title)
+            .wrap(true)
+            .wrap_mode(pango::WrapMode::WordChar)
+            .xalign(0.0)
+            .hexpand(true)
+            .css_classes(vec!["heading"])
+            .can_target(false)
+            .build();
+        header_row.append(&title_label);
+        content.append(&header_row);
+
+        let start_dt = crate::views::calendar_page::event_start_datetime(event);
+        let end_dt = crate::views::calendar_page::event_end_datetime(event);
+        let time_str = if event.all_day {
+            gettext("All Day")
+        } else {
+            match (start_dt, end_dt) {
+                (Some(s), Some(e)) => format!(
+                    "{} – {}",
+                    Self::format_agenda_time(s, use_12h),
+                    Self::format_agenda_time(e, use_12h)
+                ),
+                (Some(s), None) => Self::format_agenda_time(s, use_12h),
+                _ => event.start.clone(),
+            }
+        };
+        let time_label = gtk::Label::builder()
+            .label(&time_str)
+            .xalign(0.0)
+            .css_classes(vec!["caption", "dim-label"])
+            .can_target(false)
+            .build();
+        content.append(&time_label);
+
+        if !event.location.trim().is_empty() {
+            let loc_label = gtk::Label::builder()
+                .label(event.location.trim())
+                .xalign(0.0)
+                .ellipsize(pango::EllipsizeMode::End)
+                .max_width_chars(36)
+                .css_classes(vec!["caption"])
+                .can_target(false)
+                .build();
+            content.append(&loc_label);
+        }
+
+        if !event.description.trim().is_empty() {
+            let desc_label = gtk::Label::builder()
+                .label(event.description.trim())
+                .wrap(true)
+                .wrap_mode(pango::WrapMode::WordChar)
+                .xalign(0.0)
+                .lines(4)
+                .ellipsize(pango::EllipsizeMode::End)
+                .max_width_chars(36)
+                .css_classes(vec!["caption", "dim-label"])
+                .can_target(false)
+                .build();
+            content.append(&desc_label);
+        }
+
+        content
+    }
+
+    pub(crate) fn show_agenda_task_hover_preview(
+        canvas: &gtk::DrawingArea,
+        rect: gdk::Rectangle,
+        task: &crate::services::calendar_store_service::TaskRecord,
+        page_weak: glib::WeakRef<MailPage>,
+    ) {
+        let Some(page) = page_weak.upgrade() else { return; };
+        if canvas.root().is_none() {
+            return;
+        }
+        let popover = {
+            let existing = page.imp().active_memo_hover_popover.borrow().clone();
+            if let Some(pop) = existing {
+                if pop.parent().as_ref() == Some(canvas.upcast_ref()) {
+                    pop.remove_css_class("memo-note-popover");
+                    pop
+                } else {
+                    pop.popdown();
+                    if pop.parent().is_some() {
+                        pop.unparent();
+                    }
+                    let new_pop = gtk::Popover::builder()
+                        .autohide(false)
+                        .can_target(false)
+                        .focusable(false)
+                        .has_arrow(true)
+                        .position(gtk::PositionType::Left)
+                        .css_classes(vec!["calendar-details-popover"])
+                        .build();
+                    new_pop.set_parent(canvas);
+                    page.imp().active_memo_hover_popover.replace(Some(new_pop.clone()));
+                    new_pop
+                }
+            } else {
+                let new_pop = gtk::Popover::builder()
+                    .autohide(false)
+                    .can_target(false)
+                    .focusable(false)
+                    .has_arrow(true)
+                    .position(gtk::PositionType::Left)
+                    .css_classes(vec!["calendar-details-popover"])
+                    .build();
+                new_pop.set_parent(canvas);
+                page.imp().active_memo_hover_popover.replace(Some(new_pop.clone()));
+                new_pop
+            }
+        };
+        popover.set_pointing_to(Some(&rect));
+
+        let content = Self::build_task_hover_preview_content(task);
+        popover.set_child(Some(&content));
+        if !popover.is_visible() {
+            popover.popup();
+        }
+    }
+
+    pub(crate) fn build_task_hover_preview_content(
+        task: &crate::services::calendar_store_service::TaskRecord,
+    ) -> gtk::Box {
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .margin_start(10)
+            .margin_end(10)
+            .margin_top(8)
+            .margin_bottom(8)
+            .width_request(256)
+            .can_target(false)
+            .build();
+
+        let default_title = gettext("(Untitled)");
+        let title = if task.summary.trim().is_empty() {
+            &default_title
+        } else {
+            task.summary.trim()
+        };
+
+        let header_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .valign(gtk::Align::Center)
+            .can_target(false)
+            .build();
+
+        let task_icon = gtk::Image::builder()
+            .icon_name(if task.completed { "emblem-ok-symbolic" } else { "checkbox-checked-symbolic" })
+            .pixel_size(14)
+            .valign(gtk::Align::Center)
+            .css_classes(vec![if task.completed { "success" } else { "accent" }])
+            .build();
+        header_row.append(&task_icon);
+
+        let title_label = gtk::Label::builder()
+            .label(title)
+            .wrap(true)
+            .wrap_mode(pango::WrapMode::WordChar)
+            .xalign(0.0)
+            .hexpand(true)
+            .css_classes(vec!["heading"])
+            .can_target(false)
+            .build();
+        header_row.append(&title_label);
+        content.append(&header_row);
+
+        let status_str = if task.completed {
+            gettext("Status: Completed")
+        } else {
+            gettext("Status: Open")
+        };
+        let status_label = gtk::Label::builder()
+            .label(&status_str)
+            .xalign(0.0)
+            .css_classes(vec!["caption", "dim-label"])
+            .can_target(false)
+            .build();
+        content.append(&status_label);
+
+        if !task.due.trim().is_empty() {
+            let due_label = gtk::Label::builder()
+                .label(&format!("{}: {}", gettext("Due"), task.due.trim()))
+                .xalign(0.0)
+                .css_classes(vec!["caption", "dim-label"])
+                .can_target(false)
+                .build();
+            content.append(&due_label);
+        }
+
+        let list_name = task.source_display_name.trim();
+        let is_duplicate_list = list_name.is_empty()
+            || list_name.eq_ignore_ascii_case("Aufgaben")
+            || list_name.eq_ignore_ascii_case("Tasks")
+            || list_name.eq_ignore_ascii_case("Aufgabenliste")
+            || list_name.eq_ignore_ascii_case("Task list")
+            || list_name.eq_ignore_ascii_case(title);
+        if !is_duplicate_list {
+            let list_label = gtk::Label::builder()
+                .label(list_name)
+                .xalign(0.0)
+                .css_classes(vec!["caption", "dim-label"])
+                .can_target(false)
+                .build();
+            content.append(&list_label);
+        }
+
+        content
+    }
+
+    pub(crate) fn build_memo_hover_preview_content(
+        memo: &crate::services::calendar_store_service::MemoRecord,
+    ) -> gtk::Box {
         let content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(6)
@@ -39456,6 +39818,59 @@ impl MailPage {
             content.append(&mail_context_row);
         }
 
+        content
+    }
+
+    fn show_agenda_memo_hover_preview(
+        canvas: &gtk::DrawingArea,
+        rect: gdk::Rectangle,
+        memo: &crate::services::calendar_store_service::MemoRecord,
+        page_weak: glib::WeakRef<MailPage>,
+    ) {
+        let Some(page) = page_weak.upgrade() else { return; };
+        if canvas.root().is_none() {
+            return;
+        }
+        let popover = {
+            let existing = page.imp().active_memo_hover_popover.borrow().clone();
+            if let Some(pop) = existing {
+                if pop.parent().as_ref() == Some(canvas.upcast_ref()) {
+                    pop.add_css_class("memo-note-popover");
+                    pop
+                } else {
+                    pop.popdown();
+                    if pop.parent().is_some() {
+                        pop.unparent();
+                    }
+                    let new_pop = gtk::Popover::builder()
+                        .autohide(false)
+                        .can_target(false)
+                        .focusable(false)
+                        .has_arrow(true)
+                        .position(gtk::PositionType::Left)
+                        .css_classes(vec!["calendar-details-popover", "memo-note-popover"])
+                        .build();
+                    new_pop.set_parent(canvas);
+                    page.imp().active_memo_hover_popover.replace(Some(new_pop.clone()));
+                    new_pop
+                }
+            } else {
+                let new_pop = gtk::Popover::builder()
+                    .autohide(false)
+                    .can_target(false)
+                    .focusable(false)
+                    .has_arrow(true)
+                    .position(gtk::PositionType::Left)
+                    .css_classes(vec!["calendar-details-popover", "memo-note-popover"])
+                    .build();
+                new_pop.set_parent(canvas);
+                page.imp().active_memo_hover_popover.replace(Some(new_pop.clone()));
+                new_pop
+            }
+        };
+        popover.set_pointing_to(Some(&rect));
+
+        let content = Self::build_memo_hover_preview_content(memo);
         popover.set_child(Some(&content));
         if !popover.is_visible() {
             popover.popup();

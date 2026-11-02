@@ -906,26 +906,14 @@ impl MailViewer {
         self.set_trash_banner_visible(false);
         self.set_junk_banner_visible(false);
         self.imp().last_measured_content_height.set(None);
-        if message_id.is_some() {
-            self.imp().adapted_card_height.set(Some(52));
-            self.set_vexpand(false);
-            self.set_valign(gtk::Align::Start);
-            self.set_height_request(52);
-            if let Some(box_container) = self.imp().box_container.borrow().as_ref() {
-                box_container.set_vexpand(false);
-                box_container.set_valign(gtk::Align::Start);
-                box_container.set_height_request(52);
-            }
-        } else {
-            self.imp().adapted_card_height.set(None);
-            self.set_vexpand(true);
-            self.set_valign(gtk::Align::Fill);
-            self.set_height_request(-1);
-            if let Some(box_container) = self.imp().box_container.borrow().as_ref() {
-                box_container.set_vexpand(true);
-                box_container.set_valign(gtk::Align::Fill);
-                box_container.set_height_request(-1);
-            }
+        self.imp().adapted_card_height.set(None);
+        self.set_vexpand(true);
+        self.set_valign(gtk::Align::Fill);
+        self.set_height_request(-1);
+        if let Some(box_container) = self.imp().box_container.borrow().as_ref() {
+            box_container.set_vexpand(true);
+            box_container.set_valign(gtk::Align::Fill);
+            box_container.set_height_request(-1);
         }
 
         #[cfg(target_os = "linux")]

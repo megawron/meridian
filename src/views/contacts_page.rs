@@ -1707,13 +1707,19 @@ impl ContactsPage {
             let is_last_visible = last_visible_col_id.as_deref() == Some(*col_id);
 
             if let Some(col_box) = Self::contact_column_child(&header, col_id) {
-                col_box.set_visible(visible);
-                if is_last_visible {
-                    col_box.set_width_request(30);
-                    col_box.set_hexpand(true);
+                if col_box.is_visible() != visible {
+                    col_box.set_visible(visible);
+                }
+                let (req_w, hexp) = if is_last_visible {
+                    (30, true)
                 } else {
-                    col_box.set_width_request((width - 1).max(30));
-                    col_box.set_hexpand(false);
+                    ((width - 1).max(30), false)
+                };
+                if col_box.width_request() != req_w {
+                    col_box.set_width_request(req_w);
+                }
+                if col_box.hexpands() != hexp {
+                    col_box.set_hexpand(hexp);
                 }
 
                 let label_name = format!("contact-column-label-{col_id}");
@@ -1721,7 +1727,10 @@ impl ContactsPage {
                 while let Some(w) = child {
                     if w.widget_name() == label_name {
                         if let Some(lbl) = w.downcast_ref::<gtk::Label>() {
-                            lbl.set_label(&self.contact_header_sort_label(col));
+                            let new_lbl = self.contact_header_sort_label(col);
+                            if lbl.label() != new_lbl.as_str() {
+                                lbl.set_label(&new_lbl);
+                            }
                         }
                         break;
                     }
@@ -1733,7 +1742,10 @@ impl ContactsPage {
             let mut child = header.first_child();
             while let Some(w) = child {
                 if w.widget_name() == sep_name {
-                    w.set_visible(visible && !is_last_visible);
+                    let sep_vis = visible && !is_last_visible;
+                    if w.is_visible() != sep_vis {
+                        w.set_visible(sep_vis);
+                    }
                     break;
                 }
                 child = w.next_sibling();
@@ -2284,19 +2296,30 @@ impl ContactsPage {
             let paned_w = preview_paned.width();
             let min_child_w = if paned_w > 0 && paned_w < 440 { 140 } else { 200 };
             if let Some(lc) = list_container.as_ref() {
-                lc.set_size_request(min_child_w, -1);
+                if lc.width_request() != min_child_w {
+                    lc.set_size_request(min_child_w, -1);
+                }
                 lc.set_overflow(gtk::Overflow::Hidden);
-                lc.set_visible(true);
+                if !lc.is_visible() {
+                    lc.set_visible(true);
+                }
             }
             if let Some(db) = detail_box.as_ref() {
-                db.set_size_request(if preview_enabled { min_child_w } else { 0 }, -1);
+                let db_req = if preview_enabled { min_child_w } else { 0 };
+                if db.width_request() != db_req {
+                    db.set_size_request(db_req, -1);
+                }
                 db.set_overflow(gtk::Overflow::Hidden);
-                db.set_visible(preview_enabled);
+                if db.is_visible() != preview_enabled {
+                    db.set_visible(preview_enabled);
+                }
             }
             match imp.current_view_mode.get() {
                 ContactViewMode::Table => {
                     if let Some(alpha) = imp.alphabet_scroll.borrow().as_ref() {
-                        alpha.set_visible(false);
+                        if alpha.is_visible() {
+                            alpha.set_visible(false);
+                        }
                     }
                     let mut pos = imp.table_vpane_pos.get().max(340);
                     if preview_enabled {
@@ -2309,12 +2332,16 @@ impl ContactsPage {
                         } else if paned_w > 0 {
                             pos = (paned_w / 2).max(120);
                         }
-                        preview_paned.set_position(pos);
+                        if (preview_paned.position() - pos).abs() > 1 {
+                            preview_paned.set_position(pos);
+                        }
                     }
                 }
                 ContactViewMode::Simple => {
                     if let Some(alpha) = imp.alphabet_scroll.borrow().as_ref() {
-                        alpha.set_visible(true);
+                        if !alpha.is_visible() {
+                            alpha.set_visible(true);
+                        }
                     }
                     let mut pos = imp.simple_vpane_pos.get().max(280);
                     if preview_enabled {
@@ -2327,7 +2354,9 @@ impl ContactsPage {
                         } else if paned_w > 0 {
                             pos = (paned_w / 2).max(120);
                         }
-                        preview_paned.set_position(pos);
+                        if (preview_paned.position() - pos).abs() > 1 {
+                            preview_paned.set_position(pos);
+                        }
                     }
                 }
             }
@@ -3526,18 +3555,19 @@ impl ContactsPage {
             let page_weak_resize = self.downgrade();
             contact_table_canvas.connect_resize(move |canvas, width, _height| {
                 if let Some(page) = page_weak_resize.upgrade() {
+                    let mut needs_sync = false;
                     if !page.imp().is_mobile.get() {
                         if let Some(paned) = page.imp().contact_preview_paned.borrow().as_ref() {
                             let pw = paned.width();
                             let pos = paned.position();
                             if pw >= 440 && (pos < 200 || pos > pw - 200) {
-                                page.sync_contacts_layout_visibility();
+                                needs_sync = true;
                             } else if pw > 0 && pw < 440 && (pos < 100 || pos > pw - 100) {
-                                page.sync_contacts_layout_visibility();
+                                needs_sync = true;
                             }
                         }
                     }
-                    let target_w = (width as f64).max(300.0);
+                    let target_w = if width > 100 { width as f64 } else { 600.0 };
                     let width_changed = page
                         .imp()
                         .contact_table_layout
@@ -3545,11 +3575,16 @@ impl ContactsPage {
                         .as_ref()
                         .map(|l| (l.width - target_w).abs() > 1.0)
                         .unwrap_or(true);
-                    if width_changed {
+                    if needs_sync || width_changed {
                         let page_for_idle = page.downgrade();
                         glib::idle_add_local_once(move || {
                             if let Some(p) = page_for_idle.upgrade() {
-                                p.refresh_table_canvas();
+                                if needs_sync {
+                                    p.sync_contacts_layout_visibility();
+                                }
+                                if width_changed {
+                                    p.refresh_table_canvas();
+                                }
                             }
                         });
                     }
@@ -6048,7 +6083,12 @@ impl ContactsPage {
                             ContactViewMode::Simple => page.imp().simple_vpane_pos.set(pos),
                             ContactViewMode::Table => {
                                 page.imp().table_vpane_pos.set(pos);
-                                page.refresh_table_canvas();
+                                let page_for_idle = page.downgrade();
+                                glib::idle_add_local_once(move || {
+                                    if let Some(p) = page_for_idle.upgrade() {
+                                        p.refresh_table_canvas();
+                                    }
+                                });
                             }
                         }
                     }
@@ -6699,16 +6739,20 @@ fn refresh_contacts(
             empty_state.set_visible(contact_status_needs_visibility(contact_count, warning));
 
             if !same_data || contact_list.row_at_index(0).is_none() {
+                if let Some(page) = page_weak.upgrade() {
+                    page.imp().is_syncing_selection.set(true);
+                }
                 while let Some(row) = contact_list.row_at_index(0) {
                     contact_list.remove(&row);
                 }
                 let contacts = result.contacts;
-                let mut stored_ref = stored_contacts.borrow_mut();
-                *stored_ref = contacts.clone();
+                *stored_contacts.borrow_mut() = contacts.clone();
                 for record in &contacts {
                     append_contact_row(&contact_list, record);
                 }
-                drop(stored_ref);
+                if let Some(page) = page_weak.upgrade() {
+                    page.imp().is_syncing_selection.set(false);
+                }
                 mark_duplicate_rows(&contact_list, &stored_contacts);
                 refresh_contact_category_model(
                     &category_model,
@@ -8704,8 +8748,8 @@ fn upsert_contact_row(
         stored_contacts.borrow_mut().remove(index);
         remove_contact_list_row(contact_list, &record.source_uid, &record.uid);
     }
+    stored_contacts.borrow_mut().push(record.clone());
     append_contact_row(contact_list, &record);
-    stored_contacts.borrow_mut().push(record);
     mark_duplicate_rows(contact_list, &stored_contacts);
 }
 
