@@ -294,15 +294,23 @@ impl AccountSetupDialog {
 
     pub fn new_for_edit(profile: &AccountProfile) -> Self {
         let is_goa = profile.protocol == AccountProtocol::Goa || profile.id.starts_with("eds:");
-        let (width, height) = if is_goa { (460, 620) } else { (480, 640) };
+        let (width, height) = if is_goa { (420, -1) } else { (460, 620) };
         let encoded = serde_json::to_string(profile).expect("account profile should serialize");
         glib::Object::builder()
             .property("title", "Account Settings")
             .property("content-width", width)
             .property("content-height", height)
-            .property("follows-content-size", false)
+            .property("follows-content-size", is_goa)
             .property("edit-profile-json", encoded)
             .build()
+    }
+
+    pub fn present_non_modal(&self) {
+        adw::prelude::AdwDialogExt::present(self, None::<&gtk::Widget>);
+        if let Some(win) = self.root().and_downcast::<gtk::Window>() {
+            win.set_modal(false);
+            win.set_resizable(true);
+        }
     }
 
     pub fn was_modified(&self) -> bool {
@@ -516,13 +524,13 @@ impl AccountSetupDialog {
             .as_ref()
             .is_some_and(|p| p.protocol == AccountProtocol::Goa || p.id.starts_with("eds:"));
         if is_editing_goa {
+            self.set_content_width(420);
+            self.set_follows_content_size(true);
+        } else {
             self.set_content_width(460);
             self.set_content_height(620);
-        } else {
-            self.set_content_width(480);
-            self.set_content_height(640);
         }
-        let min_dialog_width = if is_editing_goa { 460 } else { 480 };
+        let min_dialog_width = if is_editing_goa { 400 } else { 440 };
         let is_editing_shared = edit_profile
             .as_ref()
             .is_some_and(|p| p.is_shared_mailbox);
@@ -1437,7 +1445,7 @@ impl AccountSetupDialog {
         let row_nav_sync = adw::ActionRow::builder()
             .title("Synchronization")
             .activatable(true)
-            .visible(is_editing && !is_editing_goa)
+            .visible(is_editing)
             .build();
 
         let label_nav_sync = gtk::Label::builder()
@@ -1469,10 +1477,11 @@ impl AccountSetupDialog {
         }
 
         // Group for subpage navigation rows
+        row_nav_server.set_visible(!is_editing_goa);
         let group_nav = adw::PreferencesGroup::new();
         group_nav.add(&row_nav_server);
         group_nav.add(&row_nav_sync);
-        group_nav.set_visible(!is_editing_goa);
+        group_nav.set_visible(is_editing || !is_editing_goa);
 
         let row_inbox_folder = adw::EntryRow::builder().title("Inbox").visible(false).build();
         let known_folders = collect_known_account_folders(edit_profile.as_ref());
@@ -1609,14 +1618,13 @@ impl AccountSetupDialog {
         update_protocol_fields(combo_type.selected());
         {
             let update_clone = update_protocol_fields.clone();
-            let group_nav_clone = group_nav.clone();
-            let is_goa_initial = is_editing_goa;
-            group_nav.set_visible(!is_goa_initial);
+            let row_nav_server_clone = row_nav_server.clone();
+            row_nav_server.set_visible(!is_editing_goa);
             combo_type.connect_selected_notify(move |combo| {
                 let sel = combo.selected();
                 update_clone(sel);
                 let proto = map_combo_idx_to_protocol(sel);
-                group_nav_clone.set_visible(proto != AccountProtocol::Goa);
+                row_nav_server_clone.set_visible(proto != AccountProtocol::Goa);
             });
         }
 
@@ -2301,9 +2309,9 @@ impl AccountSetupDialog {
         clamp.set_width_request(min_dialog_width);
         toolbar_view.set_content(Some(&clamp));
 
-        configure_natural_scroll_height(main_page_content.upcast_ref(), 680);
-        configure_natural_scroll_height(server_page_content.upcast_ref(), 680);
-        configure_natural_scroll_height(sync_page_content.upcast_ref(), 680);
+        configure_natural_scroll_height(main_page_content.upcast_ref(), 780);
+        configure_natural_scroll_height(server_page_content.upcast_ref(), 720);
+        configure_natural_scroll_height(sync_page_content.upcast_ref(), 720);
 
         // ── Navigation Pages Construction ────────────────────────────────────
         let nav_view = adw::NavigationView::new();
@@ -2322,7 +2330,7 @@ impl AccountSetupDialog {
 
             let server_clamp = adw::Clamp::builder()
                 .maximum_size(520)
-                .tightening_threshold(440)
+                .tightening_threshold(400)
                 .child(&server_page_content)
                 .build();
             server_clamp.set_width_request(min_dialog_width);
@@ -2338,8 +2346,10 @@ impl AccountSetupDialog {
 
             let server_nav_page = adw::NavigationPage::with_tag(&server_toolbar_view, "Server Settings", "server");
             nav_view.add(&server_nav_page);
+        }
 
-            // Synchronization Subpage
+        // Synchronization Subpage (available for both standard and GOA accounts)
+        {
             let sync_toolbar_view = adw::ToolbarView::new();
             let sync_header_bar = adw::HeaderBar::new();
             sync_header_bar.set_show_end_title_buttons(false);
@@ -2347,7 +2357,7 @@ impl AccountSetupDialog {
 
             let sync_clamp = adw::Clamp::builder()
                 .maximum_size(520)
-                .tightening_threshold(440)
+                .tightening_threshold(400)
                 .child(&sync_page_content)
                 .build();
             sync_clamp.set_width_request(min_dialog_width);
