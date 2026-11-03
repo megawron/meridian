@@ -19,8 +19,11 @@ data/locale/
 
 # Flatpak
 .flatpak-builder/
+flatpak-build-dir/
+flatpak-repo/
 repo/
 *.flatpak
+*.flatpak.sha256
 
 # OS
 .DS_Store

@@ -1,0 +1,55 @@
+name: Flatpak Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  flatpak:
+    name: Build & Package Flatpak (x86_64)
+    runs-on: ubuntu-latest
+    container:
+      image: quay.io/gnome_infrastructure/gnome-runtime-images:gnome-48
+      options: --privileged
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate and verify cargo-sources.json
+        run: |
+          ./scripts/generate-cargo-sources.sh
+          ./scripts/verify-flatpak-manifest.sh
+
+      - name: Build Flatpak bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: meridian-x86_64.flatpak
+          manifest-path: com.martingawron.Meridian.json
+          cache-key: flatpak-builder-${{ hashFiles('Cargo.lock', 'com.martingawron.Meridian.json') }}
+
+      - name: Generate SHA256 checksum
+        run: |
+          sha256sum meridian-x86_64.flatpak > meridian-x86_64.flatpak.sha256
+
+      - name: Upload Flatpak artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: meridian-flatpak-x86_64
+          path: |
+            meridian-x86_64.flatpak
+            meridian-x86_64.flatpak.sha256
+
+      - name: Attach Flatpak bundle to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            meridian-x86_64.flatpak
+            meridian-x86_64.flatpak.sha256

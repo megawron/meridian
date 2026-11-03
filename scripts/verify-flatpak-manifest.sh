@@ -1,9 +1,8 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Static release gate for the Flatpak manifest.  The actual sandbox build is
-# intentionally a Linux-only step, but this catches accidental placeholders,
-# malformed JSON, and unpinned external sources before a release is attempted.
+# Static release gate for the Flatpak manifest. Catches accidental placeholders,
+# malformed JSON, and unpinned external sources before a release build.
 
 set -eu
 
@@ -19,14 +18,14 @@ jq -e '
 ' "$manifest" >/dev/null
 
 if grep -nE 'FIXME|TODO|REPLACE_WITH|PLACEHOLDER' "$manifest"; then
-    echo "Flatpak-Manifest enthält noch einen Platzhalter" >&2
+    echo "Flatpak manifest still contains a placeholder" >&2
     exit 1
 fi
 
 if [ ! -f "$root/cargo-sources.json" ]; then
-    echo "cargo-sources.json fehlt; unter Linux mit scripts/generate-cargo-sources.sh erzeugen" >&2
+    echo "cargo-sources.json is missing; run scripts/generate-cargo-sources.sh first" >&2
     exit 1
 fi
 
 jq empty "$root/cargo-sources.json"
-echo "Flatpak-Manifest und cargo-sources.json sind statisch validiert."
+echo "Flatpak manifest and cargo-sources.json validated."

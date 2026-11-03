@@ -1,33 +1,59 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Generate the offline Cargo source manifest used by flatpak-builder.  The
-# generator is supplied by flatpak-builder on Linux and is deliberately not
-# vendored into this repository.
+# Generate the offline Cargo source manifest (cargo-sources.json) directly from
+# Cargo.lock for flatpak-builder offline sandbox builds.
 
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-generator="${FLATPAK_CARGO_GENERATOR:-}"
 
-if [ -z "$generator" ]; then
-    for candidate in \
-        /usr/lib/flatpak-builder/flatpak-cargo-generator.py \
-        /usr/share/flatpak-builder/flatpak-cargo-generator.py \
-        "$root/flatpak-cargo-generator.py"
-    do
-        if [ -f "$candidate" ]; then
-            generator=$candidate
-            break
-        fi
-    done
-fi
+python3 - "$root/Cargo.lock" "$root/cargo-sources.json" <<'PY'
+import json
+import sys
+import tomllib
+from pathlib import Path
 
-if [ -z "$generator" ] || [ ! -f "$generator" ]; then
-    echo "flatpak-cargo-generator.py nicht gefunden" >&2
-    echo "FLATPAK_CARGO_GENERATOR auf den Generator von flatpak-builder setzen" >&2
-    exit 1
-fi
+lock_path = Path(sys.argv[1])
+out_path = Path(sys.argv[2])
 
-python3 "$generator" "$root/Cargo.lock" -o "$root/cargo-sources.json"
-echo "cargo-sources.json erzeugt. Vor dem Commit scripts/verify-flatpak-manifest.sh ausführen."
+data = tomllib.loads(lock_path.read_text(encoding="utf-8"))
+sources = []
+
+for pkg in data.get("package", []):
+    name = pkg.get("name")
+    version = pkg.get("version")
+    source = pkg.get("source", "")
+    checksum = pkg.get("checksum")
+    if not source.startswith("registry+") or not checksum:
+        continue
+    crate_dir = f"cargo/vendor/{name}-{version}"
+    sources.append({
+        "type": "archive",
+        "archive-type": "tar-gzip",
+        "url": f"https://static.crates.io/crates/{name}/{name}-{version}.crate",
+        "sha256": checksum,
+        "dest": crate_dir,
+    })
+    sources.append({
+        "type": "inline",
+        "contents": json.dumps({"package": checksum, "files": {}}),
+        "dest": crate_dir,
+        "dest-filename": ".cargo-checksum.json",
+    })
+
+sources.append({
+    "type": "inline",
+    "contents": (
+        "[source.crates-io]\n"
+        'replace-with = "vendored-sources"\n\n'
+        "[source.vendored-sources]\n"
+        'directory = "cargo/vendor"\n'
+    ),
+    "dest": "cargo",
+    "dest-filename": "config.toml",
+})
+
+out_path.write_text(json.dumps(sources, indent=2) + "\n", encoding="utf-8")
+print(f"Generated {out_path} ({len(sources)} entries).")
+PY

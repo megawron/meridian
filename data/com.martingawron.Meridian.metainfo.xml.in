@@ -13,21 +13,25 @@
     </p>
     <ul>
       <li>Fast sandboxed WebKitGTK 6.0 HTML mail viewing</li>
-      <li>Privacy-first remote image blocking and OpenPGP/S-MIME groundwork</li>
+      <li>Privacy-first remote image blocking and OpenPGP/S-MIME support</li>
       <li>Integrated account, calendar, task, memo and address-book interfaces</li>
       <li>Offline and local EML, Maildir and mbox ingestion</li>
     </ul>
   </description>
 
   <launchable type="desktop-id">com.martingawron.Meridian.desktop</launchable>
-  <url type="homepage">https://gitlab.gnome.org/GNOME/meridian</url>
-  <url type="bugtracker">https://gitlab.gnome.org/GNOME/meridian/-/issues</url>
-  <developer_name>megawron &amp; GNOME Community</developer_name>
+  <url type="homepage">https://github.com/megawron/meridian</url>
+  <url type="bugtracker">https://github.com/megawron/meridian/issues</url>
+  <url type="vcs-browser">https://github.com/megawron/meridian</url>
+  <developer id="io.github.megawron">
+    <name>megawron</name>
+  </developer>
+  <content_rating type="oars-1.1" />
 
   <releases>
-    <release version="0.1.0" date="2026-08-10">
+    <release version="0.1.0" date="2026-11-03">
       <description>
-        <p>Initial GTK4/libadwaita technical preview with local mail ingestion, EDS source discovery and WebKitGTK 6.0 rendering.</p>
+        <p>Initial release of Meridian featuring GTK4/Libadwaita mail, calendar, contacts, tasks, and memos powered by Evolution Data Server and WebKitGTK 6.0.</p>
       </description>
     </release>
   </releases>
