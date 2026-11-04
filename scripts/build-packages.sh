@@ -1,36 +1,43 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Build native release packages (.rpm, .deb) and Flatpak bundle for Meridian.
+# Build release packages for Meridian locally or in CI.
 #
 # Usage:
-#   ./scripts/build-packages.sh rpm [version]
-#   ./scripts/build-packages.sh deb [version]
-#   ./scripts/build-packages.sh flatpak-stage [version]
+#   ./scripts/build-packages.sh local [tag]     # builds Flatpak + DEB + tarball locally
+#   ./scripts/build-packages.sh upload <tag>    # builds locally and uploads to GitHub release
+#   ./scripts/build-packages.sh flatpak [tag]   # builds Flatpak bundle (.flatpak) locally
+#   ./scripts/build-packages.sh rpm [tag]       # builds Fedora RPM (requires rpmbuild)
+#   ./scripts/build-packages.sh deb [tag]       # builds Debian/Ubuntu DEB
 
 set -euo pipefail
 
 APP_ID="com.martingawron.Meridian"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/packaging/out"
-RAW_VERSION="${2:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -1)}"
-RAW_VERSION="${RAW_VERSION#v}"
+TAG="${2:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -1)}"
+RAW_VERSION="${TAG#v}"
 PKG_VERSION="${RAW_VERSION//-/\~}"
-WHAT="${1:-}"
+WHAT="${1:-local}"
 
 [ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
 mkdir -p "$OUT"
+
+ensure_binary() {
+    echo "==> Building release binary"
+    ( cd "$ROOT" && cargo build --release --locked --bin meridian )
+}
 
 stage_common() {
     local prefix="$1"
     install -Dm755 "$ROOT/target/release/meridian" "$prefix/bin/meridian"
     install -Dm644 "$ROOT/data/$APP_ID.gschema.xml" "$prefix/share/glib-2.0/schemas/$APP_ID.gschema.xml"
-    glib-compile-schemas "$prefix/share/glib-2.0/schemas" || true
+    glib-compile-schemas "$prefix/share/glib-2.0/schemas" 2>/dev/null || true
     install -Dm644 "$ROOT/data/$APP_ID.desktop.in" "$prefix/share/applications/$APP_ID.desktop"
     install -Dm644 "$ROOT/data/$APP_ID.Calendar.desktop.in" "$prefix/share/applications/$APP_ID.Calendar.desktop"
     install -Dm644 "$ROOT/data/$APP_ID.metainfo.xml.in" "$prefix/share/metainfo/$APP_ID.metainfo.xml"
 
-    for size in 16 22 24 32 48 64 128 256 512 1024; do
+    for size in 16 22 24 32 48 64 128 256 512; do
         if [ -f "$ROOT/data/icons/hicolor/${size}x${size}/apps/$APP_ID.png" ]; then
             install -Dm644 "$ROOT/data/icons/hicolor/${size}x${size}/apps/$APP_ID.png" \
                 "$prefix/share/icons/hicolor/${size}x${size}/apps/$APP_ID.png"
@@ -55,10 +62,135 @@ stage_common() {
     done
 }
 
-build_rpm() {
-    echo "==> Building release binary for RPM"
-    ( cd "$ROOT" && cargo build --release --locked --bin meridian )
+build_flatpak_bundle() {
+    ensure_binary
+    local arch bundle work build_dir repo_dir
+    arch="$(uname -m)"
+    case "$TAG" in
+        *-beta*) bundle="Meridian-Beta-${arch}.flatpak" ;;
+        *)       bundle="Meridian-${arch}.flatpak" ;;
+    esac
 
+    echo "==> Packaging Flatpak bundle: $bundle"
+    work="$(mktemp -d)"
+    build_dir="$work/build-dir"
+    repo_dir="$work/repo"
+
+    mkdir -p "$build_dir/files/lib" "$build_dir/var"
+    cat > "$build_dir/metadata" <<EOF
+[Application]
+name=$APP_ID
+runtime=org.gnome.Platform/$arch/48
+sdk=org.gnome.Sdk/$arch/48
+EOF
+    stage_common "$build_dir/files"
+
+    ldd "$ROOT/target/release/meridian" | awk '/=> \// { print $3 }' | while read -r lib; do
+        base="$(basename "$lib")"
+        case "$base" in
+            libcamel*|libedataserver*|libecal*|libebook*|libebackend*|libical*|libgoa*|libphonenumber*|libprotobuf*)
+                cp -L "$lib" "$build_dir/files/lib/$base"
+                ;;
+        esac
+    done
+
+    flatpak build-finish "$build_dir" \
+        --command=meridian \
+        --share=ipc \
+        --share=network \
+        --socket=fallback-x11 \
+        --socket=wayland \
+        --device=dri \
+        --talk-name=org.gnome.evolution.dataserver.Sources5 \
+        --talk-name=org.gnome.evolution.dataserver.Calendar8 \
+        --talk-name=org.gnome.evolution.dataserver.AddressBook10 \
+        --talk-name=org.gnome.evolution.dataserver.Subprocess.Backend.* \
+        --talk-name=org.gnome.OnlineAccounts \
+        --talk-name=org.freedesktop.Notifications \
+        --talk-name=org.freedesktop.secrets \
+        --filesystem=xdg-run/gvfsd \
+        --metadata=X-DConf=migrate-path=/com/martingawron/meridian/ >/dev/null
+
+    flatpak build-export "$repo_dir" "$build_dir" >/dev/null
+    flatpak build-bundle "$repo_dir" "$OUT/$bundle" "$APP_ID" \
+        --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
+    rm -rf "$work"
+    echo "==> Flatpak ready: $OUT/$bundle"
+}
+
+build_deb() {
+    ensure_binary
+    local work pkg arch deb_file
+    work="$(mktemp -d)"
+    pkg="$work/data"
+    arch="amd64"
+    [ "$(uname -m)" = "aarch64" ] && arch="arm64"
+    deb_file="$OUT/meridian_${PKG_VERSION}-1_${arch}.deb"
+
+    echo "==> Packaging Debian/Ubuntu package: $(basename "$deb_file")"
+    mkdir -p "$pkg/usr" "$pkg/usr/share/doc/meridian" "$work/control"
+    stage_common "$pkg/usr"
+    rm -f "$pkg/usr/share/glib-2.0/schemas/gschemas.compiled"
+    cp "$ROOT/LICENSE" "$pkg/usr/share/doc/meridian/copyright"
+
+    cat > "$work/control/control" <<EOF
+Package: meridian
+Version: ${PKG_VERSION}-1
+Section: mail
+Priority: optional
+Architecture: $arch
+Maintainer: Martin Gawron <martin@martingawron.com>
+Installed-Size: $(du -sk "$pkg" | cut -f1)
+Depends: evolution-data-server, libgtk-4-1 (>= 4.16), libadwaita-1-0 (>= 1.6), libwebkitgtk-6.0-4, libsqlite3-0, librsvg2-common | glycin-loaders
+Recommends: gnome-keyring, gnome-online-accounts
+Homepage: https://github.com/megawron/meridian
+Description: GNOME-native mail, calendar, contacts, and tasks client
+ Meridian is an all-in-one mail, calendar, contacts, and tasks application
+ designed for the GNOME desktop, built with Rust, GTK 4, libadwaita, and
+ WebKitGTK on top of Evolution Data Server (EDS).
+EOF
+
+    cat > "$work/control/postinst" <<'EOF'
+#!/bin/sh
+set -e
+if [ "$1" = "configure" ] && command -v glib-compile-schemas >/dev/null 2>&1; then
+    glib-compile-schemas /usr/share/glib-2.0/schemas || true
+fi
+EOF
+    chmod 0755 "$work/control/postinst"
+
+    if command -v dpkg-deb >/dev/null 2>&1; then
+        mkdir -p "$pkg/DEBIAN"
+        cp "$work/control/"* "$pkg/DEBIAN/"
+        dpkg-deb --build --root-owner-group "$pkg" "$deb_file"
+    else
+        printf "2.0\n" > "$work/debian-binary"
+        tar --owner=0 --group=0 -C "$work/control" -czf "$work/control.tar.gz" .
+        tar --owner=0 --group=0 -C "$pkg" -czf "$work/data.tar.gz" .
+        rm -f "$deb_file"
+        ( cd "$work" && ar rcs "$deb_file" debian-binary control.tar.gz data.tar.gz )
+    fi
+
+    rm -rf "$work"
+    echo "==> DEB ready: $deb_file"
+}
+
+build_tarball() {
+    ensure_binary
+    local arch tar_name work
+    arch="$(uname -m)"
+    tar_name="meridian-${RAW_VERSION}-linux-${arch}.tar.gz"
+    work="$(mktemp -d)"
+    mkdir -p "$work/meridian-${RAW_VERSION}/usr"
+    stage_common "$work/meridian-${RAW_VERSION}/usr"
+    cp "$ROOT/LICENSE" "$ROOT/README.md" "$work/meridian-${RAW_VERSION}/"
+    tar --owner=0 --group=0 -C "$work" -czf "$OUT/$tar_name" "meridian-${RAW_VERSION}"
+    rm -rf "$work"
+    echo "==> Tarball ready: $OUT/$tar_name"
+}
+
+build_rpm() {
+    ensure_binary
     local work stage arch
     work="$(mktemp -d)"
     stage="$work/meridian-$PKG_VERSION-bin"
@@ -113,62 +245,13 @@ EOF
     echo "==> RPM built in $OUT"
 }
 
-build_deb() {
-    echo "==> Building release binary for DEB"
-    ( cd "$ROOT" && cargo build --release --locked --bin meridian )
-
-    local work pkg arch deps
-    work="$(mktemp -d)"
-    pkg="$work/meridian"
-    arch="$(dpkg --print-architecture)"
-    mkdir -p "$pkg/usr" "$pkg/DEBIAN" "$pkg/usr/share/doc/meridian"
-    stage_common "$pkg/usr"
-    rm -f "$pkg/usr/share/glib-2.0/schemas/gschemas.compiled"
-    cp "$ROOT/LICENSE" "$pkg/usr/share/doc/meridian/copyright"
-
-    mkdir -p "$work/debian"
-    printf 'Source: meridian\n\nPackage: meridian\nArchitecture: any\n' > "$work/debian/control"
-    deps="$(cd "$work" && dpkg-shlibdeps -O -e"$pkg/usr/bin/meridian" 2>/dev/null)"
-    deps="${deps#shlibs:Depends=}"
-
-    cat > "$pkg/DEBIAN/control" <<EOF
-Package: meridian
-Version: ${PKG_VERSION}-1
-Section: mail
-Priority: optional
-Architecture: $arch
-Maintainer: Martin Gawron <martin@martingawron.com>
-Installed-Size: $(du -sk --exclude=DEBIAN "$pkg" | cut -f1)
-Depends: $deps, evolution-data-server, librsvg2-common | glycin-loaders
-Recommends: gnome-keyring, gnome-online-accounts
-Homepage: https://github.com/megawron/meridian
-Description: GNOME-native mail, calendar, contacts, and tasks client
- Meridian is an all-in-one mail, calendar, contacts, and tasks application
- designed for the GNOME desktop, built with Rust, GTK 4, libadwaita, and
- WebKitGTK on top of Evolution Data Server (EDS).
-EOF
-
-    cat > "$pkg/DEBIAN/postinst" <<'EOF'
-#!/bin/sh
-set -e
-if [ "$1" = "configure" ] && command -v glib-compile-schemas >/dev/null 2>&1; then
-    glib-compile-schemas /usr/share/glib-2.0/schemas || true
-fi
-EOF
-    chmod 0755 "$pkg/DEBIAN/postinst"
-
-    dpkg-deb --build --root-owner-group "$pkg" "$OUT/meridian_${PKG_VERSION}-1_${arch}.deb"
-    rm -rf "$work"
-    echo "==> DEB built in $OUT"
-}
-
 stage_flatpak() {
+    ensure_binary
     local fp_stage="$OUT/flatpak-app"
     rm -rf "$fp_stage"
     mkdir -p "$fp_stage/lib"
     stage_common "$fp_stage"
 
-    # Bundle the EDS and companion shared libraries not included in org.gnome.Platform//48
     ldd "$ROOT/target/release/meridian" | awk '/=> \// { print $3 }' | while read -r lib; do
         base="$(basename "$lib")"
         case "$base" in
@@ -179,13 +262,33 @@ stage_flatpak() {
     done
     tar -C "$OUT" -czf "$OUT/flatpak-app.tar.gz" flatpak-app
     rm -rf "$fp_stage"
-    echo "==> Flatpak app payload staged at $OUT/flatpak-app.tar.gz"
+}
+
+build_local_all() {
+    rm -f "$OUT"/*
+    build_flatpak_bundle
+    build_deb
+    build_tarball
+    if command -v rpmbuild >/dev/null 2>&1; then
+        build_rpm
+    fi
+    ( cd "$OUT" && sha256sum * > SHA256SUMS.txt )
+    echo "==> All local release packages built in $OUT:"
+    ls -lh "$OUT"
 }
 
 case "$WHAT" in
+    local) build_local_all ;;
+    upload)
+        build_local_all
+        echo "==> Uploading packages to GitHub release $TAG..."
+        gh release upload "$TAG" "$OUT"/* --clobber
+        echo "==> Uploaded successfully to $TAG!"
+        ;;
+    flatpak) build_flatpak_bundle ;;
     rpm) build_rpm ;;
     deb) build_deb ;;
     flatpak-stage) stage_flatpak ;;
     deb-and-flatpak-stage) build_deb; stage_flatpak ;;
-    *) echo "Usage: $0 {rpm|deb|flatpak-stage|deb-and-flatpak-stage} [version]" >&2; exit 1 ;;
+    *) echo "Usage: $0 {local|upload|flatpak|rpm|deb} [tag]" >&2; exit 1 ;;
 esac

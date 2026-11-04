@@ -1,9 +1,6 @@
-name: Release Packages
+name: Release Packages (Manual)
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       ref:
@@ -18,7 +15,10 @@ jobs:
   rpm:
     name: Fedora x86_64 RPM
     runs-on: ubuntu-24.04
-    container: registry.fedoraproject.org/fedora:41
+    container:
+      image: registry.fedoraproject.org/fedora:41
+      env:
+        PATH: /root/.cargo/bin:/github/home/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     steps:
       - name: Install build dependencies
         run: |
@@ -27,7 +27,6 @@ jobs:
             evolution-data-server-devel gtk4-devel libadwaita-devel \
             webkitgtk6.0-devel sqlite-devel gettext rpm-build file
           curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -51,7 +50,10 @@ jobs:
   deb:
     name: Debian / Ubuntu amd64 DEB
     runs-on: ubuntu-24.04
-    container: docker.io/library/debian:trixie
+    container:
+      image: docker.io/library/debian:trixie
+      env:
+        PATH: /root/.cargo/bin:/github/home/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     steps:
       - name: Install build dependencies
         run: |
@@ -62,7 +64,6 @@ jobs:
             libcamel1.2-dev libedataserver1.2-dev libecal2.0-dev \
             libebook1.2-dev libebook-contacts1.2-dev libsqlite3-dev
           curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -89,91 +90,3 @@ jobs:
           name: meridian-flatpak-stage
           path: packaging/out/flatpak-app.tar.gz
           if-no-files-found: error
-
-  flatpak:
-    name: Flatpak x86_64 Bundle
-    needs: deb
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Install Flatpak & OSTree
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y flatpak ostree
-
-      - name: Download staged payload
-        uses: actions/download-artifact@v4
-        with:
-          name: meridian-flatpak-stage
-
-      - name: Package Flatpak bundle
-        run: |
-          ref="${{ github.event.inputs.ref || github.ref_name }}"
-          case "$ref" in
-            *-beta*) bundle="Meridian-Beta-x86_64.flatpak" ;;
-            *)       bundle="Meridian-x86_64.flatpak" ;;
-          esac
-
-          flatpak build-init build-dir com.martingawron.Meridian org.gnome.Sdk org.gnome.Platform 48
-          tar -xzf flatpak-app.tar.gz
-          cp -a flatpak-app/* build-dir/files/
-
-          flatpak build-finish build-dir \
-            --command=meridian \
-            --share=ipc \
-            --share=network \
-            --socket=fallback-x11 \
-            --socket=wayland \
-            --device=dri \
-            --talk-name=org.gnome.evolution.dataserver.Sources5 \
-            --talk-name=org.gnome.evolution.dataserver.Calendar8 \
-            --talk-name=org.gnome.evolution.dataserver.AddressBook10 \
-            --talk-name=org.gnome.evolution.dataserver.Subprocess.Backend.* \
-            --talk-name=org.gnome.OnlineAccounts \
-            --talk-name=org.freedesktop.Notifications \
-            --talk-name=org.freedesktop.secrets \
-            --filesystem=xdg-run/gvfsd \
-            --metadata=X-DConf=migrate-path=/com/martingawron/meridian/
-
-          flatpak build-export repo build-dir
-          flatpak build-bundle repo "$bundle" com.martingawron.Meridian \
-            --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
-
-          mkdir -p dist
-          mv "$bundle" dist/
-          ls -lh dist/
-
-      - name: Upload Flatpak bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: meridian-flatpak-x86_64
-          path: dist/*.flatpak
-          if-no-files-found: error
-
-  release:
-    name: Publish GitHub Release Assets
-    needs: [rpm, deb, flatpak]
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Download built packages
-        uses: actions/download-artifact@v4
-        with:
-          pattern: meridian-*
-          merge-multiple: true
-          path: release-assets
-
-      - name: Prepare checksums
-        run: |
-          cd release-assets
-          rm -f flatpak-app.tar.gz
-          sha256sum * > SHA256SUMS.txt
-          ls -lh
-
-      - name: Attach packages to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            release-assets/*.rpm
-            release-assets/*.deb
-            release-assets/*.flatpak
-            release-assets/SHA256SUMS.txt

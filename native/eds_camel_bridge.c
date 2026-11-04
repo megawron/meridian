@@ -6133,7 +6133,12 @@ meridian_eds_camel_search_folder (
     }
 
     const gchar *sexpr = (query_sexpr && *query_sexpr) ? query_sexpr : "(match-all)";
+#if EDS_BRIDGE_HAS_DUP_UIDS
     success = camel_folder_search_sync (folder, sexpr, &uids, cancellable, &error);
+#else
+    uids = camel_folder_search_by_expression (folder, sexpr, cancellable, &error);
+    success = (uids != NULL) || (error == NULL);
+#endif
 
 finish:
     if (cancellation_monitor)
@@ -6148,7 +6153,11 @@ finish:
             *out_uids = result_uids;
         if (out_count)
             *out_count = uids->len;
+#if EDS_BRIDGE_HAS_DUP_UIDS
         g_ptr_array_unref (uids);
+#else
+        camel_folder_search_free (folder, uids);
+#endif
     } else if (success) {
         if (out_uids)
             *out_uids = g_new0 (char *, 1);

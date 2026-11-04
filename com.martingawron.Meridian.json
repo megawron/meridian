@@ -74,7 +74,7 @@
         "install -Dm644 data/com.martingawron.Meridian.desktop.in /app/share/applications/com.martingawron.Meridian.desktop",
         "install -Dm644 data/com.martingawron.Meridian.Calendar.desktop.in /app/share/applications/com.martingawron.Meridian.Calendar.desktop",
         "install -Dm644 data/com.martingawron.Meridian.metainfo.xml.in /app/share/metainfo/com.martingawron.Meridian.metainfo.xml",
-        "for size in 16 22 24 32 48 64 128 256 512 1024; do install -Dm644 data/icons/hicolor/${size}x${size}/apps/com.martingawron.Meridian.png /app/share/icons/hicolor/${size}x${size}/apps/com.martingawron.Meridian.png; done",
+        "for size in 16 22 24 32 48 64 128 256 512; do install -Dm644 data/icons/hicolor/${size}x${size}/apps/com.martingawron.Meridian.png /app/share/icons/hicolor/${size}x${size}/apps/com.martingawron.Meridian.png; done",
         "for svg in data/icons/hicolor/scalable/actions/*.svg; do [ -f \"$svg\" ] && install -Dm644 \"$svg\" \"/app/share/icons/hicolor/scalable/actions/$(basename \"$svg\")\"; done",
         "for svg in data/icons/hicolor/scalable/apps/*.svg; do [ -f \"$svg\" ] && install -Dm644 \"$svg\" \"/app/share/icons/hicolor/scalable/apps/$(basename \"$svg\")\"; done",
         "for po in po/*.po; do [ -f \"$po\" ] || continue; lang=$(basename \"$po\" .po); install -d \"/app/share/locale/${lang}/LC_MESSAGES\"; msgfmt \"$po\" -o \"/app/share/locale/${lang}/LC_MESSAGES/meridian.mo\"; done"
