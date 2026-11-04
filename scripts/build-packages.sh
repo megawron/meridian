@@ -76,7 +76,10 @@ build_flatpak_bundle() {
     build_dir="$work/build-dir"
     repo_dir="$work/repo"
 
-    mkdir -p "$build_dir/files/lib" "$build_dir/var"
+    mkdir -p "$build_dir/files/lib" "$build_dir/var" \
+        "$build_dir/files/share/app-info/xmls" \
+        "$build_dir/files/share/app-info/icons/flatpak/64x64" \
+        "$build_dir/files/share/app-info/icons/flatpak/128x128"
     cat > "$build_dir/metadata" <<EOF
 [Application]
 name=$APP_ID
@@ -84,6 +87,44 @@ runtime=org.gnome.Platform/$arch/48
 sdk=org.gnome.Sdk/$arch/48
 EOF
     stage_common "$build_dir/files"
+
+    cp "$ROOT/data/icons/hicolor/64x64/apps/$APP_ID.png" \
+        "$build_dir/files/share/app-info/icons/flatpak/64x64/$APP_ID.png"
+    cp "$ROOT/data/icons/hicolor/128x128/apps/$APP_ID.png" \
+        "$build_dir/files/share/app-info/icons/flatpak/128x128/$APP_ID.png"
+
+    cat <<EOF | gzip -c > "$build_dir/files/share/app-info/xmls/$APP_ID.xml.gz"
+<?xml version="1.0" encoding="UTF-8"?>
+<components version="0.8" origin="flatpak">
+  <component type="desktop-application">
+    <id>$APP_ID</id>
+    <name>Meridian</name>
+    <summary>Mail, calendar, contacts, and tasks for GNOME</summary>
+    <project_license>GPL-3.0-or-later</project_license>
+    <developer id="com.martingawron">
+      <name>Martin Gawron</name>
+    </developer>
+    <description>
+      <p>Meridian is an all-in-one mail, calendar, contacts, and tasks application designed for the GNOME desktop, built with Rust, GTK 4, libadwaita, and WebKitGTK.</p>
+      <p>Built on top of Evolution Data Server (EDS), Meridian works out of the box with your existing system accounts, local folders, and GNOME Online Accounts.</p>
+    </description>
+    <icon type="cached" height="128" width="128">$APP_ID.png</icon>
+    <icon type="cached" height="64" width="64">$APP_ID.png</icon>
+    <launchable type="desktop-id">$APP_ID.desktop</launchable>
+    <url type="homepage">https://github.com/megawron/meridian</url>
+    <url type="bugtracker">https://github.com/megawron/meridian/issues</url>
+    <url type="vcs-browser">https://github.com/megawron/meridian</url>
+    <content_rating type="oars-1.1"/>
+    <releases>
+      <release version="$RAW_VERSION" date="$(date +%Y-%m-%d)">
+        <description>
+          <p>Public beta release of Meridian featuring integrated mail, calendar, contacts, tasks, and memos.</p>
+        </description>
+      </release>
+    </releases>
+  </component>
+</components>
+EOF
 
     ldd "$ROOT/target/release/meridian" | awk '/=> \// { print $3 }' | while read -r lib; do
         base="$(basename "$lib")"

@@ -4,34 +4,32 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
   <name>Meridian</name>
-  <summary>Modern, fast Mail, Calendar and Groupware Client</summary>
+  <summary>Mail, calendar, contacts, and tasks for GNOME</summary>
 
   <description>
     <p>
-      Meridian is a modern, fast GTK4 / libadwaita groupware client for
-      email, calendar, contacts, tasks, and notes, powered by Evolution Data Server (EDS).
+      Meridian is an all-in-one mail, calendar, contacts, and tasks application
+      designed for the GNOME desktop, built with Rust, GTK 4, libadwaita, and WebKitGTK.
     </p>
-    <ul>
-      <li>Fast sandboxed WebKitGTK 6.0 HTML mail viewing</li>
-      <li>Privacy-first remote image blocking and OpenPGP/S-MIME support</li>
-      <li>Integrated account, calendar, task, memo and address-book interfaces</li>
-      <li>Offline and local EML, Maildir and mbox ingestion</li>
-    </ul>
+    <p>
+      Built on top of Evolution Data Server (EDS), Meridian works out of the box
+      with your existing system accounts, local folders, and GNOME Online Accounts.
+    </p>
   </description>
 
   <launchable type="desktop-id">com.martingawron.Meridian.desktop</launchable>
   <url type="homepage">https://github.com/megawron/meridian</url>
   <url type="bugtracker">https://github.com/megawron/meridian/issues</url>
   <url type="vcs-browser">https://github.com/megawron/meridian</url>
-  <developer id="io.github.megawron">
-    <name>megawron</name>
+  <developer id="com.martingawron">
+    <name>Martin Gawron</name>
   </developer>
   <content_rating type="oars-1.1" />
 
   <releases>
-    <release version="0.1.0" date="2026-11-03">
+    <release version="0.1.0-beta.1" date="2026-11-04">
       <description>
-        <p>Initial release of Meridian featuring GTK4/Libadwaita mail, calendar, contacts, tasks, and memos powered by Evolution Data Server and WebKitGTK 6.0.</p>
+        <p>Initial public beta release of Meridian featuring integrated mail, calendar, contacts, tasks, and memos.</p>
       </description>
     </release>
   </releases>
