@@ -12,6 +12,14 @@ default-run = "meridian"
 name = "meridian"
 path = "main.rs"
 
+[[bin]]
+name = "mail_scale_bench"
+path = "bin/mail_scale_bench.rs"
+
+[[bin]]
+name = "groupware_scale_bench"
+path = "bin/groupware_scale_bench.rs"
+
 [dependencies]
 gtk.workspace = true
 adw.workspace = true
