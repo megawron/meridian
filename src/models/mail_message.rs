@@ -377,6 +377,8 @@ mod imp {
         pub attachments: RefCell<Vec<AttachmentInfo>>,
         pub is_preview_only: RefCell<bool>,
         pub cached_formatted_date: RefCell<Option<(String, String)>>,
+        pub snippet_cleaned: std::cell::Cell<bool>,
+        pub cached_timestamp: std::cell::Cell<Option<i64>>,
     }
 
     #[glib::object_subclass]
@@ -434,8 +436,11 @@ impl MailMessageObject {
         *imp.recipient_cc.borrow_mut() = recipient_cc.to_string();
         *imp.recipient_bcc.borrow_mut() = recipient_bcc.to_string();
         *imp.reply_to.borrow_mut() = reply_to.to_string();
-        *imp.subject.borrow_mut() =
-            crate::services::mail_store_service::decode_mime_header(subject);
+        *imp.subject.borrow_mut() = if subject.contains("=?") {
+            crate::services::mail_store_service::decode_mime_header(subject)
+        } else {
+            subject.trim().to_string()
+        };
         *imp.message_id.borrow_mut() = message_id;
         *imp.in_reply_to.borrow_mut() = in_reply_to;
         *imp.references.borrow_mut() = references;
@@ -444,8 +449,8 @@ impl MailMessageObject {
         *imp.thread_position.borrow_mut() = thread_position;
         *imp.date_str.borrow_mut() = date_str.to_string();
         *imp.message_size.borrow_mut() = message_size;
-        let clean_snippet = crate::services::html_sanitizer::clean_mail_snippet(preview_snippet);
-        *imp.preview_snippet.borrow_mut() = clean_snippet;
+        *imp.preview_snippet.borrow_mut() = preview_snippet.to_string();
+        imp.snippet_cleaned.set(false);
         *imp.html_body.borrow_mut() = html_body.to_string();
         *imp.is_unread.borrow_mut() = is_unread;
         *imp.is_flagged.borrow_mut() = is_flagged;
@@ -455,6 +460,53 @@ impl MailMessageObject {
         *imp.labels.borrow_mut() = labels;
         *imp.backend_location.borrow_mut() = backend_location;
         *imp.attachments.borrow_mut() = attachments;
+        obj
+    }
+
+    pub(crate) fn from_parsed(parsed: crate::services::mail_store_service::ParsedMail) -> Self {
+        let obj: Self = Object::builder().build();
+        let imp = obj.imp();
+        *imp.id.borrow_mut() = parsed.id;
+        *imp.folder_id.borrow_mut() = parsed.folder_id;
+        *imp.sender_name.borrow_mut() = parsed.sender_name;
+        *imp.sender_email.borrow_mut() = parsed.sender_email;
+        *imp.recipient_to.borrow_mut() = parsed.recipient_to;
+        *imp.recipient_cc.borrow_mut() = parsed.recipient_cc;
+        *imp.recipient_bcc.borrow_mut() = parsed.recipient_bcc;
+        *imp.reply_to.borrow_mut() = parsed.reply_to;
+        *imp.subject.borrow_mut() = if parsed.subject.contains("=?") {
+            crate::services::mail_store_service::decode_mime_header(&parsed.subject)
+        } else {
+            parsed.subject
+        };
+        *imp.message_id.borrow_mut() = parsed.message_id;
+        *imp.in_reply_to.borrow_mut() = parsed.in_reply_to;
+        *imp.references.borrow_mut() = parsed.references;
+        *imp.thread_id.borrow_mut() = parsed.thread_id;
+        *imp.thread_size.borrow_mut() = parsed.thread_size.max(1);
+        *imp.thread_position.borrow_mut() = parsed.thread_position;
+        *imp.date_str.borrow_mut() = parsed.date_str;
+        *imp.message_size.borrow_mut() = parsed.message_size;
+        *imp.preview_snippet.borrow_mut() = parsed.preview_snippet;
+        imp.snippet_cleaned.set(false);
+        *imp.html_body.borrow_mut() = parsed.html_body;
+        *imp.is_unread.borrow_mut() = parsed.is_unread;
+        *imp.is_flagged.borrow_mut() = parsed.is_flagged;
+        *imp.is_important.borrow_mut() = parsed.is_important;
+        *imp.is_replied.borrow_mut() = parsed.is_replied;
+        *imp.is_forwarded.borrow_mut() = parsed.is_forwarded;
+        *imp.follow_up_state.borrow_mut() = parsed.follow_up_state;
+        *imp.follow_up.borrow_mut() = parsed.follow_up;
+        *imp.labels.borrow_mut() = parsed.labels;
+        *imp.backend_location.borrow_mut() = parsed.backend_location;
+        *imp.attachments.borrow_mut() = parsed.attachments;
+        *imp.is_preview_only.borrow_mut() = parsed.is_preview_only;
+        if let Some(raw_headers) = parsed.raw_headers {
+            *imp.raw_headers.borrow_mut() = Some(Arc::from(raw_headers));
+        }
+        if let Some(raw_mime) = parsed.raw_mime {
+            *imp.raw_mime.borrow_mut() = Some(Arc::from(raw_mime));
+        }
         obj
     }
 
@@ -532,6 +584,21 @@ impl MailMessageObject {
         self.imp().date_str.borrow().clone()
     }
 
+    #[inline]
+    pub fn timestamp_cached<F>(&self, compute: F) -> i64
+    where
+        F: FnOnce(&str) -> i64,
+    {
+        let imp = self.imp();
+        if let Some(ts) = imp.cached_timestamp.get() {
+            return ts;
+        }
+        let date_str = imp.date_str.borrow();
+        let ts = compute(&date_str);
+        imp.cached_timestamp.set(Some(ts));
+        ts
+    }
+
     pub fn formatted_date_cached<F>(&self, cache_key: &str, compute: F) -> String
     where
         F: FnOnce(&str) -> String,
@@ -549,7 +616,17 @@ impl MailMessageObject {
     }
 
     pub fn preview_snippet(&self) -> String {
-        self.imp().preview_snippet.borrow().clone()
+        let imp = self.imp();
+        if !imp.snippet_cleaned.get() {
+            let cleaned = {
+                let raw = imp.preview_snippet.borrow();
+                crate::services::html_sanitizer::clean_mail_snippet(&raw)
+            };
+            *imp.preview_snippet.borrow_mut() = cleaned.clone();
+            imp.snippet_cleaned.set(true);
+            return cleaned;
+        }
+        imp.preview_snippet.borrow().clone()
     }
 
     pub fn html_body(&self) -> String {
@@ -642,6 +719,7 @@ impl MailMessageObject {
         self.imp().searchable_body_text.take();
         let clean_snippet = crate::services::html_sanitizer::clean_mail_snippet(&preview_snippet);
         *self.imp().preview_snippet.borrow_mut() = clean_snippet;
+        self.imp().snippet_cleaned.set(true);
         *self.imp().attachments.borrow_mut() = attachments;
         *self.imp().is_preview_only.borrow_mut() = false;
         if let Some(searchable_body_text) = searchable_body_text {

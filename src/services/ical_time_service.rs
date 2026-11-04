@@ -205,13 +205,126 @@ pub(crate) fn property_local_display(
     all_day: bool,
 ) -> Option<String> {
     let (property, value) = property_line(component, target)?;
-    let date_only = all_day || property_has_parameter(&property, "VALUE", "DATE");
-    let datetime = local_datetime_from_property(&property, &value, all_day)?;
+    local_display_from_property(&property, &value, all_day)
+}
+
+/// Format an already-extracted `(property, value)` pair for the calendar UI
+/// after local-zone conversion without re-scanning the raw component string.
+#[inline]
+pub(crate) fn local_display_from_property(
+    property: &str,
+    value: &str,
+    all_day: bool,
+) -> Option<String> {
+    let date_only = all_day || property_has_parameter(property, "VALUE", "DATE");
+    let datetime = local_datetime_from_property(property, value, all_day)?;
     Some(if date_only {
-        datetime.date().format("%Y-%m-%d").to_string()
+        format_ymd_fast(datetime.date())
     } else {
-        datetime.format("%Y-%m-%d %H:%M").to_string()
+        format_ymd_hm_fast(datetime)
     })
+}
+
+#[inline]
+pub(crate) fn parse_ical_date_fast(value: &str) -> Option<NaiveDate> {
+    let b = value.as_bytes();
+    if b.len() < 8 {
+        return None;
+    }
+    let y0 = b[0].wrapping_sub(b'0');
+    let y1 = b[1].wrapping_sub(b'0');
+    let y2 = b[2].wrapping_sub(b'0');
+    let y3 = b[3].wrapping_sub(b'0');
+    let m0 = b[4].wrapping_sub(b'0');
+    let m1 = b[5].wrapping_sub(b'0');
+    let d0 = b[6].wrapping_sub(b'0');
+    let d1 = b[7].wrapping_sub(b'0');
+    if (y0 | y1 | y2 | y3 | m0 | m1 | d0 | d1) > 9 {
+        return None;
+    }
+    let year = (y0 as i32) * 1000 + (y1 as i32) * 100 + (y2 as i32) * 10 + (y3 as i32);
+    let month = (m0 as u32) * 10 + (m1 as u32);
+    let day = (d0 as u32) * 10 + (d1 as u32);
+    NaiveDate::from_ymd_opt(year, month, day)
+}
+
+#[inline]
+pub(crate) fn parse_ical_datetime_fast(value: &str) -> Option<NaiveDateTime> {
+    let b = value.as_bytes();
+    if b.len() < 15 || b[8] != b'T' {
+        return None;
+    }
+    let date = parse_ical_date_fast(&value[..8])?;
+    let h0 = b[9].wrapping_sub(b'0');
+    let h1 = b[10].wrapping_sub(b'0');
+    let min0 = b[11].wrapping_sub(b'0');
+    let min1 = b[12].wrapping_sub(b'0');
+    let s0 = b[13].wrapping_sub(b'0');
+    let s1 = b[14].wrapping_sub(b'0');
+    if (h0 | h1 | min0 | min1 | s0 | s1) > 9 {
+        return None;
+    }
+    let hour = (h0 as u32) * 10 + (h1 as u32);
+    let minute = (min0 as u32) * 10 + (min1 as u32);
+    let second = (s0 as u32) * 10 + (s1 as u32);
+    date.and_hms_opt(hour, minute, second)
+}
+
+#[inline]
+pub(crate) fn format_ymd_fast(date: NaiveDate) -> String {
+    let y = date.year();
+    if !(0..=9999).contains(&y) {
+        return date.format("%Y-%m-%d").to_string();
+    }
+    let y = y as u32;
+    let m = date.month();
+    let d = date.day();
+    let buf: [u8; 10] = [
+        b'0' + ((y / 1000) % 10) as u8,
+        b'0' + ((y / 100) % 10) as u8,
+        b'0' + ((y / 10) % 10) as u8,
+        b'0' + (y % 10) as u8,
+        b'-',
+        b'0' + (m / 10) as u8,
+        b'0' + (m % 10) as u8,
+        b'-',
+        b'0' + (d / 10) as u8,
+        b'0' + (d % 10) as u8,
+    ];
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+#[inline]
+pub(crate) fn format_ymd_hm_fast(dt: NaiveDateTime) -> String {
+    let date = dt.date();
+    let y = date.year();
+    if !(0..=9999).contains(&y) {
+        return dt.format("%Y-%m-%d %H:%M").to_string();
+    }
+    let y = y as u32;
+    let m = date.month();
+    let d = date.day();
+    let h = dt.time().hour();
+    let min = dt.time().minute();
+    let buf: [u8; 16] = [
+        b'0' + ((y / 1000) % 10) as u8,
+        b'0' + ((y / 100) % 10) as u8,
+        b'0' + ((y / 10) % 10) as u8,
+        b'0' + (y % 10) as u8,
+        b'-',
+        b'0' + (m / 10) as u8,
+        b'0' + (m % 10) as u8,
+        b'-',
+        b'0' + (d / 10) as u8,
+        b'0' + (d % 10) as u8,
+        b' ',
+        b'0' + (h / 10) as u8,
+        b'0' + (h % 10) as u8,
+        b':',
+        b'0' + (min / 10) as u8,
+        b'0' + (min % 10) as u8,
+    ];
+    String::from_utf8_lossy(&buf).into_owned()
 }
 
 /// Return all local calendar dates represented by a repeated property such as
@@ -315,37 +428,37 @@ fn iter_physical_lines(raw: &str) -> impl Iterator<Item = &str> {
     raw.split('\n').map(|line| line.strip_suffix('\r').unwrap_or(line))
 }
 
-fn local_datetime_from_property(
+pub(crate) fn local_datetime_from_property(
     property: &str,
     value: &str,
     all_day: bool,
 ) -> Option<NaiveDateTime> {
     let value = value.trim();
-    if value.len() == 8 && value.chars().all(|character| character.is_ascii_digit()) {
-        return NaiveDate::parse_from_str(value, "%Y%m%d")
-            .ok()?
-            .and_hms_opt(0, 0, 0);
+    if value.len() == 8 {
+        return parse_ical_date_fast(value)?.and_hms_opt(0, 0, 0);
     }
-    if value.len() < 15 || value.as_bytes().get(8) != Some(&b'T') {
-        return None;
-    }
-    let naive = NaiveDateTime::parse_from_str(&value[..15], "%Y%m%dT%H%M%S").ok()?;
+    let naive = parse_ical_datetime_fast(value)?;
     if all_day {
         return Some(naive);
     }
 
-    let timezone = property_parameter(property, "TZID");
-    if !value[15..].starts_with('Z') && timezone.is_none() {
+    let is_utc = value.as_bytes().get(15) == Some(&b'Z');
+    let timezone = if is_utc || !property.contains(';') {
+        None
+    } else {
+        property_parameter(property, "TZID")
+    };
+    if !is_utc && timezone.is_none() {
         // Floating times are intentionally interpreted in the user's local
         // zone and therefore retain their wall-clock representation.
         return Some(naive);
     }
 
-    let source_timezone = if value[15..].starts_with('Z') {
-        TimeZone::utc()
+    let source_timezone = if is_utc {
+        cached_utc_timezone()
     } else {
         let identifier = timezone.as_deref()?.trim_matches('"');
-        TimeZone::from_identifier(Some(identifier))?
+        cached_timezone_from_identifier(identifier)?
     };
     let source = DateTime::new(
         &source_timezone,
@@ -371,29 +484,74 @@ fn local_datetime_from_property(
 }
 
 fn property_parameter(property: &str, target: &str) -> Option<String> {
-    let target = target.trim().to_ascii_uppercase();
+    if !property.contains(';') {
+        return None;
+    }
     property.split(';').skip(1).find_map(|parameter| {
         let (name, value) = parameter.split_once('=')?;
-        (name.trim().to_ascii_uppercase() == target).then(|| value.trim().to_string())
+        name.trim()
+            .eq_ignore_ascii_case(target.trim())
+            .then(|| value.trim().to_string())
     })
 }
 
 fn property_has_parameter(property: &str, name: &str, expected: &str) -> bool {
-    property_parameter(property, name)
-        .is_some_and(|value| value.trim_matches('"').eq_ignore_ascii_case(expected))
+    if !property.contains(';') {
+        return false;
+    }
+    property.split(';').skip(1).any(|parameter| {
+        let Some((p_name, p_val)) = parameter.split_once('=') else {
+            return false;
+        };
+        p_name.trim().eq_ignore_ascii_case(name)
+            && p_val.trim().trim_matches('"').eq_ignore_ascii_case(expected)
+    })
+}
+
+thread_local! {
+    static DISPLAY_TZ_CACHE: std::cell::RefCell<Option<(std::time::Instant, TimeZone)>> =
+        const { std::cell::RefCell::new(None) };
+    static UTC_TZ_CACHE: std::cell::OnceCell<TimeZone> = const { std::cell::OnceCell::new() };
+    static NAMED_TZ_CACHE: std::cell::RefCell<std::collections::HashMap<String, Option<TimeZone>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+fn cached_utc_timezone() -> TimeZone {
+    UTC_TZ_CACHE.with(|cell| cell.get_or_init(TimeZone::utc).clone())
+}
+
+fn cached_timezone_from_identifier(identifier: &str) -> Option<TimeZone> {
+    NAMED_TZ_CACHE.with(|cache| {
+        if let Some(cached) = cache.borrow().get(identifier) {
+            return cached.clone();
+        }
+        let tz = TimeZone::from_identifier(Some(identifier));
+        cache.borrow_mut().insert(identifier.to_string(), tz.clone());
+        tz
+    })
 }
 
 fn display_timezone() -> TimeZone {
-    let identifier = AppSettings::try_new()
-        .map(|settings| settings.calendar_time_zone())
-        .unwrap_or_else(|| "system".to_string());
-    if identifier.eq_ignore_ascii_case("system") {
-        TimeZone::local()
-    } else if identifier.eq_ignore_ascii_case("utc") {
-        TimeZone::utc()
-    } else {
-        TimeZone::from_identifier(Some(&identifier)).unwrap_or_else(TimeZone::local)
-    }
+    DISPLAY_TZ_CACHE.with(|cache| {
+        let now = std::time::Instant::now();
+        if let Some((checked_at, ref tz)) = *cache.borrow() {
+            if now.duration_since(checked_at) < std::time::Duration::from_secs(2) {
+                return tz.clone();
+            }
+        }
+        let identifier = AppSettings::try_new()
+            .map(|settings| settings.calendar_time_zone())
+            .unwrap_or_else(|| "system".to_string());
+        let tz = if identifier.eq_ignore_ascii_case("system") {
+            TimeZone::local()
+        } else if identifier.eq_ignore_ascii_case("utc") {
+            cached_utc_timezone()
+        } else {
+            cached_timezone_from_identifier(&identifier).unwrap_or_else(TimeZone::local)
+        };
+        *cache.borrow_mut() = Some((now, tz.clone()));
+        tz
+    })
 }
 
 #[cfg(test)]

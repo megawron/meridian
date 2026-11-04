@@ -125,77 +125,7 @@ pub struct ParsedMail {
 
 impl ParsedMail {
     pub fn into_object(self) -> MailMessageObject {
-        let ParsedMail {
-            id,
-            folder_id,
-            sender_name,
-            sender_email,
-            recipient_to,
-            recipient_cc,
-            recipient_bcc,
-            reply_to,
-            subject,
-            message_id,
-            in_reply_to,
-            references,
-            thread_id,
-            thread_size,
-            thread_position,
-            date_str,
-            message_size,
-            preview_snippet,
-            html_body,
-            raw_headers,
-            raw_mime,
-            is_unread,
-            is_flagged,
-            is_important,
-            is_replied,
-            is_forwarded,
-            follow_up_state,
-            follow_up,
-            labels,
-            backend_location,
-            attachments,
-            is_preview_only,
-            ..
-        } = self;
-
-        let object = MailMessageObject::new(
-            &id,
-            &folder_id,
-            &sender_name,
-            &sender_email,
-            &recipient_to,
-            &recipient_cc,
-            &recipient_bcc,
-            &reply_to,
-            &subject,
-            message_id,
-            in_reply_to,
-            references,
-            &thread_id,
-            thread_size,
-            thread_position,
-            &date_str,
-            message_size,
-            &preview_snippet,
-            &html_body,
-            is_unread,
-            is_flagged,
-            is_important,
-            follow_up_state,
-            follow_up,
-            labels,
-            backend_location,
-            attachments,
-        );
-        object.set_raw_headers(raw_headers);
-        object.set_raw_mime(raw_mime);
-        object.set_preview_only(is_preview_only);
-        object.set_replied(is_replied);
-        object.set_forwarded(is_forwarded);
-        object
+        MailMessageObject::from_parsed(self)
     }
 }
 
@@ -2683,8 +2613,8 @@ pub(crate) fn assign_thread_metadata(messages: &mut [ParsedMail]) {
             } else {
                 &message.sender_email
             },
-            date_ts: crate::views::parse_flexible_datetime(&message.date_str)
-                .map(|dt| dt.timestamp())
+            date_ts: crate::services::evolution_summary_cache::parse_rfc2822_utc_fast(&message.date_str)
+                .or_else(|| crate::views::parse_flexible_datetime(&message.date_str).map(|dt| dt.timestamp()))
                 .unwrap_or(0),
         })
         .collect::<Vec<_>>();
@@ -3303,7 +3233,10 @@ fn parse_rfc2047_word(encoded: &str) -> Option<(&str, &str, &str, usize)> {
 }
 
 pub(crate) fn decode_mime_header(value: &str) -> String {
-    let mut result = String::new();
+    if !value.contains("=?") {
+        return value.trim().to_string();
+    }
+    let mut result = String::with_capacity(value.len());
     let mut rest = value;
     let mut last_was_encoded = false;
 
@@ -5399,22 +5332,17 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_user_provided_emls() {
-        let files = [
-            "/tmp/meridian-test/sample-promo.eml",
-            "/tmp/meridian-test/sample-order.eml",
-            "/tmp/meridian-test/sample-job.eml",
-        ];
-        for path in files {
-            if let Ok(bytes) = fs::read(path) {
-                let parsed = parse_rfc822_bytes("test-id", "inbox", &bytes, false)
-                    .expect("EML message should parse successfully");
-                assert!(!parsed.subject.is_empty());
-                assert!(parsed.html_body.len() > 1000);
-                let sanitized = crate::services::html_sanitizer::sanitize_html(&parsed.html_body);
-                assert!(sanitized.len() > 1000);
-            }
-        }
+    fn test_parse_synthetic_multipart_html_eml() {
+        let synthetic = format!(
+            "From: newsletter@example.org\r\nTo: reader@example.org\r\nSubject: Welcome Update\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body>{}</body></html>",
+            "<p>Synthetic newsletter paragraph content for parser validation.</p>".repeat(30)
+        );
+        let parsed = parse_rfc822_bytes("test-id", "inbox", synthetic.as_bytes(), false)
+            .expect("EML message should parse successfully");
+        assert!(!parsed.subject.is_empty());
+        assert!(parsed.html_body.len() > 1000);
+        let sanitized = crate::services::html_sanitizer::sanitize_html(&parsed.html_body);
+        assert!(sanitized.len() > 1000);
     }
 
     #[test]

@@ -139,46 +139,50 @@ pub fn group_messages_with_options(
     inputs: &[ThreadIdentity<'_>],
     group_similar_messages: bool,
 ) -> Vec<ThreadMembership> {
-    let mut sets = DisjointSets::new(inputs.len());
-    let mut identifier_owner = HashMap::<String, usize>::with_capacity(inputs.len());
-    let mut identifiers = Vec::with_capacity(inputs.len());
-
-    // Phase 1: Connect by RFC-822 message identifiers
-    for (index, input) in inputs.iter().enumerate() {
-        let mut message_identifiers = Vec::new();
-        if let Some(message_id) = input.message_id.and_then(normalize_message_id) {
-            message_identifiers.push(message_id);
-        }
-        for identifier in input
-            .in_reply_to
-            .iter()
-            .chain(input.references.iter())
-            .filter_map(|identifier| normalize_message_id(identifier))
-        {
-            if !message_identifiers.contains(&identifier) {
-                message_identifiers.push(identifier);
-            }
-        }
-
-        for identifier in &message_identifiers {
-            if let Some(previous) = identifier_owner.insert(identifier.clone(), index) {
-                sets.union(index, previous);
-            }
-        }
-        identifiers.push(message_identifiers);
+    let n = inputs.len();
+    if n == 0 {
+        return Vec::new();
     }
 
-    // Phase 2: Subject matching fallback.
+    let mut sets = DisjointSets::new(n);
+    let mut identifier_owner = HashMap::<String, usize>::with_capacity(n * 2);
+    let mut first_identifier = vec![None::<String>; n];
+
+    // Phase 1: Connect by RFC-822 message identifiers without allocating Vec<String> per message
+    for (index, input) in inputs.iter().enumerate() {
+        if let Some(mid) = input.message_id.and_then(normalize_message_id) {
+            if let Some(previous) = identifier_owner.insert(mid.clone(), index) {
+                sets.union(index, previous);
+            }
+            first_identifier[index] = Some(mid);
+        }
+        for raw_ref in input.in_reply_to.iter().chain(input.references.iter()) {
+            if let Some(identifier) = normalize_message_id(raw_ref) {
+                if first_identifier[index].is_none() {
+                    first_identifier[index] = Some(identifier.clone());
+                }
+                if let Some(previous) = identifier_owner.insert(identifier, index) {
+                    sets.union(index, previous);
+                }
+            }
+        }
+    }
+
+    // Phase 2: Subject matching fallback (single normalization pass per message).
     // - If at least one message has a reply/forward prefix (`Re:`, `Aw:`, `Fwd:`, `Wg:`),
     //   all messages sharing that normalized subject belong to the same conversation
     //   across all time.
-    // - If none have a reply/forward prefix (e.g. recurring automated alerts like
-    //   "Sicherheitswarnung" from Google) and `group_similar_messages` is enabled,
-    //   only messages from the same sender are grouped together (across all time,
-    //   preventing unrelated senders with generic subjects like "Invoice" from colliding).
-    let mut subject_groups = HashMap::<String, Vec<usize>>::new();
+    // - If none have a reply/forward prefix and `group_similar_messages` is enabled,
+    //   only messages from the same sender are grouped together.
+    struct SubjectBucket {
+        first_idx: usize,
+        any_has_prefix: bool,
+        rest_indices: Vec<usize>,
+    }
+
+    let mut subject_groups = HashMap::<String, SubjectBucket>::with_capacity(n / 2 + 1);
     for (index, input) in inputs.iter().enumerate() {
-        let (subj, _) = normalize_subject_with_reply(input.subject);
+        let (subj, has_prefix) = normalize_subject_with_reply(input.subject);
         if !subj.is_empty()
             && subj != "ohne betreff"
             && subj != "(ohne betreff)"
@@ -187,25 +191,40 @@ pub fn group_messages_with_options(
             && subj != "kein betreff"
             && subj != "(kein betreff)"
         {
-            subject_groups.entry(subj).or_default().push(index);
+            match subject_groups.entry(subj) {
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert(SubjectBucket {
+                        first_idx: index,
+                        any_has_prefix: has_prefix,
+                        rest_indices: Vec::new(),
+                    });
+                }
+                std::collections::hash_map::Entry::Occupied(mut o) => {
+                    let bucket = o.get_mut();
+                    bucket.any_has_prefix |= has_prefix;
+                    bucket.rest_indices.push(index);
+                }
+            }
         }
     }
 
-    for (_subj, member_indices) in subject_groups {
-        if member_indices.len() <= 1 {
+    for (_subj, bucket) in subject_groups {
+        if bucket.rest_indices.is_empty() {
             continue;
         }
-        let any_has_prefix = member_indices
-            .iter()
-            .any(|&idx| normalize_subject_with_reply(inputs[idx].subject).1);
-        if any_has_prefix {
-            let first_idx = member_indices[0];
-            for &other_idx in &member_indices[1..] {
+        if bucket.any_has_prefix {
+            let first_idx = bucket.first_idx;
+            for other_idx in bucket.rest_indices {
                 sets.union(first_idx, other_idx);
             }
         } else if group_similar_messages {
-            let mut sender_first_idx = HashMap::<String, usize>::new();
-            for &idx in &member_indices {
+            let mut sender_first_idx =
+                HashMap::<String, usize>::with_capacity(bucket.rest_indices.len() + 1);
+            sender_first_idx.insert(
+                inputs[bucket.first_idx].sender.trim().to_ascii_lowercase(),
+                bucket.first_idx,
+            );
+            for idx in bucket.rest_indices {
                 let norm_sender = inputs[idx].sender.trim().to_ascii_lowercase();
                 if let Some(&first_idx) = sender_first_idx.get(&norm_sender) {
                     sets.union(first_idx, idx);
@@ -216,12 +235,13 @@ pub fn group_messages_with_options(
         }
     }
 
-    let mut component_members = HashMap::<usize, Vec<usize>>::new();
-    for index in 0..inputs.len() {
-        component_members
-            .entry(sets.find(index))
-            .or_default()
-            .push(index);
+    // Phase 3: Fast component resolution (avoid allocating Vec<usize> for single-message threads)
+    let mut roots = vec![0usize; n];
+    let mut comp_counts = vec![0u32; n];
+    for index in 0..n {
+        let r = sets.find(index);
+        roots[index] = r;
+        comp_counts[r] += 1;
     }
 
     let mut memberships = vec![
@@ -230,10 +250,37 @@ pub fn group_messages_with_options(
             size: 1,
             position: 0,
         };
-        inputs.len()
+        n
     ];
 
-    for mut members in component_members.into_values() {
+    let mut multi_components = HashMap::<usize, Vec<usize>>::new();
+    for index in 0..n {
+        let r = roots[index];
+        let count = comp_counts[r] as usize;
+        if count == 1 {
+            // Fast path for single-message threads (no sorting or Vec allocation needed)
+            let thread_id = first_identifier[index].take().unwrap_or_else(|| {
+                let subject = normalized_subject(inputs[index].subject);
+                if subject.is_empty() {
+                    format!("subject:(ohne Betreff):{index}")
+                } else {
+                    format!("subject:{subject}")
+                }
+            });
+            memberships[index] = ThreadMembership {
+                thread_id,
+                size: 1,
+                position: 0,
+            };
+        } else {
+            multi_components
+                .entry(r)
+                .or_insert_with(|| Vec::with_capacity(count))
+                .push(index);
+        }
+    }
+
+    for mut members in multi_components.into_values() {
         // Sort chronologically: oldest message first!
         members.sort_by(|&a, &b| {
             let ta = inputs[a].date_ts;
@@ -245,27 +292,27 @@ pub fn group_messages_with_options(
             }
         });
 
-        let concrete_id = members.iter().find_map(|&index| {
-            inputs[index]
-                .message_id
-                .and_then(normalize_message_id)
-                .or_else(|| identifiers[index].first().cloned())
-        });
+        let concrete_id = members
+            .iter()
+            .find_map(|&index| first_identifier[index].clone());
         let thread_id = concrete_id.unwrap_or_else(|| {
             let subject = normalized_subject(inputs[members[0]].subject);
-            format!("subject:{subject}")
+            if subject.is_empty() {
+                format!("subject:(ohne Betreff):{}", members[0])
+            } else {
+                format!("subject:{subject}")
+            }
         });
 
-        let thread_id = if thread_id == "subject:" {
-            format!("subject:(ohne Betreff):{}", members[0])
-        } else {
-            thread_id
-        };
-
-        for (position, index) in members.iter().enumerate() {
-            memberships[*index] = ThreadMembership {
-                thread_id: thread_id.clone(),
-                size: members.len(),
+        let len = members.len();
+        for (position, &index) in members.iter().enumerate() {
+            memberships[index] = ThreadMembership {
+                thread_id: if position + 1 == len {
+                    std::mem::take(&mut { thread_id.clone() })
+                } else {
+                    thread_id.clone()
+                },
+                size: len,
                 position,
             };
         }

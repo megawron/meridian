@@ -58,7 +58,7 @@ pub struct EdsSource {
     pub foreign_mail: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EdsSourceKind {
     Mail,
     Calendar,
@@ -1948,6 +1948,41 @@ pub async fn list_address_book_sources() -> Result<Vec<EdsSource>, EdsServiceErr
     Ok(sources)
 }
 
+static MEMORY_SOURCES_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<EdsSourceKind, Vec<EdsSource>>>,
+> = std::sync::OnceLock::new();
+
+pub fn load_cached_sources_fast(kind: EdsSourceKind) -> Vec<EdsSource> {
+    if let Ok(guard) = MEMORY_SOURCES_CACHE
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+    {
+        if let Some(sources) = guard.get(&kind) {
+            if !sources.is_empty() {
+                return sources.clone();
+            }
+        }
+    }
+    let cache = EdsSourceCache::new();
+    let mut cached = cache.load_with_status(kind);
+    cached.sources.retain(|s| {
+        s.enabled
+            && is_source_enabled_for_service(&s.uid, kind)
+            && is_goa_identity_service_enabled(s.parent_name.as_deref().unwrap_or(""), kind)
+                != Some(false)
+            && is_goa_identity_service_enabled(&s.display_name, kind) != Some(false)
+    });
+    if !cached.sources.is_empty() {
+        if let Ok(mut guard) = MEMORY_SOURCES_CACHE
+            .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+            .lock()
+        {
+            guard.insert(kind, cached.sources.clone());
+        }
+    }
+    cached.sources
+}
+
 /// Discover EDS sources and retain only non-secret source metadata for an
 /// offline UI state.  A cached result is explicitly marked as such and is
 /// never treated as authoritative for mutations or message/calendar data.
@@ -1977,6 +2012,12 @@ pub async fn discover_sources(kind: EdsSourceKind) -> EdsSourceDiscovery {
 
     match result {
         Ok(sources) => {
+            if let Ok(mut guard) = MEMORY_SOURCES_CACHE
+                .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+                .lock()
+            {
+                guard.insert(kind, sources.clone());
+            }
             if let Err(error) = cache.save(kind, &sources) {
                 tracing::warn!(%error, "Could not persist EDS source cache");
             }

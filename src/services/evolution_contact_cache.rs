@@ -25,7 +25,11 @@ struct Sqlite3Stmt {
 
 const SQLITE_OK: c_int = 0;
 const SQLITE_ROW: c_int = 100;
+const SQLITE_DONE: c_int = 101;
 const SQLITE_OPEN_READONLY: c_int = 0x00000001;
+const SQLITE_OPEN_READWRITE: c_int = 0x00000002;
+const SQLITE_OPEN_CREATE: c_int = 0x00000004;
+const SQLITE_STATIC: isize = 0;
 
 unsafe extern "C" {
     fn sqlite3_open_v2(
@@ -33,6 +37,20 @@ unsafe extern "C" {
         ppDb: *mut *mut Sqlite3,
         flags: c_int,
         zVfs: *const c_char,
+    ) -> c_int;
+    fn sqlite3_exec(
+        db: *mut Sqlite3,
+        sql: *const c_char,
+        callback: Option<
+            unsafe extern "C" fn(
+                *mut std::ffi::c_void,
+                c_int,
+                *mut *mut c_char,
+                *mut *mut c_char,
+            ) -> c_int,
+        >,
+        arg: *mut std::ffi::c_void,
+        errmsg: *mut *mut c_char,
     ) -> c_int;
     fn sqlite3_prepare_v2(
         db: *mut Sqlite3,
@@ -42,7 +60,18 @@ unsafe extern "C" {
         pzTail: *mut *const c_char,
     ) -> c_int;
     fn sqlite3_step(pStmt: *mut Sqlite3Stmt) -> c_int;
+    fn sqlite3_reset(pStmt: *mut Sqlite3Stmt) -> c_int;
+    fn sqlite3_clear_bindings(pStmt: *mut Sqlite3Stmt) -> c_int;
+    fn sqlite3_bind_int64(pStmt: *mut Sqlite3Stmt, index: c_int, value: i64) -> c_int;
+    fn sqlite3_bind_text(
+        pStmt: *mut Sqlite3Stmt,
+        index: c_int,
+        value: *const c_char,
+        n: c_int,
+        destructor: isize,
+    ) -> c_int;
     fn sqlite3_column_text(pStmt: *mut Sqlite3Stmt, iCol: c_int) -> *const c_char;
+    fn sqlite3_column_int64(pStmt: *mut Sqlite3Stmt, iCol: c_int) -> i64;
     fn sqlite3_finalize(pStmt: *mut Sqlite3Stmt) -> c_int;
     fn sqlite3_close(db: *mut Sqlite3) -> c_int;
 }
@@ -53,18 +82,37 @@ struct SqliteDb {
 
 impl SqliteDb {
     fn open(path: &Path) -> Option<Self> {
+        Self::open_with_mode(path, false)
+    }
+
+    fn open_with_mode(path: &Path, writable: bool) -> Option<Self> {
         let path_str = path.to_str()?;
         let c_path = CString::new(path_str).ok()?;
         let mut ptr: *mut Sqlite3 = std::ptr::null_mut();
+        let flags = if writable {
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE
+        } else {
+            SQLITE_OPEN_READONLY
+        };
         let rc = unsafe {
             sqlite3_open_v2(
                 c_path.as_ptr(),
                 &mut ptr,
-                SQLITE_OPEN_READONLY,
+                flags,
                 std::ptr::null(),
             )
         };
         if rc == SQLITE_OK && !ptr.is_null() {
+            let pragma = c"PRAGMA mmap_size = 4294967296; PRAGMA temp_store = MEMORY; PRAGMA cache_size = -65536;";
+            unsafe {
+                let _ = sqlite3_exec(
+                    ptr,
+                    pragma.as_ptr(),
+                    None,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                );
+            }
             Some(Self { ptr })
         } else {
             if !ptr.is_null() {
@@ -75,6 +123,29 @@ impl SqliteDb {
     }
 
     fn count_contacts(&self, is_cache_table: bool) -> usize {
+        // Fast O(1) B-tree right-edge probe via max(rowid), falling back to count(*)
+        let fast_sql = if is_cache_table {
+            c"SELECT max(rowid) FROM ECacheObjects;"
+        } else {
+            c"SELECT max(rowid) FROM folder_id;"
+        };
+        let mut stmt: *mut Sqlite3Stmt = std::ptr::null_mut();
+        unsafe {
+            if sqlite3_prepare_v2(self.ptr, fast_sql.as_ptr(), -1, &mut stmt, std::ptr::null_mut())
+                == SQLITE_OK
+                && !stmt.is_null()
+            {
+                if sqlite3_step(stmt) == SQLITE_ROW {
+                    let max_id = sqlite3_column_int64(stmt, 0);
+                    if max_id > 0 {
+                        sqlite3_finalize(stmt);
+                        return max_id as usize;
+                    }
+                }
+                sqlite3_finalize(stmt);
+            }
+        }
+
         let sql_str = if is_cache_table {
             "SELECT count(*) FROM ECacheObjects;"
         } else {
@@ -104,6 +175,46 @@ impl SqliteDb {
             sqlite3_finalize(stmt);
         }
         count
+    }
+
+    fn query_contacts_window(
+        &self,
+        is_cache_table: bool,
+        offset: usize,
+        limit: usize,
+    ) -> Vec<(String, String)> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let sql = if is_cache_table {
+            c"SELECT ECacheUID, ECacheOBJ FROM ECacheObjects WHERE rowid > ?1 ORDER BY rowid ASC LIMIT ?2;"
+        } else {
+            c"SELECT uid, vcard FROM folder_id WHERE rowid > ?1 ORDER BY rowid ASC LIMIT ?2;"
+        };
+        let mut stmt: *mut Sqlite3Stmt = std::ptr::null_mut();
+        let rc = unsafe {
+            sqlite3_prepare_v2(self.ptr, sql.as_ptr(), -1, &mut stmt, std::ptr::null_mut())
+        };
+        if rc != SQLITE_OK || stmt.is_null() {
+            return Vec::new();
+        }
+
+        let mut results = Vec::with_capacity(limit.min(256));
+        unsafe {
+            sqlite3_bind_int64(stmt, 1, offset as i64);
+            sqlite3_bind_int64(stmt, 2, limit as i64);
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let uid_ptr = sqlite3_column_text(stmt, 0);
+                let obj_ptr = sqlite3_column_text(stmt, 1);
+                if !uid_ptr.is_null() && !obj_ptr.is_null() {
+                    let uid = CStr::from_ptr(uid_ptr).to_string_lossy().into_owned();
+                    let vcard = CStr::from_ptr(obj_ptr).to_string_lossy().into_owned();
+                    results.push((uid, vcard));
+                }
+            }
+            sqlite3_finalize(stmt);
+        }
+        results
     }
 
     fn query_contacts_cache(&self, limit: Option<usize>) -> Vec<(String, String)> {
@@ -470,11 +581,298 @@ pub fn discover_address_book_dbs() -> Vec<AddressBookDbTarget> {
     targets
 }
 
+/// Return the total contact count for a specific SQLite address book database in $O(1)$ time.
+pub fn query_contacts_count_from_sqlite(db_path: &Path, is_cache_table: bool) -> usize {
+    let Some(db) = SqliteDb::open(db_path) else {
+        return 0;
+    };
+    db.count_contacts(is_cache_table)
+}
+
+/// Load a viewport slice (`offset`, `limit`) of contacts from a specific SQLite address book
+/// database in $O(\log N)$ time using `rowid` anchor probing.
+pub fn load_contacts_window_from_sqlite(
+    db_path: &Path,
+    is_cache_table: bool,
+    source_uid: &str,
+    source_display_name: &str,
+    offset: usize,
+    limit: usize,
+) -> Vec<EBookContactRecord> {
+    let Some(db) = SqliteDb::open(db_path) else {
+        return Vec::new();
+    };
+    let raw = db.query_contacts_window(is_cache_table, offset, limit);
+    let mut records = Vec::with_capacity(raw.len());
+    for (uid, vcard) in raw {
+        if let Some(contact) = VCardContact::parse_vcard_string(&vcard) {
+            records.push(EBookContactRecord {
+                source_uid: source_uid.to_string(),
+                source_display_name: source_display_name.to_string(),
+                uid,
+                vcard,
+                contact,
+            });
+        }
+    }
+    records
+}
+
+/// Populate a synthetic Evolution `EBookCache` SQLite database (`ECacheObjects`) with
+/// `total_contacts` enterprise vCard 4.0 contacts for multi-million scale benchmarking.
+/// Returns `(elapsed_seconds, db_size_bytes)`.
+pub fn populate_synthetic_ebook_cache_db(
+    db_path: &Path,
+    total_contacts: usize,
+) -> Result<(f64, u64), String> {
+    let start_instant = std::time::Instant::now();
+    let _ = std::fs::remove_file(db_path);
+    let Some(db) = SqliteDb::open_with_mode(db_path, true) else {
+        return Err("Failed to open synthetic EBookCache SQLite DB".to_string());
+    };
+
+    let init_sql = c"PRAGMA synchronous = OFF; \
+                     PRAGMA journal_mode = OFF; \
+                     PRAGMA locking_mode = EXCLUSIVE; \
+                     PRAGMA temp_store = MEMORY; \
+                     PRAGMA cache_size = -524288; \
+                     PRAGMA page_size = 4096; \
+                     CREATE TABLE ECacheObjects ( \
+                         ECacheUID TEXT PRIMARY KEY, \
+                         ECacheREV TEXT, \
+                         ECacheOBJ TEXT, \
+                         ECacheState INTEGER, \
+                         pgpCert INTEGER, \
+                         x509Cert INTEGER, \
+                         wants_html INTEGER, \
+                         list_show_addresses INTEGER, \
+                         is_list INTEGER, \
+                         family_name_localized TEXT, \
+                         family_name TEXT, \
+                         given_name_localized TEXT, \
+                         given_name TEXT, \
+                         full_name TEXT, \
+                         nickname TEXT, \
+                         file_as_localized TEXT, \
+                         file_as TEXT, \
+                         custom_flags INTEGER, \
+                         bdata TEXT \
+                     ); \
+                     BEGIN TRANSACTION;";
+
+    unsafe {
+        if sqlite3_exec(
+            db.ptr,
+            init_sql.as_ptr(),
+            None,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        ) != SQLITE_OK
+        {
+            return Err("Failed to initialize EBookCache ECacheObjects table".to_string());
+        }
+    }
+
+    let insert_sql = c"INSERT INTO ECacheObjects ( \
+        ECacheUID, ECacheREV, ECacheOBJ, ECacheState, is_list, \
+        family_name, given_name, full_name, file_as \
+    ) VALUES (?1, '2026-11-03T12:00:00Z', ?2, 0, 0, ?3, ?4, ?5, ?6);";
+
+    let mut stmt: *mut Sqlite3Stmt = std::ptr::null_mut();
+    unsafe {
+        if sqlite3_prepare_v2(db.ptr, insert_sql.as_ptr(), -1, &mut stmt, std::ptr::null_mut())
+            != SQLITE_OK
+            || stmt.is_null()
+        {
+            return Err("Failed to prepare EBookCache INSERT statement".to_string());
+        }
+    }
+
+    let given_names: [&str; 8] = [
+        "Alexander", "Katharina", "Maximilian", "Sophie", "Sebastian", "johanna", "lukas", "elena",
+    ];
+    let family_names: [&str; 8] = [
+        "Mueller", "Schmidt", "Schneider", "Fischer", "Weber", "Meyer", "Wagner", "Becker",
+    ];
+    let orgs: [&str; 4] = [
+        "Meridian Systems GmbH",
+        "Alpine Cloud Infrastructure AG",
+        "Nordic Photonics Corp",
+        "Continental Enterprise Engineering",
+    ];
+
+    let mut uid_buf = String::with_capacity(32);
+    let mut full_name_buf = String::with_capacity(64);
+    let mut file_as_buf = String::with_capacity(64);
+    let mut vcard_buf = String::with_capacity(320);
+
+    for i in 0..total_contacts {
+        uid_buf.clear();
+        full_name_buf.clear();
+        file_as_buf.clear();
+        vcard_buf.clear();
+
+        let given = given_names[i & 7];
+        let family = family_names[(i >> 3) & 7];
+        let org = orgs[i & 3];
+
+        use std::fmt::Write as _;
+        let _ = write!(&mut uid_buf, "pas-id-{:08}", i + 1);
+        let _ = write!(&mut full_name_buf, "{} {} #{}", given, family, i + 1);
+        let _ = write!(&mut file_as_buf, "{}, {} #{}", family, given, i + 1);
+        let _ = write!(
+            &mut vcard_buf,
+            "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:{}\r\nFN:{}\r\nN:{};{};;;\r\nEMAIL;TYPE=work:user{}@enterprise.example.com\r\nTEL;TYPE=work,voice:+49-89-555-{:06}\r\nORG:{}\r\nTITLE:Principal Engineer\r\nEND:VCARD\r\n",
+            uid_buf,
+            full_name_buf,
+            family,
+            given,
+            i + 1,
+            (i + 1) % 1_000_000,
+            org
+        );
+
+        unsafe {
+            sqlite3_reset(stmt);
+            sqlite3_clear_bindings(stmt);
+            sqlite3_bind_text(
+                stmt,
+                1,
+                uid_buf.as_ptr() as *const c_char,
+                uid_buf.len() as c_int,
+                SQLITE_STATIC,
+            );
+            sqlite3_bind_text(
+                stmt,
+                2,
+                vcard_buf.as_ptr() as *const c_char,
+                vcard_buf.len() as c_int,
+                SQLITE_STATIC,
+            );
+            sqlite3_bind_text(
+                stmt,
+                3,
+                family.as_ptr() as *const c_char,
+                family.len() as c_int,
+                SQLITE_STATIC,
+            );
+            sqlite3_bind_text(
+                stmt,
+                4,
+                given.as_ptr() as *const c_char,
+                given.len() as c_int,
+                SQLITE_STATIC,
+            );
+            sqlite3_bind_text(
+                stmt,
+                5,
+                full_name_buf.as_ptr() as *const c_char,
+                full_name_buf.len() as c_int,
+                SQLITE_STATIC,
+            );
+            sqlite3_bind_text(
+                stmt,
+                6,
+                file_as_buf.as_ptr() as *const c_char,
+                file_as_buf.len() as c_int,
+                SQLITE_STATIC,
+            );
+
+            if sqlite3_step(stmt) != SQLITE_DONE {
+                sqlite3_finalize(stmt);
+                return Err(format!("Failed to insert synthetic contact at index {i}"));
+            }
+        }
+    }
+
+    let commit_sql = c"COMMIT; \
+                       CREATE INDEX IDX_full_name ON ECacheObjects(full_name); \
+                       CREATE INDEX IDX_file_as ON ECacheObjects(file_as);";
+    unsafe {
+        sqlite3_finalize(stmt);
+        let _ = sqlite3_exec(
+            db.ptr,
+            commit_sql.as_ptr(),
+            None,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        );
+    }
+    drop(db);
+
+    let size_bytes = std::fs::metadata(db_path).map(|m| m.len()).unwrap_or(0);
+    Ok((start_instant.elapsed().as_secs_f64(), size_bytes))
+}
+
 /// Load contacts directly from the local SQLite databases, with an optional limit.
+/// Uses parallel scoped threads across multiple discovered address books when loading larger batches.
 pub fn load_contacts_from_meridian_sqlite_cache_limited(limit: Option<usize>) -> Vec<EBookContactRecord> {
     let targets = discover_address_book_dbs();
+    if targets.is_empty() {
+        return Vec::new();
+    }
+
     let mut records = Vec::new();
     let mut seen_contact_identities: HashSet<String> = HashSet::new();
+
+    if targets.len() > 1 && limit.unwrap_or(usize::MAX) > 250 {
+        let per_target_results: Vec<Vec<(String, EBookContactRecord)>> = std::thread::scope(|s| {
+            let handles: Vec<_> = targets
+                .iter()
+                .map(|target| {
+                    s.spawn(move || {
+                        let Some(db) = SqliteDb::open(&target.db_path) else {
+                            return Vec::new();
+                        };
+                        let raw_contacts = if target.is_cache_table {
+                            db.query_contacts_cache(limit)
+                        } else {
+                            db.query_contacts_local(limit)
+                        };
+                        let parent_prefix = target.parent_name.as_deref().unwrap_or("");
+                        let mut out = Vec::with_capacity(raw_contacts.len());
+                        for (uid, vcard) in raw_contacts {
+                            let Some(contact) = VCardContact::parse_vcard_string(&vcard) else {
+                                continue;
+                            };
+                            let dedup_key = format!("{parent_prefix}:{uid}");
+                            out.push((
+                                dedup_key,
+                                EBookContactRecord {
+                                    source_uid: target.source_uid.clone(),
+                                    source_display_name: target.display_name.clone(),
+                                    uid,
+                                    vcard,
+                                    contact,
+                                },
+                            ));
+                        }
+                        out
+                    })
+                })
+                .collect();
+
+            handles
+                .into_iter()
+                .filter_map(|h| h.join().ok())
+                .collect()
+        });
+
+        for batch in per_target_results {
+            for (dedup_key, record) in batch {
+                if !seen_contact_identities.insert(dedup_key) {
+                    continue;
+                }
+                records.push(record);
+                if let Some(lim) = limit {
+                    if records.len() >= lim {
+                        return records;
+                    }
+                }
+            }
+        }
+        return records;
+    }
 
     for target in targets {
         let Some(db) = SqliteDb::open(&target.db_path) else {
