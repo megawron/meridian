@@ -341,6 +341,9 @@ pub fn category_names_from_ical_value(value: &str) -> Vec<String> {
 }
 
 fn unescape_ical_text(value: &str) -> String {
+    if !value.contains('\\') {
+        return value.to_string();
+    }
     value
         .replace("\\n", "\n")
         .replace("\\N", "\n")

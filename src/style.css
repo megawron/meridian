@@ -2999,6 +2999,45 @@ splitview > .sidebar:backdrop {
   color: alpha(@window_fg_color, 0.65);
 }
 
+.sidebar-section-header-slim {
+  min-height: 24px;
+  padding: 2px 4px;
+}
+
+.sidebar-section-header-slim button {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 2px;
+  margin: 0;
+}
+
+.sidebar-section-header-slim button image {
+  -gtk-icon-size: 14px;
+  min-width: 14px;
+  min-height: 14px;
+}
+
+.sidebar-header-compact {
+  padding: 1px 2px;
+}
+
+.sidebar-header-compact label.heading {
+  font-size: 0.86rem;
+}
+
+.sidebar-header-compact button {
+  min-width: 20px;
+  min-height: 20px;
+  padding: 1px;
+}
+
+.calendar-details-inline-action-btn {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 2px;
+  margin: 0;
+}
+
 .sidebar-drawer-header label.sidebar-drawer-unread-badge,
 .sidebar-drawer-header .sidebar-drawer-unread-badge {
   font-size: 0.72rem;
@@ -4367,16 +4406,68 @@ button.month-bar-chip.span-end {
   margin-right: 4px;
 }
 
-/* Developer Debug Console */
+/* Window Statusbar & Developer Debug Console */
+.statusbar {
+  background-color: @view_bg_color;
+  border-top: 1px solid color-mix(in srgb, var(--sidebar-fg-color, @sidebar_fg_color) 8%, var(--sidebar-bg-color, @sidebar_bg_color));
+  padding: 0 8px;
+  min-height: 22px;
+}
+
+.statusbar button {
+  min-height: 20px;
+  min-width: 20px;
+  padding: 1px 4px;
+  margin: 0;
+}
+
+.statusbar-message {
+  color: alpha(@window_fg_color, 0.88);
+}
+
+.statusbar-date {
+  color: alpha(@window_fg_color, 0.72);
+}
+
 .debug-console-panel {
   background-color: @view_bg_color;
-  border-top: 1px solid @borders;
+  border-top: 1px solid color-mix(in srgb, var(--sidebar-fg-color, @sidebar_fg_color) 8%, var(--sidebar-bg-color, @sidebar_bg_color));
+  margin: 0;
+  padding: 0;
+}
+
+.debug-console-panel scrolledwindow {
+  margin: 0;
+  padding: 0;
 }
 
 .debug-console-header {
-  background-color: alpha(@window_bg_color, 0.75);
-  border-bottom: 1px solid alpha(@borders, 0.5);
-  min-height: 32px;
+  background-color: @view_bg_color;
+  border: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--sidebar-fg-color, @sidebar_fg_color) 8%, var(--sidebar-bg-color, @sidebar_bg_color));
+  box-shadow: none;
+  min-height: 24px;
+  padding: 1px 8px;
+  margin: 0;
+}
+
+.debug-console-header button {
+  min-height: 20px;
+  min-width: 20px;
+  padding: 1px 4px;
+  margin: 0;
+}
+
+.debug-console-header searchentry {
+  min-height: 20px;
+  padding: 0 6px;
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.debug-console-header separator {
+  background: transparent;
+  border: none;
 }
 
 .terminal-text {
@@ -4384,6 +4475,8 @@ button.month-bar-chip.span-end {
   font-size: 11px;
   background-color: alpha(@window_fg_color, 0.04);
   color: @view_fg_color;
+  margin: 0;
+  padding: 0;
 }
 
 /* Alphabet Sorting Pane (Physical Register Tabs) */
@@ -4560,31 +4653,35 @@ button.month-bar-chip.span-end {
   margin-right: 6px;
 }
 
-/* Date & Time and other entry fields inside appointment form cards */
-.appointment-form-page row entry,
-.appointment-form-page .action-row entry {
-  background-color: alpha(currentColor, 0.04);
-  border: 1px solid alpha(@borders, 0.7);
-  border-radius: 6px;
+/* Date & Time linked entry fields inside appointment form cards */
+.appointment-form-page .linked > entry {
   min-height: 28px;
-  padding: 2px 6px;
+  padding: 2px 8px;
+}
+
+/* Appointment Notes Card — native Libadwaita card without opaque inner white textview rectangle */
+.appointment-notes-card {
+  background-color: var(--card-bg-color);
+  color: var(--card-fg-color);
+  border-radius: 12px;
+  overflow: hidden;
+  transition: box-shadow 150ms ease-in-out;
+}
+
+.appointment-notes-card:focus-within {
+  box-shadow: 0 0 0 2px alpha(@accent_bg_color, 0.5),
+              0 1px 3px 1px RGB(0 0 6 / 7%);
+}
+
+.appointment-notes-card scrolledwindow,
+.appointment-notes-card viewport,
+.appointment-notes-view,
+.appointment-notes-view text {
+  background: transparent;
+  background-color: transparent;
+  color: inherit;
+  border: none;
   box-shadow: none;
-  transition: all 120ms ease-in-out;
-}
-
-.appointment-form-page row entry:hover,
-.appointment-form-page .action-row entry:hover {
-  background-color: alpha(currentColor, 0.07);
-  border-color: alpha(@borders, 1.0);
-}
-
-.appointment-form-page row entry:focus,
-.appointment-form-page row entry:focus-within,
-.appointment-form-page .action-row entry:focus,
-.appointment-form-page .action-row entry:focus-within {
-  background-color: @view_bg_color;
-  border-color: @accent_color;
-  box-shadow: 0 0 0 1px @accent_color;
 }
 
 .appointment-color-badge {
@@ -5240,6 +5337,14 @@ toolbarview.undershoot-top > .top-bar {
   background-image: none;
   box-shadow: none;
   border-bottom: none;
+}
+
+toolbarview > .bottom-bar,
+toolbarview.undershoot-bottom > .bottom-bar {
+  background-color: transparent;
+  background-image: none;
+  box-shadow: none;
+  border-top: none;
 }
 
 .window-header-box {
@@ -6565,6 +6670,7 @@ button.mail-memo-delete-btn:hover,
 
 .memopad-canvas,
 .memos-sidebar-section,
+.memos-sidebar-section .memos-section-header,
 .memos-panel-scroll,
 .memos-panel-scroll > viewport,
 .meridian-sidebar-drawer .memos-sidebar-section,
@@ -6575,9 +6681,10 @@ button.mail-memo-delete-btn:hover,
 .calendar-sidebar scrolledwindow.memos-panel-scroll > viewport,
 .memos-detached-window,
 .memos-detached-host {
-  background: color-mix(in srgb, @warning_bg_color 9%, @window_bg_color);
-  background-color: color-mix(in srgb, @warning_bg_color 9%, @window_bg_color);
+  background: #fcf9ec;
+  background-color: #fcf9ec;
   border-radius: 0;
+  border-bottom: none;
 }
 
 .memos-detached-host {
@@ -6622,7 +6729,7 @@ headerbar.memos-detached-headerbar button,
 .dark .memos-sidebar-section .memos-section-header {
   background: #1c1912;
   background-color: #1c1912;
-  border-bottom: 1px solid alpha(@warning_bg_color, 0.14);
+  border-bottom: none;
 }
 
 .dark headerbar.memos-detached-headerbar,
@@ -6808,7 +6915,7 @@ button.memo-note-linked-mail-btn:hover {
   .memos-sidebar-section .memos-section-header {
     background: #1c1912;
     background-color: #1c1912;
-    border-bottom: 1px solid alpha(@warning_bg_color, 0.14);
+    border-bottom: none;
   }
 
   headerbar.memos-detached-headerbar .title,

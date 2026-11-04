@@ -107,9 +107,9 @@ pub(crate) const ACTIONS: &[ActionSpec] = action_specs! {
         "app.about", "app.compose", "app.drafts", "app.global-search",
         "app.preferences", "app.quit", "win.account-setup", "win.import",
         "win.new", "win.new-contact", "win.new-event", "win.new-memo",
-        "win.new-task", "win.oof-settings", "win.search",
+        "win.new-task", "win.oof-settings", "win.redo", "win.search",
         "win.show-help-overlay", "win.switch-calendar", "win.switch-contacts",
-        "win.switch-mail", "win.switch-tasks",
+        "win.switch-mail", "win.switch-tasks", "win.undo",
         "win.filter-editor", "win.search-folder-editor", "win.mail-receive-all",
         "win.mail-send-all", "win.mail-send-receive", "win.mail-stop",
         "win.preferences", "win.toggle-top-switcher",
@@ -119,7 +119,7 @@ pub(crate) const ACTIONS: &[ActionSpec] = action_specs! {
     ActiveMail => [
         "win.apply-filters", "win.mail-density-compact",
         "win.mail-density-normal", "win.mail-density-spacious",
-        "win.new-folder", "win.redo", "win.refresh-mail", "win.undo",
+        "win.new-folder", "win.refresh-mail",
         "win.search-advanced",
         "win.toggle-all-headers", "win.zoom-in", "win.zoom-out", "win.zoom-reset",
         "win.toggle-mail-status", "win.toggle-mail-flagged",
@@ -352,6 +352,12 @@ pub(crate) const SHORTCUTS: &[ShortcutSpec] = &[
     ShortcutSpec {
         section: ShortcutSection::Mail,
         group: ShortcutGroup::MailNavigation,
+        title: "Next Unread Folder",
+        action: "win.next-unread-folder",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailNavigation,
         title: "Focus Search",
         action: "win.search",
     },
@@ -478,6 +484,12 @@ pub(crate) const SHORTCUTS: &[ShortcutSpec] = &[
         group: ShortcutGroup::MailOrganize,
         title: "Mark Conversation as Read",
         action: "win.mark-thread-read",
+    },
+    ShortcutSpec {
+        section: ShortcutSection::Mail,
+        group: ShortcutGroup::MailOrganize,
+        title: "Toggle Flag",
+        action: "win.toggle-flag",
     },
     ShortcutSpec {
         section: ShortcutSection::Mail,
