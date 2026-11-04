@@ -929,7 +929,24 @@ impl MailViewer {
             }
             if let Some(stack) = self.imp().renderer_stack.borrow().as_ref() {
                 if message_id.is_some() {
+                    if let Some(loading_widget) = stack.child_by_name("loading") {
+                        loading_widget.set_opacity(0.0);
+                    }
                     stack.set_visible_child_name("loading");
+                    let viewer_weak = self.downgrade();
+                    glib::timeout_add_local_once(std::time::Duration::from_millis(180), move || {
+                        if let Some(viewer) = viewer_weak.upgrade() {
+                            if viewer.imp().source_generation.get() == source_generation
+                                && !viewer.imp().webview_ready.get()
+                            {
+                                if let Some(stack) = viewer.imp().renderer_stack.borrow().as_ref() {
+                                    if let Some(loading_widget) = stack.child_by_name("loading") {
+                                        loading_widget.set_opacity(1.0);
+                                    }
+                                }
+                            }
+                        }
+                    });
                 } else {
                     stack.set_visible_child_name("placeholder");
                 }
@@ -938,6 +955,65 @@ impl MailViewer {
 
         if let Some(view) = self.imp().fallback_view.borrow().as_ref() {
             view.buffer().set_text("");
+        }
+    }
+
+    /// Prepare the viewer for loading while immediately sizing the white mail card
+    /// to an estimated height based on the message's byte size and preview snippet,
+    /// avoiding a jarring full-pane white flash.
+    pub(crate) fn prepare_for_loading_with_hint(
+        &self,
+        message_id: Option<&str>,
+        size_bytes: usize,
+        preview_snippet: &str,
+    ) {
+        self.prepare_for_loading(message_id);
+        let estimated_h = Self::estimate_content_height_from_hint(size_bytes, preview_snippet, "");
+        self.apply_adapted_height(estimated_h);
+    }
+
+    /// Estimate the initial content height (in CSS pixels) of an email before WebKit
+    /// completes its asynchronous DOM measurement.
+    pub(crate) fn estimate_content_height_from_hint(
+        size_bytes: usize,
+        text_hint: &str,
+        html_hint: &str,
+    ) -> i32 {
+        if !html_hint.is_empty() {
+            let text_chars = text_hint.chars().count();
+            let text_lines = text_hint.lines().count() + (text_chars / 68);
+            let html_lower = html_hint.to_ascii_lowercase();
+            let block_tags = html_lower.matches("<p").count()
+                + html_lower.matches("<div").count()
+                + html_lower.matches("<tr").count()
+                + html_lower.matches("<li").count()
+                + html_lower.matches("<br").count();
+            let img_tags = html_lower.matches("<img").count();
+            let raw_est = 76
+                + (text_lines as i32 * 22)
+                + (block_tags.min(35) as i32 * 12)
+                + (img_tags.min(8) as i32 * 64);
+            return raw_est.clamp(120, 680);
+        }
+
+        let snippet_chars = text_hint.trim().chars().count();
+        if size_bytes == 0 {
+            if snippet_chars == 0 {
+                return 220;
+            }
+            let est_lines = (snippet_chars / 65).max(1) as i32;
+            return (96 + est_lines * 24).clamp(130, 360);
+        }
+        if size_bytes <= 1_800 && snippet_chars <= 140 {
+            165
+        } else if size_bytes <= 4_200 {
+            250
+        } else if size_bytes <= 10_000 {
+            370
+        } else if size_bytes <= 24_000 {
+            490
+        } else {
+            620
         }
     }
 
@@ -1338,6 +1414,14 @@ impl MailViewer {
                 settings.set_sans_serif_font_family(&desktop_font);
                 settings.set_serif_font_family(&desktop_font);
                 settings.set_monospace_font_family(&desktop_mono);
+            }
+            if self.imp().last_measured_content_height.get().is_none() {
+                let estimated_h = Self::estimate_content_height_from_hint(
+                    render_plan.body.len(),
+                    &render_plan.visible_text,
+                    &render_plan.body,
+                );
+                self.apply_adapted_height(estimated_h);
             }
             let base_uri = self.imp().current_base_uri.borrow().clone();
             let effective_base_uri =
@@ -2300,8 +2384,28 @@ impl MailViewer {
                 let lastMeasuredWidth = 0;
                 let lastClientH = 0;
 
+                function normalizeResponsiveImages() {
+                    try {
+                        const imgs = document.images;
+                        if (!imgs) return;
+                        for (let i = 0; i < imgs.length; i++) {
+                            const img = imgs[i];
+                            if (img.hasAttribute('data-meridian-placeholder')) continue;
+                            const src = img.getAttribute('src') || '';
+                            if (src.startsWith('data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP')) continue;
+                            if (img.naturalWidth > 0 && img.naturalHeight > 0 && img.clientWidth > 0 && img.clientHeight > 0) {
+                                const expectedH = Math.round(img.clientWidth * img.naturalHeight / img.naturalWidth);
+                                if (Math.abs(img.clientHeight - expectedH) > 3) {
+                                    img.style.setProperty('height', 'auto', 'important');
+                                }
+                            }
+                        }
+                    } catch (e) {}
+                }
+
                 function measureBodyHeight() {
                     try {
+                        normalizeResponsiveImages();
                         const body = document.body;
                         if (!body) return 0;
                         const bodyRect = body.getBoundingClientRect();
@@ -3764,12 +3868,24 @@ p.MsoNormal, li.MsoNormal, div.MsoNormal, blockquote p {
 img, video, iframe, canvas, svg {
   max-width: 100%;
 }
-img:not([height]):not([style*="height"]),
-video:not([height]):not([style*="height"]),
-iframe:not([height]):not([style*="height"]),
-canvas:not([height]):not([style*="height"]),
-svg:not([height]):not([style*="height"]) {
+img:not([height]):not([style*="height" i]),
+video:not([height]):not([style*="height" i]),
+iframe:not([height]):not([style*="height" i]),
+canvas:not([height]):not([style*="height" i]),
+svg:not([height]):not([style*="height" i]) {
   height: auto;
+}
+img:not([src^="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP"])[width][height],
+img:not([src^="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP"])[width][style*="height" i],
+img:not([src^="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP"])[height][style*="width" i],
+img:not([src^="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP"])[style*="width" i][style*="height" i],
+video[width][height],
+canvas[width][height],
+svg[width][height] {
+  height: auto !important;
+}
+img:not([data-meridian-placeholder]):not([src^="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP"]) {
+  object-fit: contain;
 }
 img[data-meridian-placeholder] {
   box-sizing: border-box !important;
@@ -5924,6 +6040,21 @@ Content-Type: text/html; charset=utf-8\r\n\
         assert_eq!(viewer.margin_bottom(), 0);
         viewer.clear();
         assert_eq!(viewer.margin_bottom(), 8);
+    }
+
+    #[test]
+    fn test_wide_images_with_explicit_height_scale_proportionally() {
+        let css = super::USER_MAIL_OVERRIDE_CSS;
+        assert!(
+            css.contains("img:not([src^=\"data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP\"])[width][height]")
+                && css.contains("img:not([src^=\"data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP\"])[style*=\"width\" i][style*=\"height\" i]")
+                && css.contains("height: auto !important;"),
+            "USER_MAIL_OVERRIDE_CSS must override fixed height on images with explicit width and height so max-width: 100% scales them proportionally instead of squishing them horizontally"
+        );
+        assert!(
+            css.contains("object-fit: contain;"),
+            "USER_MAIL_OVERRIDE_CSS must set object-fit: contain on content images as a safeguard against aspect-ratio distortion"
+        );
     }
 }
 
