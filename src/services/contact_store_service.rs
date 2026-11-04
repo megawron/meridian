@@ -140,12 +140,11 @@ impl ContactStoreService {
             }
         }
 
-        contacts.sort_by(|left, right| {
-            left.contact
-                .fn_name
-                .to_lowercase()
-                .cmp(&right.contact.fn_name.to_lowercase())
-                .then_with(|| left.id.cmp(&right.id))
+        contacts.sort_by_cached_key(|record| {
+            (
+                record.contact.fn_name.to_lowercase(),
+                record.id.clone(),
+            )
         });
         contacts
     }

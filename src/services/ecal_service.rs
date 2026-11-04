@@ -49,7 +49,7 @@ impl std::fmt::Display for ECalServiceError {
 
 impl std::error::Error for ECalServiceError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(i32)]
 pub(crate) enum ECalComponentType {
     Event = 0,
@@ -556,6 +556,26 @@ impl ECalService {
         component_type: ECalComponentType,
         component: &str,
     ) -> Result<ECalMutationResult, ECalMutationError> {
+        let res = self.create_component_raw(source_uid, component_type, component);
+        if let Ok(ref confirmed) = res {
+            let confirmed_comp = confirmed
+                .component
+                .as_deref()
+                .filter(|c| !c.trim().is_empty())
+                .unwrap_or(component)
+                .to_string();
+            register_known_ecal_component(component_type, source_uid, &confirmed.uid, &confirmed_comp);
+            record_ecal_history_create(source_uid, component_type, &confirmed.uid, &confirmed_comp);
+        }
+        res
+    }
+
+    fn create_component_raw(
+        &self,
+        source_uid: &str,
+        component_type: ECalComponentType,
+        component: &str,
+    ) -> Result<ECalMutationResult, ECalMutationError> {
         if source_uid == "local-calendar" || source_uid.starts_with("account-tasks-") {
             return self.apply_local_operation(component_type, 1, component, None);
         }
@@ -568,6 +588,37 @@ impl ECalService {
     }
 
     pub(crate) fn modify_component(
+        &self,
+        source_uid: &str,
+        component_type: ECalComponentType,
+        component_uid: &str,
+        component: &str,
+    ) -> Result<ECalMutationResult, ECalMutationError> {
+        let before_component = lookup_known_ecal_component(component_type, source_uid, component_uid);
+        let res = self.modify_component_raw(source_uid, component_type, component_uid, component);
+        if let Ok(ref confirmed) = res {
+            let confirmed_comp = confirmed
+                .component
+                .as_deref()
+                .filter(|c| !c.trim().is_empty())
+                .unwrap_or(component)
+                .to_string();
+            register_known_ecal_component(component_type, source_uid, &confirmed.uid, &confirmed_comp);
+            if let Some(before) = before_component {
+                record_ecal_history_modify(
+                    source_uid,
+                    component_type,
+                    component_uid,
+                    &confirmed.uid,
+                    &before,
+                    &confirmed_comp,
+                );
+            }
+        }
+        res
+    }
+
+    fn modify_component_raw(
         &self,
         source_uid: &str,
         component_type: ECalComponentType,
@@ -601,15 +652,50 @@ impl ECalService {
         component_type: ECalComponentType,
         component_uid: &str,
     ) -> Result<ECalMutationResult, ECalMutationError> {
-        if source_uid == "local-calendar" || source_uid.starts_with("account-tasks-") {
-            return self.apply_local_operation(component_type, 3, "", Some(component_uid));
+        let before_component = lookup_known_ecal_component(component_type, source_uid, component_uid);
+        let res = self.remove_component_raw(source_uid, component_type, component_uid);
+        if res.is_ok() {
+            remove_known_ecal_component(component_type, source_uid, component_uid);
+            if let Some(before) = before_component {
+                record_ecal_history_remove(source_uid, component_type, component_uid, &before);
+            }
         }
-        if let Some(result) =
+        res
+    }
+
+    fn remove_component_raw(
+        &self,
+        source_uid: &str,
+        component_type: ECalComponentType,
+        component_uid: &str,
+    ) -> Result<ECalMutationResult, ECalMutationError> {
+        let res = if source_uid == "local-calendar" || source_uid.starts_with("account-tasks-") {
+            self.apply_local_operation(component_type, 3, "", Some(component_uid))
+        } else if let Some(result) =
             self.apply_graph_operation(source_uid, component_type, 3, "", Some(component_uid))
         {
-            return result;
+            result
+        } else {
+            self.apply_operation(source_uid, component_type, 3, "", Some(component_uid))
+        };
+        if res.is_ok() {
+            evict_component_from_calendar_cache(component_uid);
         }
-        self.apply_operation(source_uid, component_type, 3, "", Some(component_uid))
+        res
+    }
+
+    pub(crate) fn undo(
+        &self,
+        component_type: ECalComponentType,
+    ) -> Result<usize, ECalMutationError> {
+        execute_ecal_history_action(self, component_type, true)
+    }
+
+    pub(crate) fn redo(
+        &self,
+        component_type: ECalComponentType,
+    ) -> Result<usize, ECalMutationError> {
+        execute_ecal_history_action(self, component_type, false)
     }
 
     pub(crate) fn start_change_monitor(
@@ -801,6 +887,7 @@ impl ECalService {
         use std::ffi::CString;
         use std::ptr;
 
+        let source_uid_key = source_uid.to_string();
         let source_uid = CString::new(source_uid)
             .map_err(|_| ECalMutationError::Backend("Quell-UID enthält NUL".to_string()))?;
         let component = CString::new(component)
@@ -812,6 +899,10 @@ impl ECalService {
         let component_uid_pointer = component_uid
             .as_ref()
             .map_or(ptr::null(), |value| value.as_ptr());
+        let source_mutex = ecal_source_lock(&source_uid_key);
+        let _source_guard = source_mutex
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut out_uid = ptr::null_mut();
         let mut out_component = ptr::null_mut();
         let mut out_error = ptr::null_mut();
@@ -857,9 +948,11 @@ impl ECalService {
     ) -> Result<ECalRefreshOutcome, ECalServiceError> {
         use std::ffi::CString;
 
+        let source_uid_key = source_uid.to_string();
         let source_uid = CString::new(source_uid)
             .map_err(|_| ECalServiceError::Backend("Quell-UID enthält NUL".to_string()))?;
-        let _guard = ECAL_NATIVE_LOCK
+        let source_mutex = ecal_source_lock(&source_uid_key);
+        let _guard = source_mutex
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut out_error = std::ptr::null_mut();
@@ -889,11 +982,13 @@ impl ECalService {
     ) -> Result<(), ECalServiceError> {
         use std::ffi::CString;
 
+        let source_uid_key = source_uid.to_string();
         let source_uid = CString::new(source_uid)
             .map_err(|_| ECalServiceError::Backend("Quell-UID enthält NUL".to_string()))?;
         let display_name = CString::new(display_name)
             .map_err(|_| ECalServiceError::Backend("Quellenname enthält NUL".to_string()))?;
-        let _guard = ECAL_NATIVE_LOCK
+        let source_mutex = ecal_source_lock(&source_uid_key);
+        let _guard = source_mutex
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut out_error = std::ptr::null_mut();
@@ -923,9 +1018,11 @@ impl ECalService {
     ) -> Result<(), ECalServiceError> {
         use std::ffi::CString;
 
+        let source_uid_key = source_uid.to_string();
         let source_uid = CString::new(source_uid)
             .map_err(|_| ECalServiceError::Backend("Quell-UID enthält NUL".to_string()))?;
-        let _guard = ECAL_NATIVE_LOCK
+        let source_mutex = ecal_source_lock(&source_uid_key);
+        let _guard = source_mutex
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut out_error = std::ptr::null_mut();
@@ -1430,14 +1527,699 @@ impl Drop for ECalWatcher {
     }
 }
 
+static MEMORY_CALENDAR_SNAPSHOT: std::sync::OnceLock<std::sync::Mutex<Option<CalendarSnapshot>>> =
+    std::sync::OnceLock::new();
+
+const ECAL_HISTORY_LIMIT: usize = 100;
+static NEXT_ECAL_BATCH_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+thread_local! {
+    static ECAL_ACTIVE_BATCH_ID: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    static ECAL_IN_HISTORY_REPLAY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(crate) struct ECalBatchGuard {
+    batch_id: u64,
+    prev_batch_id: Option<u64>,
+}
+
+impl ECalBatchGuard {
+    pub(crate) fn new() -> Self {
+        let batch_id = NEXT_ECAL_BATCH_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let prev_batch_id = ECAL_ACTIVE_BATCH_ID.with(|cell| {
+            let prev = cell.get();
+            cell.set(Some(batch_id));
+            prev
+        });
+        Self {
+            batch_id,
+            prev_batch_id,
+        }
+    }
+
+    pub(crate) fn discard(&self, component_type: ECalComponentType) {
+        if let Ok(mut stacks) = ecal_history_stacks().lock() {
+            if let Some(stack) = stacks.get_mut(&component_type) {
+                stack.undo.retain(|cmd| cmd.batch_id != Some(self.batch_id));
+            }
+        }
+    }
+}
+
+impl Drop for ECalBatchGuard {
+    fn drop(&mut self) {
+        ECAL_ACTIVE_BATCH_ID.with(|cell| cell.set(self.prev_batch_id));
+    }
+}
+
+pub(crate) struct ECalHistoryReplayGuard {
+    prev: bool,
+}
+
+impl ECalHistoryReplayGuard {
+    pub(crate) fn new() -> Self {
+        let prev = ECAL_IN_HISTORY_REPLAY.with(|cell| {
+            let old = cell.get();
+            cell.set(true);
+            old
+        });
+        Self { prev }
+    }
+}
+
+impl Drop for ECalHistoryReplayGuard {
+    fn drop(&mut self) {
+        ECAL_IN_HISTORY_REPLAY.with(|cell| cell.set(self.prev));
+    }
+}
+
+#[derive(Debug, Clone)]
+enum ECalHistoryOp {
+    Create {
+        source_uid: String,
+        component_type: ECalComponentType,
+        uid: String,
+        component: String,
+    },
+    Modify {
+        source_uid: String,
+        component_type: ECalComponentType,
+        uid: String,
+        component: String,
+    },
+    Remove {
+        source_uid: String,
+        component_type: ECalComponentType,
+        uid: String,
+    },
+}
+
+impl ECalHistoryOp {
+    fn update_uid(&mut self, expected_source_uid: &str, old_uid: &str, new_uid: &str) {
+        if old_uid == new_uid {
+            return;
+        }
+        match self {
+            Self::Create {
+                source_uid,
+                uid,
+                component,
+                ..
+            }
+            | Self::Modify {
+                source_uid,
+                uid,
+                component,
+                ..
+            } => {
+                if source_uid == expected_source_uid && uid == old_uid {
+                    *uid = new_uid.to_string();
+                    *component = replace_ical_uid_line(component, new_uid);
+                }
+            }
+            Self::Remove {
+                source_uid, uid, ..
+            } => {
+                if source_uid == expected_source_uid && uid == old_uid {
+                    *uid = new_uid.to_string();
+                }
+            }
+        }
+    }
+}
+
+fn replace_ical_uid_line(component: &str, new_uid: &str) -> String {
+    let line_ending = if component.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut lines = Vec::new();
+    let mut replaced = false;
+    for line in component.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.len() >= 4 && trimmed[..4].eq_ignore_ascii_case("UID:") {
+            lines.push(format!("UID:{new_uid}"));
+            replaced = true;
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+    if !replaced {
+        lines.push(format!("UID:{new_uid}"));
+    }
+    lines.join(line_ending)
+}
+
+#[derive(Debug, Clone)]
+struct ECalHistoryCommand {
+    forward: ECalHistoryOp,
+    inverse: ECalHistoryOp,
+    batch_id: Option<u64>,
+}
+
+#[derive(Debug, Default)]
+struct ECalCommandStack {
+    undo: Vec<ECalHistoryCommand>,
+    redo: Vec<ECalHistoryCommand>,
+}
+
+impl ECalCommandStack {
+    fn trim(&mut self) {
+        if self.undo.len() > ECAL_HISTORY_LIMIT {
+            let excess = self.undo.len() - ECAL_HISTORY_LIMIT;
+            self.undo.drain(0..excess);
+        }
+        if self.redo.len() > ECAL_HISTORY_LIMIT {
+            let excess = self.redo.len() - ECAL_HISTORY_LIMIT;
+            self.redo.drain(0..excess);
+        }
+    }
+
+    fn push_command(&mut self, command: ECalHistoryCommand) {
+        self.undo.push(command);
+        self.redo.clear();
+        self.trim();
+    }
+
+    fn pop_batch(source_vec: &mut Vec<ECalHistoryCommand>) -> Vec<ECalHistoryCommand> {
+        let Some(head_batch_id) = source_vec.last().map(|cmd| cmd.batch_id) else {
+            return Vec::new();
+        };
+        let mut popped = Vec::new();
+        if let Some(batch_id) = head_batch_id {
+            while source_vec
+                .last()
+                .is_some_and(|cmd| cmd.batch_id == Some(batch_id))
+            {
+                if let Some(cmd) = source_vec.pop() {
+                    popped.push(cmd);
+                }
+            }
+            popped.reverse();
+        } else if let Some(cmd) = source_vec.pop() {
+            popped.push(cmd);
+        }
+        popped
+    }
+
+    fn pop_undo_batch(&mut self) -> Vec<ECalHistoryCommand> {
+        Self::pop_batch(&mut self.undo)
+    }
+
+    fn pop_redo_batch(&mut self) -> Vec<ECalHistoryCommand> {
+        Self::pop_batch(&mut self.redo)
+    }
+
+    fn update_uid_references(&mut self, source_uid: &str, old_uid: &str, new_uid: &str) {
+        if old_uid == new_uid {
+            return;
+        }
+        for cmd in self.undo.iter_mut().chain(self.redo.iter_mut()) {
+            cmd.forward.update_uid(source_uid, old_uid, new_uid);
+            cmd.inverse.update_uid(source_uid, old_uid, new_uid);
+        }
+    }
+}
+
+static KNOWN_ECAL_COMPONENTS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<(ECalComponentType, String, String), String>>,
+> = std::sync::OnceLock::new();
+
+static ECAL_HISTORY_STACKS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<ECalComponentType, ECalCommandStack>>,
+> = std::sync::OnceLock::new();
+
+fn known_ecal_components() -> &'static std::sync::Mutex<
+    std::collections::HashMap<(ECalComponentType, String, String), String>,
+> {
+    KNOWN_ECAL_COMPONENTS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn ecal_history_stacks() -> &'static std::sync::Mutex<
+    std::collections::HashMap<ECalComponentType, ECalCommandStack>,
+> {
+    ECAL_HISTORY_STACKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+pub(crate) fn register_known_ecal_component(
+    component_type: ECalComponentType,
+    source_uid: &str,
+    uid: &str,
+    component: &str,
+) {
+    if uid.trim().is_empty() || component.trim().is_empty() {
+        return;
+    }
+    if let Ok(mut map) = known_ecal_components().lock() {
+        map.insert(
+            (component_type, source_uid.to_string(), uid.to_string()),
+            component.to_string(),
+        );
+    }
+}
+
+fn remove_known_ecal_component(
+    component_type: ECalComponentType,
+    source_uid: &str,
+    uid: &str,
+) {
+    if let Ok(mut map) = known_ecal_components().lock() {
+        map.remove(&(component_type, source_uid.to_string(), uid.to_string()));
+    }
+}
+
+pub(crate) fn register_snapshot_components(snapshot: &CalendarSnapshot) {
+    let Ok(mut map) = known_ecal_components().lock() else {
+        return;
+    };
+    for event in &snapshot.events {
+        if !event.uid.trim().is_empty() && !event.component.trim().is_empty() {
+            map.insert(
+                (
+                    ECalComponentType::Event,
+                    event.source_uid.clone(),
+                    event.uid.clone(),
+                ),
+                event.component.clone(),
+            );
+        }
+    }
+    for task in &snapshot.tasks {
+        if !task.uid.trim().is_empty() && !task.component.trim().is_empty() {
+            map.insert(
+                (
+                    ECalComponentType::Task,
+                    task.source_uid.clone(),
+                    task.uid.clone(),
+                ),
+                task.component.clone(),
+            );
+        }
+    }
+    for memo in &snapshot.memos {
+        if !memo.uid.trim().is_empty() && !memo.component.trim().is_empty() {
+            map.insert(
+                (
+                    ECalComponentType::Memo,
+                    memo.source_uid.clone(),
+                    memo.uid.clone(),
+                ),
+                memo.component.clone(),
+            );
+        }
+    }
+}
+
+fn lookup_known_ecal_component(
+    component_type: ECalComponentType,
+    source_uid: &str,
+    uid: &str,
+) -> Option<String> {
+    if let Ok(map) = known_ecal_components().lock() {
+        if let Some(comp) = map.get(&(component_type, source_uid.to_string(), uid.to_string())) {
+            return Some(comp.clone());
+        }
+        if let Some((_, comp)) = map
+            .iter()
+            .find(|((ct, _, u), _)| *ct == component_type && u == uid)
+        {
+            return Some(comp.clone());
+        }
+    }
+    let find_in_snapshot = |snap: &CalendarSnapshot| -> Option<String> {
+        match component_type {
+            ECalComponentType::Event => snap
+                .events
+                .iter()
+                .find(|e| e.uid == uid && (e.source_uid == source_uid || e.source_uid.is_empty()))
+                .or_else(|| snap.events.iter().find(|e| e.uid == uid))
+                .map(|e| e.component.clone()),
+            ECalComponentType::Task => snap
+                .tasks
+                .iter()
+                .find(|t| t.uid == uid && (t.source_uid == source_uid || t.source_uid.is_empty()))
+                .or_else(|| snap.tasks.iter().find(|t| t.uid == uid))
+                .map(|t| t.component.clone()),
+            ECalComponentType::Memo => snap
+                .memos
+                .iter()
+                .find(|m| m.uid == uid && (m.source_uid == source_uid || m.source_uid.is_empty()))
+                .or_else(|| snap.memos.iter().find(|m| m.uid == uid))
+                .map(|m| m.component.clone()),
+        }
+    };
+    if let Ok(guard) = MEMORY_CALENDAR_SNAPSHOT
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+    {
+        if let Some(ref snap) = *guard {
+            if let Some(comp) = find_in_snapshot(snap) {
+                return Some(comp);
+            }
+        }
+    }
+    if source_uid == "local-calendar" || source_uid.starts_with("account-tasks-") {
+        let local_snap = CalendarStoreService::new().load_snapshot();
+        if let Some(comp) = find_in_snapshot(&local_snap) {
+            return Some(comp);
+        }
+    }
+    None
+}
+
+fn record_ecal_history_create(
+    source_uid: &str,
+    component_type: ECalComponentType,
+    uid: &str,
+    component: &str,
+) {
+    if ECAL_IN_HISTORY_REPLAY.with(|c| c.get()) {
+        return;
+    }
+    let batch_id = ECAL_ACTIVE_BATCH_ID.with(|c| c.get());
+    let cmd = ECalHistoryCommand {
+        forward: ECalHistoryOp::Create {
+            source_uid: source_uid.to_string(),
+            component_type,
+            uid: uid.to_string(),
+            component: component.to_string(),
+        },
+        inverse: ECalHistoryOp::Remove {
+            source_uid: source_uid.to_string(),
+            component_type,
+            uid: uid.to_string(),
+        },
+        batch_id,
+    };
+    if let Ok(mut stacks) = ecal_history_stacks().lock() {
+        stacks.entry(component_type).or_default().push_command(cmd);
+    }
+}
+
+fn record_ecal_history_modify(
+    source_uid: &str,
+    component_type: ECalComponentType,
+    before_uid: &str,
+    after_uid: &str,
+    before_component: &str,
+    after_component: &str,
+) {
+    if ECAL_IN_HISTORY_REPLAY.with(|c| c.get()) || before_component == after_component {
+        return;
+    }
+    let batch_id = ECAL_ACTIVE_BATCH_ID.with(|c| c.get());
+    let cmd = ECalHistoryCommand {
+        forward: ECalHistoryOp::Modify {
+            source_uid: source_uid.to_string(),
+            component_type,
+            uid: after_uid.to_string(),
+            component: after_component.to_string(),
+        },
+        inverse: ECalHistoryOp::Modify {
+            source_uid: source_uid.to_string(),
+            component_type,
+            uid: before_uid.to_string(),
+            component: before_component.to_string(),
+        },
+        batch_id,
+    };
+    if let Ok(mut stacks) = ecal_history_stacks().lock() {
+        stacks.entry(component_type).or_default().push_command(cmd);
+    }
+}
+
+fn record_ecal_history_remove(
+    source_uid: &str,
+    component_type: ECalComponentType,
+    uid: &str,
+    before_component: &str,
+) {
+    if ECAL_IN_HISTORY_REPLAY.with(|c| c.get()) {
+        return;
+    }
+    let batch_id = ECAL_ACTIVE_BATCH_ID.with(|c| c.get());
+    let cmd = ECalHistoryCommand {
+        forward: ECalHistoryOp::Remove {
+            source_uid: source_uid.to_string(),
+            component_type,
+            uid: uid.to_string(),
+        },
+        inverse: ECalHistoryOp::Create {
+            source_uid: source_uid.to_string(),
+            component_type,
+            uid: uid.to_string(),
+            component: before_component.to_string(),
+        },
+        batch_id,
+    };
+    if let Ok(mut stacks) = ecal_history_stacks().lock() {
+        stacks.entry(component_type).or_default().push_command(cmd);
+    }
+}
+
+fn apply_ecal_history_op(
+    service: &ECalService,
+    op: &ECalHistoryOp,
+) -> Result<(String, String, Option<String>), ECalMutationError> {
+    match op {
+        ECalHistoryOp::Create {
+            source_uid,
+            component_type,
+            uid,
+            component,
+        } => {
+            let res = service.create_component_raw(source_uid, *component_type, component)?;
+            let confirmed_uid = if res.uid.trim().is_empty() {
+                uid.clone()
+            } else {
+                res.uid
+            };
+            let confirmed_comp = res
+                .component
+                .as_deref()
+                .filter(|c| !c.trim().is_empty())
+                .unwrap_or(component)
+                .to_string();
+            register_known_ecal_component(*component_type, source_uid, &confirmed_uid, &confirmed_comp);
+            Ok((
+                source_uid.clone(),
+                uid.clone(),
+                (confirmed_uid != *uid).then_some(confirmed_uid),
+            ))
+        }
+        ECalHistoryOp::Modify {
+            source_uid,
+            component_type,
+            uid,
+            component,
+        } => {
+            let res = service.modify_component_raw(source_uid, *component_type, uid, component)?;
+            let confirmed_uid = if res.uid.trim().is_empty() {
+                uid.clone()
+            } else {
+                res.uid
+            };
+            let confirmed_comp = res
+                .component
+                .as_deref()
+                .filter(|c| !c.trim().is_empty())
+                .unwrap_or(component)
+                .to_string();
+            register_known_ecal_component(*component_type, source_uid, &confirmed_uid, &confirmed_comp);
+            Ok((
+                source_uid.clone(),
+                uid.clone(),
+                (confirmed_uid != *uid).then_some(confirmed_uid),
+            ))
+        }
+        ECalHistoryOp::Remove {
+            source_uid,
+            component_type,
+            uid,
+        } => {
+            service.remove_component_raw(source_uid, *component_type, uid)?;
+            remove_known_ecal_component(*component_type, source_uid, uid);
+            Ok((source_uid.clone(), uid.clone(), None))
+        }
+    }
+}
+
+fn execute_ecal_history_action(
+    service: &ECalService,
+    component_type: ECalComponentType,
+    undo: bool,
+) -> Result<usize, ECalMutationError> {
+    let _replay_guard = ECalHistoryReplayGuard::new();
+    let mut batch = {
+        let Ok(mut stacks) = ecal_history_stacks().lock() else {
+            return Ok(0);
+        };
+        let Some(stack) = stacks.get_mut(&component_type) else {
+            return Ok(0);
+        };
+        let source_vec = if undo { &mut stack.undo } else { &mut stack.redo };
+        let Some(head_batch_id) = source_vec.last().map(|cmd| cmd.batch_id) else {
+            return Ok(0);
+        };
+        let mut popped = Vec::new();
+        if let Some(batch_id) = head_batch_id {
+            while source_vec
+                .last()
+                .is_some_and(|cmd| cmd.batch_id == Some(batch_id))
+            {
+                if let Some(cmd) = source_vec.pop() {
+                    popped.push(cmd);
+                }
+            }
+            popped.reverse();
+        } else if let Some(cmd) = source_vec.pop() {
+            popped.push(cmd);
+        }
+        popped
+    };
+
+    if batch.is_empty() {
+        return Ok(0);
+    }
+
+    let mut applied_indices = Vec::with_capacity(batch.len());
+    let mut uid_renames = Vec::new();
+
+    let indices: Vec<usize> = if undo {
+        (0..batch.len()).rev().collect()
+    } else {
+        (0..batch.len()).collect()
+    };
+
+    for idx in indices {
+        let op = if undo {
+            batch[idx].inverse.clone()
+        } else {
+            batch[idx].forward.clone()
+        };
+        match apply_ecal_history_op(service, &op) {
+            Ok((source_uid, old_uid, Some(new_uid))) => {
+                batch[idx].forward.update_uid(&source_uid, &old_uid, &new_uid);
+                batch[idx].inverse.update_uid(&source_uid, &old_uid, &new_uid);
+                for other in &mut batch {
+                    other.forward.update_uid(&source_uid, &old_uid, &new_uid);
+                    other.inverse.update_uid(&source_uid, &old_uid, &new_uid);
+                }
+                uid_renames.push((source_uid, old_uid, new_uid));
+                applied_indices.push(idx);
+            }
+            Ok((_, _, None)) => {
+                applied_indices.push(idx);
+            }
+            Err(error) => {
+                for prev_idx in applied_indices.into_iter().rev() {
+                    let rollback_op = if undo {
+                        &batch[prev_idx].forward
+                    } else {
+                        &batch[prev_idx].inverse
+                    };
+                    let _ = apply_ecal_history_op(service, rollback_op);
+                }
+                if let Ok(mut stacks) = ecal_history_stacks().lock() {
+                    let stack = stacks.entry(component_type).or_default();
+                    for (src, old_u, new_u) in uid_renames {
+                        stack.update_uid_references(&src, &old_u, &new_u);
+                    }
+                    if undo {
+                        stack.undo.extend(batch);
+                    } else {
+                        stack.redo.extend(batch);
+                    }
+                }
+                return Err(error);
+            }
+        }
+    }
+
+    let count = batch.len();
+    if let Ok(mut stacks) = ecal_history_stacks().lock() {
+        let stack = stacks.entry(component_type).or_default();
+        for (src, old_u, new_u) in uid_renames {
+            stack.update_uid_references(&src, &old_u, &new_u);
+        }
+        if undo {
+            stack.redo.extend(batch);
+        } else {
+            stack.undo.extend(batch);
+        }
+        stack.trim();
+    }
+    Ok(count)
+}
+
 pub(crate) fn calendar_cache_path() -> std::path::PathBuf {
     crate::services::app_cache_dir().join("calendar_load_cache.json")
 }
 
 pub(crate) fn save_calendar_load_cache(snapshot: &CalendarSnapshot) {
+    register_snapshot_components(snapshot);
+    if let Ok(mut guard) = MEMORY_CALENDAR_SNAPSHOT
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+    {
+        *guard = Some(snapshot.clone());
+    }
     if let Err(error) = write_calendar_load_cache(&calendar_cache_path(), snapshot) {
         tracing::warn!(%error, "Could not update calendar preview cache");
     }
+}
+
+pub(crate) fn evict_component_from_calendar_cache(uid: &str) {
+    let mut updated = None;
+    if let Ok(mut guard) = MEMORY_CALENDAR_SNAPSHOT
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+    {
+        if let Some(ref mut snap) = *guard {
+            snap.events.retain(|e| e.uid != uid);
+            snap.tasks.retain(|t| t.uid != uid);
+            snap.memos.retain(|m| m.uid != uid);
+            updated = Some(snap.clone());
+        }
+    }
+    if updated.is_none() {
+        if let Some(mut snap) = load_calendar_load_cache() {
+            snap.events.retain(|e| e.uid != uid);
+            snap.tasks.retain(|t| t.uid != uid);
+            snap.memos.retain(|m| m.uid != uid);
+            updated = Some(snap);
+        }
+    }
+    if let Some(ref snap) = updated {
+        let _ = write_calendar_load_cache(&calendar_cache_path(), snap);
+    }
+}
+
+pub(crate) fn load_calendar_snapshot_fast() -> CalendarSnapshot {
+    if let Ok(guard) = MEMORY_CALENDAR_SNAPSHOT
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+    {
+        if let Some(ref snapshot) = *guard {
+            return snapshot.clone();
+        }
+    }
+    if let Some(cached) = load_calendar_load_cache() {
+        if let Ok(mut guard) = MEMORY_CALENDAR_SNAPSHOT
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+        {
+            *guard = Some(cached.clone());
+        }
+        return cached;
+    }
+    let local = super::calendar_store_service::CalendarStoreService::new().load_snapshot();
+    if !local.events.is_empty() || !local.tasks.is_empty() || !local.memos.is_empty() {
+        if let Ok(mut guard) = MEMORY_CALENDAR_SNAPSHOT
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+        {
+            *guard = Some(local.clone());
+        }
+    }
+    local
 }
 
 fn write_calendar_load_cache(
@@ -1469,7 +2251,25 @@ fn write_calendar_load_cache(
 }
 
 pub(crate) fn load_calendar_load_cache() -> Option<CalendarSnapshot> {
-    read_calendar_load_cache(&calendar_cache_path())
+    if let Ok(guard) = MEMORY_CALENDAR_SNAPSHOT
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+    {
+        if let Some(ref snapshot) = *guard {
+            return Some(snapshot.clone());
+        }
+    }
+    let loaded = read_calendar_load_cache(&calendar_cache_path());
+    if let Some(ref snapshot) = loaded {
+        register_snapshot_components(snapshot);
+        if let Ok(mut guard) = MEMORY_CALENDAR_SNAPSHOT
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+        {
+            *guard = Some(snapshot.clone());
+        }
+    }
+    loaded
 }
 
 fn read_calendar_load_cache(path: &std::path::Path) -> Option<CalendarSnapshot> {
@@ -1521,6 +2321,7 @@ pub(crate) fn load_snapshot_prefer_eds() -> CalendarLoadResult {
             }
             let local_service = super::calendar_store_service::CalendarStoreService::new();
             let snapshot = local_service.load_snapshot();
+            register_snapshot_components(&snapshot);
 
             CalendarLoadResult {
                 snapshot,
@@ -2014,6 +2815,25 @@ struct NativeTypeLoad {
 static ECAL_NATIVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(all(target_os = "linux", eds_ecal_bridge))]
+static ECAL_SOURCE_LOCKS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<()>>>>,
+> = std::sync::OnceLock::new();
+
+/// Per-source lock sharding so slow CalDAV/EWS network operations or mutations on one source
+/// never block concurrent operations on other independent ECal sources.
+#[cfg(all(target_os = "linux", eds_ecal_bridge))]
+fn ecal_source_lock(source_uid: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
+    let map_mutex =
+        ECAL_SOURCE_LOCKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut map = map_mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    map.entry(source_uid.to_string())
+        .or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(())))
+        .clone()
+}
+
+#[cfg(all(target_os = "linux", eds_ecal_bridge))]
 fn load_snapshot_native() -> Result<CalendarSnapshot, ECalServiceError> {
     let _guard = ECAL_NATIVE_LOCK
         .lock()
@@ -2209,5 +3029,72 @@ mod calendar_preview_cache_tests {
         assert!(path.is_dir());
         assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn ecal_history_stacks_isolate_event_task_and_memo_and_group_batches() {
+        let mut stacks: std::collections::HashMap<ECalComponentType, ECalCommandStack> =
+            std::collections::HashMap::new();
+
+        // Push a single event command and a batch of 2 task commands.
+        stacks
+            .entry(ECalComponentType::Event)
+            .or_default()
+            .push_command(ECalHistoryCommand {
+                forward: ECalHistoryOp::Create {
+                    source_uid: "local-calendar".to_string(),
+                    component_type: ECalComponentType::Event,
+                    uid: "ev-1".to_string(),
+                    component: "BEGIN:VEVENT\r\nUID:ev-1\r\nEND:VEVENT\r\n".to_string(),
+                },
+                inverse: ECalHistoryOp::Remove {
+                    source_uid: "local-calendar".to_string(),
+                    component_type: ECalComponentType::Event,
+                    uid: "ev-1".to_string(),
+                },
+                batch_id: None,
+            });
+
+        for uid in ["task-1", "task-2"] {
+            stacks
+                .entry(ECalComponentType::Task)
+                .or_default()
+                .push_command(ECalHistoryCommand {
+                    forward: ECalHistoryOp::Remove {
+                        source_uid: "local-calendar".to_string(),
+                        component_type: ECalComponentType::Task,
+                        uid: uid.to_string(),
+                    },
+                    inverse: ECalHistoryOp::Create {
+                        source_uid: "local-calendar".to_string(),
+                        component_type: ECalComponentType::Task,
+                        uid: uid.to_string(),
+                        component: format!("BEGIN:VTODO\r\nUID:{uid}\r\nEND:VTODO\r\n"),
+                    },
+                    batch_id: Some(42),
+                });
+        }
+
+        // Memo stack is completely untouched.
+        assert!(stacks
+            .entry(ECalComponentType::Memo)
+            .or_default()
+            .pop_undo_batch()
+            .is_empty());
+
+        // Popping Task undo returns both batch items together, without affecting Event stack.
+        let task_undo = stacks
+            .entry(ECalComponentType::Task)
+            .or_default()
+            .pop_undo_batch();
+        assert_eq!(task_undo.len(), 2);
+        assert_eq!(
+            stacks
+                .entry(ECalComponentType::Event)
+                .or_default()
+                .undo
+                .len(),
+            1
+        );
     }
 }

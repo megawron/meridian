@@ -1093,6 +1093,13 @@ impl ContactDialog {
             };
             if let Some(original) = edit_vcard_for_save.as_deref() {
                 vcard = preserve_vcard_extensions(&vcard, original);
+                if let Some(uid) = edit_uid_for_save.as_deref() {
+                    crate::services::ebook_service::register_known_ebook_vcard(
+                        &source_uid,
+                        uid,
+                        original,
+                    );
+                }
             }
             let source_uid_for_worker = source_uid.clone();
             let operation_uid = edit_uid_for_save.clone();
@@ -1622,6 +1629,16 @@ impl ContactDialog {
             if let Some(error) = contact.list_validation_error() {
                 dialog.show_toast(&error);
                 return;
+            }
+            if let (Some(uid), Some(original)) = (
+                edit_uid_for_save.as_deref(),
+                edit_vcard_for_save.as_deref(),
+            ) {
+                crate::services::ebook_service::register_known_ebook_vcard(
+                    &source_uid,
+                    uid,
+                    original,
+                );
             }
             let vcard = contact.to_vcard_string();
             let source_uid_for_worker = source_uid.clone();

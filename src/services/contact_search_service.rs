@@ -710,6 +710,25 @@ fn push_visible(values: &mut Vec<String>, value: &str) {
 }
 
 pub fn normalize_search_text(value: &str) -> String {
+    if value.is_ascii() {
+        let mut out = String::with_capacity(value.len());
+        let mut in_ws = true;
+        for b in value.bytes() {
+            if b.is_ascii_whitespace() {
+                if !in_ws {
+                    out.push(' ');
+                    in_ws = true;
+                }
+            } else {
+                out.push(b.to_ascii_lowercase() as char);
+                in_ws = false;
+            }
+        }
+        if out.ends_with(' ') {
+            out.pop();
+        }
+        return out;
+    }
     // GLib is already a production dependency and provides Unicode-aware
     // case folding and canonical composition.  Applying NFC after folding
     // makes composed and decomposed input compare identically while keeping
@@ -818,29 +837,20 @@ fn query_matches(
 }
 
 fn duplicate_identities(snapshots: &[ContactSearchSnapshot]) -> HashSet<ContactIdentity> {
-    let keys = snapshots
-        .iter()
-        .map(|snapshot| {
-            (
-                snapshot.identity.clone(),
-                snapshot
-                    .contact
-                    .duplicate_keys()
-                    .into_iter()
-                    .collect::<HashSet<_>>(),
-            )
-        })
-        .collect::<Vec<_>>();
+    let mut first_seen_by_key: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::with_capacity(snapshots.len().saturating_mul(2));
     let mut duplicate_ids = HashSet::new();
-    for (index, (identity, own_keys)) in keys.iter().enumerate() {
-        if keys
-            .iter()
-            .enumerate()
-            .any(|(other_index, (_, other_keys))| {
-                index != other_index && own_keys.iter().any(|key| other_keys.contains(key))
-            })
-        {
-            duplicate_ids.insert(identity.clone());
+
+    for (index, snapshot) in snapshots.iter().enumerate() {
+        for key in snapshot.contact.duplicate_keys() {
+            if let Some(&first_index) = first_seen_by_key.get(&key) {
+                if first_index != index {
+                    duplicate_ids.insert(snapshots[first_index].identity.clone());
+                    duplicate_ids.insert(snapshot.identity.clone());
+                }
+            } else {
+                first_seen_by_key.insert(key, index);
+            }
         }
     }
     duplicate_ids
@@ -854,38 +864,25 @@ fn duplicate_identities_cancelable<F>(
 where
     F: FnMut(),
 {
-    let mut keys = Vec::with_capacity(snapshots.len());
+    let mut first_seen_by_key: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::with_capacity(snapshots.len().saturating_mul(2));
+    let mut duplicate_ids = HashSet::new();
+
     for (index, snapshot) in snapshots.iter().enumerate() {
         if index % 16 == 0 && cancellation.load(Ordering::Relaxed) {
             return Err(ContactSearchRunError::Cancelled);
         }
-        keys.push((
-            snapshot.identity.clone(),
-            snapshot
-                .contact
-                .duplicate_keys()
-                .into_iter()
-                .collect::<HashSet<_>>(),
-        ));
+        for key in snapshot.contact.duplicate_keys() {
+            if let Some(&first_index) = first_seen_by_key.get(&key) {
+                if first_index != index {
+                    duplicate_ids.insert(snapshots[first_index].identity.clone());
+                    duplicate_ids.insert(snapshot.identity.clone());
+                }
+            } else {
+                first_seen_by_key.insert(key, index);
+            }
+        }
         if index % 16 == 15 {
-            checkpoint();
-        }
-    }
-    let mut duplicate_ids = HashSet::new();
-    for (index, (identity, own_keys)) in keys.iter().enumerate() {
-        if index % 32 == 0 && cancellation.load(Ordering::Relaxed) {
-            return Err(ContactSearchRunError::Cancelled);
-        }
-        for (other_index, (_, other_keys)) in keys.iter().enumerate() {
-            if index != other_index && own_keys.iter().any(|key| other_keys.contains(key)) {
-                duplicate_ids.insert(identity.clone());
-                break;
-            }
-            if other_index % 128 == 0 && cancellation.load(Ordering::Relaxed) {
-                return Err(ContactSearchRunError::Cancelled);
-            }
-        }
-        if index % 32 == 31 {
             checkpoint();
         }
     }
@@ -897,7 +894,11 @@ pub fn evaluate_contacts(
     snapshots: &[ContactSearchSnapshot],
 ) -> Result<Vec<ContactIdentity>, ContactSearchValidationError> {
     query.validate()?;
-    let duplicate_ids = duplicate_identities(snapshots);
+    let duplicate_ids = if query.filters.duplicate_only {
+        duplicate_identities(snapshots)
+    } else {
+        HashSet::new()
+    };
     Ok(snapshots
         .iter()
         .filter(|snapshot| query_matches(query, snapshot, &duplicate_ids))
@@ -928,16 +929,20 @@ where
     if cancellation.load(Ordering::Relaxed) {
         return Err(ContactSearchRunError::Cancelled);
     }
-    let duplicate_ids = duplicate_identities_cancelable(snapshots, cancellation, &mut checkpoint)?;
+    let duplicate_ids = if query.filters.duplicate_only {
+        duplicate_identities_cancelable(snapshots, cancellation, &mut checkpoint)?
+    } else {
+        HashSet::new()
+    };
     let mut matches = Vec::new();
     for (index, snapshot) in snapshots.iter().enumerate() {
-        if index % 32 == 0 && cancellation.load(Ordering::Relaxed) {
+        if index % 16 == 0 && cancellation.load(Ordering::Relaxed) {
             return Err(ContactSearchRunError::Cancelled);
         }
         if query_matches(query, snapshot, &duplicate_ids) {
             matches.push(snapshot.identity.clone());
         }
-        if index % 32 == 31 {
+        if index % 16 == 15 {
             checkpoint();
         }
     }

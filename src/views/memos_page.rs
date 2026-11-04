@@ -496,8 +496,17 @@ pub(crate) fn draw_memo_table_canvas(
     }
     cr.paint().ok();
 
-    for (idx, row) in layout.rows.iter().enumerate() {
-        if row.y + row.height < 0.0 || row.y > height {
+    let (clip_y1, clip_y2) = match cr.clip_extents() {
+        Ok((_, y1, _, y2)) => (y1, y2),
+        Err(_) => (0.0, height),
+    };
+    let row_h = 34.0;
+    let start_idx = ((clip_y1 / row_h).floor().max(0.0) as usize).min(layout.rows.len());
+    let end_idx = (((clip_y2 / row_h).ceil().max(0.0) as usize) + 1).min(layout.rows.len());
+
+    for idx in start_idx..end_idx {
+        let row = &layout.rows[idx];
+        if row.y + row.height < clip_y1 || row.y > clip_y2 {
             continue;
         }
 
@@ -936,7 +945,22 @@ fn apply_memo_preview_paned_layout(page: &MemosPage, orientation: MemoPreviewOri
         .map(|settings| settings.memo_preview_position(orientation.setting_value()))
         .unwrap_or_else(|| orientation.default_position());
     page.imp().memo_preview_position_restoring.set(true);
-    paned.set_orientation(memo_paned_orientation(orientation));
+    let gtk_orientation = memo_paned_orientation(orientation);
+    if let Some(start) = paned.start_child() {
+        if gtk_orientation == gtk::Orientation::Horizontal {
+            start.set_size_request(240, -1);
+        } else {
+            start.set_size_request(-1, 160);
+        }
+    }
+    if let Some(end) = paned.end_child() {
+        if gtk_orientation == gtk::Orientation::Horizontal {
+            end.set_size_request(220, -1);
+        } else {
+            end.set_size_request(-1, 160);
+        }
+    }
+    paned.set_orientation(gtk_orientation);
     paned.set_position(position);
     page.imp().memo_preview_position_restoring.set(false);
 }
@@ -1015,6 +1039,22 @@ impl MemosPage {
         };
         refresh_memo_category_model(self, &memo_list);
         refresh_memo_filter_view(self, &memo_list, &memo_records, &empty_state);
+    }
+
+    pub(crate) fn remove_memo_from_cache(&self, source_uid: &str, uid: &str) {
+        let (Some(memo_list), Some(memo_records), Some(empty_state)) = (
+            self.imp().memo_list.borrow().as_ref().cloned(),
+            self.imp().memo_records.borrow().as_ref().cloned(),
+            self.imp().memo_empty_state.borrow().as_ref().cloned(),
+        ) else {
+            return;
+        };
+        if remove_memo_row(&memo_list, Rc::clone(&memo_records), source_uid, uid) {
+            let generation = self.imp().memo_refresh_generation.get().wrapping_add(1);
+            self.imp().memo_refresh_generation.set(generation);
+            refresh_memo_category_model(self, &memo_list);
+            refresh_memo_filter_view(self, &memo_list, &memo_records, &empty_state);
+        }
     }
 
     pub(crate) fn select_exclusive_memo_source(&self, uid: &str) {
@@ -1586,6 +1626,75 @@ impl MemosPage {
             return false;
         };
         select_memo_row(&memo_list, source_uid, uid)
+    }
+
+    pub fn undo(&self) {
+        self.apply_history_action(true);
+    }
+
+    pub fn redo(&self) {
+        self.apply_history_action(false);
+    }
+
+    fn apply_history_action(&self, is_undo: bool) {
+        let (Some(memo_list), Some(memo_records), Some(empty_state)) = (
+            self.imp().memo_list.borrow().as_ref().cloned(),
+            self.imp().memo_records.borrow().as_ref().cloned(),
+            self.imp().memo_empty_state.borrow().as_ref().cloned(),
+        ) else {
+            return;
+        };
+
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let service = ECalService::new();
+            let result = if is_undo {
+                service.undo(ECalComponentType::Memo)
+            } else {
+                service.redo(ECalComponentType::Memo)
+            };
+            let _ = sender.send_blocking(result);
+        });
+
+        let page_weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let Ok(result) = receiver.recv().await else {
+                return;
+            };
+            let Some(page) = page_weak.upgrade() else {
+                return;
+            };
+            match result {
+                Ok(0) => {
+                    let message = if is_undo {
+                        crate::i18n::gettext("No memo action to undo")
+                    } else {
+                        crate::i18n::gettext("No memo action to redo")
+                    };
+                    page.show_toast(&message);
+                }
+                Ok(_count) => {
+                    reload_memo_snapshot_async(&page, &memo_list, &memo_records, &empty_state);
+                    let message = if is_undo {
+                        crate::i18n::gettext("Undid last memo action")
+                    } else {
+                        crate::i18n::gettext("Redid last memo action")
+                    };
+                    page.show_toast(&message);
+                }
+                Err(error) => {
+                    reload_memo_snapshot_async(&page, &memo_list, &memo_records, &empty_state);
+                    let message = if is_undo {
+                        crate::i18n::gettext("Undo not possible: {error}")
+                            .replace("{error}", &error.to_string())
+                    } else {
+                        crate::i18n::gettext("Redo not possible: {error}")
+                            .replace("{error}", &error.to_string())
+                    };
+                    page.show_toast(&message);
+                }
+            }
+        });
     }
 
     /// Rebuild memo rows so category colors and the category filter reflect
@@ -2711,9 +2820,10 @@ impl MemosPage {
             .orientation(gtk::Orientation::Vertical)
             .vexpand(true)
             .hexpand(true)
+            .overflow(gtk::Overflow::Hidden)
             .css_classes(vec!["memo-preview-pane"])
             .build();
-        memo_preview_box.set_size_request(0, -1);
+        memo_preview_box.set_size_request(220, -1);
         let preview_box = memo_preview_box.clone();
 
         let memo_detail_stack = gtk::Stack::builder()
@@ -2734,6 +2844,8 @@ impl MemosPage {
         let content_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .propagate_natural_width(false)
+            .min_content_width(0)
             .vexpand(true)
             .hexpand(true)
             .child(&content_box)
@@ -2751,6 +2863,7 @@ impl MemosPage {
             .replace(Some(preview_box.clone()));
 
         // Inner Paned: Separates Memo List and Preview/Editor
+        memo_list_container.set_size_request(240, -1);
         let memo_preview_paned = gtk::Paned::builder()
             .orientation(memo_paned_orientation(initial_memo_preview_state.orientation))
             .wide_handle(false)
@@ -2761,8 +2874,8 @@ impl MemosPage {
         memo_preview_paned.set_end_child(Some(&preview_box));
         memo_preview_paned.set_resize_start_child(true);
         memo_preview_paned.set_resize_end_child(true);
-        memo_preview_paned.set_shrink_start_child(true);
-        memo_preview_paned.set_shrink_end_child(true);
+        memo_preview_paned.set_shrink_start_child(false);
+        memo_preview_paned.set_shrink_end_child(false);
 
         let initial_preview_pos = AppSettings::try_new()
             .map(|settings| {
@@ -2775,20 +2888,61 @@ impl MemosPage {
             .replace(Some(memo_preview_paned.clone()));
 
         let page_weak_for_paned_pos = self.downgrade();
+        let clamping_memo_paned = Rc::new(Cell::new(false));
         memo_preview_paned.connect_position_notify(move |paned| {
+            if clamping_memo_paned.get() {
+                return;
+            }
             let Some(page) = page_weak_for_paned_pos.upgrade() else {
                 return;
             };
             if page.imp().memo_preview_position_restoring.get() {
                 return;
             }
-            let orientation = if paned.orientation() == gtk::Orientation::Horizontal {
-                MemoPreviewOrientation::Vertical
+            let both_visible = paned.start_child().is_some_and(|c| c.is_visible())
+                && paned.end_child().is_some_and(|c| c.is_visible());
+            if !both_visible {
+                return;
+            }
+            let mut pos = paned.position();
+            if paned.orientation() == gtk::Orientation::Horizontal {
+                let total_w = paned.width();
+                if total_w > 480 {
+                    let min_pos = (total_w - 500).max(240).min(total_w - 220);
+                    let max_pos = (total_w - 220).max(min_pos);
+                    let clamped = pos.clamp(min_pos, max_pos);
+                    if clamped != pos {
+                        clamping_memo_paned.set(true);
+                        paned.set_position(clamped);
+                        clamping_memo_paned.set(false);
+                        pos = clamped;
+                    }
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_memo_preview_position(
+                            MemoPreviewOrientation::Vertical.setting_value(),
+                            pos,
+                        );
+                    }
+                }
             } else {
-                MemoPreviewOrientation::Classic
-            };
-            if let Some(settings) = AppSettings::try_new() {
-                settings.set_memo_preview_position(orientation.setting_value(), paned.position());
+                let total_h = paned.height();
+                if total_h > 340 {
+                    let min_pos = 160;
+                    let max_pos = (total_h - 160).max(min_pos);
+                    let clamped = pos.clamp(min_pos, max_pos);
+                    if clamped != pos {
+                        clamping_memo_paned.set(true);
+                        paned.set_position(clamped);
+                        clamping_memo_paned.set(false);
+                        pos = clamped;
+                    }
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_memo_preview_position(
+                            MemoPreviewOrientation::Classic.setting_value(),
+                            pos,
+                        );
+                    }
+                }
             }
         });
 
@@ -2931,6 +3085,12 @@ impl MemosPage {
                 Some(&modified),
             );
 
+            crate::services::ecal_service::register_known_ecal_component(
+                ECalComponentType::Memo,
+                &memo.source_uid,
+                &memo.uid,
+                &memo.component,
+            );
             let (tx, rx) = async_channel::bounded(1);
             let source_uid = memo.source_uid.clone();
             let memo_uid = memo.uid.clone();
@@ -3498,7 +3658,7 @@ impl MemosPage {
                         };
                         match result {
                             Ok(identities) => {
-                                for identity in identities {
+                                for identity in &identities {
                                     remove_memo_row(
                                         &memo_list_for_result,
                                         Rc::clone(&memo_records_for_result),
@@ -3520,6 +3680,36 @@ impl MemosPage {
                                         &memo_records_for_result,
                                         &empty_state_for_result,
                                     );
+                                    if let Some(window) =
+                                        page.root().and_downcast::<crate::window::MeridianWindow>()
+                                    {
+                                        if let Some(view_stack) =
+                                            window.imp().view_stack.borrow().as_ref()
+                                        {
+                                            if let Some(cal_page) = view_stack
+                                                .child_by_name("calendar")
+                                                .and_downcast::<crate::views::CalendarPage>()
+                                            {
+                                                for identity in &identities {
+                                                    cal_page.remove_memo_from_cache(
+                                                        &identity.source_uid,
+                                                        &identity.uid,
+                                                    );
+                                                }
+                                            }
+                                            if let Some(mail_page) = view_stack
+                                                .child_by_name("mail")
+                                                .and_downcast::<crate::views::MailPage>()
+                                            {
+                                                for identity in &identities {
+                                                    mail_page.remove_memo_from_cache(
+                                                        &identity.source_uid,
+                                                        &identity.uid,
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                                 show_toast_for_widget(&button_for_result, &crate::i18n::gettext("Memo(s) deleted"));
                             }
@@ -5195,6 +5385,14 @@ impl MemosPage {
                 "LAST-MODIFIED",
                 Some(&modified),
             );
+            if let Some(existing) = memo_to_edit_for_save.as_ref() {
+                crate::services::ecal_service::register_known_ecal_component(
+                    ECalComponentType::Memo,
+                    &existing.source_uid,
+                    &existing.uid,
+                    &existing.component,
+                );
+            }
             let operation_uid = memo_to_edit_for_save.as_ref().map(|memo| memo.uid.clone());
             let expected_uid = operation_uid.clone();
             let generation = request_generation_for_save.get().wrapping_add(1);
@@ -6072,6 +6270,7 @@ fn memo_record_from_component(
 fn execute_memo_paste_batch(
     plan: Vec<MemoPasteItem>,
 ) -> Result<Vec<(MemoPasteItem, MemoRecord)>, String> {
+    let batch = crate::services::ecal_service::ECalBatchGuard::new();
     let service = ECalService::new();
     let mut created = Vec::<(String, String)>::new();
     let mut confirmed = Vec::with_capacity(plan.len());
@@ -6126,7 +6325,11 @@ fn execute_memo_paste_batch(
     let Some(failure) = failure else {
         return Ok(confirmed);
     };
-    let rollback_errors = rollback_created_memos(&service, &created);
+    let rollback_errors = {
+        let _replay = crate::services::ecal_service::ECalHistoryReplayGuard::new();
+        rollback_created_memos(&service, &created)
+    };
+    batch.discard(ECalComponentType::Memo);
     if rollback_errors.is_empty() {
         Err(crate::i18n::gettext("Paste aborted atomically: {}").replace("{}", &failure))
     } else {
@@ -6157,12 +6360,19 @@ fn rollback_created_memos(service: &ECalService, created: &[(String, String)]) -
 /// when a later UID fails.  The returned identities are consumed only after
 /// the whole operation has succeeded.
 fn execute_memo_delete_batch(planned: Vec<MemoRecord>) -> Result<Vec<MemoIdentity>, String> {
+    let batch = crate::services::ecal_service::ECalBatchGuard::new();
     let service = ECalService::new();
     let mut deleted = Vec::with_capacity(planned.len());
     let mut failure = None;
 
     for memo in planned {
         let identity = MemoIdentity::from(&memo);
+        crate::services::ecal_service::register_known_ecal_component(
+            ECalComponentType::Memo,
+            &memo.source_uid,
+            &memo.uid,
+            &memo.component,
+        );
         match service.remove_component(&memo.source_uid, ECalComponentType::Memo, &memo.uid) {
             Ok(mutation) if mutation.uid == memo.uid => deleted.push(memo),
             Ok(_mutation) => {
@@ -6189,19 +6399,23 @@ fn execute_memo_delete_batch(planned: Vec<MemoRecord>) -> Result<Vec<MemoIdentit
     };
 
     let mut rollback_errors = Vec::new();
-    for memo in deleted.iter().rev() {
-        match service.create_component(&memo.source_uid, ECalComponentType::Memo, &memo.component) {
-            Ok(mutation) if mutation.uid == memo.uid => {}
-            Ok(mutation) => rollback_errors.push(format!(
-                "Rollback {} / {} lieferte UID {}",
-                memo.source_uid, memo.uid, mutation.uid
-            )),
-            Err(error) => rollback_errors.push(format!(
-                "Rollback {} / {}: {error}",
-                memo.source_uid, memo.uid
-            )),
+    {
+        let _replay = crate::services::ecal_service::ECalHistoryReplayGuard::new();
+        for memo in deleted.iter().rev() {
+            match service.create_component(&memo.source_uid, ECalComponentType::Memo, &memo.component) {
+                Ok(mutation) if mutation.uid == memo.uid => {}
+                Ok(mutation) => rollback_errors.push(format!(
+                    "Rollback {} / {} lieferte UID {}",
+                    memo.source_uid, memo.uid, mutation.uid
+                )),
+                Err(error) => rollback_errors.push(format!(
+                    "Rollback {} / {}: {error}",
+                    memo.source_uid, memo.uid
+                )),
+            }
         }
     }
+    batch.discard(ECalComponentType::Memo);
     if rollback_errors.is_empty() {
         Err(crate::i18n::gettext("Delete aborted atomically: {}").replace("{}", &failure))
     } else {

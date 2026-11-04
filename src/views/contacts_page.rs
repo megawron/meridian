@@ -215,25 +215,38 @@ pub(crate) fn prepare_contact_table_layout_with_columns(
         })
         .collect();
 
-    filtered_contacts.sort_by(|a, b| {
-        let ord = match sort_col {
-            ContactTableColumn::Name => a.contact.fn_name.cmp(&b.contact.fn_name),
-            ContactTableColumn::Company => clean_contact_org(&a.contact.org).cmp(&clean_contact_org(&b.contact.org)),
-            ContactTableColumn::Title => a.contact.title.cmp(&b.contact.title),
-            ContactTableColumn::Email => a.contact.email.cmp(&b.contact.email),
-            ContactTableColumn::Phone => a.contact.tel.cmp(&b.contact.tel),
-            ContactTableColumn::Categories => {
-                let cat_a = a.contact.categories.join(", ");
-                let cat_b = b.contact.categories.join(", ");
-                cat_a.cmp(&cat_b)
+    match sort_col {
+        ContactTableColumn::Company => {
+            filtered_contacts.sort_by_cached_key(|rec| clean_contact_org(&rec.contact.org));
+            if sort_desc {
+                filtered_contacts.reverse();
             }
-        };
-        if sort_desc {
-            ord.reverse()
-        } else {
-            ord
         }
-    });
+        ContactTableColumn::Categories => {
+            filtered_contacts.sort_by_cached_key(|rec| rec.contact.categories.join(", "));
+            if sort_desc {
+                filtered_contacts.reverse();
+            }
+        }
+        _ => {
+            filtered_contacts.sort_by(|a, b| {
+                let ord = match sort_col {
+                    ContactTableColumn::Name => a.contact.fn_name.cmp(&b.contact.fn_name),
+                    ContactTableColumn::Title => a.contact.title.cmp(&b.contact.title),
+                    ContactTableColumn::Email => a.contact.email.cmp(&b.contact.email),
+                    ContactTableColumn::Phone => a.contact.tel.cmp(&b.contact.tel),
+                    ContactTableColumn::Company | ContactTableColumn::Categories => {
+                        std::cmp::Ordering::Equal
+                    }
+                };
+                if sort_desc {
+                    ord.reverse()
+                } else {
+                    ord
+                }
+            });
+        }
+    }
 
     let mut rows = Vec::with_capacity(filtered_contacts.len());
     for (i, rec) in filtered_contacts.iter().enumerate() {
@@ -2099,6 +2112,67 @@ impl ContactsPage {
         }
     }
 
+    pub fn undo(&self) {
+        self.apply_history_action(true);
+    }
+
+    pub fn redo(&self) {
+        self.apply_history_action(false);
+    }
+
+    fn apply_history_action(&self, is_undo: bool) {
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let service = EBookService::new();
+            let result = if is_undo {
+                service.undo()
+            } else {
+                service.redo()
+            };
+            let _ = sender.send_blocking(result);
+        });
+
+        let page_weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let Ok(result) = receiver.recv().await else {
+                return;
+            };
+            let Some(page) = page_weak.upgrade() else {
+                return;
+            };
+            match result {
+                Ok(0) => {
+                    let message = if is_undo {
+                        crate::i18n::gettext("No contact action to undo")
+                    } else {
+                        crate::i18n::gettext("No contact action to redo")
+                    };
+                    page.show_toast(&message);
+                }
+                Ok(_count) => {
+                    page.reload_contacts();
+                    let message = if is_undo {
+                        crate::i18n::gettext("Undid last contact action")
+                    } else {
+                        crate::i18n::gettext("Redid last contact action")
+                    };
+                    page.show_toast(&message);
+                }
+                Err(error) => {
+                    page.reload_contacts();
+                    let message = if is_undo {
+                        crate::i18n::gettext("Undo not possible: {error}")
+                            .replace("{error}", &error.to_string())
+                    } else {
+                        crate::i18n::gettext("Redo not possible: {error}")
+                            .replace("{error}", &error.to_string())
+                    };
+                    page.show_toast(&message);
+                }
+            }
+        });
+    }
+
     /// Trigger the same contact editor as the page-local toolbar button.  The
     /// main Evolution window uses this to keep menu, header, and page actions
     /// on one persistent list-refresh path.
@@ -2324,10 +2398,11 @@ impl ContactsPage {
                 .map(|s| s.contact_preview_visible())
                 .unwrap_or(true);
             let paned_w = preview_paned.width();
-            let min_child_w = if paned_w > 0 && paned_w < 440 { 140 } else { 200 };
+            let min_list_w = if paned_w > 0 && paned_w < 520 { 180 } else { 260 };
+            let min_detail_w = if paned_w > 0 && paned_w < 520 { 180 } else { 220 };
             if let Some(lc) = list_container.as_ref() {
-                if lc.width_request() != min_child_w {
-                    lc.set_size_request(min_child_w, -1);
+                if lc.width_request() != min_list_w {
+                    lc.set_size_request(min_list_w, -1);
                 }
                 lc.set_overflow(gtk::Overflow::Hidden);
                 if !lc.is_visible() {
@@ -2335,7 +2410,7 @@ impl ContactsPage {
                 }
             }
             if let Some(db) = detail_box.as_ref() {
-                let db_req = if preview_enabled { min_child_w } else { 0 };
+                let db_req = if preview_enabled { min_detail_w } else { 0 };
                 if db.width_request() != db_req {
                     db.set_size_request(db_req, -1);
                 }
@@ -2354,16 +2429,14 @@ impl ContactsPage {
                             alpha.set_visible(true);
                         }
                     }
-                    let mut pos = imp.table_vpane_pos.get().max(340);
+                    let mut pos = imp.table_vpane_pos.get().max(260);
                     if preview_enabled {
-                        if paned_w >= 440 {
-                            let max_pos = (paned_w - 220).max(220);
-                            let min_pos = 220.min(max_pos);
-                            if pos < min_pos || pos > max_pos {
-                                pos = ((paned_w * 58) / 100).clamp(min_pos, max_pos);
-                            }
+                        if paned_w >= 500 {
+                            let min_pos = (paned_w - 520).max(260).min(paned_w - 220);
+                            let max_pos = (paned_w - 220).max(min_pos);
+                            pos = pos.clamp(min_pos, max_pos);
                         } else if paned_w > 0 {
-                            pos = (paned_w / 2).max(120);
+                            pos = (paned_w / 2).max(180);
                         }
                         if (preview_paned.position() - pos).abs() > 1 {
                             preview_paned.set_position(pos);
@@ -2379,16 +2452,14 @@ impl ContactsPage {
                             alpha.set_visible(true);
                         }
                     }
-                    let mut pos = imp.simple_vpane_pos.get().max(280);
+                    let mut pos = imp.simple_vpane_pos.get().max(260);
                     if preview_enabled {
-                        if paned_w >= 440 {
-                            let max_pos = (paned_w - 220).max(200);
-                            let min_pos = 200.min(max_pos);
-                            if pos < min_pos || pos > max_pos {
-                                pos = ((paned_w * 48) / 100).clamp(min_pos, max_pos);
-                            }
+                        if paned_w >= 500 {
+                            let min_pos = (paned_w - 520).max(260).min(paned_w - 220);
+                            let max_pos = (paned_w - 220).max(min_pos);
+                            pos = pos.clamp(min_pos, max_pos);
                         } else if paned_w > 0 {
-                            pos = (paned_w / 2).max(120);
+                            pos = (paned_w / 2).max(180);
                         }
                         if (preview_paned.position() - pos).abs() > 1 {
                             preview_paned.set_position(pos);
@@ -4193,17 +4264,20 @@ impl ContactsPage {
         let header_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(6)
-            .margin_start(16)
-            .margin_end(16)
+            .margin_start(8)
+            .margin_end(8)
             .margin_top(20)
             .margin_bottom(14)
-            .halign(gtk::Align::Center)
+            .halign(gtk::Align::Fill)
+            .hexpand(true)
+            .overflow(gtk::Overflow::Hidden)
             .build();
 
         let detail_avatar = adw::Avatar::builder()
             .size(72)
             .text("")
             .show_initials(true)
+            .halign(gtk::Align::Center)
             .build();
 
         let detail_name = gtk::Label::builder()
@@ -4212,6 +4286,8 @@ impl ContactsPage {
             .wrap(true)
             .wrap_mode(gtk::pango::WrapMode::WordChar)
             .justify(gtk::Justification::Center)
+            .width_chars(1)
+            .hexpand(true)
             .build();
 
         let detail_title = gtk::Label::builder()
@@ -4220,6 +4296,8 @@ impl ContactsPage {
             .wrap(true)
             .wrap_mode(gtk::pango::WrapMode::WordChar)
             .justify(gtk::Justification::Center)
+            .width_chars(1)
+            .hexpand(true)
             .build();
 
         let detail_categories_box = gtk::Box::builder()
@@ -4916,6 +4994,7 @@ impl ContactsPage {
                         return;
                     }
                 };
+                crate::services::ebook_service::register_ebook_records(&selected);
 
                 let plan_for_action = plan.clone();
                 let selected_contact_for_action = Rc::clone(&selected_contact_for_delete);
@@ -4948,6 +5027,7 @@ impl ContactsPage {
                         let plan_for_worker = plan_for_action.clone();
                         let (sender, receiver) = async_channel::bounded(1);
                         std::thread::spawn(move || {
+                            let _batch = crate::services::ebook_service::EBookBatchGuard::new();
                             let service = EBookService::new();
                             let mut result = ContactDeleteWorkerResult {
                                 removed: Vec::with_capacity(plan_for_worker.items.len()),
@@ -5363,7 +5443,7 @@ impl ContactsPage {
             }
             glib::Propagation::Proceed
         });
-        contact_list.add_controller(list_key_controller);
+        view_stack.add_controller(list_key_controller);
 
         let page_key_controller = gtk::EventControllerKey::new();
         let sidebar_toggle_for_key = sidebar_toggle.clone();
@@ -5441,12 +5521,51 @@ impl ContactsPage {
             btn.remove_css_class("circular");
         };
 
+        let more_email_btn = gtk::Button::builder().visible(false).build();
+        let more_edit_btn = gtk::Button::builder().visible(false).build();
+        let more_delete_btn = gtk::Button::builder()
+            .visible(false)
+            .css_classes(vec!["destructive-action"])
+            .build();
+        let more_compact_sep = gtk::Separator::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .visible(false)
+            .build();
+
+        make_popover_item(
+            &more_email_btn,
+            "mail-message-new-symbolic",
+            &crate::i18n::gettext("Send Email"),
+        );
+        make_popover_item(
+            &more_edit_btn,
+            "document-edit-symbolic",
+            &crate::i18n::gettext("Edit Contact…"),
+        );
+        make_popover_item(
+            &more_delete_btn,
+            "user-trash-symbolic",
+            &crate::i18n::gettext("Delete Contact"),
+        );
         make_popover_item(&print_btn, "document-print-symbolic", &crate::i18n::gettext("Print Contact…"));
         make_popover_item(&export_btn, "document-save-symbolic", &crate::i18n::gettext("Export Contact…"));
         make_popover_item(&merge_btn, "object-select-symbolic", &crate::i18n::gettext("Merge Duplicates…"));
         make_popover_item(&copy_to_book_btn, "edit-copy-symbolic", &crate::i18n::gettext("Copy to Address Book…"));
         make_popover_item(&move_to_book_btn, "folder-move-symbolic", &crate::i18n::gettext("Move to Address Book…"));
         make_popover_item(&print_list_btn, "document-print-preview-symbolic", &crate::i18n::gettext("Print Contact List…"));
+
+        let _ = email_btn
+            .bind_property("sensitive", &more_email_btn, "sensitive")
+            .sync_create()
+            .build();
+        let _ = edit_btn
+            .bind_property("sensitive", &more_edit_btn, "sensitive")
+            .sync_create()
+            .build();
+        let _ = delete_btn
+            .bind_property("sensitive", &more_delete_btn, "sensitive")
+            .sync_create()
+            .build();
 
         let popover_weak = more_popover.downgrade();
         let connect_popdown = |btn: &gtk::Button, pop_weak: glib::WeakRef<gtk::Popover>| {
@@ -5456,6 +5575,33 @@ impl ContactsPage {
                 }
             });
         };
+        connect_popdown(&more_email_btn, popover_weak.clone());
+        connect_popdown(&more_edit_btn, popover_weak.clone());
+        connect_popdown(&more_delete_btn, popover_weak.clone());
+        {
+            let target = email_btn.downgrade();
+            more_email_btn.connect_clicked(move |_| {
+                if let Some(b) = target.upgrade() {
+                    b.emit_clicked();
+                }
+            });
+        }
+        {
+            let target = edit_btn.downgrade();
+            more_edit_btn.connect_clicked(move |_| {
+                if let Some(b) = target.upgrade() {
+                    b.emit_clicked();
+                }
+            });
+        }
+        {
+            let target = delete_btn.downgrade();
+            more_delete_btn.connect_clicked(move |_| {
+                if let Some(b) = target.upgrade() {
+                    b.emit_clicked();
+                }
+            });
+        }
         connect_popdown(&print_btn, popover_weak.clone());
         connect_popdown(&export_btn, popover_weak.clone());
         connect_popdown(&merge_btn, popover_weak.clone());
@@ -5463,6 +5609,10 @@ impl ContactsPage {
         connect_popdown(&move_to_book_btn, popover_weak.clone());
         connect_popdown(&print_list_btn, popover_weak.clone());
 
+        more_box.append(&more_email_btn);
+        more_box.append(&more_edit_btn);
+        more_box.append(&more_delete_btn);
+        more_box.append(&more_compact_sep);
         more_box.append(&print_btn);
         more_box.append(&export_btn);
         more_box.append(&merge_btn);
@@ -5697,10 +5847,11 @@ impl ContactsPage {
         let info_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(16)
-            .margin_start(20)
-            .margin_end(20)
+            .margin_start(12)
+            .margin_end(12)
             .margin_top(16)
             .margin_bottom(20)
+            .overflow(gtk::Overflow::Hidden)
             .build();
 
         let email_group = adw::PreferencesGroup::builder().title(&crate::i18n::gettext("Email")).build();
@@ -6067,9 +6218,9 @@ impl ContactsPage {
             });
         }
 
-        list_container.set_size_request(200, -1);
+        list_container.set_size_request(260, -1);
         list_container.set_overflow(gtk::Overflow::Hidden);
-        detail_box.set_size_request(200, -1);
+        detail_box.set_size_request(220, -1);
         detail_box.set_overflow(gtk::Overflow::Hidden);
         detail_box.set_vexpand(true);
         detail_box.set_hexpand(true);
@@ -6084,36 +6235,91 @@ impl ContactsPage {
         preview_paned.set_end_child(Some(&detail_box));
         preview_paned.set_resize_start_child(true);
         preview_paned.set_resize_end_child(true);
-        preview_paned.set_shrink_start_child(true);
-        preview_paned.set_shrink_end_child(true);
+        preview_paned.set_shrink_start_child(false);
+        preview_paned.set_shrink_end_child(false);
+
+        let sync_contact_header_compact: Rc<dyn Fn(&gtk::Paned)> = {
+            let email_btn = email_btn.clone();
+            let edit_btn = edit_btn.clone();
+            let delete_btn = delete_btn.clone();
+            let more_email_btn = more_email_btn.clone();
+            let more_edit_btn = more_edit_btn.clone();
+            let more_delete_btn = more_delete_btn.clone();
+            let more_compact_sep = more_compact_sep.clone();
+            let detail_avatar = detail_avatar.clone();
+            Rc::new(move |paned: &gtk::Paned| {
+                let pw = paned.width();
+                let pos = paned.position();
+                let detail_w = if pw > 0 { pw.saturating_sub(pos) } else { 0 };
+                let compact = detail_w > 0 && detail_w < 260;
+                let ultra_compact = detail_w > 0 && detail_w < 235;
+                email_btn.set_visible(!compact);
+                edit_btn.set_visible(!compact);
+                delete_btn.set_visible(!compact);
+                more_email_btn.set_visible(compact);
+                more_edit_btn.set_visible(compact);
+                more_delete_btn.set_visible(compact);
+                more_compact_sep.set_visible(compact);
+                let target_avatar_size = if ultra_compact { 40 } else if compact { 52 } else { 72 };
+                if detail_avatar.size() != target_avatar_size {
+                    detail_avatar.set_size(target_avatar_size);
+                }
+            })
+        };
 
         let stored_pos = AppSettings::try_new()
             .map(|s| s.contact_vpane_position())
             .unwrap_or(380);
-        let vpane_pos = stored_pos.clamp(280, 1200);
+        let vpane_pos = stored_pos.clamp(260, 1400);
         self.imp().simple_vpane_pos.set(vpane_pos);
-        self.imp().table_vpane_pos.set(vpane_pos.max(460));
+        self.imp().table_vpane_pos.set(vpane_pos);
         preview_paned.set_position(vpane_pos);
         {
             let page_weak_map = self.downgrade();
-            preview_paned.connect_map(move |_| {
+            let sync_compact_map = Rc::clone(&sync_contact_header_compact);
+            preview_paned.connect_map(move |paned| {
+                sync_compact_map(paned);
                 if let Some(page) = page_weak_map.upgrade() {
                     let page_for_idle = page.clone();
+                    let paned_weak = paned.downgrade();
+                    let sync_compact_idle = Rc::clone(&sync_compact_map);
                     glib::idle_add_local_once(move || {
                         page_for_idle.sync_contacts_layout_visibility();
+                        if let Some(p) = paned_weak.upgrade() {
+                            sync_compact_idle(&p);
+                        }
                     });
                 }
+            });
+        }
+        {
+            let sync_compact_pos = Rc::clone(&sync_contact_header_compact);
+            preview_paned.connect_position_notify(move |paned| {
+                sync_compact_pos(paned);
             });
         }
         if let Some(settings) = AppSettings::try_new() {
             let settings_for_notify = settings.clone();
             let page_weak_paned = self.downgrade();
+            let clamping_contact_paned = Rc::new(Cell::new(false));
             preview_paned.connect_position_notify(move |paned| {
-                let pos = paned.position();
+                if clamping_contact_paned.get() {
+                    return;
+                }
+                let mut pos = paned.position();
                 let pw = paned.width();
                 let both_visible = paned.start_child().is_some_and(|c| c.is_visible())
                     && paned.end_child().is_some_and(|c| c.is_visible());
-                if both_visible && pw >= 440 && pos >= 200 && pos <= pw - 200 {
+                if both_visible && pw >= 500 {
+                    let min_pos = (pw - 520).max(260).min(pw - 220);
+                    let max_pos = (pw - 220).max(min_pos);
+                    let clamped = pos.clamp(min_pos, max_pos);
+                    if clamped != pos {
+                        clamping_contact_paned.set(true);
+                        paned.set_position(clamped);
+                        clamping_contact_paned.set(false);
+                        pos = clamped;
+                    }
                     if let Some(page) = page_weak_paned.upgrade() {
                         match page.imp().current_view_mode.get() {
                             ContactViewMode::Simple => page.imp().simple_vpane_pos.set(pos),
@@ -6137,10 +6343,11 @@ impl ContactsPage {
             let preview_weak = preview_paned.downgrade();
             settings.connect_changed(Some("contact-vpane-position"), move |settings, _| {
                 if let Some(paned) = preview_weak.upgrade() {
-                    let pos = settings.int("contact-vpane-position").clamp(200, 1400);
+                    let pos = settings.int("contact-vpane-position").clamp(260, 1600);
                     let pw = paned.width();
-                    let clamped = if pw >= 440 {
-                        pos.clamp(200, (pw - 200).max(200))
+                    let clamped = if pw >= 500 {
+                        let min_pos = (pw - 520).max(260).min(pw - 220);
+                        pos.clamp(min_pos, (pw - 220).max(min_pos))
                     } else {
                         pos
                     };
@@ -6680,20 +6887,38 @@ fn refresh_contacts(
         return;
     }
 
-    let (sender, receiver) = async_channel::bounded(2);
+    let (sender, receiver) = async_channel::bounded(3);
     std::thread::spawn(move || {
-        // Fast path 1: Instant SQLite cache snapshot (<10ms)
-        let fast_contacts = crate::services::evolution_contact_cache::load_contacts_from_evolution_sqlite_cache();
-        if !fast_contacts.is_empty() {
-            let fast_result = crate::services::ebook_service::EBookLoadResult {
-                contacts: fast_contacts,
+        // Stage 0: Instant Viewport-First Window (Top 120 contacts in <1ms)
+        let viewport_contacts =
+            crate::services::evolution_contact_cache::load_contacts_from_meridian_sqlite_cache_limited(
+                Some(120),
+            );
+        let viewport_count = viewport_contacts.len();
+        if !viewport_contacts.is_empty() {
+            let viewport_result = crate::services::ebook_service::EBookLoadResult {
+                contacts: viewport_contacts,
                 origin: EBookDataOrigin::Local,
                 warning: None,
             };
-            let _ = sender.send_blocking((fast_result, true));
+            let _ = sender.send_blocking((viewport_result, true));
         }
 
-        // Full path 2: EDS native / remote address book sync
+        // Stage 1: Full SQLite cache snapshot (parallel across address books) if > 120 contacts exist
+        if viewport_count >= 120 {
+            let fast_contacts =
+                crate::services::evolution_contact_cache::load_contacts_from_evolution_sqlite_cache();
+            if fast_contacts.len() > viewport_count {
+                let fast_result = crate::services::ebook_service::EBookLoadResult {
+                    contacts: fast_contacts,
+                    origin: EBookDataOrigin::Local,
+                    warning: None,
+                };
+                let _ = sender.send_blocking((fast_result, true));
+            }
+        }
+
+        // Stage 2: EDS native / remote address book sync
         let result = load_contacts_prefer_eds();
         if let Err(error) = sender.send_blocking((result, false)) {
             tracing::debug!(%error, "Contact refresh result was dropped");
@@ -7305,8 +7530,16 @@ fn execute_contact_transfer_worker(
     page_weak: glib::WeakRef<ContactsPage>,
     ctx: ContactTransferUiContext,
 ) {
+    for item in &plan.items {
+        crate::services::ebook_service::register_known_ebook_vcard(
+            &item.identity.source_uid,
+            &item.identity.uid,
+            &item.vcard,
+        );
+    }
     let (sender, receiver) = async_channel::bounded(1);
     std::thread::spawn(move || {
+        let _batch = crate::services::ebook_service::EBookBatchGuard::new();
         let service = EBookService::new();
         let mut result = ContactTransferWorkerResult {
             kind: plan.kind,

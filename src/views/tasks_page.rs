@@ -505,7 +505,22 @@ fn apply_task_preview_paned_layout(page: &TasksPage, orientation: TaskPreviewOri
         .map(|settings| settings.task_preview_position(orientation.setting_value()))
         .unwrap_or_else(|| orientation.default_position());
     page.imp().task_preview_position_restoring.set(true);
-    paned.set_orientation(orientation.paned_orientation());
+    let gtk_orientation = orientation.paned_orientation();
+    if let Some(start) = paned.start_child() {
+        if gtk_orientation == gtk::Orientation::Horizontal {
+            start.set_size_request(280, -1);
+        } else {
+            start.set_size_request(-1, 180);
+        }
+    }
+    if let Some(end) = paned.end_child() {
+        if gtk_orientation == gtk::Orientation::Horizontal {
+            end.set_size_request(220, -1);
+        } else {
+            end.set_size_request(-1, 180);
+        }
+    }
+    paned.set_orientation(gtk_orientation);
     paned.set_position(position);
     page.imp().task_preview_position_restoring.set(false);
 }
@@ -3948,6 +3963,100 @@ impl TasksPage {
         }
     }
 
+    pub fn undo(&self) {
+        self.apply_history_action(true);
+    }
+
+    pub fn redo(&self) {
+        self.apply_history_action(false);
+    }
+
+    fn apply_history_action(&self, is_undo: bool) {
+        if task_mutation_batch_running(self) {
+            return;
+        }
+        let (Some(task_list), Some(task_store), Some(empty_state)) = (
+            self.imp().task_list.borrow().as_ref().cloned(),
+            self.imp().task_store.borrow().as_ref().cloned(),
+            self.imp().task_empty_state.borrow().as_ref().cloned(),
+        ) else {
+            return;
+        };
+
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let service = ECalService::new();
+            let result = if is_undo {
+                service.undo(ECalComponentType::Task)
+            } else {
+                service.redo(ECalComponentType::Task)
+            };
+            let snapshot = result
+                .as_ref()
+                .ok()
+                .filter(|&&count| count > 0)
+                .map(|_| load_snapshot_prefer_eds().snapshot);
+            let _ = sender.send_blocking((result, snapshot));
+        });
+
+        let page_weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let Ok((result, snapshot)) = receiver.recv().await else {
+                return;
+            };
+            let Some(page) = page_weak.upgrade() else {
+                return;
+            };
+            match result {
+                Ok(0) => {
+                    let message = if is_undo {
+                        gettext("No task action to undo")
+                    } else {
+                        gettext("No task action to redo")
+                    };
+                    page.show_toast(&message);
+                }
+                Ok(_count) => {
+                    if let Some(snapshot) = snapshot {
+                        task_store.remove_all();
+                        for task in snapshot.tasks {
+                            let priority = if task.priority == 0 {
+                                "normal".to_string()
+                            } else {
+                                task.priority.to_string()
+                            };
+                            task_store.append(&TaskItemObject::new(
+                                &task.source_uid,
+                                &task.uid,
+                                &task.summary,
+                                &task.due,
+                                &priority,
+                                task.completed,
+                                &task.component,
+                            ));
+                        }
+                    }
+                    render_task_rows(&page, &task_list, &task_store, &empty_state);
+                    refresh_task_preview(&page);
+                    let message = if is_undo {
+                        gettext("Undid last task action")
+                    } else {
+                        gettext("Redid last task action")
+                    };
+                    page.show_toast(&message);
+                }
+                Err(error) => {
+                    let message = if is_undo {
+                        gettext("Undo not possible: {error}").replace("{error}", &error.to_string())
+                    } else {
+                        gettext("Redo not possible: {error}").replace("{error}", &error.to_string())
+                    };
+                    page.show_toast(&message);
+                }
+            }
+        });
+    }
+
     pub(crate) fn render_task_sidebar(&self) {
         let Some(source_list) = self.imp().task_source_list.borrow().as_ref().cloned() else {
             return;
@@ -5357,19 +5466,24 @@ impl TasksPage {
         let preview_scroll = gtk::ScrolledWindow::builder()
             .child(&preview_content)
             .vexpand(true)
+            .propagate_natural_width(false)
+            .min_content_width(0)
             .hscrollbar_policy(gtk::PolicyType::Never)
             .build();
         let inspector_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
-            .margin_start(14)
-            .margin_end(14)
+            .margin_start(10)
+            .margin_end(10)
             .margin_top(12)
             .margin_bottom(16)
+            .overflow(gtk::Overflow::Hidden)
             .build();
         let inspector_scroll = gtk::ScrolledWindow::builder()
             .child(&inspector_box)
             .vexpand(true)
+            .propagate_natural_width(false)
+            .min_content_width(0)
             .hscrollbar_policy(gtk::PolicyType::Never)
             .build();
         self.imp()
@@ -5395,8 +5509,10 @@ impl TasksPage {
         let preview_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .css_classes(vec!["background"])
+            .overflow(gtk::Overflow::Hidden)
             .visible(preview_visible)
             .build();
+        preview_box.set_size_request(220, -1);
         preview_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         preview_box.append(&preview_find_bar);
         preview_box.append(&preview_stack);
@@ -5660,9 +5776,9 @@ impl TasksPage {
                 glib::Propagation::Proceed
             }
         });
-        // This controller is attached only to the task list, so editable
+        // Attached to tasks_content_box below once constructed so both the task list
+        // and the custom task table canvas receive task shortcuts while editable
         // search and task-editor widgets retain their standard shortcuts.
-        task_list.add_controller(clipboard_keys);
 
         let page_key_controller = gtk::EventControllerKey::new();
         let preview_toggle_for_page = preview_toggle.clone();
@@ -7363,6 +7479,24 @@ impl TasksPage {
                         canvas_clone.queue_draw();
                         glib::Propagation::Stop
                     }
+                    gdk::Key::Page_Up | gdk::Key::Page_Down => {
+                        let next_idx = if keyval == gdk::Key::Page_Up {
+                            current_anchor.saturating_sub(10)
+                        } else {
+                            (current_anchor + 10).min(layout.rows.len() - 1)
+                        };
+                        if let Some(row) = layout.rows.get(next_idx) {
+                            page.imp().task_table_anchor_row.set(Some(next_idx));
+                            page.imp()
+                                .task_selection
+                                .replace(vec![TaskSelectionIdentity::from_task(&row.task)]);
+                            announce_task(&row.task);
+                            update_task_selection_controls(&page);
+                            refresh_task_preview(&page);
+                            canvas_clone.queue_draw();
+                        }
+                        glib::Propagation::Stop
+                    }
                     gdk::Key::Home => {
                         if let Some(row) = layout.rows.first() {
                             page.imp().task_table_anchor_row.set(Some(0));
@@ -7432,6 +7566,7 @@ impl TasksPage {
         tasks_content_box.append(&task_table_header);
         tasks_content_box.append(&task_table_canvas);
         tasks_content_box.append(&task_list);
+        tasks_content_box.add_controller(clipboard_keys);
 
         let task_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -7468,7 +7603,9 @@ impl TasksPage {
             .spacing(10)
             .vexpand(true)
             .hexpand(true)
+            .overflow(gtk::Overflow::Hidden)
             .build();
+        workspace_center_col.set_size_request(280, -1);
         let workspace_top_pinned = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(10)
@@ -7490,8 +7627,8 @@ impl TasksPage {
         preview_paned.set_end_child(Some(&preview_box));
         preview_paned.set_resize_start_child(true);
         preview_paned.set_resize_end_child(true);
-        preview_paned.set_shrink_start_child(true);
-        preview_paned.set_shrink_end_child(true);
+        preview_paned.set_shrink_start_child(false);
+        preview_paned.set_shrink_end_child(false);
         preview_paned.set_position(
             AppSettings::try_new()
                 .map(|settings| settings.task_preview_position(preview_orientation.setting_value()))
@@ -7501,20 +7638,61 @@ impl TasksPage {
             .task_preview_paned
             .replace(Some(preview_paned.clone()));
         let page_weak_for_preview_position = self.downgrade();
+        let clamping_task_paned = Rc::new(Cell::new(false));
         preview_paned.connect_position_notify(move |paned| {
+            if clamping_task_paned.get() {
+                return;
+            }
             let Some(page) = page_weak_for_preview_position.upgrade() else {
                 return;
             };
             if page.imp().task_preview_position_restoring.get() {
                 return;
             }
-            let orientation = if paned.orientation() == gtk::Orientation::Horizontal {
-                TaskPreviewOrientation::Vertical
+            let both_visible = paned.start_child().is_some_and(|c| c.is_visible())
+                && paned.end_child().is_some_and(|c| c.is_visible());
+            if !both_visible {
+                return;
+            }
+            let mut pos = paned.position();
+            if paned.orientation() == gtk::Orientation::Horizontal {
+                let total_w = paned.width();
+                if total_w > 520 {
+                    let min_pos = (total_w - 500).max(280).min(total_w - 220);
+                    let max_pos = (total_w - 220).max(min_pos);
+                    let clamped = pos.clamp(min_pos, max_pos);
+                    if clamped != pos {
+                        clamping_task_paned.set(true);
+                        paned.set_position(clamped);
+                        clamping_task_paned.set(false);
+                        pos = clamped;
+                    }
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_task_preview_position(
+                            TaskPreviewOrientation::Vertical.setting_value(),
+                            pos,
+                        );
+                    }
+                }
             } else {
-                TaskPreviewOrientation::Classic
-            };
-            if let Some(settings) = AppSettings::try_new() {
-                settings.set_task_preview_position(orientation.setting_value(), paned.position());
+                let total_h = paned.height();
+                if total_h > 380 {
+                    let min_pos = 180;
+                    let max_pos = (total_h - 180).max(min_pos);
+                    let clamped = pos.clamp(min_pos, max_pos);
+                    if clamped != pos {
+                        clamping_task_paned.set(true);
+                        paned.set_position(clamped);
+                        clamping_task_paned.set(false);
+                        pos = clamped;
+                    }
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_task_preview_position(
+                            TaskPreviewOrientation::Classic.setting_value(),
+                            pos,
+                        );
+                    }
+                }
             }
         });
         content_box.append(&toolbar_scroll);
@@ -8643,6 +8821,14 @@ impl TasksPage {
                 return;
             }
             let source_uid_for_model = source_uid.clone();
+            if let Some(existing) = task_to_edit_for_save.as_ref() {
+                crate::services::ecal_service::register_known_ecal_component(
+                    ECalComponentType::Task,
+                    &source_uid,
+                    &existing.id(),
+                    &existing.component(),
+                );
+            }
             let operation_uid = task_to_edit_for_save.as_ref().map(TaskItemObject::id);
             let expected_uid = operation_uid.clone();
             let task_to_edit_for_result = task_to_edit_for_save.clone();
@@ -9391,8 +9577,17 @@ fn draw_task_table_canvas(
     }
     cr.paint().ok();
 
-    for (idx, row) in layout.rows.iter().enumerate() {
-        if row.y + row.height < 0.0 || row.y > height {
+    let (clip_y1, clip_y2) = match cr.clip_extents() {
+        Ok((_, y1, _, y2)) => (y1, y2),
+        Err(_) => (0.0, height),
+    };
+    let row_h = 34.0;
+    let start_idx = ((clip_y1 / row_h).floor().max(0.0) as usize).min(layout.rows.len());
+    let end_idx = (((clip_y2 / row_h).ceil().max(0.0) as usize) + 1).min(layout.rows.len());
+
+    for idx in start_idx..end_idx {
+        let row = &layout.rows[idx];
+        if row.y + row.height < clip_y1 || row.y > clip_y2 {
             continue;
         }
 
@@ -9643,6 +9838,12 @@ pub(crate) fn mutate_task_item_component(
         return;
     }
     let uid = task.id();
+    crate::services::ecal_service::register_known_ecal_component(
+        ECalComponentType::Task,
+        &source_uid,
+        &uid,
+        &task.component(),
+    );
     let uid_for_worker = uid.clone();
     let source_uid_for_worker = source_uid.clone();
     let component_for_worker = new_component.clone();
@@ -9764,6 +9965,12 @@ pub(crate) fn toggle_task_item_completion(page: &TasksPage, task: &TaskItemObjec
         update_ical_property(&component, "COMPLETED", None)
     };
     let uid = task.id();
+    crate::services::ecal_service::register_known_ecal_component(
+        ECalComponentType::Task,
+        &source_uid,
+        &uid,
+        &task.component(),
+    );
     let uid_for_worker = uid.clone();
     let source_uid_for_worker = source_uid.clone();
     let (sender, receiver) = async_channel::bounded(1);
@@ -11462,9 +11669,15 @@ fn populate_task_live_inspector(
     let top_bar = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(6)
+        .overflow(gtk::Overflow::Hidden)
         .build();
     let complete_btn = gtk::Button::builder()
         .sensitive(writable)
+        .tooltip_text(&if completed {
+            gettext("Completed")
+        } else {
+            gettext("Mark Completed")
+        })
         .css_classes(if completed {
             vec!["task-inspector-complete-btn", "completed"]
         } else {
@@ -11473,11 +11686,12 @@ fn populate_task_live_inspector(
         .build();
     let complete_btn_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     complete_btn_box.append(&gtk::Image::from_icon_name("object-select-symbolic"));
-    complete_btn_box.append(&gtk::Label::new(Some(&if completed {
+    let complete_lbl = gtk::Label::new(Some(&if completed {
         gettext("Completed")
     } else {
         gettext("Mark Completed")
-    })));
+    }));
+    complete_btn_box.append(&complete_lbl);
     complete_btn.set_child(Some(&complete_btn_box));
     {
         let pw = page.downgrade();
@@ -11511,8 +11725,9 @@ fn populate_task_live_inspector(
             }
         });
     }
+    let top_bar_sep = gtk::Separator::new(gtk::Orientation::Vertical);
     top_bar.append(&more_dialog_btn);
-    top_bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+    top_bar.append(&top_bar_sep);
 
     let delete_btn = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
@@ -11536,6 +11751,131 @@ fn populate_task_live_inspector(
         });
     }
     top_bar.append(&delete_btn);
+
+    let task_overflow_popover = gtk::Popover::new();
+    let task_overflow_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(2)
+        .margin_start(4)
+        .margin_end(4)
+        .margin_top(4)
+        .margin_bottom(4)
+        .width_request(190)
+        .build();
+    let make_overflow_btn = |icon: &str, text: &str, destructive: bool| -> gtk::Button {
+        let row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .margin_start(4)
+            .margin_end(4)
+            .build();
+        row.append(&gtk::Image::from_icon_name(icon));
+        row.append(
+            &gtk::Label::builder()
+                .label(text)
+                .halign(gtk::Align::Start)
+                .hexpand(true)
+                .build(),
+        );
+        let mut classes = vec!["flat"];
+        if destructive {
+            classes.push("destructive-action");
+        }
+        gtk::Button::builder()
+            .child(&row)
+            .halign(gtk::Align::Fill)
+            .css_classes(classes)
+            .build()
+    };
+    let overflow_dialog_btn = make_overflow_btn(
+        "document-properties-symbolic",
+        &gettext("Open full task dialog"),
+        false,
+    );
+    let overflow_del_btn = make_overflow_btn(
+        "user-trash-symbolic",
+        &gettext("Delete task"),
+        true,
+    );
+    overflow_del_btn.set_sensitive(writable);
+    {
+        let pop_w = task_overflow_popover.downgrade();
+        let dlg_w = more_dialog_btn.downgrade();
+        overflow_dialog_btn.connect_clicked(move |_| {
+            if let Some(p) = pop_w.upgrade() {
+                p.popdown();
+            }
+            if let Some(b) = dlg_w.upgrade() {
+                b.emit_clicked();
+            }
+        });
+    }
+    {
+        let pop_w = task_overflow_popover.downgrade();
+        let del_w = delete_btn.downgrade();
+        overflow_del_btn.connect_clicked(move |_| {
+            if let Some(p) = pop_w.upgrade() {
+                p.popdown();
+            }
+            if let Some(b) = del_w.upgrade() {
+                b.emit_clicked();
+            }
+        });
+    }
+    task_overflow_box.append(&overflow_dialog_btn);
+    task_overflow_box.append(&overflow_del_btn);
+    task_overflow_popover.set_child(Some(&task_overflow_box));
+    let task_overflow_btn = gtk::MenuButton::builder()
+        .icon_name("view-more-symbolic")
+        .popover(&task_overflow_popover)
+        .tooltip_text(&gettext("More actions"))
+        .css_classes(vec!["flat", "circular"])
+        .visible(false)
+        .build();
+    top_bar.append(&task_overflow_btn);
+
+    {
+        let dlg_w = more_dialog_btn.downgrade();
+        let sep_w = top_bar_sep.downgrade();
+        let del_w = delete_btn.downgrade();
+        let over_w = task_overflow_btn.downgrade();
+        let lbl_w = complete_lbl.downgrade();
+        let sync_top_bar: Rc<dyn Fn(i32)> = Rc::new(move |w: i32| {
+            let compact = w > 0 && w < 260;
+            let very_compact = w > 0 && w < 240;
+            if let Some(b) = dlg_w.upgrade() {
+                b.set_visible(!compact);
+            }
+            if let Some(s) = sep_w.upgrade() {
+                s.set_visible(!compact);
+            }
+            if let Some(d) = del_w.upgrade() {
+                d.set_visible(!compact);
+            }
+            if let Some(o) = over_w.upgrade() {
+                o.set_visible(compact);
+            }
+            if let Some(l) = lbl_w.upgrade() {
+                l.set_visible(!very_compact);
+            }
+        });
+        if let Some(paned) = page.imp().task_preview_paned.borrow().as_ref() {
+            let tw = paned.width();
+            let rw = if tw > 0 { tw.saturating_sub(paned.position()) } else { 0 };
+            sync_top_bar(rw);
+            let sync_cb = Rc::clone(&sync_top_bar);
+            paned.connect_position_notify(move |p| {
+                let total = p.width();
+                let right = if total > 0 { total.saturating_sub(p.position()) } else { 0 };
+                sync_cb(right);
+            });
+        }
+        let sync_map = Rc::clone(&sync_top_bar);
+        top_bar.connect_map(move |bx| {
+            sync_map(bx.width());
+        });
+    }
+
     inspector_box.append(&top_bar);
 
     // 2. Inline Editable Title
@@ -12016,9 +12356,18 @@ fn start_task_lifecycle_batch(
     update_task_selection_controls(page);
     show_toast_for_widget(button, &operation.progress_label());
 
+    for candidate in task_export_candidates(task_store) {
+        crate::services::ecal_service::register_known_ecal_component(
+            ECalComponentType::Task,
+            &candidate.identity.source_uid,
+            &candidate.identity.task_uid,
+            &candidate.component,
+        );
+    }
     let (sender, receiver) = async_channel::bounded(1);
     let plan_for_worker = plan.clone();
     std::thread::spawn(move || {
+        let _batch = crate::services::ecal_service::ECalBatchGuard::new();
         let local_writable = CalendarStoreService::new().is_writable();
         let service = ECalService::new();
         let results = plan_for_worker
@@ -12390,6 +12739,7 @@ fn start_task_clipboard_paste(
         let (sender, receiver) = async_channel::bounded(1);
         let plan_for_worker = plan.clone();
         std::thread::spawn(move || {
+            let _batch = crate::services::ecal_service::ECalBatchGuard::new();
             let local_writable = CalendarStoreService::new().is_writable();
             let service = ECalService::new();
             let mut result = TaskPasteWorkerResult {
@@ -12818,10 +13168,19 @@ fn start_task_delete_batch(
     update_task_selection_controls(page);
     show_toast_for_widget(button, &gettext("Deleting tasks…"));
 
+    for candidate in &candidates {
+        crate::services::ecal_service::register_known_ecal_component(
+            ECalComponentType::Task,
+            &candidate.identity.source_uid,
+            &candidate.identity.task_uid,
+            &candidate.component,
+        );
+    }
     let capabilities = page.imp().task_source_capabilities.borrow().clone();
     let plan_for_worker = plan.clone();
     let (sender, receiver) = async_channel::bounded(1);
     std::thread::spawn(move || {
+        let _batch = crate::services::ecal_service::ECalBatchGuard::new();
         let local_writable = CalendarStoreService::new().is_writable();
         let service = ECalService::new();
         let mut result = TaskDeleteWorkerResult {

@@ -1521,6 +1521,9 @@ fn escape_parameter(value: &str) -> String {
 }
 
 fn unescape_parameter(value: &str) -> String {
+    if !value.contains('\\') {
+        return value.to_string();
+    }
     let mut unescaped = String::with_capacity(value.len());
     let mut characters = value.chars();
     while let Some(character) = characters.next() {
@@ -1733,9 +1736,25 @@ fn compact_base64(value: &str) -> String {
 }
 
 fn unfold_vcard_lines(raw: &str) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
-    let normalized = raw.replace("\r\n", "\n").replace('\r', "\n");
-    for raw_line in normalized.split('\n') {
+    let mut lines: Vec<String> = Vec::with_capacity(16);
+    let bytes = raw.as_bytes();
+    let len = bytes.len();
+    let mut pos = 0;
+
+    while pos < len {
+        let start = pos;
+        while pos < len && bytes[pos] != b'\n' && bytes[pos] != b'\r' {
+            pos += 1;
+        }
+        let raw_line = &raw[start..pos];
+        if pos < len {
+            if bytes[pos] == b'\r' && pos + 1 < len && bytes[pos + 1] == b'\n' {
+                pos += 2;
+            } else {
+                pos += 1;
+            }
+        }
+
         if raw_line.starts_with(' ') || raw_line.starts_with('\t') {
             if let Some(previous) = lines.last_mut() {
                 // RFC folding removes exactly the first WSP octet. Further
@@ -1976,6 +1995,9 @@ fn escape_value(value: &str) -> String {
 }
 
 fn unescape_value(value: &str) -> String {
+    if !value.contains('\\') {
+        return value.to_string();
+    }
     let mut unescaped = String::with_capacity(value.len());
     let mut characters = value.chars();
     while let Some(character) = characters.next() {

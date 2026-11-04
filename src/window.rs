@@ -875,6 +875,11 @@ impl MeridianWindow {
             _ => String::new(),
         };
         self.update_sidebar_title(&title_str);
+        if view_name == "mail" {
+            if let Some(mail) = self.mail_page() {
+                mail.publish_statusbar_summary();
+            }
+        }
 
         if self.imp().is_mobile.get() {
             if let Some(sb_h) = self.imp().sidebar_header.borrow().as_ref() {
@@ -2290,22 +2295,20 @@ impl MeridianWindow {
     pub(crate) fn update_mail_status(&self, status_text: &str) {
         if let Some(label) = self.imp().status_label.borrow().as_ref() {
             let status_text = status_text.trim();
-            if status_text.is_empty() {
+            let status = if status_text.is_empty() {
                 let offline = AppSettings::try_new()
                     .map(|s| s.offline_mode())
                     .unwrap_or(false);
-                let offline_str = crate::i18n::gettext("Offline");
-                let ready_str = crate::i18n::gettext("Ready");
-                let default_status = if offline {
-                    format!("Meridian  ·  {offline_str}")
+                if offline {
+                    crate::i18n::gettext("Offline")
                 } else {
-                    format!("Meridian  ·  {ready_str}")
-                };
-                label.set_label(&default_status);
+                    crate::i18n::gettext("Ready")
+                }
             } else {
-                let status = format!("Meridian  ·  {status_text}");
-                label.set_label(&status);
-            }
+                status_text.to_string()
+            };
+            label.set_label(&status);
+            label.set_tooltip_text(Some(&status));
         }
     }
 
@@ -2461,7 +2464,9 @@ impl MeridianWindow {
         }
 
         if let Some(label) = self.imp().status_label.borrow().as_ref() {
-            label.set_label(&format!("Meridian  ·  {}", snapshot.status_text()));
+            let status = snapshot.status_text();
+            label.set_label(&status);
+            label.set_tooltip_text(Some(&status));
         }
 
         if let Some(progress) = self.imp().status_progress.borrow().as_ref() {
@@ -4080,11 +4085,7 @@ impl MeridianWindow {
 
         let statusbar_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(12)
-            .margin_start(12)
-            .margin_end(12)
-            .margin_top(4)
-            .margin_bottom(4)
+            .spacing(8)
             .css_classes(vec!["statusbar"])
             .build();
 
@@ -4094,11 +4095,15 @@ impl MeridianWindow {
             .css_classes(vec!["flat", "circular"])
             .build();
 
+        let initial_status_text = crate::i18n::gettext("Ready");
         let status_label = gtk::Label::builder()
-            .label(&format!("Meridian  ·  {}", crate::i18n::gettext("Ready")))
-            .css_classes(vec!["caption", "dim-label"])
+            .label(&initial_status_text)
+            .tooltip_text(&initial_status_text)
+            .css_classes(vec!["caption", "statusbar-message"])
             .halign(gtk::Align::Start)
             .hexpand(true)
+            .selectable(true)
+            .single_line_mode(true)
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(10)
             .build();
@@ -4135,7 +4140,7 @@ impl MeridianWindow {
 
         let date_label = gtk::Label::builder()
             .label(&format_current_status_date())
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(vec!["caption", "statusbar-date"])
             .halign(gtk::Align::End)
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(10)
@@ -4444,18 +4449,13 @@ impl MeridianWindow {
                     }
                 }
             }
-            if (keyval == gdk::Key::d || keyval == gdk::Key::D)
-                && modifier.contains(gdk::ModifierType::CONTROL_MASK)
-                && modifier.contains(gdk::ModifierType::SHIFT_MASK)
-            {
-                if let Some(win) = win_weak_for_key.upgrade() {
-                    if win.active_view_name().as_str() == "calendar" {
-                        if let Some(page) = win.calendar_page() {
-                            if page.current_calendar_view() == CalendarView::Agenda {
-                                let cur = page.is_agenda_detail_visible();
-                                page.set_agenda_detail_visible(!cur);
-                                return glib::Propagation::Stop;
-                            }
+            if let Some(win) = win_weak_for_key.upgrade() {
+                if win.active_view_name().as_str() == "calendar" {
+                    if let Some(page) = win.calendar_page() {
+                        if page.handle_calendar_key_press(keyval, modifier)
+                            == glib::Propagation::Stop
+                        {
+                            return glib::Propagation::Stop;
                         }
                     }
                 }
@@ -4995,28 +4995,57 @@ impl MeridianWindow {
             #[weak(rename_to = win)]
             self,
             move |_, _| {
-                let result = win
-                    .imp()
-                    .view_stack
-                    .borrow()
-                    .as_ref()
-                    .and_then(|view_stack| {
-                        view_stack
-                            .child_by_name("mail")
-                            .and_then(|widget| widget.downcast::<MailPage>().ok())
-                    })
-                    .map(|mail_page| mail_page.undo());
-
-                let message = match result {
-                    Some(Ok(true)) => gettext("Undid last mail action"),
-                    Some(Ok(false)) => gettext("No mail action to undo"),
-                    Some(Err(error)) => {
-                        tracing::warn!(%error, "Mail undo operation was not applied");
-                        gettext("Undo not possible: {error}").replace("{error}", &error.to_string())
+                if let Some(focus) = gtk::prelude::GtkWindowExt::focus(&win) {
+                    if focus.is::<gtk::Editable>()
+                        || focus.is::<gtk::Text>()
+                        || focus.is::<gtk::TextView>()
+                        || focus.is::<gtk::SearchEntry>()
+                        || focus.ancestor(gtk::Editable::static_type()).is_some()
+                        || focus.ancestor(gtk::TextView::static_type()).is_some()
+                        || focus.ancestor(gtk::SearchEntry::static_type()).is_some()
+                    {
+                        let _ = gtk::prelude::WidgetExt::activate_action(&focus, "text.undo", None);
+                        return;
                     }
-                    None => gettext("Mail view is unavailable"),
-                };
-                win.add_toast(&adw::Toast::new(&message));
+                }
+
+                match win.active_view_name().as_str() {
+                    "mail" => {
+                        let result = win.mail_page().map(|mail_page| mail_page.undo());
+                        let message = match result {
+                            Some(Ok(true)) => gettext("Undid last mail action"),
+                            Some(Ok(false)) => gettext("No mail action to undo"),
+                            Some(Err(error)) => {
+                                tracing::warn!(%error, "Mail undo operation was not applied");
+                                gettext("Undo not possible: {error}")
+                                    .replace("{error}", &error.to_string())
+                            }
+                            None => gettext("Mail view is unavailable"),
+                        };
+                        win.add_toast(&adw::Toast::new(&message));
+                    }
+                    "calendar" => {
+                        if let Some(calendar_page) = win.calendar_page() {
+                            calendar_page.undo();
+                        }
+                    }
+                    "contacts" => {
+                        if let Some(contacts_page) = win.contacts_page() {
+                            contacts_page.undo();
+                        }
+                    }
+                    "tasks" => {
+                        if let Some(tasks_page) = win.tasks_page() {
+                            tasks_page.undo();
+                        }
+                    }
+                    "memos" => {
+                        if let Some(memos_page) = win.memos_page() {
+                            memos_page.undo();
+                        }
+                    }
+                    _ => {}
+                }
             }
         ));
         self.add_action(&action_undo);
@@ -5047,28 +5076,57 @@ impl MeridianWindow {
             #[weak(rename_to = win)]
             self,
             move |_, _| {
-                let result = win
-                    .imp()
-                    .view_stack
-                    .borrow()
-                    .as_ref()
-                    .and_then(|view_stack| {
-                        view_stack
-                            .child_by_name("mail")
-                            .and_then(|widget| widget.downcast::<MailPage>().ok())
-                    })
-                    .map(|mail_page| mail_page.redo());
-
-                let message = match result {
-                    Some(Ok(true)) => gettext("Redid last mail action"),
-                    Some(Ok(false)) => gettext("No mail action to redo"),
-                    Some(Err(error)) => {
-                        tracing::warn!(%error, "Mail redo operation was not applied");
-                        gettext("Redo not possible: {error}").replace("{error}", &error.to_string())
+                if let Some(focus) = gtk::prelude::GtkWindowExt::focus(&win) {
+                    if focus.is::<gtk::Editable>()
+                        || focus.is::<gtk::Text>()
+                        || focus.is::<gtk::TextView>()
+                        || focus.is::<gtk::SearchEntry>()
+                        || focus.ancestor(gtk::Editable::static_type()).is_some()
+                        || focus.ancestor(gtk::TextView::static_type()).is_some()
+                        || focus.ancestor(gtk::SearchEntry::static_type()).is_some()
+                    {
+                        let _ = gtk::prelude::WidgetExt::activate_action(&focus, "text.redo", None);
+                        return;
                     }
-                    None => gettext("Mail view is unavailable"),
-                };
-                win.add_toast(&adw::Toast::new(&message));
+                }
+
+                match win.active_view_name().as_str() {
+                    "mail" => {
+                        let result = win.mail_page().map(|mail_page| mail_page.redo());
+                        let message = match result {
+                            Some(Ok(true)) => gettext("Redid last mail action"),
+                            Some(Ok(false)) => gettext("No mail action to redo"),
+                            Some(Err(error)) => {
+                                tracing::warn!(%error, "Mail redo operation was not applied");
+                                gettext("Redo not possible: {error}")
+                                    .replace("{error}", &error.to_string())
+                            }
+                            None => gettext("Mail view is unavailable"),
+                        };
+                        win.add_toast(&adw::Toast::new(&message));
+                    }
+                    "calendar" => {
+                        if let Some(calendar_page) = win.calendar_page() {
+                            calendar_page.redo();
+                        }
+                    }
+                    "contacts" => {
+                        if let Some(contacts_page) = win.contacts_page() {
+                            contacts_page.redo();
+                        }
+                    }
+                    "tasks" => {
+                        if let Some(tasks_page) = win.tasks_page() {
+                            tasks_page.redo();
+                        }
+                    }
+                    "memos" => {
+                        if let Some(memos_page) = win.memos_page() {
+                            memos_page.redo();
+                        }
+                    }
+                    _ => {}
+                }
             }
         ));
         self.add_action(&action_redo);
@@ -6409,11 +6467,7 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
 
     let header = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
-        .spacing(8)
-        .margin_start(12)
-        .margin_end(12)
-        .margin_top(4)
-        .margin_bottom(4)
+        .spacing(6)
         .css_classes(vec!["debug-console-header"])
         .build();
 
@@ -6421,7 +6475,7 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
     let title_label_text = gettext("Log Console");
     let title_label = gtk::Label::builder()
         .label(&title_label_text)
-        .css_classes(vec!["heading"])
+        .css_classes(vec!["caption", "heading"])
         .halign(gtk::Align::Start)
         .build();
 
@@ -6429,8 +6483,8 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
     let search_entry = gtk::SearchEntry::builder()
         .placeholder_text(&search_placeholder)
         .hexpand(true)
-        .margin_start(16)
-        .margin_end(16)
+        .margin_start(8)
+        .margin_end(8)
         .build();
 
     let pause_tooltip = gettext("Pause live updates");
@@ -6461,13 +6515,6 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
         .css_classes(vec!["flat"])
         .build();
 
-    let close_tooltip = gettext("Close log console");
-    let close_button = gtk::Button::builder()
-        .icon_name("window-close-symbolic")
-        .tooltip_text(&close_tooltip)
-        .css_classes(vec!["flat"])
-        .build();
-
     header.append(&title_icon);
     header.append(&title_label);
     header.append(&search_entry);
@@ -6475,7 +6522,6 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
     header.append(&copy_button);
     header.append(&clear_button);
     header.append(&collapse_button);
-    header.append(&close_button);
 
     let text_view = gtk::TextView::builder()
         .editable(false)
@@ -6483,10 +6529,10 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
         .monospace(true)
         .wrap_mode(gtk::WrapMode::WordChar)
         .css_classes(vec!["monospace", "terminal-text"])
-        .margin_start(8)
-        .margin_end(8)
-        .margin_top(4)
-        .margin_bottom(4)
+        .left_margin(8)
+        .right_margin(8)
+        .top_margin(4)
+        .bottom_margin(4)
         .build();
 
     let scrolled = gtk::ScrolledWindow::builder()
@@ -6500,24 +6546,15 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
         .child(&text_view)
         .build();
 
-    let sep = gtk::Separator::new(gtk::Orientation::Horizontal);
-    container.append(&sep);
     container.append(&header);
     container.append(&scrolled);
 
     let revealer_for_close = revealer.clone();
-    let do_close = Rc::new(move || {
+    collapse_button.connect_clicked(move |_| {
         revealer_for_close.set_reveal_child(false);
         if let Some(settings) = AppSettings::try_new() {
             settings.set_debug_console_enabled(false);
         }
-    });
-    let do_close_cloned = Rc::clone(&do_close);
-    collapse_button.connect_clicked(move |_| {
-        do_close();
-    });
-    close_button.connect_clicked(move |_| {
-        do_close_cloned();
     });
 
     let buffer = text_view.buffer();

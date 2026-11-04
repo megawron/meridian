@@ -307,9 +307,20 @@ pub(crate) struct MailCommand {
     forward: MailOperation,
     inverse: MailOperation,
     description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    batch_id: Option<u64>,
 }
 
 impl MailCommand {
+    fn new(forward: MailOperation, inverse: MailOperation, description: String) -> Self {
+        Self {
+            forward,
+            inverse,
+            description,
+            batch_id: None,
+        }
+    }
+
     pub(crate) fn set_message_state(
         id: impl Into<String>,
         location: Option<MailBackendLocation>,
@@ -319,21 +330,21 @@ impl MailCommand {
         after_flagged: bool,
     ) -> Self {
         let id = id.into();
-        Self {
-            forward: MailOperation::SetMessageState {
+        Self::new(
+            MailOperation::SetMessageState {
                 id: id.clone(),
                 location: location.clone(),
                 is_unread: after_unread,
                 is_flagged: after_flagged,
             },
-            inverse: MailOperation::SetMessageState {
+            MailOperation::SetMessageState {
                 id,
                 location,
                 is_unread: before_unread,
                 is_flagged: before_flagged,
             },
-            description: "Lesestatus/Markierung".to_string(),
-        }
+            "Lesestatus/Markierung".to_string(),
+        )
     }
 
     pub(crate) fn set_follow_up(
@@ -345,24 +356,24 @@ impl MailCommand {
         let id = id.into();
         let before = before.normalized();
         let after = after.normalized();
-        Self {
-            forward: MailOperation::SetFollowUp {
+        Self::new(
+            MailOperation::SetFollowUp {
                 id: id.clone(),
                 location: location.clone(),
                 metadata: after.clone(),
             },
-            inverse: MailOperation::SetFollowUp {
+            MailOperation::SetFollowUp {
                 id,
                 location,
                 metadata: before,
             },
-            description: match after.state {
+            match after.state {
                 MailFollowUpState::None => "Nachverfolgung entfernen",
                 MailFollowUpState::FollowUp => "Zur Nachverfolgung markieren",
                 MailFollowUpState::Completed => "Nachverfolgung abschließen",
             }
             .to_string(),
-        }
+        )
     }
 
     pub(crate) fn move_to(
@@ -378,19 +389,19 @@ impl MailCommand {
             message_uid: location.message_uid.clone(),
             message_id: location.message_id.clone(),
         };
-        Self {
-            forward: MailOperation::Move {
+        Self::new(
+            MailOperation::Move {
                 id: id.clone(),
                 location: Some(location.clone()),
                 destination: destination.clone(),
             },
-            inverse: MailOperation::Move {
+            MailOperation::Move {
                 id,
                 location: Some(inverse_location),
                 destination: location.folder_name,
             },
-            description: format!("Nachricht nach {destination} verschieben"),
-        }
+            format!("Nachricht nach {destination} verschieben"),
+        )
     }
 
     pub(crate) fn set_junk(
@@ -400,23 +411,23 @@ impl MailCommand {
         after: bool,
     ) -> Self {
         let id = id.into();
-        Self {
-            forward: MailOperation::SetJunk {
+        Self::new(
+            MailOperation::SetJunk {
                 id: id.clone(),
                 location: Some(location.clone()),
                 is_junk: after,
             },
-            inverse: MailOperation::SetJunk {
+            MailOperation::SetJunk {
                 id,
                 location: Some(location),
                 is_junk: before,
             },
-            description: if after {
+            if after {
                 "Als Spam markieren".to_string()
             } else {
                 "Spam-Markierung entfernen".to_string()
             },
-        }
+        )
     }
 
     pub(crate) fn set_junk_local(
@@ -425,36 +436,36 @@ impl MailCommand {
     ) -> Self {
         let id = id.into();
         let previous_folder = previous_folder.into();
-        Self {
-            forward: MailOperation::SetJunk {
+        Self::new(
+            MailOperation::SetJunk {
                 id: id.clone(),
                 location: None,
                 is_junk: true,
             },
-            inverse: MailOperation::Move {
+            MailOperation::Move {
                 id,
                 location: None,
                 destination: previous_folder,
             },
-            description: "Nachricht lokal als Spam markieren".to_string(),
-        }
+            "Nachricht lokal als Spam markieren".to_string(),
+        )
     }
 
     pub(crate) fn clear_junk_local(id: impl Into<String>) -> Self {
         let id = id.into();
-        Self {
-            forward: MailOperation::SetJunk {
+        Self::new(
+            MailOperation::SetJunk {
                 id: id.clone(),
                 location: None,
                 is_junk: false,
             },
-            inverse: MailOperation::SetJunk {
+            MailOperation::SetJunk {
                 id,
                 location: None,
                 is_junk: true,
             },
-            description: "Lokale Spam-Markierung entfernen".to_string(),
-        }
+            "Lokale Spam-Markierung entfernen".to_string(),
+        )
     }
 
     pub(crate) fn set_important(
@@ -464,44 +475,44 @@ impl MailCommand {
         after: bool,
     ) -> Self {
         let id = id.into();
-        Self {
-            forward: MailOperation::SetImportant {
+        Self::new(
+            MailOperation::SetImportant {
                 id: id.clone(),
                 location: Some(location.clone()),
                 is_important: after,
             },
-            inverse: MailOperation::SetImportant {
+            MailOperation::SetImportant {
                 id,
                 location: Some(location),
                 is_important: before,
             },
-            description: if after {
+            if after {
                 "Als wichtig markieren".to_string()
             } else {
                 "Wichtig-Markierung entfernen".to_string()
             },
-        }
+        )
     }
 
     pub(crate) fn set_important_local(id: impl Into<String>, before: bool, after: bool) -> Self {
         let id = id.into();
-        Self {
-            forward: MailOperation::SetImportant {
+        Self::new(
+            MailOperation::SetImportant {
                 id: id.clone(),
                 location: None,
                 is_important: after,
             },
-            inverse: MailOperation::SetImportant {
+            MailOperation::SetImportant {
                 id,
                 location: None,
                 is_important: before,
             },
-            description: if after {
+            if after {
                 "Als wichtig markieren".to_string()
             } else {
                 "Wichtig-Markierung entfernen".to_string()
             },
-        }
+        )
     }
 
     pub(crate) fn set_label_local(
@@ -512,25 +523,25 @@ impl MailCommand {
     ) -> Self {
         let id = id.into();
         let label = label.into().trim().to_string();
-        Self {
-            forward: MailOperation::SetLabel {
+        Self::new(
+            MailOperation::SetLabel {
                 id: id.clone(),
                 location: None,
                 label: label.clone(),
                 labeled: after,
             },
-            inverse: MailOperation::SetLabel {
+            MailOperation::SetLabel {
                 id,
                 location: None,
                 label,
                 labeled: before,
             },
-            description: if after {
+            if after {
                 "Label gesetzt".to_string()
             } else {
                 "Label entfernt".to_string()
             },
-        }
+        )
     }
 
     pub(crate) fn set_label_for_location(
@@ -542,52 +553,52 @@ impl MailCommand {
     ) -> Self {
         let id = id.into();
         let label = label.into().trim().to_string();
-        Self {
-            forward: MailOperation::SetLabel {
+        Self::new(
+            MailOperation::SetLabel {
                 id: id.clone(),
                 location: Some(location.clone()),
                 label: label.clone(),
                 labeled: after,
             },
-            inverse: MailOperation::SetLabel {
+            MailOperation::SetLabel {
                 id,
                 location: Some(location),
                 label,
                 labeled: before,
             },
-            description: if after {
+            if after {
                 "Label gesetzt".to_string()
             } else {
                 "Label entfernt".to_string()
             },
-        }
+        )
     }
 
     pub(crate) fn delete(id: impl Into<String>, location: MailBackendLocation) -> Self {
         let id = id.into();
-        Self {
-            forward: MailOperation::Delete {
+        Self::new(
+            MailOperation::Delete {
                 id: id.clone(),
                 location: Some(location.clone()),
             },
-            inverse: MailOperation::RestoreDeleted {
+            MailOperation::RestoreDeleted {
                 id,
                 location: Some(location),
             },
-            description: "Nachricht löschen".to_string(),
-        }
+            "Nachricht löschen".to_string(),
+        )
     }
 
     pub(crate) fn delete_local(id: impl Into<String>) -> Self {
         let id = id.into();
-        Self {
-            forward: MailOperation::Delete {
+        Self::new(
+            MailOperation::Delete {
                 id: id.clone(),
                 location: None,
             },
-            inverse: MailOperation::RestoreDeleted { id, location: None },
-            description: "Nachricht lokal ausblenden".to_string(),
-        }
+            MailOperation::RestoreDeleted { id, location: None },
+            "Nachricht lokal ausblenden".to_string(),
+        )
     }
 
     /// Restore one visible local sidecar-deleted record.  Unlike undoing a
@@ -595,46 +606,46 @@ impl MailCommand {
     /// older deleted row cannot undo an unrelated action.
     pub(crate) fn restore_deleted_local(id: impl Into<String>) -> Self {
         let id = id.into();
-        Self {
-            forward: MailOperation::RestoreDeleted {
+        Self::new(
+            MailOperation::RestoreDeleted {
                 id: id.clone(),
                 location: None,
             },
-            inverse: MailOperation::Delete { id, location: None },
-            description: "Nachricht wiederherstellen".to_string(),
-        }
+            MailOperation::Delete { id, location: None },
+            "Nachricht wiederherstellen".to_string(),
+        )
     }
 
     pub(crate) fn archive(id: impl Into<String>, location: MailBackendLocation) -> Self {
         let id = id.into();
-        Self {
-            forward: MailOperation::Archive {
+        Self::new(
+            MailOperation::Archive {
                 id: id.clone(),
                 location: Some(location.clone()),
             },
-            inverse: MailOperation::RestoreArchived {
+            MailOperation::RestoreArchived {
                 id,
                 location: Some(location),
             },
-            description: "Nachricht archivieren".to_string(),
-        }
+            "Nachricht archivieren".to_string(),
+        )
     }
 
     pub(crate) fn archive_local(id: impl Into<String>, previous_folder: impl Into<String>) -> Self {
         let id = id.into();
         let previous_folder = previous_folder.into();
-        Self {
-            forward: MailOperation::Archive {
+        Self::new(
+            MailOperation::Archive {
                 id: id.clone(),
                 location: None,
             },
-            inverse: MailOperation::Move {
+            MailOperation::Move {
                 id,
                 location: None,
                 destination: previous_folder,
             },
-            description: "Nachricht lokal archivieren".to_string(),
-        }
+            "Nachricht lokal archivieren".to_string(),
+        )
     }
 
     pub(crate) fn move_local(
@@ -645,37 +656,37 @@ impl MailCommand {
         let id = id.into();
         let previous_folder = previous_folder.into();
         let destination = destination.into();
-        Self {
-            forward: MailOperation::Move {
+        Self::new(
+            MailOperation::Move {
                 id: id.clone(),
                 location: None,
                 destination: destination.clone(),
             },
-            inverse: MailOperation::Move {
+            MailOperation::Move {
                 id,
                 location: None,
                 destination: previous_folder,
             },
-            description: format!("Nachricht lokal nach {destination} verschieben"),
-        }
+            format!("Nachricht lokal nach {destination} verschieben"),
+        )
     }
 
     pub(crate) fn copy_local(id: impl Into<String>, destination: impl Into<String>) -> Self {
         let id = id.into();
         let destination = destination.into();
-        Self {
-            forward: MailOperation::Copy {
+        Self::new(
+            MailOperation::Copy {
                 id: id.clone(),
                 location: None,
                 destination: destination.clone(),
             },
-            inverse: MailOperation::RemoveCopy {
+            MailOperation::RemoveCopy {
                 id,
                 location: None,
                 destination: destination.clone(),
             },
-            description: format!("Nachricht lokal nach {destination} kopiert"),
-        }
+            format!("Nachricht lokal nach {destination} kopiert"),
+        )
     }
 
     pub(crate) fn copy_remote(
@@ -685,21 +696,21 @@ impl MailCommand {
     ) -> Self {
         let id = id.into();
         let destination = destination.into();
-        Self {
-            forward: MailOperation::Copy {
+        Self::new(
+            MailOperation::Copy {
                 id: id.clone(),
                 location: Some(location),
                 destination: destination.clone(),
             },
             // The backend-created copy location is filled in immediately
             // after the forward operation succeeds.
-            inverse: MailOperation::RemoveCopy {
+            MailOperation::RemoveCopy {
                 id,
                 location: None,
                 destination: destination.clone(),
             },
-            description: format!("Nachricht nach {destination} kopiert"),
-        }
+            format!("Nachricht nach {destination} kopiert"),
+        )
     }
 
     fn update_inverse_from_result(&mut self, result: Option<MailBackendLocation>) {
@@ -1259,9 +1270,15 @@ impl MailCommandStack {
         applied_count
     }
 
-    fn record_applied_batch_without_persist(&mut self, commands: Vec<MailCommand>) -> usize {
+    fn record_applied_batch_without_persist(&mut self, mut commands: Vec<MailCommand>) -> usize {
         let applied_count = commands.len();
         if applied_count > 0 {
+            if applied_count > 1 {
+                let batch_id = MailOperationId::next().get();
+                for command in &mut commands {
+                    command.batch_id = Some(batch_id);
+                }
+            }
             self.undo.extend(commands);
             self.redo.clear();
             self.trim_history();
@@ -1451,21 +1468,42 @@ impl MailCommandStack {
         persist: bool,
     ) -> Result<Option<MailCommand>, MailOperationError> {
         cancellation.check(operation)?;
-        let command = self
-            .undo
-            .pop()
-            .expect("undo entry was checked before starting");
-        if let Err(error) = operations.apply_with_result(command.inverse.clone()) {
-            self.undo.push(command);
-            return Err(error);
+        let Some(head_batch_id) = self.undo.last().map(|cmd| cmd.batch_id) else {
+            return Ok(None);
+        };
+        let mut batch = Vec::new();
+        if let Some(batch_id) = head_batch_id {
+            while self.undo.last().is_some_and(|cmd| cmd.batch_id == Some(batch_id)) {
+                if let Some(cmd) = self.undo.pop() {
+                    batch.push(cmd);
+                }
+            }
+            batch.reverse();
+        } else if let Some(cmd) = self.undo.pop() {
+            batch.push(cmd);
         }
-        let result = command.clone();
-        self.redo.push(command);
+
+        let mut undone: Vec<MailCommand> = Vec::with_capacity(batch.len());
+        for command in batch.iter().rev() {
+            if let Err(error) = operations.apply_with_result(command.inverse.clone()) {
+                for mut prev in undone.into_iter().rev() {
+                    if let Ok(res) = operations.apply_with_result(prev.forward.clone()) {
+                        prev.update_inverse_from_result(res);
+                    }
+                }
+                self.undo.extend(batch);
+                return Err(error);
+            }
+            undone.push(command.clone());
+        }
+
+        let result = batch.last().cloned();
+        self.redo.extend(batch);
         self.trim_history();
         if persist {
             self.persist();
         }
-        Ok(Some(result))
+        Ok(result)
     }
 
     pub(crate) fn undo_with_cancellation(
@@ -1510,25 +1548,44 @@ impl MailCommandStack {
         persist: bool,
     ) -> Result<Option<MailCommand>, MailOperationError> {
         cancellation.check(operation)?;
-        let mut command = self
-            .redo
-            .pop()
-            .expect("redo entry was checked before starting");
-        let result = match operations.apply_with_result(command.forward.clone()) {
-            Ok(result) => result,
-            Err(error) => {
-                self.redo.push(command);
-                return Err(error);
-            }
+        let Some(head_batch_id) = self.redo.last().map(|cmd| cmd.batch_id) else {
+            return Ok(None);
         };
-        command.update_inverse_from_result(result);
-        let result = command.clone();
-        self.undo.push(command);
+        let mut batch = Vec::new();
+        if let Some(batch_id) = head_batch_id {
+            while self.redo.last().is_some_and(|cmd| cmd.batch_id == Some(batch_id)) {
+                if let Some(cmd) = self.redo.pop() {
+                    batch.push(cmd);
+                }
+            }
+            batch.reverse();
+        } else if let Some(cmd) = self.redo.pop() {
+            batch.push(cmd);
+        }
+
+        let mut applied: Vec<MailCommand> = Vec::with_capacity(batch.len());
+        for mut command in batch.iter().cloned() {
+            let result = match operations.apply_with_result(command.forward.clone()) {
+                Ok(result) => result,
+                Err(error) => {
+                    for prev in applied.iter().rev() {
+                        let _ = operations.apply_with_result(prev.inverse.clone());
+                    }
+                    self.redo.extend(batch);
+                    return Err(error);
+                }
+            };
+            command.update_inverse_from_result(result);
+            applied.push(command);
+        }
+
+        let result = applied.last().cloned();
+        self.undo.extend(applied);
         self.trim_history();
         if persist {
             self.persist();
         }
-        Ok(Some(result))
+        Ok(result)
     }
 
     pub(crate) fn redo_with_cancellation(
@@ -3296,6 +3353,7 @@ mod tests {
                 destination: "Archive".to_string(),
             },
             description: "test command".to_string(),
+            batch_id: None,
         };
         let second = MailCommand::move_to("remote", location, "Archive");
         let context = MailOperationContext::new();
@@ -3335,6 +3393,58 @@ mod tests {
         .expect("legacy location should remain readable");
 
         assert_eq!(location.message_id, None);
+    }
+
+    #[test]
+    fn batch_commands_undo_and_redo_as_single_logical_step() {
+        let root = temporary_directory("mail-batch-undo-redo");
+        let mail_dir = root.join("mail");
+        fs::create_dir_all(&mail_dir).expect("mail directory should be created");
+        let store =
+            MailStoreService::with_mail_dir_and_state_path(&mail_dir, root.join("state.json"));
+        let operations = MailOperationsService::with_store(store.clone());
+
+        let commands = vec![
+            MailCommand::set_message_state("msg-1", None, true, false, false, true),
+            MailCommand::set_message_state("msg-2", None, true, false, false, true),
+            MailCommand::set_message_state("msg-3", None, true, false, false, true),
+        ];
+
+        let mut history = MailCommandStack::default();
+        let applied = history
+            .execute_batch(&operations, commands)
+            .expect("batch should apply");
+        assert_eq!(applied, 3);
+        assert!(history.can_undo());
+        assert!(!history.can_redo());
+
+        // Single undo reverts all 3 messages in the batch at once.
+        let undone = history.undo(&operations).expect("batch undo should succeed");
+        assert!(undone.is_some());
+        assert!(!history.can_undo());
+        assert!(history.can_redo());
+        let state_after_undo = MailMetadataStore::new(store.metadata_path()).load();
+        for id in ["msg-1", "msg-2", "msg-3"] {
+            assert_eq!(
+                state_after_undo.get(id).map(|s| (s.is_unread, s.is_flagged)),
+                Some((true, false))
+            );
+        }
+
+        // Single redo reapplies all 3 messages in the batch at once.
+        let redone = history.redo(&operations).expect("batch redo should succeed");
+        assert!(redone.is_some());
+        assert!(history.can_undo());
+        assert!(!history.can_redo());
+        let state_after_redo = MailMetadataStore::new(store.metadata_path()).load();
+        for id in ["msg-1", "msg-2", "msg-3"] {
+            assert_eq!(
+                state_after_redo.get(id).map(|s| (s.is_unread, s.is_flagged)),
+                Some((false, true))
+            );
+        }
+
+        let _ = fs::remove_dir_all(root);
     }
 
     fn temporary_directory(label: &str) -> PathBuf {
