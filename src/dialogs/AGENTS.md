@@ -80,7 +80,7 @@ and updates to the service/settings APIs.
 - **Navigation & Container Architecture (GNOME HIG Decision Matrix)**:
   Follow this strict hierarchy to avoid double header bars, conflicting navigation buttons (`<`, `Cancel`, `Save`, `×`), or stretched forms:
   1. **Standalone Top-Level Window (`adw::Window` / `present_standalone` with `modal: false`)**:
-     Use when the user needs to keep the main Meridian window interactive in parallel (e.g., `PreferencesDialog`, `ComposeDialog`, `EventDialog`). Settings inside `PreferencesDialog` are *instant-apply* (changes persist immediately to `GSettings` without a Save button) and therefore use a standard window close button (`×`).
+     Use when the user needs to keep the main Meridian window interactive in parallel (e.g., `PreferencesDialog`, `ComposeDialog`, `EventDialog`, `ShortcutsWindow`). Settings inside `PreferencesDialog` are *instant-apply* (changes persist immediately to `GSettings` without a Save button) and therefore use a standard window close button (`×`).
   2. **Popup / Sheet Dialog (`adw::Dialog::present(Some(parent))`)**:
      Use whenever opening a **transactional unit** that requires explicit confirmation (`Cancel` on the left, `Save` / `Add` on the right) or validation before persisting, or when a self-contained narrow form (440–480px) is launched from a wide split view (980px). Never embed a transactional `Cancel`/`Save` dialog inline inside an instant-apply `PreferencesDialog` stack, as that creates stacked header bars and conflicting `<` / `Cancel` / `Save` / `×` controls. Examples: `AccountSetupDialog`, `FilterEditorDialog`, `SourcePropertiesDialog`, `adw::AlertDialog`.
   3. **Horizontal Sliding Subpage (`adw::NavigationView` + `adw::NavigationPage`)**:
