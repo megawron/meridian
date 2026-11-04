@@ -286,7 +286,7 @@ msgstr ""
 
 #: src/action_contract.rs:212
 msgid "Containing Folder"
-msgstr ""
+msgstr "Entsprechender Ordner"
 
 #: src/action_contract.rs:215 src/action_contract.rs:351
 #: src/views/mail_page.rs:21247 and 2 more
@@ -378,7 +378,7 @@ msgstr ""
 
 #: src/action_contract.rs:235
 msgid "Toggle Flag"
-msgstr ""
+msgstr "Markierung umschalten"
 
 #: src/action_contract.rs:236 src/action_contract.rs:366
 #, fuzzy
@@ -395,7 +395,7 @@ msgstr ""
 
 #: src/action_contract.rs:239
 msgid "Move to Folder..."
-msgstr ""
+msgstr "In Ordner verschieben…"
 
 #: src/action_contract.rs:240
 msgid "Copy to Folder..."
@@ -8687,7 +8687,12 @@ msgstr "Meridian als Standard-Kalenderanwendung festgelegt"
 msgid "Calendar file imported"
 msgstr "Kalenderdatei importiert"
 
+msgid "Go to Containing Folder"
+msgstr "Im entsprechenden Ordner anzeigen"
 
+msgid "Move to Folder…"
+msgstr "In Ordner verschieben…"
 
-
+msgid "Reply to All"
+msgstr "Allen antworten"
 

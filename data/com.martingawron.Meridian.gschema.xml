@@ -1227,6 +1227,11 @@
       <summary>Do not notify for these accounts</summary>
       <description>Contains UIDs of accounts for which the notifications should be avoided.</description>
     </key>
+    <key name="speculative-prefetch-enabled" type="b">
+      <default>true</default>
+      <summary>Enable speculative background prefetching</summary>
+      <description>Preload adjacent messages, hovered folders, and neighboring calendar periods in the background without side effects.</description>
+    </key>
   </schema>
 </schemalist>
 

@@ -2699,6 +2699,20 @@ impl PreferencesDialog {
             });
         }
 
+        let row_speculative_prefetch = adw::SwitchRow::builder()
+            .title(&crate::i18n::gettext("Speculative Prefetching (Instant Click)"))
+            .subtitle(&crate::i18n::gettext(
+                "Preload adjacent messages, hovered folders, and neighboring calendar periods in the background without side effects",
+            ))
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_speculative_prefetch.set_active(settings.speculative_prefetch_enabled());
+            let settings_for_prefetch = settings.clone();
+            row_speculative_prefetch.connect_active_notify(move |switch| {
+                settings_for_prefetch.set_speculative_prefetch_enabled(switch.is_active());
+            });
+        }
+
         let row_sync_message_limit = adw::SpinRow::with_range(25.0, 1_000.0, 25.0);
         row_sync_message_limit.set_title(&crate::i18n::gettext("Messages to fetch per folder"));
         row_sync_message_limit.set_digits(0);
@@ -2761,6 +2775,8 @@ impl PreferencesDialog {
         group_cache_settings.add(&row_sync_message_limit);
         row_limit_memory_usage.set_visible(true);
         group_cache_settings.add(&row_limit_memory_usage);
+        row_speculative_prefetch.set_visible(true);
+        group_cache_settings.add(&row_speculative_prefetch);
         row_flush_outbox.set_visible(true);
         group_cache_settings.add(&row_flush_outbox);
         page_sub_sync_cache.add(&group_cache_settings);

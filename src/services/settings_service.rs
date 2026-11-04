@@ -24,6 +24,24 @@ pub struct AppSettings {
     settings: gio::Settings,
 }
 
+static SPECULATIVE_PREFETCH_ATOMIC: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+static SPECULATIVE_PREFETCH_INIT: std::sync::Once = std::sync::Once::new();
+
+/// Lock-free, nanosecond check for whether speculative background prefetching is enabled.
+/// Safe to call from both the GTK main thread and background worker threads.
+pub fn is_speculative_prefetch_enabled() -> bool {
+    SPECULATIVE_PREFETCH_INIT.call_once(|| {
+        if let Some(settings) = AppSettings::try_new() {
+            SPECULATIVE_PREFETCH_ATOMIC.store(
+                settings.speculative_prefetch_enabled(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+    });
+    SPECULATIVE_PREFETCH_ATOMIC.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn normalized_mail_sort_field(value: &str) -> &str {
     match value {
         "subject" | "sender" | "date" | "unread" | "flagged" | "important" | "attachments" => value,
@@ -3350,6 +3368,33 @@ impl AppSettings {
     pub fn set_mail_date_align(&self, value: &str) {
         let val = if value == "left" { "left" } else { "right" };
         self.set_string("mail-date-align", val);
+    }
+
+    pub fn speculative_prefetch_enabled(&self) -> bool {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("speculative-prefetch-enabled"))
+            .unwrap_or(false);
+        let enabled = if has_key {
+            self.settings.boolean("speculative-prefetch-enabled")
+        } else {
+            SPECULATIVE_PREFETCH_ATOMIC.load(std::sync::atomic::Ordering::Relaxed)
+        };
+        SPECULATIVE_PREFETCH_ATOMIC.store(enabled, std::sync::atomic::Ordering::Relaxed);
+        enabled
+    }
+
+    pub fn set_speculative_prefetch_enabled(&self, enabled: bool) {
+        SPECULATIVE_PREFETCH_ATOMIC.store(enabled, std::sync::atomic::Ordering::Relaxed);
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("speculative-prefetch-enabled"))
+            .unwrap_or(false);
+        if has_key {
+            self.set_boolean("speculative-prefetch-enabled", enabled);
+        }
     }
 
     pub fn mail_list_view_profile(&self) -> String {
