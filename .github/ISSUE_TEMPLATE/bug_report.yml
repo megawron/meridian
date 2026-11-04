@@ -1,0 +1,65 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in Meridian
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for taking the time to report a bug! Please note that security vulnerabilities must be reported privately via [SECURITY.md](https://github.com/megawron/meridian/blob/main/SECURITY.md) or emailed to `martin@martingawron.com`.
+
+  - type: checkboxes
+    id: latest-version
+    attributes:
+      label: Version Check
+      description: Please verify that you are using the latest version of Meridian before submitting an issue.
+      options:
+        - label: I have verified that this issue occurs on the latest version of Meridian.
+          required: true
+
+  - type: input
+    id: meridian-version
+    attributes:
+      label: Meridian Version / Commit
+      description: Release version or `git rev-parse --short HEAD`
+      placeholder: e.g. 0.1.0 or b3deadd
+    validations:
+      required: true
+
+  - type: input
+    id: distro
+    attributes:
+      label: Linux Distribution & Version
+      placeholder: e.g. Fedora 41, Ubuntu 24.10, Arch Linux
+    validations:
+      required: true
+
+  - type: input
+    id: desktop
+    attributes:
+      label: Desktop Environment & Version
+      placeholder: e.g. GNOME 47, KDE Plasma 6.2, Sway
+    validations:
+      required: true
+
+  - type: input
+    id: account-type
+    attributes:
+      label: Account Provider / Protocol
+      placeholder: e.g. Exchange/EWS, Google, generic IMAP, CalDAV/CardDAV, local folders
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe what you did, what you expected to happen, and what actually happened.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Terminal Output / Logs
+      description: If applicable, run `RUST_LOG=debug cargo run` and paste relevant output here.
+      render: text
