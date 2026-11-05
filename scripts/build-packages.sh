@@ -127,6 +127,11 @@ EOF
     stage_common "$build_dir/files"
     stage_flatpak_appstream "$build_dir/files"
 
+    for schema in /usr/share/glib-2.0/schemas/*[Ee]volution*.gschema.xml; do
+        [ -f "$schema" ] && cp "$schema" "$build_dir/files/share/glib-2.0/schemas/"
+    done
+    glib-compile-schemas "$build_dir/files/share/glib-2.0/schemas" 2>/dev/null || true
+
     if flatpak info "org.gnome.Platform/$arch/$runtime_ver" >/dev/null 2>&1; then
         flatpak run --filesystem=host --filesystem=/tmp --command=sh "org.gnome.Platform/$arch/$runtime_ver" -c '
             bin_path="$1"
