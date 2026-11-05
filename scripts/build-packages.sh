@@ -116,27 +116,55 @@ build_flatpak_bundle() {
     repo_dir="$OUT/flatpak-repo"
     rm -rf "$repo_dir"
 
+    local runtime_ver="50"
     mkdir -p "$build_dir/files/lib" "$build_dir/var"
     cat > "$build_dir/metadata" <<EOF
 [Application]
 name=$APP_ID
-runtime=org.gnome.Platform/$arch/48
-sdk=org.gnome.Sdk/$arch/48
+runtime=org.gnome.Platform/$arch/$runtime_ver
+sdk=org.gnome.Sdk/$arch/$runtime_ver
 EOF
     stage_common "$build_dir/files"
     stage_flatpak_appstream "$build_dir/files"
 
-    ldd "$ROOT/target/release/meridian" | awk '/=> \// { print $3 }' | while read -r lib; do
-        base="$(basename "$lib")"
-        case "$base" in
-            libcamel*|libedataserver*|libecal*|libebook*|libebackend*|libical*|libgoa*|libphonenumber*|libprotobuf*)
-                cp -L "$lib" "$build_dir/files/lib/$base"
-                ;;
-        esac
-    done
+    if flatpak info "org.gnome.Platform/$arch/$runtime_ver" >/dev/null 2>&1; then
+        flatpak run --filesystem=host --command=sh "org.gnome.Platform/$arch/$runtime_ver" -c '
+            bin_path="$1"
+            lib_dir="$2"
+            while true; do
+                missing=$(LD_LIBRARY_PATH="$lib_dir" ldd "$bin_path" "$lib_dir"/*.so* 2>/dev/null | awk "/not found/ {print \$1}" | sort -u)
+                [ -z "$missing" ] && break
+                for lib in $missing; do
+                    found=""
+                    for search_dir in /run/host/lib64 /run/host/lib64/evolution-data-server /run/host/usr/lib64 /run/host/usr/lib64/evolution-data-server; do
+                        if [ -e "$search_dir/$lib" ]; then
+                            found="$search_dir/$lib"
+                            break
+                        fi
+                    done
+                    if [ -n "$found" ]; then
+                        cp -L "$found" "$lib_dir/$lib"
+                    else
+                        echo "Warning: Could not locate $lib on host" >&2
+                        break 2
+                    fi
+                done
+            done
+        ' -- "$build_dir/files/bin/meridian" "$build_dir/files/lib"
+    else
+        ldd "$ROOT/target/release/meridian" | awk '/=> \// { print $3 }' | while read -r lib; do
+            base="$(basename "$lib")"
+            case "$base" in
+                libcamel*|libedataserver*|libecal*|libebook*|libedata-book*|libebackend*|libedbus*|libical*|libgoa*|libphonenumber*|libprotobuf*|libxml2*|libboost_*|libabsl_*)
+                    cp -L "$lib" "$build_dir/files/lib/$base"
+                    ;;
+            esac
+        done
+    fi
 
     flatpak build-finish "$build_dir" \
         --command=meridian \
+        --env=LD_LIBRARY_PATH=/app/lib \
         --share=ipc \
         --share=network \
         --socket=fallback-x11 \
@@ -176,7 +204,6 @@ Branch=$branch
 Url=$repo_url
 Homepage=$homepage_url
 RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo
-SuggestRemoteName=meridian-origin
 IsRuntime=false
 GPGKey=$gpg_b64
 EOF
