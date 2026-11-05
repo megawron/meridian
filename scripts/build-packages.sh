@@ -128,7 +128,7 @@ EOF
     stage_flatpak_appstream "$build_dir/files"
 
     if flatpak info "org.gnome.Platform/$arch/$runtime_ver" >/dev/null 2>&1; then
-        flatpak run --filesystem=host --command=sh "org.gnome.Platform/$arch/$runtime_ver" -c '
+        flatpak run --filesystem=host --filesystem=/tmp --command=sh "org.gnome.Platform/$arch/$runtime_ver" -c '
             bin_path="$1"
             lib_dir="$2"
             while true; do
