@@ -703,7 +703,7 @@
       <summary>Application color scheme (system, light, or dark)</summary>
     </key>
     <key name="switcher-location" type="s">
-      <default>'bottom-left'</default>
+      <default>'top'</default>
       <summary>Location of module switcher buttons (top in header bar or bottom-left in sidebar)</summary>
       <choices>
         <choice value='top'/>

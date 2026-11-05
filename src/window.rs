@@ -1452,7 +1452,7 @@ impl MeridianWindow {
             } else {
                 let is_top = AppSettings::try_new()
                     .map(|s| s.switcher_location() == "top")
-                    .unwrap_or(false);
+                    .unwrap_or(true);
                 if is_top {
                     if let Some(switcher) = self.imp().view_switcher.borrow().as_ref() {
                         header_bar.set_title_widget(Some(switcher));
@@ -1652,7 +1652,7 @@ impl MeridianWindow {
             } else {
                 let is_top = AppSettings::try_new()
                     .map(|s| s.switcher_location() == "top")
-                    .unwrap_or(false);
+                    .unwrap_or(true);
                 if is_top {
                     if let Some(switcher) = self.imp().view_switcher.borrow().as_ref() {
                         header_bar.set_title_widget(Some(switcher));
@@ -3935,7 +3935,7 @@ impl MeridianWindow {
                 } else {
                     let is_top = AppSettings::try_new()
                         .map(|s| s.switcher_location() == "top")
-                        .unwrap_or(false);
+                        .unwrap_or(true);
                     if is_top {
                         header_bar.set_title_widget(Some(&view_switcher));
                     } else {
@@ -4672,7 +4672,7 @@ impl MeridianWindow {
 
         let is_top = AppSettings::try_new()
             .map(|s| s.switcher_location() == "top")
-            .unwrap_or(false);
+            .unwrap_or(true);
         let action_toggle_switcher =
             gio::SimpleAction::new_stateful("toggle-top-switcher", None, &is_top.to_variant());
         let settings_clone = AppSettings::try_new();

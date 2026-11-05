@@ -693,7 +693,7 @@ fn default_composer_charset() -> String {
 }
 
 fn default_switcher_location() -> String {
-    "bottom-left".to_string()
+    "top".to_string()
 }
 
 fn default_crypto_protocol() -> String {
@@ -3219,7 +3219,7 @@ mod tests {
                 .as_ref()
                 .expect("legacy settings should be present");
             assert_eq!(settings.composer_charset, "UTF-8");
-            assert_eq!(settings.switcher_location, "bottom-left");
+            assert_eq!(settings.switcher_location, "top");
             assert_eq!(settings.mail_sync_message_limit, 100);
             assert_eq!(settings.mail_sidebar_position, 220);
             assert!(settings.smime_private_key.is_empty());

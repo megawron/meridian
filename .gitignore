@@ -38,3 +38,5 @@ scratch/
 # Confidential / Local email files
 *.eml
 *.msg
+/packaging/out/
+

@@ -231,6 +231,8 @@ pub fn build_sidebar_module_switcher(
                 }
             ),
         );
+    } else {
+        switcher_box.set_visible(false);
     }
 
     switcher_box

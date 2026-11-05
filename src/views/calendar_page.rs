@@ -9413,7 +9413,6 @@ impl CalendarPage {
         let year_grid_btn = gtk::ToggleButton::builder()
             .child(&grid_btn_content)
             .group(&year_planner_btn)
-            .active(initial_year_style == YearViewStyle::Grid)
             .build();
 
         let multi_btn_content = gtk::Box::builder()
@@ -9426,8 +9425,13 @@ impl CalendarPage {
         let year_multi_btn = gtk::ToggleButton::builder()
             .child(&multi_btn_content)
             .group(&year_planner_btn)
-            .active(initial_year_style == YearViewStyle::MultiYear)
             .build();
+
+        match initial_year_style {
+            YearViewStyle::Planner => year_planner_btn.set_active(true),
+            YearViewStyle::Grid => year_grid_btn.set_active(true),
+            YearViewStyle::MultiYear => year_multi_btn.set_active(true),
+        }
 
         year_mode_toggle_box.append(&year_planner_btn);
         year_mode_toggle_box.append(&year_grid_btn);

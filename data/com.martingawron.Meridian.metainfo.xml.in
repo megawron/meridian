@@ -24,10 +24,62 @@
   <developer id="com.martingawron">
     <name>Martin Gawron</name>
   </developer>
+  <developer_name>Martin Gawron</developer_name>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#d6e6ff</color>
+    <color type="primary" scheme_preference="dark">#1c3b6e</color>
+  </branding>
+
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <recommends>
+    <control>keyboard</control>
+    <control>pointing</control>
+    <control>touch</control>
+  </recommends>
+
+  <categories>
+    <category>Office</category>
+    <category>Email</category>
+    <category>Calendar</category>
+    <category>ContactManagement</category>
+  </categories>
+
+  <keywords>
+    <keyword>mail</keyword>
+    <keyword>email</keyword>
+    <keyword>calendar</keyword>
+    <keyword>contacts</keyword>
+    <keyword>tasks</keyword>
+    <keyword>evolution</keyword>
+    <keyword>groupware</keyword>
+  </keywords>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>Unified mail workspace with threaded conversations and sandboxed HTML preview</caption>
+      <image type="source" width="3840" height="2160">https://raw.githubusercontent.com/megawron/meridian/main/data/screenshots/mail.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Calendar week view with multi-account schedules, event details, and integrated tasks</caption>
+      <image type="source" width="3840" height="2160">https://raw.githubusercontent.com/megawron/meridian/main/data/screenshots/calendar-week.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Calendar month view with multi-day events and mini-calendar navigation</caption>
+      <image type="source" width="3840" height="2160">https://raw.githubusercontent.com/megawron/meridian/main/data/screenshots/calendar-month.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Calendar year grid view with interactive day timeline preview</caption>
+      <image type="source" width="3840" height="2160">https://raw.githubusercontent.com/megawron/meridian/main/data/screenshots/calendar-year.png</image>
+    </screenshot>
+  </screenshots>
+
   <content_rating type="oars-1.1" />
 
   <releases>
-    <release version="0.1.0-beta.1" date="2026-11-04">
+    <release version="0.1.0-beta.1" date="2026-11-04" type="development">
       <description>
         <p>Initial public beta release of Meridian featuring integrated mail, calendar, contacts, tasks, and memos.</p>
       </description>

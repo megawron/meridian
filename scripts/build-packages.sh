@@ -24,6 +24,10 @@ WHAT="${1:-local}"
 mkdir -p "$OUT"
 
 ensure_binary() {
+    if [ -x "$ROOT/target/release/meridian" ] && [ "${FORCE_REBUILD:-0}" != "1" ]; then
+        echo "==> Using existing release binary: $ROOT/target/release/meridian"
+        return 0
+    fi
     echo "==> Building release binary"
     ( cd "$ROOT" && cargo build --release --locked --bin meridian )
 }
@@ -62,40 +66,21 @@ stage_common() {
     done
 }
 
-build_flatpak_bundle() {
-    ensure_binary
-    local arch bundle work build_dir repo_dir
-    arch="$(uname -m)"
-    case "$TAG" in
-        *-beta*) bundle="Meridian-Beta-${arch}.flatpak" ;;
-        *)       bundle="Meridian-${arch}.flatpak" ;;
-    esac
-
-    echo "==> Packaging Flatpak bundle: $bundle"
-    work="$(mktemp -d)"
-    build_dir="$work/build-dir"
-    repo_dir="$work/repo"
-
-    mkdir -p "$build_dir/files/lib" "$build_dir/var" \
-        "$build_dir/files/share/app-info/xmls" \
-        "$build_dir/files/share/app-info/icons/flatpak/64x64" \
-        "$build_dir/files/share/app-info/icons/flatpak/128x128"
-    cat > "$build_dir/metadata" <<EOF
-[Application]
-name=$APP_ID
-runtime=org.gnome.Platform/$arch/48
-sdk=org.gnome.Sdk/$arch/48
-EOF
-    stage_common "$build_dir/files"
+stage_flatpak_appstream() {
+    local dest="$1"
+    mkdir -p \
+        "$dest/share/app-info/xmls" \
+        "$dest/share/app-info/icons/flatpak/64x64" \
+        "$dest/share/app-info/icons/flatpak/128x128"
 
     cp "$ROOT/data/icons/hicolor/64x64/apps/$APP_ID.png" \
-        "$build_dir/files/share/app-info/icons/flatpak/64x64/$APP_ID.png"
+        "$dest/share/app-info/icons/flatpak/64x64/$APP_ID.png"
     cp "$ROOT/data/icons/hicolor/128x128/apps/$APP_ID.png" \
-        "$build_dir/files/share/app-info/icons/flatpak/128x128/$APP_ID.png"
+        "$dest/share/app-info/icons/flatpak/128x128/$APP_ID.png"
 
-    cat <<EOF | gzip -c > "$build_dir/files/share/app-info/xmls/$APP_ID.xml.gz"
+    cat <<EOF | gzip -c > "$dest/share/app-info/xmls/$APP_ID.xml.gz"
 <?xml version="1.0" encoding="UTF-8"?>
-<components version="0.8" origin="flatpak">
+<components version="1.0">
   <component type="desktop-application">
     <id>$APP_ID</id>
     <name>Meridian</name>
@@ -104,27 +89,105 @@ EOF
     <developer id="com.martingawron">
       <name>Martin Gawron</name>
     </developer>
+    <developer_name>Martin Gawron</developer_name>
     <description>
       <p>Meridian is an all-in-one mail, calendar, contacts, and tasks application designed for the GNOME desktop, built with Rust, GTK 4, libadwaita, and WebKitGTK.</p>
       <p>Built on top of Evolution Data Server (EDS), Meridian works out of the box with your existing system accounts, local folders, and GNOME Online Accounts.</p>
     </description>
+    <requires>
+      <display_length>360</display_length>
+    </requires>
+    <recommends>
+      <control>keyboard</control>
+      <control>pointing</control>
+      <control>touch</control>
+    </recommends>
     <icon type="cached" height="128" width="128">$APP_ID.png</icon>
     <icon type="cached" height="64" width="64">$APP_ID.png</icon>
+    <icon type="stock">$APP_ID</icon>
     <launchable type="desktop-id">$APP_ID.desktop</launchable>
     <url type="homepage">https://github.com/megawron/meridian</url>
     <url type="bugtracker">https://github.com/megawron/meridian/issues</url>
     <url type="vcs-browser">https://github.com/megawron/meridian</url>
-    <content_rating type="oars-1.1"/>
+    <categories>
+      <category>Office</category>
+      <category>Email</category>
+      <category>Calendar</category>
+      <category>ContactManagement</category>
+    </categories>
+    <keywords>
+      <keyword>mail</keyword>
+      <keyword>email</keyword>
+      <keyword>calendar</keyword>
+      <keyword>contacts</keyword>
+      <keyword>tasks</keyword>
+      <keyword>evolution</keyword>
+      <keyword>groupware</keyword>
+    </keywords>
+    <branding>
+      <color type="primary" scheme_preference="light">#d6e6ff</color>
+      <color type="primary" scheme_preference="dark">#1c3b6e</color>
+    </branding>
+    <screenshots>
+      <screenshot type="default">
+        <caption>Unified mail workspace with threaded conversations and sandboxed HTML preview</caption>
+        <image type="source" width="3840" height="2160">https://raw.githubusercontent.com/megawron/meridian/main/data/screenshots/mail.png</image>
+      </screenshot>
+      <screenshot>
+        <caption>Calendar week view with multi-account schedules, event details, and integrated tasks</caption>
+        <image type="source" width="3840" height="2160">https://raw.githubusercontent.com/megawron/meridian/main/data/screenshots/calendar-week.png</image>
+      </screenshot>
+      <screenshot>
+        <caption>Calendar month view with multi-day events and mini-calendar navigation</caption>
+        <image type="source" width="3840" height="2160">https://raw.githubusercontent.com/megawron/meridian/main/data/screenshots/calendar-month.png</image>
+      </screenshot>
+      <screenshot>
+        <caption>Calendar year grid view with interactive day timeline preview</caption>
+        <image type="source" width="3840" height="2160">https://raw.githubusercontent.com/megawron/meridian/main/data/screenshots/calendar-year.png</image>
+      </screenshot>
+    </screenshots>
     <releases>
-      <release version="$RAW_VERSION" date="$(date +%Y-%m-%d)">
+      <release version="$RAW_VERSION" timestamp="$(date +%s)" type="development">
         <description>
-          <p>Public beta release of Meridian featuring integrated mail, calendar, contacts, tasks, and memos.</p>
+          <p>Initial public beta release of Meridian featuring integrated mail, calendar, contacts, tasks, and memos.</p>
         </description>
       </release>
     </releases>
+    <content_rating type="oars-1.1" />
   </component>
 </components>
 EOF
+}
+
+build_flatpak_bundle() {
+    ensure_binary
+    local arch bundle work build_dir repo_dir gpg_key gpg_b64 repo_url homepage_url branch
+    arch="$(uname -m)"
+    branch="stable"
+    repo_url="${FLATPAK_REPO_URL:-https://meridian.martingawron.com/flatpak}"
+    homepage_url="${FLATPAK_HOMEPAGE_URL:-https://github.com/megawron/meridian}"
+    gpg_key="${FLATPAK_GPG_KEY:-5F5B2DAC0DFADFBA2627BB3E2654C3727A504079}"
+
+    case "$TAG" in
+        *-beta*) bundle="Meridian-Beta-${arch}.flatpak" ;;
+        *)       bundle="Meridian-${arch}.flatpak" ;;
+    esac
+
+    echo "==> Packaging Flatpak repository & bundle: $bundle (branch: $branch)"
+    work="$(mktemp -d)"
+    build_dir="$work/build-dir"
+    repo_dir="$OUT/flatpak-repo"
+    rm -rf "$repo_dir"
+
+    mkdir -p "$build_dir/files/lib" "$build_dir/var"
+    cat > "$build_dir/metadata" <<EOF
+[Application]
+name=$APP_ID
+runtime=org.gnome.Platform/$arch/48
+sdk=org.gnome.Sdk/$arch/48
+EOF
+    stage_common "$build_dir/files"
+    stage_flatpak_appstream "$build_dir/files"
 
     ldd "$ROOT/target/release/meridian" | awk '/=> \// { print $3 }' | while read -r lib; do
         base="$(basename "$lib")"
@@ -152,11 +215,57 @@ EOF
         --filesystem=xdg-run/gvfsd \
         --metadata=X-DConf=migrate-path=/com/martingawron/meridian/ >/dev/null
 
-    flatpak build-export "$repo_dir" "$build_dir" >/dev/null
-    flatpak build-bundle "$repo_dir" "$OUT/$bundle" "$APP_ID" \
-        --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
+    local gpg_args=()
+    if gpg --list-secret-keys "$gpg_key" >/dev/null 2>&1; then
+        gpg_args=(--gpg-sign="$gpg_key")
+    fi
+
+    flatpak build-export --disable-fsync --update-appstream "${gpg_args[@]}" "$repo_dir" "$build_dir" "$branch" >/dev/null
+    flatpak build-update-repo \
+        --title="Meridian Flatpak Repository" \
+        --comment="Official Flatpak repository for Meridian" \
+        --description="Official Flatpak repository for Meridian (Mail, Calendar, Contacts, and Tasks for GNOME)" \
+        --homepage="$homepage_url" \
+        --default-branch="$branch" \
+        --generate-static-deltas \
+        --static-delta-jobs=1 \
+        "${gpg_args[@]}" \
+        "$repo_dir" >/dev/null
+
+    if gpg --list-secret-keys "$gpg_key" >/dev/null 2>&1; then
+        gpg_b64="$(gpg --export "$gpg_key" | base64 -w0)"
+        cat > "$OUT/$APP_ID.flatpakref" <<EOF
+[Flatpak Ref]
+Title=Meridian
+Name=$APP_ID
+Branch=$branch
+Url=$repo_url
+Homepage=$homepage_url
+RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo
+SuggestRemoteName=meridian-origin
+IsRuntime=false
+GPGKey=$gpg_b64
+EOF
+        cp "$OUT/$APP_ID.flatpakref" "$repo_dir/$APP_ID.flatpakref"
+
+        cat > "$repo_dir/meridian.flatpakrepo" <<EOF
+[Flatpak Repo]
+Title=Meridian
+Url=$repo_url
+Homepage=$homepage_url
+Comment=Official Flatpak repository for Meridian
+Description=Official Flatpak repository for Meridian (Mail, Calendar, Contacts, and Tasks for GNOME)
+DefaultBranch=$branch
+GPGKey=$gpg_b64
+EOF
+    fi
+
+    flatpak build-bundle "$repo_dir" "$OUT/$bundle" "$APP_ID" "$branch" \
+        --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo
     rm -rf "$work"
-    echo "==> Flatpak ready: $OUT/$bundle"
+    echo "==> Flatpak bundle ready: $OUT/$bundle"
+    echo "==> Flatpakref ready:     $OUT/$APP_ID.flatpakref"
+    echo "==> Flatpak repo ready:   $repo_dir"
 }
 
 build_deb() {
@@ -292,6 +401,7 @@ stage_flatpak() {
     rm -rf "$fp_stage"
     mkdir -p "$fp_stage/lib"
     stage_common "$fp_stage"
+    stage_flatpak_appstream "$fp_stage"
 
     ldd "$ROOT/target/release/meridian" | awk '/=> \// { print $3 }' | while read -r lib; do
         base="$(basename "$lib")"
@@ -305,15 +415,73 @@ stage_flatpak() {
     rm -rf "$fp_stage"
 }
 
+publish_gh_pages() {
+    local repo_dir="$OUT/flatpak-repo"
+    if [ ! -d "$repo_dir/objects" ]; then
+        build_flatpak_bundle
+    fi
+    echo "==> Publishing Flatpak repository to gh-pages branch..."
+    local pages_work
+    pages_work="$(mktemp -d)"
+    git -C "$pages_work" init -b gh-pages >/dev/null
+    git -C "$pages_work" config user.name "$(git -C "$ROOT" config user.name || echo 'Martin Gawron')"
+    git -C "$pages_work" config user.email "$(git -C "$ROOT" config user.email || echo 'martin@martingawron.com')"
+
+    touch "$pages_work/.nojekyll"
+    local cname="${FLATPAK_CNAME:-meridian.martingawron.com}"
+    if [ -n "$cname" ]; then
+        echo "$cname" > "$pages_work/CNAME"
+    fi
+    mkdir -p "$pages_work/flatpak"
+    cp -a "$repo_dir/." "$pages_work/flatpak/"
+    rm -f "$pages_work/flatpak/.lock"
+    cp "$OUT/$APP_ID.flatpakref" "$pages_work/$APP_ID.flatpakref"
+
+    cat > "$pages_work/index.html" <<EOF
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Meridian — Flatpak Repository</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 720px; margin: 4rem auto; padding: 0 1.5rem; line-height: 1.6; }
+    pre { background: rgba(127,127,127,0.12); padding: 1rem; border-radius: 8px; overflow-x: auto; }
+    a.btn { display: inline-block; background: #3584e4; color: #fff; text-decoration: none; padding: 0.65rem 1.2rem; border-radius: 8px; font-weight: 600; margin-right: 0.75rem; }
+  </style>
+</head>
+<body>
+  <h1>Meridian</h1>
+  <p>Mail, calendar, contacts, and tasks for GNOME.</p>
+  <p>
+    <a class="btn" href="flatpak/$APP_ID.flatpakref">Install Flatpak (.flatpakref)</a>
+    <a href="https://github.com/megawron/meridian">GitHub Repository</a>
+  </p>
+  <h2>Install via Terminal</h2>
+  <pre><code>flatpak install --user --from ${FLATPAK_REPO_URL:-https://meridian.martingawron.com/flatpak}/$APP_ID.flatpakref</code></pre>
+</body>
+</html>
+EOF
+
+    git -C "$pages_work" add -A
+    git -C "$pages_work" commit -m "chore: publish Flatpak repository ($TAG)" >/dev/null
+    local remote_url
+    remote_url="$(git -C "$ROOT" remote get-url origin)"
+    git -C "$pages_work" push --force "$remote_url" gh-pages:gh-pages
+    rm -rf "$pages_work"
+    echo "==> Published Flatpak repository to gh-pages!"
+}
+
 build_local_all() {
-    rm -f "$OUT"/*
+    rm -rf "$OUT"/*
     build_flatpak_bundle
     build_deb
     build_tarball
     if command -v rpmbuild >/dev/null 2>&1; then
         build_rpm
     fi
-    ( cd "$OUT" && sha256sum * > SHA256SUMS.txt )
+    ( cd "$OUT" && find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -printf '%f\n' | sort | xargs sha256sum > SHA256SUMS.txt )
     echo "==> All local release packages built in $OUT:"
     ls -lh "$OUT"
 }
@@ -322,14 +490,17 @@ case "$WHAT" in
     local) build_local_all ;;
     upload)
         build_local_all
+        publish_gh_pages
         echo "==> Uploading packages to GitHub release $TAG..."
-        gh release upload "$TAG" "$OUT"/* --clobber
+        mapfile -t release_files < <(find "$OUT" -maxdepth 1 -type f | sort)
+        gh release upload "$TAG" "${release_files[@]}" --clobber
         echo "==> Uploaded successfully to $TAG!"
         ;;
+    publish-repo) publish_gh_pages ;;
     flatpak) build_flatpak_bundle ;;
     rpm) build_rpm ;;
     deb) build_deb ;;
     flatpak-stage) stage_flatpak ;;
     deb-and-flatpak-stage) build_deb; stage_flatpak ;;
-    *) echo "Usage: $0 {local|upload|flatpak|rpm|deb} [tag]" >&2; exit 1 ;;
+    *) echo "Usage: $0 {local|upload|publish-repo|flatpak|rpm|deb} [tag]" >&2; exit 1 ;;
 esac

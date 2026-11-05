@@ -434,8 +434,8 @@ pub(crate) fn validate_memo_category_filter_value(value: &str) -> Result<String,
 
 fn normalized_switcher_location(value: &str) -> &'static str {
     match value {
-        "top" => "top",
-        _ => "bottom-left",
+        "bottom-left" => "bottom-left",
+        _ => "top",
     }
 }
 
@@ -5951,14 +5951,15 @@ mod tests {
     #[test]
     fn set01_settings_round_trip_and_reject_invalid_portable_values() {
         assert_eq!(normalized_switcher_location("top"), "top");
-        assert_eq!(normalized_switcher_location("unknown"), "bottom-left");
+        assert_eq!(normalized_switcher_location("bottom-left"), "bottom-left");
+        assert_eq!(normalized_switcher_location("unknown"), "top");
         assert_eq!(normalize_composer_charset("utf8"), Some("UTF-8"));
         assert_eq!(normalize_composer_charset("unknown"), None);
 
         let backend = gio::memory_settings_backend_new();
         let settings = settings_with_backend(&backend);
         for (key, value) in [
-            ("switcher-location", "top"),
+            ("switcher-location", "bottom-left"),
             ("mail-sender-column-width", "240"),
             ("mail-show-security-details", "true"),
             ("mail-show-all-headers", "true"),
@@ -5975,7 +5976,7 @@ mod tests {
         }
 
         let reloaded = settings_with_backend(&backend);
-        assert_eq!(reloaded.switcher_location(), "top");
+        assert_eq!(reloaded.switcher_location(), "bottom-left");
         assert_eq!(reloaded.mail_sender_column_width(), 240);
         assert!(reloaded.mail_show_security_details());
         assert!(reloaded.mail_show_all_headers());
@@ -6005,7 +6006,7 @@ mod tests {
         assert!(!error.contains("private-key-path"));
 
         reloaded.reset_to_defaults();
-        assert_eq!(reloaded.switcher_location(), "bottom-left");
+        assert_eq!(reloaded.switcher_location(), "top");
         assert_eq!(reloaded.mail_sender_column_width(), 180);
         assert!(!reloaded.mail_show_security_details());
         assert!(!reloaded.mail_show_all_headers());
