@@ -953,7 +953,7 @@ impl PreferencesDialog {
             .build();
 
         // 1. System-wide GNOME Online Accounts
-        if detect_program_path("gnome-control-center").is_some() {
+        if eds_service::is_gnome_online_accounts_available() {
             let group_system = adw::PreferencesGroup::builder()
                 .title(&crate::i18n::gettext("System Account"))
                 .build();

@@ -266,21 +266,26 @@ impl MailStoreService {
         let welcome_file = inbox_dir.join("welcome.eml");
         let mut paths = Vec::new();
         collect_mail_files(&self.mail_dir, &mut paths);
-        if paths.is_empty() && !welcome_file.exists() {
-            let welcome_content = "From: Evolution <evolution@gnome.org>\r\n\
-To: Benutzer <user@local>\r\n\
-Subject: Willkommen bei Evolution\r\n\
+        let should_update_legacy = welcome_file.is_file()
+            && fs::read_to_string(&welcome_file)
+                .map(|s| s.contains("Willkommen bei Evolution"))
+                .unwrap_or(false);
+        if (paths.is_empty() && !welcome_file.exists()) || should_update_legacy {
+            let welcome_content = "From: Meridian <noreply@meridian.local>\r\n\
+To: Benutzer <user@meridian.local>\r\n\
+Subject: Willkommen bei Meridian\r\n\
 Date: Sun, 06 Sep 2026 12:00:00 +0200\r\n\
-Message-ID: <welcome-meridian@gnome.org>\r\n\
+Message-ID: <welcome-meridian@meridian.local>\r\n\
 MIME-Version: 1.0\r\n\
 Content-Type: text/plain; charset=UTF-8\r\n\
 \r\n\
-Herzlich willkommen bei Evolution!\r\n\
-Meridian ist dein moderner E-Mail-, Kalender- und Kontakt-Client für Linux.\r\n\
+Herzlich willkommen bei Meridian!\r\n\
+Meridian vereint E-Mail, Kalender, Kontakte, Aufgaben und Notizen in einer nativen GNOME-Anwendung.\r\n\
 \r\n\
 Erste Schritte:\r\n\
-• Neues E-Mail-Konto einrichten: Klicke oben auf 'Konto einrichten' oder oeffne das Menue oben rechts, um dein IMAP-, POP3- oder Exchange/M365-Konto zu verbinden.\r\n\
-• Ordner & Suche: Alle Ordner unterstuetzen Volltextsuche, Filter und Schnellsortierung.\r\n\
+• Bestehende Systemkonten: Über GNOME Online Accounts oder den Evolution Data Server eingerichtete Konten werden automatisch erkannt.\r\n\
+• Neues Konto verbinden: Über die Einstellungen (Konto hinzufügen) kannst du jederzeit weitere IMAP/SMTP-, Exchange/EWS-, JMAP- oder POP3-Konten einrichten.\r\n\
+• Produktivität: Verknüpfe E-Mails direkt mit Aufgaben und Notizen in der rechten Seitenleiste oder wechsle oben zwischen Mail, Kalender und Kontakten.\r\n\
 \r\n\
 Viel Freude mit Meridian!\r\n";
             let _ = fs::write(&welcome_file, welcome_content);

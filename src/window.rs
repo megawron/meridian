@@ -136,6 +136,7 @@ mod imp {
             window.setup_layout();
             window.setup_actions();
             window.setup_account_monitoring();
+            window.maybe_present_welcome_onboarding();
 
             if std::env::var("MERIDIAN_OPEN_DEBUG_CONSOLE").or_else(|_| std::env::var("EVOLUTION_OPEN_DEBUG_CONSOLE")).is_ok() {
                 window.set_debug_console_open(true);
@@ -769,6 +770,168 @@ impl MeridianWindow {
                 window.reload_mail_accounts();
             }
         });
+        dialog.present(Some(self));
+    }
+
+    fn maybe_present_welcome_onboarding(&self) {
+        #[cfg(test)]
+        {
+            return;
+        }
+        #[cfg(not(test))]
+        {
+            if std::env::var("MERIDIAN_SKIP_ONBOARDING").is_ok() {
+                return;
+            }
+            let window_weak = self.downgrade();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(650), move || {
+                let Some(window) = window_weak.upgrade() else {
+                    return;
+                };
+                let has_eds_mail = crate::services::eds_service::load_configured_account_collections()
+                    .iter()
+                    .any(|c| c.enabled && c.mail_enabled);
+                let has_profile_mail = crate::services::account_config_service::AccountConfigStore::default()
+                    .load()
+                    .iter()
+                    .any(|p| p.enabled);
+                let has_cached_mail = !crate::services::evolution_summary_cache::discover_meridian_mail_caches()
+                    .is_empty();
+                if has_eds_mail || has_profile_mail || has_cached_mail {
+                    return;
+                }
+                window.present_welcome_onboarding_dialog();
+            });
+        }
+    }
+
+    fn present_welcome_onboarding_dialog(&self) {
+        use adw::prelude::*;
+        let dialog = adw::Dialog::builder()
+            .title(&gettext("Welcome to Meridian"))
+            .content_width(460)
+            .build();
+
+        let toolbar = adw::ToolbarView::new();
+        let header = adw::HeaderBar::builder()
+            .show_end_title_buttons(true)
+            .build();
+        toolbar.add_top_bar(&header);
+
+        let outer_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(18)
+            .margin_top(12)
+            .margin_bottom(24)
+            .margin_start(24)
+            .margin_end(24)
+            .build();
+
+        let hero_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .halign(gtk::Align::Center)
+            .margin_bottom(6)
+            .build();
+        let app_icon = gtk::Image::builder()
+            .icon_name("com.martingawron.Meridian")
+            .pixel_size(64)
+            .build();
+        let title_label = gtk::Label::builder()
+            .label(&gettext("Welcome to Meridian"))
+            .css_classes(vec!["title-2"])
+            .halign(gtk::Align::Center)
+            .build();
+        let subtitle_label = gtk::Label::builder()
+            .label(&gettext(
+                "Connect an account to get started with mail, calendars, contacts, and tasks.",
+            ))
+            .css_classes(vec!["dim-label"])
+            .wrap(true)
+            .justify(gtk::Justification::Center)
+            .max_width_chars(44)
+            .halign(gtk::Align::Center)
+            .build();
+        hero_box.append(&app_icon);
+        hero_box.append(&title_label);
+        hero_box.append(&subtitle_label);
+        outer_box.append(&hero_box);
+
+        if crate::services::eds_service::is_gnome_online_accounts_available() {
+            let group_system = adw::PreferencesGroup::builder()
+                .title(&gettext("System Account"))
+                .description(&gettext(
+                    "Connect Google, Microsoft 365, Nextcloud, or Exchange across GNOME",
+                ))
+                .build();
+            let row_goa = adw::ActionRow::builder()
+                .title(&gettext("GNOME Online Accounts…"))
+                .subtitle(&gettext("Automatically syncs mail, calendars, and contacts"))
+                .activatable(true)
+                .build();
+            let icon_goa = gtk::Image::from_icon_name("preferences-system-network-symbolic");
+            row_goa.add_prefix(&icon_goa);
+            let ext_icon = gtk::Image::from_icon_name("adw-external-link-symbolic");
+            ext_icon.add_css_class("dim-label");
+            row_goa.add_suffix(&ext_icon);
+
+            let dlg_weak = dialog.downgrade();
+            row_goa.connect_activated(move |_| {
+                if let Some(d) = dlg_weak.upgrade() {
+                    d.close();
+                }
+                crate::services::eds_service::open_gnome_online_accounts(None);
+            });
+            group_system.add(&row_goa);
+            outer_box.append(&group_system);
+        }
+
+        let group_direct = adw::PreferencesGroup::builder()
+            .title(&gettext("Direct Setup"))
+            .description(&gettext(
+                "Configure IMAP/SMTP, Microsoft Exchange (EWS), JMAP, or POP3 directly in Meridian",
+            ))
+            .build();
+        let row_account = adw::ActionRow::builder()
+            .title(&gettext("Add Mail Account…"))
+            .subtitle(&gettext("Set up an email account with automatic server discovery"))
+            .activatable(true)
+            .build();
+        let icon_account = gtk::Image::from_icon_name("mail-read-symbolic");
+        row_account.add_prefix(&icon_account);
+        let chevron = gtk::Image::from_icon_name("go-next-symbolic");
+        chevron.add_css_class("dim-label");
+        row_account.add_suffix(&chevron);
+
+        let win_weak = self.downgrade();
+        let dlg_weak2 = dialog.downgrade();
+        row_account.connect_activated(move |_| {
+            if let Some(d) = dlg_weak2.upgrade() {
+                d.close();
+            }
+            if let Some(win) = win_weak.upgrade() {
+                win.present_account_setup();
+            }
+        });
+        group_direct.add(&row_account);
+        outer_box.append(&group_direct);
+
+        let skip_btn = gtk::Button::builder()
+            .label(&gettext("Skip for Now"))
+            .css_classes(vec!["pill"])
+            .halign(gtk::Align::Center)
+            .margin_top(6)
+            .build();
+        let dlg_weak3 = dialog.downgrade();
+        skip_btn.connect_clicked(move |_| {
+            if let Some(d) = dlg_weak3.upgrade() {
+                d.close();
+            }
+        });
+        outer_box.append(&skip_btn);
+
+        toolbar.set_content(Some(&outer_box));
+        dialog.set_child(Some(&toolbar));
         dialog.present(Some(self));
     }
 
@@ -2171,6 +2334,14 @@ impl MeridianWindow {
         }
 
         let home = glib::home_dir();
+        let host_config_sources = home.join(".config/evolution/sources");
+        if host_config_sources.exists() && !source_dirs.contains(&host_config_sources) {
+            source_dirs.push(host_config_sources);
+        }
+        let host_goa_dir = home.join(".config/goa-1.0");
+        if host_goa_dir.exists() && !source_dirs.contains(&host_goa_dir) {
+            source_dirs.push(host_goa_dir);
+        }
         let flatpak_sources = home.join(".var/app/org.gnome.Evolution/config/evolution/sources");
         if flatpak_sources.exists() {
             source_dirs.push(flatpak_sources);

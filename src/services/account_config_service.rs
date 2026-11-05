@@ -1006,7 +1006,15 @@ pub fn eds_sources_dir() -> PathBuf {
             return path;
         }
     }
-    gtk::glib::user_config_dir().join("evolution").join("sources")
+    let xdg = gtk::glib::user_config_dir().join("evolution").join("sources");
+    if xdg.is_dir() {
+        return xdg;
+    }
+    let host = gtk::glib::home_dir().join(".config").join("evolution").join("sources");
+    if host.is_dir() {
+        return host;
+    }
+    xdg
 }
 
 /// Reads Exchange (EWS) connection parameters `(host_url, oab_url, auth_method, username)`

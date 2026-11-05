@@ -462,10 +462,46 @@ pub async fn list_mail_sources() -> Result<Vec<EdsSource>, EdsServiceError> {
     Ok(sources)
 }
 
+fn resolve_host_evolution_config_dir() -> std::path::PathBuf {
+    let xdg = glib::user_config_dir().join("evolution/sources");
+    if xdg.is_dir() {
+        return xdg;
+    }
+    let host = glib::home_dir().join(".config/evolution/sources");
+    if host.is_dir() {
+        return host;
+    }
+    xdg
+}
+
+fn resolve_host_evolution_cache_dir() -> std::path::PathBuf {
+    let xdg = glib::user_cache_dir().join("evolution/sources");
+    if xdg.is_dir() {
+        return xdg;
+    }
+    let host = glib::home_dir().join(".cache/evolution/sources");
+    if host.is_dir() {
+        return host;
+    }
+    xdg
+}
+
+fn resolve_goa_accounts_conf_path() -> std::path::PathBuf {
+    let xdg = glib::user_config_dir().join("goa-1.0/accounts.conf");
+    if xdg.is_file() {
+        return xdg;
+    }
+    let host = glib::home_dir().join(".config/goa-1.0/accounts.conf");
+    if host.is_file() {
+        return host;
+    }
+    xdg
+}
+
 fn find_source_file_on_disk(uid: &str) -> Option<std::path::PathBuf> {
     let clean = uid.strip_suffix("-mail").unwrap_or(uid);
-    let native_config_dir = glib::user_config_dir().join("evolution/sources");
-    let native_cache_dir = glib::user_cache_dir().join("evolution/sources");
+    let native_config_dir = resolve_host_evolution_config_dir();
+    let native_cache_dir = resolve_host_evolution_cache_dir();
     let has_native_sources = std::fs::read_dir(&native_config_dir)
         .ok()
         .is_some_and(|entries| {
@@ -753,7 +789,7 @@ pub fn set_goa_account_service_enabled(uid_or_account_id: &str, kind: EdsSourceK
         }
 
         // 2. Ensure ~/.config/goa-1.0/accounts.conf reflects the state immediately
-        let goa_conf = glib::user_config_dir().join("goa-1.0/accounts.conf");
+        let goa_conf = resolve_goa_accounts_conf_path();
         if goa_conf.is_file() {
             let kf = KeyFile::new();
             if kf.load_from_file(&goa_conf, KeyFileFlags::KEEP_COMMENTS | KeyFileFlags::KEEP_TRANSLATIONS).is_ok() {
@@ -795,21 +831,83 @@ pub fn set_goa_account_service_enabled(uid_or_account_id: &str, kind: EdsSourceK
     invalidate_account_collections_cache();
 }
 
-/// Checks whether `gnome-control-center` is installed on the system so GOA UI can be opened.
+/// Checks whether GNOME Online Accounts / GNOME Settings is available on the system
+/// (either directly in `$PATH` on host installs or via D-Bus inside a Flatpak sandbox).
 pub fn is_gnome_online_accounts_available() -> bool {
-    glib::find_program_in_path("gnome-control-center").is_some()
+    if glib::find_program_in_path("gnome-control-center").is_some() {
+        return true;
+    }
+    if let Ok(bus) = gtk::gio::bus_get_sync(gtk::gio::BusType::Session, gtk::gio::Cancellable::NONE) {
+        if let Ok(reply) = bus.call_sync(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "ListActivatableNames",
+            None,
+            Some(gtk::glib::VariantTy::new("(as)").unwrap()),
+            gtk::gio::DBusCallFlags::NONE,
+            1000,
+            gtk::gio::Cancellable::NONE,
+        ) {
+            if let Some(names) = reply.child_value(0).get::<Vec<String>>() {
+                if names.iter().any(|n| n == "org.gnome.Settings" || n == "org.gnome.ControlCenter") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Opens the GNOME Online Accounts settings panel, passing `XDG_CURRENT_DESKTOP=GNOME`
-/// so `gnome-control-center` works reliably even on non-GNOME desktops (Hyprland, Sway, KDE, etc.).
+/// on host installations or activating `org.gnome.Settings` via D-Bus when running in Flatpak.
 pub fn open_gnome_online_accounts(account_id: Option<&str>) {
-    let mut cmd = std::process::Command::new("gnome-control-center");
-    cmd.env("XDG_CURRENT_DESKTOP", "GNOME");
-    cmd.arg("online-accounts");
-    if let Some(id) = account_id.map(str::trim).filter(|s| !s.is_empty()) {
-        cmd.arg(id);
+    use gtk::glib::prelude::ToVariant;
+    if glib::find_program_in_path("gnome-control-center").is_some() {
+        let mut cmd = std::process::Command::new("gnome-control-center");
+        cmd.env("XDG_CURRENT_DESKTOP", "GNOME");
+        cmd.arg("online-accounts");
+        if let Some(id) = account_id.map(str::trim).filter(|s| !s.is_empty()) {
+            cmd.arg(id);
+        }
+        let _ = cmd.spawn();
+        return;
     }
-    let _ = cmd.spawn();
+
+    if let Ok(bus) = gtk::gio::bus_get_sync(gtk::gio::BusType::Session, gtk::gio::Cancellable::NONE) {
+        let mut args: Vec<gtk::glib::Variant> = Vec::new();
+        if let Some(id) = account_id.map(str::trim).filter(|s| !s.is_empty()) {
+            args.push(id.to_variant());
+        }
+        let param_tuple = ("online-accounts", args).to_variant();
+        let params = (
+            "launch-panel",
+            vec![param_tuple],
+            std::collections::HashMap::<String, gtk::glib::Variant>::new(),
+        )
+            .to_variant();
+        for (dest, path) in [
+            ("org.gnome.Settings", "/org/gnome/Settings"),
+            ("org.gnome.ControlCenter", "/org/gnome/ControlCenter"),
+        ] {
+            if bus
+                .call_sync(
+                    Some(dest),
+                    path,
+                    "org.gtk.Actions",
+                    "Activate",
+                    Some(&params),
+                    None,
+                    gtk::gio::DBusCallFlags::NONE,
+                    3000,
+                    gtk::gio::Cancellable::NONE,
+                )
+                .is_ok()
+            {
+                return;
+            }
+        }
+    }
 }
 
 /// Configured account collection (e.g. Google, EWS, IMAP/SMTP) that may contain
@@ -860,7 +958,7 @@ pub fn load_configured_account_collections() -> Vec<EdsAccountCollection> {
 fn load_configured_account_collections_uncached() -> Vec<EdsAccountCollection> {
     let mut collections = Vec::new();
     let dirs = [
-        glib::user_config_dir().join("evolution/sources"),
+        resolve_host_evolution_config_dir(),
         glib::home_dir().join(".var/app/org.gnome.Evolution/config/evolution/sources"),
     ];
     for dir in &dirs {
@@ -1001,7 +1099,7 @@ fn is_goa_account_service_enabled(account_id: &str, kind: EdsSourceKind) -> Opti
     if account_id.is_empty() {
         return None;
     }
-    let goa_conf = glib::user_config_dir().join("goa-1.0/accounts.conf");
+    let goa_conf = resolve_goa_accounts_conf_path();
     if !goa_conf.is_file() {
         return None;
     }
@@ -1040,7 +1138,7 @@ pub fn is_goa_identity_service_enabled(identity: &str, kind: EdsSourceKind) -> O
     if identity.is_empty() {
         return None;
     }
-    let goa_conf = glib::user_config_dir().join("goa-1.0/accounts.conf");
+    let goa_conf = resolve_goa_accounts_conf_path();
     if !goa_conf.is_file() {
         return None;
     }
@@ -1317,7 +1415,7 @@ fn resolve_source_parent_name_uncached(uid: &str) -> String {
     }
 
     let mut candidate_paths = Vec::new();
-    candidate_paths.push(glib::user_config_dir().join("evolution/sources").join(format!("{clean_uid}.source")));
+    candidate_paths.push(resolve_host_evolution_config_dir().join(format!("{clean_uid}.source")));
     candidate_paths.push(glib::home_dir().join(".var/app/org.gnome.Evolution/config/evolution/sources").join(format!("{clean_uid}.source")));
     candidate_paths.push(std::path::PathBuf::from("/usr/share/evolution-data-server/sources").join(format!("{clean_uid}.source")));
 
