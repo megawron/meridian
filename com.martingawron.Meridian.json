@@ -18,10 +18,7 @@
     "--talk-name=org.gnome.evolution.dataserver.AddressBook10",
     "--talk-name=org.gnome.evolution.dataserver.Subprocess.Backend.*",
     "--talk-name=org.gnome.OnlineAccounts",
-    "--talk-name=org.freedesktop.Notifications",
-    "--talk-name=org.freedesktop.secrets",
-    "--filesystem=xdg-run/gvfsd",
-    "--metadata=X-DConf=migrate-path=/com/martingawron/meridian/"
+    "--talk-name=org.freedesktop.secrets"
   ],
   "cleanup": [
     "/include",

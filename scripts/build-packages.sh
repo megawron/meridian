@@ -15,7 +15,9 @@ set -euo pipefail
 APP_ID="com.martingawron.Meridian"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/packaging/out"
-TAG="${2:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -1)}"
+DEFAULT_VER="$(sed -n 's/.*<release version="\([^"]*\)".*/\1/p' "$ROOT/data/$APP_ID.metainfo.xml.in" | head -1)"
+[ -z "$DEFAULT_VER" ] && DEFAULT_VER="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -1)"
+TAG="${2:-$DEFAULT_VER}"
 RAW_VERSION="${TAG#v}"
 PKG_VERSION="${RAW_VERSION//-/\~}"
 WHAT="${1:-local}"
@@ -78,85 +80,20 @@ stage_flatpak_appstream() {
     cp "$ROOT/data/icons/hicolor/128x128/apps/$APP_ID.png" \
         "$dest/share/app-info/icons/flatpak/128x128/$APP_ID.png"
 
-    cat <<EOF | gzip -c > "$dest/share/app-info/xmls/$APP_ID.xml.gz"
-<?xml version="1.0" encoding="UTF-8"?>
-<components version="1.0">
-  <component type="desktop-application">
-    <id>$APP_ID</id>
-    <name>Meridian</name>
-    <summary>Mail, calendar, contacts, and tasks for GNOME</summary>
-    <project_license>GPL-3.0-or-later</project_license>
-    <developer id="com.martingawron">
-      <name>Martin Gawron</name>
-    </developer>
-    <developer_name>Martin Gawron</developer_name>
-    <description>
-      <p>Meridian is an all-in-one mail, calendar, contacts, and tasks application designed for the GNOME desktop, built with Rust, GTK 4, libadwaita, and WebKitGTK.</p>
-      <p>Built on top of Evolution Data Server (EDS), Meridian works out of the box with your existing system accounts, local folders, and GNOME Online Accounts.</p>
-    </description>
-    <requires>
-      <display_length>360</display_length>
-    </requires>
-    <recommends>
-      <control>keyboard</control>
-      <control>pointing</control>
-      <control>touch</control>
-    </recommends>
-    <icon type="cached" height="128" width="128">$APP_ID.png</icon>
-    <icon type="cached" height="64" width="64">$APP_ID.png</icon>
-    <icon type="stock">$APP_ID</icon>
-    <launchable type="desktop-id">$APP_ID.desktop</launchable>
-    <url type="homepage">https://github.com/megawron/meridian</url>
-    <url type="bugtracker">https://github.com/megawron/meridian/issues</url>
-    <url type="vcs-browser">https://github.com/megawron/meridian</url>
-    <categories>
-      <category>Office</category>
-      <category>Email</category>
-      <category>Calendar</category>
-      <category>ContactManagement</category>
-    </categories>
-    <keywords>
-      <keyword>mail</keyword>
-      <keyword>email</keyword>
-      <keyword>calendar</keyword>
-      <keyword>contacts</keyword>
-      <keyword>tasks</keyword>
-      <keyword>evolution</keyword>
-      <keyword>groupware</keyword>
-    </keywords>
-    <branding>
-      <color type="primary" scheme_preference="light">#d6e6ff</color>
-      <color type="primary" scheme_preference="dark">#1c3b6e</color>
-    </branding>
-    <screenshots>
-      <screenshot type="default">
-        <caption>Unified mail workspace with threaded conversations and sandboxed HTML preview</caption>
-        <image type="source" width="3840" height="2160">https://raw.githubusercontent.com/megawron/meridian/main/data/screenshots/mail.png</image>
-      </screenshot>
-      <screenshot>
-        <caption>Calendar week view with multi-account schedules, event details, and integrated tasks</caption>
-        <image type="source" width="3840" height="2160">https://raw.githubusercontent.com/megawron/meridian/main/data/screenshots/calendar-week.png</image>
-      </screenshot>
-      <screenshot>
-        <caption>Calendar month view with multi-day events and mini-calendar navigation</caption>
-        <image type="source" width="3840" height="2160">https://raw.githubusercontent.com/megawron/meridian/main/data/screenshots/calendar-month.png</image>
-      </screenshot>
-      <screenshot>
-        <caption>Calendar year grid view with interactive day timeline preview</caption>
-        <image type="source" width="3840" height="2160">https://raw.githubusercontent.com/megawron/meridian/main/data/screenshots/calendar-year.png</image>
-      </screenshot>
-    </screenshots>
-    <releases>
-      <release version="$RAW_VERSION" timestamp="$(date +%s)" type="development">
-        <description>
-          <p>Initial public beta release of Meridian featuring integrated mail, calendar, contacts, tasks, and memos.</p>
-        </description>
-      </release>
-    </releases>
-    <content_rating type="oars-1.1" />
-  </component>
-</components>
-EOF
+    python3 - "$ROOT/data/$APP_ID.metainfo.xml.in" "$APP_ID" <<'PY' | gzip -c > "$dest/share/app-info/xmls/$APP_ID.xml.gz"
+import sys
+path, app_id = sys.argv[1], sys.argv[2]
+with open(path, "r", encoding="utf-8") as f:
+    xml = f.read()
+xml = xml.replace('<?xml version="1.0" encoding="UTF-8"?>\n', '')
+icons = (
+    f'  <icon type="cached" height="128" width="128">{app_id}.png</icon>\n'
+    f'  <icon type="cached" height="64" width="64">{app_id}.png</icon>\n'
+    f'  <icon type="stock">{app_id}</icon>\n'
+)
+xml = xml.replace('  <launchable ', icons + '  <launchable ', 1)
+sys.stdout.write('<?xml version="1.0" encoding="UTF-8"?>\n<components version="1.0">\n' + xml.strip() + '\n</components>\n')
+PY
 }
 
 build_flatpak_bundle() {
@@ -210,10 +147,7 @@ EOF
         --talk-name=org.gnome.evolution.dataserver.AddressBook10 \
         --talk-name=org.gnome.evolution.dataserver.Subprocess.Backend.* \
         --talk-name=org.gnome.OnlineAccounts \
-        --talk-name=org.freedesktop.Notifications \
-        --talk-name=org.freedesktop.secrets \
-        --filesystem=xdg-run/gvfsd \
-        --metadata=X-DConf=migrate-path=/com/martingawron/meridian/ >/dev/null
+        --talk-name=org.freedesktop.secrets >/dev/null
 
     local gpg_args=()
     if gpg --list-secret-keys "$gpg_key" >/dev/null 2>&1; then

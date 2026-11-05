@@ -18,9 +18,11 @@
   </description>
 
   <launchable type="desktop-id">com.martingawron.Meridian.desktop</launchable>
+  <translation type="gettext">meridian</translation>
   <url type="homepage">https://github.com/megawron/meridian</url>
   <url type="bugtracker">https://github.com/megawron/meridian/issues</url>
   <url type="vcs-browser">https://github.com/megawron/meridian</url>
+  <url type="contact">https://martingawron.com</url>
   <developer id="com.martingawron">
     <name>Martin Gawron</name>
   </developer>
@@ -32,12 +34,11 @@
   </branding>
 
   <requires>
-    <display_length compare="ge">360</display_length>
+    <display_length compare="ge">768</display_length>
   </requires>
   <recommends>
     <control>keyboard</control>
     <control>pointing</control>
-    <control>touch</control>
   </recommends>
 
   <categories>
@@ -59,7 +60,7 @@
 
   <screenshots>
     <screenshot type="default">
-      <caption>Unified mail workspace with threaded conversations and sandboxed HTML preview</caption>
+      <caption>Unified mail workspace with threaded conversations, sandboxed HTML preview, and integrated agenda, tasks, and memos sidebar</caption>
       <image type="source" width="3840" height="2160">https://raw.githubusercontent.com/megawron/meridian/main/data/screenshots/mail.png</image>
     </screenshot>
     <screenshot>
@@ -71,7 +72,7 @@
       <image type="source" width="3840" height="2160">https://raw.githubusercontent.com/megawron/meridian/main/data/screenshots/calendar-month.png</image>
     </screenshot>
     <screenshot>
-      <caption>Calendar year grid view with interactive day timeline preview</caption>
+      <caption>Calendar year planner view with interactive day timeline preview</caption>
       <image type="source" width="3840" height="2160">https://raw.githubusercontent.com/megawron/meridian/main/data/screenshots/calendar-year.png</image>
     </screenshot>
   </screenshots>
@@ -81,7 +82,13 @@
   <releases>
     <release version="0.1.0-beta.1" date="2026-11-04" type="development">
       <description>
-        <p>Initial public beta release of Meridian featuring integrated mail, calendar, contacts, tasks, and memos.</p>
+        <p>Initial public beta release of Meridian:</p>
+        <ul>
+          <li>Unified mail workspace with threaded conversations, fast full-text search, OpenPGP and S/MIME support, and sandboxed HTML preview</li>
+          <li>Multi-view calendar supporting Day, Work Week, Week, Month, Agenda, and Year (Planner, Grid, and Multi-Year) views</li>
+          <li>Integrated Contacts, Tasks, and Memos with email-linked notes and a customizable right-hand sidebar</li>
+          <li>Native Evolution Data Server (EDS) and GNOME Online Accounts integration</li>
+        </ul>
       </description>
     </release>
   </releases>
