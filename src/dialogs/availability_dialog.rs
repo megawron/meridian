@@ -68,7 +68,7 @@ glib::wrapper! {
 impl AvailabilityDialog {
     pub fn new(date: NaiveDate) -> Self {
         glib::Object::builder()
-            .property("title", "Freie Zeiten")
+            .property("title", "Free/Busy")
             .property("content-width", 520)
             .property("content-height", 420)
             .property("date", date.format("%Y-%m-%d").to_string())
@@ -99,11 +99,12 @@ impl AvailabilityDialog {
 
         let toolbar = adw::ToolbarView::new();
         let header = adw::HeaderBar::new();
+        header.set_show_start_title_buttons(false);
+        header.set_show_end_title_buttons(false);
         let close = gtk::Button::builder()
-            .label("Schließen")
-            .css_classes(vec!["flat"])
+            .label("Close")
             .build();
-        header.pack_end(&close);
+        header.pack_start(&close);
         toolbar.add_top_bar(&header);
 
         let content = gtk::Box::builder()
@@ -117,8 +118,8 @@ impl AvailabilityDialog {
         content.append(
             &gtk::Label::builder()
                 .label(&format!(
-                    "Freie Zeiten am {} · Arbeitszeit {}–{}",
-                    date.format("%d.%m.%Y"),
+                    "Available slots on {} · Working hours {}–{}",
+                    date.format("%Y-%m-%d"),
                     format_minutes(workday_start),
                     format_minutes(workday_end)
                 ))
@@ -129,7 +130,7 @@ impl AvailabilityDialog {
         );
         content.append(
             &gtk::Label::builder()
-                .label("Lokale/app-eigene Kalenderdaten; die Verfügbarkeitsabfrage wird unter Linux ergänzt.")
+                .label("Calculated from your local and synced calendars.")
                 .css_classes(vec!["dim-label"])
                 .halign(gtk::Align::Start)
                 .wrap(true)
@@ -143,8 +144,8 @@ impl AvailabilityDialog {
         if slots.is_empty() {
             list.append(
                 &adw::ActionRow::builder()
-                    .title("Keine passenden freien Zeitblöcke")
-                    .subtitle("Es wurde kein freier Block von mindestens 30 Minuten gefunden.")
+                    .title("No available time slots")
+                    .subtitle("No free slot of at least 30 minutes was found during working hours.")
                     .build(),
             );
         } else {
@@ -173,7 +174,7 @@ fn slot_row(slot: FreeSlot) -> adw::ActionRow {
             slot.start.format("%H:%M"),
             slot.end.format("%H:%M")
         ))
-        .subtitle(format!("{} Minuten frei", slot.duration_minutes()))
+        .subtitle(format!("{} minutes available", slot.duration_minutes()))
         .build()
 }
 

@@ -3364,23 +3364,33 @@ impl ItipBanner {
 
                 let time_prefix = format!("{:02}:{:02}", item.start_min / 60, item.start_min % 60);
                 let time_end = format!("{:02}:{:02}", item.end_min / 60, item.end_min % 60);
-                let max_lines = if h >= 34.0 {
-                    (((h - 6.0) / 16.0).floor() as i32).max(1)
+                let time_display = if col_width >= 82.0 {
+                    format!("{time_prefix}–{time_end}")
+                } else {
+                    time_prefix.clone()
+                };
+                let max_lines = if h >= 28.0 {
+                    (((h - 4.0) / 14.0).floor() as i32).max(2)
                 } else {
                     1
                 };
                 let is_multiline = max_lines > 1;
-                let markup_text = if h < 26.0 {
+                let markup_text = if h < 28.0 {
                     format!(
-                        "<span size=\"small\"><b>{}</b></span>",
+                        "<span size=\"small\">{} <b>{}</b></span>",
+                        time_prefix,
                         glib::markup_escape_text(&item.title)
                     )
                 } else {
-                    format!("<b>{}</b>", glib::markup_escape_text(&item.title))
+                    format!(
+                        "<span size=\"small\" alpha=\"88%\">{}</span>\n<b>{}</b>",
+                        time_display,
+                        glib::markup_escape_text(&item.title)
+                    )
                 };
 
                 let mut tooltip = format!(
-                    "{}\n{} – {} Uhr{}",
+                    "{}\n{}–{}{}",
                     item.title,
                     time_prefix,
                     time_end,
@@ -3393,11 +3403,11 @@ impl ItipBanner {
                     }
                 );
                 if !item.location.trim().is_empty() {
-                    tooltip.push_str(&format!("\n📍 Ort: {}", item.location.trim()));
+                    tooltip.push_str(&format!("\n📍 Location: {}", item.location.trim()));
                 }
                 if !item.description.trim().is_empty() {
                     let short_desc: String = item.description.trim().chars().take(150).collect();
-                    tooltip.push_str(&format!("\n\n📝 Notizen:\n{short_desc}"));
+                    tooltip.push_str(&format!("\n\n📝 Notes:\n{short_desc}"));
                 }
 
                 let mut css_classes = vec!["appointment-timeline-event", "calendar-grid-event"];

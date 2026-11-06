@@ -305,8 +305,8 @@ pub(crate) fn calendar_group_sort_key(group: &str) -> (u8, &str) {
 fn create_date_picker_popover(entry: &gtk::Entry) -> (gtk::Button, gtk::Popover) {
     let btn = gtk::Button::builder()
         .icon_name("x-office-calendar-symbolic")
-        .tooltip_text("Datum im Kalender auswählen")
-        .css_classes(vec!["flat"])
+        .tooltip_text("Select date in calendar")
+        .css_classes(vec!["datetime-picker-button"])
         .build();
     let popover = gtk::Popover::builder().has_arrow(true).build();
     let cal = gtk::Calendar::new();
@@ -409,8 +409,8 @@ fn create_date_picker_popover(entry: &gtk::Entry) -> (gtk::Button, gtk::Popover)
 fn create_time_picker_popover(entry: &gtk::Entry) -> (gtk::Button, gtk::Popover) {
     let btn = gtk::Button::builder()
         .icon_name("alarm-symbolic")
-        .tooltip_text("Uhrzeit auswählen")
-        .css_classes(vec!["flat"])
+        .tooltip_text("Select time")
+        .css_classes(vec!["datetime-picker-button"])
         .build();
     let popover = gtk::Popover::builder().has_arrow(true).build();
     let scroll = gtk::ScrolledWindow::builder()
@@ -472,7 +472,7 @@ fn create_timezone_picker_popover<E: IsA<gtk::Editable> + IsA<gtk::Widget>>(
 ) -> (gtk::Button, gtk::Popover) {
     let btn = gtk::Button::builder()
         .icon_name("pan-down-symbolic")
-        .tooltip_text("Zeitzone auswählen")
+        .tooltip_text("Select timezone")
         .css_classes(vec!["flat"])
         .build();
     let popover = gtk::Popover::builder().has_arrow(true).build();
@@ -486,7 +486,7 @@ fn create_timezone_picker_popover<E: IsA<gtk::Editable> + IsA<gtk::Widget>>(
         .width_request(280)
         .build();
     let search_entry = gtk::SearchEntry::builder()
-        .placeholder_text("Zeitzone suchen…")
+        .placeholder_text("Search timezone…")
         .hexpand(true)
         .build();
     pop_box.append(&search_entry);
@@ -527,7 +527,7 @@ fn create_timezone_picker_popover<E: IsA<gtk::Editable> + IsA<gtk::Widget>>(
     btn.connect_clicked(move |_| {
         if rows_for_click.borrow().is_empty() {
             let timezones: &[(&str, &str)] = &[
-                ("Europe/Berlin", "Europe/Berlin (MEZ/MESZ)"),
+                ("Europe/Berlin", "Europe/Berlin (CET/CEST)"),
                 ("Europe/Vienna", "Europe/Vienna"),
                 ("Europe/Zurich", "Europe/Zurich"),
                 ("Europe/London", "Europe/London (GMT/BST)"),
@@ -537,7 +537,7 @@ fn create_timezone_picker_popover<E: IsA<gtk::Editable> + IsA<gtk::Widget>>(
                 ("Europe/Amsterdam", "Europe/Amsterdam"),
                 ("Europe/Warsaw", "Europe/Warsaw"),
                 ("Europe/Stockholm", "Europe/Stockholm"),
-                ("Europe/Athens", "Europe/Athens (OEZ)"),
+                ("Europe/Athens", "Europe/Athens (EET)"),
                 ("Europe/Istanbul", "Europe/Istanbul"),
                 ("America/New_York", "America/New_York (ET)"),
                 ("America/Chicago", "America/Chicago (CT)"),
@@ -556,8 +556,8 @@ fn create_timezone_picker_popover<E: IsA<gtk::Editable> + IsA<gtk::Widget>>(
                 ("Asia/Tokyo", "Asia/Tokyo (JST)"),
                 ("Australia/Sydney", "Australia/Sydney (AEST)"),
                 ("Pacific/Auckland", "Pacific/Auckland (NZST)"),
-                ("UTC", "UTC (Koordinierte Weltzeit)"),
-                ("", "Fließend (ohne feste Zeitzone)"),
+                ("UTC", "UTC (Coordinated Universal Time)"),
+                ("", "Floating (no fixed timezone)"),
             ];
             let mut built = Vec::with_capacity(timezones.len());
             for (tz_id, tz_label) in timezones {
@@ -600,7 +600,7 @@ fn create_categories_picker_popover<E: IsA<gtk::Editable> + IsA<gtk::Widget>>(
 ) -> (gtk::Button, gtk::Popover) {
     let btn = gtk::Button::builder()
         .icon_name("pan-down-symbolic")
-        .tooltip_text("Kategorien auswählen")
+        .tooltip_text("Select categories")
         .css_classes(vec!["flat"])
         .build();
     let popover = gtk::Popover::builder().has_arrow(true).build();
@@ -638,7 +638,7 @@ fn create_categories_picker_popover<E: IsA<gtk::Editable> + IsA<gtk::Widget>>(
             let cats = store.load();
             if cats.is_empty() {
                 let empty_lbl = gtk::Label::builder()
-                    .label("Keine gespeicherten Kategorien")
+                    .label("No saved categories")
                     .xalign(0.0)
                     .css_classes(vec!["dim-label"])
                     .build();
@@ -691,7 +691,7 @@ fn create_room_picker_popover<E: IsA<gtk::Editable> + IsA<gtk::Widget>>(
 ) -> (gtk::Button, gtk::Popover) {
     let btn = gtk::Button::builder()
         .icon_name("pan-down-symbolic")
-        .tooltip_text("Besprechungsraum auswählen")
+        .tooltip_text("Select meeting room")
         .css_classes(vec!["flat"])
         .build();
     let popover = gtk::Popover::builder().has_arrow(true).build();
@@ -733,29 +733,29 @@ fn create_room_picker_popover<E: IsA<gtk::Editable> + IsA<gtk::Widget>>(
         if !populated.replace(true) {
             let mut available_rooms: Vec<(String, String, String)> = vec![
                 (
-                    "Konferenzraum Spree".to_string(),
-                    "spree-meeting@firma.de".to_string(),
-                    "12 Plätze · Beamer, Video-Konferenz".to_string(),
+                    "Conference Room Spree".to_string(),
+                    "spree-meeting@company.local".to_string(),
+                    "12 seats · Projector, Video Conferencing".to_string(),
                 ),
                 (
-                    "Meetingraum Havel".to_string(),
-                    "havel-meeting@firma.de".to_string(),
-                    "6 Plätze · Monitor, Whiteboard".to_string(),
+                    "Meeting Room Havel".to_string(),
+                    "havel-meeting@company.local".to_string(),
+                    "6 seats · Display, Whiteboard".to_string(),
                 ),
                 (
-                    "Besprechungsraum 1".to_string(),
-                    "raum-1@firma.de".to_string(),
-                    "4 Plätze · TV, Konferenztelefon".to_string(),
+                    "Meeting Room 1".to_string(),
+                    "room-1@company.local".to_string(),
+                    "4 seats · TV, Speakerphone".to_string(),
                 ),
                 (
-                    "Kreativ-Lounge".to_string(),
-                    "lounge@firma.de".to_string(),
-                    "8 Plätze · Couch, mobiles Board".to_string(),
+                    "Creative Lounge".to_string(),
+                    "lounge@company.local".to_string(),
+                    "8 seats · Lounge seating, Mobile board".to_string(),
                 ),
                 (
-                    "Fokusbox / Einzel-Booth".to_string(),
-                    "fokusbox@firma.de".to_string(),
-                    "1 Platz · Schallisoliert".to_string(),
+                    "Focus Pod".to_string(),
+                    "focus-pod@company.local".to_string(),
+                    "1 seat · Soundproof booth".to_string(),
                 ),
             ];
 
@@ -772,7 +772,7 @@ fn create_room_picker_popover<E: IsA<gtk::Editable> + IsA<gtk::Widget>>(
                         } else {
                             email.clone()
                         };
-                        available_rooms.push((name, email, "Ressource aus Kalender".to_string()));
+                        available_rooms.push((name, email, "Calendar resource".to_string()));
                     }
                 }
             }
@@ -818,22 +818,118 @@ fn create_room_picker_popover<E: IsA<gtk::Editable> + IsA<gtk::Widget>>(
     (btn, popover)
 }
 
+#[derive(Clone)]
+struct TimelinePreviewSlot {
+    label: gtk::Label,
+    is_all_day: bool,
+    start_min: u32,
+    end_min: u32,
+    location: String,
+    height: f64,
+    col_width: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PreviewTimelineRect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    start_min: u32,
+    end_min: u32,
+}
+
+#[derive(Clone, Debug)]
+struct TimelineTooltipRect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    tooltip: String,
+}
+
+#[derive(Default)]
+struct TimelineInteractiveState {
+    preview_rect: Option<PreviewTimelineRect>,
+    tooltips: Vec<TimelineTooltipRect>,
+    is_dragging: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum TimelineDragMode {
+    None,
+    Move { orig_start_min: u32, orig_end_min: u32 },
+    ResizeTop { orig_start_min: u32, orig_end_min: u32 },
+    ResizeBottom { orig_start_min: u32, orig_end_min: u32 },
+    GridSweep { start_y: f64, anchor_min: u32, swept: bool },
+}
+
+fn format_timeline_timed_event_markup(
+    title: &str,
+    start_min: u32,
+    end_min: u32,
+    location: &str,
+    height: f64,
+    col_width: f64,
+) -> (String, i32, bool) {
+    let escaped_title = glib::markup_escape_text(title);
+    let start_str = format_clock_minutes(start_min);
+    let end_str = format_clock_minutes(end_min);
+    let time_display = if col_width >= 82.0 {
+        format!("{start_str}–{end_str}")
+    } else {
+        start_str.clone()
+    };
+
+    if height >= 48.0 && !location.trim().is_empty() {
+        let escaped_loc = glib::markup_escape_text(location.trim());
+        let max_lines = (((height - 6.0) / 14.0).floor() as i32).max(3);
+        (
+            format!(
+                "<span size=\"small\" alpha=\"88%\">{time_display}</span>\n<b>{escaped_title}</b>\n<span size=\"x-small\" alpha=\"80%\">{escaped_loc}</span>"
+            ),
+            max_lines,
+            true,
+        )
+    } else if height >= 28.0 {
+        let max_lines = (((height - 4.0) / 14.0).floor() as i32).max(2);
+        (
+            format!("<span size=\"small\" alpha=\"88%\">{time_display}</span>\n<b>{escaped_title}</b>"),
+            max_lines,
+            true,
+        )
+    } else {
+        (
+            format!("<span size=\"small\">{start_str} <b>{escaped_title}</b></span>"),
+            1,
+            false,
+        )
+    }
+}
+
 fn update_day_schedule_timeline(
     all_day_box: &gtk::Box,
     timeline_fixed: &gtk::Fixed,
     timeline_window_title: &adw::WindowTitle,
     conflict_badge: &gtk::Label,
-    preview_slot: &Rc<RefCell<Option<(gtk::Label, bool, String)>>>,
+    preview_slot: &Rc<RefCell<Option<TimelinePreviewSlot>>>,
+    interactive_state: &Rc<RefCell<TimelineInteractiveState>>,
     events_cache: &[CalendarEventRecord],
     date_str: &str,
     start_time_str: &str,
     end_time_str: &str,
     all_day: bool,
     summary: &str,
+    preview_location: &str,
     edit_uid: Option<&str>,
     selected_calendar_color: Option<&str>,
 ) {
     preview_slot.replace(None);
+    {
+        let mut st = interactive_state.borrow_mut();
+        st.preview_rect = None;
+        st.tooltips.clear();
+    }
 
     while let Some(child) = all_day_box.first_child() {
         all_day_box.remove(&child);
@@ -843,13 +939,13 @@ fn update_day_schedule_timeline(
     }
 
     let Some(current_date) = parse_date_lenient(date_str) else {
-        timeline_window_title.set_subtitle("Ungültiges Datum");
+        timeline_window_title.set_subtitle("Invalid date");
         all_day_box.set_visible(false);
         conflict_badge.set_visible(false);
         return;
     };
 
-    timeline_window_title.set_subtitle(&current_date.format("%A, %d. %B %Y").to_string());
+    timeline_window_title.set_subtitle(&current_date.format("%A, %b %d, %Y").to_string());
 
     let current_start_min = parse_time_to_minutes(start_time_str).unwrap_or(9 * 60);
     let current_end_min = parse_time_to_minutes(end_time_str).unwrap_or(current_start_min + 60);
@@ -860,7 +956,7 @@ fn update_day_schedule_timeline(
     };
 
     let display_title = if summary.trim().is_empty() {
-        "Neuer Termin"
+        "New Event"
     } else {
         summary.trim()
     };
@@ -870,61 +966,70 @@ fn update_day_schedule_timeline(
     // 1. All-day events
     let mut all_day_items: Vec<(bool, String, String, String, String)> = Vec::new(); // (is_preview, title, color, location, description)
     if all_day {
-        all_day_items.push((true, display_title.to_string(), preview_color.clone(), String::new(), String::new()));
+        all_day_items.push((
+            true,
+            display_title.to_string(),
+            preview_color.clone(),
+            preview_location.to_string(),
+            String::new(),
+        ));
     }
     for ev in events_cache {
         if Some(ev.uid.as_str()) == edit_uid {
             continue;
         }
         if crate::views::calendar_page::event_occurs_on(ev, current_date) && ev.all_day {
-            let (_, _, ev_title) =
-                crate::views::calendar_page::event_occurrence_times_for_date(ev, current_date, 30);
+            let ev_title = if ev.summary.trim().is_empty() {
+                crate::i18n::gettext("(Untitled)")
+            } else {
+                ev.summary.trim().to_string()
+            };
             let color = crate::views::calendar_page::event_color_for_record(ev);
             all_day_items.push((false, ev_title, color, ev.location.clone(), ev.description.clone()));
         }
     }
 
-fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is_dark: bool) -> String {
-    let clean = color.trim_start_matches('#').to_lowercase();
-    let mode = if is_dark { "dark" } else { "light" };
-    let preview_tag = if is_preview { "prev" } else { "norm" };
-    let type_tag = if is_all_day { "allday" } else { "timed" };
-    let class_name = format!("timeline-ev-{clean}-{preview_tag}-{type_tag}-{mode}");
+    fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is_dark: bool) -> String {
+        let clean = color.trim_start_matches('#').to_lowercase();
+        let mode = if is_dark { "dark" } else { "light" };
+        let preview_tag = if is_preview { "prev" } else { "norm" };
+        let type_tag = if is_all_day { "allday" } else { "timed" };
+        let class_name = format!("timeline-ev-{clean}-{preview_tag}-{type_tag}-{mode}");
 
-    thread_local! {
-        static REGISTERED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
-    }
-
-    let already_registered = REGISTERED.with(|r| r.borrow().contains(&class_name));
-    if !already_registered {
-        if let Some(display) = gtk::gdk::Display::default() {
-            let (bg, _, _, fg) = crate::views::calendar_page::pastel_colors_for_hex(color, is_dark);
-            let border_rule = if is_preview {
-                format!("box-shadow: 0 0 0 2px {color}; font-weight: 600;")
-            } else {
-                "border: none; font-weight: 500;".to_string()
-            };
-            let (radius, padding) = if is_all_day {
-                ("4px", "3px 8px")
-            } else {
-                ("4px", "2px 6px")
-            };
-            let css = format!(
-                "label.{class_name} {{ background-color: {bg}; color: {fg}; {border_rule} border-radius: {radius}; padding: {padding}; }}"
-            );
-            let p = gtk::CssProvider::new();
-            p.load_from_string(&css);
-            gtk::style_context_add_provider_for_display(
-                &display,
-                &p,
-                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
-            REGISTERED.with(|r| r.borrow_mut().insert(class_name.clone()));
+        thread_local! {
+            static REGISTERED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
         }
-    }
 
-    class_name
-}
+        let already_registered = REGISTERED.with(|r| r.borrow().contains(&class_name));
+        if !already_registered {
+            if let Some(display) = gtk::gdk::Display::default() {
+                let (bg, _, _, fg) = crate::views::calendar_page::pastel_colors_for_hex(color, is_dark);
+                let border_rule = if is_preview {
+                    format!("border-left: 4px solid {color}; box-shadow: 0 0 0 1.5px {color}; font-weight: 600;")
+                } else {
+                    format!("border-left: 4px solid {color}; font-weight: 500;")
+                };
+                let (radius, padding) = if is_all_day {
+                    ("5px", "3px 8px")
+                } else {
+                    ("6px", "3px 6px 3px 7px")
+                };
+                let css = format!(
+                    "label.{class_name} {{ background-color: {bg}; color: {fg}; {border_rule} border-radius: {radius}; padding: {padding}; }}"
+                );
+                let p = gtk::CssProvider::new();
+                p.load_from_string(&css);
+                gtk::style_context_add_provider_for_display(
+                    &display,
+                    &p,
+                    gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                );
+                REGISTERED.with(|r| r.borrow_mut().insert(class_name.clone()));
+            }
+        }
+
+        class_name
+    }
 
     if all_day_items.is_empty() {
         all_day_box.set_visible(false);
@@ -943,8 +1048,11 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
                 title.to_string()
             };
             let mut tooltip = format!("{display_title}\n{}", crate::i18n::gettext("All Day"));
+            if *is_preview {
+                tooltip.push_str("\n(Click or drag on the timeline below to set a time)");
+            }
             if !loc.trim().is_empty() {
-                tooltip.push_str(&format!("\n📍 Ort: {}", loc.trim()));
+                tooltip.push_str(&format!("\n📍 Location: {}", loc.trim()));
             }
             if !desc.trim().is_empty() {
                 let desc_trimmed = desc.trim();
@@ -954,11 +1062,12 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
                 } else {
                     desc_trimmed.to_string()
                 };
-                tooltip.push_str(&format!("\n\n📝 Notizen:\n{short_desc}"));
+                tooltip.push_str(&format!("\n\n📝 Notes:\n{short_desc}"));
             }
             let ev_label = gtk::Label::builder()
                 .label(&display_title)
                 .ellipsize(gtk::pango::EllipsizeMode::End)
+                .xalign(0.0)
                 .halign(gtk::Align::Fill)
                 .valign(gtk::Align::Start)
                 .width_request(TIMELINE_EVENTS_WIDTH as i32)
@@ -967,7 +1076,15 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
                 .tooltip_text(&tooltip)
                 .build();
             if *is_preview {
-                preview_slot.replace(Some((ev_label.clone(), true, String::new())));
+                preview_slot.replace(Some(TimelinePreviewSlot {
+                    label: ev_label.clone(),
+                    is_all_day: true,
+                    start_min: current_start_min,
+                    end_min: current_end_min,
+                    location: loc.clone(),
+                    height: 24.0,
+                    col_width: TIMELINE_EVENTS_WIDTH,
+                }));
             }
             all_day_box.append(&ev_label);
         }
@@ -992,8 +1109,13 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
             continue;
         }
         if crate::views::calendar_page::event_occurs_on(ev, current_date) {
-            let (ev_start, ev_end, ev_title) =
+            let (ev_start, ev_end, _ev_time_text) =
                 crate::views::calendar_page::event_occurrence_times_for_date(ev, current_date, 30);
+            let ev_title = if ev.summary.trim().is_empty() {
+                crate::i18n::gettext("(Untitled)")
+            } else {
+                ev.summary.trim().to_string()
+            };
             let color = crate::views::calendar_page::event_color_for_record(ev);
             timed_items.push(DayTimelineTimedItem {
                 is_preview: false,
@@ -1016,7 +1138,7 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
             title: display_title.to_string(),
             color: preview_color,
             uid: None,
-            location: String::new(),
+            location: preview_location.to_string(),
             description: String::new(),
         });
     }
@@ -1054,9 +1176,9 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
     } else {
         let count = conflicting_uids.len();
         let text = if count == 1 {
-            "⚠️ 1 Überschneidung".to_string()
+            "⚠️ 1 conflict".to_string()
         } else {
-            format!("⚠️ {count} Überschneidungen")
+            format!("⚠️ {count} conflicts")
         };
         conflict_badge.set_label(&text);
         conflict_badge.set_visible(true);
@@ -1116,7 +1238,7 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
             let x = TIMELINE_EVENTS_X + col_idx as f64 * (col_width + col_gap);
             let y = (item.start_min as f64 / 60.0) * HOUR_HEIGHT;
             let duration = item.end_min.saturating_sub(item.start_min);
-            let h = ((duration.max(20) as f64) / 60.0) * HOUR_HEIGHT - 2.0;
+            let h = (((duration.max(20) as f64) / 60.0) * HOUR_HEIGHT - 2.0).max(20.0);
 
             let is_conflict = item
                 .uid
@@ -1127,24 +1249,24 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
 
             let is_dark = adw::StyleManager::default().is_dark();
 
-            let time_prefix = format_clock_minutes(item.start_min);
-            let label_text = format!("{} {}", time_prefix, item.title);
-
             let mut tooltip = format!(
-                "{}\n{}-{} Uhr{}",
+                "{}\n{}–{}{}",
                 item.title,
                 format_clock_minutes(item.start_min),
                 format_clock_minutes(item.end_min),
                 if is_conflict {
-                    "\n(⚠️ Überschneidet sich mit anderem Termin)"
+                    "\n⚠️ Overlaps with another event"
                 } else if item.is_preview {
-                    "\n(Vorschau des aktuellen Termins)"
+                    "\n↕ Drag to move · Drag top/bottom edge to resize"
                 } else {
                     ""
                 }
             );
+            if item.is_preview && is_conflict {
+                tooltip.push_str("\n↕ Drag to move · Drag top/bottom edge to resize");
+            }
             if !item.location.trim().is_empty() {
-                tooltip.push_str(&format!("\n📍 Ort: {}", item.location.trim()));
+                tooltip.push_str(&format!("\n📍 Location: {}", item.location.trim()));
             }
             if !item.description.trim().is_empty() {
                 let desc_trimmed = item.description.trim();
@@ -1154,7 +1276,7 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
                 } else {
                     desc_trimmed.to_string()
                 };
-                tooltip.push_str(&format!("\n\n📝 Notizen:\n{short_desc}"));
+                tooltip.push_str(&format!("\n\n📝 Notes:\n{short_desc}"));
             }
 
             let mut css_classes = vec!["appointment-timeline-event"];
@@ -1168,23 +1290,82 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
             let color_class = ensure_timeline_event_css(&item.color, item.is_preview, false, is_dark);
             css_classes.push(&color_class);
 
+            let (markup_text, max_lines, is_multiline) = format_timeline_timed_event_markup(
+                &item.title,
+                item.start_min,
+                item.end_min,
+                &item.location,
+                h,
+                col_width,
+            );
+
             let widget = gtk::Label::builder()
-                .label(&label_text)
+                .use_markup(true)
+                .label(&markup_text)
+                .wrap(is_multiline)
+                .wrap_mode(gtk::pango::WrapMode::WordChar)
                 .ellipsize(gtk::pango::EllipsizeMode::End)
+                .single_line_mode(!is_multiline)
+                .lines(max_lines)
                 .xalign(0.0)
+                .yalign(0.0)
                 .halign(gtk::Align::Fill)
                 .valign(gtk::Align::Fill)
                 .width_request(col_width as i32)
-                .height_request(h.max(20.0) as i32)
+                .height_request(h as i32)
+                .can_target(false)
                 .css_classes(css_classes)
-                .tooltip_text(&tooltip)
                 .build();
 
+            timeline_fixed.put(&widget, x, y);
+
             if item.is_preview {
-                preview_slot.replace(Some((widget.clone(), false, time_prefix)));
+                // Subtle top & bottom resize grip bars on the preview event
+                if h >= 24.0 && col_width >= 44.0 {
+                    let grip_w = 22.0;
+                    let grip_x = x + ((col_width - grip_w) * 0.5).max(4.0);
+                    let top_grip = gtk::Box::builder()
+                        .width_request(grip_w as i32)
+                        .height_request(2)
+                        .can_target(false)
+                        .css_classes(vec!["appointment-timeline-resize-grip"])
+                        .build();
+                    let bottom_grip = gtk::Box::builder()
+                        .width_request(grip_w as i32)
+                        .height_request(2)
+                        .can_target(false)
+                        .css_classes(vec!["appointment-timeline-resize-grip"])
+                        .build();
+                    timeline_fixed.put(&top_grip, grip_x, y + 2.0);
+                    timeline_fixed.put(&bottom_grip, grip_x, (y + h - 4.0).max(y + 4.0));
+                }
+
+                preview_slot.replace(Some(TimelinePreviewSlot {
+                    label: widget.clone(),
+                    is_all_day: false,
+                    start_min: item.start_min,
+                    end_min: item.end_min,
+                    location: item.location.clone(),
+                    height: h,
+                    col_width,
+                }));
+                interactive_state.borrow_mut().preview_rect = Some(PreviewTimelineRect {
+                    x,
+                    y,
+                    width: col_width,
+                    height: h,
+                    start_min: item.start_min,
+                    end_min: item.end_min,
+                });
             }
 
-            timeline_fixed.put(&widget, x, y);
+            interactive_state.borrow_mut().tooltips.push(TimelineTooltipRect {
+                x,
+                y,
+                width: col_width,
+                height: h,
+                tooltip,
+            });
         }
     }
 }
@@ -1192,7 +1373,7 @@ fn ensure_timeline_event_css(color: &str, is_preview: bool, is_all_day: bool, is
 impl EventDialog {
     pub fn new() -> Self {
         glib::Object::builder()
-            .property("title", "Termin — Keine Zusammenfassung")
+            .property("title", "Event — No Summary")
             .property("content-width", 880)
             .property("content-height", 680)
             .build()
@@ -1200,7 +1381,7 @@ impl EventDialog {
 
     pub fn new_for_date(date: NaiveDate) -> Self {
         glib::Object::builder()
-            .property("title", "Termin — Keine Zusammenfassung")
+            .property("title", "Event — No Summary")
             .property("content-width", 880)
             .property("content-height", 680)
             .property("initial-date", date.format("%Y-%m-%d").to_string())
@@ -1236,8 +1417,8 @@ impl EventDialog {
         };
         let title_text = summary
             .filter(|s| !s.trim().is_empty())
-            .map(|s| format!("Termin — {s}"))
-            .unwrap_or_else(|| "Termin — Keine Zusammenfassung".to_string());
+            .map(|s| format!("Event — {s}"))
+            .unwrap_or_else(|| "Event — No Summary".to_string());
         let mut builder = glib::Object::builder()
             .property("title", title_text)
             .property("content-width", 880)
@@ -1267,8 +1448,8 @@ impl EventDialog {
     ) -> Self {
         let title_text = summary
             .filter(|s| !s.trim().is_empty())
-            .map(|s| format!("Termin — {s}"))
-            .unwrap_or_else(|| "Termin — Keine Zusammenfassung".to_string());
+            .map(|s| format!("Event — {s}"))
+            .unwrap_or_else(|| "Event — No Summary".to_string());
         let mut builder = glib::Object::builder()
             .property("title", title_text)
             .property("content-width", 880)
@@ -1288,9 +1469,9 @@ impl EventDialog {
     pub fn new_for_edit(event: &CalendarEventRecord) -> Self {
         let summary = ical_property(&event.component, "SUMMARY")
             .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| "Keine Zusammenfassung".to_string());
+            .unwrap_or_else(|| "No Summary".to_string());
         glib::Object::builder()
-            .property("title", &format!("Termin — {summary}"))
+            .property("title", &format!("Event — {summary}"))
             .property("content-width", 880)
             .property("content-height", 680)
             .property("edit-component", &event.component)
@@ -1376,7 +1557,7 @@ impl EventDialog {
 
         let btn_open_in_new_window = gtk::Button::builder()
             .icon_name("window-new-symbolic")
-            .tooltip_text("In neuem Fenster öffnen")
+            .tooltip_text("Open in new window")
             .css_classes(vec!["flat"])
             .visible(self.imp().is_modal.get())
             .build();
@@ -1391,7 +1572,7 @@ impl EventDialog {
         self.imp().btn_open_in_new_window.replace(Some(btn_open_in_new_window));
 
         let btn_cancel = gtk::Button::builder()
-            .label("Abbrechen")
+            .label("Cancel")
             .build();
         let dialog_weak_cancel = self.downgrade();
         btn_cancel.connect_clicked(move |_| {
@@ -1402,16 +1583,16 @@ impl EventDialog {
         form_header_bar.pack_start(&btn_cancel);
 
         let btn_save = gtk::Button::builder()
-            .label(if edit_uid.is_some() { "Speichern" } else { "Erstellen" })
+            .label(if edit_uid.is_some() { "Save" } else { "Create" })
             .css_classes(vec!["suggested-action"])
             .build();
         form_header_bar.pack_end(&btn_save);
 
         let window_title = adw::WindowTitle::builder()
             .title(if edit_uid.is_some() {
-                "Termin bearbeiten"
+                "Edit Event"
             } else {
-                "Neuer Termin"
+                "New Event"
             })
             .build();
         form_header_bar.set_title_widget(Some(&window_title));
@@ -1437,17 +1618,17 @@ impl EventDialog {
         let initial_events = crate::services::ecal_service::load_calendar_snapshot_fast().events;
         let events_cache = Rc::new(RefCell::new(initial_events));
 
-        // ── Gruppe 1: Primäre Termindaten ──
+        // ── Group 1: Basic Event Info ──
         let group_basic = adw::PreferencesGroup::new();
 
         let entry_title = adw::EntryRow::builder()
-            .title("Titel")
+            .title("Title")
             .show_apply_button(false)
             .build();
         group_basic.add(&entry_title);
 
         let row_location = adw::EntryRow::builder()
-            .title("Ort")
+            .title("Location")
             .show_apply_button(false)
             .build();
         group_basic.add(&row_location);
@@ -1487,7 +1668,7 @@ impl EventDialog {
             .build();
 
         let btn_calendar_label = gtk::Label::builder()
-            .label("Lokaler Kalender")
+            .label("Local Calendar")
             .xalign(0.0)
             .build();
 
@@ -1510,7 +1691,7 @@ impl EventDialog {
         btn_calendar.set_sensitive(edit_uid.is_none());
 
         let row_calendar_action = adw::ActionRow::builder()
-            .title("Kalender")
+            .title("Calendar")
             .activatable_widget(&btn_calendar)
             .build();
         row_calendar_action.add_suffix(&btn_calendar);
@@ -1562,26 +1743,26 @@ impl EventDialog {
             }
         };
 
-        // ── Gruppe 2: Zeitpunkt, Wiederholung & Erinnerungen ──
+        // ── Group 2: Date & Time, Recurrence & Reminders ──
         let group_time = adw::PreferencesGroup::builder()
-            .title("Zeitpunkt")
+            .title("Date & Time")
             .build();
 
         let row_allday = adw::SwitchRow::builder()
-            .title("Ganztägig")
+            .title("All Day")
             .active(false)
             .build();
         group_time.add(&row_allday);
 
         let row_start = adw::ActionRow::builder()
-            .title("Beginn")
+            .title("Starts")
             .build();
 
         let entry_start_date = gtk::Entry::builder()
             .width_chars(10)
             .max_width_chars(10)
             .text(&format_date_for_locale_entry(default_start.date()))
-            .tooltip_text("Datum (DD.MM.YYYY, MM/DD/YYYY oder YYYY-MM-DD)")
+            .tooltip_text("Date (DD.MM.YYYY, MM/DD/YYYY, or YYYY-MM-DD)")
             .valign(gtk::Align::Center)
             .build();
         let (btn_start_cal, _pop_start_cal) = create_date_picker_popover(&entry_start_date);
@@ -1589,7 +1770,7 @@ impl EventDialog {
         let start_date_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["linked"])
+            .css_classes(vec!["linked", "datetime-input-group"])
             .build();
         start_date_box.append(&entry_start_date);
         start_date_box.append(&btn_start_cal);
@@ -1598,7 +1779,7 @@ impl EventDialog {
             .width_chars(5)
             .max_width_chars(5)
             .text(&default_start.format("%H:%M").to_string())
-            .tooltip_text("Uhrzeit (HH:MM)")
+            .tooltip_text("Time (HH:MM)")
             .valign(gtk::Align::Center)
             .build();
         let (btn_start_time, _pop_start_time) = create_time_picker_popover(&entry_start_time);
@@ -1607,7 +1788,7 @@ impl EventDialog {
             .orientation(gtk::Orientation::Horizontal)
             .valign(gtk::Align::Center)
             .margin_start(6)
-            .css_classes(vec!["linked"])
+            .css_classes(vec!["linked", "datetime-input-group"])
             .build();
         start_time_box.append(&entry_start_time);
         start_time_box.append(&btn_start_time);
@@ -1617,14 +1798,14 @@ impl EventDialog {
         group_time.add(&row_start);
 
         let row_end = adw::ActionRow::builder()
-            .title("Ende")
+            .title("Ends")
             .build();
 
         let entry_end_date = gtk::Entry::builder()
             .width_chars(10)
             .max_width_chars(10)
             .text(&format_date_for_locale_entry(default_end.date()))
-            .tooltip_text("Datum (DD.MM.YYYY, MM/DD/YYYY oder YYYY-MM-DD)")
+            .tooltip_text("Date (DD.MM.YYYY, MM/DD/YYYY, or YYYY-MM-DD)")
             .valign(gtk::Align::Center)
             .build();
         let (btn_end_cal, _pop_end_cal) = create_date_picker_popover(&entry_end_date);
@@ -1632,7 +1813,7 @@ impl EventDialog {
         let end_date_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["linked"])
+            .css_classes(vec!["linked", "datetime-input-group"])
             .build();
         end_date_box.append(&entry_end_date);
         end_date_box.append(&btn_end_cal);
@@ -1641,7 +1822,7 @@ impl EventDialog {
             .width_chars(5)
             .max_width_chars(5)
             .text(&default_end.format("%H:%M").to_string())
-            .tooltip_text("Uhrzeit (HH:MM)")
+            .tooltip_text("Time (HH:MM)")
             .valign(gtk::Align::Center)
             .build();
         let (btn_end_time, _pop_end_time) = create_time_picker_popover(&entry_end_time);
@@ -1650,7 +1831,7 @@ impl EventDialog {
             .orientation(gtk::Orientation::Horizontal)
             .valign(gtk::Align::Center)
             .margin_start(6)
-            .css_classes(vec!["linked"])
+            .css_classes(vec!["linked", "datetime-input-group"])
             .build();
         end_time_box.append(&entry_end_time);
         end_time_box.append(&btn_end_time);
@@ -1660,35 +1841,35 @@ impl EventDialog {
         group_time.add(&row_end);
 
         let recurrence_preset_model = gtk::StringList::new(&[
-            "Keine",
-            "Täglich",
-            "Wöchentlich",
-            "Zweiwöchentlich",
-            "Monatlich",
-            "Jährlich",
-            "Benutzerdefiniert…",
+            "None",
+            "Daily",
+            "Weekly",
+            "Biweekly",
+            "Monthly",
+            "Yearly",
+            "Custom…",
         ]);
         let row_recurrence_preset = adw::ComboRow::builder()
-            .title("Wiederholung")
+            .title("Repeat")
             .model(&recurrence_preset_model)
             .selected(0)
             .build();
         group_time.add(&row_recurrence_preset);
 
         let row_recurrence = adw::EntryRow::builder()
-            .title("Wiederholungsregel (RRULE)")
+            .title("Recurrence Rule (RRULE)")
             .show_apply_button(false)
             .visible(false)
             .build();
         group_time.add(&row_recurrence);
         let row_rdates = adw::EntryRow::builder()
-            .title("Zusätzliche Termine (RDATE)")
+            .title("Additional Dates (RDATE)")
             .show_apply_button(false)
             .visible(false)
             .build();
         group_time.add(&row_rdates);
         let row_exdates = adw::EntryRow::builder()
-            .title("Ausnahmen (EXDATE)")
+            .title("Excluded Dates (EXDATE)")
             .show_apply_button(false)
             .visible(false)
             .build();
@@ -1777,13 +1958,14 @@ impl EventDialog {
             }
         }
         let expander_alarms = adw::ExpanderRow::builder()
-            .title("Erinnerungen")
+            .title("Reminders")
             .subtitle(&alarm_editor.summary_label())
             .use_markup(false)
             .show_enable_switch(false)
             .build();
         let alarm_prefs_row = adw::PreferencesRow::builder()
             .activatable(false)
+            .css_classes(vec!["alarm-expander-container-row"])
             .child(alarm_editor.widget())
             .build();
         expander_alarms.add_row(&alarm_prefs_row);
@@ -1796,18 +1978,18 @@ impl EventDialog {
 
         content_box.append(&group_time);
 
-        // ── Gruppe 3: Details & Optionen (Progressive Disclosure) ──
+        // ── Group 3: Details & Options (Progressive Disclosure) ──
         let group_options = adw::PreferencesGroup::builder()
             .title("Details")
             .build();
 
         let row_attendees = adw::EntryRow::builder()
-            .title("Teilnehmer")
+            .title("Attendees")
             .show_apply_button(false)
             .build();
         let btn_room_availability = gtk::Button::builder()
             .icon_name("x-office-calendar-symbolic")
-            .tooltip_text("Freie Zeiten / Verfügbarkeit prüfen")
+            .tooltip_text("Check Free/Busy Availability")
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
@@ -1823,12 +2005,12 @@ impl EventDialog {
         group_options.add(&row_attendees);
 
         let row_conference = adw::EntryRow::builder()
-            .title("Meeting-Link")
+            .title("Meeting Link")
             .show_apply_button(false)
             .build();
         let btn_open_web = gtk::Button::builder()
             .icon_name("web-browser-symbolic")
-            .tooltip_text("Link im Browser öffnen")
+            .tooltip_text("Open link in browser")
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
@@ -1850,17 +2032,17 @@ impl EventDialog {
         group_options.add(&row_conference);
 
         let expander_advanced = adw::ExpanderRow::builder()
-            .title("Weitere Optionen")
-            .subtitle("Status, Zeitzone, Raum, Kategorien und Sichtbarkeit")
+            .title("More Options")
+            .subtitle("Status, timezone, room, categories, and privacy")
             .use_markup(false)
             .show_enable_switch(false)
             .build();
 
         let status_model = gtk::StringList::new(&[
-            "Keine",
-            "Bestätigt",
-            "Vorläufig",
-            "Abgesagt",
+            "None",
+            "Confirmed",
+            "Tentative",
+            "Cancelled",
         ]);
         let dropdown_status = adw::ComboRow::builder()
             .title("Status")
@@ -1869,9 +2051,9 @@ impl EventDialog {
             .build();
         expander_advanced.add_row(&dropdown_status);
 
-        let transparency_model = gtk::StringList::new(&["Beschäftigt", "Frei"]);
+        let transparency_model = gtk::StringList::new(&["Busy", "Free"]);
         let dropdown_transparency = adw::ComboRow::builder()
-            .title("Verfügbarkeit")
+            .title("Availability")
             .model(&transparency_model)
             .selected(0)
             .build();
@@ -1879,7 +2061,7 @@ impl EventDialog {
 
         let default_tz = crate::services::ical_time_service::default_calendar_timezone_id();
         let entry_tz = adw::EntryRow::builder()
-            .title("Zeitzone")
+            .title("Timezone")
             .text(&default_tz)
             .show_apply_button(false)
             .build();
@@ -1887,7 +2069,7 @@ impl EventDialog {
         btn_tz.set_valign(gtk::Align::Center);
         let btn_diff_end_tz = gtk::ToggleButton::builder()
             .icon_name("airplane-mode-symbolic")
-            .tooltip_text("Abweichende End-Zeitzone (z. B. für Flüge oder Reisen über Zeitzonen)")
+            .tooltip_text("Different end timezone (e.g. for flights across timezones)")
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
@@ -1897,7 +2079,7 @@ impl EventDialog {
         expander_advanced.add_row(&entry_tz);
 
         let entry_end_tz = adw::EntryRow::builder()
-            .title("Ankunfts-Zeitzone")
+            .title("Arrival Timezone")
             .text(&default_tz)
             .show_apply_button(false)
             .visible(false)
@@ -1921,7 +2103,7 @@ impl EventDialog {
         });
 
         let entry_room = adw::EntryRow::builder()
-            .title("Besprechungsraum")
+            .title("Meeting Room")
             .show_apply_button(false)
             .build();
         let (btn_room, _pop_room) = create_room_picker_popover(
@@ -1934,7 +2116,7 @@ impl EventDialog {
         expander_advanced.add_row(&entry_room);
 
         let entry_categories = adw::EntryRow::builder()
-            .title("Kategorien")
+            .title("Categories")
             .show_apply_button(false)
             .build();
         let (btn_categories, _pop_categories) = create_categories_picker_popover(&entry_categories);
@@ -1943,17 +2125,17 @@ impl EventDialog {
         expander_advanced.add_row(&entry_categories);
 
         let row_private = adw::SwitchRow::builder()
-            .title("Privater Termin")
-            .subtitle("Als privat markieren")
+            .title("Private Event")
+            .subtitle("Mark as private")
             .build();
         expander_advanced.add_row(&row_private);
 
         group_options.add(&expander_advanced);
         content_box.append(&group_options);
 
-        // ── Gruppe 4: Notizen ──
+        // ── Group 4: Notes ──
         let group_desc = adw::PreferencesGroup::builder()
-            .title("Notizen")
+            .title("Notes")
             .build();
 
         let desc_overlay = gtk::Overlay::builder()
@@ -1979,7 +2161,7 @@ impl EventDialog {
             .css_classes(vec!["appointment-notes-view"])
             .build();
         let desc_placeholder = gtk::Label::builder()
-            .label("Notizen oder Beschreibung hinzufügen…")
+            .label("Add notes or description…")
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Start)
             .margin_start(14)
@@ -2008,8 +2190,8 @@ impl EventDialog {
 
         // Right: Day Schedule Timeline inside sidebar panel
         let timeline_window_title = adw::WindowTitle::builder()
-            .title("Tagesplan")
-            .subtitle(&default_start.format("%A, %d. %B %Y").to_string())
+            .title("Day Schedule")
+            .subtitle(&default_start.format("%A, %b %d, %Y").to_string())
             .build();
 
         let timeline_header_bar = adw::HeaderBar::new();
@@ -2050,13 +2232,17 @@ impl EventDialog {
             .vexpand(true)
             .build();
 
-        let timeline_overlay = gtk::Overlay::new();
+        let timeline_overlay = gtk::Overlay::builder()
+            .can_target(true)
+            .has_tooltip(true)
+            .build();
 
         let hours_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .height_request((24.0 * HOUR_HEIGHT) as i32)
             .width_request(250)
             .hexpand(false)
+            .can_target(false)
             .build();
 
         for h in 0..24 {
@@ -2065,6 +2251,7 @@ impl EventDialog {
                 .height_request(HOUR_HEIGHT as i32)
                 .width_request(250)
                 .hexpand(false)
+                .can_target(false)
                 .css_classes(vec!["appointment-timeline-hour-row"])
                 .build();
             let lbl = gtk::Label::builder()
@@ -2072,6 +2259,7 @@ impl EventDialog {
                 .width_request(38)
                 .halign(gtk::Align::End)
                 .valign(gtk::Align::Start)
+                .can_target(false)
                 .css_classes(vec!["appointment-timeline-hour-label"])
                 .build();
             let sep = gtk::Separator::builder()
@@ -2079,6 +2267,7 @@ impl EventDialog {
                 .width_request(200)
                 .hexpand(false)
                 .valign(gtk::Align::Start)
+                .can_target(false)
                 .build();
             row.append(&lbl);
             row.append(&sep);
@@ -2090,6 +2279,7 @@ impl EventDialog {
             .height_request((24.0 * HOUR_HEIGHT) as i32)
             .width_request(250)
             .hexpand(false)
+            .can_target(false)
             .build();
         timeline_overlay.add_overlay(&timeline_fixed);
 
@@ -2130,23 +2320,31 @@ impl EventDialog {
         // Timeline live updater
         let color_badge_provider = Rc::new(RefCell::new(None::<gtk::CssProvider>));
         let selected_source_color_for_timeline = Rc::clone(&selected_source_color);
-        let preview_slot = Rc::new(RefCell::new(None::<(gtk::Label, bool, String)>));
+        let preview_slot = Rc::new(RefCell::new(None::<TimelinePreviewSlot>));
+        let interactive_state = Rc::new(RefCell::new(TimelineInteractiveState::default()));
+        let suppress_timeline_update = Rc::new(Cell::new(false));
         let update_timeline = {
             let all_day_box = all_day_box.clone();
             let timeline_fixed = timeline_fixed.clone();
             let timeline_window_title = timeline_window_title.clone();
             let conflict_badge = conflict_badge.clone();
             let preview_slot = Rc::clone(&preview_slot);
+            let interactive_state = Rc::clone(&interactive_state);
+            let suppress_timeline_update = Rc::clone(&suppress_timeline_update);
             let events_cache = Rc::clone(&events_cache);
             let entry_start_date = entry_start_date.clone();
             let entry_start_time = entry_start_time.clone();
             let entry_end_time = entry_end_time.clone();
             let row_allday = row_allday.clone();
             let entry_title = entry_title.clone();
+            let row_location = row_location.clone();
             let edit_uid = edit_uid.clone();
             let selected_source_color = Rc::clone(&selected_source_color_for_timeline);
             let color_badge_provider = Rc::clone(&color_badge_provider);
             Rc::new(move || {
+                if suppress_timeline_update.get() {
+                    return;
+                }
                 let color_val = selected_source_color.borrow().clone();
                 let cal_color = if color_val.is_empty() { None } else { Some(color_val) };
 
@@ -2175,17 +2373,261 @@ impl EventDialog {
                     &timeline_window_title,
                     &conflict_badge,
                     &preview_slot,
+                    &interactive_state,
                     &events_cache.borrow(),
                     &entry_start_date.text(),
                     &entry_start_time.text(),
                     &entry_end_time.text(),
                     row_allday.is_active(),
                     &entry_title.text(),
+                    &row_location.text(),
                     edit_uid.as_deref(),
                     cal_color.as_deref(),
                 );
             })
         };
+
+        // Interactive Day Schedule: dynamic tooltips, hover cursors, drag-to-move, drag-to-resize, and click/sweep
+        {
+            let state_for_tooltip = Rc::clone(&interactive_state);
+            timeline_overlay.connect_query_tooltip(move |_, x, y, _keyboard, tooltip| {
+                let st = state_for_tooltip.borrow();
+                if st.is_dragging {
+                    return false;
+                }
+                let fx = x as f64;
+                let fy = y as f64;
+                for item in st.tooltips.iter().rev() {
+                    if fx >= item.x && fx <= item.x + item.width && fy >= item.y && fy <= item.y + item.height {
+                        tooltip.set_text(Some(&item.tooltip));
+                        return true;
+                    }
+                }
+                false
+            });
+        }
+
+        {
+            let state_for_motion = Rc::clone(&interactive_state);
+            let overlay_weak_motion = timeline_overlay.downgrade();
+            let motion_ctrl = gtk::EventControllerMotion::new();
+            motion_ctrl.connect_motion(move |_, x, y| {
+                let Some(overlay) = overlay_weak_motion.upgrade() else {
+                    return;
+                };
+                let st = state_for_motion.borrow();
+                if st.is_dragging {
+                    return;
+                }
+                if let Some(rect) = st.preview_rect {
+                    if x >= rect.x - 4.0 && x <= rect.x + rect.width + 4.0 {
+                        let edge = (rect.height * 0.25).clamp(5.0, 8.0);
+                        if (y - rect.y).abs() <= edge || (y - (rect.y + rect.height)).abs() <= edge {
+                            overlay.set_cursor_from_name(Some("ns-resize"));
+                            return;
+                        } else if y >= rect.y && y <= rect.y + rect.height {
+                            overlay.set_cursor_from_name(Some("grab"));
+                            return;
+                        }
+                    }
+                }
+                if x >= TIMELINE_EVENTS_X - 6.0 {
+                    overlay.set_cursor_from_name(Some("pointer"));
+                } else {
+                    overlay.set_cursor_from_name(None);
+                }
+            });
+            let state_for_leave = Rc::clone(&interactive_state);
+            let overlay_weak_leave = timeline_overlay.downgrade();
+            motion_ctrl.connect_leave(move |_| {
+                if !state_for_leave.borrow().is_dragging {
+                    if let Some(overlay) = overlay_weak_leave.upgrade() {
+                        overlay.set_cursor_from_name(None);
+                    }
+                }
+            });
+            timeline_overlay.add_controller(motion_ctrl);
+        }
+
+        {
+            let drag_mode = Rc::new(Cell::new(TimelineDragMode::None));
+            let apply_timeline_minutes = {
+                let entry_start_time = entry_start_time.clone();
+                let entry_end_time = entry_end_time.clone();
+                let suppress = Rc::clone(&suppress_timeline_update);
+                let update_tl = update_timeline.clone();
+                Rc::new(move |new_start: u32, new_end: u32| {
+                    let start_clamped = new_start.min(23 * 60 + 45);
+                    let end_clamped = new_end.max(start_clamped + 15).min(23 * 60 + 59);
+                    let s_txt = format_clock_minutes(start_clamped);
+                    let e_txt = format_clock_minutes(end_clamped);
+                    let changed_s = entry_start_time.text().as_str() != s_txt;
+                    let changed_e = entry_end_time.text().as_str() != e_txt;
+                    if !changed_s && !changed_e {
+                        return;
+                    }
+                    suppress.set(true);
+                    if changed_s {
+                        entry_start_time.set_text(&s_txt);
+                    }
+                    if changed_e {
+                        entry_end_time.set_text(&e_txt);
+                    }
+                    suppress.set(false);
+                    update_tl();
+                })
+            };
+
+            let drag_gesture = gtk::GestureDrag::new();
+            let state_begin = Rc::clone(&interactive_state);
+            let mode_begin = Rc::clone(&drag_mode);
+            let overlay_weak_begin = timeline_overlay.downgrade();
+            let entry_start_begin = entry_start_time.clone();
+            let entry_end_begin = entry_end_time.clone();
+            let row_allday_begin = row_allday.clone();
+            let apply_begin = Rc::clone(&apply_timeline_minutes);
+            drag_gesture.connect_drag_begin(move |gesture, start_x, start_y| {
+                if start_x < TIMELINE_EVENTS_X - 10.0 {
+                    mode_begin.set(TimelineDragMode::None);
+                    return;
+                }
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let preview_rect = {
+                    let mut st = state_begin.borrow_mut();
+                    st.is_dragging = true;
+                    st.preview_rect
+                };
+                if let Some(rect) = preview_rect {
+                    if start_x >= rect.x - 6.0 && start_x <= rect.x + rect.width + 6.0 {
+                        let edge = (rect.height * 0.25).clamp(5.0, 8.0);
+                        if (start_y - rect.y).abs() <= edge {
+                            mode_begin.set(TimelineDragMode::ResizeTop {
+                                orig_start_min: rect.start_min,
+                                orig_end_min: rect.end_min,
+                            });
+                            if let Some(overlay) = overlay_weak_begin.upgrade() {
+                                overlay.set_cursor_from_name(Some("ns-resize"));
+                            }
+                            return;
+                        } else if (start_y - (rect.y + rect.height)).abs() <= edge {
+                            mode_begin.set(TimelineDragMode::ResizeBottom {
+                                orig_start_min: rect.start_min,
+                                orig_end_min: rect.end_min,
+                            });
+                            if let Some(overlay) = overlay_weak_begin.upgrade() {
+                                overlay.set_cursor_from_name(Some("ns-resize"));
+                            }
+                            return;
+                        } else if start_y >= rect.y && start_y <= rect.y + rect.height {
+                            mode_begin.set(TimelineDragMode::Move {
+                                orig_start_min: rect.start_min,
+                                orig_end_min: rect.end_min,
+                            });
+                            if let Some(overlay) = overlay_weak_begin.upgrade() {
+                                overlay.set_cursor_from_name(Some("grabbing"));
+                            }
+                            return;
+                        }
+                    }
+                }
+
+                // Clicked outside preview block: jump event to clicked 15-min slot (and allow sweeping a new range)
+                let cur_start = parse_time_to_minutes(&entry_start_begin.text()).unwrap_or(9 * 60);
+                let cur_end = parse_time_to_minutes(&entry_end_begin.text()).unwrap_or(cur_start + 60);
+                let duration = cur_end.saturating_sub(cur_start).max(15);
+                let raw_min = ((start_y / HOUR_HEIGHT) * 60.0).clamp(0.0, (24 * 60 - 15) as f64);
+                let anchor_min = (((raw_min / 15.0).floor() as u32) * 15).min(23 * 60 + 45);
+                if row_allday_begin.is_active() {
+                    row_allday_begin.set_active(false);
+                }
+                let max_start = (23 * 60 + 45).min(1440u32.saturating_sub(duration));
+                let new_start = anchor_min.min(max_start);
+                let new_end = (new_start + duration).min(23 * 60 + 59);
+                apply_begin(new_start, new_end);
+                mode_begin.set(TimelineDragMode::GridSweep {
+                    start_y,
+                    anchor_min,
+                    swept: false,
+                });
+                if let Some(overlay) = overlay_weak_begin.upgrade() {
+                    overlay.set_cursor_from_name(Some("ns-resize"));
+                }
+            });
+
+            let mode_update = Rc::clone(&drag_mode);
+            let apply_update = Rc::clone(&apply_timeline_minutes);
+            drag_gesture.connect_drag_update(move |_, _offset_x, offset_y| {
+                match mode_update.get() {
+                    TimelineDragMode::None => {}
+                    TimelineDragMode::Move {
+                        orig_start_min,
+                        orig_end_min,
+                    } => {
+                        let duration = orig_end_min.saturating_sub(orig_start_min).max(15);
+                        let delta_steps = ((offset_y / HOUR_HEIGHT) * 4.0).round() as i32;
+                        let delta_min = delta_steps * 15;
+                        let max_start = (23 * 60 + 45).min(1440u32.saturating_sub(duration)) as i32;
+                        let new_start = (orig_start_min as i32 + delta_min).clamp(0, max_start.max(0)) as u32;
+                        let new_end = (new_start + duration).min(23 * 60 + 59);
+                        apply_update(new_start, new_end);
+                    }
+                    TimelineDragMode::ResizeBottom {
+                        orig_start_min,
+                        orig_end_min,
+                    } => {
+                        let delta_steps = ((offset_y / HOUR_HEIGHT) * 4.0).round() as i32;
+                        let delta_min = delta_steps * 15;
+                        let min_end = (orig_start_min + 15) as i32;
+                        let new_end = (orig_end_min as i32 + delta_min).clamp(min_end, 23 * 60 + 45) as u32;
+                        apply_update(orig_start_min, new_end);
+                    }
+                    TimelineDragMode::ResizeTop {
+                        orig_start_min,
+                        orig_end_min,
+                    } => {
+                        let delta_steps = ((offset_y / HOUR_HEIGHT) * 4.0).round() as i32;
+                        let delta_min = delta_steps * 15;
+                        let max_start = orig_end_min.saturating_sub(15) as i32;
+                        let new_start = (orig_start_min as i32 + delta_min).clamp(0, max_start.max(0)) as u32;
+                        apply_update(new_start, orig_end_min);
+                    }
+                    TimelineDragMode::GridSweep {
+                        start_y,
+                        anchor_min,
+                        swept,
+                    } => {
+                        if offset_y.abs() >= (HOUR_HEIGHT * 0.22) || swept {
+                            mode_update.set(TimelineDragMode::GridSweep {
+                                start_y,
+                                anchor_min,
+                                swept: true,
+                            });
+                            let raw_min = (((start_y + offset_y) / HOUR_HEIGHT) * 60.0).clamp(0.0, 24.0 * 60.0);
+                            let cur_min = (((raw_min / 15.0).round() as u32) * 15).min(23 * 60 + 45);
+                            let (new_start, new_end) = if cur_min >= anchor_min {
+                                (anchor_min, cur_min.max(anchor_min + 15))
+                            } else {
+                                (cur_min, anchor_min.max(cur_min + 15))
+                            };
+                            apply_update(new_start, new_end);
+                        }
+                    }
+                }
+            });
+
+            let state_end = Rc::clone(&interactive_state);
+            let mode_end = Rc::clone(&drag_mode);
+            let overlay_weak_end = timeline_overlay.downgrade();
+            drag_gesture.connect_drag_end(move |_, _offset_x, _offset_y| {
+                state_end.borrow_mut().is_dragging = false;
+                mode_end.set(TimelineDragMode::None);
+                if let Some(overlay) = overlay_weak_end.upgrade() {
+                    overlay.set_cursor_from_name(None);
+                }
+            });
+
+            timeline_overlay.add_controller(drag_gesture);
+        }
 
         let update_tl_sdate = update_timeline.clone();
         let entry_end_date_for_sdate = entry_end_date.clone();
@@ -2217,6 +2659,9 @@ impl EventDialog {
         let update_tl_etime = update_timeline.clone();
         entry_end_time.connect_changed(move |_| update_tl_etime());
 
+        let update_tl_loc = update_timeline.clone();
+        row_location.connect_changed(move |_| update_tl_loc());
+
         let update_tl_allday = update_timeline.clone();
         let start_time_box_allday = start_time_box.clone();
         let end_time_box_allday = end_time_box.clone();
@@ -2244,25 +2689,32 @@ impl EventDialog {
             let trimmed = text.trim();
             if let Some(dialog) = dialog_weak_title.upgrade() {
                 if trimmed.is_empty() {
-                    dialog.set_title("Termin — Keine Zusammenfassung");
+                    dialog.set_title("Event — No Summary");
                     window_title_clone.set_subtitle("");
                 } else {
-                    dialog.set_title(&format!("Termin — {trimmed}"));
+                    dialog.set_title(&format!("Event — {trimmed}"));
                     window_title_clone.set_subtitle(trimmed);
                 }
             }
-            if let Some((lbl, is_all_day, time_prefix)) = preview_slot_for_title.borrow().as_ref() {
+            if let Some(slot) = preview_slot_for_title.borrow().as_ref() {
                 let display = if trimmed.is_empty() {
-                    "Neuer Termin"
+                    "New Event"
                 } else {
                     trimmed
                 };
-                if *is_all_day {
-                    lbl.set_label(display);
-                    lbl.set_tooltip_text(Some(&format!("{display}\nGanztägiger Termin")));
+                if slot.is_all_day {
+                    slot.label.set_label(display);
+                    slot.label.set_tooltip_text(Some(&format!("{display}\nAll Day")));
                 } else {
-                    lbl.set_label(&format!("{time_prefix} {display}"));
-                    lbl.set_tooltip_text(Some(&format!("{display}\n(Vorschau des aktuellen Termins)")));
+                    let (markup, _, _) = format_timeline_timed_event_markup(
+                        display,
+                        slot.start_min,
+                        slot.end_min,
+                        &slot.location,
+                        slot.height,
+                        slot.col_width,
+                    );
+                    slot.label.set_markup(&markup);
                 }
             }
         });
@@ -2292,11 +2744,11 @@ impl EventDialog {
             let trimmed = summary.trim();
             if trimmed.is_empty() {
                 entry_title.set_text("");
-                self.set_title("Termin — Keine Zusammenfassung");
+                self.set_title("Event — No Summary");
                 window_title.set_subtitle("");
             } else {
                 entry_title.set_text(trimmed);
-                self.set_title(&format!("Termin — {trimmed}"));
+                self.set_title(&format!("Event — {trimmed}"));
                 window_title.set_subtitle(trimmed);
             }
             row_location.set_text(
@@ -2418,7 +2870,7 @@ impl EventDialog {
             let trimmed = summary.trim();
             if !trimmed.is_empty() {
                 entry_title.set_text(trimmed);
-                self.set_title(&format!("Termin — {trimmed}"));
+                self.set_title(&format!("Event — {trimmed}"));
                 window_title.set_subtitle(trimmed);
             }
         }
@@ -2462,7 +2914,7 @@ impl EventDialog {
                     } else if source.uid == "system-calendar" || source.backend_name == "local" {
                         "On This Computer".to_string()
                     } else {
-                        "Andere".to_string()
+                        "Other".to_string()
                     };
                     let clean_name = clean_calendar_display_name(&source.display_name, &group);
                     temp_items.push(TempItem {
@@ -2484,21 +2936,21 @@ impl EventDialog {
                         let group = if !account_name.is_empty() {
                             account_name
                         } else {
-                            "Konten".to_string()
+                            "Accounts".to_string()
                         };
                         temp_items.push(TempItem {
                             uid: cal_uid,
-                            clean_name: "Kalender".to_string(),
+                            clean_name: "Calendar".to_string(),
                             group,
                             color,
                         });
                     }
 
                     if crate::services::calendar_store_service::CalendarStoreService::new().is_writable() {
-                        let color = crate::views::calendar_page::calendar_source_color("local-calendar", "Lokaler Kalender");
+                        let color = crate::views::calendar_page::calendar_source_color("local-calendar", "Local Calendar");
                         temp_items.push(TempItem {
                             uid: "local-calendar".to_string(),
-                            clean_name: "Lokaler Kalender".to_string(),
+                            clean_name: "Local Calendar".to_string(),
                             group: "On This Computer".to_string(),
                             color,
                         });
@@ -2775,7 +3227,7 @@ impl EventDialog {
                 } else {
                     let source_uid = selected_source_uid.borrow().clone();
                     if source_uid.is_empty() {
-                        dialog.show_toast("Kein aktiver Kalender ist ausgewählt");
+                        dialog.show_toast("No active calendar is selected");
                         return;
                     }
                     source_uid
@@ -2948,9 +3400,9 @@ impl EventDialog {
                     match result {
                         Ok(result) => {
                             let message = if was_edit {
-                                format!("Termin aktualisiert ({})", result.uid)
+                                format!("Event updated ({})", result.uid)
                             } else {
-                                format!("Termin gespeichert ({})", result.uid)
+                                format!("Event saved ({})", result.uid)
                             };
                             dialog.show_toast(&message);
                             dialog.imp().edit_uid.replace(Some(result.uid.clone()));
@@ -2963,7 +3415,7 @@ impl EventDialog {
                             }
                         }
                         Err(error) => dialog
-                            .show_toast(&format!("Termin konnte nicht gespeichert werden: {error}")),
+                            .show_toast(&format!("Could not save event: {error}")),
                     }
                 });
             })
@@ -3128,11 +3580,11 @@ impl EventDialog {
                 let summary = if has_title {
                     raw_title.trim().to_string()
                 } else {
-                    "Keine Zusammenfassung".to_string()
+                    "No Summary".to_string()
                 };
 
                 let mut builder = glib::Object::builder()
-                    .property("title", format!("Termin — {summary}"))
+                    .property("title", format!("Event — {summary}"))
                     .property("content-width", 880)
                     .property("content-height", 680)
                     .property("edit-component", &component);
@@ -3145,7 +3597,7 @@ impl EventDialog {
                 builder.build()
             } else {
                 let mut builder = glib::Object::builder()
-                    .property("title", "Termin — Keine Zusammenfassung")
+                    .property("title", "Event — No Summary")
                     .property("content-width", 880)
                     .property("content-height", 680)
                     .property("initial-start", format!("{start_date_iso} {}", split_entry_start_time.text().trim()))
@@ -3197,6 +3649,35 @@ impl Default for EventDialog {
     }
 }
 
+fn format_alarm_display_label(alarm: &Alarm) -> String {
+    let trigger_text = match &alarm.trigger {
+        AlarmTrigger::Relative {
+            relation,
+            offset_seconds,
+            ..
+        } => {
+            if *offset_seconds == 0 {
+                match relation {
+                    AlarmRelation::Start => "At time of event".to_string(),
+                    AlarmRelation::End => "At end of event".to_string(),
+                }
+            } else {
+                let raw = alarm.trigger.label();
+                match relation {
+                    AlarmRelation::Start => raw.strip_suffix(" start").unwrap_or(&raw).to_string(),
+                    AlarmRelation::End => format!("{raw} of event"),
+                }
+            }
+        }
+        AlarmTrigger::Absolute { value, .. } => format!("On {value}"),
+        AlarmTrigger::Unknown { .. } => "Custom trigger".to_string(),
+    };
+    match &alarm.action {
+        AlarmAction::Display => trigger_text,
+        other => format!("{}: {}", other.label(), trigger_text),
+    }
+}
+
 /// Shared GTK4 reminder page used by event, task and memo editors.  The
 /// service owns the VALARM value model; this small widget owns only staged
 /// ordering and editor state.  Every visible control below changes that
@@ -3215,13 +3696,13 @@ impl AlarmEditor {
     pub(crate) fn new(component: Option<&str>, summary: &str) -> Self {
         let root = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(6)
+            .spacing(0)
             .build();
 
         let list = gtk::ListBox::new();
         list.set_selection_mode(gtk::SelectionMode::None);
         list.set_vexpand(false);
-        list.add_css_class("boxed-list");
+        list.add_css_class("alarm-editor-list");
         root.append(&list);
 
         let editor = Self {
@@ -3249,9 +3730,9 @@ impl AlarmEditor {
     pub(crate) fn summary_label(&self) -> String {
         let alarms = self.alarms.borrow();
         match alarms.len() {
-            0 => "Keine".to_string(),
-            1 => alarms[0].label(),
-            n => format!("{} ({} weitere)", alarms[0].label(), n - 1),
+            0 => "None".to_string(),
+            1 => format_alarm_display_label(&alarms[0]),
+            n => format!("{} (+{} more)", format_alarm_display_label(&alarms[0]), n - 1),
         }
     }
 
@@ -3290,15 +3771,24 @@ impl AlarmEditor {
         let current_alarms = self.alarms.borrow().clone();
         for (idx, alarm) in current_alarms.iter().enumerate() {
             let subtitle = if alarm.is_safe_to_notify() {
-                ""
+                alarm
+                    .message
+                    .as_deref()
+                    .filter(|m| !m.trim().is_empty())
+                    .unwrap_or("")
             } else {
-                "Nur angezeigt und bewahrt; wird nicht automatisch ausgeführt"
+                "Preserved from calendar; not executed automatically"
             };
             let row = adw::ActionRow::builder()
-                .title(alarm.label())
+                .title(format_alarm_display_label(alarm))
                 .subtitle(subtitle)
                 .activatable(true)
                 .build();
+            let bell_icon = gtk::Image::builder()
+                .icon_name("alarm-symbolic")
+                .css_classes(vec!["dim-label"])
+                .build();
+            row.add_prefix(&bell_icon);
 
             let editor_for_edit = self.clone();
             row.connect_activated(move |_| {
@@ -3308,7 +3798,7 @@ impl AlarmEditor {
             if len > 1 {
                 let up_btn = gtk::Button::builder()
                     .icon_name("go-up-symbolic")
-                    .tooltip_text("Nach oben")
+                    .tooltip_text("Move up")
                     .css_classes(vec!["flat"])
                     .valign(gtk::Align::Center)
                     .sensitive(idx > 0)
@@ -3324,7 +3814,7 @@ impl AlarmEditor {
 
                 let down_btn = gtk::Button::builder()
                     .icon_name("go-down-symbolic")
-                    .tooltip_text("Nach unten")
+                    .tooltip_text("Move down")
                     .css_classes(vec!["flat"])
                     .valign(gtk::Align::Center)
                     .sensitive(idx + 1 < len)
@@ -3341,7 +3831,7 @@ impl AlarmEditor {
 
             let remove_btn = gtk::Button::builder()
                 .icon_name("user-trash-symbolic")
-                .tooltip_text("Erinnerung entfernen")
+                .tooltip_text("Remove reminder")
                 .css_classes(vec!["flat"])
                 .valign(gtk::Align::Center)
                 .build();
@@ -3358,7 +3848,7 @@ impl AlarmEditor {
         }
 
         let add_row = adw::ActionRow::builder()
-            .title("Erinnerung hinzufügen…")
+            .title("Add Reminder…")
             .activatable(true)
             .build();
         let add_icon = gtk::Image::from_icon_name("list-add-symbolic");
@@ -3382,17 +3872,29 @@ impl AlarmEditor {
             .unwrap_or_else(|| Alarm::new_display_relative(AlarmRelation::Start, -15 * 60, None));
         let window = adw::Dialog::builder()
             .title(if index.is_some() {
-                "Erinnerung bearbeiten"
+                "Edit Reminder"
             } else {
-                "Erinnerung hinzufügen"
+                "Add Reminder"
             })
-            .content_width(480)
-            .content_height(620)
+            .content_width(440)
+            .content_height(460)
             .build();
         let toolbar = adw::ToolbarView::new();
         let header = adw::HeaderBar::new();
+        header.set_show_start_title_buttons(false);
+        header.set_show_end_title_buttons(false);
+
+        let cancel_btn = gtk::Button::builder()
+            .label("Cancel")
+            .build();
+        let window_for_cancel = window.clone();
+        cancel_btn.connect_clicked(move |_| {
+            window_for_cancel.close();
+        });
+        header.pack_start(&cancel_btn);
+
         let save = gtk::Button::builder()
-            .label("Übernehmen")
+            .label("Save")
             .css_classes(vec!["suggested-action"])
             .build();
         header.pack_end(&save);
@@ -3400,7 +3902,7 @@ impl AlarmEditor {
 
         let content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(12)
+            .spacing(16)
             .margin_start(18)
             .margin_end(18)
             .margin_top(14)
@@ -3413,6 +3915,53 @@ impl AlarmEditor {
             .build();
         toolbar.set_content(Some(&scroll));
         window.set_child(Some(&toolbar));
+
+        // ── Group 1: Main Reminder Settings (inside PreferencesGroup so all ComboRows work!) ──
+        let general_group = adw::PreferencesGroup::new();
+
+        const PRESET_OFFSETS: &[Option<i64>] = &[
+            Some(0),
+            Some(-5 * 60),
+            Some(-10 * 60),
+            Some(-15 * 60),
+            Some(-30 * 60),
+            Some(-60 * 60),
+            Some(-2 * 60 * 60),
+            Some(-24 * 60 * 60),
+            Some(-2 * 24 * 60 * 60),
+            Some(-7 * 24 * 60 * 60),
+            None, // Custom
+        ];
+        let preset_model = gtk::StringList::new(&[
+            "At time of event",
+            "5 minutes before",
+            "10 minutes before",
+            "15 minutes before",
+            "30 minutes before",
+            "1 hour before",
+            "2 hours before",
+            "1 day before",
+            "2 days before",
+            "1 week before",
+            "Custom…",
+        ]);
+        let preset_row = adw::ComboRow::builder()
+            .title("When")
+            .model(&preset_model)
+            .build();
+        let initial_preset_idx = match &initial.trigger {
+            AlarmTrigger::Relative {
+                relation: AlarmRelation::Start,
+                offset_seconds,
+                ..
+            } => PRESET_OFFSETS
+                .iter()
+                .position(|candidate| *candidate == Some(*offset_seconds))
+                .unwrap_or(10) as u32,
+            _ => 10,
+        };
+        preset_row.set_selected(initial_preset_idx);
+        general_group.add(&preset_row);
 
         let action_values = Rc::new({
             let mut values = vec![
@@ -3428,12 +3977,18 @@ impl AlarmEditor {
         });
         let action_labels = action_values
             .iter()
-            .map(AlarmAction::label)
+            .map(|act| match act {
+                AlarmAction::Display => "Notification".to_string(),
+                AlarmAction::Audio => "Sound".to_string(),
+                AlarmAction::Email => "Email".to_string(),
+                AlarmAction::Procedure => "Custom Command".to_string(),
+                AlarmAction::Unknown(v) => format!("Custom ({v})"),
+            })
             .collect::<Vec<_>>();
         let action_label_refs = action_labels.iter().map(String::as_str).collect::<Vec<_>>();
         let action_model = gtk::StringList::new(&action_label_refs);
         let action_row = adw::ComboRow::builder()
-            .title("Aktion")
+            .title("Type")
             .model(&action_model)
             .build();
         let action_index = action_values
@@ -3441,26 +3996,7 @@ impl AlarmEditor {
             .position(|value| value == &initial.action)
             .unwrap_or(0);
         action_row.set_selected(action_index as u32);
-        content.append(&action_row);
-
-        let safety_note = gtk::Label::builder()
-            .label(
-                "Ton, E-Mail und Prozedur werden aus Sicherheitsgründen nur angezeigt und bewahrt.",
-            )
-            .halign(gtk::Align::Start)
-            .wrap(true)
-            .css_classes(vec!["warning", "dim-label"])
-            .build();
-        safety_note.set_visible(!initial.action.is_safe_to_notify());
-        content.append(&safety_note);
-        let safety_note_for_action = safety_note.clone();
-        let action_values_for_signal = Rc::clone(&action_values);
-        action_row.connect_selected_notify(move |row| {
-            let unsafe_action = action_values_for_signal
-                .get(row.selected() as usize)
-                .is_some_and(|action| !action.is_safe_to_notify());
-            safety_note_for_action.set_visible(unsafe_action);
-        });
+        general_group.add(&action_row);
 
         let trigger_values = Rc::new({
             let mut values = vec![0_u8, 1_u8];
@@ -3471,13 +4007,13 @@ impl AlarmEditor {
         });
         let trigger_model = gtk::StringList::new(
             &[
-                "Relativ zu Beginn/Ende",
-                "Absoluter Zeitpunkt",
-                "Unbekannter Trigger (bewahren)",
+                "Relative to event",
+                "Specific date & time",
+                "Preserved trigger",
             ][..trigger_values.len()],
         );
         let trigger_row = adw::ComboRow::builder()
-            .title("Trigger-Typ")
+            .title("Trigger Mode")
             .model(&trigger_model)
             .build();
         let trigger_index = match initial.trigger {
@@ -3486,43 +4022,63 @@ impl AlarmEditor {
             AlarmTrigger::Unknown { .. } => 2,
         };
         trigger_row.set_selected(trigger_index);
-        content.append(&trigger_row);
+        trigger_row.set_visible(initial_preset_idx == 10);
+        general_group.add(&trigger_row);
 
+        content.append(&general_group);
+
+        let safety_note = gtk::Label::builder()
+            .label(
+                "Sound, Email, and Custom Command reminders are preserved in the calendar file but not executed automatically.",
+            )
+            .halign(gtk::Align::Start)
+            .wrap(true)
+            .css_classes(vec!["warning", "dim-label"])
+            .build();
+        safety_note.set_visible(!initial.action.is_safe_to_notify());
+        content.append(&safety_note);
+
+        // ── Group 2: Custom Relative or Absolute Timing ──
         let relative_group = adw::PreferencesGroup::builder()
-            .title("Relativer Trigger")
-            .build();
-        let relative_to_model = gtk::StringList::new(&["Beginn", "Ende"]);
-        let relative_to_row = adw::ComboRow::builder()
-            .title("Bezugspunkt")
-            .model(&relative_to_model)
-            .build();
-        let direction_model = gtk::StringList::new(&["Vorher", "Nachher"]);
-        let direction_row = adw::ComboRow::builder()
-            .title("Richtung")
-            .model(&direction_model)
+            .title("Custom Timing")
             .build();
         let offset_row = adw::SpinRow::with_range(0.0, 10_000_000.0, 1.0);
-        offset_row.set_title("Abstand");
+        offset_row.set_title("Offset");
         offset_row.set_digits(0);
         offset_row.set_snap_to_ticks(true);
-        let unit_model = gtk::StringList::new(&["Minuten", "Stunden", "Tage"]);
+        let unit_model = gtk::StringList::new(&["Minutes", "Hours", "Days"]);
         let unit_row = adw::ComboRow::builder()
-            .title("Einheit")
+            .title("Unit")
             .model(&unit_model)
             .build();
-        relative_group.add(&relative_to_row);
-        relative_group.add(&direction_row);
+        let direction_model = gtk::StringList::new(&["Before", "After"]);
+        let direction_row = adw::ComboRow::builder()
+            .title("Direction")
+            .model(&direction_model)
+            .build();
+        let relative_to_model = gtk::StringList::new(&["Event start", "Event end"]);
+        let relative_to_row = adw::ComboRow::builder()
+            .title("Relative to")
+            .model(&relative_to_model)
+            .build();
         relative_group.add(&offset_row);
         relative_group.add(&unit_row);
+        relative_group.add(&direction_row);
+        relative_group.add(&relative_to_row);
         content.append(&relative_group);
 
-        let absolute_entry = adw::EntryRow::builder()
-            .title("Absoluter Zeitpunkt")
+        let absolute_group = adw::PreferencesGroup::builder()
+            .title("Specific Date & Time")
             .build();
-        absolute_entry.set_tooltip_text(Some("YYYYMMDDTHHMMSSZ oder YYYYMMDDTHHMMSS"));
-        content.append(&absolute_entry);
+        let absolute_entry = adw::EntryRow::builder()
+            .title("Timestamp (YYYYMMDDTHHMMSSZ)")
+            .build();
+        absolute_entry.set_tooltip_text(Some("YYYYMMDDTHHMMSSZ or YYYYMMDDTHHMMSS"));
+        absolute_group.add(&absolute_entry);
+        content.append(&absolute_group);
+
         let unknown_trigger_label = gtk::Label::builder()
-            .label("Der unbekannte Trigger bleibt beim Speichern unverändert.")
+            .label("The imported trigger will be preserved unchanged when saving.")
             .halign(gtk::Align::Start)
             .wrap(true)
             .css_classes(vec!["dim-label"])
@@ -3541,7 +4097,7 @@ impl AlarmEditor {
             AlarmRelation::Start => 0,
             AlarmRelation::End => 1,
         });
-        direction_row.set_selected((offset >= 0) as u32);
+        direction_row.set_selected((offset > 0) as u32);
         let (offset_value, offset_unit) = duration_editor_parts(offset.unsigned_abs());
         offset_row.set_value(offset_value as f64);
         unit_row.set_selected(offset_unit);
@@ -3549,34 +4105,98 @@ impl AlarmEditor {
             absolute_entry.set_text(value);
         }
 
-        let relative_group_for_trigger = relative_group.clone();
-        let absolute_entry_for_trigger = absolute_entry.clone();
-        let unknown_trigger_for_trigger = unknown_trigger_label.clone();
-        trigger_row.connect_selected_notify(move |row| {
-            let selected = row.selected();
-            relative_group_for_trigger.set_visible(selected == 0);
-            absolute_entry_for_trigger.set_visible(selected == 1);
-            unknown_trigger_for_trigger.set_visible(selected == 2);
-        });
-        relative_group.set_visible(trigger_index == 0);
-        absolute_entry.set_visible(trigger_index == 1);
-        unknown_trigger_label.set_visible(trigger_index == 2);
+        let is_custom = initial_preset_idx == 10;
+        relative_group.set_visible(is_custom && trigger_index == 0);
+        absolute_group.set_visible(is_custom && trigger_index == 1);
+        unknown_trigger_label.set_visible(is_custom && trigger_index == 2);
 
-        let repeat_group = adw::PreferencesGroup::builder()
-            .title("Wiederholung")
+        let syncing_preset = Rc::new(Cell::new(false));
+        {
+            let syncing_preset = Rc::clone(&syncing_preset);
+            let trigger_row = trigger_row.clone();
+            let relative_group = relative_group.clone();
+            let absolute_group = absolute_group.clone();
+            let unknown_trigger_label = unknown_trigger_label.clone();
+            let offset_row = offset_row.clone();
+            let unit_row = unit_row.clone();
+            let direction_row = direction_row.clone();
+            let relative_to_row = relative_to_row.clone();
+            preset_row.connect_selected_notify(move |row| {
+                if syncing_preset.get() {
+                    return;
+                }
+                syncing_preset.set(true);
+                let sel = row.selected() as usize;
+                if let Some(Some(preset_sec)) = PRESET_OFFSETS.get(sel) {
+                    trigger_row.set_selected(0);
+                    trigger_row.set_visible(false);
+                    relative_group.set_visible(false);
+                    absolute_group.set_visible(false);
+                    unknown_trigger_label.set_visible(false);
+                    relative_to_row.set_selected(0);
+                    direction_row.set_selected(0);
+                    let (val, unit) = duration_editor_parts(preset_sec.unsigned_abs());
+                    offset_row.set_value(val as f64);
+                    unit_row.set_selected(unit);
+                } else {
+                    trigger_row.set_visible(true);
+                    let trig_sel = trigger_row.selected();
+                    relative_group.set_visible(trig_sel == 0);
+                    absolute_group.set_visible(trig_sel == 1);
+                    unknown_trigger_label.set_visible(trig_sel == 2);
+                }
+                syncing_preset.set(false);
+            });
+        }
+
+        let relative_group_for_trigger = relative_group.clone();
+        let absolute_group_for_trigger = absolute_group.clone();
+        let unknown_trigger_for_trigger = unknown_trigger_label.clone();
+        let preset_for_trigger = preset_row.clone();
+        trigger_row.connect_selected_notify(move |row| {
+            let is_custom_mode = preset_for_trigger.selected() == 10;
+            let selected = row.selected();
+            relative_group_for_trigger.set_visible(is_custom_mode && selected == 0);
+            absolute_group_for_trigger.set_visible(is_custom_mode && selected == 1);
+            unknown_trigger_for_trigger.set_visible(is_custom_mode && selected == 2);
+        });
+
+        // ── Group 3: Advanced / Repeat & Message ──
+        let options_group = adw::PreferencesGroup::new();
+        let has_advanced_initial = initial.repeat.unwrap_or(0) > 0
+            || initial.message.as_deref().is_some_and(|m| !m.trim().is_empty())
+            || !initial.attachments.is_empty()
+            || !initial.attendees.is_empty();
+        let advanced_expander = adw::ExpanderRow::builder()
+            .title("More Options")
+            .subtitle("Custom message and repeat interval")
+            .show_enable_switch(false)
+            .expanded(has_advanced_initial)
             .build();
+
+        let message_entry = adw::EntryRow::builder()
+            .title("Custom Message")
+            .show_apply_button(false)
+            .build();
+        if let Some(message) = initial.message.as_deref() {
+            message_entry.set_text(message);
+        }
+        advanced_expander.add_row(&message_entry);
+
         let repeat_row = adw::SpinRow::with_range(0.0, 4_096.0, 1.0);
-        repeat_row.set_title("Wiederholungen nach dem ersten Alarm");
+        repeat_row.set_title("Repeat Count");
         repeat_row.set_digits(0);
         repeat_row.set_snap_to_ticks(true);
         repeat_row.set_value(initial.repeat.unwrap_or(0) as f64);
+        advanced_expander.add_row(&repeat_row);
+
         let repeat_interval_row = adw::SpinRow::with_range(0.0, 10_000_000.0, 1.0);
-        repeat_interval_row.set_title("Abstand der Wiederholungen");
+        repeat_interval_row.set_title("Repeat Interval");
         repeat_interval_row.set_digits(0);
         repeat_interval_row.set_snap_to_ticks(true);
-        let repeat_unit_model = gtk::StringList::new(&["Minuten", "Stunden", "Tage"]);
+        let repeat_unit_model = gtk::StringList::new(&["Minutes", "Hours", "Days"]);
         let repeat_unit_row = adw::ComboRow::builder()
-            .title("Einheit")
+            .title("Interval Unit")
             .model(&repeat_unit_model)
             .build();
         if let Some(duration) = &initial.duration {
@@ -3586,42 +4206,51 @@ impl AlarmEditor {
         } else {
             repeat_interval_row.set_value(5.0);
         }
-        repeat_group.add(&repeat_row);
-        repeat_group.add(&repeat_interval_row);
-        repeat_group.add(&repeat_unit_row);
-        content.append(&repeat_group);
+        advanced_expander.add_row(&repeat_interval_row);
+        advanced_expander.add_row(&repeat_unit_row);
 
-        let options = adw::PreferencesGroup::builder()
-            .title("Nachricht und Aktionsdaten")
-            .build();
-        let message_view = gtk::TextView::builder()
-            .wrap_mode(gtk::WrapMode::WordChar)
-            .height_request(86)
-            .margin_start(12)
-            .margin_end(12)
-            .margin_top(6)
-            .margin_bottom(6)
-            .build();
-        if let Some(message) = initial.message.as_deref() {
-            message_view.buffer().set_text(message);
-        }
-        options.add(
-            &adw::ActionRow::builder()
-                .title("Benutzerdefinierte Nachricht")
-                .build(),
-        );
-        options.add(&message_view);
         let attachments_entry = adw::EntryRow::builder()
-            .title("Sound/Prozedur-Anhänge (eine URI pro Zeile)")
+            .title("Sound / Action URI")
+            .show_apply_button(false)
+            .visible(
+                matches!(initial.action, AlarmAction::Audio | AlarmAction::Procedure)
+                    || !initial.attachments.is_empty(),
+            )
             .build();
         attachments_entry.set_text(&initial.attachments.join("\n"));
-        options.add(&attachments_entry);
+        advanced_expander.add_row(&attachments_entry);
+
         let attendees_entry = adw::EntryRow::builder()
-            .title("E-Mail-Empfänger (eine Adresse pro Zeile)")
+            .title("Email Recipients")
+            .show_apply_button(false)
+            .visible(matches!(initial.action, AlarmAction::Email) || !initial.attendees.is_empty())
             .build();
         attendees_entry.set_text(&initial.attendees.join("\n"));
-        options.add(&attendees_entry);
-        content.append(&options);
+        advanced_expander.add_row(&attendees_entry);
+
+        options_group.add(&advanced_expander);
+        content.append(&options_group);
+
+        let safety_note_for_action = safety_note.clone();
+        let attachments_for_action = attachments_entry.clone();
+        let attendees_for_action = attendees_entry.clone();
+        let advanced_for_action = advanced_expander.clone();
+        let action_values_for_signal = Rc::clone(&action_values);
+        action_row.connect_selected_notify(move |row| {
+            let selected_action = action_values_for_signal.get(row.selected() as usize);
+            let unsafe_action = selected_action.is_some_and(|action| !action.is_safe_to_notify());
+            safety_note_for_action.set_visible(unsafe_action);
+            let show_attach = selected_action.is_some_and(|a| {
+                matches!(a, AlarmAction::Audio | AlarmAction::Procedure)
+            }) || !attachments_for_action.text().trim().is_empty();
+            let show_attendees = selected_action.is_some_and(|a| matches!(a, AlarmAction::Email))
+                || !attendees_for_action.text().trim().is_empty();
+            attachments_for_action.set_visible(show_attach);
+            attendees_for_action.set_visible(show_attendees);
+            if show_attach || show_attendees {
+                advanced_for_action.set_expanded(true);
+            }
+        });
 
         let editor = self.clone();
         let initial_for_save = initial.clone();
@@ -3661,7 +4290,7 @@ impl AlarmEditor {
                     if !is_valid_absolute_alarm_value(&value) {
                         show_alarm_error(
                             &window_for_save,
-                            "Der absolute Trigger muss YYYYMMDDTHHMMSS[Z] entsprechen.",
+                            "The timestamp must match YYYYMMDDTHHMMSS[Z].",
                         );
                         return;
                     }
@@ -3674,14 +4303,7 @@ impl AlarmEditor {
             let duration = (repeat_interval > 0).then(|| {
                 AlarmDuration::new(repeat_interval * alarm_unit_seconds(repeat_unit_row.selected()))
             });
-            let message = message_view
-                .buffer()
-                .text(
-                    &message_view.buffer().start_iter(),
-                    &message_view.buffer().end_iter(),
-                    false,
-                )
-                .to_string();
+            let message = message_entry.text().to_string();
             let attachments = attachments_entry
                 .text()
                 .lines()
@@ -3759,7 +4381,7 @@ fn is_valid_absolute_alarm_value(value: &str) -> bool {
 
 fn show_alarm_error(parent: &impl IsA<gtk::Widget>, message: &str) {
     let dialog = adw::AlertDialog::new(
-        Some("Erinnerung konnte nicht übernommen werden"),
+        Some("Could not save reminder"),
         Some(message),
     );
     dialog.add_response("ok", "OK");
@@ -3985,32 +4607,32 @@ pub(crate) fn build_event_component(
 ) -> Result<String, String> {
     let title = title.trim();
     if title.is_empty() {
-        return Err("Ein Termin benötigt einen Titel".to_string());
+        return Err("An event requires a title".to_string());
     }
-    let start_value = parse_event_datetime(start, all_day, "Beginn")?;
-    let end_value = parse_event_datetime(end, all_day, "Ende")?;
+    let start_value = parse_event_datetime(start, all_day, "Starts")?;
+    let end_value = parse_event_datetime(end, all_day, "Ends")?;
     if !all_day && end_value <= start_value {
-        return Err("Das Ende muss nach dem Beginn liegen".to_string());
+        return Err("End time must be after start time".to_string());
     }
     let status = match status.to_ascii_uppercase().as_str() {
         "TENTATIVE" => "TENTATIVE",
         "CANCELLED" => "CANCELLED",
         "CONFIRMED" => "CONFIRMED",
-        _ => return Err("Der Terminstatus ist ungültig".to_string()),
+        _ => return Err("Invalid event status".to_string()),
     };
     for (field, value) in [
         ("RRULE", recurrence),
         ("RDATE", rdates),
         ("EXDATE", exdates),
-        ("Teilnehmer", attendees),
-        ("Räume", rooms),
-        ("Konferenz-URL", conference),
+        ("Attendees", attendees),
+        ("Rooms", rooms),
+        ("Conference URL", conference),
     ] {
         if value
             .chars()
             .any(|character| character == '\r' || character == '\n')
         {
-            return Err(format!("{field} enthält ungültige Zeilenumbrüche"));
+            return Err(format!("{field} contains invalid line breaks"));
         }
     }
 
@@ -4129,32 +4751,32 @@ pub(crate) fn update_existing_event_component(
 ) -> Result<String, String> {
     let title = title.trim();
     if title.is_empty() {
-        return Err("Ein Termin benötigt einen Titel".to_string());
+        return Err("An event requires a title".to_string());
     }
-    let start_value = parse_event_datetime(start, all_day, "Beginn")?;
-    let end_value = parse_event_datetime(end, all_day, "Ende")?;
+    let start_value = parse_event_datetime(start, all_day, "Starts")?;
+    let end_value = parse_event_datetime(end, all_day, "Ends")?;
     if !all_day && end_value <= start_value {
-        return Err("Das Ende muss nach dem Beginn liegen".to_string());
+        return Err("End time must be after start time".to_string());
     }
     let status = match status.to_ascii_uppercase().as_str() {
         "TENTATIVE" => "TENTATIVE",
         "CANCELLED" => "CANCELLED",
         "CONFIRMED" => "CONFIRMED",
-        _ => return Err("Der Terminstatus ist ungültig".to_string()),
+        _ => return Err("Invalid event status".to_string()),
     };
     for (field, value) in [
         ("RRULE", recurrence),
         ("RDATE", rdates),
         ("EXDATE", exdates),
-        ("Teilnehmer", attendees),
-        ("Räume", rooms),
-        ("Konferenz-URL", conference),
+        ("Attendees", attendees),
+        ("Rooms", rooms),
+        ("Conference URL", conference),
     ] {
         if value
             .chars()
             .any(|character| character == '\r' || character == '\n')
         {
-            return Err(format!("{field} enthält ungültige Zeilenumbrüche"));
+            return Err(format!("{field} contains invalid line breaks"));
         }
     }
 
@@ -4466,11 +5088,11 @@ fn parse_event_datetime(value: &str, all_day: bool, field_name: &str) -> Result<
     if all_day {
         return NaiveDate::parse_from_str(value, "%Y-%m-%d")
             .map(|date| date.format("%Y%m%d").to_string())
-            .map_err(|_| format!("{field_name}: erwartet YYYY-MM-DD"));
+            .map_err(|_| format!("{field_name}: expected YYYY-MM-DD"));
     }
     NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M")
         .map(|date_time| date_time.format("%Y%m%dT%H%M%S").to_string())
-        .map_err(|_| format!("{field_name}: erwartet YYYY-MM-DD HH:MM"))
+        .map_err(|_| format!("{field_name}: expected YYYY-MM-DD HH:MM"))
 }
 
 fn normalize_timezone_input(raw: &str) -> Result<Option<String>, String> {
@@ -4488,7 +5110,7 @@ fn normalize_timezone_input(raw: &str) -> Result<Option<String>, String> {
         return Ok(Some("UTC".to_string()));
     }
     if glib::TimeZone::from_identifier(Some(trimmed)).is_none() {
-        return Err(format!("Ungültige Zeitzone: {trimmed}"));
+        return Err(format!("Invalid timezone: {trimmed}"));
     }
     Ok(Some(trimmed.to_string()))
 }
@@ -4503,8 +5125,8 @@ fn prepare_end_val_for_timezones(
     if all_day {
         return Ok(end_val.to_string());
     }
-    let start_ical = parse_event_datetime(start_val, false, "Beginn")?;
-    let end_ical = parse_event_datetime(end_val, false, "Ende")?;
+    let start_ical = parse_event_datetime(start_val, false, "Starts")?;
+    let end_ical = parse_event_datetime(end_val, false, "Ends")?;
     let stz = normalize_timezone_input(start_tz)?;
     let etz = match end_tz {
         Some(e) => normalize_timezone_input(e)?,
@@ -4524,7 +5146,7 @@ fn prepare_end_val_for_timezones(
             crate::services::ical_time_service::property_local_timestamp(&end_prop, &end_ical, 0),
         ) {
             if e_ts <= s_ts {
-                return Err("Das Ende (inkl. Zeitzone) muss nach dem Beginn liegen".to_string());
+                return Err("End time (including timezone) must be after start time".to_string());
             }
             if end_ical <= start_ical {
                 if let Ok(dt) = NaiveDateTime::parse_from_str(start_val.trim(), "%Y-%m-%d %H:%M") {
@@ -4552,8 +5174,8 @@ pub(crate) fn apply_event_timezones_to_component(
         Some(e) => normalize_timezone_input(e)?,
         None => stz.clone(),
     };
-    let start_ical = parse_event_datetime(start_val, false, "Beginn")?;
-    let end_ical = parse_event_datetime(end_val, false, "Ende")?;
+    let start_ical = parse_event_datetime(start_val, false, "Starts")?;
+    let end_ical = parse_event_datetime(end_val, false, "Ends")?;
     let start_prop = match &stz {
         Some(tz) => format!("DTSTART;TZID={tz}"),
         None => "DTSTART".to_string(),
