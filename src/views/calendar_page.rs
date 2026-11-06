@@ -3055,7 +3055,7 @@ impl CalendarPage {
             let mode_box = gtk::Box::builder()
                 .orientation(gtk::Orientation::Horizontal)
                 .spacing(0)
-                .css_classes(vec!["linked"])
+                .css_classes(vec!["linked", "sidebar-layout-mode-toggler"])
                 .valign(gtk::Align::Center)
                 .build();
 
@@ -4096,26 +4096,19 @@ impl CalendarPage {
                 let (ref bx0, _, exp0) = ordered_containers[0];
                 let (ref bx1, _, exp1) = ordered_containers[1];
                 let (ref bx2, _, exp2) = ordered_containers[2];
-                let approx_inner_h = if exp0 {
-                    (outer_h * 55 / 100).max(240)
-                } else {
+                let approx_inner_h = if !exp0 {
                     (outer_h - SIDEBAR_COLLAPSED_HEADER_H).max(240)
+                } else if exp1 && !exp2 {
+                    (outer_h * 75 / 100).max(320)
+                } else {
+                    (outer_h * 55 / 100).max(240)
                 };
                 let d1 = compute_compact_box_height(bx1.upcast_ref(), approx_inner_h);
                 let d2 = compute_compact_box_height(bx2.upcast_ref(), approx_inner_h);
                 let outer_saved = self.imp().sidebar_saved_vpane_pos.get();
                 let outer_manual_bh = match (exp1, exp2, self.imp().sidebar_manual_bottom_h.get()) {
                     (true, true, Some(mbh)) => Some(mbh),
-                    (true, false, Some(mbh)) => {
-                        let m_h = self
-                            .imp()
-                            .sidebar_manual_inner_bottom_h
-                            .get()
-                            .or(d2)
-                            .unwrap_or(104);
-                        let min_h = d1.unwrap_or(96) + SIDEBAR_COLLAPSED_HEADER_H + 2;
-                        Some((mbh - m_h + SIDEBAR_COLLAPSED_HEADER_H + 2).max(min_h))
-                    }
+                    (true, false, Some(mbh)) => Some(mbh),
                     (false, true, _) => self
                         .imp()
                         .sidebar_manual_inner_bottom_h
@@ -4133,7 +4126,14 @@ impl CalendarPage {
                         };
                         Some((h1 + h2 + 6).min(cap))
                     }
-                    (true, false, Some(h1), _) => Some(h1 + SIDEBAR_COLLAPSED_HEADER_H + 2),
+                    (true, false, Some(h1), _) => {
+                        let cap = if outer_h > 360 {
+                            (outer_h * 52 / 100).max(210)
+                        } else {
+                            260
+                        };
+                        Some((h1 + SIDEBAR_COLLAPSED_HEADER_H + 2).min(cap))
+                    }
                     (false, true, _, Some(h2)) => Some(h2 + SIDEBAR_COLLAPSED_HEADER_H + 2),
                     (false, false, _, _) => Some(SIDEBAR_COLLAPSED_HEADER_H * 2 + 2),
                     _ => None,
@@ -4157,7 +4157,7 @@ impl CalendarPage {
                 } else {
                     None
                 };
-                let inner_pos = apply_two_pane_accordion(
+                let _inner_pos = apply_two_pane_accordion(
                     &tag_inner_vpaned,
                     expected_inner_h,
                     bx1.upcast_ref(),
@@ -4169,18 +4169,43 @@ impl CalendarPage {
                     d1,
                     d2,
                 );
-                if raw_outer_h > 220 && (tag_inner_vpaned.height() - expected_inner_h).abs() > 8 {
+                if raw_outer_h > 220 {
                     let page_weak = self.downgrade();
-                    let inner_weak = tag_inner_vpaned.downgrade();
-                    glib::idle_add_local_once(move || {
-                        if let (Some(page), Some(inner)) = (page_weak.upgrade(), inner_weak.upgrade()) {
+                    let ticks_left = Rc::new(Cell::new(2u8));
+                    tag_inner_vpaned.add_tick_callback(move |inner, _| {
+                        let rem = ticks_left.get();
+                        if rem == 0 {
+                            return glib::ControlFlow::Break;
+                        }
+                        ticks_left.set(rem - 1);
+                        if let Some(page) = page_weak.upgrade() {
                             if !page.imp().sidebar_vpane_dragging.get()
                                 && !page.imp().sidebar_inner_vpane_dragging.get()
                             {
-                                page.imp().syncing_sidebar_vpane.set(true);
-                                inner.set_position(inner_pos);
-                                page.imp().syncing_sidebar_vpane.set(false);
+                                let real_h = inner.height();
+                                if real_h > 68 {
+                                    let (pos, resize_start, resize_end) =
+                                        compute_two_pane_accordion_layout(
+                                            real_h,
+                                            exp1,
+                                            exp2,
+                                            inner_saved,
+                                            inner_manual_bh,
+                                            d1,
+                                            d2,
+                                        );
+                                    page.imp().syncing_sidebar_vpane.set(true);
+                                    inner.set_resize_start_child(resize_start);
+                                    inner.set_resize_end_child(resize_end);
+                                    inner.set_position(pos);
+                                    page.imp().syncing_sidebar_vpane.set(false);
+                                }
                             }
+                        }
+                        if rem <= 1 {
+                            glib::ControlFlow::Break
+                        } else {
+                            glib::ControlFlow::Continue
                         }
                     });
                 }
@@ -7945,7 +7970,10 @@ impl CalendarPage {
         month_canvas.set_draw_func(move |_, cr, width_i32, height_i32| {
             let width = width_i32 as f64;
             let height = height_i32 as f64;
-            let is_dark = adw::StyleManager::default().is_dark();
+            let is_dark = adw::StyleManager::default().is_dark()
+                || AppSettings::try_new()
+                    .map(|s| s.force_dark_mode())
+                    .unwrap_or(false);
 
             let Some(page) = page_weak_draw.upgrade() else { return };
             let layout_rc = page.imp().month_layout.borrow().as_ref().cloned();
@@ -8980,7 +9008,10 @@ impl CalendarPage {
             let Some(page) = page_weak_draw.upgrade() else { return };
             let width = width_i32 as f64;
             let height = height_i32 as f64;
-            let is_dark = adw::StyleManager::default().is_dark();
+            let is_dark = adw::StyleManager::default().is_dark()
+                || AppSettings::try_new()
+                    .map(|s| s.force_dark_mode())
+                    .unwrap_or(false);
 
             let items_ref = page.imp().agenda_items.borrow();
             if items_ref.is_empty() {
@@ -9931,7 +9962,10 @@ impl CalendarPage {
             let Some(page) = page_weak_draw.upgrade() else { return };
             let width = width_i32 as f64;
             let height = height_i32 as f64;
-            let is_dark = adw::StyleManager::default().is_dark();
+            let is_dark = adw::StyleManager::default().is_dark()
+                || AppSettings::try_new()
+                    .map(|s| s.force_dark_mode())
+                    .unwrap_or(false);
             let year = page.current_calendar_viewport().anchor_date.year();
             let selected_range: Option<(NaiveDate, NaiveDate)> = if let Some(drag) = *page.imp().month_drag_selection.borrow() {
                 let (s, e) = if drag.start_date <= drag.current_date {
@@ -10875,7 +10909,10 @@ impl CalendarPage {
             let Some(page) = page_weak_draw.upgrade() else { return };
             let width = width_i32 as f64;
             let height = height_i32 as f64;
-            let is_dark = adw::StyleManager::default().is_dark();
+            let is_dark = adw::StyleManager::default().is_dark()
+                || AppSettings::try_new()
+                    .map(|s| s.force_dark_mode())
+                    .unwrap_or(false);
             let row_height = 46.0f64;
 
             let (clip_y1, clip_y2) = match cr.clip_extents() {
@@ -11491,18 +11528,14 @@ impl CalendarPage {
         tag_inner_vpaned.add_controller(inner_click);
 
         let page_weak_vpane = self.downgrade();
-        let last_outer_vpane_h = Rc::new(Cell::new(0i32));
         tag_vpaned.connect_position_notify(move |paned| {
             let Some(page) = page_weak_vpane.upgrade() else { return };
             let h = paned.height();
-            let prev_h = last_outer_vpane_h.replace(h);
             if page.imp().syncing_sidebar_vpane.get() {
                 return;
             }
             if let (Some(start), Some(end)) = (paned.start_child(), paned.end_child()) {
-                let height_stable = prev_h > 220 && (h - prev_h).abs() <= 2;
-                let user_drag =
-                    page.imp().sidebar_vpane_dragging.get() || (paned.is_mapped() && height_stable);
+                let user_drag = page.imp().sidebar_vpane_dragging.get();
                 if !user_drag || !start.vexpands() || !end.vexpands() {
                     return;
                 }
@@ -11521,18 +11554,14 @@ impl CalendarPage {
         });
 
         let page_weak_inner_vpane = self.downgrade();
-        let last_inner_vpane_h = Rc::new(Cell::new(0i32));
         tag_inner_vpaned.connect_position_notify(move |paned| {
             let Some(page) = page_weak_inner_vpane.upgrade() else { return };
             let h = paned.height();
-            let prev_h = last_inner_vpane_h.replace(h);
             if page.imp().syncing_sidebar_vpane.get() {
                 return;
             }
             if let (Some(start), Some(end)) = (paned.start_child(), paned.end_child()) {
-                let height_stable = prev_h > 180 && (h - prev_h).abs() <= 2;
-                let user_drag = page.imp().sidebar_inner_vpane_dragging.get()
-                    || (paned.is_mapped() && height_stable);
+                let user_drag = page.imp().sidebar_inner_vpane_dragging.get();
                 if !user_drag || !start.vexpands() || !end.vexpands() {
                     return;
                 }
@@ -11730,7 +11759,10 @@ impl CalendarPage {
             let Some(page) = page_weak_draw.upgrade() else { return };
             let width = width_i32 as f64;
             let height = height_i32 as f64;
-            let is_dark = adw::StyleManager::default().is_dark();
+            let is_dark = adw::StyleManager::default().is_dark()
+                || AppSettings::try_new()
+                    .map(|s| s.force_dark_mode())
+                    .unwrap_or(false);
             let layout_opt = page.imp().taskpad_layout.borrow().clone();
             let hovered_idx = *page.imp().taskpad_hovered_index.borrow();
             let selected_idx = *page.imp().taskpad_selected_index.borrow();
@@ -12013,7 +12045,6 @@ impl CalendarPage {
             .margin_bottom(2)
             .overflow(gtk::Overflow::Hidden)
             .css_classes(vec![
-                "sidebar-drawer-header",
                 "memos-section-header",
                 "sidebar-section-header-slim",
             ])
@@ -15388,7 +15419,10 @@ impl CalendarPage {
             let width = width_i32 as f64;
             let height = height_i32 as f64;
             let eff_slot_h = (height / slot_count as f64).max(1.0);
-            let is_dark = adw::StyleManager::default().is_dark();
+            let is_dark = adw::StyleManager::default().is_dark()
+                || AppSettings::try_new()
+                    .map(|s| s.force_dark_mode())
+                    .unwrap_or(false);
 
             let workday_y1 = (workday_start as f64 / 1440.0) * height;
             let workday_y2 = (workday_end as f64 / 1440.0) * height;
@@ -15499,7 +15533,10 @@ impl CalendarPage {
                 let width = width_i32 as f64;
                 let height = height_i32 as f64;
                 let eff_slot_h = (height / slot_count as f64).max(1.0);
-                let is_dark = adw::StyleManager::default().is_dark();
+                let is_dark = adw::StyleManager::default().is_dark()
+                || AppSettings::try_new()
+                    .map(|s| s.force_dark_mode())
+                    .unwrap_or(false);
 
                 let workday_y1 = (workday_start as f64 / 1440.0) * height;
                 let workday_y2 = (workday_end as f64 / 1440.0) * height;
@@ -15587,7 +15624,10 @@ impl CalendarPage {
                 let width = width_i32 as f64;
                 let height = height_i32 as f64;
                 let eff_slot_h = (height / slot_count as f64).max(1.0);
-                let is_dark = adw::StyleManager::default().is_dark();
+                let is_dark = adw::StyleManager::default().is_dark()
+                || AppSettings::try_new()
+                    .map(|s| s.force_dark_mode())
+                    .unwrap_or(false);
 
                 if let Ok(mut font_options) = gtk::cairo::FontOptions::new() {
                     font_options.set_antialias(gtk::cairo::Antialias::Subpixel);
@@ -19984,7 +20024,10 @@ impl CalendarPage {
                 .spacing(4)
                 .margin_top(2)
                 .build();
-            let is_dark = adw::StyleManager::default().is_dark();
+            let is_dark = adw::StyleManager::default().is_dark()
+                || AppSettings::try_new()
+                    .map(|s| s.force_dark_mode())
+                    .unwrap_or(false);
 
             // 1. All-day & Multi-day pills first (matching BusyCal)
             for ev in day_events.iter() {
@@ -21891,13 +21934,6 @@ pub(crate) fn draw_taskpad_canvas(
     selected_idx: Option<usize>,
     is_dark: bool,
 ) {
-    if is_dark {
-        cr.set_source_rgb(0.14, 0.14, 0.14);
-    } else {
-        cr.set_source_rgb(1.0, 1.0, 1.0);
-    }
-    cr.paint().ok();
-
     for (idx, item) in layout.items.iter().enumerate() {
         if item.y + item.height < 0.0 || item.y > height {
             continue;
@@ -29986,7 +30022,10 @@ fn calendar_grid_event_chip(
                 return;
             }
 
-            let is_dark = adw::StyleManager::default().is_dark();
+            let is_dark = adw::StyleManager::default().is_dark()
+                || AppSettings::try_new()
+                    .map(|s| s.force_dark_mode())
+                    .unwrap_or(false);
             let (bg_hex, hov_hex, _, fg_hex) = pastel_colors_for_hex(&color_draw, is_dark);
             let active_bg_hex = if is_hovered_draw.get() { &hov_hex } else { &bg_hex };
             let (bg_r, bg_g, bg_b) =
