@@ -1055,7 +1055,7 @@ impl MailViewerWindow {
                 next.set_sensitive(false);
             }
             MessageSearchStatus::Pending => {
-                status.set_label("Suchen …");
+                status.set_label(&gettext("Searching…"));
                 prev.set_sensitive(false);
                 next.set_sensitive(false);
             }

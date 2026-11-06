@@ -1789,9 +1789,11 @@ fn format_modern_recipient_summary(
     let total_count = to_list.len() + cc_list.len();
 
     let arrow = if expanded { "▴" } else { "▾" };
+    let to_prefix = crate::i18n::gettext("to");
+    let me_label = crate::i18n::gettext("me");
 
     if total_count == 0 {
-        return format!("an mich {arrow}");
+        return format!("{to_prefix} {me_label} {arrow}");
     }
 
     let is_user_email = |email: &str| -> bool {
@@ -1811,7 +1813,7 @@ fn format_modern_recipient_summary(
         if !email.trim().is_empty() {
             email.clone()
         } else {
-            "mich".to_string()
+            me_label
         }
     } else {
         let first = to_list.first().or_else(|| cc_list.first());
@@ -1821,17 +1823,17 @@ fn format_modern_recipient_summary(
             } else if !email.trim().is_empty() {
                 email.clone()
             } else {
-                "mich".to_string()
+                me_label
             }
         } else {
-            "mich".to_string()
+            me_label
         }
     };
 
     let summary = if total_count <= 1 {
-        format!("an {target_display}")
+        format!("{to_prefix} {target_display}")
     } else {
-        format!("an {target_display}, +{}", total_count - 1)
+        format!("{to_prefix} {target_display}, +{}", total_count - 1)
     };
 
     format!("{summary} {arrow}")
@@ -19260,14 +19262,21 @@ impl MailPage {
     }
     fn localize_folder_name(name: &str) -> String {
         let clean = name.trim();
-        match clean.to_ascii_lowercase().as_str() {
+        match clean.to_lowercase().as_str() {
             "inbox" | "posteingang" => crate::i18n::gettext("Inbox"),
-            "drafts" | "entwürfe" | "entwuerfe" => crate::i18n::gettext("Drafts"),
-            "sent" | "sent items" | "gesendet" => crate::i18n::gettext("Sent"),
-            "trash" | "mülleimer" | "papierkorb" | "deleted items" => crate::i18n::gettext("Trash"),
-            "junk" | "junk email" | "spam" => crate::i18n::gettext("Junk"),
+            "drafts" | "draft" | "entwürfe" | "entwuerfe" | "entwurf" => crate::i18n::gettext("Drafts"),
+            "sent" | "sent items" | "sent mail" | "gesendet" | "gesendete elemente" | "gesendete" => {
+                crate::i18n::gettext("Sent")
+            }
+            "trash" | "mülleimer" | "papierkorb" | "deleted items" | "gelöschte elemente"
+            | "geloeschte elemente" | "gelöscht" => crate::i18n::gettext("Trash"),
+            "junk" | "junk email" | "junk-e-mail" | "spam" => crate::i18n::gettext("Junk"),
             "archive" | "archiv" => crate::i18n::gettext("Archive"),
             "outbox" | "postausgang" => crate::i18n::gettext("Outbox"),
+            "synchronisierungsprobleme" | "sync issues" => crate::i18n::gettext("Sync Issues"),
+            "konflikte" | "conflicts" => crate::i18n::gettext("Conflicts"),
+            "lokale fehler" | "local failures" => crate::i18n::gettext("Local Failures"),
+            "serverfehler" | "server failures" => crate::i18n::gettext("Server Failures"),
             _ => clean.to_string(),
         }
     }
@@ -19495,12 +19504,13 @@ impl MailPage {
                         source_uid: node.source_uid.clone(),
                         source_display_name: node.source_display_name.clone(),
                         folder_name: parent.clone(),
-                        display_name: parent
-                            .rsplit('/')
-                            .next()
-                            .filter(|name| !name.is_empty())
-                            .unwrap_or(parent.as_str())
-                            .to_string(),
+                        display_name: Self::localize_folder_name(
+                            parent
+                                .rsplit('/')
+                                .next()
+                                .filter(|name| !name.is_empty())
+                                .unwrap_or(parent.as_str()),
+                        ),
                         icon_name: "folder-symbolic".to_string(),
                         unread_count: 0,
                         total_count: 0,
@@ -19547,10 +19557,11 @@ impl MailPage {
                 .entry(canonical_src.to_string())
                 .or_insert_with(|| {
                     let source_name = Self::localize_source_name(&folder.source_display_name);
+                    let fallback_account = crate::i18n::gettext("Mail Account");
                     FolderObject::new_backend(
                         &source_root_id,
                         if source_name.is_empty() {
-                            "Mailkonto"
+                            &fallback_account
                         } else {
                             &source_name
                         },
@@ -19670,11 +19681,11 @@ impl MailPage {
                     profile.email.clone()
                 };
                 let default_folders = [
-                    ("Posteingang", "Posteingang", "mail-inbox-symbolic"),
-                    ("Gesendete Elemente", "Gesendete Elemente", "mail-send-symbolic"),
-                    ("Entwürfe", "Entwürfe", "mail-drafts-symbolic"),
-                    ("Gelöschte Elemente", "Gelöschte Elemente", "user-trash-symbolic"),
-                    ("Junk-E-Mail", "Junk-E-Mail", "mail-spam-symbolic"),
+                    ("Posteingang", "Inbox", "mail-inbox-symbolic"),
+                    ("Gesendete Elemente", "Sent", "mail-send-symbolic"),
+                    ("Entwürfe", "Drafts", "mail-drafts-symbolic"),
+                    ("Gelöschte Elemente", "Trash", "user-trash-symbolic"),
+                    ("Junk-E-Mail", "Junk", "mail-spam-symbolic"),
                 ];
                 for (fname, dname, icon) in default_folders {
                     let key = Self::dynamic_folder_key(&profile_canonical, fname);
@@ -53422,50 +53433,50 @@ mod tests {
     fn test_format_modern_recipient_summary() {
         let user_emails = vec!["max.jensen1@gmail.com".to_string()];
 
-        // 1. Empty recipient -> "an mich ▾"
+        // 1. Empty recipient -> "to me ▾"
         assert_eq!(
             format_modern_recipient_summary("", "", &user_emails, false),
-            "an mich ▾"
+            "to me ▾"
         );
 
-        // 2. User recipient -> "an max.jensen1@gmail.com ▾" (or "▴" if expanded)
+        // 2. User recipient -> "to max.jensen1@gmail.com ▾" (or "▴" if expanded)
         assert_eq!(
             format_modern_recipient_summary("max.jensen1@gmail.com", "", &user_emails, false),
-            "an max.jensen1@gmail.com ▾"
+            "to max.jensen1@gmail.com ▾"
         );
         assert_eq!(
             format_modern_recipient_summary("max.jensen1@gmail.com", "", &user_emails, true),
-            "an max.jensen1@gmail.com ▴"
+            "to max.jensen1@gmail.com ▴"
         );
 
-        // 3. User with display name -> "an max.jensen1@gmail.com ▾"
+        // 3. User with display name -> "to max.jensen1@gmail.com ▾"
         assert_eq!(
             format_modern_recipient_summary("Martin <max.jensen1@gmail.com>", "", &user_emails, false),
-            "an max.jensen1@gmail.com ▾"
+            "to max.jensen1@gmail.com ▾"
         );
 
-        // 4. Multiple recipients including user -> "an max.jensen1@gmail.com, +1 ▾"
+        // 4. Multiple recipients including user -> "to max.jensen1@gmail.com, +1 ▾"
         assert_eq!(
             format_modern_recipient_summary("max.jensen1@gmail.com, colleague@example.com", "", &user_emails, false),
-            "an max.jensen1@gmail.com, +1 ▾"
+            "to max.jensen1@gmail.com, +1 ▾"
         );
 
-        // 5. Multiple recipients including user in CC -> "an max.jensen1@gmail.com, +1 ▾"
+        // 5. Multiple recipients including user in CC -> "to max.jensen1@gmail.com, +1 ▾"
         assert_eq!(
             format_modern_recipient_summary("colleague@example.com", "max.jensen1@gmail.com", &user_emails, false),
-            "an max.jensen1@gmail.com, +1 ▾"
+            "to max.jensen1@gmail.com, +1 ▾"
         );
 
-        // 6. Third party single recipient -> "an Alice ▾"
+        // 6. Third party single recipient -> "to Alice ▾"
         assert_eq!(
             format_modern_recipient_summary("Alice <alice@example.com>", "", &user_emails, false),
-            "an Alice ▾"
+            "to Alice ▾"
         );
 
-        // 7. Third party multiple recipients -> "an Alice, +2 ▾"
+        // 7. Third party multiple recipients -> "to Alice, +2 ▾"
         assert_eq!(
             format_modern_recipient_summary("Alice <alice@example.com>, Bob <bob@example.com>", "Charlie <charlie@example.com>", &user_emails, false),
-            "an Alice, +2 ▾"
+            "to Alice, +2 ▾"
         );
     }
 

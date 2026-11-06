@@ -1487,7 +1487,7 @@ impl MailViewer {
         self.imp().webview_ready.set(false);
         let Some(webview) = self.ensure_webkit() else {
             self.show_renderer_error();
-            return Err("WebKit-Druckdarsteller ist nicht verfügbar".to_string());
+            return Err("WebKit print renderer is not available".to_string());
         };
         let content_uri = renderer_content_uri(render_generation);
         self.imp().active_webview_generation.set(render_generation);
@@ -1522,25 +1522,25 @@ impl MailViewer {
         glib::timeout_add_local(Duration::from_millis(40), move || {
             let Some(viewer) = viewer.upgrade() else {
                 if let Some(callback) = callback.borrow_mut().take() {
-                    callback(Err("Druckdarsteller wurde geschlossen".to_string()));
+                    callback(Err("Print renderer was closed".to_string()));
                 }
                 return glib::ControlFlow::Break;
             };
             if viewer.imp().render_generation.get() != render_generation {
                 if let Some(callback) = callback.borrow_mut().take() {
                     callback(Err(
-                        "Druckdokument wurde durch eine neuere Auswahl ersetzt".to_string()
+                        "Print document was superseded by a newer selection".to_string()
                     ));
                 }
                 return glib::ControlFlow::Break;
-            }
+            };
             if !viewer.imp().webview_ready.get() {
                 let attempt = attempts.get().saturating_add(1);
                 attempts.set(attempt);
                 if attempt >= 250 {
                     if let Some(callback) = callback.borrow_mut().take() {
                         callback(Err(
-                            "Druckdarstellung wurde nicht rechtzeitig geladen".to_string()
+                            "Print preview did not finish loading in time".to_string()
                         ));
                     }
                     return glib::ControlFlow::Break;
@@ -1549,7 +1549,7 @@ impl MailViewer {
             }
             let Some(webview) = viewer.imp().webview.borrow().as_ref().cloned() else {
                 if let Some(callback) = callback.borrow_mut().take() {
-                    callback(Err("WebKit-Druckdarsteller ist nicht verfügbar".to_string()));
+                    callback(Err("WebKit print renderer is not available".to_string()));
                 }
                 return glib::ControlFlow::Break;
             };

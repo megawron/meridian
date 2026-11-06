@@ -8996,7 +8996,7 @@ fn refresh_contact_category_model(
         selected_category.replace(String::new());
     }
 
-    let mut names = vec!["Alle Kategorien".to_string()];
+    let mut names = vec![gettext("All Categories")];
     names.extend(categories);
     let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
     category_model.splice(0, category_model.n_items(), &name_refs);

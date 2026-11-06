@@ -1487,7 +1487,7 @@ fn transform_task_bulk_edit_component(
                     .parse::<u8>()
                     .ok()
                     .filter(|value| *value <= 100)
-                    .ok_or_else(|| "PERCENT-COMPLETE muss zwischen 0 und 100 liegen".to_string())
+                    .ok_or_else(|| "PERCENT-COMPLETE must be between 0 and 100".to_string())
             })
             .transpose()?
             .unwrap_or_else(|| parse_task_percent(component));
@@ -1554,14 +1554,14 @@ fn transform_task_bulk_edit_component(
                 .ok()
                 .filter(|value| *value <= 9)
                 .map(|value| value.to_string())
-                .ok_or_else(|| "PRIORITY muss leer oder zwischen 0 und 9 liegen".to_string())?;
+                .ok_or_else(|| "PRIORITY must be empty or between 0 and 9".to_string())?;
             result = update_ical_property(&result, "PRIORITY", Some(&priority));
         }
     }
     if let Some(class) = draft.class.as_deref() {
         let class = class.trim().to_ascii_uppercase();
         if !class.is_empty() && !matches!(class.as_str(), "PUBLIC" | "PRIVATE" | "CONFIDENTIAL") {
-            return Err("CLASS muss PUBLIC, PRIVATE, CONFIDENTIAL oder leer sein".to_string());
+            return Err("CLASS must be PUBLIC, PRIVATE, CONFIDENTIAL, or empty".to_string());
         }
         result = update_ical_property(
             &result,
