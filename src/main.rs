@@ -50,7 +50,7 @@ fn main() -> ExitCode {
 
     // Create and run the AdwApplication
     let is_preview = std::env::args().any(|a| a.starts_with("--settings-preview") || a.starts_with("--preferences-preview"));
-    let non_unique = is_preview || std::env::args().any(|a| a == "--non-unique");
+    let non_unique = cfg!(debug_assertions) || is_preview || std::env::args().any(|a| a == "--non-unique");
     let flags = if non_unique {
         gio::ApplicationFlags::HANDLES_OPEN | gio::ApplicationFlags::NON_UNIQUE
     } else {

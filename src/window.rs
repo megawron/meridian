@@ -4273,7 +4273,8 @@ impl MeridianWindow {
             .css_classes(vec!["caption", "statusbar-message"])
             .halign(gtk::Align::Start)
             .hexpand(true)
-            .selectable(true)
+            .selectable(false)
+            .can_focus(false)
             .single_line_mode(true)
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(10)
@@ -4373,6 +4374,15 @@ impl MeridianWindow {
                 }
                 debug_revealer_for_setting.set_reveal_child(enabled);
             });
+            let debug_revealer_for_sb_hide = debug_revealer.clone();
+            settings.connect_changed(Some("mail-show-statusbar"), move |s, _| {
+                if !s.boolean("mail-show-statusbar") {
+                    debug_revealer_for_sb_hide.set_reveal_child(false);
+                    if s.boolean("debug-console-enabled") {
+                        let _ = s.set_boolean("debug-console-enabled", false);
+                    }
+                }
+            });
         } else {
             debug_revealer.set_visible(false);
         }
@@ -4381,6 +4391,36 @@ impl MeridianWindow {
                 revealer.set_visible(false);
             }
         });
+
+        let statusbar_menu = gio::Menu::new();
+        let statusbar_section = gio::Menu::new();
+        statusbar_section.append(
+            Some(&crate::i18n::gettext("Show / Hide Log Console")),
+            Some("win.toggle-debug-console"),
+        );
+        statusbar_section.append(
+            Some(&crate::i18n::gettext("Hide Status Bar")),
+            Some("win.toggle-statusbar"),
+        );
+        statusbar_menu.append_section(None, &statusbar_section);
+        status_label.set_extra_menu(Some(&statusbar_menu));
+
+        let statusbar_popover = gtk::PopoverMenu::from_model(Some(&statusbar_menu));
+        statusbar_popover.set_has_arrow(false);
+        statusbar_popover.set_parent(&statusbar_box);
+        let statusbar_right_click = gtk::GestureClick::builder().button(3).build();
+        let popover_for_sb = statusbar_popover.clone();
+        statusbar_right_click.connect_pressed(move |gesture, _, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            popover_for_sb.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
+                x.round() as i32,
+                y.round() as i32,
+                1,
+                1,
+            )));
+            popover_for_sb.popup();
+        });
+        statusbar_box.add_controller(statusbar_right_click);
 
         statusbar_box.append(&online_toggle);
         statusbar_box.append(&status_label);
@@ -6628,7 +6668,175 @@ pub(crate) fn format_current_status_date() -> String {
     format!("{}, {} {} {}", weekday, now.day(), month, now.year())
 }
 
+#[derive(Clone, Copy, Debug)]
+struct DebugConsolePrefs {
+    height: i32,
+    show_warn_error: bool,
+    show_info: bool,
+    show_debug: bool,
+}
+
+impl Default for DebugConsolePrefs {
+    fn default() -> Self {
+        Self {
+            height: 160,
+            show_warn_error: true,
+            show_info: true,
+            show_debug: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConsoleLogLevel {
+    WarnError,
+    Info,
+    Debug,
+}
+
+fn classify_log_line(line: &str) -> ConsoleLogLevel {
+    if line.contains(" ERROR ")
+        || line.contains(" WARN ")
+        || line.starts_with("ERROR ")
+        || line.starts_with("WARN ")
+    {
+        ConsoleLogLevel::WarnError
+    } else if line.contains(" DEBUG ")
+        || line.contains(" TRACE ")
+        || line.starts_with("DEBUG ")
+        || line.starts_with("TRACE ")
+    {
+        ConsoleLogLevel::Debug
+    } else {
+        ConsoleLogLevel::Info
+    }
+}
+
+fn debug_console_prefs_memory() -> &'static std::sync::Mutex<Option<DebugConsolePrefs>> {
+    static PREFS: std::sync::OnceLock<std::sync::Mutex<Option<DebugConsolePrefs>>> =
+        std::sync::OnceLock::new();
+    PREFS.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(not(test))]
+fn debug_console_prefs_path() -> std::path::PathBuf {
+    glib::user_config_dir()
+        .join("meridian")
+        .join("debug_console.json")
+}
+
+fn load_debug_console_prefs() -> DebugConsolePrefs {
+    if let Ok(guard) = debug_console_prefs_memory().lock() {
+        if let Some(prefs) = *guard {
+            return prefs;
+        }
+    }
+    #[cfg(not(test))]
+    {
+        let path = debug_console_prefs_path();
+        if let Ok(raw) = std::fs::read_to_string(&path) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
+                let def = DebugConsolePrefs::default();
+                let prefs = DebugConsolePrefs {
+                    height: val
+                        .get("height")
+                        .and_then(|v| v.as_i64())
+                        .map(|v| (v as i32).clamp(60, 600))
+                        .unwrap_or(def.height),
+                    show_warn_error: val
+                        .get("show_warn_error")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(def.show_warn_error),
+                    show_info: val
+                        .get("show_info")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(def.show_info),
+                    show_debug: val
+                        .get("show_debug")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(def.show_debug),
+                };
+                if let Ok(mut guard) = debug_console_prefs_memory().lock() {
+                    *guard = Some(prefs);
+                }
+                return prefs;
+            }
+        }
+    }
+    let prefs = DebugConsolePrefs::default();
+    if let Ok(mut guard) = debug_console_prefs_memory().lock() {
+        *guard = Some(prefs);
+    }
+    prefs
+}
+
+fn save_debug_console_prefs(prefs: DebugConsolePrefs) {
+    if let Ok(mut guard) = debug_console_prefs_memory().lock() {
+        *guard = Some(prefs);
+    }
+    #[cfg(not(test))]
+    {
+        let path = debug_console_prefs_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let payload = serde_json::json!({
+            "height": prefs.height.clamp(60, 600),
+            "show_warn_error": prefs.show_warn_error,
+            "show_info": prefs.show_info,
+            "show_debug": prefs.show_debug,
+        });
+        if let Ok(serialized) = serde_json::to_string_pretty(&payload) {
+            let _ = std::fs::write(path, serialized);
+        }
+    }
+}
+
+fn is_interactive_debug_header_target(
+    container: &gtk::Box,
+    x: f64,
+    y: f64,
+) -> bool {
+    let Some(mut widget) = container.pick(x, y, gtk::PickFlags::DEFAULT) else {
+        return false;
+    };
+    loop {
+        if widget.downcast_ref::<gtk::Button>().is_some()
+            || widget.downcast_ref::<gtk::ToggleButton>().is_some()
+            || widget.downcast_ref::<gtk::SearchEntry>().is_some()
+            || widget.downcast_ref::<gtk::Text>().is_some()
+        {
+            return true;
+        }
+        if widget == *container.upcast_ref::<gtk::Widget>() {
+            break;
+        }
+        let Some(parent) = widget.parent() else {
+            break;
+        };
+        widget = parent;
+    }
+    false
+}
+
+fn can_resize_debug_console_at(container: &gtk::Box, header: &gtk::Box, x: f64, y: f64) -> bool {
+    if y < 0.0 {
+        return false;
+    }
+    if y <= 5.0 {
+        return true;
+    }
+    let header_h = header.height().max(22) as f64;
+    if y <= header_h && !is_interactive_debug_header_target(container, x, y) {
+        return true;
+    }
+    false
+}
+
 fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
+    let initial_prefs = load_debug_console_prefs();
+    let prefs_state = std::rc::Rc::new(std::cell::Cell::new(initial_prefs));
+
     let container = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .vexpand(false)
@@ -6653,10 +6861,48 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
     let search_placeholder = gettext("Filter logs…");
     let search_entry = gtk::SearchEntry::builder()
         .placeholder_text(&search_placeholder)
-        .hexpand(true)
-        .margin_start(8)
-        .margin_end(8)
+        .hexpand(false)
+        .width_chars(22)
+        .max_width_chars(30)
+        .margin_start(6)
+        .margin_end(4)
         .build();
+
+    let header_spacer = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .hexpand(true)
+        .build();
+
+    let filter_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(3)
+        .css_classes(vec!["debug-console-filters"])
+        .build();
+
+    let filter_warn_btn = gtk::ToggleButton::builder()
+        .label(&gettext("Warn/Err"))
+        .tooltip_text(&gettext("Show warnings and errors (WARN / ERROR)"))
+        .active(initial_prefs.show_warn_error)
+        .css_classes(vec!["flat", "debug-filter-chip"])
+        .build();
+
+    let filter_info_btn = gtk::ToggleButton::builder()
+        .label(&gettext("Info"))
+        .tooltip_text(&gettext("Show status and info messages (INFO)"))
+        .active(initial_prefs.show_info)
+        .css_classes(vec!["flat", "debug-filter-chip"])
+        .build();
+
+    let filter_debug_btn = gtk::ToggleButton::builder()
+        .label(&gettext("Debug"))
+        .tooltip_text(&gettext("Show automatic verbose background logs (DEBUG / TRACE)"))
+        .active(initial_prefs.show_debug)
+        .css_classes(vec!["flat", "debug-filter-chip"])
+        .build();
+
+    filter_box.append(&filter_warn_btn);
+    filter_box.append(&filter_info_btn);
+    filter_box.append(&filter_debug_btn);
 
     let pause_tooltip = gettext("Pause live updates");
     let pause_button = gtk::ToggleButton::builder()
@@ -6689,6 +6935,8 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
     header.append(&title_icon);
     header.append(&title_label);
     header.append(&search_entry);
+    header.append(&header_spacer);
+    header.append(&filter_box);
     header.append(&pause_button);
     header.append(&copy_button);
     header.append(&clear_button);
@@ -6706,12 +6954,14 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
         .bottom_margin(4)
         .build();
 
+    let initial_height = initial_prefs.height.clamp(60, 600);
     let scrolled = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Automatic)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
-        .propagate_natural_height(true)
-        .min_content_height(120)
-        .max_content_height(180)
+        .propagate_natural_height(false)
+        .min_content_height(initial_height)
+        .max_content_height(initial_height)
+        .height_request(initial_height)
         .vexpand(false)
         .valign(gtk::Align::End)
         .child(&text_view)
@@ -6719,6 +6969,111 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
 
     container.append(&header);
     container.append(&scrolled);
+
+    // Top-border & header drag-to-resize controller
+    {
+        let motion = gtk::EventControllerMotion::new();
+        motion.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let container_for_motion = container.clone();
+        let header_for_motion = header.clone();
+        motion.connect_motion(move |_, x, y| {
+            if can_resize_debug_console_at(&container_for_motion, &header_for_motion, x, y) {
+                container_for_motion.set_cursor_from_name(Some("ns-resize"));
+            } else {
+                container_for_motion.set_cursor_from_name(None);
+            }
+        });
+        let container_for_leave = container.clone();
+        motion.connect_leave(move |_| {
+            container_for_leave.set_cursor_from_name(None);
+        });
+        container.add_controller(motion);
+
+        let drag = gtk::GestureDrag::new();
+        drag.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let drag_start_root_y = std::rc::Rc::new(std::cell::Cell::new(0.0f64));
+        let drag_start_pos = std::rc::Rc::new(std::cell::Cell::new((0.0f64, 0.0f64)));
+        let drag_start_height = std::rc::Rc::new(std::cell::Cell::new(initial_height));
+        let drag_active = std::rc::Rc::new(std::cell::Cell::new(false));
+
+        let container_for_begin = container.clone();
+        let header_for_begin = header.clone();
+        let prefs_for_begin = std::rc::Rc::clone(&prefs_state);
+        let start_root_y_for_begin = std::rc::Rc::clone(&drag_start_root_y);
+        let start_pos_for_begin = std::rc::Rc::clone(&drag_start_pos);
+        let start_h_for_begin = std::rc::Rc::clone(&drag_start_height);
+        let active_for_begin = std::rc::Rc::clone(&drag_active);
+        drag.connect_drag_begin(move |gesture, start_x, start_y| {
+            if !can_resize_debug_console_at(
+                &container_for_begin,
+                &header_for_begin,
+                start_x,
+                start_y,
+            ) {
+                active_for_begin.set(false);
+                gesture.set_state(gtk::EventSequenceState::Denied);
+                return;
+            }
+            let root_y = container_for_begin
+                .root()
+                .and_then(|root| {
+                    container_for_begin.compute_point(
+                        &root,
+                        &gtk::graphene::Point::new(start_x as f32, start_y as f32),
+                    )
+                })
+                .map(|pt| pt.y() as f64)
+                .unwrap_or(start_y);
+            start_pos_for_begin.set((start_x, start_y));
+            start_root_y_for_begin.set(root_y);
+            start_h_for_begin.set(prefs_for_begin.get().height.clamp(60, 600));
+            active_for_begin.set(true);
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+        });
+
+        let container_for_update = container.clone();
+        let scrolled_for_update = scrolled.clone();
+        let prefs_for_update = std::rc::Rc::clone(&prefs_state);
+        let start_root_y_for_update = std::rc::Rc::clone(&drag_start_root_y);
+        let start_pos_for_update = std::rc::Rc::clone(&drag_start_pos);
+        let start_h_for_update = std::rc::Rc::clone(&drag_start_height);
+        let active_for_update = std::rc::Rc::clone(&drag_active);
+        drag.connect_drag_update(move |_, offset_x, offset_y| {
+            if !active_for_update.get() {
+                return;
+            }
+            let (sx, sy) = start_pos_for_update.get();
+            let cur_x = sx + offset_x;
+            let cur_y = sy + offset_y;
+            let cur_root_y = container_for_update
+                .root()
+                .and_then(|root| {
+                    container_for_update.compute_point(
+                        &root,
+                        &gtk::graphene::Point::new(cur_x as f32, cur_y as f32),
+                    )
+                })
+                .map(|pt| pt.y() as f64)
+                .unwrap_or(cur_y);
+            let delta = (start_root_y_for_update.get() - cur_root_y).round() as i32;
+            let new_height = (start_h_for_update.get() + delta).clamp(60, 600);
+            scrolled_for_update.set_min_content_height(new_height);
+            scrolled_for_update.set_max_content_height(new_height);
+            scrolled_for_update.set_height_request(new_height);
+            let mut prefs = prefs_for_update.get();
+            prefs.height = new_height;
+            prefs_for_update.set(prefs);
+        });
+
+        let prefs_for_end = std::rc::Rc::clone(&prefs_state);
+        let active_for_end = std::rc::Rc::clone(&drag_active);
+        drag.connect_drag_end(move |_, _, _| {
+            if active_for_end.replace(false) {
+                save_debug_console_prefs(prefs_for_end.get());
+            }
+        });
+        container.add_controller(drag);
+    }
 
     let revealer_for_close = revealer.clone();
     collapse_button.connect_clicked(move |_| {
@@ -6733,14 +7088,43 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
     let search_for_entry = std::rc::Rc::clone(&search_filter);
     let buffer_for_entry = buffer.clone();
     let text_view_for_entry = text_view.clone();
+    let prefs_for_refresh = std::rc::Rc::clone(&prefs_state);
+    let last_render_key: std::rc::Rc<
+        std::cell::RefCell<Option<(usize, String, String, bool, bool, bool)>>,
+    > = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let last_key_for_refresh = std::rc::Rc::clone(&last_render_key);
 
     let refresh_logs = std::rc::Rc::new(
         move |buf: &gtk::TextBuffer, tv: &gtk::TextView, filter: &str| {
+            let prefs = prefs_for_refresh.get();
             let logs = crate::services::log_buffer::recent_logs();
             let filter_lower = filter.trim().to_lowercase();
+            let last_line = logs.last().cloned().unwrap_or_default();
+            let current_key = (
+                logs.len(),
+                last_line,
+                filter_lower.clone(),
+                prefs.show_warn_error,
+                prefs.show_info,
+                prefs.show_debug,
+            );
+            if last_key_for_refresh.borrow().as_ref() == Some(&current_key) {
+                return;
+            }
+            *last_key_for_refresh.borrow_mut() = Some(current_key);
+
             let mut filtered_text: String = logs
                 .iter()
-                .filter(|line| filter_lower.is_empty() || line.to_lowercase().contains(&filter_lower))
+                .filter(|line| {
+                    let level_ok = match classify_log_line(line) {
+                        ConsoleLogLevel::WarnError => prefs.show_warn_error,
+                        ConsoleLogLevel::Info => prefs.show_info,
+                        ConsoleLogLevel::Debug => prefs.show_debug,
+                    };
+                    level_ok
+                        && (filter_lower.is_empty()
+                            || line.to_lowercase().contains(&filter_lower))
+                })
                 .cloned()
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -6764,9 +7148,61 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
         }));
     });
 
+    {
+        let prefs_for_warn = std::rc::Rc::clone(&prefs_state);
+        let refresh_for_warn = std::rc::Rc::clone(&refresh_logs);
+        let buffer_for_warn = buffer.clone();
+        let tv_for_warn = text_view.clone();
+        let search_for_warn = std::rc::Rc::clone(&search_filter);
+        filter_warn_btn.connect_toggled(move |btn| {
+            let mut prefs = prefs_for_warn.get();
+            prefs.show_warn_error = btn.is_active();
+            prefs_for_warn.set(prefs);
+            save_debug_console_prefs(prefs);
+            let filter = search_for_warn.borrow().clone();
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                refresh_for_warn(&buffer_for_warn, &tv_for_warn, &filter);
+            }));
+        });
+
+        let prefs_for_info = std::rc::Rc::clone(&prefs_state);
+        let refresh_for_info = std::rc::Rc::clone(&refresh_logs);
+        let buffer_for_info = buffer.clone();
+        let tv_for_info = text_view.clone();
+        let search_for_info = std::rc::Rc::clone(&search_filter);
+        filter_info_btn.connect_toggled(move |btn| {
+            let mut prefs = prefs_for_info.get();
+            prefs.show_info = btn.is_active();
+            prefs_for_info.set(prefs);
+            save_debug_console_prefs(prefs);
+            let filter = search_for_info.borrow().clone();
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                refresh_for_info(&buffer_for_info, &tv_for_info, &filter);
+            }));
+        });
+
+        let prefs_for_debug = std::rc::Rc::clone(&prefs_state);
+        let refresh_for_debug = std::rc::Rc::clone(&refresh_logs);
+        let buffer_for_debug = buffer.clone();
+        let tv_for_debug = text_view.clone();
+        let search_for_debug = std::rc::Rc::clone(&search_filter);
+        filter_debug_btn.connect_toggled(move |btn| {
+            let mut prefs = prefs_for_debug.get();
+            prefs.show_debug = btn.is_active();
+            prefs_for_debug.set(prefs);
+            save_debug_console_prefs(prefs);
+            let filter = search_for_debug.borrow().clone();
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                refresh_for_debug(&buffer_for_debug, &tv_for_debug, &filter);
+            }));
+        });
+    }
+
     let buffer_for_clear = buffer.clone();
+    let last_key_for_clear = std::rc::Rc::clone(&last_render_key);
     clear_button.connect_clicked(move |_| {
         crate::services::log_buffer::clear_logs();
+        *last_key_for_clear.borrow_mut() = None;
         buffer_for_clear.set_text("");
     });
 
@@ -6789,8 +7225,14 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
     let text_view_for_notify = text_view.clone();
     let search_for_notify = std::rc::Rc::clone(&search_filter);
     let refresh_for_notify = std::rc::Rc::clone(&refresh_logs);
+    let scrolled_for_notify = scrolled.clone();
+    let prefs_for_notify = std::rc::Rc::clone(&prefs_state);
     revealer.connect_reveal_child_notify(move |r| {
         if r.reveals_child() {
+            let h = prefs_for_notify.get().height.clamp(60, 600);
+            scrolled_for_notify.set_min_content_height(h);
+            scrolled_for_notify.set_max_content_height(h);
+            scrolled_for_notify.set_height_request(h);
             let filter = search_for_notify.borrow().clone();
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 refresh_for_notify(&buffer_for_notify, &text_view_for_notify, &filter);
