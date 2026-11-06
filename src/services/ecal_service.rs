@@ -41,7 +41,7 @@ pub(crate) enum ECalServiceError {
 impl std::fmt::Display for ECalServiceError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unsupported => write!(formatter, "Der Kalenderdienst ist nicht verfügbar"),
+            Self::Unsupported => write!(formatter, "Calendar service is unavailable"),
             Self::Backend(message) => write!(formatter, "{message}"),
         }
     }
@@ -189,8 +189,8 @@ pub(crate) enum ECalMutationError {
 impl std::fmt::Display for ECalMutationError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unsupported => write!(formatter, "Der Kalenderdienst ist nicht verfügbar"),
-            Self::Conflict(message) => write!(formatter, "Kalenderkonflikt: {message}"),
+            Self::Unsupported => write!(formatter, "Calendar service is unavailable"),
+            Self::Conflict(message) => write!(formatter, "Calendar conflict: {message}"),
             Self::Backend(message) => write!(formatter, "{message}"),
         }
     }
@@ -298,7 +298,7 @@ impl ECalService {
     ) -> Result<ECalRefreshOutcome, ECalServiceError> {
         if source_uid.trim().is_empty() {
             return Err(ECalServiceError::Backend(
-                "ECal-Aktualisierung benötigt eine Quell-UID".to_string(),
+                "ECal refresh requires a source UID".to_string(),
             ));
         }
         if source_uid == "local-calendar" {
@@ -350,12 +350,12 @@ impl ECalService {
     ) -> Result<(), ECalServiceError> {
         if source_uid.trim().is_empty() {
             return Err(ECalServiceError::Backend(
-                "ECal-Umbenennung benötigt eine Quell-UID".to_string(),
+                "ECal rename requires a source UID".to_string(),
             ));
         }
         if display_name.trim().is_empty() {
             return Err(ECalServiceError::Backend(
-                "ECal-Umbenennung benötigt einen Namen".to_string(),
+                "ECal rename requires a name".to_string(),
             ));
         }
         if source_uid == "local-calendar"
@@ -384,7 +384,7 @@ impl ECalService {
     ) -> Result<(), ECalServiceError> {
         if source_uid.trim().is_empty() {
             return Err(ECalServiceError::Backend(
-                "ECal-Löschen benötigt eine Quell-UID".to_string(),
+                "ECal deletion requires a source UID".to_string(),
             ));
         }
         if source_uid == "local-calendar"
@@ -414,12 +414,12 @@ impl ECalService {
     ) -> Result<ECalSourceCopyResult, ECalServiceError> {
         if from_source_uid.trim().is_empty() || to_source_uid.trim().is_empty() {
             return Err(ECalServiceError::Backend(
-                "ECal-Quellenkopie benötigt zwei Quell-UIDs".to_string(),
+                "ECal source copy requires two source UIDs".to_string(),
             ));
         }
         if from_source_uid == to_source_uid {
             return Err(ECalServiceError::Backend(
-                "Quelle und Ziel der ECal-Quellenkopie müssen verschieden sein".to_string(),
+                "Source and destination of ECal source copy must be different".to_string(),
             ));
         }
         if from_source_uid == "local-calendar"
@@ -451,12 +451,12 @@ impl ECalService {
     ) -> Result<ECalLocalSourceCreateResult, ECalServiceError> {
         if display_name.trim().is_empty() {
             return Err(ECalServiceError::Backend(
-                "Eine lokale ECal-Quelle benötigt einen Namen".to_string(),
+                "A local ECal source requires a name".to_string(),
             ));
         }
         if !is_valid_ical_source_color(color) {
             return Err(ECalServiceError::Backend(
-                "Die Farbe der lokalen ECal-Quelle muss #RRGGBB sein".to_string(),
+                "Local ECal source color must be #RRGGBB".to_string(),
             ));
         }
 
@@ -479,7 +479,7 @@ impl ECalService {
     ) -> Result<ECalLocalSourceProperties, ECalServiceError> {
         if source_uid.trim().is_empty() {
             return Err(ECalServiceError::Backend(
-                "Lokale ECal-Eigenschaften benötigen eine Quell-UID".to_string(),
+                "Local ECal properties require a source UID".to_string(),
             ));
         }
         if source_uid == "local-calendar"
@@ -509,17 +509,17 @@ impl ECalService {
     ) -> Result<ECalLocalSourcePropertiesUpdateResult, ECalServiceError> {
         if source_uid.trim().is_empty() {
             return Err(ECalServiceError::Backend(
-                "Lokale ECal-Eigenschaften benötigen eine Quell-UID".to_string(),
+                "Local ECal properties require a source UID".to_string(),
             ));
         }
         if update.display_name.trim().is_empty() {
             return Err(ECalServiceError::Backend(
-                "Lokale ECal-Eigenschaften benötigen einen Namen".to_string(),
+                "Local ECal properties require a name".to_string(),
             ));
         }
         if !is_valid_ical_source_color(&update.color) {
             return Err(ECalServiceError::Backend(
-                "Die Farbe der lokalen ECal-Quelle muss #RRGGBB sein".to_string(),
+                "Local ECal source color must be #RRGGBB".to_string(),
             ));
         }
         if update
@@ -528,7 +528,7 @@ impl ECalService {
             .is_some_and(|uri| uri.trim().is_empty())
         {
             return Err(ECalServiceError::Backend(
-                "Die Datei-URI der lokalen ECal-Quelle darf nicht leer sein".to_string(),
+                "Local ECal source file URI must not be empty".to_string(),
             ));
         }
         if source_uid == "local-calendar"
@@ -765,7 +765,7 @@ impl ECalService {
                 .map(|uid| (uid, String::new())),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "Unbekannte lokale ECal-Operation",
+                "Unknown local ECal operation",
             )),
         };
         result
@@ -797,7 +797,7 @@ impl ECalService {
         }
 
         let source_display_name = if service.username.trim().is_empty() {
-            "Microsoft 365 Kalender"
+            "Microsoft 365 Calendar"
         } else {
             "Microsoft 365"
         };
@@ -806,7 +806,7 @@ impl ECalService {
             parse_ical_component(raw, source_uid, source_display_name, &mut snapshot);
             snapshot.events.into_iter().next().ok_or_else(|| {
                 ECalMutationError::Backend(
-                    "Die iCalendar-Komponente enthält kein gültiges VEVENT".to_string(),
+                    "iCalendar component does not contain a valid VEVENT".to_string(),
                 )
             })
         };
@@ -823,7 +823,7 @@ impl ECalService {
                     })
                     .ok_or_else(|| {
                         ECalMutationError::Backend(
-                            "Graph lieferte kein verwendbares Kalenderereignis zurück".to_string(),
+                            "Graph did not return a usable calendar event".to_string(),
                         )
                     })
             }),
@@ -831,7 +831,7 @@ impl ECalService {
                 let uid = component_uid.unwrap_or_default();
                 if uid.trim().is_empty() {
                     Err(ECalMutationError::Backend(
-                        "Zum Ändern eines Graph-Kalenderereignisses fehlt die UID".to_string(),
+                        "Missing UID for modifying Graph calendar event".to_string(),
                     ))
                 } else {
                     parse_event(component).and_then(|event| {
@@ -845,7 +845,7 @@ impl ECalService {
                             })
                             .ok_or_else(|| {
                                 ECalMutationError::Backend(
-                                    "Graph lieferte kein verwendbares Kalenderereignis zurück"
+                                    "Graph did not return a usable calendar event"
                                         .to_string(),
                                 )
                             })
@@ -856,7 +856,7 @@ impl ECalService {
                 let uid = component_uid.unwrap_or_default();
                 if uid.trim().is_empty() {
                     Err(ECalMutationError::Backend(
-                        "Zum Löschen eines Graph-Kalenderereignisses fehlt die UID".to_string(),
+                        "Missing UID for deleting Graph calendar event".to_string(),
                     ))
                 } else {
                     service
@@ -869,7 +869,7 @@ impl ECalService {
                 }
             }
             _ => Err(ECalMutationError::Backend(
-                "Unbekannte Graph-ECal-Operation".to_string(),
+                "Unknown Graph ECal operation".to_string(),
             )),
         };
         Some(result)
@@ -889,13 +889,13 @@ impl ECalService {
 
         let source_uid_key = source_uid.to_string();
         let source_uid = CString::new(source_uid)
-            .map_err(|_| ECalMutationError::Backend("Quell-UID enthält NUL".to_string()))?;
+            .map_err(|_| ECalMutationError::Backend("Source UID contains NUL".to_string()))?;
         let component = CString::new(component)
-            .map_err(|_| ECalMutationError::Backend("Komponente enthält NUL".to_string()))?;
+            .map_err(|_| ECalMutationError::Backend("Component contains NUL".to_string()))?;
         let component_uid = component_uid
             .map(CString::new)
             .transpose()
-            .map_err(|_| ECalMutationError::Backend("Komponenten-UID enthält NUL".to_string()))?;
+            .map_err(|_| ECalMutationError::Backend("Component UID contains NUL".to_string()))?;
         let component_uid_pointer = component_uid
             .as_ref()
             .map_or(ptr::null(), |value| value.as_ptr());
@@ -929,12 +929,12 @@ impl ECalService {
             }),
             2 => {
                 Err(ECalMutationError::Conflict(error.unwrap_or_else(|| {
-                    "Backend meldet einen Konflikt".to_string()
+                    "Backend reported a conflict".to_string()
                 })))
             }
             _ => {
                 Err(ECalMutationError::Backend(error.unwrap_or_else(|| {
-                    "ECal-Mutation fehlgeschlagen".to_string()
+                    "ECal mutation failed".to_string()
                 })))
             }
         }
@@ -950,7 +950,7 @@ impl ECalService {
 
         let source_uid_key = source_uid.to_string();
         let source_uid = CString::new(source_uid)
-            .map_err(|_| ECalServiceError::Backend("Quell-UID enthält NUL".to_string()))?;
+            .map_err(|_| ECalServiceError::Backend("Source UID contains NUL".to_string()))?;
         let source_mutex = ecal_source_lock(&source_uid_key);
         let _guard = source_mutex
             .lock()
@@ -968,7 +968,7 @@ impl ECalService {
             1 => Ok(ECalRefreshOutcome::RemoteRefreshed),
             2 => Err(ECalServiceError::Unsupported),
             _ => Err(ECalServiceError::Backend(error.unwrap_or_else(|| {
-                "EDS/ECal-Aktualisierung fehlgeschlagen".to_string()
+                "EDS/ECal refresh failed".to_string()
             }))),
         }
     }
@@ -984,9 +984,9 @@ impl ECalService {
 
         let source_uid_key = source_uid.to_string();
         let source_uid = CString::new(source_uid)
-            .map_err(|_| ECalServiceError::Backend("Quell-UID enthält NUL".to_string()))?;
+            .map_err(|_| ECalServiceError::Backend("Source UID contains NUL".to_string()))?;
         let display_name = CString::new(display_name)
-            .map_err(|_| ECalServiceError::Backend("Quellenname enthält NUL".to_string()))?;
+            .map_err(|_| ECalServiceError::Backend("Source name contains NUL".to_string()))?;
         let source_mutex = ecal_source_lock(&source_uid_key);
         let _guard = source_mutex
             .lock()
@@ -1005,7 +1005,7 @@ impl ECalService {
             Ok(())
         } else {
             Err(ECalServiceError::Backend(error.unwrap_or_else(|| {
-                "EDS/ECal-Umbenennung fehlgeschlagen".to_string()
+                "EDS/ECal rename failed".to_string()
             })))
         }
     }
@@ -1020,7 +1020,7 @@ impl ECalService {
 
         let source_uid_key = source_uid.to_string();
         let source_uid = CString::new(source_uid)
-            .map_err(|_| ECalServiceError::Backend("Quell-UID enthält NUL".to_string()))?;
+            .map_err(|_| ECalServiceError::Backend("Source UID contains NUL".to_string()))?;
         let source_mutex = ecal_source_lock(&source_uid_key);
         let _guard = source_mutex
             .lock()
@@ -1038,7 +1038,7 @@ impl ECalService {
             Ok(())
         } else {
             Err(ECalServiceError::Backend(error.unwrap_or_else(|| {
-                "EDS/ECal-Löschen fehlgeschlagen".to_string()
+                "EDS/ECal deletion failed".to_string()
             })))
         }
     }
@@ -1053,9 +1053,9 @@ impl ECalService {
         use std::ffi::CString;
 
         let from_source_uid = CString::new(from_source_uid)
-            .map_err(|_| ECalServiceError::Backend("Quell-UID enthält NUL".to_string()))?;
+            .map_err(|_| ECalServiceError::Backend("Source UID contains NUL".to_string()))?;
         let to_source_uid = CString::new(to_source_uid)
-            .map_err(|_| ECalServiceError::Backend("Quell-UID enthält NUL".to_string()))?;
+            .map_err(|_| ECalServiceError::Backend("Source UID contains NUL".to_string()))?;
         let _guard = ECAL_NATIVE_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1084,12 +1084,12 @@ impl ECalService {
                 updated_count,
                 status: ECalSourceCopyStatus::PartialFailure(error.unwrap_or_else(|| {
                     format!(
-                        "ECal-Quellenkopie nach {copied_count} bestätigten Komponenten fehlgeschlagen"
+                        "ECal source copy failed after {copied_count} confirmed components"
                     )
                 })),
             }),
             _ => Err(ECalServiceError::Backend(error.unwrap_or_else(|| {
-                "EDS/ECal-Quellenkopie fehlgeschlagen".to_string()
+                "EDS/ECal source copy failed".to_string()
             }))),
         }
     }
@@ -1104,9 +1104,9 @@ impl ECalService {
         use std::ffi::CString;
 
         let display_name = CString::new(display_name)
-            .map_err(|_| ECalServiceError::Backend("Quellenname enthält NUL".to_string()))?;
+            .map_err(|_| ECalServiceError::Backend("Source name contains NUL".to_string()))?;
         let color = CString::new(color)
-            .map_err(|_| ECalServiceError::Backend("Quellenfarbe enthält NUL".to_string()))?;
+            .map_err(|_| ECalServiceError::Backend("Source color contains NUL".to_string()))?;
         let _guard = ECAL_NATIVE_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1135,7 +1135,7 @@ impl ECalService {
                 })
                 .ok_or_else(|| {
                     ECalServiceError::Backend(
-                        "EDS bestätigte eine lokale Quelle ohne gültige UID".to_string(),
+                        "EDS confirmed a local source without a valid UID".to_string(),
                     )
                 }),
             2 => source_uid
@@ -1143,18 +1143,18 @@ impl ECalService {
                     source_uid,
                     status: ECalLocalSourceCreateStatus::CreatedUnavailable(
                         warning.unwrap_or_else(|| {
-                            "Die lokale ECal-Quelle wurde erstellt, ist aber noch nicht erreichbar"
+                            "Local ECal source was created, but is not yet reachable"
                                 .to_string()
                         }),
                     ),
                 })
                 .ok_or_else(|| {
                     ECalServiceError::Backend(
-                        "EDS bestätigte eine lokale Quelle ohne gültige UID".to_string(),
+                        "EDS confirmed a local source without a valid UID".to_string(),
                     )
                 }),
             _ => Err(ECalServiceError::Backend(error.unwrap_or_else(|| {
-                "EDS konnte die lokale ECal-Quelle nicht erstellen".to_string()
+                "EDS could not create the local ECal source".to_string()
             }))),
         }
     }
@@ -1168,7 +1168,7 @@ impl ECalService {
         use std::ffi::CString;
 
         let source_uid = CString::new(source_uid)
-            .map_err(|_| ECalServiceError::Backend("Quell-UID enthält NUL".to_string()))?;
+            .map_err(|_| ECalServiceError::Backend("Source UID contains NUL".to_string()))?;
         let _guard = ECAL_NATIVE_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1200,7 +1200,7 @@ impl ECalService {
                     })
                     .ok_or_else(|| {
                         ECalServiceError::Backend(
-                            "EDS lieferte lokale Eigenschaften für eine andere oder ungültige Quelle"
+                            "EDS returned local properties for a different or invalid source"
                                 .to_string(),
                         )
                     });
@@ -1211,7 +1211,7 @@ impl ECalService {
                 Err(match result {
                     2 => ECalServiceError::Unsupported,
                     _ => ECalServiceError::Backend(error.unwrap_or_else(|| {
-                        "EDS konnte die lokalen ECal-Eigenschaften nicht lesen".to_string()
+                        "EDS could not read local ECal properties".to_string()
                     })),
                 })
             }
@@ -1229,19 +1229,19 @@ impl ECalService {
         use std::ffi::CString;
 
         let source_uid = CString::new(source_uid)
-            .map_err(|_| ECalServiceError::Backend("Quell-UID enthält NUL".to_string()))?;
+            .map_err(|_| ECalServiceError::Backend("Source UID contains NUL".to_string()))?;
         let display_name = CString::new(update.display_name.as_str())
-            .map_err(|_| ECalServiceError::Backend("Quellenname enthält NUL".to_string()))?;
+            .map_err(|_| ECalServiceError::Backend("Source name contains NUL".to_string()))?;
         let color = CString::new(update.color.as_str())
-            .map_err(|_| ECalServiceError::Backend("Quellenfarbe enthält NUL".to_string()))?;
+            .map_err(|_| ECalServiceError::Backend("Source color contains NUL".to_string()))?;
         let custom_file_uri = update
             .custom_file_uri
             .as_deref()
             .map(CString::new)
             .transpose()
-            .map_err(|_| ECalServiceError::Backend("Datei-URI enthält NUL".to_string()))?;
+            .map_err(|_| ECalServiceError::Backend("File URI contains NUL".to_string()))?;
         let email_address = CString::new(update.email_address.as_str())
-            .map_err(|_| ECalServiceError::Backend("E-Mail-Adresse enthält NUL".to_string()))?;
+            .map_err(|_| ECalServiceError::Backend("Email address contains NUL".to_string()))?;
         let _guard = ECAL_NATIVE_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1272,12 +1272,12 @@ impl ECalService {
             2 => Ok(ECalLocalSourcePropertiesUpdateResult {
                 source_uid: source_uid.to_string_lossy().into_owned(),
                 status: ECalLocalSourceCreateStatus::CreatedUnavailable(warning.unwrap_or_else(|| {
-                    "Die lokalen ECal-Eigenschaften wurden gespeichert, aber die Quelle ist noch nicht erreichbar".to_string()
+                    "Local ECal properties were saved, but the source is not yet reachable".to_string()
                 })),
             }),
             3 => Err(ECalServiceError::Unsupported),
             _ => Err(ECalServiceError::Backend(error.unwrap_or_else(|| {
-                "EDS konnte die lokalen ECal-Eigenschaften nicht speichern".to_string()
+                "EDS could not save local ECal properties".to_string()
             }))),
         }
     }
@@ -1307,7 +1307,7 @@ impl ECalService {
                 ffi::meridian_eds_ecal_free_source_capabilities(sources, count);
             }
             return Err(ECalServiceError::Backend(warning.unwrap_or_else(|| {
-                "EDS/ECal-Quellen konnten nicht gelesen werden".to_string()
+                "Could not read EDS/ECal sources".to_string()
             })));
         }
         let parsed = unsafe {
@@ -1319,12 +1319,12 @@ impl ECalService {
                     .map(|source| {
                         let source_uid = c_string(source.source_uid).ok_or_else(|| {
                             ECalServiceError::Backend(
-                                "EDS lieferte eine Quelle ohne gültige UID".to_string(),
+                                "EDS returned a source without a valid UID".to_string(),
                             )
                         })?;
                         if source_uid.trim().is_empty() {
                             return Err(ECalServiceError::Backend(
-                                "EDS lieferte eine Quelle ohne gültige UID".to_string(),
+                                "EDS returned a source without a valid UID".to_string(),
                             ));
                         }
                         let (task_assignment_supported, task_assignment_conversion_supported) =
@@ -1363,7 +1363,7 @@ impl ECalService {
             .any(|source| !identities.insert(source.source_uid.clone()))
         {
             return Err(ECalServiceError::Backend(
-                "EDS lieferte doppelte Quell-UIDs".to_string(),
+                "EDS returned duplicate source UIDs".to_string(),
             ));
         }
         Ok(ECalSourceDiscovery { sources, warning })
@@ -1418,7 +1418,7 @@ impl ECalWatcher {
         }
         if result == 0 || raw.is_null() {
             return Err(ECalServiceError::Backend(warning.unwrap_or_else(|| {
-                "EDS/ECal-Signalmonitor konnte nicht gestartet werden".to_string()
+                "Could not start EDS/ECal signal monitor".to_string()
             })));
         }
 
@@ -1456,7 +1456,7 @@ impl ECalWatcher {
         };
         if result < 0 {
             return Err(ECalServiceError::Backend(
-                "EDS/ECal-Signalmonitor wurde beendet".to_string(),
+                "EDS/ECal signal monitor terminated".to_string(),
             ));
         }
         if result == 0 {
@@ -1477,7 +1477,7 @@ impl ECalWatcher {
                     ffi::meridian_eds_ecal_free_watcher_event(&mut raw_event);
                 }
                 return Err(ECalServiceError::Backend(
-                    "EDS/ECal-Signalmonitor lieferte einen unbekannten Quellentyp".to_string(),
+                    "EDS/ECal signal monitor returned an unknown source type".to_string(),
                 ));
             }
         };
@@ -1490,7 +1490,7 @@ impl ECalWatcher {
                     ffi::meridian_eds_ecal_free_watcher_event(&mut raw_event);
                 }
                 return Err(ECalServiceError::Backend(error.unwrap_or_else(|| {
-                    "EDS/ECal-Signalmonitor meldete einen Fehler".to_string()
+                    "EDS/ECal signal monitor reported an error".to_string()
                 })));
             }
             _ => {
@@ -1498,7 +1498,7 @@ impl ECalWatcher {
                     ffi::meridian_eds_ecal_free_watcher_event(&mut raw_event);
                 }
                 return Err(ECalServiceError::Backend(
-                    "EDS/ECal-Signalmonitor lieferte einen unbekannten Ereignistyp".to_string(),
+                    "EDS/ECal signal monitor returned an unknown event type".to_string(),
                 ));
             }
         };
@@ -2250,17 +2250,44 @@ fn write_calendar_load_cache(
     result
 }
 
+fn filter_snapshot_enabled_sources(snapshot: &mut CalendarSnapshot) {
+    snapshot.events.retain(|ev| {
+        ev.source_uid.is_empty()
+            || crate::services::eds_service::is_source_enabled_for_service(
+                &ev.source_uid,
+                crate::services::eds_service::EdsSourceKind::Calendar,
+            )
+    });
+    snapshot.tasks.retain(|t| {
+        t.source_uid.is_empty()
+            || crate::services::eds_service::is_source_enabled_for_service(
+                &t.source_uid,
+                crate::services::eds_service::EdsSourceKind::Calendar,
+            )
+    });
+    snapshot.memos.retain(|m| {
+        m.source_uid.is_empty()
+            || crate::services::eds_service::is_source_enabled_for_service(
+                &m.source_uid,
+                crate::services::eds_service::EdsSourceKind::Calendar,
+            )
+    });
+}
+
 pub(crate) fn load_calendar_load_cache() -> Option<CalendarSnapshot> {
     if let Ok(guard) = MEMORY_CALENDAR_SNAPSHOT
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
     {
         if let Some(ref snapshot) = *guard {
-            return Some(snapshot.clone());
+            let mut filtered = snapshot.clone();
+            filter_snapshot_enabled_sources(&mut filtered);
+            return Some(filtered);
         }
     }
-    let loaded = read_calendar_load_cache(&calendar_cache_path());
-    if let Some(ref snapshot) = loaded {
+    let mut loaded = read_calendar_load_cache(&calendar_cache_path());
+    if let Some(ref mut snapshot) = loaded {
+        filter_snapshot_enabled_sources(snapshot);
         register_snapshot_components(snapshot);
         if let Ok(mut guard) = MEMORY_CALENDAR_SNAPSHOT
             .get_or_init(|| std::sync::Mutex::new(None))
@@ -2348,7 +2375,7 @@ fn load_snapshot_from_graph() -> Option<CalendarLoadResult> {
         .map_err(|error| error.to_string())
         .ok()?;
     let source_display_name = if service.username.trim().is_empty() {
-        "Microsoft 365 Kalender".to_string()
+        "Microsoft 365 Calendar".to_string()
     } else {
         format!("Microsoft 365 ({})", service.username)
     };
@@ -2842,7 +2869,7 @@ fn load_snapshot_native() -> Result<CalendarSnapshot, ECalServiceError> {
     let mut warnings = Vec::new();
     let mut native_successes = 0;
 
-    for (source_type, label) in [(0, "Kalender"), (1, "Aufgabenlisten"), (2, "Notizlisten")] {
+    for (source_type, label) in [(0, "Calendars"), (1, "Task Lists"), (2, "Memo Lists")] {
         match load_components_native(source_type, &mut snapshot) {
             Ok(result) => {
                 native_successes += 1;
@@ -2867,7 +2894,7 @@ fn load_snapshot_native() -> Result<CalendarSnapshot, ECalServiceError> {
             warnings
                 .first()
                 .cloned()
-                .unwrap_or_else(|| "EDS/ECal konnte nicht erreicht werden".to_string()),
+                .unwrap_or_else(|| "Could not reach EDS/ECal".to_string()),
         ));
     }
 
@@ -2911,6 +2938,14 @@ fn load_components_native(
                     continue;
                 };
                 let source_uid = c_string(entry.source_uid).unwrap_or_default();
+                if !source_uid.is_empty()
+                    && !crate::services::eds_service::is_source_enabled_for_service(
+                        &source_uid,
+                        crate::services::eds_service::EdsSourceKind::Calendar,
+                    )
+                {
+                    continue;
+                }
                 let source_display_name = c_string(entry.source_display_name).unwrap_or_default();
                 parse_ical_component(&component, &source_uid, &source_display_name, snapshot);
             }
@@ -2920,14 +2955,14 @@ fn load_components_native(
 
     if result == 0 {
         return Err(ECalServiceError::Backend(warning.unwrap_or_else(|| {
-            "EDS/ECal-Ladevorgang fehlgeschlagen".to_string()
+            "EDS/ECal load failed".to_string()
         })));
     }
 
     if configured_sources > 0 && successful_sources == 0 && failed_sources > 0 {
         return Ok(NativeTypeLoad {
             warning: Some(
-                warning.unwrap_or_else(|| "Keine ECal-Quelle konnte geöffnet werden".to_string()),
+                warning.unwrap_or_else(|| "No ECal source could be opened".to_string()),
             ),
         });
     }

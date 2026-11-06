@@ -83,20 +83,20 @@ impl EdsSourceDiscovery {
     pub fn status_text(&self) -> String {
         match (self.origin, self.sources.len(), self.error.as_deref()) {
             (EdsSourceOrigin::Live, count, Some(error)) => {
-                format!("{count} Kontoquelle(n); {error}")
+                format!("{count} account source(s); {error}")
             }
-            (EdsSourceOrigin::Live, 0, None) => "Keine Kontoquelle gefunden".to_string(),
-            (EdsSourceOrigin::Live, count, None) => format!("{count} Kontoquelle(n)"),
+            (EdsSourceOrigin::Live, 0, None) => "No account source found".to_string(),
+            (EdsSourceOrigin::Live, count, None) => format!("{count} account source(s)"),
             (EdsSourceOrigin::Cache, count, Some(error)) => format!(
-                "{count} zwischengespeicherte Kontoquelle(n); Live-Verbindung fehlgeschlagen: {error}"
+                "{count} cached account source(s); live connection failed: {error}"
             ),
             (EdsSourceOrigin::Cache, count, None) => {
-                format!("{count} zwischengespeicherte Kontoquelle(n)")
+                format!("{count} cached account source(s)")
             }
             (EdsSourceOrigin::Empty, _, Some(error)) => {
-                format!("Kontoquellen nicht erreichbar: {error}")
+                format!("Account sources unreachable: {error}")
             }
-            (EdsSourceOrigin::Empty, _, None) => "Keine Kontoquelle verfügbar".to_string(),
+            (EdsSourceOrigin::Empty, _, None) => "No account source available".to_string(),
         }
     }
 }
@@ -167,7 +167,7 @@ impl std::fmt::Display for EdsServiceError {
         match self {
             EdsServiceError::DBus(e) => write!(f, "D-Bus error: {}", e),
             EdsServiceError::DBusFdo(e) => write!(f, "D-Bus FDO error: {}", e),
-            EdsServiceError::RegistryUnavailable => write!(f, "Kontoquellen sind nicht verfügbar"),
+            EdsServiceError::RegistryUnavailable => write!(f, "Account sources are unavailable"),
             EdsServiceError::OperationFailed(msg) => write!(f, "Operation failed: {}", msg),
         }
     }
@@ -933,6 +933,12 @@ static SOURCE_ENABLED_CACHE: RwLock<
         std::collections::HashMap<(String, EdsSourceKind), bool>,
     )>,
 > = RwLock::new(None);
+static GOA_SERVICE_CACHE: RwLock<
+    Option<(
+        std::time::Instant,
+        std::collections::HashMap<(String, EdsSourceKind), Option<bool>>,
+    )>,
+> = RwLock::new(None);
 
 /// Invalidate cached collections and parent names so newly created or updated accounts are immediately visible.
 pub fn invalidate_account_collections_cache() {
@@ -944,6 +950,14 @@ pub fn invalidate_account_collections_cache() {
     }
     if let Ok(mut guard) = SOURCE_ENABLED_CACHE.write() {
         *guard = None;
+    }
+    if let Ok(mut guard) = GOA_SERVICE_CACHE.write() {
+        *guard = None;
+    }
+    if let Some(mutex) = MEMORY_SOURCES_CACHE.get() {
+        if let Ok(mut guard) = mutex.lock() {
+            guard.clear();
+        }
     }
 }
 
@@ -1102,46 +1116,84 @@ fn load_configured_account_collections_uncached() -> Vec<EdsAccountCollection> {
     collections
 }
 
-/// Check `~/.config/goa-1.0/accounts.conf` for whether a GNOME Online Account has enabled a service.
+/// Check live GOA D-Bus first, then `~/.config/goa-1.0/accounts.conf` for whether a GNOME Online Account has enabled a service.
 fn is_goa_account_service_enabled(account_id: &str, kind: EdsSourceKind) -> Option<bool> {
     let account_id = account_id.trim();
     if account_id.is_empty() {
         return None;
     }
-    let goa_conf = resolve_goa_accounts_conf_path();
-    if !goa_conf.is_file() {
-        return None;
+    let cache_key = (account_id.to_string(), kind);
+    if let Ok(guard) = GOA_SERVICE_CACHE.read() {
+        if let Some((instant, map)) = &*guard {
+            if instant.elapsed() < std::time::Duration::from_secs(6) {
+                if let Some(&cached) = map.get(&cache_key) {
+                    return cached;
+                }
+            }
+        }
     }
-    let kf = KeyFile::new();
-    if kf.load_from_file(&goa_conf, KeyFileFlags::NONE).is_err() {
-        return None;
-    }
-    let group = format!("Account {account_id}");
-    if !kf.has_group(&group) {
-        return None;
-    }
-    if kf.boolean(&group, "Disabled").unwrap_or(false)
-        || kf.boolean(&group, "IsTemporary").unwrap_or(false)
-    {
-        return Some(false);
-    }
+
     let (enabled_key, disabled_key) = match kind {
         EdsSourceKind::Mail => ("MailEnabled", "MailDisabled"),
         EdsSourceKind::Calendar => ("CalendarEnabled", "CalendarDisabled"),
         EdsSourceKind::AddressBook => ("ContactsEnabled", "ContactsDisabled"),
     };
-    if let Ok(disabled) = kf.boolean(&group, disabled_key) {
-        if disabled {
-            return Some(false);
+
+    let mut result = None;
+    let object_path = format!("/org/gnome/OnlineAccounts/Accounts/{account_id}");
+    if let Ok(bus) =
+        gtk::gio::bus_get_sync(gtk::gio::BusType::Session, gtk::gio::Cancellable::NONE)
+    {
+        if let Some(disabled) = read_goa_dbus_disabled_prop(&bus, &object_path, disabled_key) {
+            result = Some(!disabled);
         }
     }
-    if let Ok(enabled) = kf.boolean(&group, enabled_key) {
-        return Some(enabled);
+
+    if result.is_none() {
+        let goa_conf = resolve_goa_accounts_conf_path();
+        if goa_conf.is_file() {
+            let kf = KeyFile::new();
+            if kf.load_from_file(&goa_conf, KeyFileFlags::NONE).is_ok() {
+                let group = format!("Account {account_id}");
+                if kf.has_group(&group) {
+                    if kf.boolean(&group, "Disabled").unwrap_or(false)
+                        || kf.boolean(&group, "IsTemporary").unwrap_or(false)
+                    {
+                        result = Some(false);
+                    } else if let Ok(disabled) = kf.boolean(&group, disabled_key) {
+                        if disabled {
+                            result = Some(false);
+                        }
+                    }
+                    if result.is_none() {
+                        if let Ok(enabled) = kf.boolean(&group, enabled_key) {
+                            result = Some(enabled);
+                        }
+                    }
+                }
+            }
+        }
     }
-    None
+
+    if let Ok(mut guard) = GOA_SERVICE_CACHE.write() {
+        if let Some((instant, map)) = guard.as_mut() {
+            if instant.elapsed() < std::time::Duration::from_secs(6) {
+                map.insert(cache_key, result);
+            } else {
+                let mut new_map = std::collections::HashMap::new();
+                new_map.insert(cache_key, result);
+                *guard = Some((std::time::Instant::now(), new_map));
+            }
+        } else {
+            let mut new_map = std::collections::HashMap::new();
+            new_map.insert(cache_key, result);
+            *guard = Some((std::time::Instant::now(), new_map));
+        }
+    }
+    result
 }
 
-/// Check `~/.config/goa-1.0/accounts.conf` by account Identity or PresentationIdentity (e.g. email address).
+/// Check live GOA D-Bus / `~/.config/goa-1.0/accounts.conf` by account Identity or PresentationIdentity (e.g. email address).
 pub fn is_goa_identity_service_enabled(identity: &str, kind: EdsSourceKind) -> Option<bool> {
     let identity = identity.trim();
     if identity.is_empty() {
@@ -1156,16 +1208,11 @@ pub fn is_goa_identity_service_enabled(identity: &str, kind: EdsSourceKind) -> O
         return None;
     }
     let groups = kf.groups();
-    let (enabled_key, disabled_key) = match kind {
-        EdsSourceKind::Mail => ("MailEnabled", "MailDisabled"),
-        EdsSourceKind::Calendar => ("CalendarEnabled", "CalendarDisabled"),
-        EdsSourceKind::AddressBook => ("ContactsEnabled", "ContactsDisabled"),
-    };
     for group in groups {
         let g = group.as_str();
-        if !g.starts_with("Account ") {
+        let Some(account_id) = g.strip_prefix("Account ") else {
             continue;
-        }
+        };
         let matches_id = kf
             .string(g, "Identity")
             .ok()
@@ -1175,19 +1222,10 @@ pub fn is_goa_identity_service_enabled(identity: &str, kind: EdsSourceKind) -> O
                 .ok()
                 .is_some_and(|v| v.trim().eq_ignore_ascii_case(identity));
         if matches_id {
-            if kf.boolean(g, "Disabled").unwrap_or(false)
-                || kf.boolean(g, "IsTemporary").unwrap_or(false)
-            {
-                return Some(false);
+            if kf.boolean(g, "IsTemporary").unwrap_or(false) {
+                continue;
             }
-            if let Ok(disabled) = kf.boolean(g, disabled_key) {
-                if disabled {
-                    return Some(false);
-                }
-            }
-            if let Ok(enabled) = kf.boolean(g, enabled_key) {
-                return Some(enabled);
-            }
+            return is_goa_account_service_enabled(account_id.trim(), kind);
         }
     }
     None
@@ -1201,18 +1239,34 @@ pub fn is_parent_service_enabled(parent_uid: &str, kind: EdsSourceKind) -> bool 
             if !kf.boolean("Data Source", "Enabled").unwrap_or(true) {
                 return false;
             }
-            if kf.has_group("GNOME Online Accounts") {
-                if let Ok(account_id) = kf.string("GNOME Online Accounts", "AccountId") {
-                    if is_goa_account_service_enabled(account_id.trim(), kind) == Some(false) {
+            let identity_opt = kf
+                .string("Collection", "Identity")
+                .or_else(|_| kf.string("Data Source", "DisplayName"))
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            if let Some(ref ident) = identity_opt {
+                let profiles = crate::services::account_config_service::AccountConfigStore::default().load_cached();
+                if let Some(profile) = profiles.iter().find(|p| {
+                    !p.is_shared_mailbox
+                        && (p.id == parent_uid
+                            || p.id.strip_prefix("eds:") == Some(parent_uid)
+                            || p.email.eq_ignore_ascii_case(ident))
+                }) {
+                    if !profile.enabled {
                         return false;
                     }
                 }
             }
-            if let Ok(identity) = kf
-                .string("Collection", "Identity")
-                .or_else(|_| kf.string("Data Source", "DisplayName"))
-            {
-                if is_goa_identity_service_enabled(identity.trim(), kind) == Some(false) {
+            if kf.has_group("GNOME Online Accounts") {
+                if let Ok(account_id) = kf.string("GNOME Online Accounts", "AccountId") {
+                    if let Some(goa_enabled) = is_goa_account_service_enabled(account_id.trim(), kind) {
+                        return goa_enabled;
+                    }
+                }
+            }
+            if let Some(ref ident) = identity_opt {
+                if is_goa_identity_service_enabled(ident, kind) == Some(false) {
                     return false;
                 }
             }
@@ -2137,7 +2191,7 @@ pub async fn discover_sources(kind: EdsSourceKind) -> EdsSourceDiscovery {
     if let Some(remaining) = recovery_retry_remaining(&cached.recovery, now) {
         return discovery_from_cache(
             cached,
-            format!("Wiederverbindung in {remaining} Sekunde(n)"),
+            format!("Reconnecting in {remaining} second(s)"),
         );
     }
 
@@ -2233,10 +2287,10 @@ fn recovery_after_failure(
 fn discovery_from_cache(cached: EdsSourceCacheLoad, error: String) -> EdsSourceDiscovery {
     let cache_warning = match (cached.status, cached.warning) {
         (EdsSourceCacheStatus::Corrupt, Some(warning)) => {
-            Some(format!("Quellencache beschädigt: {warning}"))
+            Some(format!("Source cache corrupted: {warning}"))
         }
         (EdsSourceCacheStatus::Unreadable, Some(warning)) => {
-            Some(format!("Quellencache nicht lesbar: {warning}"))
+            Some(format!("Source cache unreadable: {warning}"))
         }
         _ => None,
     };
@@ -2283,10 +2337,10 @@ mod tests {
                 foreign_mail: None,
             }],
             origin: EdsSourceOrigin::Live,
-            error: Some("Kontakte: Zugriff verweigert".to_string()),
+            error: Some("Contacts: Access denied".to_string()),
         };
-        assert!(discovery.status_text().contains("1 Kontoquelle"));
-        assert!(discovery.status_text().contains("Zugriff verweigert"));
+        assert!(discovery.status_text().contains("1 account source"));
+        assert!(discovery.status_text().contains("Access denied"));
     }
 
     #[test]
@@ -2308,7 +2362,7 @@ mod tests {
     #[test]
     fn test_error_display() {
         let err = EdsServiceError::RegistryUnavailable;
-        assert_eq!(err.to_string(), "Kontoquellen sind nicht verfügbar");
+        assert_eq!(err.to_string(), "Account sources are unavailable");
     }
 
     #[test]
@@ -2469,7 +2523,7 @@ mod tests {
         assert_eq!(discovery.origin, EdsSourceOrigin::Empty);
         let error = discovery.error.expect("warning should remain visible");
         assert!(error.contains("registry unavailable"));
-        assert!(error.contains("Quellencache beschädigt"));
+        assert!(error.contains("Source cache corrupted"));
     }
 
     #[tokio::test]
