@@ -7137,9 +7137,9 @@ mod tests {
         let existing = Vec::new();
         assert!(parse_memo_attachment_editor_text("URI:", &existing).is_err());
         let save_err = memo_attachment_save_error(true);
-        assert!(
-            save_err == Some("Attachments are still loading; please wait".to_string())
-                || save_err == Some("Anhänge werden noch geladen; bitte warten".to_string())
+        assert_eq!(
+            save_err,
+            Some("Attachments are still loading; please wait".to_string())
         );
         assert_eq!(memo_attachment_save_error(false), None);
         let mut draft = MemoEditorDraft::from_component(

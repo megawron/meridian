@@ -4672,11 +4672,7 @@ mod tests {
             "Vorschau aus dem Nachrichtentext"
         );
         let empty = readable_fallback_text(Some("   "));
-        assert!(
-            empty == "Loading message…"
-                || empty == "Nachricht wird geladen…"
-                || empty == "Nachricht wird geladen …"
-        );
+        assert_eq!(empty, "Loading message…");
     }
 
     #[test]

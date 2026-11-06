@@ -278,7 +278,7 @@ return_operation_error (GError **error,
 
     if (!error || !*error) {
         if (out_error)
-            *out_error = g_strdup ("EDS/EBook-Mutation fehlgeschlagen");
+            *out_error = g_strdup ("EDS/EBook mutation failed");
         return 0;
     }
 
@@ -286,7 +286,7 @@ return_operation_error (GError **error,
     message = g_strdup_printf (
         "%s%s",
         conflict ? "conflict: " : "",
-        (*error)->message ? (*error)->message : "unbekannter EBook-Fehler");
+        (*error)->message ? (*error)->message : "unknown EBook error");
     if (out_error)
         *out_error = message;
     else
@@ -326,7 +326,7 @@ meridian_eds_ebook_apply_operation (
     if (!source_uid || !*source_uid) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "EBook-Mutation benötigt eine Quell-UID");
+            "EBook mutation requires a source UID");
         return return_operation_error (&error, out_error);
     }
     if (operation != MERIDIAN_EDS_EBOOK_CREATE &&
@@ -342,7 +342,7 @@ meridian_eds_ebook_apply_operation (
         (!vcard || !*vcard)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "EBook-Mutation benötigt eine vCard");
+            "EBook mutation requires a vCard");
         return return_operation_error (&error, out_error);
     }
     if ((operation == MERIDIAN_EDS_EBOOK_MODIFY ||
@@ -350,7 +350,7 @@ meridian_eds_ebook_apply_operation (
         (!contact_uid || !*contact_uid)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "EBook-Mutation benötigt eine Kontakt-UID");
+            "EBook mutation requires a contact UID");
         return return_operation_error (&error, out_error);
     }
 
@@ -361,13 +361,13 @@ meridian_eds_ebook_apply_operation (
     if (!source) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-            "Die EBook-Quelle existiert nicht mehr");
+            "The EBook source no longer exists");
         goto finish;
     }
     if (!e_source_get_enabled (source)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_FAILED,
-            "Die EBook-Quelle ist deaktiviert");
+            "The EBook source is disabled");
         goto finish;
     }
 
@@ -384,7 +384,7 @@ meridian_eds_ebook_apply_operation (
         if (!contact) {
             g_set_error_literal (
                 &error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
-                "Ungültige vCard");
+                "Invalid vCard");
             goto finish;
         }
         if (operation == MERIDIAN_EDS_EBOOK_CREATE) {

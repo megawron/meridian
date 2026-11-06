@@ -675,7 +675,7 @@ set_cancelled_error (GError **error)
 {
     g_set_error_literal (
         error, G_IO_ERROR, G_IO_ERROR_CANCELLED,
-        "EDS/Camel-Änderung wurde abgebrochen");
+        "EDS/Camel change was cancelled");
     return FALSE;
 }
 
@@ -2233,7 +2233,7 @@ load_source (LoadContext *context,
         context->failed_sources++;
         context->processed_sources++;
         gchar *scope = g_strdup_printf (
-            "%s: Ordner konnten nicht geladen werden",
+            "%s: folders could not be loaded",
             e_source_get_display_name (source));
         remember_error (context, scope, error);
         g_free (scope);
@@ -2371,7 +2371,7 @@ meridian_eds_camel_load_messages (const char *source_uid,
     if (context.cancelled) {
         if (!context.first_error)
             context.first_error = g_strdup (
-                "EDS/Camel-Ladevorgang wurde abgebrochen");
+                "EDS/Camel load was cancelled");
         result = 0;
     } else if (context.successful_sources > 0 || context.configured_sources == 0) {
         if (out_messages)
@@ -2721,7 +2721,7 @@ meridian_eds_camel_load_messages_by_uid (
         !message_uids || message_uid_count == 0) {
         if (out_error)
             *out_error = g_strdup (
-                "Inkrementelles Camel-Laden benötigt Konto, Ordner und UIDs");
+                "Incremental Camel loading requires an account, folder and UIDs");
         return 0;
     }
 
@@ -2817,7 +2817,7 @@ meridian_eds_camel_load_messages_by_uid (
     success = !context.cancelled;
     if (context.cancelled && !context.first_error)
         context.first_error = g_strdup (
-            "Inkrementelles Camel-Laden wurde abgebrochen");
+            "Incremental Camel loading was cancelled");
 
 finish:
     if (!success && !context.first_error && error)
@@ -3022,12 +3022,12 @@ meridian_eds_camel_load_subscription_folders (
     if (!source_uid || !*source_uid) {
         if (out_error)
             *out_error = g_strdup (
-                "Camel-Abonnements benötigen eine genaue EDS-Quellen-ID");
+                "Camel subscriptions require an exact EDS source ID");
         return 0;
     }
     if (cancellation_requested (cancellation_callback, cancellation_user_data)) {
         if (out_error)
-            *out_error = g_strdup ("Camel-Abonnements wurden abgebrochen");
+            *out_error = g_strdup ("Camel subscriptions were cancelled");
         return 0;
     }
 
@@ -3040,13 +3040,13 @@ meridian_eds_camel_load_subscription_folders (
     if (!source) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-            "Die EDS-Mailquelle für Abonnements existiert nicht mehr");
+            "The EDS mail source for subscriptions no longer exists");
         goto finish;
     }
     if (!e_source_get_enabled (source)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_FAILED,
-            "Die EDS-Mailquelle für Abonnements ist deaktiviert");
+            "The EDS mail source for subscriptions is disabled");
         goto finish;
     }
 
@@ -3091,7 +3091,7 @@ finish:
     if (!success && out_error) {
         *out_error = g_strdup (error
             ? error->message
-            : "Camel-Abonnementsliste konnte nicht geladen werden");
+            : "Camel subscription list could not be loaded");
     }
     if (success) {
         if (out_folders) {
@@ -3143,12 +3143,12 @@ meridian_eds_camel_set_folder_subscription (
     if (!source_uid || !*source_uid || !folder_name || !*folder_name) {
         if (out_error)
             *out_error = g_strdup (
-                "Camel-Abonnements benötigen eine genaue Quelle und einen Ordnernamen");
+                "Camel subscriptions require an exact source and a folder name");
         return 0;
     }
     if (cancellation_requested (cancellation_callback, cancellation_user_data)) {
         if (out_error)
-            *out_error = g_strdup ("Camel-Abonnementänderung wurde abgebrochen");
+            *out_error = g_strdup ("Camel subscription change was cancelled");
         return 0;
     }
 
@@ -3161,13 +3161,13 @@ meridian_eds_camel_set_folder_subscription (
     if (!source) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-            "Die EDS-Mailquelle für Abonnements existiert nicht mehr");
+            "The EDS mail source for subscriptions no longer exists");
         goto finish;
     }
     if (!e_source_get_enabled (source)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_FAILED,
-            "Die EDS-Mailquelle für Abonnements ist deaktiviert");
+            "The EDS mail source for subscriptions is disabled");
         goto finish;
     }
 
@@ -3181,7 +3181,7 @@ meridian_eds_camel_set_folder_subscription (
     if (!CAMEL_IS_SUBSCRIBABLE (store)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
-            "Diese Camel-Mailquelle unterstützt keine Ordner-Abonnements");
+            "This Camel mail source does not support folder subscriptions");
         goto finish;
     }
 
@@ -3197,13 +3197,13 @@ meridian_eds_camel_set_folder_subscription (
     if (!matching_folder || !is_mail_folder (matching_folder)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-            "Der abonnierbare Camel-Ordner wurde nicht gefunden");
+            "The subscribable Camel folder was not found");
         goto finish;
     }
     if ((matching_folder->flags & CAMEL_FOLDER_NOSELECT) != 0) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
-            "Dieser Camel-Ordner ist nicht abonnierbar");
+            "This Camel folder is not subscribable");
         goto finish;
     }
 
@@ -3236,7 +3236,7 @@ meridian_eds_camel_set_folder_subscription (
          desired_subscribed)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_FAILED,
-            "Der Camel-Server hat die angeforderte Abonnementänderung nicht bestätigt");
+            "The Camel server did not confirm the requested subscription change");
         goto finish;
     }
     if (cancellation_requested (cancellation_callback, cancellation_user_data)) {
@@ -3249,7 +3249,7 @@ finish:
     if (!success && out_error) {
         *out_error = g_strdup (error
             ? error->message
-            : "Camel-Abonnementänderung konnte nicht bestätigt werden");
+            : "Camel subscription change could not be confirmed");
     }
     camel_folder_info_free (folder_info);
     g_clear_error (&error);
@@ -3390,12 +3390,12 @@ meridian_eds_camel_get_folder_mutation_capabilities (
         !folder_name || !*folder_name) {
         if (out_error)
             *out_error = g_strdup (
-                "Camel-Ordneraktionen benötigen eine genaue Quelle und einen Ordnernamen");
+                "Camel folder actions require an exact source and a folder name");
         return 0;
     }
     if (cancellation_requested (cancellation_callback, cancellation_user_data)) {
         if (out_error)
-            *out_error = g_strdup ("Camel-Ordneraktionen wurden abgebrochen");
+            *out_error = g_strdup ("Camel folder actions were cancelled");
         return 0;
     }
 
@@ -3406,12 +3406,12 @@ meridian_eds_camel_get_folder_mutation_capabilities (
     source = e_source_registry_ref_source (registry, source_uid);
     if (!source) {
         g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-            "Die EDS-Mailquelle für Ordneraktionen existiert nicht mehr");
+            "The EDS mail source for folder actions no longer exists");
         goto finish;
     }
     if (!e_source_get_enabled (source)) {
         g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_FAILED,
-            "Die EDS-Mailquelle für Ordneraktionen ist deaktiviert");
+            "The EDS mail source for folder actions is disabled");
         goto finish;
     }
     session = eds_camel_ref_session (registry);
@@ -3427,7 +3427,7 @@ meridian_eds_camel_get_folder_mutation_capabilities (
     matching_folder = find_folder_info_by_name (folder_info, folder_name);
     if (!matching_folder) {
         g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-            "Der genaue Camel-Ordner für die Aktion wurde nicht gefunden");
+            "The exact Camel folder for the action was not found");
         goto finish;
     }
     if (cancellation_requested (cancellation_callback, cancellation_user_data)) {
@@ -3441,7 +3441,7 @@ finish:
     if (!success && out_error) {
         *out_error = g_strdup (error
             ? error->message
-            : "Camel-Ordneraktionen konnten nicht geprüft werden");
+            : "Camel folder actions could not be verified");
     }
     camel_folder_info_free (folder_info);
     g_clear_error (&error);
@@ -3486,7 +3486,7 @@ meridian_eds_camel_apply_folder_mutation (
     if (!source_uid || !*source_uid || !folder_name || !*folder_name) {
         if (out_error)
             *out_error = g_strdup (
-                "Camel-Ordneraktionen benötigen eine genaue Quelle und einen Ordnernamen");
+                "Camel folder actions require an exact source and a folder name");
         return 0;
     }
     if ((kind == MERIDIAN_EDS_CAMEL_FOLDER_CREATE_CHILD ||
@@ -3494,7 +3494,7 @@ meridian_eds_camel_apply_folder_mutation (
         !folder_mutation_target_is_leaf (target_name)) {
         if (out_error)
             *out_error = g_strdup (
-                "Camel-Ordnernamen müssen ein einzelnes nicht-leeres Segment sein");
+                "Camel folder names must be a single non-empty segment");
         return 0;
     }
     if (kind != MERIDIAN_EDS_CAMEL_FOLDER_CREATE_CHILD &&
@@ -3503,12 +3503,12 @@ meridian_eds_camel_apply_folder_mutation (
         kind != MERIDIAN_EDS_CAMEL_FOLDER_REFRESH) {
         if (out_error)
             *out_error = g_strdup (
-                "Camel bietet keine sichere atomare Ordner-Kopier- oder Verschiebeoperation");
+                "Camel provides no safe atomic folder copy or move operation");
         return 0;
     }
     if (cancellation_requested (cancellation_callback, cancellation_user_data)) {
         if (out_error)
-            *out_error = g_strdup ("Camel-Ordneraktion wurde abgebrochen");
+            *out_error = g_strdup ("Camel folder action was cancelled");
         return 0;
     }
 
@@ -3519,12 +3519,12 @@ meridian_eds_camel_apply_folder_mutation (
     source = e_source_registry_ref_source (registry, source_uid);
     if (!source) {
         g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-            "Die EDS-Mailquelle für Ordneraktionen existiert nicht mehr");
+            "The EDS mail source for folder actions no longer exists");
         goto finish;
     }
     if (!e_source_get_enabled (source)) {
         g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_FAILED,
-            "Die EDS-Mailquelle für Ordneraktionen ist deaktiviert");
+            "The EDS mail source for folder actions is disabled");
         goto finish;
     }
     session = eds_camel_ref_session (registry);
@@ -3540,7 +3540,7 @@ meridian_eds_camel_apply_folder_mutation (
     matching_folder = find_folder_info_by_name (folder_info, folder_name);
     if (!matching_folder) {
         g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-            "Der genaue Camel-Ordner für die Aktion wurde nicht gefunden");
+            "The exact Camel folder for the action was not found");
         goto finish;
     }
     set_folder_mutation_capabilities (store, matching_folder, &capabilities);
@@ -3549,13 +3549,13 @@ meridian_eds_camel_apply_folder_mutation (
     case MERIDIAN_EDS_CAMEL_FOLDER_CREATE_CHILD:
         if (!capabilities.can_create_child) {
             g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
-                "Dieser Camel-Ordner unterstützt kein Erstellen von Unterordnern");
+                "This Camel folder does not support creating subfolders");
             goto finish;
         }
         expected_name = g_strdup_printf ("%s/%s", folder_name, target_name);
         if (find_folder_info_by_name (folder_info, expected_name)) {
             g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_EXISTS,
-                "Ein Camel-Ordner mit diesem Namen existiert bereits");
+                "A Camel folder with this name already exists");
             goto finish;
         }
         verified_folder = camel_store_create_folder_sync (
@@ -3573,18 +3573,18 @@ meridian_eds_camel_apply_folder_mutation (
     case MERIDIAN_EDS_CAMEL_FOLDER_RENAME:
         if (!capabilities.can_rename) {
             g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
-                "Dieser Camel-Ordner unterstützt kein Umbenennen");
+                "This Camel folder does not support renaming");
             goto finish;
         }
         expected_name = folder_mutation_child_name (folder_name, target_name);
         if (g_str_equal (expected_name, folder_name)) {
             g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-                "Der neue Camel-Ordnername unterscheidet sich nicht vom bestehenden Namen");
+                "The new Camel folder name does not differ from the existing name");
             goto finish;
         }
         if (find_folder_info_by_name (folder_info, expected_name)) {
             g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_EXISTS,
-                "Ein Camel-Ordner mit diesem Namen existiert bereits");
+                "A Camel folder with this name already exists");
             goto finish;
         }
         if (!camel_store_rename_folder_sync (
@@ -3594,7 +3594,7 @@ meridian_eds_camel_apply_folder_mutation (
     case MERIDIAN_EDS_CAMEL_FOLDER_DELETE:
         if (!capabilities.can_delete) {
             g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
-                "Dieser Camel-Ordner unterstützt kein sicheres Löschen");
+                "This Camel folder does not support safe deletion");
             goto finish;
         }
         if (!camel_store_delete_folder_sync (
@@ -3604,7 +3604,7 @@ meridian_eds_camel_apply_folder_mutation (
     case MERIDIAN_EDS_CAMEL_FOLDER_REFRESH:
         if (!capabilities.can_refresh) {
             g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
-                "Dieser Camel-Ordner unterstützt keine Aktualisierung");
+                "This Camel folder does not support refreshing");
             goto finish;
         }
         folder = camel_store_get_folder_sync (
@@ -3626,20 +3626,20 @@ meridian_eds_camel_apply_folder_mutation (
     if (kind == MERIDIAN_EDS_CAMEL_FOLDER_DELETE) {
         if (find_folder_info_by_name (folder_info, folder_name)) {
             g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                "Der Camel-Server hat das Löschen des Ordners nicht bestätigt");
+                "The Camel server did not confirm deleting the folder");
             goto finish;
         }
     } else {
         verified_folder = find_folder_info_by_name (folder_info, expected_name);
         if (!verified_folder) {
             g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                "Der Camel-Server hat die Ordneränderung nicht bestätigt");
+                "The Camel server did not confirm the folder change");
             goto finish;
         }
         if (kind == MERIDIAN_EDS_CAMEL_FOLDER_RENAME &&
             find_folder_info_by_name (folder_info, folder_name)) {
             g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                "Der Camel-Server hat das Umbenennen des Ordners nicht bestätigt");
+                "The Camel server did not confirm renaming the folder");
             goto finish;
         }
     }
@@ -3659,7 +3659,7 @@ meridian_eds_camel_apply_folder_mutation (
         if (!verified_folder ||
             (verified_folder->flags & CAMEL_FOLDER_SUBSCRIBED) == 0) {
             g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                "Der Camel-Server hat das Abonnieren des neuen Ordners nicht bestätigt");
+                "The Camel server did not confirm subscribing to the new folder");
             goto finish;
         }
     }
@@ -3673,7 +3673,7 @@ finish:
     if (!success && out_error) {
         *out_error = g_strdup (error
             ? error->message
-            : "Camel-Ordneraktion konnte nicht bestätigt werden");
+            : "Camel folder action could not be confirmed");
     }
     g_free (expected_name);
     camel_folder_info_free (subscription_info);
@@ -4774,7 +4774,7 @@ verify_message_flags (CamelFolder *folder,
     message_info = camel_folder_get_message_info (folder, message_uid);
     if (!message_info) {
         set_conflict_error (
-            error, "Die Nachricht wurde während der Änderung entfernt");
+            error, "The message was removed during the change");
         return FALSE;
     }
 
@@ -4783,7 +4783,7 @@ verify_message_flags (CamelFolder *folder,
 
     if ((actual & mask) != (expected & mask)) {
         set_conflict_error (
-            error, "Der Serverzustand der Nachricht hat sich gleichzeitig geändert");
+            error, "The server state of the message changed concurrently");
         return FALSE;
     }
 
@@ -4808,7 +4808,7 @@ verify_message_follow_up (CamelFolder *folder,
     message_info = camel_folder_get_message_info (folder, message_uid);
     if (!message_info) {
         set_conflict_error (
-            error, "Die Nachricht wurde während der Follow-up-Änderung entfernt");
+            error, "The message was removed during the follow-up change");
         return FALSE;
     }
 
@@ -4832,7 +4832,7 @@ verify_message_follow_up (CamelFolder *folder,
         g_strcmp0 (due_by && *due_by ? due_by : NULL,
                    expected_due_by) != 0) {
         set_conflict_error (
-            error, "Der Serverzustand der Follow-up-Tags hat sich gleichzeitig geändert");
+            error, "The server state of the follow-up tags changed concurrently");
         g_object_unref (message_info);
         return FALSE;
     }
@@ -4867,7 +4867,7 @@ synchronize_message_follow_up (CamelFolder *folder,
     message_info = camel_folder_get_message_info (folder, message_uid);
     if (!message_info) {
         set_conflict_error (
-            error, "Die Nachricht existiert im Quellordner nicht mehr");
+            error, "The message no longer exists in the source folder");
         return FALSE;
     }
 
@@ -4981,7 +4981,7 @@ verify_message_moved (CamelFolder *source,
         return TRUE;
 
     set_conflict_error (
-        error, "Die Nachricht ist nach der Serveränderung noch im Quellordner");
+        error, "The message is still in the source folder after the server change");
     return FALSE;
 }
 
@@ -5025,7 +5025,7 @@ meridian_eds_camel_apply_operation (
 
     if (cancellation_requested (cancellation_callback, cancellation_user_data)) {
         if (out_error)
-            *out_error = g_strdup ("EDS/Camel-Änderung wurde abgebrochen");
+            *out_error = g_strdup ("EDS/Camel change was cancelled");
         return 0;
     }
 
@@ -5074,7 +5074,7 @@ meridian_eds_camel_apply_operation (
             message_uid = resolved_message_uid;
         if (!message_exists (folder, message_uid)) {
             set_conflict_error (
-                &error, "Die Nachricht existiert im Quellordner nicht mehr");
+                &error, "The message no longer exists in the source folder");
             conflict = TRUE;
             goto finish;
         }
@@ -5241,7 +5241,7 @@ meridian_eds_camel_apply_operation (
             message_uid = resolved_message_uid;
         if (!message_exists (restore_source, message_uid)) {
             set_conflict_error (
-                &error, "Die gelöschte Nachricht existiert im Papierkorb nicht mehr");
+                &error, "The deleted message no longer exists in the trash");
             conflict = TRUE;
             break;
         }
@@ -5291,7 +5291,7 @@ meridian_eds_camel_apply_operation (
             message_uid = resolved_message_uid;
         if (!message_exists (restore_source, message_uid)) {
             set_conflict_error (
-                &error, "Die archivierte Nachricht existiert im Archiv nicht mehr");
+                &error, "The archived message no longer exists in the archive");
             conflict = TRUE;
             break;
         }
@@ -5406,8 +5406,8 @@ open_special_folder (CamelStore *store,
         g_set_error_literal (
             error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
             drafts
-                ? "Für dieses EDS-Konto ist kein Entwurfsordner vorhanden"
-                : "Für dieses EDS-Konto ist kein Gesendet-Ordner vorhanden");
+                ? "This EDS account has no drafts folder"
+                : "This EDS account has no sent folder");
         goto finish;
     }
 
@@ -5521,7 +5521,7 @@ set_message_identity (CamelMimeMessage *message,
     if (!address || !*address) {
         g_set_error_literal (
             error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "Die EDS-Mail-Identität enthält keine Absenderadresse");
+            "The EDS mail identity has no sender address");
         goto finish;
     }
 
@@ -5530,7 +5530,7 @@ set_message_identity (CamelMimeMessage *message,
             from, name && *name ? name : NULL, address)) {
         g_set_error_literal (
             error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "Die EDS-Absenderadresse konnte nicht als Internetadresse gelesen werden");
+            "The EDS sender address could not be parsed as an internet address");
         goto finish;
     }
 
@@ -5598,7 +5598,7 @@ meridian_eds_camel_save_message (
     if (!source_uid || !*source_uid || !raw_message || raw_message_len == 0) {
         if (out_error)
             *out_error = g_strdup (
-                "EDS-Speicherung benötigt ein Konto und eine RFC822-Nachricht");
+                "EDS saving requires an account and an RFC822 message");
         return 0;
     }
     if (folder != MERIDIAN_EDS_CAMEL_SAVE_DRAFT &&
@@ -5617,13 +5617,13 @@ meridian_eds_camel_save_message (
     if (!source) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-            "Das EDS-Mailkonto existiert nicht mehr");
+            "The EDS mail account no longer exists");
         goto finish;
     }
     if (!e_source_get_enabled (source)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_FAILED,
-            "Das EDS-Mailkonto ist deaktiviert");
+            "The EDS mail account is disabled");
         goto finish;
     }
 
@@ -5635,14 +5635,14 @@ meridian_eds_camel_save_message (
     if (!identity_uid || !*identity_uid) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-            "Für das EDS-Mailkonto ist keine Mail-Identität konfiguriert");
+            "No mail identity is configured for the EDS mail account");
         goto finish;
     }
     identity_source = e_source_registry_ref_source (registry, identity_uid);
     if (!identity_source) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-            "Die Mail-Identität des EDS-Kontos existiert nicht mehr");
+            "The mail identity of the EDS account no longer exists");
         goto finish;
     }
 
@@ -5729,7 +5729,7 @@ meridian_eds_camel_send_message (
     if (!source_uid || !*source_uid || !raw_message || raw_message_len == 0) {
         if (out_error)
             *out_error = g_strdup (
-                "Versand benötigt ein EDS-Konto und eine RFC822-Nachricht");
+                "Sending requires an EDS account and an RFC822 message");
         return 0;
     }
 
@@ -5742,13 +5742,13 @@ meridian_eds_camel_send_message (
     if (!source) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-            "Das ausgewählte EDS-Mailkonto existiert nicht mehr");
+            "The selected EDS mail account no longer exists");
         goto finish;
     }
     if (!e_source_get_enabled (source)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_FAILED,
-            "Das ausgewählte EDS-Mailkonto ist deaktiviert");
+            "The selected EDS mail account is disabled");
         goto finish;
     }
 
@@ -5786,7 +5786,7 @@ meridian_eds_camel_send_message (
     if (!identity_address || !*identity_address) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "Die ausgewählte EDS-Mail-Identität enthält keine Absenderadresse");
+            "The selected EDS mail identity has no sender address");
         goto finish;
     }
 
@@ -5801,7 +5801,7 @@ meridian_eds_camel_send_message (
     if (!transport_uid || !*transport_uid) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-            "Für die EDS-Mail-Identität ist kein Mail-Transport konfiguriert");
+            "No mail transport is configured for the EDS mail identity");
         goto finish;
     }
 
@@ -5812,7 +5812,7 @@ meridian_eds_camel_send_message (
     if (!transport_source) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-            "Der konfigurierte EDS-Mail-Transport existiert nicht mehr");
+            "The configured EDS mail transport no longer exists");
         goto finish;
     }
 
@@ -5824,7 +5824,7 @@ meridian_eds_camel_send_message (
     if (!backend_name || !*backend_name) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
-            "Der EDS-Mail-Transport enthält keinen Camel-Backendnamen");
+            "The EDS mail transport has no Camel backend name");
         goto finish;
     }
 
@@ -5878,7 +5878,7 @@ meridian_eds_camel_send_message (
     if (!CAMEL_IS_TRANSPORT (transport_service)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
-            "Der EDS-Mail-Transport ist kein Camel-Transport");
+            "The EDS mail transport is not a Camel transport");
         goto finish;
     }
 
@@ -5896,7 +5896,7 @@ meridian_eds_camel_send_message (
             identity_address)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "Die EDS-Absenderadresse konnte nicht als Internetadresse gelesen werden");
+            "The EDS sender address could not be parsed as an internet address");
         goto finish;
     }
     camel_medium_remove_header (CAMEL_MEDIUM (message), "From");
@@ -5919,7 +5919,7 @@ meridian_eds_camel_send_message (
     if (camel_address_length (CAMEL_ADDRESS (recipients)) == 0) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "Die RFC822-Nachricht enthält keine gültigen Empfänger");
+            "The RFC822 message has no valid recipients");
         goto finish;
     }
 
@@ -5958,7 +5958,7 @@ meridian_eds_camel_send_message (
             g_free (appended_uid);
         }
         if (!sent_message_saved && sent_error) {
-            g_warning ("EDS Sent-Kopie konnte nicht gespeichert werden: %s",
+            g_warning ("EDS sent copy could not be saved: %s",
                        sent_error->message);
         }
         g_clear_error (&sent_error);
@@ -6004,7 +6004,7 @@ meridian_eds_camel_store_password (const char *source_uid,
 {
     if (!source_uid || !*source_uid || !password) {
         if (out_error)
-            *out_error = g_strdup ("Ungültige Quell-UID oder leeres Passwort");
+            *out_error = g_strdup ("Invalid source UID or empty password");
         return 0;
     }
 
@@ -6012,7 +6012,7 @@ meridian_eds_camel_store_password (const char *source_uid,
     ESourceRegistry *registry = eds_camel_ref_registry (&err);
     if (!registry) {
         if (out_error)
-            *out_error = g_strdup (err ? err->message : "Verbindung zum EDS Source Registry fehlgeschlagen");
+            *out_error = g_strdup (err ? err->message : "Connection to the EDS source registry failed");
         if (err)
             g_clear_error (&err);
         return 0;
@@ -6026,7 +6026,7 @@ meridian_eds_camel_store_password (const char *source_uid,
     ESource *source = e_source_registry_ref_source (registry, source_uid);
     if (!source) {
         if (out_error)
-            *out_error = g_strdup_printf ("Quelle '%s' nicht in EDS gefunden", source_uid);
+            *out_error = g_strdup_printf ("Source '%s' not found in EDS", source_uid);
         g_clear_object (&provider);
         g_clear_object (&session);
         g_clear_object (&registry);
@@ -6047,7 +6047,7 @@ meridian_eds_camel_store_password (const char *source_uid,
 
     if (!ok) {
         if (out_error)
-            *out_error = g_strdup (err ? err->message : "Passwort konnte nicht im Schlüsselbund hinterlegt werden");
+            *out_error = g_strdup (err ? err->message : "Password could not be stored in the keyring");
         if (err)
             g_clear_error (&err);
         return 0;
@@ -6088,7 +6088,7 @@ meridian_eds_camel_search_folder (
 
     if (!source_uid || !*source_uid || !folder_name || !*folder_name) {
         if (out_error)
-            *out_error = g_strdup ("Suche benötigt Konto-UID und Ordnernamen");
+            *out_error = g_strdup ("Search requires an account UID and a folder name");
         return 0;
     }
 

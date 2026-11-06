@@ -40,13 +40,13 @@ copy_folder_tree_sync (CamelStore *source_store,
             !is_mail_folder (info) ||
             (info->flags & (CAMEL_FOLDER_VIRTUAL | CAMEL_FOLDER_VTRASH)) != 0) {
             g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
-                "Der Quellbaum enthält einen nicht übertragbaren Ordner");
+                "The source tree contains a folder that cannot be transferred");
             success = FALSE;
             break;
         }
         if (delete_originals && (info->flags & (CAMEL_FOLDER_READONLY | CAMEL_FOLDER_SYSTEM)) != 0) {
             g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,
-                "Ein geschützter Quellordner darf nicht verschoben werden");
+                "A protected source folder must not be moved");
             success = FALSE;
             break;
         }
@@ -125,7 +125,7 @@ copy_folder_tree_sync (CamelStore *source_store,
                 GPtrArray *remaining_uids = camel_folder_dup_uids (folder);
                 if (remaining_uids->len > 0) {
                     g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_BUSY,
-                        "Neue oder nicht übertragene Nachrichten im Quellordner; Ordner wird nicht gelöscht");
+                        "New or untransferred messages in the source folder; folder will not be deleted");
                     success = FALSE;
                 }
                 g_ptr_array_unref (remaining_uids);

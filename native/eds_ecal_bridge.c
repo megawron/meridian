@@ -388,7 +388,7 @@ return_operation_error (GError **error,
 
     if (!error || !*error) {
         if (out_error)
-            *out_error = g_strdup ("EDS/ECal-Mutation fehlgeschlagen");
+            *out_error = g_strdup ("EDS/ECal mutation failed");
         return 0;
     }
 
@@ -396,7 +396,7 @@ return_operation_error (GError **error,
     message = g_strdup_printf (
         "%s%s",
         conflict ? "conflict: " : "",
-        (*error)->message ? (*error)->message : "unbekannter ECal-Fehler");
+        (*error)->message ? (*error)->message : "unknown ECal error");
     if (out_error)
         *out_error = message;
     else
@@ -447,7 +447,7 @@ meridian_eds_ecal_apply_operation (
     if (!source_uid || !*source_uid) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "ECal-Mutation benötigt eine Quell-UID");
+            "ECal mutation requires a source UID");
         return return_operation_error (&error, out_error);
     }
     if (source_type != MERIDIAN_EDS_ECAL_EVENTS &&
@@ -471,7 +471,7 @@ meridian_eds_ecal_apply_operation (
         (!component_string || !*component_string)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "ECal-Mutation benötigt eine iCalendar-Komponente");
+            "ECal mutation requires an iCalendar component");
         return return_operation_error (&error, out_error);
     }
     if ((operation == MERIDIAN_EDS_ECAL_MODIFY ||
@@ -479,7 +479,7 @@ meridian_eds_ecal_apply_operation (
         (!component_uid || !*component_uid)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "ECal-Mutation benötigt eine Komponenten-UID");
+            "ECal mutation requires a component UID");
         return return_operation_error (&error, out_error);
     }
 
@@ -491,13 +491,13 @@ meridian_eds_ecal_apply_operation (
     if (!source) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-            "Die ECal-Quelle existiert nicht mehr");
+            "The ECal source no longer exists");
         goto finish;
     }
     if (!e_source_get_enabled (source)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_FAILED,
-            "Die ECal-Quelle ist deaktiviert");
+            "The ECal source is disabled");
         goto finish;
     }
 
@@ -512,7 +512,7 @@ meridian_eds_ecal_apply_operation (
         if (!component) {
             g_set_error_literal (
                 &error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
-                "Ungültige iCalendar-Komponente");
+                "Invalid iCalendar component");
             goto finish;
         }
         if (!uid || !*uid)
@@ -680,7 +680,7 @@ meridian_eds_ecal_list_source_capabilities (
         if (!client && !first_error && error) {
             first_error = g_strdup_printf (
                 "%s: %s", display_name && *display_name ? display_name : "ECal-Quelle",
-                error->message ? error->message : "Verbindung fehlgeschlagen");
+                error->message ? error->message : "Connection failed");
         }
         g_clear_error (&error);
         if (!append_source_capability (
@@ -689,7 +689,7 @@ meridian_eds_ecal_list_source_capabilities (
             g_clear_object (&client);
             g_set_error_literal (
                 &error, G_IO_ERROR, G_IO_ERROR_NO_SPACE,
-                "ECal-Quellmetadaten konnten nicht gespeichert werden");
+                "ECal source metadata could not be saved");
             goto finish;
         }
         g_clear_object (&client);
@@ -700,7 +700,7 @@ finish:
     if (result == 0 && out_error) {
         *out_error = g_strdup (
             error && error->message ? error->message :
-            "EDS/ECal-Quellen konnten nicht gelesen werden");
+            "EDS/ECal sources could not be read");
     } else if (result == 1 && out_error && first_error) {
         *out_error = g_steal_pointer (&first_error);
     }
@@ -737,7 +737,7 @@ meridian_eds_ecal_refresh_source (
         *out_error = NULL;
     if (!source_uid || !*source_uid) {
         if (out_error)
-            *out_error = g_strdup ("ECal-Aktualisierung benötigt eine Quell-UID");
+            *out_error = g_strdup ("ECal refresh requires a source UID");
         return 0;
     }
     extension_name = source_extension_name_for_type (source_type);
@@ -754,19 +754,19 @@ meridian_eds_ecal_refresh_source (
     if (!source) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-            "Die ECal-Quelle existiert nicht mehr");
+            "The ECal source no longer exists");
         goto finish;
     }
     if (!e_source_get_enabled (source)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_FAILED,
-            "Die ECal-Quelle ist deaktiviert");
+            "The ECal source is disabled");
         goto finish;
     }
     if (!e_source_has_extension (source, extension_name)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "Die ECal-Quelle hat nicht den erwarteten Quellentyp");
+            "The ECal source does not have the expected source type");
         goto finish;
     }
     client = E_CAL_CLIENT (e_cal_client_connect_sync (
@@ -785,7 +785,7 @@ finish:
     if (result == 0 && out_error) {
         *out_error = g_strdup (
             error && error->message ? error->message :
-            "EDS/ECal-Aktualisierung fehlgeschlagen");
+            "EDS/ECal refresh failed");
     }
     g_clear_error (&error);
     g_clear_object (&client);
@@ -846,13 +846,13 @@ resolve_source_for_management (ESourceRegistry *registry,
     if (!source) {
         g_set_error_literal (
             error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-            "Die ECal-Quelle existiert nicht mehr");
+            "The ECal source no longer exists");
         return FALSE;
     }
     if (!e_source_has_extension (source, extension_name)) {
         g_set_error_literal (
             error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "Die ECal-Quelle hat nicht den erwarteten Quellentyp");
+            "The ECal source does not have the expected source type");
         g_object_unref (source);
         return FALSE;
     }
@@ -881,14 +881,14 @@ meridian_eds_ecal_rename_source (
     if (!source_uid || !*source_uid) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "ECal-Umbenennung benötigt eine Quell-UID");
+            "ECal rename requires a source UID");
         goto finish;
     }
     trimmed_name = g_strdup (display_name ? display_name : "");
     if (!*g_strstrip (trimmed_name)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "ECal-Umbenennung benötigt einen Namen");
+            "ECal rename requires a name");
         goto finish;
     }
     registry = ecal_get_source_registry_with_retry (NULL, &error);
@@ -900,19 +900,19 @@ meridian_eds_ecal_rename_source (
     if (!e_source_get_enabled (source)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_FAILED,
-            "Die ECal-Quelle ist deaktiviert");
+            "The ECal source is disabled");
         goto finish;
     }
     if (!e_source_get_writable (source)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,
-            "Die ECal-Quelle ist nicht schreibbar");
+            "The ECal source is not writable");
         goto finish;
     }
     if (source_is_in_collection (registry, source)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,
-            "Eine sammlungsverwaltete ECal-Quelle kann nicht umbenannt werden");
+            "A collection-managed ECal source cannot be renamed");
         goto finish;
     }
     e_source_set_display_name (source, display_name);
@@ -923,7 +923,7 @@ meridian_eds_ecal_rename_source (
 finish:
     if (result == 0)
         result = return_source_management_error (
-            &error, out_error, "EDS/ECal-Umbenennung fehlgeschlagen");
+            &error, out_error, "EDS/ECal rename failed");
     g_free (trimmed_name);
     g_clear_object (&source);
     g_clear_object (&registry);
@@ -946,7 +946,7 @@ meridian_eds_ecal_delete_source (
     if (!source_uid || !*source_uid) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "ECal-Löschen benötigt eine Quell-UID");
+            "ECal deletion requires a source UID");
         goto finish;
     }
     registry = ecal_get_source_registry_with_retry (NULL, &error);
@@ -962,7 +962,7 @@ meridian_eds_ecal_delete_source (
         if (!e_source_get_removable (source)) {
             g_set_error_literal (
                 &error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,
-                "Die ECal-Quelle kann nicht gelöscht werden");
+                "The ECal source cannot be deleted");
             goto finish;
         }
         if (!e_source_remove_sync (source, NULL, &error))
@@ -973,7 +973,7 @@ meridian_eds_ecal_delete_source (
 finish:
     if (result == 0)
         result = return_source_management_error (
-            &error, out_error, "EDS/ECal-Löschen fehlgeschlagen");
+            &error, out_error, "EDS/ECal deletion failed");
     g_clear_object (&source);
     g_clear_object (&registry);
     return result;
@@ -1050,13 +1050,13 @@ meridian_eds_ecal_copy_source (
         !to_source_uid || !*to_source_uid) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "ECal-Quellenkopie benötigt zwei Quell-UIDs");
+            "ECal source copy requires two source UIDs");
         goto finish;
     }
     if (g_strcmp0 (from_source_uid, to_source_uid) == 0) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "Quelle und Ziel der ECal-Quellenkopie müssen verschieden sein");
+            "The source and target of the ECal source copy must differ");
         goto finish;
     }
     registry = ecal_get_source_registry_with_retry (NULL, &error);
@@ -1070,7 +1070,7 @@ meridian_eds_ecal_copy_source (
     if (!e_source_get_enabled (from_source) || !e_source_get_enabled (to_source)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_FAILED,
-            "Quelle oder Ziel der ECal-Quellenkopie ist deaktiviert");
+            "The source or target of the ECal source copy is disabled");
         goto finish;
     }
     from_client = E_CAL_CLIENT (e_cal_client_connect_sync (
@@ -1084,7 +1084,7 @@ meridian_eds_ecal_copy_source (
     if (e_client_is_readonly (E_CLIENT (to_client))) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_READ_ONLY,
-            "Das Ziel der ECal-Quellenkopie ist schreibgeschützt");
+            "The target of the ECal source copy is read-only");
         goto finish;
     }
     if (!e_cal_client_get_object_list_sync (
@@ -1100,7 +1100,7 @@ meridian_eds_ecal_copy_source (
         if (!component) {
             g_set_error_literal (
                 &error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
-                "Die ECal-Quelle enthält eine ungültige Komponente");
+                "The ECal source contains an invalid component");
             result = 2;
             goto finish;
         }
@@ -1108,7 +1108,7 @@ meridian_eds_ecal_copy_source (
         if (!uid || !*uid) {
             g_set_error_literal (
                 &error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
-                "Die ECal-Quelle enthält eine Komponente ohne UID");
+                "The ECal source contains a component without a UID");
             result = 2;
             goto finish;
         }
@@ -1166,13 +1166,13 @@ finish:
         if (out_error) {
             *out_error = g_strdup (
                 error && error->message ? error->message :
-                "EDS/ECal-Quellenkopie fehlgeschlagen");
+                "EDS/ECal source copy failed");
         }
     } else if (result == 2 && out_error) {
         *out_error = g_strdup_printf (
-            "ECal-Quellenkopie nach %zu bestätigten Komponenten fehlgeschlagen: %s",
+            "ECal source copy failed after %zu confirmed components: %s",
             copied_count,
-            error && error->message ? error->message : "unbekannter ECal-Fehler");
+            error && error->message ? error->message : "unknown ECal error");
     }
     g_clear_error (&error);
     free_ical_component_list (components);
@@ -1230,13 +1230,13 @@ meridian_eds_ecal_create_local_source (
     if (!*g_strstrip (trimmed_display_name)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "Eine lokale ECal-Quelle benötigt einen Namen");
+            "A local ECal source requires a name");
         goto finish;
     }
     if (!is_valid_source_color (color)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "Die Farbe der lokalen ECal-Quelle muss #RRGGBB sein");
+            "The color of the local ECal source must be #RRGGBB");
         goto finish;
     }
     extension_name = source_extension_name_for_type (source_type);
@@ -1253,7 +1253,7 @@ meridian_eds_ecal_create_local_source (
     if (!parent_source || !e_source_get_enabled (parent_source)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-            "Die lokale ECal-Stammquelle ist nicht verfügbar");
+            "The local ECal root source is not available");
         goto finish;
     }
     created_source = e_source_new (NULL, NULL, &error);
@@ -1265,7 +1265,7 @@ meridian_eds_ecal_create_local_source (
     if (!component_extension) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_FAILED,
-            "Die lokale ECal-Quellenerweiterung konnte nicht erstellt werden");
+            "The local ECal source extension could not be created");
         goto finish;
     }
     e_source_backend_set_backend_name (
@@ -1277,7 +1277,7 @@ meridian_eds_ecal_create_local_source (
     if (!local_extension) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_FAILED,
-            "Die lokale ECal-Backend-Erweiterung konnte nicht erstellt werden");
+            "The local ECal backend extension could not be created");
         goto finish;
     }
     e_source_local_set_writable (local_extension, TRUE);
@@ -1290,7 +1290,7 @@ meridian_eds_ecal_create_local_source (
     if (!source_uid || !*source_uid) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_FAILED,
-            "EDS bestätigte eine lokale Quelle ohne gültige UID");
+            "EDS confirmed a local source without a valid UID");
         goto finish;
     }
     if (out_source_uid)
@@ -1300,7 +1300,7 @@ meridian_eds_ecal_create_local_source (
         if (out_warning) {
             *out_warning = g_strdup (
                 error && error->message ? error->message :
-                "Die lokale ECal-Quelle wurde erstellt, aber noch nicht gefunden");
+                "The local ECal source was created but not found yet");
         }
         g_clear_error (&error);
         result = 2;
@@ -1309,7 +1309,7 @@ meridian_eds_ecal_create_local_source (
     if (!e_source_get_enabled (committed_source)) {
         if (out_warning)
             *out_warning = g_strdup (
-                "Die lokale ECal-Quelle wurde erstellt, ist aber deaktiviert");
+                "The local ECal source was created but is disabled");
         result = 2;
         goto finish;
     }
@@ -1320,7 +1320,7 @@ meridian_eds_ecal_create_local_source (
         if (out_warning) {
             *out_warning = g_strdup (
                 error && error->message ? error->message :
-                "Die lokale ECal-Quelle wurde erstellt, ist aber noch nicht erreichbar");
+                "The local ECal source was created but is not reachable yet");
         }
         g_clear_error (&error);
         result = 2;
@@ -1332,7 +1332,7 @@ finish:
     if (result == 0 && out_error) {
         *out_error = g_strdup (
             error && error->message ? error->message :
-            "EDS konnte die lokale ECal-Quelle nicht erstellen");
+            "EDS could not create the local ECal source");
     }
     g_clear_error (&error);
     g_free (trimmed_display_name);
@@ -1445,7 +1445,7 @@ meridian_eds_ecal_get_local_source_properties (
         *out_error = NULL;
     if (!source_uid || !*source_uid || !out_properties) {
         if (out_error)
-            *out_error = g_strdup ("Lokale ECal-Eigenschaften benötigen eine Quell-UID");
+            *out_error = g_strdup ("Local ECal properties require a source UID");
         return 0;
     }
     registry = ecal_get_source_registry_with_retry (NULL, &error);
@@ -1463,7 +1463,7 @@ meridian_eds_ecal_get_local_source_properties (
     if (!e_source_get_enabled (source)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_FAILED,
-            "Die ECal-Quelle ist deaktiviert");
+            "The ECal source is disabled");
         goto finish;
     }
     builtin_source = ref_builtin_source_for_type (registry, source_type);
@@ -1472,7 +1472,7 @@ meridian_eds_ecal_get_local_source_properties (
     if (!is_valid_source_color (color)) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_FAILED,
-            "EDS lieferte keine gültige Farbe für die lokale ECal-Quelle");
+            "EDS returned no valid color for the local ECal source");
         goto finish;
     }
     out_properties->source_uid = g_strdup (e_source_get_uid (source));
@@ -1491,7 +1491,7 @@ finish:
         if (out_error) {
             *out_error = g_strdup (
                 error && error->message ? error->message :
-                "EDS konnte die lokalen ECal-Eigenschaften nicht lesen");
+                "EDS could not read the local ECal properties");
         }
     }
     g_clear_error (&error);
@@ -1538,18 +1538,18 @@ meridian_eds_ecal_update_local_source_properties (
         *out_error = NULL;
     if (!source_uid || !*source_uid) {
         g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "Lokale ECal-Eigenschaften benötigen eine Quell-UID");
+            "Local ECal properties require a source UID");
         goto finish;
     }
     trimmed_display_name = g_strdup (display_name ? display_name : "");
     if (!*g_strstrip (trimmed_display_name)) {
         g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "Lokale ECal-Eigenschaften benötigen einen Namen");
+            "Local ECal properties require a name");
         goto finish;
     }
     if (!is_valid_source_color (color)) {
         g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "Die Farbe der lokalen ECal-Quelle muss #RRGGBB sein");
+            "The color of the local ECal source must be #RRGGBB");
         goto finish;
     }
     if (custom_file_uri) {
@@ -1557,7 +1557,7 @@ meridian_eds_ecal_update_local_source_properties (
         if (!*custom_file_uri || !scheme) {
             g_free (scheme);
             g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-                "Die Datei-URI der lokalen ECal-Quelle ist ungültig");
+                "The file URI of the local ECal source is invalid");
             goto finish;
         }
         g_free (scheme);
@@ -1565,7 +1565,7 @@ meridian_eds_ecal_update_local_source_properties (
         normalized_uri = custom_file ? g_file_get_uri (custom_file) : NULL;
         if (!normalized_uri || !*normalized_uri) {
             g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-                "Die Datei-URI der lokalen ECal-Quelle ist ungültig");
+                "The file URI of the local ECal source is invalid");
             goto finish;
         }
     }
@@ -1583,18 +1583,18 @@ meridian_eds_ecal_update_local_source_properties (
         goto finish;
     if (!e_source_get_enabled (source)) {
         g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_FAILED,
-            "Die ECal-Quelle ist deaktiviert");
+            "The ECal source is disabled");
         goto finish;
     }
     if (!e_source_get_writable (source)) {
         g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,
-            "Die ECal-Quelle ist nicht schreibbar");
+            "The ECal source is not writable");
         goto finish;
     }
     builtin_source = ref_builtin_source_for_type (registry, source_type);
     if (custom_file && builtin_source && e_source_equal (source, builtin_source)) {
         g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "Die eingebaute lokale ECal-Quelle verwendet keine eigene Datei");
+            "The built-in local ECal source does not use its own file");
         goto finish;
     }
     dbus_object = e_source_ref_dbus_object (source);
@@ -1606,7 +1606,7 @@ meridian_eds_ecal_update_local_source_properties (
     uid = e_source_get_uid (scratch_source);
     if (!uid || g_strcmp0 (uid, source_uid) != 0) {
         g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_FAILED,
-            "EDS lieferte eine bearbeitbare Kopie für eine andere Quelle");
+            "EDS returned an editable copy for a different source");
         goto finish;
     }
     scratch_component_extension = e_source_get_extension (
@@ -1615,7 +1615,7 @@ meridian_eds_ecal_update_local_source_properties (
         scratch_source, E_SOURCE_EXTENSION_LOCAL_BACKEND);
     if (!scratch_component_extension || !scratch_local_extension) {
         g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_FAILED,
-            "EDS konnte die lokalen Quellenerweiterungen nicht bearbeiten");
+            "EDS could not edit the local source extensions");
         goto finish;
     }
     e_source_set_display_name (scratch_source, display_name);
@@ -1632,7 +1632,7 @@ meridian_eds_ecal_update_local_source_properties (
             registry, source_uid, source_type, &committed_source, &error)) {
         if (out_warning)
             *out_warning = g_strdup (error && error->message ? error->message :
-                "Die lokalen ECal-Eigenschaften wurden gespeichert, aber die Quelle ist nicht erreichbar");
+                "The local ECal properties were saved, but the source is not reachable");
         g_clear_error (&error);
         result = 2;
         goto finish;
@@ -1640,7 +1640,7 @@ meridian_eds_ecal_update_local_source_properties (
     if (!e_source_get_enabled (committed_source)) {
         if (out_warning)
             *out_warning = g_strdup (
-                "Die lokalen ECal-Eigenschaften wurden gespeichert, aber die Quelle ist deaktiviert");
+                "The local ECal properties were saved, but the source is disabled");
         result = 2;
         goto finish;
     }
@@ -1649,7 +1649,7 @@ meridian_eds_ecal_update_local_source_properties (
     if (!client) {
         if (out_warning)
             *out_warning = g_strdup (error && error->message ? error->message :
-                "Die lokalen ECal-Eigenschaften wurden gespeichert, aber die Quelle ist noch nicht erreichbar");
+                "The local ECal properties were saved, but the source is not reachable yet");
         g_clear_error (&error);
         result = 2;
         goto finish;
@@ -1659,7 +1659,7 @@ meridian_eds_ecal_update_local_source_properties (
 finish:
     if (result == 0 && out_error) {
         *out_error = g_strdup (error && error->message ? error->message :
-            "EDS konnte die lokalen ECal-Eigenschaften nicht speichern");
+            "EDS could not save the local ECal properties");
     }
     g_clear_error (&error);
     g_free (trimmed_display_name);

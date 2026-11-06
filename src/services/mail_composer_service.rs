@@ -2184,7 +2184,7 @@ mod tests {
             smime_options: None,
         })
         .expect_err("signing without a key must fail before invoking GnuPG");
-        assert!(error.contains("kein passender Schlüssel") || error.to_ascii_lowercase().contains("key"));
+        assert!(error.to_ascii_lowercase().contains("key"));
     }
 
     #[test]
@@ -2215,8 +2215,7 @@ mod tests {
         })
         .expect_err("S/MIME signing without a certificate must fail before OpenSSL");
         assert!(
-            error.contains("Zertifikat oder privater Schlüssel fehlt")
-                || error.to_ascii_lowercase().contains("certificate")
+            error.to_ascii_lowercase().contains("certificate")
                 || error.to_ascii_lowercase().contains("key")
         );
     }
