@@ -30,7 +30,7 @@ Meridian is conceived as a spiritual successor to [Evolution](https://gitlab.gno
 
 ## Installation
 
-Install via Flatpak ([`com.martingawron.Meridian.flatpakref`](https://meridian.martingawron.com/flatpak/com.martingawron.Meridian.flatpakref)):
+[Download Flatpak](https://meridian.martingawron.com/flatpak/com.martingawron.Meridian.flatpakref) and open it with GNOME Software, or install it from the terminal:
 
 ```bash
 flatpak install --user --from https://meridian.martingawron.com/flatpak/com.martingawron.Meridian.flatpakref
