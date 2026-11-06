@@ -34,6 +34,8 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: registry.fedoraproject.org/fedora:44
+      # flatpak build-export validates icons in a bwrap sandbox, which needs user namespaces
+      options: --privileged
       env:
         PATH: /root/.cargo/bin:/github/home/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     steps:
